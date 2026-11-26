@@ -20,6 +20,7 @@
 import type { RpValidationConfig } from "./jwt.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
 import type { D1DatabaseLike } from "./d1-queue-store.ts";
+import type { R2BucketLike } from "./kv-blobs.ts";
 
 export const HOSTED_VERSION = "0.1.0";
 export const SERVICE_NAME = "fleet-hosted";
@@ -93,6 +94,16 @@ export interface HostedEnv {
   /** The Turso auth token for QUEUE_LIBSQL_URL (a secret binding,
    *  never committed). Unset for unauthenticated local endpoints. */
   QUEUE_LIBSQL_AUTH_TOKEN?: string;
+  /** The fleet-kv central primary (#13316): the shared Turso DB the
+   *  kv door forwards catalogued statements to over Hrana. A
+   *  libsql:// or https:// URL (wrangler [vars]); unset → the kv
+   *  door fails closed (503). */
+  KV_LIBSQL_URL?: string;
+  /** The Turso auth token for KV_LIBSQL_URL (a secret binding,
+   *  never committed). Held by the Worker only: kv callers present
+   *  their own RP/agent JWT or kv-scoped service token, never this
+   *  data-plane credential. */
+  KV_LIBSQL_AUTH_TOKEN?: string;
   /** The fleet-queue D1 database, by binding (#14866): the queue
    *  verbs run against it through D1QueueStore when the binding is
    *  present \u2014 the Cloudflare-first data plane. A binding, not a
@@ -101,6 +112,13 @@ export interface HostedEnv {
    *  signal, and it takes precedence over the Turso/libSQL queue
    *  backends in buildDeps. Absent \u2192 those backends, unchanged. */
   QUEUE_D1?: D1DatabaseLike;
+  /** The kv blob bucket (#13318): an R2 binding for the blob upload
+   * door. Absent → that door fails closed (503). */
+  KV_BLOBS?: R2BucketLike;
+  /** The kv blob read-capability key (#13318): a secret, set by name
+   * at deployment, never in wrangler.toml. Absent → the read routes
+   * fail closed (503). */
+  KV_BLOB_CAPABILITY_KEY?: string;
   /** The message bridge, by service binding (#14373): the bridge
    * door calls it with the PM credential below. A binding, not a
    * value: present when the deployed shape carries it (wrangler.toml
@@ -155,8 +173,15 @@ export interface HostedConfig {
   rp: RpValidationConfig | null;
   /** Tenancy directory, or null when none is configured/readable. */
   tenancy: TenancyDirectory | null;
-  /** True only when every auth input is present and parsed. */
+  /** True only when every auth input is present and parsed. Note
+   * (#14978): authenticate() no longer requires this as a whole —
+   * service-token callers need only the tenancy directory; this flag
+   * stays the "full auth (RP + tenancy)" summary for reporting. */
   authConfigured: boolean;
+  /** True when a tenancy directory is configured: service-token
+   * callers can authenticate (#14978 / CF-2b) even before an RP
+   * issuer exists. */
+  serviceAuthConfigured: boolean;
   /** Stamp signature key material (#12586), independent of auth. */
   stamp: StampConfig;
   /** Fleet App rotation configuration (#12585), or null when no
@@ -189,6 +214,12 @@ export interface HostedConfig {
   /** The auth token for queueLibsqlUrl (secret, never a [vars]
    *  value); null for unauthenticated endpoints. */
   queueLibsqlAuthToken: string | null;
+  /** The fleet-kv central primary (#13316), or null when unset —
+   *  the kv door then fails closed (503). */
+  kvLibsqlUrl: string | null;
+  /** The auth token for kvLibsqlUrl (secret); null for an
+   *  unauthenticated local endpoint. */
+  kvLibsqlAuthToken: string | null;
   /** The PM bridge credential (#14373), or null when unset or too
    * short to be one — the bridge door then fails closed (503). The
    * value is held only to be presented to the bridge; it is never
@@ -304,6 +335,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     rp,
     tenancy,
     authConfigured: rp !== null && tenancy !== null,
+    serviceAuthConfigured: tenancy !== null,
     stamp: parseStampConfig(env),
     github: parseGitHubAppConfig(env),
     webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
@@ -312,6 +344,8 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     queueLibsqlFile: parseQueueLibsqlFile(env.QUEUE_LIBSQL_FILE),
     queueLibsqlUrl: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_URL),
     queueLibsqlAuthToken: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_AUTH_TOKEN),
+    kvLibsqlUrl: parseQueueLibsqlUrl(env.KV_LIBSQL_URL),
+    kvLibsqlAuthToken: parseQueueLibsqlUrl(env.KV_LIBSQL_AUTH_TOKEN),
     bridge: parseBridgeConfig(env),
   };
 }

@@ -440,7 +440,7 @@ mod tests {
         }
         let answer = fanout.finish();
         assert_eq!(answer.completeness, Some(Completeness::Complete));
-        assert!(answer.unanswered_peers.is_empty());
+        assert_eq!(answer.unanswered_peers, [] as [String; 0]);
         assert_eq!(answer.results, ["l1"]);
         assert_eq!(answer.provenance.len(), 4);
         assert!(
@@ -483,7 +483,7 @@ mod tests {
             .unwrap();
         let answer = fanout.finish();
         assert_eq!(answer.completeness, Some(Completeness::Complete));
-        assert!(answer.unanswered_peers.is_empty());
+        assert_eq!(answer.unanswered_peers, [] as [String; 0]);
         assert_eq!(answer.provenance.len(), 4);
     }
 

@@ -184,6 +184,8 @@ const server = net.createServer((client) => {
     tryTargets(order)
       .then((upstream) => {
         upstream.on('error', () => { client.destroy(); upstream.destroy(); });
+        client.on('close', () => upstream.destroy());
+        upstream.on('close', () => client.destroy());
         upstream.write(buf);
         // This is now a transparent TCP pipe, not a first-line peek. Forwarded
         // flows may be legitimately long-lived or idle; tunnel/upstream

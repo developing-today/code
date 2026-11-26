@@ -350,6 +350,7 @@ required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
 required file aggregator/events.json
 optional file aggregator/events.json.outbox.jsonl
+optional tree aggregator/events.json.segments
 optional tree aggregator/events.json.archive
 optional file aggregator/activity-ingestion.json
 required file aggregator/coverage-snapshot.json
@@ -423,6 +424,15 @@ for f in activity-ingestion.json events.json.outbox.jsonl; do
       fail "dataset copy failed: $AGG/$f"
   else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
 done
+# Audit event segments (#14958): the hot stream's records live in
+# events.json.segments/ and events.json is its manifest/checkpoint.
+# Copy the segments BEFORE events.json (the same ordering
+# discipline as the outbox above): a generation may hold segment
+# records its manifest checkpoint still lags — the store adopts
+# chained extras on load — but never a checkpoint ahead of its
+# segments, which would restore as missing history.
+if [ -d "$AGG/events.json.segments" ]; then cp -a "$AGG/events.json.segments" "$STAGE/aggregator/events.json.segments" ||
+  fail "dataset copy failed: $AGG/events.json.segments"; fi
 for f in actions.json comments.json fleet-feed.json quota-current.json \
   registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
   events.json \

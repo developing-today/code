@@ -69,7 +69,8 @@ machines:
     # and seat that reaches amd uses the full ladder; hosted MCP clients
     # speak HTTPS only, so they get the public door alone.
     enrollment:
-      opencode-lanes: [laptop-agent-cf, laptop-agent-tailnet, ssh, commander-door]
+      opencode-lanes:
+        [laptop-agent-cf, laptop-agent-tailnet, ssh, commander-door]
       muse-seats: [laptop-agent-cf, laptop-agent-tailnet, ssh, commander-door]
       external-mcp-clients: [commander-door]
     capabilities:
@@ -94,25 +95,25 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-25T07:24:17Z'
+      last_seen: '2026-11-26T17:24:08Z'
       status: degraded
       checks:
-        reported_at: '2026-11-25T07:24:17Z'
+        reported_at: '2026-11-26T17:24:08Z'
         reachable:
           state: ok
           ssh: true
           opencode_server_http: 200
         load_headroom:
           state: ok
-          load15: 10.87
+          load15: 5.8
           cpu_cores: 16
-          load15_per_core: 0.679
+          load15_per_core: 0.362
         disk_headroom:
           state: failed
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 196
-          free_pct: 5.8
+          free_gb: 117
+          free_pct: 3.5
         sessions:
           state: ok
           listed: 50
@@ -121,7 +122,7 @@ machines:
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: '21506'
+          task_id: '23885'
           queue: repo-health-code-pilot
-          worker: agent-next-21-local
-          completed_at: '2026-11-25T07:20:01Z'
+          worker: repo-worker-code
+          completed_at: '2026-11-26T13:18:38Z'

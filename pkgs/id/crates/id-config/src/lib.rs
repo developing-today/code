@@ -31,16 +31,39 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 pub mod explain;
+pub mod links;
+pub mod namespaces;
 pub mod peers;
+pub mod remotes;
 pub mod resolve;
 pub mod rollout;
+pub mod storage;
+pub mod tiers;
 
 pub use explain::{ExplainEntry, Explanation, explain};
-pub use peers::{PeerClass, PeerEntry, PeerOperation};
+pub use links::{
+    ADVERTISED_LINK_ADAPTERS, ControlLink, Links, QueryLink, ResolvedLinks, ResolvedQueryLink,
+    ResolvedSendOnlyLink, ResolvedSyncLink, SendOnlyLink, SyncLink,
+};
+pub use namespaces::{
+    BUILTIN_NAMESPACE_REGISTRY, MAX_NAMESPACE_REGISTRY_ID_LEN, Namespaces, RegistryRef,
+    ResolvedNamespaces,
+};
+pub use peers::{OperationOverride, PeerClass, PeerEntry, PeerOperation};
+pub use remotes::FanoutRemote;
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
     RevisionRecord, RollbackOutcome, Rollout, RolloutError, resolved_digest,
+};
+pub use storage::{
+    ADVERTISED_OBJECT_STORE_ADAPTERS, ADVERTISED_STORE_ADAPTERS, AdvertisedStoreAdapter,
+    ObjectStoreBinding, ResolvedObjectStoreBinding, ResolvedStorage, ResolvedStoreBinding, Storage,
+    StoreBinding, SyncParticipation,
+};
+pub use tiers::{
+    DEFAULT_TIER, MAX_TIER_ID_LEN, Placement, RETENTION_INDEFINITE, ResolvedTier, ResolvedTiers,
+    TierLookup, TierPolicy,
 };
 
 /// The only `ConfigDocument` schema version this crate accepts. The schema
@@ -105,11 +128,11 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         "schema_version" | "config_id" | "revision" | "protocol_versions" | "ceilings"
         | "gates" => Some(FieldClass::Mechanism),
         // Mode bundles, behavioral values, scoped overrides, retained
-        // extensions, fan-out keys and the peer plane are the configurable
-        // surface.
-        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" => {
-            Some(FieldClass::Behavior)
-        }
+        // extensions, fan-out keys, the peer plane, the storage plane and the
+        // tier map, the link plane and the namespace registry reference are
+        // the configurable surface.
+        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" | "storage"
+        | "tiers" | "links" | "namespaces" => Some(FieldClass::Behavior),
         _ => None,
     }
 }
@@ -284,9 +307,9 @@ const fn default_peer_breadth() -> u32 {
 /// operator sees the mistake. The hop limit is `ceilings.max_hops`, bounded
 /// by [`MAX_HOPS_LIMIT`].
 ///
-/// `fanout.remotes[]` is not here yet: it names entries of the `peers[]`
-/// plane ([`PeerEntry`]) and lands with a later part of slice 9111-03.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `fanout.remotes[]` names entries of the `peers[]` plane
+/// ([`PeerEntry`]); see [`FanoutRemote`] for its rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fanout {
     /// Whole fan-out query deadline in milliseconds. Default 5000.
@@ -301,6 +324,13 @@ pub struct Fanout {
     /// How many peers one query asks at once. Default 4.
     #[serde(default = "default_peer_breadth")]
     pub peer_breadth: u32,
+    /// The peers fan-out queries may ask (record §7.1). Default `[]`:
+    /// local-only. Omitted from the canonical encoding when empty, so a
+    /// document without remotes keeps the digest it had before the list
+    /// existed. The resolved list is sorted by priority and each entry
+    /// carries its effective timeout and scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remotes: Vec<FanoutRemote>,
 }
 
 impl Default for Fanout {
@@ -309,6 +339,7 @@ impl Default for Fanout {
             deadline_ms: default_deadline_ms(),
             per_peer_timeout_ms: default_per_peer_timeout_ms(),
             peer_breadth: default_peer_breadth(),
+            remotes: Vec::new(),
         }
     }
 }
@@ -336,17 +367,17 @@ impl Fanout {
     /// The resolved form.
     ///
     /// The per-peer timeout is clamped to the deadline (record §7.1 and
-    /// §7.2); every other key is as written.
+    /// §7.2), and the remotes are sorted by priority with their effective
+    /// timeout and scope filled in from `peers`; every other key is as
+    /// written.
     #[must_use]
-    pub const fn resolved(self) -> Self {
-        let per_peer_timeout_ms = if self.per_peer_timeout_ms > self.deadline_ms {
-            self.deadline_ms
-        } else {
-            self.per_peer_timeout_ms
-        };
+    pub fn resolved(&self, peers: &[PeerEntry]) -> Self {
+        let per_peer_timeout_ms = self.per_peer_timeout_ms.min(self.deadline_ms);
         Self {
+            deadline_ms: self.deadline_ms,
             per_peer_timeout_ms,
-            ..self
+            peer_breadth: self.peer_breadth,
+            remotes: remotes::resolved(&self.remotes, peers, per_peer_timeout_ms, self.deadline_ms),
         }
     }
 }
@@ -512,6 +543,23 @@ pub struct ConfigDocument {
     /// configured peers, so every peer is `unknown`. See [`PeerEntry`].
     #[serde(default)]
     pub peers: Vec<PeerEntry>,
+    /// The storage plane: which adapter backs each store. Absent means
+    /// the built-in defaults. See [`Storage`].
+    #[serde(default)]
+    pub storage: Storage,
+    /// The tier map: tier identifier to placement and retention. Absent
+    /// means every record is in the built-in `default` tier. See
+    /// [`TierPolicy`].
+    #[serde(default)]
+    pub tiers: BTreeMap<String, TierPolicy>,
+    /// The link plane: per-kind link defaults. Absent means every
+    /// configurable kind is off. See [`Links`].
+    #[serde(default)]
+    pub links: Links,
+    /// The namespace plane: which local registry names resolve in. Absent
+    /// means the built-in registry only. See [`Namespaces`].
+    #[serde(default)]
+    pub namespaces: Namespaces,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -550,6 +598,27 @@ pub struct ResolvedConfig {
     /// plane existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peers: Vec<PeerEntry>,
+    /// Resolved storage plane. Omitted from the canonical encoding when it
+    /// is the built-in default, so a document without `storage` keeps the
+    /// digest it had before the plane existed.
+    #[serde(default, skip_serializing_if = "ResolvedStorage::is_default")]
+    pub storage: ResolvedStorage,
+    /// Resolved tier map, always holding `default`. Omitted from the
+    /// canonical encoding when it is only the built-in `default` tier, so
+    /// a document without `tiers` keeps the digest it had before the map
+    /// existed.
+    #[serde(default, skip_serializing_if = "ResolvedTiers::is_default")]
+    pub tiers: ResolvedTiers,
+    /// Resolved link plane. Omitted from the canonical encoding when it is
+    /// the built-in default, so a document without `links` keeps the
+    /// digest it had before the plane existed.
+    #[serde(default, skip_serializing_if = "ResolvedLinks::is_default")]
+    pub links: ResolvedLinks,
+    /// Resolved namespace plane. Omitted from the canonical encoding when
+    /// it is the built-in registry, so a document without `namespaces`
+    /// keeps the digest it had before the plane existed.
+    #[serde(default, skip_serializing_if = "ResolvedNamespaces::is_default")]
+    pub namespaces: ResolvedNamespaces,
 }
 
 impl ResolvedConfig {
@@ -683,6 +752,110 @@ pub enum ConfigError {
     /// policy would never be in force.
     #[error("peer {0:?} expires_at must be after valid_from")]
     EmptyPeerWindow(String),
+    /// A storage binding names an adapter this build does not advertise
+    /// (record §6.5 step 4).
+    #[error("storage.{store}.adapter {adapter:?} is not advertised by this build")]
+    UnadvertisedStorageAdapter {
+        /// `local_store`, `event_log` or `object_store`.
+        store: &'static str,
+        /// The adapter named.
+        adapter: String,
+    },
+    /// A storage binding asks for a durability its adapter does not
+    /// advertise (record §6.5 step 4).
+    #[error("storage.{store}.durability {durability:?} is not advertised by adapter {adapter:?}")]
+    UnadvertisedDurability {
+        /// `local_store` or `event_log`.
+        store: &'static str,
+        /// The adapter.
+        adapter: String,
+        /// The durability named.
+        durability: String,
+    },
+    /// `storage.object_store.retention_class` is empty.
+    #[error("storage.object_store.retention_class must not be empty; omit it for the default")]
+    EmptyRetentionClass,
+    /// A fan-out remote names a peer with no `peers[]` entry.
+    #[error("fanout.remotes[] peer_id {0:?} has no peers[] entry")]
+    UnknownRemotePeer(String),
+    /// A peer is listed twice in `fanout.remotes[]`.
+    #[error("fanout.remotes[] lists peer {0:?} more than once")]
+    DuplicateRemote(String),
+    /// A fan-out remote names a peer that can never be asked.
+    #[error("fanout.remotes[] peer {peer_id:?} can never be asked: {rule}")]
+    RemoteNotAskable {
+        /// The peer.
+        peer_id: String,
+        /// Why it can't be asked.
+        rule: &'static str,
+    },
+    /// A fan-out remote asks to relay through a peer that is not
+    /// `fully_trusted` with `relay_granted` (record §7.3).
+    #[error(
+        "fanout.remotes[] peer {0:?} has relay true but is not fully_trusted with relay_granted"
+    )]
+    RemoteRelayNotGranted(String),
+    /// A fan-out remote's `scope` is present but empty.
+    #[error("fanout.remotes[] peer {0:?} scope must not be empty; omit it for the peer's scope")]
+    EmptyRemoteScope(String),
+    /// A per-operation override names an operation it may not override.
+    #[error("peer {peer_id:?} overrides.{operation} is not allowed: {rule}")]
+    InvalidOperationOverride {
+        /// The peer.
+        peer_id: String,
+        /// The operation's wire name.
+        operation: &'static str,
+        /// Why it is not allowed.
+        rule: &'static str,
+    },
+    /// A per-operation override names an adapter this build does not
+    /// advertise (record §6.5 step 4).
+    #[error(
+        "peer {peer_id:?} overrides.{operation}.adapter {adapter:?} is not advertised by this build"
+    )]
+    UnadvertisedOverrideAdapter {
+        /// The peer.
+        peer_id: String,
+        /// The operation's wire name.
+        operation: &'static str,
+        /// The adapter named.
+        adapter: String,
+    },
+    /// A link names an adapter this build does not advertise (record §6.5
+    /// step 4).
+    #[error("links.{link}.adapter {adapter:?} is not advertised by this build")]
+    UnadvertisedLinkAdapter {
+        /// `sync` or `send_only`.
+        link: &'static str,
+        /// The adapter named.
+        adapter: String,
+    },
+    /// `namespaces.registry` is not `builtin`, `server:<id>` or
+    /// `handle:<handle>` with a valid ID (record §3.1, §7.4; #9116).
+    #[error(
+        "namespaces.registry {0:?} must be \"builtin\", \"server:<id>\" or \"handle:<handle>\", the id 1 to 255 visible ASCII characters"
+    )]
+    InvalidNamespaceRegistry(String),
+    /// A link's `retention_class` is empty.
+    #[error("links.{0}.retention_class must not be empty; omit it for the default")]
+    EmptyLinkRetentionClass(&'static str),
+    /// A tier identifier is empty, too long, or uses a character other
+    /// than ASCII letters, digits, `-` and `_`.
+    #[error("tier id {0:?} must be 1 to 64 ASCII letters, digits, '-' or '_' (record section 3.5)")]
+    InvalidTierId(String),
+    /// A tier's retention is neither `indefinite` nor a whole number of
+    /// days written `<n>d` with `n` at least 1.
+    #[error("tiers.{tier}.retention {retention:?} must be \"indefinite\" or \"<n>d\" with n >= 1")]
+    InvalidTierRetention {
+        /// The tier.
+        tier: String,
+        /// The retention given.
+        retention: String,
+    },
+    /// A tier is placed in the object store but `storage.object_store` is
+    /// not bound.
+    #[error("tiers.{0}.placement is object_store but storage.object_store is not bound")]
+    TierNeedsObjectStore(String),
     /// An extension key is not a valid namespace.
     #[error(
         "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
@@ -790,6 +963,11 @@ impl ConfigDocument {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
         peers::validate(&self.peers)?;
+        remotes::validate(&self.fanout.remotes, &self.peers)?;
+        self.storage.validate()?;
+        self.links.validate()?;
+        self.namespaces.validate()?;
+        tiers::validate(&self.tiers, &self.storage)?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
@@ -909,8 +1087,12 @@ impl ConfigDocument {
             behavior,
             provenance,
             extensions: self.extensions.clone(),
-            fanout: self.fanout.resolved(),
+            fanout: self.fanout.resolved(&self.peers),
             peers: peers::resolved(&self.peers),
+            storage: self.storage.resolved(),
+            tiers: tiers::resolved(&self.tiers),
+            links: self.links.resolved(),
+            namespaces: self.namespaces.resolved(),
         })
     }
 }

@@ -66,6 +66,7 @@
 //     nothing.
 
 import { FailClosed, parseBindingId, parseJurisdiction, type Jurisdiction } from "./routing.ts";
+import { TenancyRegistry, type TenancyDatabase } from "./tenancy-registry.ts";
 
 export const TENANT_STATES = [
   "requested",
@@ -170,6 +171,7 @@ interface DOState {
 interface Env {
   TENANT_DB_PROVIDER?: TenantDatabaseProvider;
   TENANT_DELETION_COOLING_OFF_MS?: string;
+  TENANCY_DB?: TenancyDatabase;
 }
 
 interface TenantRow {
@@ -436,8 +438,8 @@ export class TenantOpsDO {
 
   /** Steps 1–3 (signup + binding ceremony are upstream; this is
    * the tenant request they enable): record the row `requested`
-   * with its intent, then validate. A tenant whose binding is
-   * missing or not active fails validation ON the row (§4's
+   * with its intent, then validate. A tenant whose account is not
+   * active, or whose binding is missing or not active, fails validation ON the row (§4's
    * requested ──► failed edge) — and no database is ever created
    * before a binding exists. Idempotent: a repeat request returns
    * the existing row, whatever state it has reached. */
@@ -476,11 +478,8 @@ export class TenantOpsDO {
       request_id: provisioningRequestId(row.tenant_id),
       jurisdiction,
     });
-    const binding = this.sql()
-      .exec("SELECT status FROM binding WHERE binding_id = ?", this.tenantId)
-      .toArray();
-    if (binding.length === 0 || binding[0].status !== "active") {
-      const reason = binding.length === 0 ? "binding_missing" : "binding_not_active";
+    const reason = await new TenancyRegistry(this.env.TENANCY_DB).provisioningBlockReason(this.tenantId);
+    if (reason !== null) {
       row = this.setState(row, "failed");
       this.journal(at, "failed", "requested", "failed", actor, { reason });
     }
@@ -683,7 +682,18 @@ export class TenantOpsDO {
     this.requireActor(actor, ["owner", "platform"], "deletion completion");
     const requestedAt = this.meta("deletion_requested_at");
     const windowMs = this.coolingOffMs();
-    if (requestedAt === null || Date.parse(at) - Date.parse(requestedAt) < windowMs) {
+    // A missing or unreadable start time cannot prove the window
+    // elapsed, so it refuses: NaN would otherwise compare false and
+    // let the drop through at once.
+    const elapsedMs = requestedAt === null ? Number.NaN : Date.parse(at) - Date.parse(requestedAt);
+    if (!Number.isFinite(elapsedMs)) {
+      throw new FailClosed(
+        409,
+        "cooling_off_unproven",
+        "deletion: the recorded deletion request time is missing or unreadable, so the cooling-off window (§4 step 10) cannot be shown to have elapsed; the tenant stays in deleting with its credentials revoked",
+      );
+    }
+    if (elapsedMs < windowMs) {
       throw new FailClosed(
         409,
         "cooling_off",

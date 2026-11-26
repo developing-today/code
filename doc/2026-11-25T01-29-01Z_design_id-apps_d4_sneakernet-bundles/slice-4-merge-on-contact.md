@@ -217,6 +217,7 @@ following code. Removable media and email are unaffected.
   writes made inside its window. Revocation belongs to the broker and keyset
   work.
 - Held pairs wait on slice 2. Their release path is designed there, not
-  here.
+  here (`slice-2-bundle-grants.md`: a grant releases only the pairs in its own
+  bundle).
 - The fixture has two hosts. Three-way merges follow from the store being a
   set, but the self-test does not run one.

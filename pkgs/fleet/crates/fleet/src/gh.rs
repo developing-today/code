@@ -129,6 +129,18 @@
 //! close — the queue sweep's detective check is the net), and a
 //! build without the queue client skips the guard the same way.
 //!
+//! Stdin values (#15556): `gh secret set` / `gh variable set`
+//! without `--body` take the value from stdin — a one-shot stream
+//! the first rotation attempt consumes. Before this fix a retryable
+//! first attempt (rate limit / permission refusal) left the failover
+//! attempt reading EOF, and real gh stores that as an EMPTY value
+//! with exit 0: a silent provisioning failure. So when stdin is not
+//! a terminal and supplies the value, fleet reads it once, refuses
+//! an empty value loudly (exit 2, before any attempt), and replays
+//! the same bytes to every attempt. An explicitly empty `--body`
+//! is refused the same way. A terminal stdin is inherited as
+//! before, so gh's interactive prompt is unchanged.
+//!
 //! Metadata create path (#9073, design §12–§15): `issue create` and
 //! `pr create` bodies are stamped with the fleet Metadata block
 //! (gh_metadata.rs) before the rotation runs, and the full record
@@ -141,12 +153,13 @@
 
 use crate::gh_cache;
 use crate::gh_closure;
+use crate::gh_content_ledger;
 use crate::gh_guard;
 use crate::gh_metadata;
 use crate::gh_sync;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -157,6 +170,11 @@ const EXIT_USAGE: i32 = 2;
 /// for "no token source could be resolved at all" (matches the
 /// secrets/dispatch unresolved exit shape).
 const EXIT_UNRESOLVED: i32 = 3;
+/// The shared content-creation ledger refused the reservation, so
+/// the create did not run (code#2227). Mirrors gh-post's exit 5:
+/// an unledgered filing is the failure mode the ledger exists to
+/// kill, so the refusal is loud and counted, never silent.
+const EXIT_LEDGER: i32 = 5;
 
 fn usage_error(message: &str) -> i32 {
     eprintln!("error: {message}");
@@ -1349,17 +1367,169 @@ struct Attempt {
 /// which binary was chosen, it only tells the shim not to route.
 const SHIM_GUARD_ENV: &str = "FLEET_GH_SHIM_ACTIVE";
 
+/// The index and word of the `gh` command in `args`, past any
+/// inherited flags given before it (the scan `command_word` does,
+/// keeping the position so the subcommand after it can be read).
+fn command_word_at(args: &[String]) -> Option<(usize, &str)> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let a = a.as_str();
+        if a == "-R" || a == "--repo" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            return Some((i, a));
+        }
+    }
+    None
+}
+
+/// Is this a `secret set` / `variable set` call — the two commands
+/// whose value can come from `--body`, an `--env-file`, or stdin
+/// (`gh secret set --help`, `gh variable set --help`)?
+fn is_value_set(args: &[String]) -> bool {
+    let Some((i, word)) = command_word_at(args) else {
+        return false;
+    };
+    (word == "secret" || word == "variable") && args.get(i + 1).map(|s| s.as_str()) == Some("set")
+}
+
+/// The `--body` value of a value-set call, when a body flag is
+/// present in any spelling (`--body V`, `--body=V`, `-b V`, `-bV`).
+fn body_value(args: &[String]) -> Option<Option<&str>> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--body" || a == "-b" {
+            return Some(args.get(i + 1).map(|s| s.as_str()));
+        }
+        if let Some(v) = a.strip_prefix("--body=") {
+            return Some(Some(v));
+        }
+        if a.starts_with("-b") && a.len() > 2 {
+            return Some(Some(&a[2..]));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The `--env-file` target of a value-set call, when present in any
+/// spelling (`--env-file F`, `--env-file=F`, `-f F`, `-fF`); `-`
+/// means gh reads the file from stdin.
+fn env_file_value(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--env-file" || a == "-f" {
+            return args.get(i + 1).map(|s| s.as_str());
+        }
+        if let Some(v) = a.strip_prefix("--env-file=") {
+            return Some(v);
+        }
+        if a.starts_with("-f") && a.len() > 2 {
+            return Some(&a[2..]);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Does stdin supply this call's value? True for a value-set call
+/// with no `--body` whose `--env-file` is absent or `-`: real gh
+/// then reads the value from stdin (`gh secret set --help`: the
+/// body flag "reads from standard input if not specified").
+/// Oracle: those --help texts (#15556).
+fn stdin_supplies_value(args: &[String]) -> bool {
+    is_value_set(args)
+        && body_value(args).is_none()
+        && matches!(env_file_value(args), None | Some("-"))
+}
+
+/// The loud refusal for a value-set call that would store an empty
+/// value, or None when the call carries a non-empty value.
+/// `piped_stdin` is the stdin bytes fleet buffered for replay, or
+/// None when stdin is a terminal (gh prompts interactively; the
+/// prompt is the caller's own choice and is not second-guessed).
+/// An empty `--body` is refused regardless of stdin. Oracle:
+/// #15556 — real gh stores an empty stdin read / empty body as an
+/// empty secret and exits 0, so the failure is silent downstream.
+fn empty_value_error(args: &[String], piped_stdin: Option<&[u8]>) -> Option<String> {
+    if !is_value_set(args) {
+        return None;
+    }
+    if let Some(body) = body_value(args) {
+        return match body {
+            Some(v) if !v.is_empty() => None,
+            _ => Some(
+                "secret/variable set with an empty --body would store an empty value; \
+                 refusing (pass a non-empty --body, or pipe the value on stdin)"
+                    .to_string(),
+            ),
+        };
+    }
+    if !stdin_supplies_value(args) {
+        return None;
+    }
+    match piped_stdin {
+        Some(bytes) if bytes.iter().all(|b| b.is_ascii_whitespace()) => Some(
+            "secret/variable set reads its value from stdin, but stdin is empty; \
+             refusing to store an empty value (pipe the value, or pass --body)"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// Run the real `gh` once, under `token`, capturing output for
 /// classification. stdin is inherited so prompts behave; stdout and
 /// stderr are piped (see the module header for why). The child
 /// carries the shim recursion guard (SHIM_GUARD_ENV).
 fn run_gh_once(gh_bin: &str, args: &[String], token: &str) -> std::io::Result<Attempt> {
-    let out = Command::new(gh_bin)
+    run_gh_once_with_stdin(gh_bin, args, token, None)
+}
+
+/// `run_gh_once` with stdin bytes to replay (#15556): when
+/// `stdin_bytes` is Some, the child reads exactly those bytes from
+/// a pipe — the same bytes every attempt gets, so a failover after
+/// a stdin-consuming first attempt cannot observe EOF and store
+/// an empty value. The write runs on its own thread so a child
+/// filling its output pipes cannot deadlock the feed.
+fn run_gh_once_with_stdin(
+    gh_bin: &str,
+    args: &[String],
+    token: &str,
+    stdin_bytes: Option<&[u8]>,
+) -> std::io::Result<Attempt> {
+    let Some(bytes) = stdin_bytes else {
+        let out = Command::new(gh_bin)
+            .args(args)
+            .env("GH_TOKEN", token)
+            .env(SHIM_GUARD_ENV, "1")
+            .stdin(Stdio::inherit())
+            .output()?;
+        return Ok(Attempt {
+            code: out.status.code().unwrap_or(1),
+            stdout: out.stdout,
+            stderr: out.stderr,
+        });
+    };
+    let mut child = Command::new(gh_bin)
         .args(args)
         .env("GH_TOKEN", token)
         .env(SHIM_GUARD_ENV, "1")
-        .stdin(Stdio::inherit())
-        .output()?;
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut sin) = child.stdin.take() {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            let _ = sin.write_all(&bytes);
+        });
+    }
+    let out = child.wait_with_output()?;
     Ok(Attempt {
         code: out.status.code().unwrap_or(1),
         stdout: out.stdout,
@@ -1378,7 +1548,7 @@ fn run_with_provider<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
 ) -> i32 {
-    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false).0
+    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false, None).0
 }
 
 /// run_with_provider, additionally handing back the final attempt's
@@ -1393,6 +1563,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
     capture_stdout: bool,
+    stdin_bytes: Option<&[u8]>,
 ) -> (i32, Option<Vec<u8>>) {
     let read_only = is_read_call(args);
     let mut last: Option<Attempt> = None;
@@ -1411,7 +1582,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
         if trace {
             eprintln!("fleet gh: attempt {} under {}", idx + 1, source.label());
         }
-        let attempt = match run_gh_once(gh_bin, args, &token) {
+        let attempt = match run_gh_once_with_stdin(gh_bin, args, &token, stdin_bytes) {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
@@ -1786,6 +1957,43 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some(prepared) => prepared.args.clone(),
         None => call_args,
     };
+    // Content-creation ledger (code#2227): a classified create
+    // reserves its shared-ledger row BEFORE any GitHub write. The
+    // ledger owns the failure mode — a reservation failure refuses
+    // the create (exit 5), never an unledgered filing.
+    let ledger_pending = match gh_content_ledger::start(&call_args) {
+        Ok(pending) => pending,
+        Err(e) => {
+            eprintln!(
+                "fleet gh: content-ledger reserve failed ({e}); \
+                 refusing to post unledgered (code#2227)"
+            );
+            return EXIT_LEDGER;
+        }
+    };
+    // Stdin values (#15556): a value-set call taking its value from
+    // piped stdin gets those bytes buffered once, here — an empty
+    // value is refused before any attempt, and the buffered bytes
+    // are replayed to every rotation attempt, so a failover cannot
+    // turn the value into an empty store. A terminal stdin stays
+    // inherited (gh prompts), and every other call is untouched.
+    let stdin_replay: Option<Vec<u8>> =
+        if stdin_supplies_value(&call_args) && !std::io::stdin().is_terminal() {
+            let mut buf = Vec::new();
+            match std::io::stdin().read_to_end(&mut buf) {
+                Ok(_) => Some(buf),
+                Err(e) => {
+                    eprintln!("fleet gh: reading the value from stdin failed: {e}");
+                    return EXIT_UNRESOLVED;
+                }
+            }
+        } else {
+            None
+        };
+    if let Some(message) = empty_value_error(&call_args, stdin_replay.as_deref()) {
+        eprintln!("fleet gh: {message}");
+        return EXIT_USAGE;
+    }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&call_args, config);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
@@ -1796,8 +2004,26 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         &call_args,
         &sources,
         trace,
-        prepared_create.is_some(),
+        // The ledger's verify step reads the created item's URL
+        // from stdout (code#2227); capture changes nothing
+        // user-visible — emit() still streams every byte.
+        prepared_create.is_some() || ledger_pending.is_some(),
+        stdin_replay.as_deref(),
     );
+    // Content-creation ledger (code#2227): finalise the reservation
+    // with what actually happened, on every path below. The row
+    // records the truth; gh's exit code stands either way (the
+    // metadata create path's posture).
+    if let Some(pending) = &ledger_pending {
+        match gh_content_ledger::finish(pending, code, final_stdout.as_deref()) {
+            Ok(Some(notice)) => eprintln!("fleet gh: {notice}"),
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "fleet gh: content-ledger finalize failed ({e}); \
+                 the create stands, the ledger is short one outcome"
+            ),
+        }
+    }
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -2862,6 +3088,48 @@ mod tests {
         )
     }
 
+    // oracle: the shared-ledger contract in gh_content_ledger — a
+    // reservation must be committed before the external create starts;
+    // empty stdout on exit 0 is finalized failed without rewriting gh's
+    // exit code. CONTENT_LEDGER_PATH points into this test's isolated dir.
+    #[test]
+    fn create_reserves_before_gh_and_empty_output_records_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-gh-ledger-e2e-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.sqlite");
+        let probe = dir.join("probe");
+        let script = format!(
+            "#!/bin/sh\n\
+             python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
+             touch \"{}\"\n\
+             exit 0\n",
+            ledger.display(), probe.display()
+        );
+        let script_path = place_script(&dir, "ledger-gh", &script);
+        let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
+            .iter().map(|s| s.to_string()).collect();
+        let pending = gh_content_ledger::start_at(&args, &ledger)
+            .expect("reserve succeeds")
+            .unwrap();
+        let attempt = run_gh_once(&script_path, &[], "test-token").expect("fake gh runs");
+        assert_eq!(attempt.code, 0, "gh's exit code is preserved");
+        assert!(probe.exists(), "fake gh ran after observing reservation");
+        gh_content_ledger::finish(&pending, attempt.code, Some(&attempt.stdout))
+            .expect("finalize reservation");
+        let conn = rusqlite::Connection::open(&ledger).unwrap();
+        let (outcome, detail): (String, String) = conn
+            .query_row("SELECT outcome, detail FROM events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(outcome, "failed", "empty successful output is not a created item");
+        assert_eq!(detail, "gh exited 0 with empty output");
+    }
+
     /// Place an executable script the way fake_gh does: the text
     /// goes to a side file and a separate `cp` (exited before we
     /// return) writes the file that is executed, so no descriptor
@@ -3008,6 +3276,125 @@ mod tests {
         assert_eq!(code, 0);
         let calls = std::fs::read_to_string(&log).unwrap();
         assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
+    }
+
+    // oracle: #15556 — `gh secret set --help` / `gh variable set
+    // --help`: the value comes from stdin exactly when there is no
+    // --body and no real --env-file; `--env-file -` is stdin too.
+    #[test]
+    fn stdin_supplies_value_shapes() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(stdin_supplies_value(&v(&["secret", "set", "NAME"])));
+        assert!(stdin_supplies_value(&v(&[
+            "-R", "o/r", "secret", "set", "NAME"
+        ])));
+        assert!(stdin_supplies_value(&v(&["variable", "set", "NAME"])));
+        assert!(stdin_supplies_value(&v(&[
+            "secret",
+            "set",
+            "NAME",
+            "--env-file",
+            "-"
+        ])));
+        assert!(!stdin_supplies_value(&v(&[
+            "secret", "set", "NAME", "--body", "x"
+        ])));
+        assert!(!stdin_supplies_value(&v(&[
+            "secret", "set", "NAME", "--body=x"
+        ])));
+        assert!(!stdin_supplies_value(&v(&["secret", "set", "-f", ".env"])));
+        assert!(!stdin_supplies_value(&v(&["secret", "list"])));
+        assert!(!stdin_supplies_value(&v(&["issue", "list"])));
+    }
+
+    // oracle: #15556's evidence — real gh stores an empty stdin
+    // read (or an empty --body) as an empty secret and exits 0, so
+    // fleet must refuse both before any attempt; a non-empty piped
+    // value, a non-empty body, and the interactive (terminal)
+    // prompt path are all left alone.
+    #[test]
+    fn empty_value_error_shapes() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let set = v(&["secret", "set", "NAME", "--repo", "o/r"]);
+        assert!(empty_value_error(&set, Some(b"")).is_some());
+        assert!(empty_value_error(&set, Some(b"  \n")).is_some());
+        assert!(empty_value_error(&set, Some(b"the-value\n")).is_none());
+        assert!(empty_value_error(&set, None).is_none(), "terminal prompt");
+        let body = v(&["secret", "set", "NAME", "--body", ""]);
+        assert!(empty_value_error(&body, None).is_some());
+        let body_ok = v(&["secret", "set", "NAME", "--body=x"]);
+        assert!(empty_value_error(&body_ok, Some(b"")).is_none());
+        let list = v(&["secret", "list"]);
+        assert!(empty_value_error(&list, Some(b"")).is_none());
+    }
+
+    // oracle: #15556 at the exec boundary — a fake gh that reads
+    // its stdin dry and then fails with a rate limit under the
+    // first token (the failover shape): the second attempt must
+    // receive the SAME stdin bytes, not EOF. Before the replay,
+    // the second attempt logged an empty value and real gh stored
+    // it as an empty secret with exit 0.
+    #[test]
+    fn stdin_replayed_to_failover_attempt() {
+        let dir =
+            std::env::temp_dir().join(format!("fleet-gh-test-{}-stdin-replay", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stdin.log");
+        let script = dir.join("fake-gh");
+        let script_text = format!(
+            "#!/bin/sh\n\
+             v=$(cat)\n\
+             echo \"$GH_TOKEN|$v\" >> \"{log}\"\n\
+             if [ \"$GH_TOKEN\" = \"tok-personal\" ]; then\n\
+             \techo 'GraphQL: API rate limit exceeded' >&2\n\
+             \texit 1\n\
+             fi\n\
+             exit 0\n",
+            log = log.display()
+        );
+        // Same ETXTBSY guard as fake_gh: write a side file, place
+        // the executable with a separate `cp` process.
+        let source = dir.join("fake-gh.src");
+        std::fs::write(&source, script_text).unwrap();
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the fake gh");
+        assert!(copied.success(), "cp of the fake gh failed: {copied}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = script.to_string_lossy().to_string();
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let args: Vec<String> = ["secret", "set", "NAME", "--repo", "o/r"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let sources = vec![
+            TokenSource::Personal,
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+        ];
+        let (code, _) = run_with_provider_capturing(
+            &mut provider,
+            &script,
+            &args,
+            &sources,
+            false,
+            false,
+            Some(b"the-value"),
+        );
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls, "tok-personal|the-value\ntok-app:developing-today|the-value\n",
+            "both attempts received the full stdin value: {calls:?}"
+        );
     }
 
     // oracle: the #8887 retry-safety rule — a write whose failure

@@ -12,7 +12,7 @@ use std::io::{Cursor, Read, Write};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
-use crate::world_presentation::ScreenPatch;
+use crate::world_presentation::{ScreenPatch, ScreenPatchV2};
 
 /// Version of the MessagePack screen-patch wire representation.
 pub const SCREEN_CODEC_VERSION: u8 = 1;
@@ -67,6 +67,10 @@ pub enum ScreenCodecError {
     /// The MessagePack value has trailing bytes after its one complete value.
     #[error("trailing bytes after screen frame")]
     TrailingBytes,
+    /// A Screen v2 tagged frame carries an invalid semantic tag set
+    /// (#14731 slice 5): the frame is rejected, never downgraded to v1.
+    #[error("invalid semantic tags in screen v2 frame: {0}")]
+    InvalidTags(String),
 }
 
 /// Encodes a patch as one versioned MessagePack value.
@@ -94,6 +98,67 @@ pub fn decode_patch(bytes: &[u8]) -> Result<ScreenPatch, ScreenCodecError> {
     if frame.version != SCREEN_CODEC_VERSION {
         return Err(ScreenCodecError::UnsupportedVersion(frame.version));
     }
+    Ok(frame.patch)
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct VersionedTaggedPatch<'a> {
+    version: u8,
+    #[serde(borrow)]
+    patch: &'a ScreenPatchV2,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedVersionedTaggedPatch {
+    version: u8,
+    patch: ScreenPatchV2,
+}
+
+/// Encodes a Screen v2 tagged patch as one versioned MessagePack value
+/// (#14731 slice 5). The envelope is the codec's version-1 shape; the
+/// patch inside is the Screen v2 representation (`patch.version == 2`,
+/// every cell carrying its semantic tags). The patch is validated
+/// before encoding, so an invalid tag set never reaches the wire.
+pub fn encode_tagged_patch(patch: &ScreenPatchV2) -> Result<Vec<u8>, ScreenCodecError> {
+    patch
+        .validate()
+        .map_err(|err| ScreenCodecError::InvalidTags(err.to_string()))?;
+    let bytes = rmp_serde::to_vec_named(&VersionedTaggedPatch {
+        version: SCREEN_CODEC_VERSION,
+        patch,
+    })?;
+    if bytes.len() > MAX_SCREEN_FRAME_BYTES {
+        return Err(ScreenCodecError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Decodes one bounded Screen v2 tagged patch value, validating the
+/// Screen version and every cell's tag set. A version-1 patch frame is
+/// rejected here (its cells carry no `tags` field, which the v2 shape
+/// requires), and [`decode_patch`] conversely rejects a tagged frame:
+/// neither decoder silently drops tags by downgrading the other.
+pub fn decode_tagged_patch(bytes: &[u8]) -> Result<ScreenPatchV2, ScreenCodecError> {
+    if bytes.len() > MAX_SCREEN_FRAME_BYTES {
+        return Err(ScreenCodecError::TooLarge);
+    }
+    let mut deserializer = rmp_serde::Deserializer::new(Cursor::new(bytes));
+    let frame = <OwnedVersionedTaggedPatch as Deserialize>::deserialize(&mut deserializer)?;
+    if usize::try_from(deserializer.into_inner().position()).ok() != Some(bytes.len()) {
+        return Err(ScreenCodecError::TrailingBytes);
+    }
+    if frame.version != SCREEN_CODEC_VERSION {
+        return Err(ScreenCodecError::UnsupportedVersion(frame.version));
+    }
+    if frame.patch.version != crate::world_presentation::SCREEN_VERSION_TAGGED {
+        return Err(ScreenCodecError::UnsupportedVersion(frame.patch.version));
+    }
+    frame
+        .patch
+        .validate()
+        .map_err(|err| ScreenCodecError::InvalidTags(err.to_string()))?;
     Ok(frame.patch)
 }
 
@@ -210,9 +275,7 @@ struct OwnedVersionedCompressedViewPatch {
 /// `{version: 2, compression: 1, payload}` whose payload is the raw-DEFLATE
 /// (RFC 1951) of the version-1 frame. Small frames come back byte-identical
 /// to [`encode_view_patch`], so compression never grows a frame on the wire.
-pub fn encode_view_patch_compressed(
-    frame: &ViewPatchFrame,
-) -> Result<Vec<u8>, ScreenCodecError> {
+pub fn encode_view_patch_compressed(frame: &ViewPatchFrame) -> Result<Vec<u8>, ScreenCodecError> {
     let raw = encode_view_patch(frame)?;
     let mut encoder =
         flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
@@ -235,8 +298,7 @@ pub fn encode_view_patch_compressed(
 /// decodes the inner version-1 frame exactly as a plain frame.
 fn decode_compressed_view_patch(bytes: &[u8]) -> Result<ViewPatchFrame, ScreenCodecError> {
     let mut deserializer = rmp_serde::Deserializer::new(Cursor::new(bytes));
-    let frame =
-        <OwnedVersionedCompressedViewPatch as Deserialize>::deserialize(&mut deserializer)?;
+    let frame = <OwnedVersionedCompressedViewPatch as Deserialize>::deserialize(&mut deserializer)?;
     if usize::try_from(deserializer.into_inner().position()).ok() != Some(bytes.len()) {
         return Err(ScreenCodecError::TrailingBytes);
     }
@@ -615,10 +677,7 @@ mod tests {
         let bomb = rmp_serde::to_vec_named(&TestCompressedEnvelope {
             version: SCREEN_CODEC_VERSION_COMPRESSED,
             compression: COMPRESSION_DEFLATE,
-            payload: serde_bytes::ByteBuf::from(deflate(&vec![
-                0_u8;
-                MAX_SCREEN_FRAME_BYTES + 1
-            ])),
+            payload: serde_bytes::ByteBuf::from(deflate(&vec![0_u8; MAX_SCREEN_FRAME_BYTES + 1])),
         })
         .unwrap();
         assert!(matches!(
@@ -639,6 +698,107 @@ mod tests {
         assert!(matches!(
             decode_view_patch(&trailing),
             Err(ScreenCodecError::TrailingBytes)
+        ));
+    }
+
+    fn tagged_patch() -> crate::world_presentation::ScreenPatchV2 {
+        use crate::world_presentation::{ScreenSurfaceV2, TaggedScreenCell};
+        let cell = |symbol: &str, tags: Vec<String>| {
+            TaggedScreenCell::new(
+                ScreenCell {
+                    symbol: symbol.to_owned(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                    token: None,
+                },
+                tags,
+            )
+            .unwrap()
+        };
+        let before = ScreenSurfaceV2::from_tagged_cells(
+            2,
+            1,
+            vec![
+                cell("C", vec!["sys.color.blue".to_owned()]),
+                cell(" ", Vec::new()),
+            ],
+        )
+        .unwrap();
+        let after = ScreenSurfaceV2::from_tagged_cells(
+            2,
+            1,
+            vec![
+                cell(
+                    "C",
+                    vec![
+                        "sys.color.blue".to_owned(),
+                        "world.appearance.cape".to_owned(),
+                    ],
+                ),
+                cell(" ", Vec::new()),
+            ],
+        )
+        .unwrap();
+        crate::world_presentation::ScreenPatchV2::diff(&before, &after).unwrap()
+    }
+
+    #[test]
+    fn tagged_patches_round_trip_and_neither_decoder_downgrades() {
+        use super::{decode_tagged_patch, encode_tagged_patch};
+        let patch = tagged_patch();
+        let encoded = encode_tagged_patch(&patch).unwrap();
+        assert_eq!(decode_tagged_patch(&encoded).unwrap(), patch);
+        // The v1 decoder rejects the tagged frame (unknown `tags`
+        // field on its strict cells) instead of dropping the tags.
+        assert!(decode_patch(&encoded).is_err());
+        // And the tagged decoder rejects a plain v1 patch frame.
+        let v1 = encode_patch(&sample_view_patch().patch).unwrap();
+        assert!(decode_tagged_patch(&v1).is_err());
+    }
+
+    #[test]
+    fn tagged_patch_decode_rejects_invalid_tag_sets() {
+        use super::{decode_tagged_patch, encode_tagged_patch};
+        use crate::world_presentation::{TaggedCellRun, TaggedScreenCell};
+        // Hand-built patch bypassing TaggedScreenCell::new validation.
+        let bad = crate::world_presentation::ScreenPatchV2 {
+            version: 2,
+            width: 2,
+            height: 1,
+            runs: vec![TaggedCellRun {
+                start: 0,
+                cells: vec![TaggedScreenCell {
+                    symbol: "C".to_owned(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                    token: None,
+                    tags: vec!["unnamespaced".to_owned()],
+                }],
+            }],
+        };
+        assert!(matches!(
+            encode_tagged_patch(&bad),
+            Err(ScreenCodecError::InvalidTags(_))
+        ));
+        // The same shape arriving from the wire: serialize it raw
+        // (bypassing encode_tagged_patch's validation) and decode.
+        #[derive(serde::Serialize)]
+        struct RawEnvelope<'a> {
+            version: u8,
+            patch: &'a crate::world_presentation::ScreenPatchV2,
+        }
+        let raw = rmp_serde::to_vec_named(&RawEnvelope {
+            version: 1,
+            patch: &bad,
+        })
+        .unwrap();
+        assert!(matches!(
+            decode_tagged_patch(&raw),
+            Err(ScreenCodecError::InvalidTags(_))
         ));
     }
 
@@ -761,11 +921,9 @@ mod tests {
         for (width, height) in [(80_usize, 24_usize), (120_usize, 50_usize)] {
             let full = document_screen(width, height);
             let changed = sparse_redraw(&full);
-            let blank = ScreenSurface::from_cells(width, height, vec![
-                blank_cell();
-                width * height
-            ])
-            .unwrap();
+            let blank =
+                ScreenSurface::from_cells(width, height, vec![blank_cell(); width * height])
+                    .unwrap();
             let full_frame = ViewPatchFrame {
                 sequence: 1,
                 view_revision: 2,

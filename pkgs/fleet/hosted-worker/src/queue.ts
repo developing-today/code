@@ -1036,7 +1036,8 @@ async function claimPickOnce(
     const candidates: TaskRow[] = [];
     for (const t of await store.allTasks()) {
       if (
-        !t.manual_only && payloadNonEmpty(t) &&
+        !t.manual_only &&
+        payloadNonEmpty(t) &&
         (pickMode === "handoff" ? isHandedOff(t) : eligibleDefault(t, now, scope.claimer)) &&
         (await scopeMatch(store, t, scope, true))
       ) {
@@ -1654,7 +1655,12 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
     );
   }
   const packet = clone(packetRaw) as JsonObject;
-  const metadata: JsonObject = req["metadata"] === undefined ? {} : isObj(req["metadata"]) ? req["metadata"] : fail(2, "enqueue: metadata must be a JSON object");
+  const metadata: JsonObject =
+    req["metadata"] === undefined
+      ? {}
+      : isObj(req["metadata"])
+        ? req["metadata"]
+        : fail(2, "enqueue: metadata must be a JSON object");
   const warnings = [...warnings0];
   await enrichPayloadLabels(
     store,

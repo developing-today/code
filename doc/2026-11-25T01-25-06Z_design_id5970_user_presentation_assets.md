@@ -9,13 +9,13 @@
 
 ## Sibling state at the baseline
 
-| Issue | State | What this record takes from it |
-|---|---|---|
-| #6010 cell/tag model | closed, record on main | The tagged cell, the total kind→glyph table, tier obligations and the precedence order. The glyph rung (§4) is that table. |
-| #6011 terminal ladder | closed | The terminal rungs the glyph and line tiers render into. |
-| #6012 cost ranking | closed, record on main | Measured rank per device profile, worst-dimension rule, per-world and per-viewer gates. Filters expose measurable inputs to it. |
-| #6013 shader format | closed via PR #7019, record on main | Closed code-owned format registry, `shadertoy.glsl.fragment` v1, declared inputs, asset revision separate from format version. |
-| #786 tiers | open (implementation in review) | Consumed as-is: tiers and in-band detection. This record never says how a tier is probed. |
+| Issue                 | State                               | What this record takes from it                                                                                                  |
+| --------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| #6010 cell/tag model  | closed, record on main              | The tagged cell, the total kind→glyph table, tier obligations and the precedence order. The glyph rung (§4) is that table.      |
+| #6011 terminal ladder | closed                              | The terminal rungs the glyph and line tiers render into.                                                                        |
+| #6012 cost ranking    | closed, record on main              | Measured rank per device profile, worst-dimension rule, per-world and per-viewer gates. Filters expose measurable inputs to it. |
+| #6013 shader format   | closed via PR #7019, record on main | Closed code-owned format registry, `shadertoy.glsl.fragment` v1, declared inputs, asset revision separate from format version.  |
+| #786 tiers            | open (implementation in review)     | Consumed as-is: tiers and in-band detection. This record never says how a tier is probed.                                       |
 
 The 2026-11-09 record named two blockers before an implementation plan could be filed: #6013's record (PR #7019) and #6010's record. Both have landed.
 
@@ -43,14 +43,14 @@ The 2026-11-09 record named two blockers before an implementation plan could be 
 
 **Decision.** A filter is a named, versioned transform with a declared contract, not free-form code.
 
-| Field | Meaning |
-|---|---|
-| `name@version` | Reference identity; world policy permits names, versions or families. |
-| `applies-to` | Declared parts or the whole asset. |
+| Field          | Meaning                                                                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name@version` | Reference identity; world policy permits names, versions or families.                                                                                                      |
+| `applies-to`   | Declared parts or the whole asset.                                                                                                                                         |
 | `capabilities` | What the client must have: `raster`, `gpu-fragment`, `animation`, `blend-mode:<x>`, a minimum #786 tier. A shader-backed filter's capability is its #6013 registry format. |
-| `cost` | Measurable inputs for #6012's ranker: target area, channels, passes. |
-| `fallback` | The authored rung this filter falls to when unavailable. |
-| `authority` | Who authored it: client built-in, world (in world policy), or asset author (shipped with the asset). |
+| `cost`         | Measurable inputs for #6012's ranker: target area, channels, passes.                                                                                                       |
+| `fallback`     | The authored rung this filter falls to when unavailable.                                                                                                                   |
+| `authority`    | Who authored it: client built-in, world (in world policy), or asset author (shipped with the asset).                                                                       |
 
 Composition is an ordered list per part, `cape: [sparkle@1, tint@2]`; order is part of the reference. Chain length is bounded per tier so composition cannot become an unbounded per-frame cost. A filter whose capability is absent falls to its authored rung and the presentation diagnostic says so; it never silently no-ops while claiming to be applied.
 
@@ -60,12 +60,12 @@ Composition is an ordered list per part, `cape: [sparkle@1, tint@2]`; order is p
 
 Evaluated top-down against world policy, then client capability:
 
-| Rung | What renders | Author |
-|---|---|---|
-| 1. Rich | Asset plus composed filters, shader-backed where #6013's registry and #6012's rank allow | Asset author |
-| 2. Static substitute | A pre-rendered image (for example "static sparkles on the sprite") | Asset author; a world may override with a themed substitute |
-| 3. Tileset | The cell's tile, keyed by `(kind, form, material)` per #6010 §3 | World author's tileset mapping, client default set second |
-| 4. Glyph | The cell's glyph per #6010's total kind→glyph table, coloured by its semantic colour tag | Client table; a world may override with themed glyphs as data |
+| Rung                 | What renders                                                                             | Author                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| 1. Rich              | Asset plus composed filters, shader-backed where #6013's registry and #6012's rank allow | Asset author                                                  |
+| 2. Static substitute | A pre-rendered image (for example "static sparkles on the sprite")                       | Asset author; a world may override with a themed substitute   |
+| 3. Tileset           | The cell's tile, keyed by `(kind, form, material)` per #6010 §3                          | World author's tileset mapping, client default set second     |
+| 4. Glyph             | The cell's glyph per #6010's total kind→glyph table, coloured by its semantic colour tag | Client table; a world may override with themed glyphs as data |
 
 Rules:
 
