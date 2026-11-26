@@ -135,6 +135,46 @@ export function machineReport(value: unknown): MachineReport | null {
   return actions && sections ? { name: v.name, actions, sections } : null;
 }
 
+/** A machine asking to be enrolled under its own key (#13492). The
+ * body travels signed with that key (the signature is in the
+ * `x-pm-signature` header, over the body as sent, as a report's is),
+ * which proves the asker holds the private half; the public half it
+ * presents is the credential its reports will be taken under once the
+ * owner approves. The code the machine shows its owner is the key's
+ * short name (see keyId): the owner approves that code on the Machines
+ * screen, as a phone is linked. */
+export interface EnrollRequest {
+  v: 1;
+  /** Milliseconds, near the edge's own clock (SYNC_SKEW_MS). */
+  at: number;
+  key: PublicKey;
+  /** What the machine says of itself, as in a report. Optional: a
+   * machine may ask before it has anything to say of itself. */
+  machine?: MachineReport;
+}
+
+/** How many machines may be enrolled under their own keys, beside the
+ * first machine whose key the edge learns through the tunnel. */
+export const MAX_MACHINES = 8;
+/** How many enrollment asks may wait for the owner at once. */
+export const MAX_PENDING_MACHINES = 4;
+/** An enrollment ask the owner has not answered in this long is dropped. */
+export const PENDING_MACHINE_MS = 24 * 60 * 60_000;
+
+/** An enrollment ask as it may arrive, checked, or null. */
+export function enrollRequest(value: unknown): EnrollRequest | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object" || v.v !== 1 || typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+  const key = publicKey(v.key);
+  if (!key) return null;
+  let machine: MachineReport | undefined;
+  if (v.machine !== undefined && v.machine !== null) {
+    machine = machineReport(v.machine) ?? undefined;
+    if (!machine) return null;
+  }
+  return { v: 1, at: v.at, key, ...(machine ? { machine } : {}) };
+}
+
 /** What the Machines screen is drawn from: the platform's own part,
  * each machine that reports, and what is held for one. */
 export interface MachinesAnswer {
@@ -176,6 +216,29 @@ export interface MachinesAnswer {
      * Behind the platform's `settingsRev`, it has not taken the owner's
      * latest change yet (#14957). */
     settingsRev?: number | null;
+    /** The short name of this machine's key (see keyId): how the owner
+     * tells one machine from another when enrolling or removing one.
+     * Absent from an answer older than the saying (#13492). */
+    kid?: string;
+    /** It reports under a key of its own that the owner enrolled, not
+     * the first machine's key learned through the tunnel. Absent (and
+     * so false) for the first machine, and from an older answer. */
+    enrolled?: boolean;
+  }[];
+  /** Machines that have asked to be enrolled and wait for the owner to
+   * approve them on the Machines screen: the code each shows, which is
+   * the short name of its key. Absent from an answer older than the
+   * saying, and when none are waiting (#13492). */
+  pending?: { kid: string; code: string; name: string; at: number }[];
+  /** Which machine each section the edge keeps came from, and which
+   * machine's copy the app is showing. Absent from an answer older
+   * than the saying (#13492). */
+  sectionsFrom?: {
+    name: string;
+    from: { machine: string; kid: string; at: number; hash: string }[];
+    /** The kid of the machine whose copy is shown, or null when no
+     * machine's copy is: the edge's own read, or nothing yet. */
+    showing: string | null;
   }[];
   /** What the owner did that waits to be done, oldest first, and who
    * each waits for (absent from an answer older than the saying). */
