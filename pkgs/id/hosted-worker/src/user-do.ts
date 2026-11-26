@@ -94,16 +94,6 @@ interface Env {
    * string var. Absent/empty = no ceiling. A malformed value
    * fails writes closed (see ceilingBytes). */
   USER_CEILING_BYTES?: string;
-  /** Request cap (#15485): per-binding request ceiling per
-   * window, as a string var, configured alongside the storage
-   * ceiling. Absent/empty = no cap. A malformed value fails
-   * requests closed (see requestCeiling). */
-  USER_REQUEST_CEILING?: string;
-  /** Request cap (#15485): the window length in milliseconds
-   * the request ceiling applies over, as a string var. Absent/
-   * empty = DEFAULT_REQUEST_WINDOW_MS. A malformed or
-   * non-positive value fails requests closed. */
-  USER_REQUEST_WINDOW_MS?: string;
   /** #15485 (#2046 §6): per-binding request ceiling for one
    * window, as a string var, configured alongside the storage
    * ceiling. Absent/empty = no request ceiling. A malformed
@@ -153,9 +143,6 @@ export function requestBodyLimit(rawCeiling: string | undefined): number {
   if (!Number.isInteger(n) || n < 0) return MAX_BODY_BYTES;
   return Math.min(n, MAX_BODY_BYTES);
 }
-
-/** Default request-cap window (#15485): one hour. */
-export const DEFAULT_REQUEST_WINDOW_MS = 3_600_000;
 
 export function bodyTooLarge(limit: number): FailClosed {
   return new FailClosed(413, "body_too_large", `request body is larger than the ${limit}-byte limit`);
@@ -304,65 +291,6 @@ export class UserDO {
     return { start, count: Number(this.meta("requests") ?? "0") };
   }
 
-  /** The configured per-binding request ceiling per window
-   * (#15485); null = no cap. A malformed value is a
-   * configuration error: requests fail closed rather than
-   * silently running uncapped, like the storage ceiling. */
-  private requestCeiling(): number | null {
-    const raw = this.env.USER_REQUEST_CEILING;
-    if (raw === undefined || raw === "") return null;
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n < 0) {
-      throw new FailClosed(
-        500,
-        "request_ceiling_misconfigured",
-        "USER_REQUEST_CEILING is not a non-negative integer; requests fail closed",
-      );
-    }
-    return n;
-  }
-
-  /** The request-cap window length in ms (#15485). */
-  private requestWindowMs(): number {
-    const raw = this.env.USER_REQUEST_WINDOW_MS;
-    if (raw === undefined || raw === "") return DEFAULT_REQUEST_WINDOW_MS;
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n <= 0) {
-      throw new FailClosed(
-        500,
-        "request_ceiling_misconfigured",
-        "USER_REQUEST_WINDOW_MS is not a positive integer; requests fail closed",
-      );
-    }
-    return n;
-  }
-
-  /** The live request-cap window at `now`: the persisted window
-   * while it is still open, or a fresh, not-yet-persisted window
-   * once the persisted one has expired. The window count meters
-   * served non-usage requests only: refused requests never
-   * increment it, and /v1/usage is the observability surface —
-   * like export at the storage cap, it stays available at cap
-   * so the count against the ceiling remains readable. */
-  private requestWindow(now: number): { start: number; count: number } {
-    const start = this.meta("request_window_start_ms");
-    const count = this.meta("request_window_count");
-    if (start === null || count === null) return { start: now, count: 0 };
-    const s = Number(start);
-    if (!Number.isInteger(s) || now >= s + this.requestWindowMs()) return { start: now, count: 0 };
-    return { start: s, count: Number(count) };
-  }
-
-  private persistRequestWindow(window: { start: number; count: number }) {
-    this.state.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES (?, ?), (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      "request_window_start_ms",
-      String(window.start),
-      "request_window_count",
-      String(window.count),
-    );
-  }
-
   /** Usage accounting, derived from the tables on every read so
    * the numbers can never drift from the data they describe.
    * blob_bytes counts bytes referenced by THIS user (a deduped
@@ -381,20 +309,8 @@ export class UserDO {
     // Bridge event bytes are this user's storage like any other:
     // they count toward the same ceiling.
     const bridgeBytes = this.bridgeStore().storedBytes();
-    // The request-cap window (#15485), read without mutating it:
-    // an expired or unopened window reports an empty count and
-    // no reset time; the next served request opens a fresh one.
-    const windowStart = this.meta("request_window_start_ms");
-    const windowLive =
-      windowStart !== null && Number.isInteger(Number(windowStart)) && Date.now() < Number(windowStart) + this.requestWindowMs();
-    const requestCeiling = this.requestCeiling();
-    const windowCount = windowLive ? Number(this.meta("request_window_count") ?? "0") : 0;
     return {
       requests: Number(this.meta("requests") ?? "0"),
-      request_ceiling: requestCeiling,
-      request_window_count: windowCount,
-      request_window_resets_at: windowLive ? new Date(Number(windowStart) + this.requestWindowMs()).toISOString() : null,
-      at_request_cap: requestCeiling !== null && windowCount >= requestCeiling,
       kv_count: Number(kv.n),
       kv_bytes: kvBytes,
       blob_count: Number(blobs.n),
