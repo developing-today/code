@@ -15,6 +15,13 @@ import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
 import { STORES_FILE, storesList, type StoreRow } from "./stores.ts";
+import {
+  type GitHubRun,
+  lastMigrationRuns,
+  STORE_MIGRATE_WORKFLOW,
+  storeMigrateInputs,
+  storeMigrateRequest,
+} from "./store-migrate.ts";
 import { storeAnswered, storeLiveStatements, storeNotAnswering, type StoreLive } from "./store-live.ts";
 import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
 import { TURSO_ADMIN_WORKFLOW, tursoAdminInputs, tursoAdminRequest, tursoAdminRun } from "./turso-admin.ts";
@@ -1564,6 +1571,30 @@ export class Ops {
     } | null;
     const run = found?.workflow_runs?.[0];
     return run ? tursoAdminRun(run) : null;
+  }
+
+  /**
+   * Start a store migration in its workflow (#14256). A real store must
+   * be typed back as `confirm_store`; the stand-in needs no confirmation.
+   */
+  async storeMigrate(args: Record<string, unknown>) {
+    const req = storeMigrateRequest(args);
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${STORE_MIGRATE_WORKFLOW}/dispatches`], {
+      ref: "main",
+      inputs: storeMigrateInputs(req),
+    });
+    return { started: req.store };
+  }
+
+  /**
+   * The last migration started from here for each store (#14256), read
+   * from the workflow's runs: the store is in each run's title.
+   */
+  async storeMigrations() {
+    const found = (await this.gh([
+      `repos/${this.cfg.repo}/actions/workflows/${STORE_MIGRATE_WORKFLOW}/runs?event=workflow_dispatch&per_page=50`,
+    ])) as { workflow_runs?: GitHubRun[] } | null;
+    return { runs: lastMigrationRuns(found?.workflow_runs ?? []) };
   }
 
   // ---- one screen --------------------------------------------------------

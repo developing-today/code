@@ -2546,6 +2546,18 @@ export function runSaid(run, now = Date.now()) {
   return [state, ago(run.at, now), String(run.commit || "").slice(0, 7), run.byHand ? "started by hand" : null].filter(Boolean).join(" · ");
 }
 
+/** The stores the migration workflow can run against (#14256), as its
+ * own choices name them; `stand-in` is the CI proof, not a store. */
+export const MIGRATABLE_STORES = new Set(["fleet-queue", "fleet-platform", "fleet-mirror", "voice-line-ledger"]);
+
+/** A store's last migration run, in a line (#14256): none yet, or the
+ * run as runSaid says it, with a failure said as a failure. */
+export function migrationSaid(run, now = Date.now()) {
+  if (!run) return { text: "No migration has been run from here yet.", tone: "" };
+  const said = runSaid(run, now);
+  return run.failed ? { text: `Last migration failed: ${said}`, tone: "warn" } : { text: `Last migration: ${said}`, tone: "" };
+}
+
 /** What is being served, in a sentence, from the edge's health answer:
  * which commit Cloudflare serves, and whether the laptop runs the same. */
 export function servingSaid(health) {
@@ -2641,6 +2653,7 @@ const REFUSED_SAID = {
   "task.move": "moving a task",
   "pr.merge": "merging",
   "deploy.start": "starting a deploy",
+  "store.migrate": "starting a store migration",
   "intake.send": "filing a note, a bug or a change",
   "read.board": "reading the board",
   "read.prs": "reading the pull requests",
@@ -2823,6 +2836,7 @@ const CAN_SAID = {
   "task.unblock": "unblock a task",
   "pr.merge": "merge",
   "deploy.start": "start a deploy",
+  "store.migrate": "start a store migration",
   "intake.send": "file a note, a bug or a change",
   "question.answer": "record an answer",
   "question.defer": "hand a question back",
@@ -3267,11 +3281,42 @@ export function platformCounts(workers) {
 async function viewPlatform() {
   // When the store tokens run out is a machine's to read; with none
   // reporting, the Workers still show.
-  const [p, held, live] = await Promise.all([
+  const [p, held, live, migrations] = await Promise.all([
     api(freshly("platform")),
     api("tokens").catch((error) => ({ error: error.message })),
     api(freshly("stores")).catch((error) => ({ error: error.message })),
+    api(freshly("store-migrations")).catch((error) => ({ error: error.message })),
   ]);
+  // Each store's last migration run, and a way to start one (#14256):
+  // the run goes to GitHub's migration workflow, which alone reads the
+  // store's token. A real store needs its name typed back.
+  const migrated = migrations?.runs && typeof migrations.runs === "object" ? migrations.runs : {};
+  const migrationLine = (store) => {
+    if (migrations?.error) return h("p", { class: "why" }, `Its last migration could not be read: ${migrations.error}`);
+    const run = migrated[store];
+    const said = migrationSaid(run);
+    return h("p", { class: said.tone === "warn" ? "why" : "meta" }, run?.url ? ext(run.url, said.text) : said.text);
+  };
+  const migrate = (store) => async (e) => {
+    const typed = await ask({
+      title: `Migrate ${store}?`,
+      text: "GitHub applies the shared-schema migrations to this store. Migrations already applied are skipped, and a failed migration stops the run and shows here as failed.",
+      label: `Type ${store} to confirm`,
+      required: true,
+      okLabel: "Migrate",
+      danger: true,
+    });
+    if (typed === null) return;
+    act("store.migrate", { store, confirm_store: typed }, "Migration started", e.target);
+  };
+  const proof = async (e) => {
+    const yes = await ask({
+      title: "Run the migration proof?",
+      text: "GitHub runs the migration tests, applies the migrations twice to a throwaway store, and checks that a broken migration fails. No real store is touched.",
+      okLabel: "Run it",
+    });
+    if (yes !== null) act("store.migrate", { store: "stand-in" }, "Migration proof started", e.target);
+  };
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
   const repo = `https://github.com/${me.repo || "developing-today/code"}`;
@@ -3294,6 +3339,14 @@ async function viewPlatform() {
   ];
   const stores = Array.isArray(live?.stores) ? live.stores : [];
   out.push(h("h2", {}, `Stores${stores.length ? ` (${stores.length})` : ""}`));
+  out.push(
+    card(
+      h("h3", {}, "Migration proof"),
+      h("p", { class: "meta" }, "The stand-in run proves the migrations against a throwaway store before any real store is migrated."),
+      migrationLine("stand-in"),
+      h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: proof }, "Run the proof")),
+    ),
+  );
   if (live?.error) out.push(card(h("p", { class: "why" }, `The stores could not be asked: ${live.error}`)));
   if (!live?.error && stores.length === 0) out.push(card(h("p", { class: "meta" }, "The list of stores names none.")));
   if (live?.malformed) {
@@ -3317,6 +3370,9 @@ async function viewPlatform() {
         h("p", { class: said.tone === "warn" ? "why" : "meta" }, said.text),
         ...said.lines.map((line) => h("p", { class: "meta" }, line)),
         h("p", { class: "meta" }, `Used by ${(s.usedBy || []).join(", ")}.`),
+        ...(MIGRATABLE_STORES.has(s.name)
+          ? [migrationLine(s.name), h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: migrate(s.name) }, "Migrate"))]
+          : []),
       ),
     );
   }
