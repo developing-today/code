@@ -2980,7 +2980,10 @@ mod tests {
 
         // The persistent Evaluator's high-water mark: the same state warns
         // no second time.
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Growing past the next threshold warns once more, for that tier.
         {
@@ -3018,13 +3021,19 @@ mod tests {
 
         // The first authorization is not a re-add, and warns about nothing.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-authorize cycles inside the window: the fourth
         // re-add crosses the churn threshold and warns exactly once.
         for cycle in 0..4_u64 {
             log.device_revoke(author, group, device).unwrap();
-            assert!(evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2).is_empty());
+            assert_eq!(
+                evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2),
+                [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+            );
             log.device_add(author, group, device, Role::Read).unwrap();
             let fired = evaluate_group_warnings(&mut watcher, &path, 1_002 + cycle * 2);
             if cycle < 3 {
@@ -3055,7 +3064,10 @@ mod tests {
 
         // The first authorization is not a re-add, and warns about nothing.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-authorize cycles, all inside one interval:
         // no evaluation runs until every cycle is already in the log.
@@ -3091,7 +3103,10 @@ mod tests {
 
         // Account A authorizes the device; the first evaluation adopts it.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-add cycles by account B inside one interval:
         // B's revokes do not touch A's grant, so nothing here is a re-add.
@@ -3099,7 +3114,10 @@ mod tests {
             log.device_revoke(other, group, device).unwrap();
             log.device_add(other, group, device, Role::Read).unwrap();
         }
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3126,14 +3144,20 @@ mod tests {
         // adopts it with both grant owners tracked.
         log.device_add(author, group, device, Role::Read).unwrap();
         log.device_add(other, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
         log.remove(author, group, other, id_events::groups::RemoveMode::Revoke)
             .unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four genuine revoke + re-add cycles by the remaining account,
         // all inside one interval, must count four re-adds and warn.
@@ -3488,7 +3512,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.web_port, Some(3001));
-        assert!(parsed.web_bindings.is_empty());
+        assert_eq!(parsed.web_bindings, [] as [String; 0]);
     }
 
     #[test]

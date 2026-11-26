@@ -306,7 +306,7 @@ fn test_cli_parse_serve() {
             assert!(!no_gossip);
             assert!(!web);
             assert_eq!(port, 3000);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -326,12 +326,12 @@ fn test_cli_parse_serve() {
             assert_eq!(world_max_sessions, 1024);
             assert_eq!(world_idle_secs, 600);
             assert_eq!(world_boot_window_secs, 600);
-            assert!(world_caps.is_empty());
+            assert_eq!(world_caps, [] as [String; 0]);
             assert_eq!(world_cap_policy, "deny");
             assert!(roc_bin.is_none());
             assert!(roc_platform.is_none());
             assert!(!world_native);
-            assert!(allow_node.is_empty());
+            assert_eq!(allow_node, [] as [String; 0]);
             assert!(!open_writes);
         }
         _ => panic!("Expected Serve command"),
@@ -363,7 +363,7 @@ fn test_cli_parse_serve_with_flags() {
             assert!(!no_gossip);
             assert!(!web);
             assert_eq!(port, 3000);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -822,7 +822,7 @@ fn test_cli_parse_peers_default() {
             assert_eq!(depth, 1);
             assert_eq!(max_peers, 1000);
             assert_eq!(timeout, 30);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -1121,7 +1121,7 @@ fn test_cli_parse_show() {
             assert!(output.is_none());
             assert!(first.is_none());
             assert!(last.is_none());
-            assert!(exclude.is_empty());
+            assert_eq!(exclude, [] as [String; 0]);
         }
         _ => panic!("Expected Show command"),
     }

@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn test_parse_bootstrap_ids_all_invalid_yields_empty() {
         let entries = vec!["nope".to_string(), "123".to_string(), String::new()];
-        assert!(parse_bootstrap_ids(&entries).is_empty());
+        assert_eq!(parse_bootstrap_ids(&entries), [] as [iroh_base::PublicKey; 0]);
     }
 
     #[test]
@@ -1253,7 +1253,7 @@ mod tests {
         let zero = crawl_peers(&seeds, 0, 0, 1, true, true)
             .await
             .expect("crawl succeeds");
-        assert!(zero.is_empty());
+        assert_eq!(zero, [] as [id_core::discovery::PeerAnnouncement; 0]);
     }
 
     fn abuse_row(local: u8, remote: u8, seed: u64) -> AbuseCountersRow {
