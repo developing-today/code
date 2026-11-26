@@ -140,6 +140,13 @@ whose inputs name the parent snapshot and whose payload (rule id, input
 digest, ordered items with scores) the same parent reproduces. Keeping it
 is best effort and never fails a start.
 
+Slice 3 (`src/search_history.ts`): `POST /v1/search` takes an optional
+`session` (1 to 128 of `A-Za-z0-9._:-`). With a `RETAINED` binding and the
+`search-history` class enabled, each answered search in that session is
+kept as the next version of `search-session:<session>`: `k`, hit or miss,
+and the returned chunk refs. The query text is dropped unless the class
+allows it. Keeping it is best effort and never fails a search.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client
