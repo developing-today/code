@@ -3767,7 +3767,7 @@ func TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment(t *test
 		t.Fatalf("oracle: by default the destructive call should run:\n%s", out)
 	}
 	e := newEnv(t, oneServer)
-	e.setenv("MCPX_ELICIT_CONFIRM_DESTRUCTIVE=true")
+	e.setenv("MCPX_ELICIT_CONFIRM_DESTRUCTIVE=true", "MCPX_ELICIT_ASK_TIMEOUT=2s")
 	out, err := e.try("call", "demo.wipe", `{}`)
 	if err == nil {
 		t.Fatalf("with elicit.confirmDestructive=true the headless destructive call should be refused; got:\n%s", out)
