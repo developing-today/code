@@ -19,6 +19,7 @@ unicode-normalization = "0.1"
 zstd = "0.14"
 thiserror = "2"
 ureq = { version = "3", features = ["rustls"] }
+libc = "0.2"
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }

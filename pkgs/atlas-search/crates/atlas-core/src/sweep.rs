@@ -436,6 +436,70 @@ pub fn spend_anomaly(run_value: f64, trailing_median: Option<f64>) -> bool {
     trailing_median.is_some_and(|median| median > 0.0 && run_value > 2.0 * median)
 }
 
+/// The #6058 row returned by an embed/publish caller after that caller has
+/// written it to the ledger. The sweep validates and references this input;
+/// it does not create a second, local copy that could be mistaken for the
+/// authoritative ledger.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EmbeddingLedgerRow {
+    pub batch_id: String,
+    pub recorded_at: String,
+    pub source_class: String,
+    pub chunks_new: u64,
+    pub chunks_reused: u64,
+    pub tokens_embedded: u64,
+    pub model: String,
+    pub usd: f64,
+    pub usd_per_1m_tokens: f64,
+    pub outcome: EmbeddingLedgerOutcome,
+    pub attestation_ref: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingLedgerOutcome {
+    Published,
+    Rejected,
+}
+
+impl EmbeddingLedgerRow {
+    fn validate(&self, batch_id: &str) -> Result<()> {
+        // #6058 has its own closed source-class vocabulary. The sweep's
+        // newer adapter classes are not silently mapped onto it.
+        const LEDGER_CLASSES: [&str; 5] =
+            ["code-repo", "docs", "logs", "chat-transcripts", "comments"];
+        if self.batch_id != batch_id || !LEDGER_CLASSES.contains(&self.source_class.as_str()) {
+            return Err(Error::fatal(format!(
+                "sweep ledger: batch {} must match run {} and source class {} must be one of the #6058 classes",
+                self.batch_id, batch_id, self.source_class
+            )));
+        }
+        if self.recorded_at.is_empty() || self.model.is_empty() || self.attestation_ref.is_empty() {
+            return Err(Error::fatal(
+                "sweep ledger: recorded_at, model and attestation_ref must be non-empty",
+            ));
+        }
+        if !self.usd.is_finite()
+            || self.usd < 0.0
+            || !self.usd_per_1m_tokens.is_finite()
+            || self.usd_per_1m_tokens < 0.0
+        {
+            return Err(Error::fatal(
+                "sweep ledger: usd values must be finite and non-negative",
+            ));
+        }
+        let expected = self.tokens_embedded as f64 * self.usd_per_1m_tokens / 1_000_000.0;
+        let tolerance = expected.abs().max(1.0) * 1e-9;
+        if (self.usd - expected).abs() > tolerance {
+            return Err(Error::fatal(format!(
+                "sweep ledger: usd {} does not match token cost {expected}",
+                self.usd
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// The §5 report row: one per source class per run (the cycle report
 /// rolls these up per source).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -457,6 +521,10 @@ pub struct RunReportRow {
     pub chunks_reused: u64,
     pub tokens_embedded: u64,
     pub embed_model: Option<String>,
+    /// Optional key of the matching #6058 ledger row. The ledger is
+    /// emitted at the embed/publish gate; this runner never invents one.
+    #[serde(default)]
+    pub embedding_ledger_ref: Option<String>,
     pub embed_usd: f64,
     pub tgt_read_rows: u64,
     pub tgt_write_rows: u64,
@@ -486,6 +554,10 @@ pub struct SweepState {
     pub throttled_last: BTreeSet<String>,
     /// Recent report rows, oldest first, capped at MAX_REPORT_ROWS.
     pub last_reports: Vec<RunReportRow>,
+    /// Durable manifest for completed runs, oldest first. Records are
+    /// append-only and retain the source-level decision audit trail.
+    #[serde(default)]
+    pub manifest: Vec<ManifestRecord>,
 }
 
 /// The (source class, host) key used for locks and pause state.
@@ -620,6 +692,15 @@ pub struct RunRequest {
     pub envelope: Vec<EnvelopeLine>,
     #[serde(default)]
     pub embed_usd: f64,
+    /// Existing #6058 ledger row key, if embedding already emitted one.
+    /// `batch_id` remains the stable join key when the ledger is absent.
+    #[serde(default)]
+    pub embedding_ledger_ref: Option<String>,
+    /// Existing complete #6058 row returned by the embed/publish caller.
+    /// The runner validates it and reports its key; it does not infer or
+    /// write ledger data itself.
+    #[serde(default)]
+    pub embedding_ledger: Option<EmbeddingLedgerRow>,
     pub embed_usd_median: Option<f64>,
 }
 
@@ -653,6 +734,17 @@ pub struct RunOutcome {
 /// their content addresses recorded as landed (the staging write and
 /// the #6057 promotion are downstream of this core).
 pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
+    run_once_with_landing(state_dir, req, |_| Ok(()))
+}
+
+/// Run one sweep while landing each accepted candidate before persisting
+/// its content address in runner state. If landing fails, state is not
+/// advanced; an idempotent landing implementation makes retry safe.
+pub fn run_once_with_landing(
+    state_dir: &Path,
+    req: &RunRequest,
+    mut land: impl FnMut(&CandidateFacts) -> Result<()>,
+) -> Result<RunOutcome> {
     let mut state = load_state(state_dir)?;
     let key = class_host_key(req.source_class, &req.host);
     let mut report = RunReportRow {
@@ -665,8 +757,32 @@ pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
         tgt_read_rows: req.measurements.tgt_read_rows,
         tgt_write_rows: req.measurements.tgt_write_rows,
         embed_usd: req.embed_usd,
+        embedding_ledger_ref: req.embedding_ledger_ref.clone(),
         ..RunReportRow::default()
     };
+    if let Some(row) = &req.embedding_ledger {
+        row.validate(&req.batch_id)?;
+        if req
+            .embedding_ledger_ref
+            .as_deref()
+            .is_some_and(|reference| reference != row.batch_id)
+        {
+            return Err(Error::fatal(
+                "sweep ledger: explicit ledger reference conflicts with supplied row batch_id",
+            ));
+        }
+        report.chunks_new = row.chunks_new;
+        report.chunks_reused = row.chunks_reused;
+        report.tokens_embedded = row.tokens_embedded;
+        report.embed_model = Some(row.model.clone());
+        report.embed_usd = row.usd;
+        report.embedding_ledger_ref = Some(row.batch_id.clone());
+    }
+    let embed_usd = req
+        .embedding_ledger
+        .as_ref()
+        .map_or(req.embed_usd, |row| row.usd);
+    report.embed_usd = embed_usd;
     let finish = |state: &SweepState,
                   report: RunReportRow,
                   status: RunStatus,
@@ -674,6 +790,7 @@ pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
                   alerts: Vec<String>|
      -> Result<RunOutcome> {
         let mut state = state.clone();
+        state.manifest.extend(records.iter().cloned());
         state.last_reports.push(report.clone());
         if state.last_reports.len() > MAX_REPORT_ROWS {
             let excess = state.last_reports.len() - MAX_REPORT_ROWS;
@@ -773,6 +890,7 @@ pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
         let outcome = filter_candidate(req.source_class, facts, &landed);
         let (outcome_name, reason) = match outcome {
             FilterOutcome::Accept => {
+                land(facts)?;
                 report.items_accepted += 1;
                 report.bytes_staged = report.bytes_staged.saturating_add(facts.bytes);
                 if let Some(address) = &facts.content_address {
@@ -846,7 +964,7 @@ pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
         state.paused.insert(key.clone());
         report.pause_state = "paused".to_string();
     }
-    if spend_anomaly(req.embed_usd, req.embed_usd_median) {
+    if spend_anomaly(embed_usd, req.embed_usd_median) {
         alerts.push("plan/spend-anomaly".to_string());
     }
     if report.pause_state.is_empty() {
@@ -1110,6 +1228,8 @@ mod tests {
             },
             envelope: Vec::new(),
             embed_usd: 0.0,
+            embedding_ledger_ref: None,
+            embedding_ledger: None,
             embed_usd_median: None,
         }
     }
@@ -1148,6 +1268,89 @@ mod tests {
             outcome.records[0].reason_code.as_deref(),
             Some("duplicate-content")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Oracle: a complete, validated #6058 row supplied by the
+    /// embed/publish caller is referenced in the report, without copying
+    /// it into a competing local ledger or deriving it from aggregate spend.
+    #[test]
+    fn run_once_references_supplied_embedding_ledger_row() {
+        let dir = temp_state_dir("run-once-ledger");
+        let mut req = request(SourceClass::CodeRepo, Vec::new());
+        req.embed_usd_median = Some(0.000005);
+        req.embedding_ledger = Some(EmbeddingLedgerRow {
+            batch_id: req.batch_id.clone(),
+            recorded_at: "2026-11-21T20:00:00Z".to_owned(),
+            source_class: "code-repo".to_owned(),
+            chunks_new: 2,
+            chunks_reused: 3,
+            tokens_embedded: 1000,
+            model: "text-embedding-3-small".to_owned(),
+            usd: 0.00002,
+            usd_per_1m_tokens: 0.02,
+            outcome: EmbeddingLedgerOutcome::Published,
+            attestation_ref: "attestation:batch-1".to_owned(),
+        });
+        let first = run_once(&dir, &req).expect("first run");
+        let report = first.report.expect("report");
+        assert_eq!(report.embedding_ledger_ref.as_deref(), Some("batch-1"));
+        assert_eq!(report.chunks_new, 2);
+        assert_eq!(report.chunks_reused, 3);
+        assert_eq!(report.tokens_embedded, 1000);
+        assert_eq!(
+            report.embed_model.as_deref(),
+            Some("text-embedding-3-small")
+        );
+        assert_eq!(report.embed_usd, 0.00002);
+        assert!(
+            first
+                .alerts
+                .iter()
+                .any(|alert| alert == "plan/spend-anomaly")
+        );
+        let state = load_state(&dir).expect("state");
+        assert_eq!(state.last_reports.len(), 1);
+        assert_eq!(
+            state.last_reports[0].embedding_ledger_ref.as_deref(),
+            Some("batch-1")
+        );
+
+        let second = run_once(&dir, &req).expect("repeated run");
+        assert_eq!(
+            second
+                .report
+                .expect("retry report")
+                .embedding_ledger_ref
+                .as_deref(),
+            Some("batch-1")
+        );
+        assert_eq!(load_state(&dir).expect("state").last_reports.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Oracle: malformed or conflicting ledger data fails before any run
+    /// state is advanced, rather than creating a plausible-looking row.
+    #[test]
+    fn run_once_rejects_invalid_embedding_ledger_without_state_write() {
+        let dir = temp_state_dir("run-once-invalid-ledger");
+        let mut req = request(SourceClass::SessionLogs, Vec::new());
+        req.embedding_ledger_ref = Some("other-batch".to_owned());
+        req.embedding_ledger = Some(EmbeddingLedgerRow {
+            batch_id: req.batch_id.clone(),
+            recorded_at: "2026-11-21T20:00:00Z".to_owned(),
+            source_class: "session-logs".to_owned(),
+            chunks_new: 1,
+            chunks_reused: 0,
+            tokens_embedded: 100,
+            model: "model".to_owned(),
+            usd: 0.1,
+            usd_per_1m_tokens: 1.0,
+            outcome: EmbeddingLedgerOutcome::Published,
+            attestation_ref: "attestation:batch-1".to_owned(),
+        });
+        assert!(run_once(&dir, &req).is_err());
+        assert!(!dir.join("sweep-state.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
