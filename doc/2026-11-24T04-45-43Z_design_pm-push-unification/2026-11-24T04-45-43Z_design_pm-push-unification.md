@@ -32,7 +32,7 @@ Four Web Push senders, three subscription stores plus one mirror, three VAPID ke
 - **Sender:** hand-rolled Web Push (`src/push.ts` — RFC 8291 aes128gcm encryption + RFC 8292 VAPID, platform crypto only). VAPID pair **B**, generated on first use and kept in the store file (`privateJwk` + `publicKey`).
 - **Producer:** `src/notify.ts`'s Notifier — a diff engine over the console's state documents: it compares what the documents say with what has already been announced (`Seen`) and sends the difference (a fleet reply to one of Drew's prompts → `replies`; a new needs-hands item → `needs`; new questions → `questions`; a unit failed, with a 5-minute sustained-failure rule for timer units → `trouble`). First pass primes only, so enabling never floods.
 - **Delivery feedback:** `Push.status()` (`GET /push`) reports the last send's taken/refused outcome; the app computes an **endpoint mark** (SHA-256 prefix of its endpoint) and compares it with the marks the server holds, "so the app can tell that this sender has lost it, without any address being sent back" — a sender-side subscription-loss self-check that already exists and that §5's migration reuses.
-- **Devices:** `src/devices.ts` — a phone-link registry for the Android widget: challenge/verifier linking, the store keeps token *hashes*; a linked phone gets a read-only token for counts + top lines. This identity is unrelated to push subscriptions today.
+- **Devices:** `src/devices.ts` — a phone-link registry for the Android widget: challenge/verifier linking, the store keeps token _hashes_; a linked phone gets a read-only token for counts + top lines. This identity is unrelated to push subscriptions today.
 
 ### 1.3 Console edge (Cloudflare Worker; `pm-stack/console/edge`)
 
@@ -48,12 +48,12 @@ Four Web Push senders, three subscription stores plus one mirror, three VAPID ke
 
 ### 1.5 Android app (`pm-stack/console/android`; package `today.developing.pmconsole`)
 
-- A **Trusted Web Activity** over the console site: "The site's notifications arrive as the app's own, with its mark in the status bar; the app asks for the permission itself." It has **no native push channel** (no FCM) — its notifications *are* the console's Web Push, i.e. pair C / the edge store's subscriptions.
+- A **Trusted Web Activity** over the console site: "The site's notifications arrive as the app's own, with its mark in the status bar; the app asks for the permission itself." It has **no native push channel** (no FCM) — its notifications _are_ the console's Web Push, i.e. pair C / the edge store's subscriptions.
 - Around the site: home-screen widget (polls the summary every ~30 min on the §1.2 device token), dictation/share intents into the Ask box, long-press shortcuts, `pm.security.cab` link interception. Mutual trust via asset statements + `/.well-known/assetlinks.json`.
 
 ### 1.6 The class union
 
-Twelve distinct class ids exist across the stacks. Overlaps are near-misses, not duplicates: console `needs` = "a new item needs your hands" (census diff) vs aggregator `needs-drew` = "a question only Drew can answer, with answerable options" (attention tier + answer machinery). Console `trouble` (a unit failed) overlaps the *territory* of `incident` (a watchdog reports something down) and `stack-health` (a monitored service starts failing its probe) but is produced by a different detector over different state. Console `replies` and `questions` have no aggregator counterpart; the quota family (`quota-wall`, `quota-near-wall`, `section-risk`), `blocked-age`, and `prompt` have no console counterpart.
+Twelve distinct class ids exist across the stacks. Overlaps are near-misses, not duplicates: console `needs` = "a new item needs your hands" (census diff) vs aggregator `needs-drew` = "a question only Drew can answer, with answerable options" (attention tier + answer machinery). Console `trouble` (a unit failed) overlaps the _territory_ of `incident` (a watchdog reports something down) and `stack-health` (a monitored service starts failing its probe) but is produced by a different detector over different state. Console `replies` and `questions` have no aggregator counterpart; the quota family (`quota-wall`, `quota-near-wall`, `section-risk`), `blocked-age`, and `prompt` have no console counterpart.
 
 ### 1.7 What the fragmentation costs (the problem statement)
 
@@ -66,7 +66,7 @@ Twelve distinct class ids exist across the stacks. Overlaps are near-misses, not
 
 - **One registry, one sender, one taxonomy, one preference model** — stated as invariants, not aspirations; every component below either is the one, produces into it, or is retired.
 - **Event-driven at the point of detection** (Drew's standing requirement, 2026-11-11): the stack pushes itself when it detects; producers emit at detection, and no new polling loop is introduced to move notifications around.
-- **The exception that proves the rule is designed, not accidental:** the notify-relay remains a sender of last resort for exactly one class, because its purpose is the primary stack being down. It is a mirror *of the registry*, so its exception status costs no second registry.
+- **The exception that proves the rule is designed, not accidental:** the notify-relay remains a sender of last resort for exactly one class, because its purpose is the primary stack being down. It is a mirror _of the registry_, so its exception status costs no second registry.
 - **Observability is a schema property,** not a page: timestamps are written by writers under a stated format, and an unmeasurable state alarms on a surface that does not depend on the thing being measured.
 
 ## 3. The unified design
@@ -79,7 +79,7 @@ New tables in the **fleet-platform Turso store** (the aggregator's existing stor
 - `push_preferences`: one row per (endpoint, class) with `enabled`, plus per-endpoint `quiet` (start/end/tz/enabled) — the aggregator's model, generalized.
 - `push_sends`: the unified ledger (§3.5).
 
-An endpoint is a *device-context*, not a browser accident: the Android app's TWA-held subscription registers with `client = android-app` and its `device_id` set, so the app is a first-class endpoint — named in the census, holding its own preferences, prunable on its own gone-streak — alongside browser endpoints. A future native (FCM) transport adds rows with `transport = fcm` behind the same preferences and ledger; nothing else in this design changes.
+An endpoint is a _device-context_, not a browser accident: the Android app's TWA-held subscription registers with `client = android-app` and its `device_id` set, so the app is a first-class endpoint — named in the census, holding its own preferences, prunable on its own gone-streak — alongside browser endpoints. A future native (FCM) transport adds rows with `transport = fcm` behind the same preferences and ledger; nothing else in this design changes.
 
 ### 3.2 One sender
 
@@ -94,22 +94,22 @@ A single send service — in the aggregator today, in #8570's consolidated pm-co
 
 The union, each class with exactly one producer of record:
 
-| Class | Producer | Notes |
-|---|---|---|
-| `incident` | aggregator intake (watchdogs/broker raises) | Breakthrough. `stack.silent`/recovered are payload variants at the relay. |
-| `needs-drew` | aggregator attention tier | Answerable; payload contract unchanged (§3.4). |
-| `quota-wall`, `quota-near-wall`, `section-risk` | aggregator quota derivation | As today, incl. #8882's definitions. |
-| `stack-health` | aggregator stack-health derivation | Also carries §3.5's sentinel incidents (on non-push surfaces). |
-| `blocked-age` | aggregator attention tier | As today. |
-| `prompt` | aggregator prompt machinery (#10035) | Per-submission opt-in still applies. |
-| `replies`, `questions`, `trouble` | console Notifier | Detection logic unchanged; delivery via the one sender. |
-| `needs` | console Notifier | Kept distinct from `needs-drew` (see below). |
+| Class                                           | Producer                                    | Notes                                                                     |
+| ----------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------- |
+| `incident`                                      | aggregator intake (watchdogs/broker raises) | Breakthrough. `stack.silent`/recovered are payload variants at the relay. |
+| `needs-drew`                                    | aggregator attention tier                   | Answerable; payload contract unchanged (§3.4).                            |
+| `quota-wall`, `quota-near-wall`, `section-risk` | aggregator quota derivation                 | As today, incl. #8882's definitions.                                      |
+| `stack-health`                                  | aggregator stack-health derivation          | Also carries §3.5's sentinel incidents (on non-push surfaces).            |
+| `blocked-age`                                   | aggregator attention tier                   | As today.                                                                 |
+| `prompt`                                        | aggregator prompt machinery (#10035)        | Per-submission opt-in still applies.                                      |
+| `replies`, `questions`, `trouble`               | console Notifier                            | Detection logic unchanged; delivery via the one sender.                   |
+| `needs`                                         | console Notifier                            | Kept distinct from `needs-drew` (see below).                              |
 
 `needs` vs `needs-drew` stay **separate ids with separate labels** in v1 — "Needs me" (new items needing hands) vs "Needs Drew" (answerable questions). They make different promises and carry different payloads; merging them silently would change what Drew's toggles mean. Whether to merge is posed to Drew on #14084 as an explicit product question; the registry's class table makes either answer a data change, not a refactor. `digest` remains a delivery shape, never a class.
 
 ### 3.4 Answerable pushes
 
-The `needs-drew` contract is preserved byte-for-byte in shape: payload `{ledgerId, question, options[]}`, tap → the answer page → `/api/needs-drew/<ledgerId>/answer` under the per-question token → resolution recorded in the needs-drew ledger. It must work identically when the endpoint's client is `android-app` — the TWA already intercepts `pm.security.cab` links, and the answer page is served from the same hosted surfaces the app wraps. Answer *application* (the applier, its signed decide envelope, its exactly-once ledger) is #14043's design and is untouched; #13469's edge answer intake composes unchanged, because answers land in the same ledger regardless of which endpoint delivered the question.
+The `needs-drew` contract is preserved byte-for-byte in shape: payload `{ledgerId, question, options[]}`, tap → the answer page → `/api/needs-drew/<ledgerId>/answer` under the per-question token → resolution recorded in the needs-drew ledger. It must work identically when the endpoint's client is `android-app` — the TWA already intercepts `pm.security.cab` links, and the answer page is served from the same hosted surfaces the app wraps. Answer _application_ (the applier, its signed decide envelope, its exactly-once ledger) is #14043's design and is untouched; #13469's edge answer intake composes unchanged, because answers land in the same ledger regardless of which endpoint delivered the question.
 
 ### 3.5 Delivery observability (the #14061 fix, by construction)
 
@@ -125,10 +125,10 @@ Preferences are managed where Drew and the app live: the console (pm.security.ca
 
 ## 4. Migration
 
-1. **Aggregator subscriptions:** none live — nothing to move. Its table *shapes* seed the registry schema (they are the richer model), and `AlertsStore` is re-pointed at the registry tables.
+1. **Aggregator subscriptions:** none live — nothing to move. Its table _shapes_ seed the registry schema (they are the richer model), and `AlertsStore` is re-pointed at the registry tables.
 2. **Console edge subscriptions cannot be re-keyed.** A Web Push subscription is bound to the application-server key presented at `pushManager.subscribe()` time; rows written under pair C cannot be delivered to by pair A. Migration is therefore a **re-subscription**, not a copy: the console site/app compares its endpoint mark against the marks the registry holds (the existing §1.2 mechanism, built for exactly this detection), finds itself unknown to the one sender, and re-subscribes under pair A into the registry with `client` + `device_id` set. The KV push store freezes read-only for one release after cutover, then is dropped.
 3. **Console origin store:** empty — retired outright; its `notified.json` producer state migrates to the producer's new home so the Notifier does not re-announce history.
-4. **Relay mirror:** source switches from the aggregator's store to the registry (same snapshot protocol, same seq discipline, same shared secret by name). The mirrored set becomes *all* live endpoints, so the dead-man's switch covers the app endpoint too.
+4. **Relay mirror:** source switches from the aggregator's store to the registry (same snapshot protocol, same seq discipline, same shared secret by name). The mirrored set becomes _all_ live endpoints, so the dead-man's switch covers the app endpoint too.
 5. **Sends history:** the legacy ledger stays as-is under #14061 (its repair is that issue's ask). The unified ledger starts at cutover; no backfill is attempted across the schema break — the roll-up's window simply begins at cutover, and the legacy page remains linked for the historical window.
 6. **The device step in #14048 still stands** — Drew re-enabling notifications on his phone is the first live registration into the unified registry (via the app, `client = android-app`), and the census (§3.5) is how we prove it landed.
 
@@ -154,7 +154,7 @@ Preferences are managed where Drew and the app live: the console (pm.security.ca
 - **S4 — Edge cutover + app endpoint.** Edge `Push` retires as sender; subscribe path writes the registry with `client`/`device_id`; endpoint-mark re-subscription under pair A; the one preferences surface on pm.security.cab; `/alerts/preferences` redirect; KV store frozen. Needs S3.
 - **S5 — Relay re-point + close-out.** Mirror source = registry; legacy stores dropped after their freeze windows; closure evidence posted for #14048 and #14061 (census shows ≥ 1 live endpoint per class path; a week of dated sends in the unified ledger). Needs S4.
 
-**Why no slice is packetised yet:** two seams must settle on the #14084 record first. (i) The `needs`/`needs-drew` taxonomy call is Drew-facing — it changes what his toggles say — and is posed on the issue for his word; S1's schema does not depend on the answer, but S3's producer mapping does. (ii) S4 can only be specified exactly against the endpoint-mark flow's behaviour in the *shipped* app build, which must be verified live before that slice is written. S1 and S2 are close to specifiable and packetise on this design's acceptance — the same design-first pattern #14043 used (its design of record landed, then its build slices were mapped from it).
+**Why no slice is packetised yet:** two seams must settle on the #14084 record first. (i) The `needs`/`needs-drew` taxonomy call is Drew-facing — it changes what his toggles say — and is posed on the issue for his word; S1's schema does not depend on the answer, but S3's producer mapping does. (ii) S4 can only be specified exactly against the endpoint-mark flow's behaviour in the _shipped_ app build, which must be verified live before that slice is written. S1 and S2 are close to specifiable and packetise on this design's acceptance — the same design-first pattern #14043 used (its design of record landed, then its build slices were mapped from it).
 
 ## 8. Open questions (posed on #14084)
 

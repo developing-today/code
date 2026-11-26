@@ -25,20 +25,20 @@ instant account creation by scanning a QR code, no name/e-mail/phone number
 required, fast push, strict rate limits, and automatic deletion of messages
 after a short retention window. Anyone can run a Chatmail server, and the
 network is federated like e-mail itself. The core library's own README
-summarises the iroh relationship in one line: it provides *ephemeral
+summarises the iroh relationship in one line: it provides _ephemeral
 peer-to-peer networking using Iroh, for multi-device setup and webxdc
-realtime data*
+realtime data_
 ([chatmail-core](https://rs.delta.chat/src/deltachat/peer_channels.rs.html)).
 
-Iroh appears in Delta Chat in two shipped features, and pointedly *not* in a
+Iroh appears in Delta Chat in two shipped features, and pointedly _not_ in a
 third:
 
 ### (a) Second-device setup / backup transfer — iroh's origin story
 
 The first iroh integration, and by n0's own account the use case that caused
 modern iroh to exist: while n0 was still building an IPFS-compatible system,
-a side project implemented *transfer of Delta Chat chat history when
-provisioning a new device*; that lightweight QUIC + BLAKE3-verified-streaming
+a side project implemented _transfer of Delta Chat chat history when
+provisioning a new device_; that lightweight QUIC + BLAKE3-verified-streaming
 library, built from scratch for Delta Chat, is what became iroh, and it was
 deployed in a real app used by thousands of people across Windows, Linux,
 iOS and Android before iroh 1.0 was ever framed as a general toolkit
@@ -61,8 +61,7 @@ In Delta Chat's core this is the `imex/transfer.rs` module
 
 ### (b) Webxdc realtime channels — iroh-gossip
 
-The second, larger integration shipped in **Delta Chat 1.48 (November
-2024)**, after almost two years of collaboration with the iroh team. Webxdc
+The second, larger integration shipped in **Delta Chat 1.48 (November 2024)**, after almost two years of collaboration with the iroh team. Webxdc
 is Delta Chat's in-chat mini-app format (small web apps sent as message
 attachments and run inside chats). 1.48 added a `joinRealtimeChannel()` API
 that gives those apps an ephemeral, direct peer-to-peer channel alongside the
@@ -82,7 +81,7 @@ How it works, per Delta Chat's announcement and the core's
   itself. When an app calls `joinRealtimeChannel().setListener()` or
   `.send()`, the device lazily starts the P2P machinery and posts a normal
   (encrypted) chat message containing its `IrohNodeAddr` (relay URL + public
-  key — deliberately *not* its direct IP addresses, since mail providers
+  key — deliberately _not_ its direct IP addresses, since mail providers
   persist messages). Peers store that address scoped to the app instance and
   join the gossip swarm. Delta Chat's announcement stresses that no global
   DHT lookup is involved: an end-to-end encrypted system message carrying an
@@ -106,7 +105,7 @@ How it works, per Delta Chat's announcement and the core's
   `webxdc.sendUpdate` over e-mail, ephemeral traffic over the iroh-gossip
   channel.
 
-### (c) Calls — deliberately *not* iroh
+### (c) Calls — deliberately _not_ iroh
 
 Audio/video calls are the natural third candidate, and they do **not** use
 iroh. Delta Chat's calls are peer-to-peer **WebRTC**, signalled via regular
@@ -123,7 +122,7 @@ implementations bundle the supporting cast accordingly — e.g. Madmail lists
 
 **Why Delta Chat matters for this estate:** it is the strongest evidence
 that iroh survives contact with a mass-market, mobile-first, adversarial-NAT
-user base — and its architecture is instructive: iroh is used *only* where
+user base — and its architecture is instructive: iroh is used _only_ where
 direct connections beat store-and-forward (device provisioning, ephemeral
 realtime), bootstrapped through the existing federated channel (encrypted
 mail messages carrying tickets/addresses) rather than through any global
@@ -132,7 +131,7 @@ discovery system, with relays folded into the servers users already have.
 ## 1.2 Pubky — the pkarr sibling (not an iroh transport user)
 
 Pubky, from Synonym, is a key-based web protocol and social ecosystem:
-identity is an Ed25519 keypair, users keep data on self-chosen *homeservers*,
+identity is an Ed25519 keypair, users keep data on self-chosen _homeservers_,
 and **PKARR (Public Key Addressable Resource Records)** — signed DNS-like
 records published to the BitTorrent Mainline DHT — makes each public key a
 sovereign, resolvable "public key domain" pointing at wherever the user's
@@ -150,10 +149,10 @@ fully decentralised lookup, and an n0-built Cloudflare Worker implementing
 the pkarr relay format is catalogued in the Pubky directory. Pubky itself
 does not run on iroh connections; it is the flagship application of the
 pkarr ecosystem that iroh's discovery composes with. For this estate that
-distinction matters: pkarr is a *shared rendezvous format* between the two
+distinction matters: pkarr is a _shared rendezvous format_ between the two
 projects, and Pubky is the proof that pkarr works at ecosystem scale.
 
-## 1.3 OpenArchive *Save* — iroh for storage/replication (beta, real-world)
+## 1.3 OpenArchive _Save_ — iroh for storage/replication (beta, real-world)
 
 OpenArchive's **Save** app (Secure, Archive, Verify, Encrypt) lets
 journalists and human-rights documenters archive mobile media verifiably.
@@ -193,7 +192,7 @@ Scale label: **beta, deployed with at-risk user communities**.
   relative of this estate's own route/exec work: direct connections by
   endpoint ID as the whole product.
 - **Swarmie** — n0's proof-of-concept sendme extension adding global content
-  discovery via the Mainline DHT; explicitly *very experimental*, included
+  discovery via the Mainline DHT; explicitly _very experimental_, included
   here as the boundary marker between the shipped tools and the experiments
   ([repo](https://github.com/n0-computer/swarmie)).
 
@@ -203,6 +202,7 @@ From n0's curated [awesome-iroh](https://github.com/n0-computer/awesome-iroh)
 list and project sources, with honest scale labels:
 
 **Decentralised AI compute (production-leaning, the largest-scale non-chat users):**
+
 - **Prime Intellect** — decentralised AI compute infrastructure; uses iroh
   for peer connectivity between distributed training/inference nodes.
 - **Psyche** — open infrastructure for decentralised model training
@@ -211,6 +211,7 @@ list and project sources, with honest scale labels:
 - **Tandemn** — "iroh for tensors": inference across heterogeneous GPUs.
 
 **Collaboration / dev tools (shipped tools, small teams):**
+
 - **Teamtype** — editor-agnostic realtime collaborative editing of local
   text files.
 - **p2pmux** — terminal multiplexer where every pane is a PTY on its
@@ -224,6 +225,7 @@ list and project sources, with honest scale labels:
   publishing it, iroh as default transport, native phone + desktop apps.
 
 **File sharing / backup (shipped, mostly small):**
+
 - **Dropwire** — E2EE resumable file transfer, no account, no server;
   **fsend** — webapp + CLI with resumable transfers; **Chorrent** —
   BitTorrent-style swarm transfer pulling verified pieces from every
@@ -232,12 +234,14 @@ list and project sources, with honest scale labels:
   computer, no cloud; **Strada** — file transfer/management product.
 
 **Games (real, niche):**
+
 - **Bones** — a Rust game engine networked with iroh; **Fish Folk: Jumpy**
   — a shipped 2D shooter built on Bones; **Godot Iroh** — P2P multiplayer
   extension for the Godot engine; **iroh-lan** — LAN-party-over-internet
   tooling.
 
 **Social / local-first (beta to production):**
+
 - **Delta Chat** (above); **Dash Chat** (darksoil studio) — secure chat
   designed for internet shutdowns; **Rostra** — a friends-to-friends social
   network (via Radicle); **Weird** — a local-first personal-web app from
@@ -269,7 +273,7 @@ Slack" resolves to **two main venues plus satellites**:
    ([CONTRIBUTING.md](https://raw.githubusercontent.com/n0-computer/iroh/main/CONTRIBUTING.md)),
    and the canonical short link is **https://iroh.computer/discord**.
    **Access reality:** Discord requires a Discord account and joining the
-   server; the channels are *not publicly readable* from the open web.
+   server; the channels are _not publicly readable_ from the open web.
    This lane did not join or read it — nothing behind that login is
    summarised here. If Drew wants the live conversation (help channels,
    project showcases, maintainer chatter), joining via
@@ -291,8 +295,8 @@ Slack" resolves to **two main venues plus satellites**:
    YouTube channel. Announcements flow through the blog + Discussions +
    socials; day-to-day developer socialising is Discord.
 
-**Bottom line:** the substantive *public* record is GitHub Discussions +
-the blog; the substantive *social* record is the login-gated Discord.
+**Bottom line:** the substantive _public_ record is GitHub Discussions +
+the blog; the substantive _social_ record is the login-gated Discord.
 
 ## 2.2 Recent important conversations (public board, paraphrased)
 
@@ -306,7 +310,7 @@ paraphrased in substance — follow the links to read the originals.
   Ed25519 keys, a future fault-tolerant quantum computer could forge
   identities, and that migration across a deployed identity system takes
   years — so the proposal is to make iroh crypto-agile and define a
-  post-quantum migration path *now* while keeping Ed25519 today. The
+  post-quantum migration path _now_ while keeping Ed25519 today. The
   thread drew sustained maintainer engagement (8 comments).
   [Discussion #4532](https://github.com/n0-computer/iroh/discussions/4532)
 - **A decision was made about how WebRTC support will happen: as an
@@ -354,13 +358,13 @@ paraphrased in substance — follow the links to read the originals.
   authenticate-by-key transport — iroh itself ships no authz model.
   [Discussions board, General](https://github.com/n0-computer/iroh/discussions)
 
-## 2.3 What is *not* publicly visible
+## 2.3 What is _not_ publicly visible
 
 The Discord's content (help channels, working discussion, any
 decision-making that happens socially) is not readable without joining,
 and this research deliberately did not join under anyone's identity. The
 public surfaces above — Discussions, the blog, release notes, awesome-iroh
-— are a faithful record of *what shipped and what was proposed*, but if
+— are a faithful record of _what shipped and what was proposed_, but if
 Drew wants the community's live pulse, the Discord at
 https://iroh.computer/discord is the room, and joining it is a one-click
 step from his own account.

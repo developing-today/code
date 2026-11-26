@@ -18,16 +18,17 @@
 // near the edge's own clock, and that time is later than the last sync
 // accepted.
 import type { Issuer } from "./config.ts";
+import type { OwnerChangeableName, PlatformSettings, SettingDiffers, SettingInForce } from "./settings.ts";
 
-/** What the edge needs to know to recognise the owner. It comes from the
- * host in every sync, so there is one place it is set. The last four
- * fields are what the edge needs to read and write by itself: where the
- * queue store is and which token opens it, how the owner's prompts are
- * marked, and which repositories hold his needs-me items. They are
- * absent from configs stored or reported before the edge could do that:
- * those still validate, with the fields empty, and the edge does not do
- * the core itself until a config carries them (see
- * Edge.directConfigReady). */
+/** What a machine tells the edge in every sync. Who may sign in (the
+ * owners, the certificate names, the issuers, the Android signing
+ * fingerprints) the edge goes by: that is the deployment's, set where
+ * the hostname is set up. The repository's settings among these
+ * (src/settings.ts) the edge has of its own and goes by its own, bar
+ * the list of repositories (see MACHINES_FOR_NOW there); what a machine
+ * tells for them is compared and shown, not used. The last four fields
+ * are absent from configs stored or reported before the edge could act
+ * by itself: those still validate, with the fields empty. */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -70,6 +71,10 @@ export interface SyncRequest {
    * console older than this: the edge then knows it only as a machine
    * that reports. */
   machine?: MachineReport;
+  /** The revision of the owner's changed settings this machine runs
+   * with, as the edge last said them (0: none, its own). Absent from a
+   * console older than the saying (#14957). */
+  settingsRev?: number;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -137,7 +142,22 @@ export interface MachinesAnswer {
   served: "edge" | "machine";
   /** What the platform does with no machine: null when it is not in
    * front, and an empty list of each when it only serves and waits. */
-  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  platform: {
+    primary: boolean;
+    actions: string[];
+    sections: string[];
+    refused: string[];
+    /** Which source each of the platform's settings is in force from,
+     * with its value, the repository's beside it, and for an owner's
+     * change who made it, when, and at which revision: the one place
+     * the owner reads which settings are in force and since when
+     * (#14955). Absent from an answer older than the saying. */
+    settings?: SettingInForce[];
+    /** The revision of the owner's changes these settings are at (0
+     * before any): what a change from the app is made from, so one made
+     * from an older look is refused (#14956). */
+    settingsRev?: number;
+  } | null;
   machines: {
     name: string;
     /** When it last reported, in milliseconds; null if it never has. */
@@ -147,6 +167,15 @@ export interface MachinesAnswer {
     version: string | null;
     actions: string[];
     sections: string[];
+    /** The platform's settings it runs with others of, each with both
+     * values and which the platform goes by. Absent when there is none
+     * (and from an answer older than the saying). */
+    differs?: SettingDiffers[];
+    /** The revision of the owner's changed settings it last said it runs
+     * with (0: its own); null when its console is older than the saying.
+     * Behind the platform's `settingsRev`, it has not taken the owner's
+     * latest change yet (#14957). */
+    settingsRev?: number | null;
   }[];
   /** What the owner did that waits to be done, oldest first, and who
    * each waits for (absent from an answer older than the saying). */
@@ -259,6 +288,11 @@ export interface SyncResponse {
   /** Sections the edge reads itself, and so need not be sent to it.
    * Absent from an edge that reads none. */
   owns?: string[];
+  /** The settings the owner changed from the app, at their revision,
+   * for the machine to run with in place of its own (#14957). Sent
+   * whenever the owner has changed any (an empty `values` once every
+   * change was put back); absent before, and from an older edge. */
+  settings?: { rev: number; values: Partial<Pick<PlatformSettings, OwnerChangeableName>> };
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
@@ -279,12 +313,67 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  // The composer's broaden and offer (#14375) are the owner's words
+  // too: a broaden done late still delivers the send's own remainder
+  // (and nothing, once none is left), and an offer posted late
+  // stands open until its ttl or its slots fill.
+  "message.broaden",
+  "message.offer",
+  // A revocation is the owner's kill switch (#14374): done late it is
+  // still the right act — a credential revoked an hour late is revoked,
+  // and one already revoked answers so — so it is held for a machine
+  // rather than refused while the laptop is away. The edge itself
+  // never revokes: its bridge credential holds the read scope only.
+  "agent.revoke",
+  // Taking back an agent's unused enroll tokens (#14376) is the same
+  // shape: no value travels in it, and done late it is still the right
+  // act. The mints are deliberately NOT here: a mint's answer is the
+  // secret itself, shown once on the screen that asked — held and
+  // done late, the value would reach nobody and be lost, so a mint
+  // asked at the edge while no machine answers is refused, never held.
+  "agent.revoke-enroll",
+  // Removing a wake hook (#14544) is the same shape again: no value
+  // in it, still the right act done late. Setting one is deliberately
+  // NOT here: its arguments carry the hook's token, and a held copy
+  // would keep that value at the edge — so a set asked at the edge
+  // while no machine answers is refused, never held, like the mints.
+  "agent.wake-hook-remove",
   "prompt.enqueue",
   // What the owner says is never lost for want of a machine: it is
   // kept and filed when one is back (or filed here, when the edge can).
   "intake.send",
   "triage.enqueue",
 ]);
+/** Actions on something that may have changed by the time they arrive:
+ * a merge, a deploy, a task's or a unit's state. A device keeps these
+ * and sends them by itself only while they are fresh (`TIMELY` in
+ * public/outbox.js is the same list, and a test holds the two together).
+ * The platform holds every sender to the same rule (#13501). */
+export const TIMELY = new Set(["pr.merge", "deploy.start", "task.cancel", "task.unblock", "unit.act"]);
+/** How long a timely action stays fresh. */
+export const TIMELY_MS = 10 * 60_000;
+/** What a timely action that arrived too late is answered with. */
+export const STALE_ACT_ERROR =
+  "This was done more than ten minutes ago and may no longer apply. Look again, and send it with sure to do it anyway.";
+
+/** Whether an action arrives too late to be done unasked (#13501). The
+ * sender says when the owner did it (`at`, ms since the epoch) and may
+ * say what its own clock read when it sent it (`sent`). It is too late
+ * when either clock says more than ten minutes have passed: the
+ * platform's, which a device whose clock runs slow cannot talk round,
+ * or the device's own, which a device whose clock runs fast cannot hide
+ * from the platform's. One that says `sure` was looked at again by the
+ * owner and goes as it is. One that says nothing of when it was done
+ * claims to be done now, and is taken as that. */
+export function staleAct(kind: string, body: { at?: unknown; sent?: unknown; sure?: unknown }, now: number): boolean {
+  if (!TIMELY.has(kind) || body.sure === true) return false;
+  const at = body.at;
+  if (typeof at !== "number" || !Number.isFinite(at)) return false;
+  if (now - at > TIMELY_MS) return true;
+  const sent = body.sent;
+  return typeof sent === "number" && Number.isFinite(sent) && sent - at > TIMELY_MS;
+}
+
 /** What an action is about, where the order of two matters: a rank set
  * twice, a task moved twice. Two about one thing are done in the order
  * the owner did them: one that may be done late goes behind an earlier
@@ -317,6 +406,26 @@ export function subjectOf(kind: string, args: Record<string, unknown> | null | u
       return of("questions", a.set);
     case "pr.merge":
       return of("pr", a.pr);
+    case "agent.revoke": {
+      // One agent's credentials on one surface: two revocations of
+      // the same agent keep the owner's order.
+      const surface = typeof a.surface === "string" ? a.surface : "";
+      const name = typeof a.name === "string" ? a.name : "";
+      return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+    }
+    case "message.broaden":
+      // A batch's broadenings keep the owner's order, like a
+      // revocation's: each delivers what the ones before it left.
+      return of("batch", a.batch);
+    case "agent.revoke-enroll":
+      // One agent's enroll tokens: a later mint for the same agent
+      // does not queue behind this (a mint is never held), but two
+      // take-backs of one agent keep the owner's order.
+      return of("enroll", a.agent);
+    case "agent.wake-hook-remove":
+      // One address's wake hook: two removals of one address keep
+      // the owner's order, as a revocation's do.
+      return of("wake-hook", a.address);
     case "unit.act":
       return of("unit", a.unit);
     default:

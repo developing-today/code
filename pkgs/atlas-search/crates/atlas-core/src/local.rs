@@ -609,6 +609,10 @@ impl SearchBackend for LocalBackend {
         "local"
     }
 
+    fn manifest(&self) -> crate::manifest::Manifest {
+        self.manifest.clone()
+    }
+
     fn vec_table(&self) -> &str {
         &self.vec_table
     }

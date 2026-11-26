@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PM-ASSEMBLY wiring patches, run inside ~/wt-pm-book. Every anchor asserted."""
+
 import pathlib
 
 root = pathlib.Path.cwd()
@@ -29,7 +30,9 @@ anchor = """      - name: Stage id book into site/id
           test -f site/id/index.html
 """
 assert t.count(anchor) == 1, "id stage anchor not found exactly once"
-pm_steps = anchor + """
+pm_steps = (
+    anchor
+    + """
       # The Project Management book (#13900, pm-stack/book) shares
       # this repository's single Pages site the same way: built with
       # its own siteUrl and staged under pm/ here, in the same deploy
@@ -56,11 +59,13 @@ pm_steps = anchor + """
           cp -rL result-pm-docs site/pm
           test -f site/pm/index.html
 """
+)
 t = t.replace(anchor, pm_steps)
 p.write_text(t)
 print("mcpx-docs.yml patched")
 
 import yaml
+
 d = yaml.safe_load(p.read_text())
 steps = d["jobs"]["deploy"]["steps"]
 names = [s.get("name", "") for s in steps]

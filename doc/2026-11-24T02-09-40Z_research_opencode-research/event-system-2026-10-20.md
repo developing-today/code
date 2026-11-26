@@ -50,7 +50,7 @@ set in `~/.config/opencode/plugin`, and the shipped opencode 1.18.31 binary itse
 One typed bus (`packages/core/src/bus.ts`) fed by schema-defined events
 (`packages/schema/src/*-event.ts`, inventoried in `event-manifest.ts`). Two classes:
 
-- **Durable events** — facts about an *aggregate* (almost always a session). Written
+- **Durable events** — facts about an _aggregate_ (almost always a session). Written
   to SQLite (`event` + `event_sequence` tables, `packages/core/src/event/sql.ts`) in
   the same transaction as the state projections they produce, with a per-aggregate
   sequence number and a per-type schema version. Session state is a projection folded
@@ -73,7 +73,7 @@ Bus operations (`packages/core/src/bus.ts` `Interface`):
   the old and new location.
 - `log({ aggregateID, after, follow })` — read one aggregate's durable log from a
   sequence cursor, optionally transitioning from replay to live; emits one
-  `log.synced` marker at the replay watermark so a consumer *knows* it has caught up.
+  `log.synced` marker at the replay watermark so a consumer _knows_ it has caught up.
 - `project(definition, projector)` — register a fold over an event type (how read
   models/projections are built).
 - `replay(...)` — re-ingest serialized events with divergence/ownership checks (this
@@ -90,10 +90,10 @@ Bus operations (`packages/core/src/bus.ts` `Interface`):
 - Execution: `session.execution.started|succeeded|failed|interrupted`,
   `session.step.started|streamed|ended|failed`, `session.retry.scheduled`
 - Prompt queue (the inbox is event-sourced too): `session.inbox.enqueued|delivered|
-  cancelled|delivery.changed`
+cancelled|delivery.changed`
 - Content: `session.text.started|delta|ended`, `session.reasoning.*` (same trio),
   `session.tool.input.started|delta|ended`, `session.tool.called|progress|success|
-  failed`, `session.message.content.updated`
+failed`, `session.message.content.updated`
 - Context: `session.compaction.started|delta|ended|failed`, `session.compacted`,
   `session.skill.activated`, `session.shell.started|ended`
 - Accounting: `session.usage.recorded` (durable, internal), `session.usage.updated`
@@ -114,21 +114,21 @@ messaging), `server.connected`, `server.resync`, `global.disposed`, and plugin-d
   (`EventManifest.ServerDefinitions`) + `rpc.*` plugin events + the two server frames.
   The per-directory `/event` and `/global/event` endpoints and the
   `{ type, properties }` shape are gone; payloads are now `{ id, created, type, data,
-  location?, metadata? }`.
+location?, metadata? }`.
 - Frames carry real SSE ids of the form `<instance>:<sequence>`. Reconnect with
   `Last-Event-ID` and the server replays from a bounded in-process buffer (1,024
   frames / 4 MB, `packages/server/src/event-feed.ts`); if your cursor is foreign or
   evicted you get exactly one `server.resync` frame and refetch state — no silent
   gaps, no duplicates across the replay/live seam.
 - Backpressure is explicit: a subscriber queue is 4,096 frames; a slow consumer's
-  stream is *failed* rather than stalling the bus. 15 s heartbeat comments.
+  stream is _failed_ rather than stalling the bus. 15 s heartbeat comments.
 - History endpoint: `GET /api/experimental/session/:sessionID/log?after=<seq>&
-  follow=true` streams one session's durable log (replay, then live if asked).
+follow=true` streams one session's durable log (replay, then live if asked).
 - There is **no native `session.status` / `session.idle`** in the 2.x vocabulary.
   Busy/idle/retry is derived from `execution.*`, `step.started`, and
   `retry.scheduled`. (The schema still defines status/idle types for the TUI's public
   stream; OpenChamber synthesizes the old vocabulary from execution events — see §2.)
-- One retention caveat: durable *payloads* are only kept for historical reads when
+- One retention caveat: durable _payloads_ are only kept for historical reads when
   the server runs with `events.persist` on. The default local/embedded profile leaves
   it off (sequences and projections are still maintained; the hosted workerd profile
   sets `persist: true` — `packages/server/src/workerd.ts`, wiring in
@@ -157,21 +157,21 @@ Setting it now is harmless and meaningless in both lines.
 
 ## 2. Inventory — your systems, one by one
 
-| System | Consumes opencode events? | Effect of the flag |
-|---|---|---|
-| opencode server 1.18.31 (this sandbox; your current builds) | Produces the 1.x stream (`/event`, `/global/event`) | **None.** Server code never reads the flag (binary census above). |
-| opencode TUI 1.18.31 | Yes — it's the primary 1.x consumer | **None in this build.** The flag is plumbed into the TUI plugin-list builder, which ignores the value. |
-| OpenChamber (your fork) | Yes — heavily | **None, and it doesn't pair with 1.18.31 at all.** OpenChamber requires OpenCode ≥ 2.0.20 (`packages/web/server/lib/opencode/compatibility.js`) and consumes the 2.x `/api/event` stream. On 2.x builds the flag isn't read. |
-| OpenCode desktop app (fork `packages/desktop` / `packages/app`) | Yes, via the 2.x client | **None.** The desktop shell itself sets `OPENCODE_EXPERIMENTAL_FILEWATCHER` and `…_ICON_DISCOVERY` (`packages/desktop/src/main/lifecycle/environment.ts`) — notably *not* the event-system flag. |
-| Plugin: mcpx-session.ts | No | **Untouched.** It registers `experimental.chat.system.transform` and dynamic tools only; it never subscribes to bus events. |
-| Plugin: mcpx bridge (`plugin/mcpx/daemon.ts`) | No | **Untouched.** Its `event` fields belong to mcpx's *own* durable log schema, not opencode's bus. |
-| Plugin: subtask2 (`@openspoon/subtask2` 0.3.9) | No | **Untouched.** Hooks are `tool.execute.before/after`, `experimental.chat.messages.transform`, `experimental.text.complete` — no `event` hook (checked in the installed dist). |
-| mcpx daemon | No | **Untouched.** Separate service; doesn't consume opencode events. |
-| Your automation driving the server API (fleet agents, this sandbox's tooling) | No — request/response only | **Untouched.** (And this sandbox's server runs `--pure`, so plugins don't even load here.) |
+| System                                                                        | Consumes opencode events?                           | Effect of the flag                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| opencode server 1.18.31 (this sandbox; your current builds)                   | Produces the 1.x stream (`/event`, `/global/event`) | **None.** Server code never reads the flag (binary census above).                                                                                                                                                            |
+| opencode TUI 1.18.31                                                          | Yes — it's the primary 1.x consumer                 | **None in this build.** The flag is plumbed into the TUI plugin-list builder, which ignores the value.                                                                                                                       |
+| OpenChamber (your fork)                                                       | Yes — heavily                                       | **None, and it doesn't pair with 1.18.31 at all.** OpenChamber requires OpenCode ≥ 2.0.20 (`packages/web/server/lib/opencode/compatibility.js`) and consumes the 2.x `/api/event` stream. On 2.x builds the flag isn't read. |
+| OpenCode desktop app (fork `packages/desktop` / `packages/app`)               | Yes, via the 2.x client                             | **None.** The desktop shell itself sets `OPENCODE_EXPERIMENTAL_FILEWATCHER` and `…_ICON_DISCOVERY` (`packages/desktop/src/main/lifecycle/environment.ts`) — notably _not_ the event-system flag.                             |
+| Plugin: mcpx-session.ts                                                       | No                                                  | **Untouched.** It registers `experimental.chat.system.transform` and dynamic tools only; it never subscribes to bus events.                                                                                                  |
+| Plugin: mcpx bridge (`plugin/mcpx/daemon.ts`)                                 | No                                                  | **Untouched.** Its `event` fields belong to mcpx's _own_ durable log schema, not opencode's bus.                                                                                                                             |
+| Plugin: subtask2 (`@openspoon/subtask2` 0.3.9)                                | No                                                  | **Untouched.** Hooks are `tool.execute.before/after`, `experimental.chat.messages.transform`, `experimental.text.complete` — no `event` hook (checked in the installed dist).                                                |
+| mcpx daemon                                                                   | No                                                  | **Untouched.** Separate service; doesn't consume opencode events.                                                                                                                                                            |
+| Your automation driving the server API (fleet agents, this sandbox's tooling) | No — request/response only                          | **Untouched.** (And this sandbox's server runs `--pure`, so plugins don't even load here.)                                                                                                                                   |
 
 ### OpenChamber deserves a paragraph of its own
 
-OpenChamber is your most sophisticated event consumer, and it is *already* a 2.x
+OpenChamber is your most sophisticated event consumer, and it is _already_ a 2.x
 citizen — the flag is irrelevant to it, but the 2.x event system is its lifeline:
 
 - Its web server keeps **one shared upstream SSE reader** on `/api/event`
@@ -183,8 +183,8 @@ citizen — the flag is irrelevant to it, but the 2.x event system is its lifeli
   vocabulary its server-side consumers (notifications, message queue, session
   activity, goal mode, permission auto-accept, Linear status) were written against.
   Load-bearing translations: busy/idle/retry synthesized from `session.execution.*`
-  + `session.retry.scheduled` + `session.step.started`; each `session.step.ended`
-  becomes an assistant `message.updated`, only the last carrying `finish: "stop"`.
+  - `session.retry.scheduled` + `session.step.started`; each `session.step.ended`
+    becomes an assistant `message.updated`, only the last carrying `finish: "stop"`.
 - A **delta coalescer** merges the three v2 delta types before replay/fan-out
   (measured on a real stream: 3,402 delta frames / 1.3 MB → 483 frames / 197 KB,
   lossless). This matters for §3/§4: raw 2.x streams are ~97% delta frames.
@@ -197,7 +197,7 @@ citizen — the flag is irrelevant to it, but the 2.x event system is its lifeli
 
 **No built-in analytics.** No metrics endpoint, no counters/timings API, nothing
 Prometheus-shaped in the server or protocol packages (searched). `packages/stats` in
-the fork is the opencode.ai public stats *website* (a separate SST app), unrelated to
+the fork is the opencode.ai public stats _website_ (a separate SST app), unrelated to
 the event system. The core's `event-logger.ts` merely logs five config-family event
 types (`agent/provider/model/command/config.updated`) at info level.
 
@@ -280,7 +280,7 @@ OpenChamber already depends on it and anything new you build should too:
 
 - After your next real work session on a 2.x build, watch:
   1. **OpenChamber's status indicators** around aborts and provider retries — busy/
-     idle/retry there is *synthesized* from execution events (translate-v2.js), the
+     idle/retry there is _synthesized_ from execution events (translate-v2.js), the
      most likely place for edge-case weirdness.
   2. **Anything of yours that ever parsed the 1.x stream** (`message.part.delta`,
      `{type, properties}` shape, `/global/event`) — it will not work against 2.x;

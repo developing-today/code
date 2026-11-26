@@ -40,12 +40,29 @@ jobs:
         env:
           PM_CONSOLE_SITE: http://10.0.2.2:4897
         run: bash pm-stack/console/android/build.sh
+      # The build above is unsigned (the signing key is not in CI, by
+      # design) and Android will not install an unsigned APK, so sign
+      # it with a throwaway key made on the runner and give it the
+      # name the check step names. The certificate the site lists is
+      # not what is under test here: against the demo edge the app
+      # opens as a Custom Tab over plain http, not as a verified
+      # Trusted Web Activity (see the build step's note).
+      - name: Sign the APK with a throwaway key for the check
+        run: |
+          out=pm-stack/console/android/app/build/outputs/apk/release
+          keytool -genkeypair -keystore "$RUNNER_TEMP/pm-console-check.p12" -storetype PKCS12 -alias pmconsole -keyalg RSA -keysize 2048 -validity 30 -storepass pm-console-check -keypass pm-console-check -dname "CN=pm console offline check"
+          printf 'pm-console-check' >"$RUNNER_TEMP/pm-console-check-password"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          "$apksigner" sign --ks "$RUNNER_TEMP/pm-console-check.p12" --ks-type pkcs12 --ks-key-alias pmconsole --ks-pass "file:$RUNNER_TEMP/pm-console-check-password" --out "$out/app-release.apk" "$out/app-release-unsigned.apk"
       - name: Start the demo edge
         env:
           PM_CONSOLE_DEMO_ACT_LOG: ${{ github.workspace }}/pm-console-acts.jsonl
         run: |
           : >pm-console-acts.jsonl
-          nohup bun run pm-stack/console/scripts/edge-demo.ts 4897 >edge-demo.log 2>&1 &
+          # The edge routes by the name it is called under; the
+          # emulator calls this machine 10.0.2.2, so the demo edge
+          # is started under that name (it still binds loopback).
+          PM_EDGE_DEMO_PUBLIC_HOST=10.0.2.2 nohup bun run pm-stack/console/scripts/edge-demo.ts 4897 >edge-demo.log 2>&1 &
           echo $! >edge-demo.pid
           disown
           for attempt in $(seq 1 30); do
@@ -58,16 +75,34 @@ jobs:
           echo "the demo edge did not answer its health check" >&2
           cat edge-demo.log >&2
           exit 1
+      # GitHub's current Ubuntu runners keep /dev/kvm closed to the
+      # runner user, so the emulator action finds no hardware
+      # acceleration and starts the emulator with -accel off, which
+      # current emulator builds refuse outright: the emulator exits at
+      # once and the step burns its whole boot timeout polling for a
+      # device that never starts (runs 45397083403, 45464698161).
+      # Open the device up the way the action's README prescribes for
+      # these runners, so the emulator gets KVM and actually boots.
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Check the app with no connection
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 34
+          # The action's default two cores starve the system UI under
+          # software rendering on these four-core runners: the
+          # launcher itself went unresponsive in run 45556776868 and
+          # its system dialog covered the screen for the whole check.
+          cores: 4
           target: google_apis
           arch: x86_64
           profile: pixel_7
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: bash pm-stack/console/android/offline-check.sh --apk pm-stack/console/android/app/build/outputs/apk/release/app-release.apk --edge-url http://127.0.0.1:4897 --act-log pm-console-acts.jsonl
+          script: bash pm-stack/console/android/offline-check.sh --apk pm-stack/console/android/app/build/outputs/apk/release/app-release.apk --edge-url http://127.0.0.1:4897 --act-log pm-console-acts.jsonl --site-url http://10.0.2.2:4897
       - name: Keep the act log and the edge log
         if: always()
         uses: actions/upload-artifact@v7

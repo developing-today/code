@@ -36,7 +36,7 @@ physical media" ([sneakerweb.org](https://sneakerweb.org/)).
 - **Architecture** (from the [protocol specification](https://sneakerweb.org/spec)):
   sneakerweb is a thin application protocol over **Willow'25**. There is exactly
   one communal Willow namespace for the entire sneakerweb; each website is one
-  Willow **subspace**, and the subspace's Ed25519 public key *is* the site's
+  Willow **subspace**, and the subspace's Ed25519 public key _is_ the site's
   "domain" (a one-to-one correspondence — claiming a domain means generating a
   keypair). Entry paths map directly onto URL paths, and a local web server
   serves your collection to your ordinary browser at
@@ -44,12 +44,12 @@ physical media" ([sneakerweb.org](https://sneakerweb.org/)).
   words, "to prevent the forgery of websites, merge updated data, and create
   efficient and compact .snk files" — `.snk` files are Willow **Drop Format**
   bundles. The protocol is deliberately transport-agnostic, but the spec
-  *recommends* `.snk` files exchanged via physical media or LANs only, and says
+  _recommends_ `.snk` files exchanged via physical media or LANs only, and says
   so in strikingly normative terms: "these restrictions might seem cumbersome,
   but they will shape your interactions with this technology into a form that
   the internet cannot replicate"
   ([spec](https://sneakerweb.org/spec)).
-- **Does it run?** Yes — it is the worm-blossom project's flagship *working*
+- **Does it run?** Yes — it is the worm-blossom project's flagship _working_
   application. The CLI offers `domain`, `publish`, `export`, `import`, `block`,
   and `serve` commands, is downloadable from sneakerweb.org, and is iterated in
   public: a 1.2.0 announcement went out on the fediverse, and the most recent
@@ -64,7 +64,7 @@ physical media" ([sneakerweb.org](https://sneakerweb.org/)).
 - **Relation to Willow and to our estate**: sneakerweb is the proof-of-concept
   that the Willow data model + Meadowcap + Drop Format work end-to-end for a
   real (if deliberately small-scale) application. It is also a statement of
-  values our estate does *not* share: it is anti-scale and anti-internet by
+  values our estate does _not_ share: it is anti-scale and anti-internet by
   design. For the fleet, sneakerweb matters as evidence (the stack runs), not
   as a model (its transport stance is the opposite of ours).
 
@@ -112,8 +112,8 @@ paper.** Split by evidence:
 ### Real but alpha / in-flight
 
 - **The Rust store layer** is mid-construction in the open: recent diary
-  entries describe Emmy implementing store *summarising* and *splittable
-  storage* — the two ingredients of region-based set reconciliation — and
+  entries describe Emmy implementing store _summarising_ and _splittable
+  storage_ — the two ingredients of region-based set reconciliation — and
   wrestling the 3D-indexing problem with Amparore's AreaSlice work
   ([diary](https://worm-blossom.org/)). This is sync being built bottom-up,
   in public, not yet usable as sync.
@@ -122,7 +122,7 @@ paper.** Split by evidence:
   it, but the audit's advice was "do not use the alpha Drop Format" for
   evidence-grade work.
 - **WTP (Willow Transfer Protocol)** — the current sync focus — is at the
-  *message-encoding design* stage in the diaries ("progress on defining
+  _message-encoding design_ stage in the diaries ("progress on defining
   message encodings for the WTP"), i.e. pre-implementation.
 
 ### Paper-only / paused
@@ -132,13 +132,13 @@ paper.** Split by evidence:
   redrafted after WTP (baseline note §0).
 - **Private Interest Overlap**, **Willow URIs**, **LCMUX** (their stream
   multiplexing spec): proposals/designs without implementations.
-- **Encrypted Willow** is explicitly *an analysis document, not a protocol*
+- **Encrypted Willow** is explicitly _an analysis document, not a protocol_
   (baseline note §5.1).
 
 ### Credibility debits (the honest vaporware-adjacent evidence)
 
 - **The bab_rs digest incident**: every `bab_rs` version before 0.7 computed
-  *incorrect WILLIAM3 digests*; 0.8 "truly fixes" them (canonical changelog,
+  _incorrect WILLIAM3 digests_; 0.8 "truly fixes" them (canonical changelog,
   quoted in the [Riot audit](https://github.com/rabble/riot/blob/HEAD/docs/research/2026-07-10-willow-implementation-audit.md)).
   A hash layer that silently produced wrong digests for multiple releases is
   the single hardest fact against the family's engineering maturity.
@@ -150,8 +150,7 @@ paper.** Split by evidence:
   — needed by the store work — were not properly defined in the Final specs,
   and resolving it by re-homing the definition. The specs are living documents
   maintained by two-to-three people, not frozen standards.
-- **Bus factor**: the collective is Aljoscha Meyer, Sam Gwilym, and (since
-  2026) Emmy Walker, grant-funded (NLnet), ~$3K/yr donations (baseline §12).
+- **Bus factor**: the collective is Aljoscha Meyer, Sam Gwilym, and (since 2026) Emmy Walker, grant-funded (NLnet), ~$3K/yr donations (baseline §12).
 
 ### Credibility credits
 
@@ -164,10 +163,10 @@ paper.** Split by evidence:
 
 **Verdict**: Willow/Meadowcap is **not vaporware**: the data model, Meadowcap,
 the Rust/TS implementations, and a real application demonstrably exist and
-run. What *is* still vapor, years in, is the confidential network sync layer
+run. What _is_ still vapor, years in, is the confidential network sync layer
 (Confidential Sync/PIO) and any production-grade Rust sync at all. An estate
-adopting Willow today is adopting finished *data + authorisation* layers and
-volunteering to build or wait for the *network* layer.
+adopting Willow today is adopting finished _data + authorisation_ layers and
+volunteering to build or wait for the _network_ layer.
 
 ---
 
@@ -182,7 +181,7 @@ Ordered by seriousness of commitment:
   This is first-party support, not external validation.
 - **Sneakerweb** — worm-blossom's own application (§1). Also first-party, but
   it is the strongest existence proof that the full stack works end-to-end.
-- **Leaf / Weird (muni.town)** — the most substantial *external* design
+- **Leaf / Weird (muni.town)** — the most substantial _external_ design
   adoption. Leaf is a protocol family built on Willow that uses Meadowcap
   directly, and extends it where Willow is silent: **FROST threshold
   co-signing** so a capability can require an online co-signature — their
@@ -194,7 +193,7 @@ Ordered by seriousness of commitment:
   tracking fit chat better — evidence that even sympathetic adopters treat
   Willow as one ingredient, not the whole answer
   ([A Brief History of Roomy's Architectures](https://blog.muni.town/brief-history-of-roomy-architectures/)).
-- **Riot (rabble)** — the deepest external *Rust* adoption. Riot is a
+- **Riot (rabble)** — the deepest external _Rust_ adoption. Riot is a
   community application runtime being built directly on the `willow25`
   crates (Rust core + WASM browser node), and its team produced the July 2026
   implementation audit this note cites — pinning exact crate versions,
@@ -215,7 +214,7 @@ Ordered by seriousness of commitment:
   dead-drop system and documented the fit assessment (including a real
   blocker: TagDrop signs with ML-DSA-44, Willow/Meadowcap authorises with
   Ed25519). An evaluation, not an adoption — included because it shows the
-  shape of external interest: people *assess* Willow often, *ship on it*
+  shape of external interest: people _assess_ Willow often, _ship on it_
   rarely ([commit record](https://github.com/mofosyne/tagdrop/commit/ce0e3105c895aa155c5de54382a7edaf396a64b3)).
 - **Research uptake** — Amparore's storage-indexing analysis (2026) treats
   Willow's 3D structure as a research object in its own right (baseline §6).
@@ -223,7 +222,7 @@ Ordered by seriousness of commitment:
 Summary: support is real but thin and mostly first-party or prototype-grade.
 Nobody is running Willow in production infrastructure; the two external
 projects that matter (Leaf, Riot) are pre-release and are both, tellingly,
-building *around* Willow's gaps (revocation, sync) rather than waiting for
+building _around_ Willow's gaps (revocation, sync) rather than waiting for
 worm-blossom to close them.
 
 ---
@@ -243,16 +242,16 @@ Where the formalism genuinely leads the field:
   independent codebases did. Compare p2panda (engineering-led, spec follows
   code) or Nostr (deliberately laissez-faire — the Willow authors' own
   comparison concedes Nostr is "significantly easier to implement, but
-  arguably also more difficult to *solidly* build upon"
+  arguably also more difficult to _solidly_ build upon"
   ([Comparison](https://willowprotocol.org/more/willow_compared/))).
 - **The Area algebra.** Subspace × path-prefix × time-range areas, closed
   under intersection, serve simultaneously as the unit of authorisation
   (Meadowcap), the unit of interest (partial sync), and the unit of
   reconciliation (AreaSlices in RBSR). One concept, three jobs, no seams —
-  nobody else in the survey has an authorisation scope that is *the same
-  object* as their sync scope.
+  nobody else in the survey has an authorisation scope that is _the same
+  object_ as their sync scope.
 - **Attenuation as a theorem, not a policy.** Meadowcap delegation validity
-  *requires* area inclusion at every hop; widening is cryptographically
+  _requires_ area inclusion at every hop; widening is cryptographically
   unverifiable (baseline §2.3). Keyhive's Keyline matches this rigour in the
   auth layer specifically (set-based evaluation, RT₀-style reasoning) — it is
   the one peer that plays the same purity game, on a narrower board.
@@ -266,7 +265,7 @@ Where the formalism genuinely leads the field:
   (they argue it, at length, against IPFS-style designs); no server/ACL
   fallback for revocation — instead a published essay dissecting why
   timestamps are a compromise ("Timestamps, Really?"); no completeness
-  proofs, *deliberately*, to keep traceless deletion possible. When their
+  proofs, _deliberately_, to keep traceless deletion possible. When their
   hash needs (constant-size length proofs) weren't met by Bao, they designed
   a hash family (§8) rather than accepting the logarithmic proof. When their
   log scheme (Bamboo) was beaten by their own newer result, they published
@@ -275,14 +274,14 @@ Where the formalism genuinely leads the field:
 
 Where purity costs — the same choices, read from the operator's side:
 
-- **No revocation** is a *theorem-shaped* hole: offline-verifiable
+- **No revocation** is a _theorem-shaped_ hole: offline-verifiable
   capabilities cannot be revoked without an online element, so Meadowcap
   doesn't pretend — and every adopter (Leaf's FROST co-signer, our renewal
   service idea) ends up bolting the online element back on.
 - **Claimed timestamps** are load-bearing for both conflict resolution and
   capability windows; the design trusts writers with time because a purer
   alternative (causal history) would break the state-based model. The purity
-  is in *admitting* this, not in solving it.
+  is in _admitting_ this, not in solving it.
 - **Storage efficiency is an open research problem** (no lexicographic index
   makes every Area contiguous — Amparore 2026): the 3D formalism is
   beautiful and, as yet, nobody knows how to store it optimally.
@@ -291,7 +290,7 @@ Where purity costs — the same choices, read from the operator's side:
   privacy later). Purity has a schedule cost, and Willow pays it in the open.
 
 Against the rest of our survey: p2panda is the pragmatic engineer (compose
-iroh, ship crates, let auth be simple); the ocap family is *older* theory
+iroh, ship crates, let auth be simple); the ocap family is _older_ theory
 (decades of capability literature) but solves a different problem (live
 objects, not replicated data); Keyhive is Willow's only true peer in rigour,
 and it is even less mature. So: **Willow is the leading-edge research
@@ -305,7 +304,7 @@ keeps those two claims separate.**
 ## 5. What is Reed's prefix auth scheme? Is it good?
 
 **First, a naming correction that changes the answer: "prefix auth" is
-prefix *authentication*, not prefix *authorisation*.** Reed has nothing to
+prefix _authentication_, not prefix _authorisation_.** Reed has nothing to
 do with Meadowcap-style path-prefix capabilities. It belongs to the other
 meaning of "auth" entirely.
 
@@ -315,9 +314,9 @@ meaning of "auth" entirely.
 authentication scheme** — the cryptographic primitive behind append-only /
 transparency logs ([Reed Specification](https://worm-blossom.github.io/reed/)).
 Given a single totally-ordered stream of events, a prefix authentication
-scheme lets anyone produce a *short certificate* proving that one event
+scheme lets anyone produce a _short certificate_ proving that one event
 happened before another — equivalently, that the sequence of events up to
-position *i* is a prefix of the sequence up to position *j*. This is the
+position _i_ is a prefix of the sequence up to position _j_. This is the
 primitive Certificate Transparency uses (signed tree heads + inclusion /
 consistency proofs), generalised.
 
@@ -329,7 +328,7 @@ The construction, from the spec:
   paths between any two positions).
 - Each vertex is labelled by a hash of its out-neighbours' labels (plus
   position metadata, which lets any label prove its own position). Each
-  commitment vertex can reach the commitment vertices of *all earlier*
+  commitment vertex can reach the commitment vertices of _all earlier_
   events.
 - The **prefix certificate** for two events is the set of labels of the
   closed out-neighbourhood of the shortest path between their commitment
@@ -341,7 +340,7 @@ The construction, from the spec:
 
 Reed is the spec form of the scheme from Meyer's paper **"Better Prefix
 Authentication"** ([arXiv:2308.15058](https://arxiv.org/abs/2308.15058)),
-which recasts these schemes as *antimonotone linking schemes* and improves
+which recasts these schemes as _antimonotone linking schemes_ and improves
 on the state of the art in both prefix authentication and secure relative
 timestamping — explicitly positioned as "more efficient alternatives to
 certificate transparency logs." Reed **supersedes Bamboo**, Meyer's earlier
@@ -349,7 +348,7 @@ log format (the one old p2panda was built on): the Reed spec says it is "more
 efficient than Bamboo, more minimalistic in feature set, and generic over any
 particular cryptographic primitives," and the Bamboo repo now points readers
 to Reed ([Bamboo](https://github.com/AljoschaMeyer/bamboo)). Tellingly, the
-Reed spec also records *why* it shed features: Bamboo was designed for data
+Reed spec also records _why_ it shed features: Bamboo was designed for data
 replication, "but I have since come to prefer more flexible replication
 technologies" — i.e. Willow.
 
@@ -364,7 +363,7 @@ technologies" — i.e. Willow.
   invites — Reed vs Meadowcap areas vs Keyline — is a category distinction,
   not a contest. Meadowcap and Keyline answer "who may do what to which
   data"; Reed answers "can you prove event A precedes event B in this one
-  stream". Reed could sit *under* a log-based system (it is what Bamboo was
+  stream". Reed could sit _under_ a log-based system (it is what Bamboo was
   for p2panda); it cannot substitute for a capability layer, and a capability
   layer cannot substitute for it.
 - **As an adoption target today: weak.** No production implementation
@@ -394,11 +393,11 @@ gloss, and it is unambiguous about which side they're on.
 In a recent weekly diary, Sammy's link list includes
 [**A Critique of GPUI**](https://blog.zortax.de) (by the author of the
 signal-based `zgui` framework) with this worm-blossom gloss, verbatim in
-substance: *"A nuanced take on where Rust UI libraries inspired by Elm
+substance: _"A nuanced take on where Rust UI libraries inspired by Elm
 (which feels like all of them really) fall flat. Personally I loved Elm but
 found the lack of component-level state very fiddly. And there's lots to
 suggest the lack of a component model makes it much harder to calculate diffs
-between renders"* ([worm-blossom.org diary](https://worm-blossom.org/)).
+between renders"_ ([worm-blossom.org diary](https://worm-blossom.org/)).
 
 So their position, as far as it is stated:
 
@@ -413,7 +412,7 @@ So their position, as far as it is stated:
 2. **The specific worm-blossom complaint is architectural, not about
    rendering speed**: Elm-style architectures (a single global model +
    message updates, which they see GPUI as belonging to) lack
-   *component-level state*, which makes both programming (fiddly) and
+   _component-level state_, which makes both programming (fiddly) and
    efficient diffing (no component boundaries to diff against) harder.
    Note the affection in it — "Personally I loved Elm" — this is a
    disappointed-former-believer critique, not a dismissal of the paradigm's
@@ -439,7 +438,7 @@ Walker joined the collective largely on the strength of ufotofu contributions
 
 How it works:
 
-- **Two dual traits.** A *sequence* is items terminated by at most one final
+- **Two dual traits.** A _sequence_ is items terminated by at most one final
   value. A `Producer` yields `Either<Item, Final>` one at a time (with
   `slurp` to fill internal buffers); a `Consumer` receives them (with
   `flush` to empty buffers). Both can error on any call. The traits are
@@ -471,13 +470,13 @@ ufotofu↔axum streaming adapters to serve seekable video,
 perhaps always meant to be").
 
 **Relevance to our Rust work**: ufotofu itself is a respectable, principled
-alternative to futures-rs `Stream`/`Sink` for streaming *serialisation*
+alternative to futures-rs `Stream`/`Sink` for streaming _serialisation_
 workloads — the Final-value-in-the-type design genuinely fits protocol
 codecs (a stream that ends with a checksum/status is one type, not a
 convention). But adopting the Willow crates means adopting ufotofu's async
 worldview with them: `!Send` futures and pollster-style executors sit
 awkwardly inside a Tokio multi-threaded fleet binary, and bridging is
-per-boundary work. As a standalone choice for *our own* new streaming code
+per-boundary work. As a standalone choice for _our own_ new streaming code
 it is a small-ecosystem bet (one collective, no Tokio-native ecosystem) —
 interesting where its codec discipline pays, not a default.
 
@@ -491,11 +490,11 @@ interesting where its codec discipline pays, not a default.
 peer-to-peer systems** — spec at [bab-hash.org](https://bab-hash.org/spec),
 Rust implementation `bab_rs`. Like BLAKE3/Bao, a Bab digest is the root of a
 binary Merkle tree over 1024-byte chunks, so a receiver can verify a stream
-*as it arrives* (each verified prefix is safe to persist and forward),
-verify arbitrary *slices* independently, and pull different slices from
+_as it arrives_ (each verified prefix is safe to persist and forward),
+verify arbitrary _slices_ independently, and pull different slices from
 different peers in parallel. **WILLIAM3** is the family's concrete
 instantiation — the one Willow'25 uses as its payload hash — and it is,
-deliberately, *almost* BLAKE3.
+deliberately, _almost_ BLAKE3.
 
 ### Why not just BLAKE3 (+ Bao)? — their reasoning, in their words
 
@@ -504,7 +503,7 @@ gives three advantages of Bab over Bao (the verified-streaming spec layered
 on BLAKE3):
 
 1. **Constant-size length proofs.** Given a Bab digest, a peer can certify
-   *how many bytes* were hashed in constant space. Bao needs logarithmic
+   _how many bytes_ were hashed in constant space. Bao needs logarithmic
    space for the same proof — small, but growing, and it complicates
    storage-oriented APIs.
 2. **A generic, parameterisable construction.** Bab is specified over
@@ -569,10 +568,10 @@ second spec to track. So Willow'25 standardised on WILLIAM3.
   Willow-style store/sync design; outside one, they buy nothing and cost a
   second, single-implementation, pre-1.0 hash ecosystem with a demonstrated
   silent-digest-bug history.
-- **What using BLAKE3 instead would break**: Willow'25 *interoperability* —
+- **What using BLAKE3 instead would break**: Willow'25 _interoperability_ —
   a BLAKE3-digested store cannot reconcile with willow25 peers (digests and
   fingerprints won't match), and you lose constant-size length proofs. What
-  it would *not* break: local correctness. iroh-willow already proved a
+  it would _not_ break: local correctness. iroh-willow already proved a
   BLAKE3-instantiated Willow works fine as a closed system (baseline note
   §10). So the decision is exactly: **interop with the Willow'25 world →
   bab/WILLIAM3; closed system on our own transport → BLAKE3/bao is the

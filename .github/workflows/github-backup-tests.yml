@@ -67,6 +67,10 @@ jobs:
           node-version: 24
 
       - name: Run the github-backup regression suite (each file as a script)
+        env:
+          # The deploy tests skip without node elsewhere (#14267); here
+          # node is set up above, so a missing node must fail.
+          GITHUB_BACKUP_REQUIRE_NODE: "1"
         run: |
           fail=0
           count=0
@@ -94,10 +98,15 @@ jobs:
 
       - name: Run the github-backup Worker tests (node --test)
         run: |
-          test_file="infra/github-backup/worker/test/index.test.mjs"
-          if [ ! -f "$test_file" ]; then
-            echo "::error::Worker test file missing: $test_file — the suite was not run."
-            exit 1
-          fi
-          node --test "$test_file"
+          for test_file in \
+            infra/github-backup/worker/test/index.test.mjs \
+            infra/github-backup/worker/test/release-version.test.mjs; do
+            if [ ! -f "$test_file" ]; then
+              echo "::error::Worker test file missing: $test_file — the suite was not run."
+              exit 1
+            fi
+          done
+          node --test \
+            infra/github-backup/worker/test/index.test.mjs \
+            infra/github-backup/worker/test/release-version.test.mjs
           echo "github-backup Worker tests passed."

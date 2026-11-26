@@ -1,4 +1,3 @@
-
 ## Appendix — Lane 7 brief, verbatim
 
 > You are LANE 7 — STRAY-WORK of programme AUDIT-7 (Drew's directive, 2026-11-23 ~17:56 CST): seven parallel audit lanes over the four repos (developing-today/code, developing-today-forks/opencode, developing-today-forks/openchamber, dezren39/fleet), exhaustive — every item in scope, one by one, read in full, no sampling.
@@ -6,6 +5,7 @@
 > UMBRELLA TRACKING ISSUE: developing-today/code#13871 — https://github.com/developing-today/code/issues/13871 — the cross-lane coordination point. Your tracking issue IS the stray-work audit issue described in your brief below; post its link as a comment on #13871 and post progress on it at EVERY slice boundary.
 >
 > SHARED RULES (binding on all seven lanes):
+>
 > - GitHub access: the fleet GitHub subcommand ONLY. All reads via `fleet gh api` (the `fleet` binary lives at ~/.local/share/hatch-recovery/bin/fleet — put that dir on PATH); all issue/comment writes via `~/tools/gh-post` (the GitHub App identity). NEVER plain `gh` with the user token, NEVER the GitHub connector. Reason (Drew): direct access burns the personal user API tokens; the GitHub App identity must do this work. If a fleet-gh verb you need does not exist, report that to the coordinator in your return — do not fall back to plain gh.
 > - Tracking first: file your own tracking issue in developing-today/code, link it on the umbrella (#13871), and post progress on it at EVERY slice boundary. Check the umbrella + an issue's comments before acting on it — if another lane has claimed it, the lane whose primary scope it is owns the action; the other records a pointer comment on the umbrella, never a duplicate issue or PR.
 > - Exhaustive, one by one, read everything. No sampling, no skimming by title. Volume is large — work in slices (per repo, per batch); if a slice exceeds one session, enqueue per-batch sub-work to the pilot queue (`--queue repo-health-code-pilot`, kind `feature_slice` + `payload.slice`, NEVER kind `design`; premise + singular-ownership check first, fresh fleet-gh REST reads, comments per_page=100 count-confirmed) following the lane conventions. A claim comment from another lane is a HARD STOP.

@@ -32,9 +32,9 @@ use id_core::location_ref::{LocationRef, R2Locator, TypedLocator};
 use id_core::namespace_definition::NamespaceId;
 
 use related_links::{
-    LINKS_VIEW_KEY, LinkError, LinkResolution, LinkTarget, MAX_PATH_REF_BYTES, PathRef,
-    RelatedLink, canonical_links, envelope_links, is_valid_relation, resolve_link, resolve_links,
-    set_view_links, view_links,
+    LINKS_VIEW_KEY, LinkError, LinkResolution, LinkTarget, MAX_PATH_REF_BYTES, PathComparison,
+    PathRef, RelatedLink, canonical_links, envelope_links, is_valid_relation, resolve_link,
+    resolve_links, set_view_links, view_links,
 };
 use sidecar_snapshot::{SidecarBodyV1, SidecarEnvelopeV1, SnapshotId};
 
@@ -81,9 +81,8 @@ fn snapshot(
 }
 
 fn location_ref() -> LocationRef {
-    let locator = TypedLocator::from(
-        R2Locator::new("acct-1", "bucket-1", "objects/thing-1").unwrap(),
-    );
+    let locator =
+        TypedLocator::from(R2Locator::new("acct-1", "bucket-1", "objects/thing-1").unwrap());
     // A NamespaceId has its own grammar (a letter followed by
     // letters, digits or hyphens) — unlike the sidecar body's
     // free-text namespace label above.
@@ -105,10 +104,7 @@ fn sample_links() -> Vec<RelatedLink> {
             LinkTarget::PathRef(PathRef::new("docs/guide.md").unwrap()),
         ),
         RelatedLink::new("located-at", LinkTarget::LocationRef(location_ref())),
-        RelatedLink::new(
-            "part-of",
-            LinkTarget::ContentRef(content(b"target-other")),
-        ),
+        RelatedLink::new("part-of", LinkTarget::ContentRef(content(b"target-other"))),
     ]
 }
 
@@ -143,20 +139,33 @@ fn path_ref_accepts_namespace_relative_paths() {
         "deeply/nested/path/to/an/object.bin",
     ] {
         let path = PathRef::new(raw).unwrap();
-        assert_eq!(path.as_str(), raw, "already-NFC input is stored verbatim");
+        assert_eq!(path.as_str(), raw, "input is stored verbatim");
     }
 }
 
 #[test]
-fn path_ref_normalises_to_nfc_at_write() {
-    // "cafe" + combining acute (U+0301) composes to "café" (U+00E9).
-    let path = PathRef::new("cafe\u{301}").unwrap();
-    assert_eq!(path.as_str(), "caf\u{e9}");
-    // "A" + combining ring above (U+030A) composes to U+00C5.
+fn path_ref_keeps_the_authors_spelling_at_write() {
+    // #14208 / A-9121.1: the stored text is never normalised. "cafe"
+    // + combining acute (U+0301) stays decomposed; it does not become
+    // "café" (U+00E9), which would silently redirect the link.
+    let decomposed = PathRef::new("cafe\u{301}").unwrap();
+    assert_eq!(decomposed.as_str(), "cafe\u{301}");
+    let composed = PathRef::new("caf\u{e9}").unwrap();
+    assert_eq!(composed.as_str(), "caf\u{e9}");
+    // Without the namespace opt-in the two spellings name different
+    // targets.
+    assert_ne!(decomposed, composed);
+    assert!(!decomposed.same_target(&composed, PathComparison::Exact));
+    // With the opt-in they compare equal, and the stored spelling is
+    // still the author's.
+    assert!(decomposed.same_target(&composed, PathComparison::Nfc));
+    assert_eq!(decomposed.comparison_key(PathComparison::Nfc), "caf\u{e9}");
+    assert_eq!(decomposed.as_str(), "cafe\u{301}");
+    // "A" + combining ring above (U+030A) is kept as written too.
     let path = PathRef::new("A\u{30a}/x").unwrap();
-    assert_eq!(path.as_str(), "\u{c5}/x");
-    // Normalisation is idempotent: the stored form re-validates to
-    // itself.
+    assert_eq!(path.as_str(), "A\u{30a}/x");
+    assert_eq!(path.comparison_key(PathComparison::Nfc), "\u{c5}/x");
+    // The stored form re-validates to itself.
     assert_eq!(PathRef::new(path.as_str()).unwrap(), path);
 }
 
@@ -188,7 +197,10 @@ fn path_ref_rejects_leading_slash_and_bad_segments() {
 #[test]
 fn path_ref_cap_is_resource_limit_not_truncation() {
     let at_cap = "a".repeat(MAX_PATH_REF_BYTES);
-    assert_eq!(PathRef::new(&at_cap).unwrap().as_str().len(), MAX_PATH_REF_BYTES);
+    assert_eq!(
+        PathRef::new(&at_cap).unwrap().as_str().len(),
+        MAX_PATH_REF_BYTES
+    );
 
     // A multi-segment path exactly at the cap is also fine.
     let segmented = format!("{}/{}", "a".repeat(2048), "b".repeat(2047));
@@ -239,10 +251,7 @@ fn unknown_target_kind_is_unsupported_target_kind() {
     // not path-link changes (design §4, Q1).
     for kind in ["url", "blob"] {
         let value = Value::Map(vec![
-            (
-                Value::Text("kind".to_owned()),
-                Value::Text(kind.to_owned()),
-            ),
+            (Value::Text("kind".to_owned()), Value::Text(kind.to_owned())),
             (
                 Value::Text("url".to_owned()),
                 Value::Text("https://example.com/x".to_owned()),
@@ -304,7 +313,13 @@ fn canonical_order_sorts_by_relation_then_target_bytes_and_collapses_duplicates(
     let relations: Vec<&str> = canonical.iter().map(|l| l.relation.as_str()).collect();
     assert_eq!(
         relations,
-        ["derived-from", "located-at", "part-of", "see-also", "see-also"]
+        [
+            "derived-from",
+            "located-at",
+            "part-of",
+            "see-also",
+            "see-also"
+        ]
     );
     assert!(matches!(canonical[3].target, LinkTarget::ContentRef(_)));
     assert!(matches!(canonical[4].target, LinkTarget::PathRef(_)));
@@ -341,8 +356,11 @@ fn adding_a_link_changes_the_snapshot_but_not_the_subject() {
     assert_eq!(bare.body.subject_content_id, subject());
     assert_eq!(linked.body.subject_content_id, subject());
     assert_ne!(bare.snapshot_id().unwrap(), linked.snapshot_id().unwrap());
-    assert_eq!(envelope_links(&linked).unwrap(), canonical_links(&sample_links()).unwrap());
-    assert!(envelope_links(&bare).unwrap().is_empty());
+    assert_eq!(
+        envelope_links(&linked).unwrap(),
+        canonical_links(&sample_links()).unwrap()
+    );
+    assert_eq!(envelope_links(&bare).unwrap(), [] as [RelatedLink; 0]);
 }
 
 #[test]
@@ -351,9 +369,12 @@ fn empty_link_set_removes_the_view_entry() {
     assert!(view.contains_key(LINKS_VIEW_KEY));
     set_view_links(&mut view, &[]).unwrap();
     assert!(!view.contains_key(LINKS_VIEW_KEY));
-    assert!(view_links(&view).unwrap().is_empty());
+    assert_eq!(view_links(&view).unwrap(), [] as [RelatedLink; 0]);
     // A view that never had links reads as empty, not an error.
-    assert!(view_links(&BTreeMap::new()).unwrap().is_empty());
+    assert_eq!(
+        view_links(&BTreeMap::new()).unwrap(),
+        [] as [RelatedLink; 0]
+    );
 }
 
 // ---------------------------------------------------------------- §5
@@ -425,14 +446,14 @@ fn dangling_links_survive_rewrite() {
 fn resolution_is_per_target_and_read_only() {
     let links = sample_links();
     let present = content(b"target-content");
-    let resolutions = resolve_links(&links, |target| {
-        matches!(target, LinkTarget::ContentRef(id) if *id == present)
-    });
+    let resolutions = resolve_links(
+        &links,
+        |target| matches!(target, LinkTarget::ContentRef(id) if *id == present),
+    );
     assert_eq!(resolutions.len(), links.len());
     for (link, resolution) in links.iter().zip(&resolutions) {
         assert_eq!(resolution.target(), &link.target);
-        let should_resolve =
-            matches!(&link.target, LinkTarget::ContentRef(id) if *id == present);
+        let should_resolve = matches!(&link.target, LinkTarget::ContentRef(id) if *id == present);
         assert_eq!(!resolution.is_dangling(), should_resolve, "link {link:?}");
     }
     // Resolution changed nothing: the links still read back whole.

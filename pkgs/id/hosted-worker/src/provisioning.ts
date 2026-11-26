@@ -22,7 +22,7 @@
 // a deployment by itself — it returns the exact plan a deployment may
 // enable, or refuses with an explicit diagnostic.
 
-import { FailClosed, SUPPORTED_JURISDICTIONS, type Jurisdiction } from "./routing.ts";
+import { BLOBS_BINDING_FOR_JURISDICTION, FailClosed, SUPPORTED_JURISDICTIONS, type Jurisdiction } from "./routing.ts";
 
 /** What the deployed-account evidence says about one capability:
  * "supported" only when the canary / API read-back proved it on the
@@ -120,10 +120,7 @@ export function validateEnablement(config: EnablementConfig, evidence: AccountEv
     );
   }
   if (!(SUPPORTED_JURISDICTIONS as readonly string[]).includes(rawJurisdiction)) {
-    refuse(
-      "unsupported_jurisdiction",
-      `configured jurisdiction "${rawJurisdiction}" is not supported; failing closed`,
-    );
+    refuse("unsupported_jurisdiction", `configured jurisdiction "${rawJurisdiction}" is not supported; failing closed`);
   }
   const jurisdiction = rawJurisdiction as Jurisdiction;
 
@@ -183,9 +180,13 @@ export function validateEnablement(config: EnablementConfig, evidence: AccountEv
   // binding's declared field — must match the configured one.
   const bucket = config.bucket;
   if (!bucket) {
+    refuse("bucket_missing", `no R2 bucket is configured for jurisdiction "${jurisdiction}"; failing closed`);
+  }
+  const expectedBinding = BLOBS_BINDING_FOR_JURISDICTION[jurisdiction];
+  if (bucket.binding !== expectedBinding) {
     refuse(
-      "bucket_missing",
-      `no R2 bucket is configured for jurisdiction "${jurisdiction}"; failing closed`,
+      "bucket_binding_mismatch",
+      `bucket binding "${bucket.binding}" is not the authoritative binding "${expectedBinding}" for jurisdiction "${jurisdiction}"; failing closed`,
     );
   }
   if (bucket.declaredJurisdiction !== undefined && bucket.declaredJurisdiction !== jurisdiction) {

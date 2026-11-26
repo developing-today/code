@@ -45,18 +45,26 @@ Three designs handle a world that outgrows one host, and they disagree in method
 - `2026-11-08_design_id5787.md` (2026-11-08): Spill v2 — native spill pools, lease failover and multi-holder fencing. Its recommendation is stated in one line: honest v2 is failover plus read replicas plus a pool of eligible holders; it is not write scaling. At every instant a world still has exactly one holder and one epoch chain. Concurrent multi-writer spill is rejected in the record, with the reason: the append gate is the write bottleneck by design — every accepted mutation is serialized, epoch-checked and synced by the single append gate — so adding holders adds contenders, not throughput. If write scaling is ever proven necessary, the record states it arrives as world splitting under the region and shard designs, not as parallel holders of one journal.
 - `2026-11-12T19-35-00Z_feature_world_lease_handoff_actor_boundary` (2026-11-12): world lease handoff at the actor boundary, the feature record that puts the lease transfer at the world's actor edge.
 
+As of 2026-11-25, `id-worlds` contains the spill pool policy and actor failover
+journaling. The spill-admission gate requires a verified successor replay cursor
+at or beyond the current grant/handoff position; renewals do not move that
+ownership boundary. These are library mechanisms, not a deployed host controller:
+`evaluate_spill` has no production callers yet, and real detection/grant/replay
+timings remain an acceptance gap on #7572. See the
+[replay-admission slice record](../../../../doc/2026-11-25T01-38-00Z_design_spill_replay_gate/2026-11-25T01-38-00Z_design_spill_replay_gate.md).
+
 ## The #6304 scale programme and its first measured limits
 
 The scale programme is #6304, under Phase 14 core topic #6281, with plan of record epic #6312 and v2 (growth policy and the degradation ladder) filed as #6305 behind it. Its v1 design record is `2026-11-23T07-53-00Z_design_scale_perf_stress_v1` (2026-11-23): how large worlds are generated, what is measured, and what the first measured limits are. The generator extends the existing bench harness instead of building a second one: deterministic (fixed seed; same seed and same tier produce the same worlds, byte for byte in event content), manifest-verified (expected event counts and final state hash per measured world, so a fast-but-wrong run cannot pass as a result), and run as profiles of the existing bench binary. Implementation issues: #13083 (generator), #13084 (join time), #13085 (frame cost), #13086 (memory), #13087 (the 10x run), #13088 (the 100x run).
 
 The tier table, from the record:
 
-| Axis | 1x | 10x | 100x |
-|---|---|---|---|
-| Idle worlds | 1,000 | 10,000 | 100,000 |
-| Active worlds | 100 | 1,000 | 10,000 |
+| Axis                          | 1x     | 10x     | 100x      |
+| ----------------------------- | ------ | ------- | --------- |
+| Idle worlds                   | 1,000  | 10,000  | 100,000   |
+| Active worlds                 | 100    | 1,000   | 10,000    |
 | Single-world history (events) | 10,000 | 100,000 | 1,000,000 |
-| Members on the hot world | 32 | 320 | 3,200 |
+| Members on the hot world      | 32     | 320     | 3,200     |
 
 A tier is a measurement target, not a promise; the record states that a run hitting a wall — out-of-memory, eviction storm, p99 blowup, fuel exhaustion — is a result, and the wall is recorded as that tier's measured limit.
 

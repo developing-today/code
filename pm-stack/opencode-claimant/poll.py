@@ -58,9 +58,15 @@ Prints one JSON object:
                                               # session-cap-5016)
     "cap": 36,
     "concurrency_cap": 36,
-    "cap_room": int | null                   # CAP - active claimant
+     "cap_room": int | null,                  # CAP - active claimant
                                               # roots; null when count
                                               # unknown
+     "pilot_cap_comparison": {
+       "proposed_cap": 4,
+       "observed_active_claimant_roots": int | null,
+       "available_slots": int | null,
+       "over_cap_by": int | null
+     }                                        # advisory only (#1658)
   }
 
 Read-only by construction: claimed rows come from the queue-broker's
@@ -132,6 +138,8 @@ QUEUES = [
 ]
 CAP = 36
 CONCURRENCY_CAP = CAP
+# #1658 measurement only: never used for operational launch decisions.
+PILOT_PROPOSED_CAP = 4
 # A root session counts toward the cap only while it is active: no
 # terminal marker and recent activity. GET /api/session returns every
 # finished-but-unarchived session forever (50 roots at the #3026 gate
@@ -610,7 +618,9 @@ def _server_get(path, *, include_envelope=False, raise_http_errors=False):
     token = base64.b64encode(f"opencode:{credential}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
     try:
-        with urllib.request.urlopen(req, timeout=_poll_timeout(SERVER_READ_TIMEOUT_S)) as res:
+        with urllib.request.urlopen(
+            req, timeout=_poll_timeout(SERVER_READ_TIMEOUT_S)
+        ) as res:
             data = json.loads(res.read() or "null")
     except urllib.error.HTTPError:
         if raise_http_errors:
@@ -706,7 +716,9 @@ def _broker_post(path, body):
     if url.startswith("unix://"):
         # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
         # path, not an HTTP base URL. Never append /list to that filename.
-        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=_poll_timeout(BROKER_READ_TIMEOUT_S))
+        conn = _UnixHTTPConnection(
+            url[len("unix://") :], timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)
+        )
         try:
             conn.request("POST", path, body=payload, headers=headers)
             with conn.getresponse() as res:
@@ -729,7 +741,9 @@ def _broker_post(path, body):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)) as res:
+        with urllib.request.urlopen(
+            req, timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)
+        ) as res:
             data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
         raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
@@ -1055,9 +1069,7 @@ def main():
     # census), not submission order.
     with ThreadPoolExecutor(max_workers=2 + 2 * len(QUEUES)) as pool:
         sessions_f = pool.submit(_timed_read, "session list", fetch_sessions)
-        active_f = pool.submit(
-            _timed_read, "active session ids", fetch_active_ids
-        )
+        active_f = pool.submit(_timed_read, "active session ids", fetch_active_ids)
         row_futures = {
             q: (
                 pool.submit(
@@ -1082,15 +1094,11 @@ def main():
         for q in QUEUES:
             rows = row_futures[q][0].result()
             handed_off_rows = row_futures[q][1].result()
-            shaped = get_candidates(rows) + get_handed_off_candidates(
-                handed_off_rows
-            )
+            shaped = get_candidates(rows) + get_handed_off_candidates(handed_off_rows)
             per_queue[q] = (rows, handed_off_rows, shaped)
             shaped_ids.extend(r.get("id") for r in shaped)
         _poll_phase("ledger_read")
-        bindings = _timed_read(
-            "ledger bindings", fetch_ledger_bindings, shaped_ids
-        )
+        bindings = _timed_read("ledger bindings", fetch_ledger_bindings, shaped_ids)
         _poll_phase("snapshot")
         sessions = sessions_f.result()
         _poll_phase("active_sessions")
@@ -1150,6 +1158,21 @@ def main():
     out["cap"] = CAP
     out["concurrency_cap"] = CAP
     out["cap_room"] = room
+    # Advisory #1658 comparison reuses the operational census, not a
+    # separate read. Non-scheduled active claimant roots are a proxy,
+    # NOT verified queue-specific spawns. This does not change CAP,
+    # cap_room, candidate discovery or any launch decision. Unknown
+    # counts stay unknown rather than manufacturing advisory room.
+    out["pilot_cap_comparison"] = {
+        "proposed_cap": PILOT_PROPOSED_CAP,
+        "observed_active_claimant_roots": active,
+        "available_slots": (
+            max(0, PILOT_PROPOSED_CAP - active) if active is not None else None
+        ),
+        "over_cap_by": (
+            max(0, active - PILOT_PROPOSED_CAP) if active is not None else None
+        ),
+    }
     print(json.dumps(out, indent=1))
     return 0
 

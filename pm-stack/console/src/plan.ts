@@ -15,6 +15,7 @@
 // Everything here reaches GitHub through Ops.gh, so it runs unchanged on
 // a machine (the fleet binary's gh) and at the edge (GitHub's REST API).
 import { OpError } from "./errors.ts";
+import { openRoadmapChangePr } from "./roadmap-change.ts";
 import { type Ops, RANK_PRIORITY, RANKS, type Rank, type RunResult, triagePacket } from "./ops.ts";
 import type { Work } from "./work.ts";
 
@@ -342,6 +343,8 @@ export interface IntakeResult {
   /** A comment was left on an existing issue; no issue was made. */
   commented: boolean;
   queued: boolean;
+  /** The pull request a change was made as, when the platform made it. */
+  pr?: string;
   note?: string;
 }
 
@@ -502,6 +505,26 @@ export class Plan {
     });
   }
 
+  /** The platform's half of a change asked for in the app (#13497):
+   * the change made as a pull request against the roadmap file it
+   * belongs to. What cannot be made mechanically is refused with its
+   * reason, and the caller carries on with the issue and the task. */
+  private async roadmapPr(
+    cap: Capability,
+    asked: { action: Change; to: Phase | null; title: string | null },
+    row: string | null,
+    words: string,
+    issue: number,
+  ) {
+    return openRoadmapChangePr(
+      this.ops,
+      this.repo,
+      cap,
+      { action: asked.action, row, title: asked.title, to: asked.to, intent: words },
+      { said: changeSaid(asked, row), words, issue, now: this.clock() },
+    );
+  }
+
   /**
    * Take in a note, a bug or a change, in the owner's words.
    *
@@ -659,7 +682,34 @@ export class Plan {
       kind: "triage.enqueue",
       args: { issue: made.number, title: made.title, rank: filedRank, at },
     }).catch(notQueued);
-    return { issue: made.number, url: made.html_url, commented: false, ...queuedSaid(queued, "filed") };
+    const said = queuedSaid(queued, "filed");
+    const notes = [...(said.note ? [said.note] : [])];
+    // A change asked for in the app is made by the platform itself, as
+    // a pull request against the roadmap file (#13497). The issue and
+    // its task stand either way: with a pull request they are its
+    // record and its review; without one, they are the work, as before.
+    let pr: string | undefined;
+    if (kind === "change" && asked !== null && cap?.file) {
+      const opened = await this.roadmapPr(cap, asked, aboutRow, words, made.number).catch((e: Error) => e);
+      if (opened instanceof Error) {
+        notes.push(`the roadmap change was not made as a pull request: ${opened.message}`);
+      } else {
+        pr = opened.url;
+        await this.ops
+          .gh(["-X", "POST", `repos/${this.repo}/issues/${made.number}/comments`], {
+            body: `The platform made this change as a pull request: ${opened.url}\n\nIt changes only \`${cap.file}\`. Reviewing and merging it puts the change on the roadmap; until then the roadmap itself is unchanged.`,
+          })
+          .catch(() => {});
+      }
+    }
+    return {
+      issue: made.number,
+      url: made.html_url,
+      commented: false,
+      queued: said.queued,
+      ...(pr ? { pr } : {}),
+      ...(notes.length ? { note: notes.join("; ").slice(0, 300) } : {}),
+    };
   }
 }
 

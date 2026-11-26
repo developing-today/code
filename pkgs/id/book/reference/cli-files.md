@@ -26,12 +26,12 @@ id in|add|store|import [FILES]...
 
 Aliases: `in`, `add`, `store`, `import`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--content` (visible alias `--data`) | none (switch) | off | Read the content from stdin instead of from file paths. Requires exactly one name argument. Conflicts with `--stdin`. |
-| `--stdin` | none (switch) | off | Read more file paths from stdin, split on newline, tab or comma. Conflicts with `--content`. |
-| `--hash-only` | none (switch) | off | Store the content without creating a named tag. The content is retrievable by hash only. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote operation. |
+| Flag                                 | Argument      | Default | Meaning                                                                                                               |
+| ------------------------------------ | ------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--content` (visible alias `--data`) | none (switch) | off     | Read the content from stdin instead of from file paths. Requires exactly one name argument. Conflicts with `--stdin`. |
+| `--stdin`                            | none (switch) | off     | Read more file paths from stdin, split on newline, tab or comma. Conflicts with `--content`.                          |
+| `--hash-only`                        | none (switch) | off     | Store the content without creating a named tag. The content is retrievable by hash only.                              |
+| `--no-relay`                         | none (switch) | off     | Disable relay servers for a remote operation.                                                                         |
 
 Behaviour notes:
 
@@ -61,9 +61,9 @@ Failure shapes: a missing input file is a handler error (exit 1); `--content` co
 id put-hash <SOURCE>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| (none) | — | — | `put-hash` defines no flags of its own; the global flags apply. |
+| Flag   | Argument | Default | Meaning                                                         |
+| ------ | -------- | ------- | --------------------------------------------------------------- |
+| (none) | —        | —       | `put-hash` defines no flags of its own; the global flags apply. |
 
 Behaviour notes:
 
@@ -84,12 +84,12 @@ Failure shapes: a missing source file is a handler error (exit 1). A missing `SO
 id send <SOURCE_NODE> <NAME> --to <DEST_NODE> [--as <NAME>] [--replace] [--no-relay]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--to` | `DEST_NODE` | required (no default) | Destination server node ID (64 hex characters). |
-| `--as` | `NAME` | the source name | Name to register on the destination. |
-| `--replace` | none (switch) | off | Replace an existing, different destination file; the old destination file is archived under an archive name first. |
-| `--no-relay` | none (switch) | off | Disable relay servers for the connection to the source. |
+| Flag         | Argument      | Default               | Meaning                                                                                                            |
+| ------------ | ------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `--to`       | `DEST_NODE`   | required (no default) | Destination server node ID (64 hex characters).                                                                    |
+| `--as`       | `NAME`        | the source name       | Name to register on the destination.                                                                               |
+| `--replace`  | none (switch) | off                   | Replace an existing, different destination file; the old destination file is archived under an archive name first. |
+| `--no-relay` | none (switch) | off                   | Disable relay servers for the connection to the source.                                                            |
 
 Behaviour notes:
 
@@ -113,13 +113,13 @@ id get --hash [SOURCES]...
 id get --name-only [SOURCES]...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--stdin` | none (switch) | off | Read more sources from stdin, split on newline, tab or comma. |
-| `--hash` | none (switch) | off | Treat all sources as hashes. A source that matches no known hash fails. Conflicts with `--name-only`. |
-| `--name-only` | none (switch) | off | Treat all sources as names only; hash interpretation is skipped even for 64-character hex strings. Conflicts with `--hash`. |
-| `--stdout` | none (switch) | off | Write all retrieved files to stdout, concatenated. Overrides the per-item output specifications. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote operation. |
+| Flag          | Argument      | Default | Meaning                                                                                                                     |
+| ------------- | ------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--stdin`     | none (switch) | off     | Read more sources from stdin, split on newline, tab or comma.                                                               |
+| `--hash`      | none (switch) | off     | Treat all sources as hashes. A source that matches no known hash fails. Conflicts with `--name-only`.                       |
+| `--name-only` | none (switch) | off     | Treat all sources as names only; hash interpretation is skipped even for 64-character hex strings. Conflicts with `--hash`. |
+| `--stdout`    | none (switch) | off     | Write all retrieved files to stdout, concatenated. Overrides the per-item output specifications.                            |
+| `--no-relay`  | none (switch) | off     | Disable relay servers for a remote operation.                                                                               |
 
 Behaviour notes:
 
@@ -145,9 +145,9 @@ Failure shapes: a name or hash with no stored content fails with `file not found
 id get-hash <HASH> <OUTPUT>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| (none) | — | — | `get-hash` defines no flags of its own; the global flags apply. |
+| Flag   | Argument | Default | Meaning                                                         |
+| ------ | -------- | ------- | --------------------------------------------------------------- |
+| (none) | —        | —       | `get-hash` defines no flags of its own; the global flags apply. |
 
 Behaviour notes:
 
@@ -171,12 +171,12 @@ id output|out [SOURCES]...
 
 Aliases: `output`, `out`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--stdin` | none (switch) | off | Read more sources from stdin, split on newline, tab or comma. |
-| `--hash` | none (switch) | off | Treat all sources as hashes. Conflicts with `--name-only`. |
-| `--name-only` | none (switch) | off | Treat all sources as names only, skipping hash interpretation. Conflicts with `--hash`. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote operation. |
+| Flag          | Argument      | Default | Meaning                                                                                 |
+| ------------- | ------------- | ------- | --------------------------------------------------------------------------------------- |
+| `--stdin`     | none (switch) | off     | Read more sources from stdin, split on newline, tab or comma.                           |
+| `--hash`      | none (switch) | off     | Treat all sources as hashes. Conflicts with `--name-only`.                              |
+| `--name-only` | none (switch) | off     | Treat all sources as names only, skipping hash interpretation. Conflicts with `--hash`. |
+| `--no-relay`  | none (switch) | off     | Disable relay servers for a remote operation.                                           |
 
 Behaviour notes:
 
@@ -197,9 +197,9 @@ Failure shapes: a missing source fails with `file not found` or `file not found 
 id list [NODE]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote listing. |
+| Flag         | Argument      | Default | Meaning                                     |
+| ------------ | ------------- | ------- | ------------------------------------------- |
+| `--no-relay` | none (switch) | off     | Disable relay servers for a remote listing. |
 
 Behaviour notes:
 
@@ -226,9 +226,9 @@ id migrate
 
 Alias: `migrate`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| (none) | — | — | `migrate-tags` takes no arguments and defines no flags of its own; the global flags apply. |
+| Flag   | Argument | Default | Meaning                                                                                    |
+| ------ | -------- | ------- | ------------------------------------------------------------------------------------------ |
+| (none) | —        | —       | `migrate-tags` takes no arguments and defines no flags of its own; the global flags apply. |
 
 Behaviour notes:
 
@@ -261,11 +261,11 @@ Failure shapes: a store that cannot be opened is a handler error (exit 1).
 
 `--format` exists on `find` and `search` only:
 
-| Value | Meaning |
-|---|---|
-| `tag` | Each match printed with its query. |
-| `group` | Matches grouped by query. |
-| `union` | Matches deduplicated by hash. |
+| Value   | Meaning                            |
+| ------- | ---------------------------------- |
+| `tag`   | Each match printed with its query. |
+| `group` | Matches grouped by query.          |
+| `union` | Matches deduplicated by hash.      |
 
 The clap default is `tag`. The REPL's `find` and `search` default to `union`, because the REPL hand parser enters with `union` as its default format. The same query therefore prints tag-grouped output from the command line and union-deduplicated output in the REPL. Each side's help now names the other's default (discrepancy CLI-11, resolved).
 
@@ -275,19 +275,19 @@ The clap default is `tag`. The REPL's `find` and `search` default to `union`, be
 id find <QUERIES>...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--name` | none (switch) | off | Prefer name matches over hash matches. |
-| `--stdout` | none (switch) | off | Write the best match to stdout instead of to a file. |
-| `--all` (visible aliases `--out`, `--export`, `--save`, `--full`) | none (switch) | off | Output all matches instead of only the best match. |
-| `--dir` | `DIR` | none | Output directory for `--all`; each match is saved by name. |
-| `--format` | `tag`, `group` or `union` | `tag` | Output format (see the `--format` table above). |
-| `--first` | `N` (optional) | bare flag = `1` | Return only the first N matches. Conflicts with `--last`. |
-| `--last` | `N` (optional) | bare flag = `1` | Return only the last N matches. Conflicts with `--first`. |
-| `--count` | none (switch) | off | Print the count of matches instead of the matches. |
-| `--exclude` | `PAT` | none | Exclude matches whose name or hash contains `PAT`. Repeatable. |
-| `--node` | `NODE_ID` | none | Remote node to search. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote search. |
+| Flag                                                              | Argument                  | Default         | Meaning                                                        |
+| ----------------------------------------------------------------- | ------------------------- | --------------- | -------------------------------------------------------------- |
+| `--name`                                                          | none (switch)             | off             | Prefer name matches over hash matches.                         |
+| `--stdout`                                                        | none (switch)             | off             | Write the best match to stdout instead of to a file.           |
+| `--all` (visible aliases `--out`, `--export`, `--save`, `--full`) | none (switch)             | off             | Output all matches instead of only the best match.             |
+| `--dir`                                                           | `DIR`                     | none            | Output directory for `--all`; each match is saved by name.     |
+| `--format`                                                        | `tag`, `group` or `union` | `tag`           | Output format (see the `--format` table above).                |
+| `--first`                                                         | `N` (optional)            | bare flag = `1` | Return only the first N matches. Conflicts with `--last`.      |
+| `--last`                                                          | `N` (optional)            | bare flag = `1` | Return only the last N matches. Conflicts with `--first`.      |
+| `--count`                                                         | none (switch)             | off             | Print the count of matches instead of the matches.             |
+| `--exclude`                                                       | `PAT`                     | none            | Exclude matches whose name or hash contains `PAT`. Repeatable. |
+| `--node`                                                          | `NODE_ID`                 | none            | Remote node to search.                                         |
+| `--no-relay`                                                      | none (switch)             | off             | Disable relay servers for a remote search.                     |
 
 Behaviour notes:
 
@@ -312,18 +312,18 @@ Failure shapes: no matches fails with `no matches found for: <queries>` (exit 1)
 id search <QUERIES>...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--name` | none (switch) | off | Prefer name matches over hash matches. |
-| `--all` (visible aliases `--out`, `--export`, `--save`, `--full`) | none (switch) | off | Include all matches in the output. |
-| `--dir` | `DIR` | none | Output directory for `--all`. |
-| `--format` | `tag`, `group` or `union` | `tag` | Output format (see the `--format` table above). |
-| `--first` | `N` (optional) | bare flag = `1` | Return only the first N matches. Conflicts with `--last`. |
-| `--last` | `N` (optional) | bare flag = `1` | Return only the last N matches. Conflicts with `--first`. |
-| `--count` | none (switch) | off | Print the count of matches instead of the matches. |
-| `--exclude` | `PAT` | none | Exclude matches whose name or hash contains `PAT`. Repeatable. |
-| `--node` | `NODE_ID` | none | Remote node to search. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote search. |
+| Flag                                                              | Argument                  | Default         | Meaning                                                        |
+| ----------------------------------------------------------------- | ------------------------- | --------------- | -------------------------------------------------------------- |
+| `--name`                                                          | none (switch)             | off             | Prefer name matches over hash matches.                         |
+| `--all` (visible aliases `--out`, `--export`, `--save`, `--full`) | none (switch)             | off             | Include all matches in the output.                             |
+| `--dir`                                                           | `DIR`                     | none            | Output directory for `--all`.                                  |
+| `--format`                                                        | `tag`, `group` or `union` | `tag`           | Output format (see the `--format` table above).                |
+| `--first`                                                         | `N` (optional)            | bare flag = `1` | Return only the first N matches. Conflicts with `--last`.      |
+| `--last`                                                          | `N` (optional)            | bare flag = `1` | Return only the last N matches. Conflicts with `--first`.      |
+| `--count`                                                         | none (switch)             | off             | Print the count of matches instead of the matches.             |
+| `--exclude`                                                       | `PAT`                     | none            | Exclude matches whose name or hash contains `PAT`. Repeatable. |
+| `--node`                                                          | `NODE_ID`                 | none            | Remote node to search.                                         |
+| `--no-relay`                                                      | none (switch)             | off             | Disable relay servers for a remote search.                     |
 
 Behaviour notes:
 
@@ -348,16 +348,16 @@ id view <QUERIES>...
 
 Alias: `view`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--name` | none (switch) | off | Prefer name matches over hash matches. |
-| `--all` | none (switch) | off | Output all matches instead of only the first. |
-| `-o`, `--output` | `FILE` | stdout | Write the matched content to `FILE` instead of stdout. |
-| `--first` | `N` (optional) | bare flag = `1` | Return only the first N matches. Conflicts with `--last`. |
-| `--last` | `N` (optional) | bare flag = `1` | Return only the last N matches. Conflicts with `--first`. |
-| `--exclude` | `PAT` | none | Exclude matches whose name or hash contains `PAT`. Repeatable. |
-| `--node` | `NODE_ID` | none | Remote node to search. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote search. |
+| Flag             | Argument       | Default         | Meaning                                                        |
+| ---------------- | -------------- | --------------- | -------------------------------------------------------------- |
+| `--name`         | none (switch)  | off             | Prefer name matches over hash matches.                         |
+| `--all`          | none (switch)  | off             | Output all matches instead of only the first.                  |
+| `-o`, `--output` | `FILE`         | stdout          | Write the matched content to `FILE` instead of stdout.         |
+| `--first`        | `N` (optional) | bare flag = `1` | Return only the first N matches. Conflicts with `--last`.      |
+| `--last`         | `N` (optional) | bare flag = `1` | Return only the last N matches. Conflicts with `--first`.      |
+| `--exclude`      | `PAT`          | none            | Exclude matches whose name or hash contains `PAT`. Repeatable. |
+| `--node`         | `NODE_ID`      | none            | Remote node to search.                                         |
+| `--no-relay`     | none (switch)  | off             | Disable relay servers for a remote search.                     |
 
 Behaviour notes:
 
@@ -380,22 +380,22 @@ Failure shapes: no matches fails with `no matches found for: <queries>` (exit 1)
 id peek <QUERIES>...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--name` | none (switch) | off | Prefer name matches over hash matches. |
-| `-n`, `--lines` | `N` | `5` | Number of head and tail units to show. Zero is rejected by the value parser. |
-| `--head-only` | none (switch) | off | Show only the head. Conflicts with `--tail-only`. |
-| `--tail-only` | none (switch) | off | Show only the tail. Conflicts with `--head-only`. |
-| `--chars` | none (switch) | off | Count by characters instead of lines. Conflicts with `--words`. |
-| `--words` | none (switch) | off | Count by words instead of lines. Conflicts with `--chars`. |
-| `-q`, `--quiet` | none (switch) | off | Suppress the header banner; print content only. |
-| `-o`, `--output` | `FILE` | stdout | Write the preview to `FILE` instead of stdout. |
-| `--all` | none (switch) | off | Peek all matches instead of only the first per query. |
-| `--first` | `N` (optional) | bare flag = `1` | Return only the first N matches. Conflicts with `--last`. |
-| `--last` | `N` (optional) | bare flag = `1` | Return only the last N matches. Conflicts with `--first`. |
-| `--exclude` | `PAT` | none | Exclude matches whose name or hash contains `PAT`. Repeatable. |
-| `--node` | `NODE_ID` | none | Remote node to search. |
-| `--no-relay` | none (switch) | off | Disable relay servers for a remote search. |
+| Flag             | Argument       | Default         | Meaning                                                                      |
+| ---------------- | -------------- | --------------- | ---------------------------------------------------------------------------- |
+| `--name`         | none (switch)  | off             | Prefer name matches over hash matches.                                       |
+| `-n`, `--lines`  | `N`            | `5`             | Number of head and tail units to show. Zero is rejected by the value parser. |
+| `--head-only`    | none (switch)  | off             | Show only the head. Conflicts with `--tail-only`.                            |
+| `--tail-only`    | none (switch)  | off             | Show only the tail. Conflicts with `--head-only`.                            |
+| `--chars`        | none (switch)  | off             | Count by characters instead of lines. Conflicts with `--words`.              |
+| `--words`        | none (switch)  | off             | Count by words instead of lines. Conflicts with `--chars`.                   |
+| `-q`, `--quiet`  | none (switch)  | off             | Suppress the header banner; print content only.                              |
+| `-o`, `--output` | `FILE`         | stdout          | Write the preview to `FILE` instead of stdout.                               |
+| `--all`          | none (switch)  | off             | Peek all matches instead of only the first per query.                        |
+| `--first`        | `N` (optional) | bare flag = `1` | Return only the first N matches. Conflicts with `--last`.                    |
+| `--last`         | `N` (optional) | bare flag = `1` | Return only the last N matches. Conflicts with `--first`.                    |
+| `--exclude`      | `PAT`          | none            | Exclude matches whose name or hash contains `PAT`. Repeatable.               |
+| `--node`         | `NODE_ID`      | none            | Remote node to search.                                                       |
+| `--no-relay`     | none (switch)  | off             | Disable relay servers for a remote search.                                   |
 
 Behaviour notes:
 

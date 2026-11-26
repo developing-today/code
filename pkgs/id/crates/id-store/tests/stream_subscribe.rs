@@ -649,11 +649,7 @@ impl Rng {
     }
 
     fn below(&mut self, bound: u64) -> u64 {
-        if bound == 0 {
-            0
-        } else {
-            self.next() % bound
-        }
+        if bound == 0 { 0 } else { self.next() % bound }
     }
 }
 

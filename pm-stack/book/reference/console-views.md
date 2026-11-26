@@ -9,7 +9,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **What it is:** The current board: in-progress and next work (`viewNow`).
 - **Inputs:** Data from `Work.board()` (`console/src/work.ts`): queue counts, claimed, queued, and blocked-reason groups.
 - **Defaults:** The fallback view: an unknown hash lands here.
-- **Behaviour:** The console's home view, drawn from the queue's current state.
+- **Behaviour:** The console's home view, drawn from the queue's current state. Counts are fleet queue tasks (queue-broker state: claimed is in progress, queued is next, blocked is blocked) — same words as the aggregator's board-derived work-item counts (`/queue`, Overview in-progress), different source; the page says so and cross-links the aggregator's wording (#14063). The need-you tile is the console's own set, not the aggregator's NEEDS USER intake queue.
 - **Failure shapes:** None recorded in the survey.
 
 ## `#next` — Next
@@ -24,7 +24,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **What it is:** Everything waiting on the owner (`viewNeeds`, extra `questions`), split into segmented sub-views: `questions`, `hands`, `reviews`, `other`.
 - **Inputs:** The aggregator's needs-Drew census, `GET /api/needs-drew.json`, split by `console/src/work.ts` (`Work.census()`): hands items carry a `hands:v1` marker, reviews carry the `user/review` label with no hands marker, and the rest are escalated items with no stated action. Session-derived waiting items come from `/api/attention.json` (`Work.sessions()`, tier `needs-drew`). Decision sets appear under `questions`, read from the decisions file by `Work.questions()`: open questions only, newest set first, context clipped to 280 characters in the list.
 - **Defaults:** The default segment is chosen by counts: questions first, then hands, then reviews.
-- **Behaviour:** Answers happen in place: Reply posts `act("need.comment")`; **I did it** on a hands item posts `act("hands.done")`. The full answer mechanics are in [The question sets, enumerated](question-sets.md). D13: the phone names the buckets Questions, Only you can do, Reviews, and Escalated; the census vocabulary in code is hands, reviews, and escalated/other.
+- **Behaviour:** Answers happen in place: Reply posts `act("need.comment")`; **I did it** on a hands item posts `act("hands.done")`. The full answer mechanics are in [The question sets, enumerated](question-sets.md). D13: the phone names the buckets Questions, Only you can do, Reviews, and Escalated; the census vocabulary in code is hands, reviews, and escalated/other. The view names its source (the console's need-you set: open questions plus hands, reviews, escalated) and cross-links the aggregator `/attention` NEEDS USER intake queue as the different count (#14063).
 - **Failure shapes:** None recorded in the survey.
 
 ## `#ask` and `#ask/say=&lt;text&gt;` — Ask
@@ -45,7 +45,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** Queue tasks by status (`viewQueue`).
 - **Inputs:** Actions post to `POST /console/api/queue/&lt;task&gt;/&lt;action&gt;` (`console/src/server.ts`).
-- **Behaviour:** The console's working cut of the queue; the aggregator's cross-project cut is `/queue`.
+- **Behaviour:** The console's working cut of the queue; the aggregator's cross-project cut is `/queue` (board-derived work items, not live broker tasks).
 - **Failure shapes:** None recorded in the survey.
 
 ## `#more/prs` — Pull requests
@@ -68,6 +68,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Inputs:** `GET /console/api/agents`.
 - **Behaviour:** The console's cut of the session registry; the aggregator's cut is `/sessions`.
 - **Failure shapes:** None recorded in the survey.
+
+## `#more/messages` — Messages
+
+- **What it is:** The owner's message pipeline and composer (`viewMessages`, `ops`): every message on every surface (connector, fleet, notes) with its real sender, plus the offers list.
+- **Inputs:** `GET /console/api/pipeline` (filters: kind, surface, sender, receiver, batch, work state, unread), `GET /console/api/offers`; sends post to the action table as `message.send`, `message.broaden`, `message.offer`.
+- **Behaviour:** The composer takes the bridge's whole addressing grammar — names, globs (`agent:f*`), groups, `all` — with a kind toggle (message / instruction) and an optional limit. A send answers with the bridge's match report (matched, delivered, recipients named, remaining), shown in place; while agents remain, **Broaden** delivers the send's own remainder on its batch, never a fresh fan-out. **Offer instead** posts the text as a claim offer with a slot count; the offer's row shows its claims as they land, and its claims and replies read together through the batch filter. Instructions reach agents sender-stripped (the bridge's job); this screen always shows the owner as sender. Sends ride the PM stack's bridge credential at the edge; without it they are held for a machine, like any other held action.
+- **Failure shapes:** A send whose answer carries no match report is said so ("the bridge did not say who that reached"), never recounted console-side. The offers list failing to read is shown as its own empty state, apart from the pipeline's.
 
 ## `#more/services` — Services
 
@@ -150,7 +157,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** The intake routing list (`viewIntake`): kinds note, bug, and change, with their label and rank routes (`plan.ts` `ROUTES`; `INTAKE_LABEL = "owner/intake"`).
 - **Inputs:** A submission from this view.
-- **Behaviour:** Submitting files a GitHub issue and a triage/prompt queue packet, routed by kind through the `ROUTES` table.
+- **Behaviour:** Submitting files a GitHub issue and a triage/prompt queue packet, routed by kind through the `ROUTES` table. A change against a capability with a roadmap file is also made by the platform itself, as a pull request against that file alone (`console/src/roadmap-change.ts`), when it can be made mechanically — a row added, moved, marked built, dropped, or retitled; the pull request is recorded on the issue, and a change that cannot be made mechanically says why in the answer and stands as issue and task alone.
 - **Failure shapes:** None recorded in the survey.
 
 Sources: PM-SURVEY website census (`pm-stack/console/public/app.js`, `pm-stack/console/src/server.ts`, `pm-stack/console/src/work.ts`, `pm-stack/console/src/ops.ts`, `pm-stack/console/src/plan.ts`), survey files `website-pages.md` and `disagreements.md` (D4, D12, D13), census date 2026-11-23.

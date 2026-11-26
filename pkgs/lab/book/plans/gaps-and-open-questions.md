@@ -33,7 +33,7 @@ cite these numbers.
 4. **DX010 count tension:** the inventory says 4× owned (1
    missing fans/PSU);
    [#6071](https://github.com/developing-today/code/issues/6071)
-   says install 3 *more*. Install-of-owned versus buy-more is not
+   says install 3 _more_. Install-of-owned versus buy-more is not
    distinguished in the record.
 5. **Racking state unknown.** No record of racks present, rails
    installed, or layout executed;

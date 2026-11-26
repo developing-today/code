@@ -3,6 +3,7 @@
 // build statements. The only remote implementation is the Turso store
 // client (turso-stores.ts), whose storeStatement() turns every literal
 // produced here into a typed argument before it rewrites any syntax.
+import type { TursoWriteContext } from "./turso-write-metrics.ts";
 
 /** Escape a string as a SQL string literal (standard-conforming strings:
  * doubling the single quote is sufficient). */
@@ -23,5 +24,5 @@ export function sqlInt(v: number): string {
 
 export interface SqlClient {
   ref: string;
-  query<T = Record<string, unknown>>(sql: string): Promise<T[]>;
+  query<T = Record<string, unknown>>(sql: string, writeContext?: TursoWriteContext): Promise<T[]>;
 }

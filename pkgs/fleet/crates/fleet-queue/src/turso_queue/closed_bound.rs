@@ -244,7 +244,7 @@ fn closure_log_text() -> Result<String, TErr> {
 fn resolve_alerts_intake_token() -> Result<String, String> {
     let config = fleet_config::Config::load().unwrap_or_default();
     fleet_secrets::Resolver::default_chain(&config)
-        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
         .map(|v| v.expose().to_string())
         .map_err(|e| e.to_string())
 }
@@ -262,7 +262,7 @@ fn resolve_alerts_intake_token() -> Result<String, String> {
 pub fn run_closed_bound_checks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
     run_closed_bound_checks_with(t, limit, &|body| {
         resolve_alerts_intake_token().and_then(|token| {
-            crate::needs_drew::post_plain_alert_to(&crate::needs_drew::alerts_url(), &token, body)
+            crate::needs_user::post_plain_alert_to(&crate::needs_user::alerts_url(), &token, body)
         })
     })
 }

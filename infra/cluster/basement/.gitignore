@@ -1,0 +1,7 @@
+# Talos PKI, client config and age key: Tier A (see infra/cluster/README.md).
+# Never commit these in any form; they live in the secrets store (#13948).
+secrets.yaml
+talosconfig
+talm.key
+values-secret.yaml
+kubeconfig

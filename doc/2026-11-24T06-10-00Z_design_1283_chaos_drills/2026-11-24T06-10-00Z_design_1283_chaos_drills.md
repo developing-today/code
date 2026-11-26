@@ -3,7 +3,8 @@
 - Source issue: developing-today/code#1283 (part of epic #1184, PM stack coherence)
 - Tracking: #13873 (AUDIT-7 Lane 6, DESIGN-GAPS); umbrella #13871
 - Queue task: 21671 (slice 1 of #1283, owned paths `doc/`)
-- Status: design of record, design-only. No implementation in this record.
+- Status: historical proposal, superseded by the implementation and weekly rotation now on main; not the current design of record.
+- Disposition recorded 2026-11-26: issue #1283 is closed with the three drill implementations present on main. This proposal is retained as dated context; the unobserved watchdog/page-warning signals from the age-feed run remain a verification gap, not a demonstrated success. The proposal’s thresholds, D3 target, generic runner, and future slice/schedule status do not describe the shipped implementation.
 - Date: 2026-11-24 (UTC 06:10)
 
 ## 1. Problem and context

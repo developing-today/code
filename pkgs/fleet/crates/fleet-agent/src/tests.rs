@@ -316,6 +316,88 @@ fn a_queue_claim_carries_the_claimers_model_leaf_when_given() {
     ));
 }
 
+/// Seed a saved profile carrying a model stamp, as an enrolment
+/// with --model-* flags writes it (#4919).
+fn seed_stamped_profile(fake: &Fake) {
+    std::fs::write(
+        fake.profile_path(),
+        json!({
+            "name": "felix",
+            "kind": "muse",
+            "groups": ["muse"],
+            "enrolled_at": 1,
+            "model": {"provider": "muse-lane", "id": "muse-lane", "variant": "high"},
+        })
+        .to_string(),
+    )
+    .expect("seed the profile");
+}
+
+#[test]
+fn next_stamps_the_claim_from_the_profile_when_no_model_flags_are_given() {
+    // Oracle (#4919): the effort producer is the profile stamp. A
+    // lane enrolled with a stamp claims WITH it — variant included —
+    // without repeating --model-* on the run, so the broker writes
+    // claim_variant and the completion derive has an effort to
+    // propagate. Before this, such a claim went out unstamped.
+    let fake = Fake::new();
+    seed_stamped_profile(&fake);
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10814, "queue": "fleet", "status": "claimed",
+                       "title": "Next task"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "felix", "--lane", "felix"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker felix --lane felix --lease-seconds 14400 --model-provider muse-lane --model-id muse-lane --model-variant high"
+    ));
+}
+
+#[test]
+fn nexts_explicit_model_flags_override_the_profile_stamp() {
+    // Oracle (#4919): an explicit stamp is the caller's own and
+    // wins whole — the profile stamp must not leak into a claim
+    // whose caller named a different leaf.
+    let fake = Fake::new();
+    seed_stamped_profile(&fake);
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10815, "queue": "fleet", "status": "claimed",
+                       "title": "Next task"}),
+        )],
+    );
+    let (out, code) = run(
+        &fake,
+        &[
+            "next",
+            "--agent",
+            "felix",
+            "--lane",
+            "felix",
+            "--model-provider",
+            "_openai.main",
+            "--model-id",
+            "gpt-6-luna",
+            "--model-variant",
+            "medium",
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker felix --lane felix --lease-seconds 14400 --model-provider _openai.main --model-id gpt-6-luna --model-variant medium"
+    ));
+    assert!(
+        !fake.called("--model-id muse-lane"),
+        "the profile stamp must not ride an explicitly stamped claim"
+    );
+}
+
 #[test]
 fn next_uses_the_registered_worker_for_a_known_lane() {
     // Oracle (#6853): the broker's canonical lane registry binds
@@ -324,6 +406,7 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
         ("code-i", "repo-worker-code"),
         ("code-a", "repo-worker-code"),
         ("code-b", "repo-worker-code"),
+        ("code-g", "repo-worker-code"),
         ("opencode-a", "repo-worker-opencode"),
         ("opencode-b", "repo-worker-opencode"),
         ("openchamber-a", "repo-worker-openchamber"),
@@ -400,9 +483,11 @@ fn next_keeps_the_agent_as_worker_for_an_unknown_oc_lane() {
     );
     assert_eq!(code, EXIT_OK);
     assert_eq!(out["rung"], "queue");
-    assert!(fake.called(
-        "fleet queue claim --worker oc-bogus-02 --lane oc-bogus-02 --lease-seconds 14400"
-    ));
+    assert!(
+        fake.called(
+            "fleet queue claim --worker oc-bogus-02 --lane oc-bogus-02 --lease-seconds 14400"
+        )
+    );
 }
 
 #[test]
@@ -967,6 +1052,63 @@ fn shortlist_add_refuses_duplicates_and_recent_hand_outs() {
 }
 
 #[test]
+fn take_never_hands_out_an_issue_already_handed_within_the_window() {
+    // Oracle (#14651): a shortlist row can outlive its hand-out: it
+    // was written before reservations removed rows, or restored from
+    // an old file. take must skip it until the window passes.
+    let mut list = Shortlist::default();
+    list.entries.push(entry(557, 0, 1));
+    list.entries.push(entry(558, 2, 2));
+    list.handed.push(shortlist::Handed {
+        repo: "developing-today/code".to_string(),
+        issue: 557,
+        to: "agent-a".to_string(),
+        at: 100,
+    });
+    let taken = list.take("agent-b", 200).unwrap();
+    assert_eq!(
+        taken.issue, 558,
+        "the better-ranked 557 is already handed out"
+    );
+    assert!(
+        list.take("agent-c", 200).is_none(),
+        "557 stays unhanded in the window"
+    );
+    list.prune(100 + shortlist::HANDED_TTL_SECS);
+    let taken = list
+        .take("agent-c", 100 + shortlist::HANDED_TTL_SECS)
+        .unwrap();
+    assert_eq!(taken.issue, 557, "the window has passed");
+}
+
+#[test]
+fn a_priority_reservation_removes_the_shortlist_row_for_the_same_issue() {
+    // Oracle (#14651), the reported sequence end to end: issue 557
+    // is shortlisted; agent A reserves it through the priority rung
+    // (`next --no-shortlist`); agent B then takes from the shortlist
+    // before GitHub state changes. B must not get 557 a second time.
+    let fake = Fake::new();
+    fake.seed(vec![entry(557, 2, 1), entry(558, 2, 2)]);
+    let now = fake.now.get();
+    let reserved = shortlist::reserve(&fake.shortlist_path(), now, "agent-a", &[entry(557, 2, 1)])
+        .unwrap()
+        .expect("the priority rung hands out 557");
+    assert_eq!(reserved.issue, 557);
+    let list = shortlist::load(&fake.shortlist_path()).unwrap();
+    assert!(
+        !list.has("developing-today/code", 557),
+        "the reservation removed the shortlist row"
+    );
+    assert!(list.has("developing-today/code", 558));
+    let (out, code) = run(&fake, &["shortlist", "take", "--agent", "agent-b"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["entry"]["issue"], 558);
+    let (out, code) = run(&fake, &["shortlist", "take", "--agent", "agent-c"]);
+    assert_eq!(code, EXIT_NO_WORK);
+    assert!(out["entry"].is_null());
+}
+
+#[test]
 fn a_shortlist_file_that_does_not_parse_is_an_error_and_is_left_alone() {
     let fake = Fake::new();
     std::fs::write(fake.shortlist_path(), "{ not a shortlist").unwrap();
@@ -1048,6 +1190,30 @@ proptest! {
         prop_assert_eq!(&got, &expected);
         prop_assert_eq!(list.handed.len(), specs.len());
         prop_assert!(list.entries.is_empty());
+    }
+
+    /// Any interleaving of adds, shortlist takes and priority
+    /// reservations hands each issue out at most once within the
+    /// window (#14651). Every operation happens at one instant, so
+    /// no hand-out ages out mid-sequence.
+    #[test]
+    fn mixed_handouts_never_repeat_an_issue(ops in proptest::collection::vec((0u8..3, 1u64..6, 0u64..7), 0..40)) {
+        let mut list = Shortlist::default();
+        let mut handed_out: Vec<u64> = Vec::new();
+        for (op, issue, rank) in ops {
+            let got = match op {
+                0 => {
+                    list.add(entry(issue, rank, issue));
+                    None
+                }
+                1 => list.take("taker", 1000),
+                _ => list.reserve_from("reserver", 1000, &[entry(issue, rank, issue)]),
+            };
+            if let Some(e) = got {
+                prop_assert!(!handed_out.contains(&e.issue), "issue {} handed out twice", e.issue);
+                handed_out.push(e.issue);
+            }
+        }
     }
 
     /// What is written is what is read back.
@@ -1134,6 +1300,82 @@ fn enrolling_registers_the_mailbox_saves_the_profile_and_reports_the_rungs() {
 }
 
 #[test]
+fn enrolling_with_model_flags_records_the_stamp_in_the_profile() {
+    // Oracle (#4919): the enrolment is where the lane names its
+    // model/effort once; the saved profile is what `next` stamps
+    // claims from, so the stamp must be in the file, variant and
+    // all, and echoed in the answer for the operator to verify.
+    let fake = Fake::new();
+    fake.on(
+        "fleet bridge hello",
+        vec![ok(json!({"agent": "muse-7", "groups": ["muse"]}))],
+    )
+    .on(
+        "fleet queue health",
+        vec![fail(3, "queue broker unreachable")],
+    )
+    .on(
+        "fleet gh api rate_limit",
+        vec![ok(json!({"rate": {"remaining": 4000}}))],
+    )
+    .on(
+        "fleet laptop-agent health",
+        vec![fail(3, "no leg answered")],
+    );
+    let (out, code) = run(
+        &fake,
+        &[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-7",
+            "--model-provider",
+            "muse-lane",
+            "--model-id",
+            "muse-lane",
+            "--model-variant",
+            "high",
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(
+        out["model"],
+        json!({"provider": "muse-lane", "id": "muse-lane", "variant": "high"})
+    );
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.profile_path()).unwrap()).unwrap();
+    assert_eq!(
+        saved["model"],
+        json!({"provider": "muse-lane", "id": "muse-lane", "variant": "high"}),
+        "the profile is the durable record the claim path reads"
+    );
+}
+
+#[test]
+fn enrolling_with_a_variant_but_no_leaf_is_a_usage_error() {
+    // Oracle (#4919): a variant alone is a half-stamp — the queue
+    // claim refuses one, so enrolment must refuse it too, before
+    // anything is probed or saved.
+    let fake = Fake::new();
+    let err = execute(
+        &fake,
+        &argv(&[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-7",
+            "--model-variant",
+            "high",
+        ]),
+    )
+    .unwrap_err();
+    assert!(matches!(err, AgentError::Usage(_)), "{err:?}");
+    assert!(!fake.profile_path().exists());
+}
+
+#[test]
 fn a_seat_where_no_intake_leg_answers_is_exit_three_and_still_explains_itself() {
     let fake = Fake::new();
     fake.on("fleet ", vec![fail(3, "unreachable")])
@@ -1200,6 +1442,177 @@ fn a_dry_run_registers_nothing_and_saves_nothing() {
     assert_eq!(out["registered"], false);
     assert!(!fake.called("bridge hello"));
     assert!(!fake.profile_path().exists());
+}
+
+const BOOTSTRAP_FIXTURE: &str = "fixtureBootstrapTokenValue00000000000003";
+
+#[test]
+fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet bridge exchange",
+        vec![ok(json!({
+            "agent": "muse-9",
+            "kind": "muse",
+            "groups": ["muse"],
+            "notes_identity": "muse/muse-9",
+            "fleet_token_name": "bridge.muse-9-fleet-token",
+            "notes_token_name": "bridge.muse-9-token",
+            "url": "https://bridge.example",
+            "stored": true,
+        }))],
+    )
+    .on("fleet bridge hello", vec![ok(json!({"agent": "muse-9"}))])
+    .on(
+        "fleet queue health",
+        vec![fail(3, "queue broker unreachable")],
+    )
+    .on(
+        "fleet gh api rate_limit",
+        vec![ok(json!({"rate": {"remaining": 4000}}))],
+    )
+    .on(
+        "fleet laptop-agent health",
+        vec![fail(3, "no leg answered")],
+    );
+    let (out, code) = run(
+        &fake,
+        &[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-9",
+            "--bootstrap",
+            BOOTSTRAP_FIXTURE,
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["registered"], true);
+    // The exchange ran before any probe, and the mint-bound groups
+    // are what the enrolment reports.
+    assert!(
+        fake.calls()[0].contains("fleet bridge exchange --agent muse-9"),
+        "calls: {:?}",
+        fake.calls()
+    );
+    assert_eq!(out["groups"], json!(["muse"]));
+    assert_eq!(
+        out["bootstrap"]["fleet_token_name"],
+        "bridge.muse-9-fleet-token"
+    );
+    assert_eq!(out["bootstrap"]["notes_token_name"], "bridge.muse-9-token");
+    assert_eq!(out["bootstrap"]["notes_identity"], "muse/muse-9");
+    // The profile records the credential names — and no token value
+    // (neither the bootstrap token nor any credential) is in it, in
+    // the output, or in the hook files.
+    let saved_text = std::fs::read_to_string(fake.profile_path()).unwrap();
+    let saved: Value = serde_json::from_str(&saved_text).unwrap();
+    assert_eq!(saved["fleet_token_name"], "bridge.muse-9-fleet-token");
+    assert_eq!(saved["notes_token_name"], "bridge.muse-9-token");
+    assert_eq!(saved["notes_identity"], "muse/muse-9");
+    assert!(
+        !saved_text.contains(BOOTSTRAP_FIXTURE),
+        "the profile must not carry the bootstrap token"
+    );
+    assert!(
+        !out.to_string().contains(BOOTSTRAP_FIXTURE),
+        "the output must not carry the bootstrap token"
+    );
+    // The wake hook: a token-free detector polling this identity's
+    // signal path, and a definition whose prompt fetches by name.
+    let hook = &out["wake_hook"];
+    assert_eq!(hook["id"], "bridge-muse-9");
+    assert_eq!(hook["identity"], "muse/muse-9");
+    let script = std::fs::read_to_string(
+        fake.dir
+            .join("hooks")
+            .join("scripts")
+            .join("bridge-muse-9-signal.sh"),
+    )
+    .unwrap();
+    assert!(
+        script.contains("https://bridge.example/muse/muse-9"),
+        "{script}"
+    );
+    assert!(!script.contains(BOOTSTRAP_FIXTURE));
+    let definition: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fake.dir
+                .join("hooks")
+                .join("definitions")
+                .join("bridge-muse-9.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(definition["id"], "bridge-muse-9");
+    assert_eq!(definition["poll_interval_secs"], 60);
+    let prompt = definition["prompt"].as_str().unwrap();
+    assert!(prompt.contains("fleet bridge notes inbox"), "{prompt}");
+    assert!(
+        prompt.contains("bridge.muse-9-token"),
+        "the prompt names the token, by name: {prompt}"
+    );
+    assert!(!prompt.contains(BOOTSTRAP_FIXTURE));
+}
+
+#[test]
+fn a_refused_exchange_enrols_nothing() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet bridge exchange",
+        vec![fail(
+            4,
+            "the bridge refused the exchange: the bootstrap token is wrong, already used, expired or revoked",
+        )],
+    );
+    let err = execute(
+        &fake,
+        &argv(&[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-9",
+            "--bootstrap",
+            BOOTSTRAP_FIXTURE,
+        ]),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, AgentError::Down(m) if m.contains("nothing was stored")),
+        "{err}"
+    );
+    assert!(
+        !fake.profile_path().exists(),
+        "no profile after a refused exchange"
+    );
+    assert!(
+        !fake.called("bridge hello"),
+        "no hello after a refused exchange: {:?}",
+        fake.calls()
+    );
+    assert!(
+        !fake.dir.join("hooks").exists(),
+        "no wake hook after a refused exchange"
+    );
+}
+
+#[test]
+fn bootstrap_refuses_a_dry_run_and_a_seat_it_cannot_provision() {
+    let fake = Fake::new();
+    let err = |words: &[&str]| execute(&fake, &argv(words)).unwrap_err();
+    assert!(
+        matches!(err(&["enroll", "--kind", "muse", "--name", "muse-9", "--bootstrap", BOOTSTRAP_FIXTURE, "--dry-run"]), AgentError::Usage(m) if m.contains("dry run"))
+    );
+    assert!(
+        matches!(err(&["enroll", "--kind", "claude", "--bootstrap", BOOTSTRAP_FIXTURE]), AgentError::Usage(m) if m.contains("no local seat"))
+    );
+    assert!(
+        matches!(err(&["enroll", "--kind", "dot", "--name", "dot", "--bootstrap", BOOTSTRAP_FIXTURE]), AgentError::Usage(m) if m.contains("no local seat"))
+    );
+    assert!(fake.calls().is_empty());
 }
 
 #[test]

@@ -500,9 +500,17 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
 /// the reason on a `released` event. Dispatch uses it for an item
 /// whose sub-task failed to launch or bind: the item goes back to
 /// the pool in the same touch instead of sitting claimed and idle
-/// until its lease expires.
+/// until its lease expires. With `--limit-platform <family>
+/// --limit-reason <text>` (#14993) the release also records a
+/// platform limitation on the task, so a task routed to a seat
+/// the releaser is not stops being offered to the wrong family.
 pub(super) fn cmd_release(rest: &[String]) -> i32 {
-    let args = parse_verb_args("release", rest, &["worker", "lane", "reason"], &[]);
+    let args = parse_verb_args(
+        "release",
+        rest,
+        &["worker", "lane", "reason", "limit-platform", "limit-reason"],
+        &[],
+    );
     reject_extra_pos("release", &args, 1);
     let Some(reason) = args.get("reason") else {
         die(
@@ -520,6 +528,8 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
             "worker": opt_worker(&args),
             "lane": lane_arg(&args),
             "reason": reason,
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
         }),
     ));
     let row = served_row(require_row(&resp, "release_repo_task"), "release");
@@ -679,7 +689,10 @@ pub(super) fn cmd_lane(rest: &[String]) -> i32 {
             "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
-    print_json(&served_row(require_row(&resp, "assign_repo_task_lane"), "lane"));
+    print_json(&served_row(
+        require_row(&resp, "assign_repo_task_lane"),
+        "lane",
+    ));
     0
 }
 
@@ -930,6 +943,36 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
     0
 }
 
+/// Change a task's queue priority and request the broker's linked
+/// GitHub synchronization.
+pub(super) fn cmd_reprioritize(rest: &[String]) -> i32 {
+    let args = parse_verb_args("reprioritize", rest, &["worker", "reason"], &[]);
+    reject_extra_pos("reprioritize", &args, 2);
+    let id = args.pos_i64(0, "task_id");
+    let raw = args
+        .pos(1)
+        .unwrap_or_else(|| die(2, "reprioritize: priority is required"));
+    let v: Value = match raw.parse::<i64>() {
+        Ok(n) => json!(n),
+        Err(_) => json!(raw),
+    };
+    let to = match crate::validate::resolve_priority(&v, "priority") {
+        Ok(n) => n,
+        Err(e) => die(2, &e),
+    };
+    // The actor is the authenticated caller identity: the worker id
+    // presented over the broker's X-Agent-Token channel (opt_worker
+    // default), exactly like the other lifecycle verbs. No free-form
+    // actor string is accepted — it would be spoofable.
+    let body = json!({"task_id": id, "priority": to, "worker": opt_worker(&args), "reason": args.get("reason")});
+    let resp = unwrap_ok(call("/reprioritize", &body));
+    print_json(&served_row(
+        require_row(&resp, "reprioritize_task"),
+        "reprioritize",
+    ));
+    0
+}
+
 /// wake (#8184): release a broker-held parked wait now that
 /// its condition is satisfied (e.g. the triage step finished
 /// triaging the item). The broker flips it back to queued.
@@ -959,7 +1002,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
 pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
     let config = fleet_config::Config::load().unwrap_or_default();
     fleet_secrets::Resolver::default_chain(&config)
-        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
         .map(|v| v.expose().to_string())
         .map_err(|e| e.to_string())
 }
@@ -967,7 +1010,7 @@ pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
 /// #8568: parse cmd_block's --options-json flag: a JSON array of
 /// {"id": ..., "label": ...} objects. Bad shapes are usage errors
 /// at the caller's terminal, like --progress.
-pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrewOption> {
+pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_user::NeedsUserOption> {
     let Some(raw) = args.get("options-json") else {
         return Vec::new();
     };
@@ -983,7 +1026,7 @@ pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrew
             let id = o.get("id").and_then(|v| v.as_str());
             let label = o.get("label").and_then(|v| v.as_str());
             match (id, label) {
-                (Some(id), Some(label)) => crate::needs_drew::NeedsDrewOption {
+                (Some(id), Some(label)) => crate::needs_user::NeedsUserOption {
                     id: id.to_string(),
                     label: label.to_string(),
                 },
@@ -1085,7 +1128,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         .or_else(|| hands.as_ref().map(|h| h.action.clone()));
     let needs_drew = if rc == "escalated-to-user" {
         match (args.get("ledger-id"), question) {
-            (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
+            (Some(ledger_id), Some(question)) => Some(crate::needs_user::BlockNeedsUser {
                 ledger_id,
                 question,
                 context: args.get("context"),
@@ -1129,7 +1172,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     if let Some(nd) = &needs_drew {
         // Snake_case keys, matching the /block body's own style;
         // the broker (and, later, the broker-side raise) reads
-        // this shape back via needs_drew::from_block_request.
+        // this shape back via needs_user::from_block_request.
         let mut nd_json = json!({
             "ledger_id": nd.ledger_id,
             "question": nd.question,
@@ -1165,7 +1208,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     // above keeps its current JSON shape exactly.
     if let Some(nd) = &needs_drew {
         let raised = resolve_alerts_intake_token()
-            .and_then(|token| crate::needs_drew::post_needs_drew(&token, nd));
+            .and_then(|token| crate::needs_user::post_needs_user(&token, nd));
         match raised {
             Ok(_) => eprint(&format!(
                 "repo-queue: needs-drew raised for ledger item {}",
@@ -1311,7 +1354,10 @@ pub(super) fn cmd_dep_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/dep-recheck", &body));
-    print_json(&served_row(require_row(&resp, "dep_recheck"), "dep-recheck"));
+    print_json(&served_row(
+        require_row(&resp, "dep_recheck"),
+        "dep-recheck",
+    ));
     0
 }
 
@@ -1360,26 +1406,60 @@ pub(super) fn cmd_repair(rest: &[String]) -> i32 {
 }
 
 pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
-    let args = parse_verb_args("cancel", rest, &["worker", "reason"], &[]);
+    let args = parse_verb_args(
+        "cancel",
+        rest,
+        &["worker", "reason", "resolution", "substatus", "ref"],
+        &[],
+    );
     reject_extra_pos("cancel", &args, 1);
     let reason = args
         .get("reason")
         .unwrap_or_else(|| die(2, "cancel: --reason is required"));
+    let resolution = args
+        .get("resolution")
+        .unwrap_or_else(|| die(2, "cancel: --resolution is required"));
+    if let Err(e) = crate::validate::validate_resolution(
+        "cancelled",
+        Some(&resolution),
+        args.get("substatus").as_deref(),
+        Some(&reason),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("cancel: {e}"));
+    }
     let worker = args
         .get("worker")
         .unwrap_or_else(|| "fleet-monitor".to_string());
-    let resp = unwrap_ok(call(
-        "/cancel",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": worker,
-            "reason": reason,
-        }),
-    ));
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": worker,
+        "reason": reason,
+    });
+    for (flag, field) in [
+        ("resolution", "resolution"),
+        ("substatus", "substatus"),
+        ("ref", "resolution_ref"),
+    ] {
+        if let Some(value) = args.get(flag) {
+            body[field] = json!(value);
+        }
+    }
+    let resp = unwrap_ok(call("/cancel", &body));
     let row = served_row(require_row(&resp, "cancel_repo_task"), "cancel");
     // #9046: a cancel closes the binding window on the timeline.
     unbound_append(&worker, &row, "cancel");
     print_json(&row);
+    0
+}
+
+/// Run the idempotent, evidence-only terminal-resolution backfill and
+/// print the baseline census for #14170 Q2.
+pub(super) fn cmd_resolution_backfill(rest: &[String]) -> i32 {
+    let args = parse_verb_args("resolution-backfill", rest, &[], &[]);
+    reject_extra_pos("resolution-backfill", &args, 0);
+    let resp = unwrap_ok(call("/resolution-backfill", &json!({})));
+    print_json(&require_row(&resp, "resolution_backfill"));
     0
 }
 
@@ -1457,6 +1537,10 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
             "result-file",
             "telemetry",
             "execution",
+            "resolution",
+            "substatus",
+            "reason",
+            "ref",
         ],
         &[],
     );
@@ -1479,6 +1563,15 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
                 die(2, "--result must be a JSON object");
             }
         }
+    }
+    if let Err(e) = crate::validate::validate_resolution(
+        "done",
+        args.get("resolution").as_deref().or(Some("done")),
+        args.get("substatus").as_deref(),
+        args.get("reason").as_deref(),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("complete: {e}"));
     }
     check_telemetry_fields(&result_obj, "--result");
     if let Some(tel_raw) = args.get("telemetry") {
@@ -1568,6 +1661,16 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
         "lane": lane_arg(&args),
         "result": result_obj,
     });
+    for (flag, field) in [
+        ("resolution", "resolution"),
+        ("substatus", "substatus"),
+        ("reason", "resolution_reason"),
+        ("ref", "resolution_ref"),
+    ] {
+        if let Some(value) = args.get(flag) {
+            body[field] = json!(value);
+        }
+    }
     if let Some(ex) = ex {
         body["execution"] = ex;
     }

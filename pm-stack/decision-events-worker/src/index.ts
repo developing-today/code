@@ -4,12 +4,21 @@
 //   POST /events  (alias POST /webhook)
 //     Authenticated webhook (shared secret, Worker secret
 //     WEBHOOK_SECRET — vaulted in Bitwarden by name
-//     `cloudflare.decision-events.webhook-secret`, set with
-//     `wrangler secret put`; never in this repo). Accepts a batch of
+//     `cloudflare.decision-events.webhook-secret`, installed as a
+//     Worker secret outside the release workflow; never in this repo.
+//     Accepts a batch of
 //     decision-set events ({events: [...]}, a bare array, or one
 //     event), stores them in D1 (INSERT OR IGNORE on event_id —
 //     redelivery is a no-op), then hands each set's NEW events to that
 //     set's Durable Object for per-set fan-out.
+//   GET /sets?<limit>
+//     Authenticated list of every set the Worker holds events for,
+//     newest activity first: per set its event count and its latest
+//     event (id, type, ts). The edge reads this to find open
+//     questions without a machine (#13491): per-set reads need a
+//     setId, and only the store knows which sets exist. Question
+//     text itself still lives in the aggregator's decisions file —
+//     this lists activity, not definitions.
 //   GET /sets/<setId>/events?limit=<n>&after=<cursor>
 //     Authenticated read-back of a set's events from D1, in
 //     (ts, event_id) order. `after` is the composite cursor the
@@ -44,6 +53,7 @@ import {
 export interface Env {
   DB: D1Database;
   SET_EVENTS: DurableObjectNamespace;
+  VERSION?: string;
   WEBHOOK_SECRET?: string;
 }
 
@@ -64,6 +74,19 @@ const emptyState = (setId: string): SetState => ({
   lastTs: null,
   updatedAt: null,
 });
+
+// Seen-event storage (#14865): one key per event id (`seen/<eventId>`,
+// value = fan-out sequence number). The previous shape kept every seen
+// id in a single "seenEventIds" array and rewrote the whole array — up
+// to SEEN_CAP ids — on every batch that carried even one new event:
+// O(cap) write volume per event. Per-id keys make an ingest write
+// O(new events); the cap is enforced by deleting only the overflow
+// entries, oldest sequence first. The fixed-size "state" object is
+// O(1) and is still rewritten per batch, as before.
+const SEEN_PREFIX = "seen/";
+const SEEN_CAP = 1000;
+const LEGACY_SEEN_KEY = "seenEventIds";
+const seenKey = (eventId: string): string => `${SEEN_PREFIX}${eventId}`;
 
 export class DecisionSetEvents {
   private state: DurableObjectState;
@@ -100,15 +123,20 @@ export class DecisionSetEvents {
       this.setId = body.setId;
       const state = await this.loadState();
       state.setId = body.setId;
-      const seenList = (await this.state.storage.get<string[]>("seenEventIds")) ?? [];
-      const seen = new Set(seenList);
+      // Dedup lookup: one storage read of just this batch's per-id keys,
+      // plus the legacy whole-array key until it is migrated below.
+      const batchKeys = body.events.map((e) => seenKey(e.eventId));
+      const stored = await this.state.storage.get<number>(batchKeys);
+      const legacySeen = (await this.state.storage.get<string[]>(LEGACY_SEEN_KEY)) ?? null;
+      const seen = new Set<string>(legacySeen ?? []);
       const newEvents: DecisionSetEvent[] = [];
+      const newEntries: Record<string, number> = {};
       for (const e of body.events) {
-        if (seen.has(e.eventId)) continue;
+        if (seen.has(e.eventId) || stored.has(seenKey(e.eventId))) continue;
         seen.add(e.eventId);
-        seenList.push(e.eventId);
         newEvents.push(e);
         state.fannedOut += 1;
+        newEntries[seenKey(e.eventId)] = state.fannedOut;
         state.lastEventId = e.eventId;
         state.lastType = e.type;
         state.lastTs = e.ts;
@@ -116,8 +144,30 @@ export class DecisionSetEvents {
       let delivered = 0;
       if (newEvents.length > 0) {
         state.updatedAt = new Date().toISOString();
-        const trimmedSeen = seenList.length > 1000 ? seenList.slice(-1000) : seenList;
-        await this.state.storage.put("seenEventIds", trimmedSeen);
+        if (legacySeen !== null) {
+          // One-time migration off the legacy array: its ids are the most
+          // recent arrivals, so their sequences sit immediately below the
+          // ids fanned out before this batch. After this put the legacy
+          // key is deleted and never written again.
+          const base = state.fannedOut - newEvents.length - legacySeen.length;
+          legacySeen.forEach((id, i) => {
+            const key = seenKey(id);
+            if (!(key in newEntries)) newEntries[key] = base + i + 1;
+          });
+          await this.state.storage.delete(LEGACY_SEEN_KEY);
+        }
+        // One put carrying only this batch's new ids (plus, on the
+        // migration batch, the legacy ids) — never the whole seen set.
+        await this.state.storage.put(newEntries);
+        if (state.fannedOut > SEEN_CAP) {
+          // Enforce the cap by deleting only the overflow, oldest first.
+          const all = await this.state.storage.list<number>({ prefix: SEEN_PREFIX });
+          const excess = all.size - SEEN_CAP;
+          if (excess > 0) {
+            const oldest = [...all.entries()].sort((a, b) => a[1] - b[1]).slice(0, excess);
+            await this.state.storage.delete(oldest.map(([key]) => key));
+          }
+        }
         await this.state.storage.put("state", state);
         const message = JSON.stringify({ type: "decision-events", setId: body.setId, events: newEvents });
         for (const ws of this.state.getWebSockets()) {
@@ -228,6 +278,34 @@ async function handlePostEvents(request: Request, env: Env): Promise<Response> {
   );
 }
 
+async function handleListSets(url: URL, env: Env): Promise<Response> {
+  const limitRaw = Number(url.searchParams.get("limit") ?? "200");
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 200;
+  const { results } = await env.DB.prepare(
+    `WITH ranked AS (
+      SELECT set_id, COUNT(*) OVER (PARTITION BY set_id) AS n,
+        MIN(ts) OVER (PARTITION BY set_id) AS first_ts,
+        ts AS last_ts, event_id AS last_event_id, type AS last_type,
+        ROW_NUMBER() OVER (PARTITION BY set_id ORDER BY ts DESC, event_id DESC) AS row_num
+      FROM decision_set_events
+    )
+    SELECT set_id, n, first_ts, last_ts, last_event_id, last_type
+    FROM ranked WHERE row_num = 1
+    ORDER BY last_ts DESC, set_id ASC LIMIT ?`,
+  )
+    .bind(limit)
+    .all<Record<string, unknown>>();
+  const sets = (results ?? []).map((row) => ({
+    setId: row.set_id,
+    events: row.n,
+    firstTs: row.first_ts,
+    lastTs: row.last_ts,
+    lastEventId: row.last_event_id,
+    lastType: row.last_type,
+  }));
+  return Response.json({ count: sets.length, sets });
+}
+
 async function handleGetEvents(url: URL, env: Env, setId: string): Promise<Response> {
   const limitRaw = Number(url.searchParams.get("limit") ?? "200");
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 200;
@@ -269,10 +347,20 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, service: "decision-events", webhookConfigured: Boolean(env.WEBHOOK_SECRET) });
+      return Response.json({
+        ok: true,
+        service: "decision-events",
+        webhookConfigured: Boolean(env.WEBHOOK_SECRET),
+        version: env.VERSION ?? "unknown",
+      });
     }
     if ((url.pathname === "/events" || url.pathname === "/webhook") && request.method === "POST") {
       return handlePostEvents(request, env);
+    }
+    if (url.pathname === "/sets" && request.method === "GET") {
+      if (!env.WEBHOOK_SECRET) return jsonError(503, "webhook secret not configured");
+      if (!isAuthorized(request.headers, env.WEBHOOK_SECRET)) return jsonError(401, "unauthorized");
+      return handleListSets(url, env);
     }
     const setMatch = /^\/sets\/([^/]+)\/(events|state|stream)$/.exec(url.pathname);
     if (setMatch && request.method === "GET") {

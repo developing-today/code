@@ -199,7 +199,7 @@ slice.
   cursor resume confirms no duplicate/lost results; byte accounting uses the
   serialized representation used for the response.
 - **Commands:** from `pkgs/id`, run the focused `cargo test -p id-core
-  social_object` targets, then `cargo test -p id-core`; run the package's
+social_object` targets, then `cargo test -p id-core`; run the package's
   formatter and lint checks for changed Rust files. The implementer records
   exact commands and outcomes in the implementation PR.
 - **Live proof:** not applicable; the module is pure and this design adds no

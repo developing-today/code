@@ -9,14 +9,36 @@
 //! - The runtime: [`world`] (core, actor, replica, replication,
 //!   handle), [`world_session`], [`world_hub`], [`world_net`],
 //!   [`world_store`], [`world_records`], [`world_compile`],
-//!   [`world_native`], [`world_fixture`], [`world_cache`] and, under
-//!   the `sandbox` feature, [`sandbox`] — the wasmtime guest runner
-//!   whose fuel budgets are the split's determinism canary.
+//!   [`world_functions`], [`world_native`], [`world_fixture`],
+//!   [`world_cache`] and, under the `sandbox` feature, [`sandbox`] —
+//!   the wasmtime guest runner whose fuel budgets are the split's
+//!   determinism canary.
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
 //!   the replaying supervisor over one data root.
+//! - [`creator_announcements`]: scheduled creator announcements — the
+//!   durable local schedule and its evaluator, which fires late after
+//!   downtime and records the lateness (#13743).
+//! - [`creator_index`]: the author-scoped local index over the author's
+//!   own worlds and programs, rebuilt from journals and records, with
+//!   build time and staleness (#13741).
+//! - [`creator_org_views`]: read-only organization views (text and JSON)
+//!   over the creator index, publish states and announcement schedule
+//!   (#13745).
 //! - [`program_bundle`]: the signed single-file program bundle (#8280,
 //!   design D1-D3): export, verify and fork, fully offline.
+//! - [`program_update`]: update discovery and the update envelope
+//!   decision for installed program bundles (#8546, design v2 §§4–5).
+//! - [`program_publish_state`]: draft / published journal facts per
+//!   program version (#13742), keyed to the #6278 bundle record.
+//! - [`safety_appeal`]: appeals against logged moderation actions,
+//!   linked by action hash and decided through the review queue (#14467).
+//! - [`safety_report`]: public-world safety reports — the signed
+//!   report fact and its operator-scoped intake (#14464).
+//! - [`safety_review_queue`]: the moderator review queue over report
+//!   facts, with signed closures (#14465).
+//! - [`safety_transparency`]: the read-only, replayable transparency
+//!   log view over the moderation record (#14466).
 //! - [`shell_contract`]: the F13.1 shell contract the native shell
 //!   speaks.
 //! - [`groups::worlds`]: seam 6 of the design — the groups→worlds
@@ -42,18 +64,33 @@
 pub use id_core::port;
 
 pub mod account_charge;
+pub mod attachment_dispatch;
 pub mod blob_gate;
 pub mod chat_anchor_render;
+pub mod creator_announcements;
+pub mod creator_index;
+pub mod creator_org_views;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
+#[cfg(unix)]
+pub mod host_control;
 pub mod input_framing;
+pub mod kitty_graphics;
+pub mod kitty_still;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
 pub mod program_gallery_operator;
+pub mod program_publish_state;
 pub mod program_registry;
 pub mod program_registry_net;
+pub mod program_registry_pkarr;
+pub mod program_update;
+pub mod safety_appeal;
+pub mod safety_report;
+pub mod safety_review_queue;
+pub mod safety_transparency;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;
@@ -64,7 +101,9 @@ pub mod world_compile;
 #[cfg(feature = "sandbox")]
 pub mod world_dev;
 pub mod world_doctor;
+pub mod world_export;
 pub mod world_fixture;
+pub mod world_functions;
 pub mod world_hub;
 pub mod world_line;
 pub mod world_native;

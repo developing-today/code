@@ -1,37 +1,37 @@
 {
- "title": "AUDIT-7 Lane 7 slice B: remaining orphaned open issues in code (~49) + needs-parent triage",
- "body": "After Lane 7 batches 1-2 (34 orphans linked, see code#13874), ~49 OPEN issues in developing-today/code remain with no parent label and no issue reference in the body (orphan list in the Lane 7 report doc). For each, one by one, read in full incl. comments (per_page=100, count-confirmed; lane claim = hard stop): assign the appropriate maintenance epic (id #12462, fleet #12460, mcpx #12459, atlas #12457, pm-stack #12458, lab-cluster #12461, main-broken #8976, scheduled-tasks #8979, daily-maintenance #8978, design-register #8986) as sub-issue + labels stray-work, epic/<slug>, primary-parent/<slug>; or label stray/needs-parent and propose a new parent on #13874 where none fits. Also triage items labelled stray/needs-parent in slice A.",
- "priority": 60,
- "dedupe_key": "audit7:lane7:feature_slice:code:13874:B",
- "payload": {
-  "schema": "repo-health/v1",
-  "kind": "feature_slice",
-  "repo": "developing-today/code",
-  "max_attempts": 2,
-  "timebox_minutes": 120,
-  "risk": "low: label + sub-issue metadata only, no code changes, no closes",
-  "tests": [
-   "readback via fleet gh api: parent sub_issues list contains child; child labels contain stray-work + primary-parent/*"
-  ],
-  "slice": "B",
-  "issue": 13874,
-  "problem": "After Lane 7 batches 1-2 (34 orphans linked, see code#13874), ~49 OPEN issues in developing-today/code remain with no parent label and no issue reference in the body (orphan list in the Lane 7 report doc). For each, one by one, read in full incl. comments (per_page=100, count-confirmed; lane claim = hard stop): assign the appropriate maintenance epic (id #12462, fleet #12460, mcpx #12459, atlas #12457, pm-stack #12458, lab-cluster #12461, main-broken #8976, scheduled-tasks #8979, daily-maintenance #8978, design-register #8986) as sub-issue + labels stray-work, epic/<slug>, primary-parent/<slug>; or label stray/needs-parent and propose a new parent on #13874 where none fits. Also triage items labelled stray/needs-parent in slice A.",
-  "scope": "After Lane 7 batches 1-2 (34 orphans linked, see code#13874), ~49 OPEN issues in developing-today/code remain with no parent label and no issue reference in the body (orphan list in the Lane 7 report doc). For each, one by one, read in full incl. comments (per_page=100, count-confirmed; lane claim = hard stop): assign the appropriate maintenance epic (id #12462, fleet #12460, mcpx #12459, atlas #12457, pm-stack #12458, lab-cluster #12461, main-broken #8976, scheduled-tasks #8979, daily-maintenance #8978, design-register #8986) as sub-issue + labels stray-work, epic/<slug>, primary-parent/<slug>; or label stray/needs-parent and propose a new parent on #13874 where none fits. Also triage items labelled stray/needs-parent in slice A.",
-  "acceptance": [
-   "all remaining orphan open issues dispositioned: linked or needs-parent with a named proposed parent",
-   "progress + final counts on code#13874"
-  ],
-  "context_refs": [
-   "https://github.com/developing-today/code/issues/13874",
-   "https://github.com/developing-today/code/issues/13871"
-  ],
-  "priority_reason": "AUDIT-7 Lane 7 continuation slices ordered by the lane brief; exhaustive stray-work hygiene for the four repos",
-  "dedupe": {
-   "basis": "Singular ownership: Lane 7 tracking issue code#13874 is the only stray-work audit; batches 1-2 done by Lane 7 session 2026-11-23; these slices cover disjoint remaining sets (A: text-linked, B: orphans, C: forks/fleet)",
-   "checked_at": "2026-11-24T00:40:00Z"
-  },
-  "evidence": [
-   "Lane 7 census on code#13874 slice-1 comment: 18,594 items in window; 1,405 open; code open issues 587 parent-labelled / 521 text-linked / 91 orphaned"
-  ]
- }
+  "title": "AUDIT-7 Lane 7 slice B: remaining orphaned open issues in code (~49) + needs-parent triage",
+  "body": "After Lane 7 batches 1-2 (34 orphans linked, see code#13874), ~49 OPEN issues in developing-today/code remain with no parent label and no issue reference in the body (orphan list in the Lane 7 report doc). For each, one by one, read in full incl. comments (per_page=100, count-confirmed; lane claim = hard stop): assign the appropriate maintenance epic (id #12462, fleet #12460, mcpx #12459, atlas #12457, pm-stack #12458, lab-cluster #12461, main-broken #8976, scheduled-tasks #8979, daily-maintenance #8978, design-register #8986) as sub-issue + labels stray-work, epic/<slug>, primary-parent/<slug>; or label stray/needs-parent and propose a new parent on #13874 where none fits. Also triage items labelled stray/needs-parent in slice A.",
+  "priority": 60,
+  "dedupe_key": "audit7:lane7:feature_slice:code:13874:B",
+  "payload": {
+    "schema": "repo-health/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "max_attempts": 2,
+    "timebox_minutes": 120,
+    "risk": "low: label + sub-issue metadata only, no code changes, no closes",
+    "tests": [
+      "readback via fleet gh api: parent sub_issues list contains child; child labels contain stray-work + primary-parent/*"
+    ],
+    "slice": "B",
+    "issue": 13874,
+    "problem": "After Lane 7 batches 1-2 (34 orphans linked, see code#13874), ~49 OPEN issues in developing-today/code remain with no parent label and no issue reference in the body (orphan list in the Lane 7 report doc). For each, one by one, read in full incl. comments (per_page=100, count-confirmed; lane claim = hard stop): assign the appropriate maintenance epic (id #12462, fleet #12460, mcpx #12459, atlas #12457, pm-stack #12458, lab-cluster #12461, main-broken #8976, scheduled-tasks #8979, daily-maintenance #8978, design-register #8986) as sub-issue + labels stray-work, epic/<slug>, primary-parent/<slug>; or label stray/needs-parent and propose a new parent on #13874 where none fits. Also triage items labelled stray/needs-parent in slice A.",
+    "scope": "After Lane 7 batches 1-2 (34 orphans linked, see code#13874), ~49 OPEN issues in developing-today/code remain with no parent label and no issue reference in the body (orphan list in the Lane 7 report doc). For each, one by one, read in full incl. comments (per_page=100, count-confirmed; lane claim = hard stop): assign the appropriate maintenance epic (id #12462, fleet #12460, mcpx #12459, atlas #12457, pm-stack #12458, lab-cluster #12461, main-broken #8976, scheduled-tasks #8979, daily-maintenance #8978, design-register #8986) as sub-issue + labels stray-work, epic/<slug>, primary-parent/<slug>; or label stray/needs-parent and propose a new parent on #13874 where none fits. Also triage items labelled stray/needs-parent in slice A.",
+    "acceptance": [
+      "all remaining orphan open issues dispositioned: linked or needs-parent with a named proposed parent",
+      "progress + final counts on code#13874"
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13874",
+      "https://github.com/developing-today/code/issues/13871"
+    ],
+    "priority_reason": "AUDIT-7 Lane 7 continuation slices ordered by the lane brief; exhaustive stray-work hygiene for the four repos",
+    "dedupe": {
+      "basis": "Singular ownership: Lane 7 tracking issue code#13874 is the only stray-work audit; batches 1-2 done by Lane 7 session 2026-11-23; these slices cover disjoint remaining sets (A: text-linked, B: orphans, C: forks/fleet)",
+      "checked_at": "2026-11-24T00:40:00Z"
+    },
+    "evidence": [
+      "Lane 7 census on code#13874 slice-1 comment: 18,594 items in window; 1,405 open; code open issues 587 parent-labelled / 521 text-linked / 91 orphaned"
+    ]
+  }
 }

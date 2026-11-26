@@ -4,31 +4,31 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/id/crates/id-web
 
 `id serve --web` exposes three WebSocket protocols. Their routes are listed in [The web UI: pages and HTTP API](web-ui.md); this chapter is the wire reference for each.
 
-| Socket | Route | Encoding | Direction |
-|---|---|---|---|
-| Collab | `/ws/collab/{doc_id}` | Binary MessagePack | Both |
-| Tags | `/ws/tags` | JSON text | Server to client only |
-| World bridge | `/ws/world` (default; from `[interfaces.web]`) | JSON text | Both |
+| Socket       | Route                                          | Encoding           | Direction             |
+| ------------ | ---------------------------------------------- | ------------------ | --------------------- |
+| Collab       | `/ws/collab/{doc_id}`                          | Binary MessagePack | Both                  |
+| Tags         | `/ws/tags`                                     | JSON text          | Server to client only |
+| World bridge | `/ws/world` (default; from `[interfaces.web]`) | JSON text          | Both                  |
 
 ## Collab: collaborative editing
 
 Implementation: `crates/id-web/src/collab.rs`. Frames are MessagePack arrays of the form `[tag, …fields]`, encoded and decoded with `rmp_serde`. The message type is `CollabMessage`.
 
-| Tag | Name | Direction | Fields |
-|---|---|---|---|
-| 0 | Init | Server → client | `[0, version, doc, mode]` |
-| 1 | Steps | Client → server | `[1, version, steps, clientID]` |
-| 2 | Update | Server → client | `[2, steps, clientIDs]` |
-| 3 | Ack | Server → client | `[3, version]` |
-| 4 | Cursor | Both | `[4, clientID, head, anchor, name?, idleSecs?]` |
-| 5 | Error | Server → client | `[5, error]` |
-| 6 | CursorRemove | Server → client | `[6, clientID]` |
-| 7 | NewVersion | Server → client | `[7, hash, name]` |
-| 8 | Auth | Client → server | `[8, token]` — the first message after connect |
-| 9 | AuthOk | Server → client | `[9, client_id, name, token?]` — the `token` field carries a refreshed token when one is issued |
-| 10 | Checkpoint | Client → server | `[10, text]` — publish a durable note-session checkpoint. Filename sessions refuse this message. |
-| 11 | Checkpointed | Server → client | `[11, head]` — `head` is the hex of the new note head revision |
-| — | Empty text `""` | Both | Cursor-refresh ping/pong for throttled inactive tabs; see the cadence below |
+| Tag | Name            | Direction       | Fields                                                                                           |
+| --- | --------------- | --------------- | ------------------------------------------------------------------------------------------------ |
+| 0   | Init            | Server → client | `[0, version, doc, mode]`                                                                        |
+| 1   | Steps           | Client → server | `[1, version, steps, clientID]`                                                                  |
+| 2   | Update          | Server → client | `[2, steps, clientIDs]`                                                                          |
+| 3   | Ack             | Server → client | `[3, version]`                                                                                   |
+| 4   | Cursor          | Both            | `[4, clientID, head, anchor, name?, idleSecs?]`                                                  |
+| 5   | Error           | Server → client | `[5, error]`                                                                                     |
+| 6   | CursorRemove    | Server → client | `[6, clientID]`                                                                                  |
+| 7   | NewVersion      | Server → client | `[7, hash, name]`                                                                                |
+| 8   | Auth            | Client → server | `[8, token]` — the first message after connect                                                   |
+| 9   | AuthOk          | Server → client | `[9, client_id, name, token?]` — the `token` field carries a refreshed token when one is issued  |
+| 10  | Checkpoint      | Client → server | `[10, text]` — publish a durable note-session checkpoint. Filename sessions refuse this message. |
+| 11  | Checkpointed    | Server → client | `[11, head]` — `head` is the hex of the new note head revision                                   |
+| —   | Empty text `""` | Both            | Cursor-refresh ping/pong for throttled inactive tabs; see the cadence below                      |
 
 Compatibility: a legacy Init frame without the `mode` field still decodes; `mode` defaults to `raw`.
 
@@ -42,17 +42,17 @@ The `web/README` wire table lists tags 0–5 only, and gives Init as `[0, versio
 
 ### Keepalive, timeouts and cleanup
 
-| Constant | Value | Behaviour |
-|---|---|---|
-| `PING_INTERVAL` | 30 s of inactivity | A Ping is sent every 30 s idle cycle. |
-| `EMPTY_TEXT_MESSAGE_EVERY_N_PINGS` | `2` | Every 2nd ping cycle sends the empty text message `""` **instead of** a Ping frame. |
-| `PONG_TIMEOUT` | 30 min | The connection is closed after 30 min without a pong or message. |
-| Cursor removal | 5 min after disconnect | A disconnected client's cursor is removed. |
-| Document cleanup | 1 h after the last client leaves | The document's in-memory collab state is cleaned up. |
+| Constant                           | Value                            | Behaviour                                                                           |
+| ---------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------- |
+| `PING_INTERVAL`                    | 30 s of inactivity               | A Ping is sent every 30 s idle cycle.                                               |
+| `EMPTY_TEXT_MESSAGE_EVERY_N_PINGS` | `2`                              | Every 2nd ping cycle sends the empty text message `""` **instead of** a Ping frame. |
+| `PONG_TIMEOUT`                     | 30 min                           | The connection is closed after 30 min without a pong or message.                    |
+| Cursor removal                     | 5 min after disconnect           | A disconnected client's cursor is removed.                                          |
+| Document cleanup                   | 1 h after the last client leaves | The document's in-memory collab state is cleaned up.                                |
 
 ### The empty-text cadence (WEB-8)
 
-The `web/README` timeout section states that the server sends empty text messages *instead of* Ping frames. The code sends both: a Ping frame on each 30 s idle cycle, with every 2nd cycle's Ping replaced by the empty text message. A client must therefore handle Ping frames and empty text frames on the same socket. That is disagreement WEB-8; the cadence in the table above is the code behaviour.
+The `web/README` timeout section states that the server sends empty text messages _instead of_ Ping frames. The code sends both: a Ping frame on each 30 s idle cycle, with every 2nd cycle's Ping replaced by the empty text message. A client must therefore handle Ping frames and empty text frames on the same socket. That is disagreement WEB-8; the cadence in the table above is the code behaviour.
 
 ### Worked example
 
@@ -79,12 +79,12 @@ Route: `/ws/tags`. Implementation: `crates/id-web/src/tags_ws.rs`; the event typ
 
 `TagEvent` is serialised with `#[serde(tag = "type")]` and lowercase renames. The four kinds are:
 
-| `type` | Fields | Meaning |
-|---|---|---|
-| `set` | `ns`, `subject`, `key`, `value?` | A tag value was set. |
-| `del` | `ns`, `subject`, `key`, `value?` | A tag value was deleted; `value` absent means the key's values were deleted. |
-| `del_all` | `ns`, `subject` | All tags for the subject were deleted. |
-| `transfer` | `ns`, `from`, `to`, `count` | `count` tags moved from subject `from` to subject `to`. |
+| `type`     | Fields                           | Meaning                                                                      |
+| ---------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| `set`      | `ns`, `subject`, `key`, `value?` | A tag value was set.                                                         |
+| `del`      | `ns`, `subject`, `key`, `value?` | A tag value was deleted; `value` absent means the key's values were deleted. |
+| `del_all`  | `ns`, `subject`                  | All tags for the subject were deleted.                                       |
+| `transfer` | `ns`, `from`, `to`, `count`      | `count` tags moved from subject `from` to subject `to`.                      |
 
 Namespaces: `ns` is `global` (the default), `node`, or a custom paired (α/Ω) namespace. Tag values are arbitrary bytes on the store side; the REST surface in [The web UI: pages and HTTP API](web-ui.md) carries binary values as `value_b64`.
 
@@ -117,91 +117,94 @@ Rules that apply to every frame:
 
 ### Client frames: 43 kinds
 
-| Kind | Notes |
-|---|---|
-| `join` | Fields: `capability`, optional `after`, `screen_patches`, `screen_msgpack`, `resume_token`, `agent_profile`, `device_input`. |
-| `info` | Session information request. |
-| `metrics` | Metrics request. |
-| `records` | Records request. |
-| `records_ticket` | Records ticket request. |
-| `documents` | Document list request. |
-| `document` | Single document request. |
-| `download_module` | Module download. |
-| `download_module_admin` | Module download, admin form. |
-| `event_history_admin` | Event history, admin form. |
-| `invite` | Carries an `admin_token`. |
-| `directory` | Public directory request; no token. |
-| `list_worlds` | List worlds on the host. |
-| `create_world` | Create a world. |
-| `set_isolation` | Set a world's isolation state. |
-| `set_cross_world_write` | Set cross-world write. |
-| `force_cross_world_write` | Force cross-world write on. |
-| `set_file_scope` | Set file scope. |
-| `compile` | Compile a module. |
-| `update_caps` | Update capabilities. |
-| `set_caps_ceiling` | Set the capability ceiling. |
-| `set_schedule` | Set a schedule. |
-| `cancel_schedule` | Cancel a schedule. |
-| `world_state` | World state request. |
-| `set_execution_profile` | Set the execution profile. |
-| `execution_profile_info` | Execution profile information request. |
-| `caps` | Capability query. |
-| `chat` | Chat post. May carry `screen_revision`, the stale-decision token checked by the policy layer in [The MCP bridge](mcp.md). |
-| `form_result` | A submitted form result. |
-| `attenuate` | Attenuate a capability. |
-| `delegate_to_friend` | Delegate to a friend. |
-| `input` | Program input; the payload travels as `data_hex`. |
-| `resize` | Terminal/surface resize. |
-| `paste` | Paste input. |
-| `screen_subscribe` | Subscribe to a screen region and/or to event classes. |
-| `pointer` | Pointer input. |
-| `hover` | Hover input. |
-| `install_begin` | Begin a module install upload. |
-| `install_chunk` | One install chunk. |
-| `install_end` | Finish a module install upload. |
-| `revoke` | Revoke a capability. |
-| `provider_offer` | Provider offer. |
-| `provider_reply` | Provider reply. |
+| Kind                      | Notes                                                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `join`                    | Fields: `capability`, optional `after`, `screen_patches`, `screen_msgpack`, `resume_token`, `agent_profile`, `device_input`. |
+| `info`                    | Session information request.                                                                                                 |
+| `metrics`                 | Metrics request.                                                                                                             |
+| `records`                 | Records request.                                                                                                             |
+| `records_ticket`          | Records ticket request.                                                                                                      |
+| `documents`               | Document list request.                                                                                                       |
+| `document`                | Single document request.                                                                                                     |
+| `download_module`         | Module download.                                                                                                             |
+| `download_module_admin`   | Module download, admin form.                                                                                                 |
+| `event_history_admin`     | Event history, admin form.                                                                                                   |
+| `invite`                  | Carries an `admin_token`.                                                                                                    |
+| `directory`               | Public directory request; no token.                                                                                          |
+| `list_worlds`             | List worlds on the host.                                                                                                     |
+| `create_world`            | Create a world.                                                                                                              |
+| `set_isolation`           | Set a world's isolation state.                                                                                               |
+| `set_cross_world_write`   | Set cross-world write.                                                                                                       |
+| `force_cross_world_write` | Force cross-world write on.                                                                                                  |
+| `set_file_scope`          | Set file scope.                                                                                                              |
+| `compile`                 | Compile a module.                                                                                                            |
+| `update_caps`             | Update capabilities.                                                                                                         |
+| `set_caps_ceiling`        | Set the capability ceiling.                                                                                                  |
+| `set_schedule`            | Set a schedule.                                                                                                              |
+| `cancel_schedule`         | Cancel a schedule.                                                                                                           |
+| `world_state`             | World state request.                                                                                                         |
+| `set_execution_profile`   | Set the execution profile.                                                                                                   |
+| `execution_profile_info`  | Execution profile information request.                                                                                       |
+| `set_presentation_policy` | Set the presentation policy.                                                                                                 |
+| `presentation_policy_info`| Presentation policy request. Needs no token.                                                                                 |
+| `caps`                    | Capability query.                                                                                                            |
+| `chat`                    | Chat post. May carry `screen_revision`, the stale-decision token checked by the policy layer in [The MCP bridge](mcp.md).    |
+| `form_result`             | A submitted form result.                                                                                                     |
+| `attenuate`               | Attenuate a capability.                                                                                                      |
+| `delegate_to_friend`      | Delegate to a friend.                                                                                                        |
+| `input`                   | Program input; the payload travels as `data_hex`.                                                                            |
+| `resize`                  | Terminal/surface resize.                                                                                                     |
+| `paste`                   | Paste input.                                                                                                                 |
+| `screen_subscribe`        | Subscribe to a screen region and/or to event classes.                                                                        |
+| `pointer`                 | Pointer input.                                                                                                               |
+| `hover`                   | Hover input.                                                                                                                 |
+| `install_begin`           | Begin a module install upload.                                                                                               |
+| `install_chunk`           | One install chunk.                                                                                                           |
+| `install_end`             | Finish a module install upload.                                                                                              |
+| `revoke`                  | Revoke a capability.                                                                                                         |
+| `provider_offer`          | Provider offer.                                                                                                              |
+| `provider_reply`          | Provider reply.                                                                                                              |
 
 ### Server frames: 35 kinds
 
-| Kind | Notes |
-|---|---|
-| `snapshot` | Full world snapshot. |
-| `event` | A world event. |
-| `provider_request` | A provider request to the client. |
-| `form_result_status` | Status of a form result. |
-| `view` | Screen view: `data`/`surface`/`patch`, plus `view_revision` and `resume_token`. |
-| `semantic_diff` | A semantic diff of the screen state. |
-| `screen_subscription` | A screen subscription delivery. |
-| `module_info` | Module information. |
-| `metrics` | Metrics reply. |
-| `records` | Records reply. |
-| `records_ticket` | Records ticket reply. |
-| `documents` | Documents reply. |
-| `document` | Document reply. |
-| `module_begin` | Begin a module download. |
-| `module_chunk` | One module chunk. |
-| `module_end` | End a module download. |
-| `event_history_begin` | Begin an event history download. |
-| `event_history_event` | One event history entry. |
-| `invite` | Invite reply. |
-| `worlds` | World list reply. |
-| `world_created` | A world was created. |
-| `isolation` | Isolation state. |
-| `policy` | Policy state. |
-| `caps` | Capability reply. |
-| `execution_profile` | Execution profile reply. |
-| `caps_ceiling` | Capability ceiling reply. |
-| `schedules` | Schedules reply. |
-| `world_state` | World state reply. |
-| `compiled` | A compile finished. |
-| `upload_ready` | The host is ready for an install upload. |
-| `module_installed` | A module was installed. |
-| `revoked` | A capability was revoked. |
-| `program_changed` | The program changed. |
-| `error` | An error. May carry a stable `code`, for example `actor_denied`. |
-| `input_refused` | An `input` frame was refused. |
+| Kind                  | Notes                                                                           |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `snapshot`            | Full world snapshot.                                                            |
+| `event`               | A world event.                                                                  |
+| `provider_request`    | A provider request to the client.                                               |
+| `form_result_status`  | Status of a form result.                                                        |
+| `view`                | Screen view: `data`/`surface`/`patch`, plus `view_revision` and `resume_token`. |
+| `semantic_diff`       | A semantic diff of the screen state.                                            |
+| `screen_subscription` | A screen subscription delivery.                                                 |
+| `module_info`         | Module information.                                                             |
+| `metrics`             | Metrics reply.                                                                  |
+| `records`             | Records reply.                                                                  |
+| `records_ticket`      | Records ticket reply.                                                           |
+| `documents`           | Documents reply.                                                                |
+| `document`            | Document reply.                                                                 |
+| `module_begin`        | Begin a module download.                                                        |
+| `module_chunk`        | One module chunk.                                                               |
+| `module_end`          | End a module download.                                                          |
+| `event_history_begin` | Begin an event history download.                                                |
+| `event_history_event` | One event history entry.                                                        |
+| `invite`              | Invite reply.                                                                   |
+| `worlds`              | World list reply.                                                               |
+| `world_created`       | A world was created.                                                            |
+| `isolation`           | Isolation state.                                                                |
+| `policy`              | Policy state.                                                                   |
+| `caps`                | Capability reply.                                                               |
+| `execution_profile`   | Execution profile reply.                                                        |
+| `presentation_policy` | Presentation policy reply.                                                      |
+| `caps_ceiling`        | Capability ceiling reply.                                                       |
+| `schedules`           | Schedules reply.                                                                |
+| `world_state`         | World state reply.                                                              |
+| `compiled`            | A compile finished.                                                             |
+| `upload_ready`        | The host is ready for an install upload.                                        |
+| `module_installed`    | A module was installed.                                                         |
+| `revoked`             | A capability was revoked.                                                       |
+| `program_changed`     | The program changed.                                                            |
+| `error`               | An error. May carry a stable `code`, for example `actor_denied`.                |
+| `input_refused`       | An `input` frame was refused.                                                   |
 
 ### Contract revisions
 

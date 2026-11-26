@@ -15,11 +15,11 @@ the estate.
 Three different things share the word "dispatch", and only one of
 them touches this database:
 
-| Name | What it is | Touches `fleet-dispatch-jobs`? |
-| --- | --- | --- |
-| The **dispatch** domain | A thin client over the pm-dispatch service | No |
-| **pm-dispatch** | The laptop service (`pkgs/pm-dispatch`, `pm-stack/dispatch`) | No |
-| **dispatch-test** | The `fleet dispatch-test` domain (design #6580) | Yes — its sole owner in this repo |
+| Name                    | What it is                                                   | Touches `fleet-dispatch-jobs`?    |
+| ----------------------- | ------------------------------------------------------------ | --------------------------------- |
+| The **dispatch** domain | A thin client over the pm-dispatch service                   | No                                |
+| **pm-dispatch**         | The laptop service (`pkgs/pm-dispatch`, `pm-stack/dispatch`) | No                                |
+| **dispatch-test**       | The `fleet dispatch-test` domain (design #6580)              | Yes — its sole owner in this repo |
 
 **Status (2026-11-23): live, small and current.** The #13844 Turso
 audit read the store on 2026-11-23 and counted `jobs`, 6 rows. The
@@ -52,7 +52,7 @@ The table has 14 columns: `id`, `created_at`, `name`, `target_repo`,
 `output_tail`, `updated_at`, `submodule` and `commands`.
 
 Phase 2 (#6595) gave two of those columns their current meaning:
-`target_ref` carries the *submodule* ref (empty means the umbrella's
+`target_ref` carries the _submodule_ ref (empty means the umbrella's
 recorded SHA), and `script` mirrors `commands` so MVP-era readers
 still see the payload. Job ids are generated client-side in the form
 `dt-<unix_millis base36>-<4 hex chars>`.
