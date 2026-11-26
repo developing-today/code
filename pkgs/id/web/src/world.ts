@@ -933,9 +933,9 @@ function initWorld(): void {
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       reconnects = 0;
-      // #10927 slice 2: a restored offline cursor carries no journal
-      // identity, so the first connect after a restore asks for a fresh
-      // host snapshot. Live-page reconnects keep the resume behavior.
+      // #10927 slice 2: a restored offline cursor or disconnected socket
+      // carries no proof of journal continuity, so request a fresh host
+      // snapshot. Resume tokens are only offered on a continuous live page.
       const freshResnapshot = requiresFreshSnapshot;
       ws.send(
         JSON.stringify({
@@ -957,7 +957,7 @@ function initWorld(): void {
       );
       // A fresh session needs its initial resize. A resumable
       // reconnect keeps the established viewport unless it changed.
-      // A restored offline cursor is always a fresh snapshot request.
+      // Any request that forces a fresh snapshot resets the view base too.
       sendViewport(!hasResumableScreen() || requiresFreshSnapshot);
     });
     ws.addEventListener("message", (event) => {
