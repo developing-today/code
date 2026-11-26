@@ -73,6 +73,7 @@ pub mod host;
 #[cfg(unix)]
 pub mod host_control;
 pub mod input_framing;
+pub mod kitty_graphics;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
