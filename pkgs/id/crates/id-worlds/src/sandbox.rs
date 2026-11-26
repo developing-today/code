@@ -1575,7 +1575,22 @@ mod tests {
                     fuel,
                     ..SandboxLimits::default()
                 };
-                let runner = compile(ECHO, limits).unwrap();
+                // Every case runs the identical ECHO module; only the
+                // fuel limit differs. Compiling it per case cost ~28 ms
+                // of the ~30 ms a case spent before its first update
+                // (#15142), so compile once per process and give each
+                // case a runner over the shared engine/module with its
+                // own limits. Validation is unchanged: it runs once, on
+                // the same bytes, at the first case.
+                static ECHO_RUNNER: std::sync::OnceLock<Sandbox> =
+                    std::sync::OnceLock::new();
+                let base = ECHO_RUNNER
+                    .get_or_init(|| compile(ECHO, SandboxLimits::default()).unwrap());
+                let runner = Sandbox {
+                    engine: base.engine.clone(),
+                    module: base.module.clone(),
+                    limits,
+                };
                 let mut world = runner.instantiate(123).unwrap();
                 world.set_fuel_rate_budget(
                     id_caps::account_quota::FuelRateBudget::new(budget_limit),
@@ -3797,6 +3812,13 @@ mod tests {
     /// does not export are absent.
     fn measure_example(example: &Example) -> Vec<(GuestCall, u64)> {
         let runner = Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap();
+        measure_with_runner(&runner, example)
+    }
+
+    /// [`measure_example`] over a runner the caller already compiled, so
+    /// a test measuring several drive scripts over one module (the two
+    /// territory entries) compiles the module once (#15142).
+    fn measure_with_runner(runner: &Sandbox, example: &Example) -> Vec<(GuestCall, u64)> {
         let mut live = runner.instantiate(7).unwrap();
         (example.drive)(&mut live);
         live.view().unwrap();
@@ -3846,8 +3868,14 @@ mod tests {
     #[test]
     #[ignore = "prints the baseline to re-baseline FUEL_BUDGETS by hand"]
     fn print_fuel_baseline() {
+        let mut runners = std::collections::HashMap::new();
         for example in examples() {
-            for (call, fuel) in measure_example(&example) {
+            let runner = runners
+                .entry((example.wasm.as_ptr().addr(), example.wasm.len()))
+                .or_insert_with(|| {
+                    Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap()
+                });
+            for (call, fuel) in measure_with_runner(runner, &example) {
                 println!(
                     "    (\"{}\", GuestCall::{call:?}, {}), // baseline {fuel}",
                     example.name,
@@ -4019,6 +4047,9 @@ mod tests {
     #[test]
     fn checked_in_examples_stay_within_fuel_budgets() {
         let mut failures = Vec::new();
+        // `territory` and `territory-full` are one module under two
+        // drive scripts; compile each distinct module once (#15142).
+        let mut runners = std::collections::HashMap::new();
         for example in examples() {
             assert!(
                 example.wasm.len() <= 1024 * 1024,
@@ -4026,7 +4057,12 @@ mod tests {
                 example.name,
                 example.wasm.len()
             );
-            for (call, actual) in measure_example(&example) {
+            let runner = runners
+                .entry((example.wasm.as_ptr().addr(), example.wasm.len()))
+                .or_insert_with(|| {
+                    Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap()
+                });
+            for (call, actual) in measure_with_runner(runner, &example) {
                 let budget = FUEL_BUDGETS
                     .iter()
                     .find(|(name, kind, _)| *name == example.name && *kind == call)
