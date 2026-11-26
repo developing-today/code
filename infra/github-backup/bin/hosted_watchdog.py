@@ -172,7 +172,10 @@ def alert_body(judgement, watchdog_run_id, checked_at):
         "",
         f"- status: {MISSED}",
         f"- detail: {judgement['detail']}",
-        f"- last_run_id: {judgement['last_run_id']}",
+        # Named last_probe_run, not last_run_id: the dedup scan
+        # (hosted_alerts.RUN_RE) takes the first "run_id: " match in
+        # the body, and it must land on the evidence line below.
+        f"- last_probe_run: {judgement['last_run_id']}",
         f"- last_generated_at: {judgement['last_generated_at']}",
         f"- age_hours: {judgement['age_hours']}",
         f"- slo_hours: {PROBE_SLO_HOURS}",
