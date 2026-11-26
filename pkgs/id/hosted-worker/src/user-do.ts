@@ -94,6 +94,13 @@ interface Env {
    * string var. Absent/empty = no ceiling. A malformed value
    * fails writes closed (see ceilingBytes). */
   USER_CEILING_BYTES?: string;
+  /** #15485 (#2046 §6): most requests one binding may make in a
+   * window, as a string var. Absent/empty = no request cap. A
+   * malformed value fails every request closed (see requestCap). */
+  USER_REQUEST_CEILING?: string;
+  /** Length of the request-cap window in seconds; absent/empty =
+   * 86400 (one day). Only read when USER_REQUEST_CEILING is set. */
+  USER_REQUEST_WINDOW_SECONDS?: string;
   /** Bridge (#3818): waiting-pool bounds for the signed-object
    * bridge, as string vars. Absent = the native defaults
    * (bridge-store.ts). A malformed value fails bridge writes
@@ -108,6 +115,19 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** Default request-cap window: one day. */
+export const DEFAULT_REQUEST_WINDOW_SECONDS = 86_400;
+
+/** A refusal the caller may retry after `retryAfterSeconds`; the
+ * response carries it as `Retry-After` (#15485). */
+class RetryableRefusal extends FailClosed {
+  readonly retryAfterSeconds: number;
+  constructor(status: number, code: string, message: string, retryAfterSeconds: number) {
+    super(status, code, message);
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
 }
 
 function ceilingExceeded(headroom: number): FailClosed {
@@ -222,6 +242,66 @@ export class UserDO {
       );
     }
     return n;
+  }
+
+  /** The configured request cap; null = none. A malformed value
+   * is a configuration error and fails every request closed, so a
+   * typo never silently removes the cap. */
+  private requestCap(): { ceiling: number; windowMs: number } | null {
+    const raw = this.env.USER_REQUEST_CEILING;
+    if (raw === undefined || raw === "") return null;
+    const ceiling = Number(raw);
+    const rawWindow = this.env.USER_REQUEST_WINDOW_SECONDS;
+    const windowSeconds =
+      rawWindow === undefined || rawWindow === "" ? DEFAULT_REQUEST_WINDOW_SECONDS : Number(rawWindow);
+    if (!Number.isInteger(ceiling) || ceiling < 0 || !Number.isInteger(windowSeconds) || windowSeconds <= 0) {
+      throw new FailClosed(
+        500,
+        "request_cap_misconfigured",
+        "USER_REQUEST_CEILING must be a non-negative integer and USER_REQUEST_WINDOW_SECONDS a positive integer; requests fail closed",
+      );
+    }
+    return { ceiling, windowMs: windowSeconds * 1000 };
+  }
+
+  /** The current request window: its start and how many requests
+   * it has admitted. A window that has run out (or a clock that
+   * moved backwards past its start) reads as a fresh, empty one. */
+  private requestWindow(windowMs: number, now: number): { start: number; count: number } {
+    const rawStart = this.meta("request_window_start_ms");
+    const start = rawStart === null ? Number.NaN : Number(rawStart);
+    const count = Number(this.meta("request_window_count") ?? "0");
+    if (!Number.isFinite(start) || now < start || now - start >= windowMs) {
+      return { start: now, count: 0 };
+    }
+    return { start, count: Number.isFinite(count) ? count : 0 };
+  }
+
+  /** Admit one request against the cap, or refuse it with a
+   * retryable 429 until the window resets. A refused request does
+   * not use up the window. */
+  private admitRequest(cap: { ceiling: number; windowMs: number }) {
+    const now = Date.now();
+    const current = this.requestWindow(cap.windowMs, now);
+    if (current.count >= cap.ceiling) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((current.start + cap.windowMs - now) / 1000));
+      throw new RetryableRefusal(
+        429,
+        "request_cap_exceeded",
+        `request cap reached: ${cap.ceiling} requests per ${cap.windowMs / 1000} s; retry after ${retryAfterSeconds} s`,
+        retryAfterSeconds,
+      );
+    }
+    this.setMeta("request_window_start_ms", String(current.start));
+    this.setMeta("request_window_count", String(current.count + 1));
+  }
+
+  private setMeta(key: string, value: string) {
+    this.state.storage.sql.exec(
+      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      key,
+      value,
+    );
   }
 
   /** Usage accounting, derived from the tables on every read so
@@ -431,9 +511,16 @@ export class UserDO {
         "INSERT INTO meta (key, value) VALUES ('requests', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
       );
       const url = new URL(req.url);
-      if (url.pathname === "/v1/usage" && req.method === "GET") {
+      const isUsage = url.pathname === "/v1/usage" && req.method === "GET";
+      const requestCap = this.requestCap();
+      // The usage read is exempt so a capped caller can still see
+      // where it stands and when the window resets (#15485).
+      if (requestCap !== null && !isUsage) this.admitRequest(requestCap);
+      if (isUsage) {
         const usage = this.usage();
         const ceiling = this.ceilingBytes();
+        const now = Date.now();
+        const current = requestCap === null ? null : this.requestWindow(requestCap.windowMs, now);
         return json({
           binding_id: bindingId,
           jurisdiction,
@@ -441,6 +528,12 @@ export class UserDO {
           ...usage,
           ceiling_bytes: ceiling,
           at_cap: ceiling !== null && usage.storage_bytes >= ceiling,
+          request_ceiling: requestCap === null ? null : requestCap.ceiling,
+          request_window_seconds: requestCap === null ? null : requestCap.windowMs / 1000,
+          window_requests: current === null ? null : current.count,
+          window_resets_at_ms:
+            requestCap === null || current === null || current.count === 0 ? null : current.start + requestCap.windowMs,
+          at_request_cap: requestCap !== null && current !== null && current.count >= requestCap.ceiling,
         });
       }
       if (url.pathname === "/v1/export" && req.method === "GET") {
@@ -734,6 +827,11 @@ export class UserDO {
       }
       return json({ error: "not_found" }, 404);
     } catch (e) {
+      if (e instanceof RetryableRefusal) {
+        const response = json({ error: e.code, message: e.message, retry_after_seconds: e.retryAfterSeconds }, e.status);
+        response.headers.set("retry-after", String(e.retryAfterSeconds));
+        return response;
+      }
       if (e instanceof FailClosed) return json({ error: e.code, message: e.message }, e.status);
       throw e;
     }
