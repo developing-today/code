@@ -8,7 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { UserDO, HDR_BINDING, HDR_JURISDICTION, HDR_ROUTED } from "../src/user-do.ts";
+import { UserDO, HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED } from "../src/user-do.ts";
+import { authTranscript, bodyHashHex } from "../src/bridge-auth.ts";
+import { bytesToHex, importIdKey } from "../src/ed25519.ts";
+import { signEvent } from "../src/event.ts";
+import { encodeBatch } from "../src/bridge-session.ts";
 
 const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -146,4 +150,55 @@ test("a malformed request ceiling fails closed", async () => {
   const r = await doA.fetch(routed("/v1/kv/k1"));
   assert.equal(r.status, 500);
   assert.equal(((await r.json()) as { error: string }).error, "request_ceiling_misconfigured");
+});
+test("bridge export stays available past the request ceiling: the challenge still mints a nonce at the cap", async () => {
+  const { doA } = makeDO({ USER_REQUEST_CEILING: "2", USER_REQUEST_WINDOW_MS: "60000" });
+  const key = await importIdKey(new Uint8Array(32).fill(61));
+  const bridgeRouted = (path: string, init: RequestInit = {}): Request => {
+    const headers = new Headers(init.headers);
+    headers.set(HDR_IROH, key.publicHex);
+    return routed(path, { ...init, headers });
+  };
+  const proofFor = async (nonce: string, context: "push" | "export", body: Uint8Array) => {
+    const signature = await key.sign(authTranscript(A, nonce, context, bodyHashHex(body)));
+    return { "x-id-nonce": nonce, "x-id-proof": bytesToHex(signature) };
+  };
+  // Seed one bridge event (counted request 1) and one KV write
+  // (counted request 2): the window count reaches the ceiling of 2.
+  const event = await signEvent(key, {
+    seq: 0,
+    backlink: null,
+    kind: "message",
+    body: new TextEncoder().encode("body 0"),
+  });
+  const batch = encodeBatch([event.bytes]);
+  const firstChallenge = await doA.fetch(bridgeRouted("/v1/bridge/challenge"));
+  assert.equal(firstChallenge.status, 200);
+  const firstNonce = ((await firstChallenge.json()) as { nonce: string }).nonce;
+  const push = await doA.fetch(
+    bridgeRouted("/v1/bridge/push", {
+      method: "POST",
+      headers: await proofFor(firstNonce, "push", batch),
+      body: batch as BodyInit,
+    }),
+  );
+  assert.equal(push.status, 200);
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "a" }))).status, 200);
+  // At the cap, ordinary requests are refused...
+  assert.equal((await doA.fetch(routed("/v1/kv/k1"))).status, 429);
+  // ...but the challenge route is cap-exempt, so a caller holding
+  // no live nonce can still mint one. Nonces are single-use with a
+  // 5-minute TTL (bridge-auth.ts): without this exemption the
+  // cap-exempt bridge export would be unreachable at the cap.
+  const challenge = await doA.fetch(bridgeRouted("/v1/bridge/challenge"));
+  assert.equal(challenge.status, 200, "the bridge challenge stays available at the request cap");
+  const { nonce } = (await challenge.json()) as { nonce: string };
+  assert.ok(nonce.length > 0);
+  // Bridge export with the proof minted at the cap succeeds, with
+  // the export proof checks fully intact.
+  const exp = await doA.fetch(
+    bridgeRouted("/v1/bridge/export", { headers: await proofFor(nonce, "export", new Uint8Array(0)) }),
+  );
+  assert.equal(exp.status, 200, "bridge export with a proof minted at the cap succeeds");
+  assert.equal(((await exp.json()) as { object_count: number }).object_count, 1);
 });
