@@ -667,7 +667,7 @@ mod tests {
             .map(|edge| edge.source)
             .collect();
         assert_eq!(to_20, vec![hash(10), hash(30)]);
-        assert!(projection.backlinks_to(hash(10)).is_empty());
+        assert_eq!(projection.backlinks_to(hash(10)), [] as [&LinkRecord; 0]);
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod tests {
         let projection = project_links(&folded, &links).unwrap();
         assert_eq!(projection.edges().len(), 1);
         assert_eq!(projection.edges()[0].id, hash(41));
-        assert!(projection.backlinks_to(hash(20)).is_empty());
+        assert_eq!(projection.backlinks_to(hash(20)), [] as [&LinkRecord; 0]);
     }
 
     #[test]
@@ -701,7 +701,7 @@ mod tests {
         let projection =
             project_links(&folded, &[link(40, 10, 10, 20, "dropped", Some(30))]).unwrap();
 
-        assert!(projection.edges().is_empty());
+        assert_eq!(projection.edges(), [] as [LinkRecord; 0]);
     }
 
     #[test]
@@ -710,7 +710,7 @@ mod tests {
 
         let projection = project_links(&folded, &[link(40, 10, 10, 99, "dropped", None)]).unwrap();
 
-        assert!(projection.edges().is_empty());
+        assert_eq!(projection.edges(), [] as [LinkRecord; 0]);
     }
 
     #[test]
@@ -812,16 +812,14 @@ mod tests {
         // A viewer who cannot access target 20 learns nothing from note 10's links:
         // the edge is dropped, not returned with its target redacted.
         let only_source: HashSet<Hash> = HashSet::from([hash(10)]);
-        assert!(
-            projection
-                .links_from_visible(hash(10), &only_source)
-                .is_empty()
+        assert_eq!(
+            projection.links_from_visible(hash(10), &only_source),
+            [] as [&LinkRecord; 0]
         );
         // And an inaccessible target has no visible backlinks at all.
-        assert!(
-            projection
-                .backlinks_to_visible(hash(20), &only_source)
-                .is_empty()
+        assert_eq!(
+            projection.backlinks_to_visible(hash(20), &only_source),
+            [] as [&LinkRecord; 0]
         );
     }
 
@@ -901,7 +899,7 @@ mod tests {
         // shows through the walk.
         for store in [&store_a, &store_b] {
             let page = store.links_from_visible_page(hash(10), &visible, 1, Some(hash(41)));
-            assert!(page.edges.is_empty());
+            assert_eq!(page.edges, [] as [&LinkRecord; 0]);
             assert!(!page.has_next);
         }
 
@@ -933,10 +931,10 @@ mod tests {
         let projection = project_links(&folded, &links).unwrap();
         let visible: HashSet<Hash> = HashSet::from([hash(10), hash(20)]);
         let page = projection.links_from_visible_page(hash(10), &visible, 0, None);
-        assert!(page.edges.is_empty());
+        assert_eq!(page.edges, [] as [&LinkRecord; 0]);
         assert!(page.has_next);
         let empty = projection.links_from_visible_page(hash(20), &visible, 0, None);
-        assert!(empty.edges.is_empty());
+        assert_eq!(empty.edges, [] as [&LinkRecord; 0]);
         assert!(!empty.has_next);
     }
 
