@@ -151,7 +151,7 @@ import {
 } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
-import { createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
+import { createD1LedgerQuery, createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
 
 /** Where the settings the owner changed are kept: beside "cfg", never in it. */
 export const OWNER_SETTINGS_KEY = "ownerSettings";
@@ -2287,7 +2287,10 @@ export class Edge {
     // request goes on exactly as it did before.
     if (this.ledgerPages && LEDGER_PAGE_PATHS.has(path)) {
       const response = await ledgerPage(req, {
-        query: createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
+        query:
+          this.ledgerPages.store === "d1"
+            ? createD1LedgerQuery(this.ledgerPages.db)
+            : createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
         now: () => this.now(),
       });
       if (response) return response;
