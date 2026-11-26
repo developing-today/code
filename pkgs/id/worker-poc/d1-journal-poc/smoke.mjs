@@ -239,10 +239,64 @@ async function main() {
     "snapshot plus ordered tail must have no duplicate, gap, or reorder",
   );
 
+  await bridgeIsolation(baseUrl);
+
   console.log("D1 journal-fit smoke: PASS");
   console.log("  append ordinals: 1, 2, 3");
   console.log("  bookmark carried to a fresh request: read-your-write PASS");
   console.log("  snapshot + ordered tail: byte-identical JSONL, no gap/duplicate/reorder");
+  console.log("  D1 bridge event store (#15538): event/head round trip PASS");
+  console.log("  D1 bridge event store (#15538): cross-binding isolation PASS");
+}
+
+// #15538 slice 3: a signed event appended through tenant A's D1
+// binding comes back byte-identical with its chain head from A, and
+// tenant B's separate binding sees neither the event nor the head.
+async function bridgeIsolation(baseUrl) {
+  const fixtureResponse = await fetch(`${baseUrl}/bridge/fixture`, { signal: abortSignal() });
+  if (!fixtureResponse.ok) assert.fail(`bridge fixture failed: ${await responseError(fixtureResponse)}`);
+  const fixture = await fixtureResponse.json();
+  assert.equal(fixture.events.length, 2, "fixture should be a two-event chain");
+  const author = encodeURIComponent(fixture.author);
+
+  for (const event of fixture.events) {
+    const response = await fetch(`${baseUrl}/bridge/append?tenant=a`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: Buffer.from(event.bytes_b64, "base64"),
+      signal: abortSignal(),
+    });
+    if (!response.ok) assert.fail(`bridge append failed: ${await responseError(response)}`);
+    const outcome = await response.json();
+    assert.deepEqual(outcome, { kind: "accepted", id: event.id, author: fixture.author, seq: event.seq });
+  }
+
+  // Event/head round trip through the binding used for append.
+  const last = fixture.events[1];
+  const eventResponse = await fetch(`${baseUrl}/bridge/event?tenant=a&author=${author}&seq=1`, {
+    signal: abortSignal(),
+  });
+  if (!eventResponse.ok) assert.fail(`bridge event read failed: ${await responseError(eventResponse)}`);
+  assert.equal(eventResponse.headers.get("x-event-id"), last.id);
+  assert.deepEqual(
+    Buffer.from(await eventResponse.arrayBuffer()),
+    Buffer.from(last.bytes_b64, "base64"),
+    "tenant A must return the exact signed event bytes",
+  );
+  const headA = await (await fetch(`${baseUrl}/bridge/head?tenant=a&author=${author}`, { signal: abortSignal() })).json();
+  assert.deepEqual(headA, { author: fixture.author, next_seq: 2, head: last.id }, "tenant A chain head");
+
+  // Cross-binding isolation: tenant B's database never saw the event.
+  const eventB = await fetch(`${baseUrl}/bridge/event?tenant=b&author=${author}&seq=1`, { signal: abortSignal() });
+  assert.equal(eventB.status, 404, "tenant B must not read tenant A's event");
+  await eventB.arrayBuffer();
+  const headB = await (await fetch(`${baseUrl}/bridge/head?tenant=b&author=${author}`, { signal: abortSignal() })).json();
+  assert.deepEqual(headB, { author: fixture.author, next_seq: 0, head: null }, "tenant B must not see tenant A's head");
+
+  // An unnamed binding is refused, never defaulted to a tenant.
+  const unnamed = await fetch(`${baseUrl}/bridge/head?author=${author}`, { signal: abortSignal() });
+  assert.equal(unnamed.status, 400, "a request without a tenant binding must be refused");
+  await unnamed.arrayBuffer();
 }
 
 function onSignal(signal) {

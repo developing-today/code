@@ -36,3 +36,14 @@ that snapshot bytes plus a later tail are exactly the submitted JSONL bytes.
   and [D1 read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/).
   Local Wrangler cannot prove regional replica routing, production
   `served_by_region`/`served_by_primary`, or production replica behavior.
+
+## Hosted bridge event store on per-tenant D1 (#15538)
+
+The same smoke also proves the first D1 slice of the hosted bridge event
+store (`pkgs/id/hosted-worker/src/d1-bridge-store.ts`). The config declares
+two tenant databases, each its own D1 binding (`TENANT_A`, `TENANT_B`). The
+Worker signs a synthetic two-event chain with a fixed test seed, the smoke
+appends it through tenant A's binding, reads back the exact event bytes and
+the chain head from A, and checks that tenant B's binding sees neither. A
+request that names no tenant binding is refused, never defaulted. Rehoming
+existing data, dual-write and any production binding are out of scope.
