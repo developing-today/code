@@ -92,7 +92,7 @@ mod archive_reference_behavior_tests {
     use std::sync::Arc;
 
     use id_core::access::AccessPolicy;
-    use id_store::tags::TagStore;
+    use id_store::tags::{Tag, TagStore};
     use iroh::endpoint::{Endpoint, RelayMode, presets};
     use iroh_base::SecretKey;
     use iroh_blobs::{Hash, api::Store, store::mem::MemStore};
@@ -2000,7 +2000,7 @@ mod tests {
         >::new()))
         .await
         .unwrap();
-        assert_eq!(empty, [] as [TagInfo; 0]);
+        assert_eq!(empty, [] as [ListEntry; 0]);
 
         let hash = Hash::from_bytes([2; 32]);
         let info = TagInfo {
@@ -2637,7 +2637,7 @@ mod publication_control_tests {
 
     use super::{
         MetaProtocol, MetaRequest, MetaResponse, PublicationControl, PublicationControlHandle,
-        PublicationOp, PublicationOutcome, WirePlacement, WirePublication,
+        PublicationOp, PublicationOutcome, WirePlacement, WirePublication, WirePublicationStatus,
     };
 
     struct FakeControl;
