@@ -23,7 +23,7 @@ use crate::central::{
     self, Address, CentralError, Head, IdempotencyKey, Intent, Namespace, Op, Outcome, Pipeline,
     REGISTRY_ID, Scope,
 };
-use crate::sweep::{SweepError, SweepReport, Sweeper, host_incarnation};
+use crate::sweep::{BlobPlane, SweepError, SweepReport, Sweeper, host_incarnation};
 use crate::{Identity, KvError, LocalStore, sql, unsigned};
 
 /// Local schema version 6: the cached namespace definitions and the record
@@ -49,6 +49,26 @@ pub(crate) fn migrate_to_v6(tx: &rusqlite::Transaction<'_>) -> Result<(), KvErro
          );",
     )
     .map_err(sql)
+}
+
+/// Local schema version 9: the cached definition carries the namespace's
+/// blob placement (code#13318).
+pub(crate) fn migrate_to_v9(tx: &rusqlite::Transaction<'_>) -> Result<(), KvError> {
+    let present: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('kv_namespace_cache') WHERE name='blob_jurisdiction'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if present == 0 {
+        tx.execute_batch(
+            "ALTER TABLE kv_namespace_cache ADD COLUMN blob_jurisdiction TEXT;
+             ALTER TABLE kv_namespace_cache ADD COLUMN blob_tier TEXT;",
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
 }
 
 /// What the host's cache says about one namespace.
@@ -83,8 +103,8 @@ pub fn pull_namespaces(store: &LocalStore, primary: &dyn Pipeline) -> Result<usi
         tx.execute(
             "INSERT INTO kv_namespace_cache (
                  namespace, registry_id, scope_kind, shared_scope_id, core_binding,
-                 global_flag, blob_threshold, policy_epoch)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 global_flag, blob_threshold, policy_epoch, blob_jurisdiction, blob_tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 definition.namespace,
                 definition.registry_id,
@@ -94,6 +114,14 @@ pub fn pull_namespaces(store: &LocalStore, primary: &dyn Pipeline) -> Result<usi
                 i64::from(definition.global_flag),
                 i64::try_from(definition.blob_threshold).unwrap_or(i64::MAX),
                 i64::try_from(definition.policy_epoch).unwrap_or(i64::MAX),
+                definition
+                    .placement
+                    .as_ref()
+                    .map(|partition| partition.jurisdiction.as_str()),
+                definition
+                    .placement
+                    .as_ref()
+                    .map(|partition| partition.tier.as_str()),
             ],
         )
         .map_err(sql)?;
@@ -135,7 +163,7 @@ pub fn lookup(store: &LocalStore, namespace: &str) -> Result<Lookup, KvError> {
         .connection
         .query_row(
             "SELECT registry_id, scope_kind, shared_scope_id, core_binding, global_flag,
-                    blob_threshold, policy_epoch
+                    blob_threshold, policy_epoch, blob_jurisdiction, blob_tier
              FROM kv_namespace_cache WHERE namespace = ?1",
             params![namespace],
             |row| {
@@ -152,6 +180,15 @@ pub fn lookup(store: &LocalStore, namespace: &str) -> Result<Lookup, KvError> {
                     global_flag: row.get::<_, i64>(4)? == 1,
                     blob_threshold: unsigned(row.get(5)?),
                     policy_epoch: unsigned(row.get(6)?),
+                    placement: match (
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                    ) {
+                        (Some(jurisdiction), Some(tier)) => {
+                            Some(crate::blob::Partition::new(&jurisdiction, &tier))
+                        }
+                        _ => None,
+                    },
                 })
             },
         )
@@ -201,6 +238,19 @@ pub fn sync(
     writer: &str,
     sleep: &mut dyn FnMut(Duration),
 ) -> Result<SyncReport, SweepError> {
+    sync_with_blobs(store, identity, primary, writer, sleep, None)
+}
+
+/// [`sync`], placing over-threshold values through `blobs` when a blob
+/// plane is configured (code#13318).
+pub fn sync_with_blobs(
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    primary: &dyn Pipeline,
+    writer: &str,
+    sleep: &mut dyn FnMut(Duration),
+    blobs: Option<&BlobPlane<'_>>,
+) -> Result<SyncReport, SweepError> {
     let namespaces = pull_namespaces(store, primary)?;
     let resolve = |namespace: &str| cached_definition(store, namespace);
     let sweep = Sweeper {
@@ -208,6 +258,7 @@ pub fn sync(
         writer,
         resolve: &resolve,
         sleep,
+        blobs,
     }
     .sweep(store, identity)?;
     Ok(SyncReport { namespaces, sweep })
@@ -218,11 +269,17 @@ pub fn sync(
 pub enum GlobalError {
     Local(KvError),
     Central(CentralError),
+    /// A blob-backed value could not be read and verified.
+    Blob(crate::blob::BlobError),
     NotFound,
     /// The value is over the namespace's inline threshold; central has no
     /// blob plane before Phase 3.
     NeedsPhase3 {
         threshold: u64,
+    },
+    /// The value goes to a blob, and the namespace has no blob placement.
+    NoBlobPlacement {
+        namespace: String,
     },
     Conflict {
         expected: u64,
@@ -235,8 +292,10 @@ impl GlobalError {
         match self {
             Self::Local(error) => error.code(),
             Self::Central(error) => error.code(),
+            Self::Blob(error) => error.code(),
             Self::NotFound => "not_found",
             Self::NeedsPhase3 { .. } => "pending_needs_phase3",
+            Self::NoBlobPlacement { .. } => "no_blob_placement",
             Self::Conflict { .. } => "conflict",
         }
     }
@@ -255,10 +314,15 @@ impl std::fmt::Display for GlobalError {
         match self {
             Self::Local(error) => write!(f, "{error}"),
             Self::Central(error) => write!(f, "{error}"),
+            Self::Blob(error) => write!(f, "{error}"),
             Self::NotFound => f.write_str("no live central value for this key"),
             Self::NeedsPhase3 { threshold } => write!(
                 f,
                 "the value is over this namespace's {threshold}-byte inline threshold, and central blob placement arrives in Phase 3"
+            ),
+            Self::NoBlobPlacement { namespace } => write!(
+                f,
+                "the value goes to a blob, and namespace {namespace} has no blob placement (kv namespace define --blob-partition)"
             ),
             Self::Conflict { expected, actual } => write!(
                 f,
@@ -282,6 +346,15 @@ impl From<CentralError> for GlobalError {
     }
 }
 
+impl From<crate::blob_read::ValueError> for GlobalError {
+    fn from(error: crate::blob_read::ValueError) -> Self {
+        match error {
+            crate::blob_read::ValueError::Central(error) => Self::Central(error),
+            crate::blob_read::ValueError::Blob(error) => Self::Blob(error),
+        }
+    }
+}
+
 /// The central address `identity` reaches for `namespace`/`key`, from the
 /// authoritative definition.
 fn address(
@@ -299,25 +372,21 @@ fn address(
 }
 
 /// `--global get`: the authoritative central head, bypassing the overlay and
-/// any cache. Writes the value's bytes to `out`.
+/// any cache. Writes the value's bytes to `out`: a blob-backed head through
+/// `blobs`, verified against its reference.
 pub fn global_get(
     primary: &dyn Pipeline,
     identity: &Identity<'_>,
     namespace: &str,
     key: &str,
+    blobs: Option<&dyn crate::blob_read::BlobReader>,
     out: &mut dyn Write,
 ) -> Result<u64, GlobalError> {
     let (_, address) = address(primary, identity, namespace, key)?;
     match central::head(primary, &address)? {
-        Some(Head {
-            live: true,
-            value,
-            version,
-            ..
-        }) => {
-            out.write_all(&value)
-                .map_err(|error| GlobalError::Local(KvError::Io(error)))?;
-            Ok(version)
+        Some(head @ Head { live: true, .. }) => {
+            crate::blob_read::write_value(&head.envelope, &head.value, &address, blobs, out)?;
+            Ok(head.version)
         }
         _ => Err(GlobalError::NotFound),
     }
@@ -390,6 +459,186 @@ pub fn global_write(
         },
     };
     let receipt = central::cas_with_retry(primary, &intent, sleep)?;
+    match receipt.outcome {
+        Outcome::Committed { version } => Ok(version),
+        Outcome::Conflict {
+            expected, actual, ..
+        } => Err(GlobalError::Conflict { expected, actual }),
+    }
+}
+
+/// A value over the resident budget, streamed to a private file beside the
+/// store and hashed on the way. The file is removed when the spool drops.
+pub struct Spool {
+    path: std::path::PathBuf,
+    digest: crate::blob::Digest,
+}
+
+impl Spool {
+    /// Stream `head` then the rest of `rest` into a new file in `dir`.
+    pub fn create(
+        dir: &std::path::Path,
+        head: &[u8],
+        rest: &mut dyn Read,
+    ) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!("{}.spool", fresh_request_id()));
+        let mut spool = Self {
+            path,
+            digest: crate::blob::Digest {
+                bytes_len: 0,
+                digest: String::new(),
+            },
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&spool.path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let mut reader = std::io::Cursor::new(head).chain(rest);
+        spool.digest = crate::blob::digest_copy(&mut reader, &mut writer)?;
+        writer.flush()?;
+        Ok(spool)
+    }
+
+    pub fn len(&self) -> u64 {
+        self.digest.bytes_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.digest.bytes_len == 0
+    }
+}
+
+impl Drop for Spool {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// A `--global set` value: its bytes, or a spool when it is over the
+/// resident budget (always a blob).
+pub enum GlobalValue {
+    Bytes(Vec<u8>),
+    Spooled(Spool),
+}
+
+impl GlobalValue {
+    fn len(&self) -> u64 {
+        match self {
+            Self::Bytes(bytes) => bytes.len() as u64,
+            Self::Spooled(spool) => spool.len(),
+        }
+    }
+}
+
+/// `--global set`: one write against central. A value at or below the
+/// namespace's threshold (and not forced to a blob) is an inline CAS, as
+/// [`global_write`]. Anything else streams through the upload door into the
+/// namespace's blob placement and lands by publish-CAS (design §8–§10), so
+/// central only ever holds a reference to published bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn global_set(
+    store: &LocalStore,
+    primary: &dyn Pipeline,
+    identity: &Identity<'_>,
+    namespace: &str,
+    key: &str,
+    value: GlobalValue,
+    force_blob: bool,
+    expect: Option<u64>,
+    blobs: Option<&dyn crate::sweep::BlobUploader>,
+    sleep: &mut dyn FnMut(Duration),
+) -> Result<u64, GlobalError> {
+    let (definition, address) = address(primary, identity, namespace, key)?;
+    let len = value.len();
+    let value = match value {
+        GlobalValue::Bytes(bytes)
+            if crate::blob::place(len, definition.blob_threshold, force_blob)
+                == crate::blob::Placement::Inline =>
+        {
+            return global_write(
+                store,
+                primary,
+                identity,
+                namespace,
+                key,
+                Op::Set(bytes),
+                expect,
+                sleep,
+            );
+        }
+        value => value,
+    };
+    let Some(partition) = definition.placement.clone() else {
+        return Err(GlobalError::NoBlobPlacement {
+            namespace: namespace.to_string(),
+        });
+    };
+    let Some(uploader) = blobs else {
+        return Err(GlobalError::NeedsPhase3 {
+            threshold: definition.blob_threshold,
+        });
+    };
+    let (digest, mut reader): (String, Box<dyn Read>) = match &value {
+        GlobalValue::Bytes(bytes) => (
+            blake3::hash(bytes).to_hex().to_string(),
+            Box::new(std::io::Cursor::new(bytes.as_slice())),
+        ),
+        GlobalValue::Spooled(spool) => (
+            spool.digest.digest.clone(),
+            Box::new(
+                std::fs::File::open(&spool.path)
+                    .map_err(|error| GlobalError::Local(KvError::Io(error)))?,
+            ),
+        ),
+    };
+    let upload = crate::sweep::BlobUpload {
+        registry_id: &definition.registry_id,
+        namespace,
+        scope_id: &address.scope_id,
+        partition: &partition,
+        digest: &digest,
+        bytes_len: len,
+    };
+    let reference = uploader.upload(&upload, &mut reader)?;
+    drop(reader);
+    if reference.digest != digest || reference.bytes_len != len || reference.partition != partition
+    {
+        return Err(CentralError::Store(format!(
+            "the upload door answered a reference to other bytes: {} {} in {}",
+            reference.digest, reference.bytes_len, reference.partition
+        ))
+        .into());
+    }
+    let expected_version = match expect {
+        Some(version) => version,
+        None => central::head(primary, &address)?.map_or(0, |head| head.version),
+    };
+    let intent = Intent {
+        address,
+        expected_version,
+        op: Op::Set(reference.encode()),
+        idempotency: IdempotencyKey {
+            writer: identity.owner_user_id.to_string(),
+            host_incarnation: host_incarnation(store)?,
+            outbox_id: fresh_request_id(),
+        },
+    };
+    let receipt =
+        match crate::blob_central::publish_cas_with_retry(primary, &intent, &reference, sleep)? {
+            crate::blob_central::PublishCas::Decided(receipt) => receipt,
+            crate::blob_central::PublishCas::NotPublished => {
+                return Err(CentralError::Unavailable(
+                    "the blob was deleted before its reference landed; set it again".into(),
+                )
+                .into());
+            }
+        };
     match receipt.outcome {
         Outcome::Committed { version } => Ok(version),
         Outcome::Conflict {
@@ -492,6 +741,39 @@ mod tests {
     }
 
     #[test]
+    fn central_sync_pull_caches_the_blob_placement() {
+        let primary = primary();
+        let mut placed = Namespace::shared("status", "fleet-status");
+        placed.placement = Some(crate::blob::Partition::new("eu", "standard"));
+        define_namespace(&primary, &placed).unwrap();
+        let store = LocalStore::in_memory().unwrap();
+        pull_namespaces(&store, &primary).unwrap();
+        let Lookup::Known(status) = lookup(&store, "status").unwrap() else {
+            panic!("status should be cached");
+        };
+        assert_eq!(
+            status,
+            central::resolve(&primary, REGISTRY_ID, "status").unwrap()
+        );
+        assert_eq!(
+            status.placement,
+            Some(crate::blob::Partition::new("eu", "standard"))
+        );
+        let Lookup::Known(notes) = lookup(&store, "notes").unwrap() else {
+            panic!("notes should be cached");
+        };
+        assert_eq!(notes.placement, None);
+        // Dropping the placement reaches hosts on their next pull.
+        placed.placement = None;
+        define_namespace(&primary, &placed).unwrap();
+        pull_namespaces(&store, &primary).unwrap();
+        let Lookup::Known(status) = lookup(&store, "status").unwrap() else {
+            panic!("status should be cached");
+        };
+        assert_eq!(status.placement, None);
+    }
+
+    #[test]
     fn central_sync_sweeps_with_pulled_definitions() {
         let primary = primary();
         let store = LocalStore::in_memory().unwrap();
@@ -549,7 +831,7 @@ mod tests {
         assert_eq!(version, 1);
         let mut out = Vec::new();
         assert_eq!(
-            global_get(&primary, &me(), "status", "agent", &mut out).unwrap(),
+            global_get(&primary, &me(), "status", "agent", None, &mut out).unwrap(),
             1
         );
         assert_eq!(out, b"one");
@@ -578,7 +860,7 @@ mod tests {
         assert_eq!(deleted, 2);
         let mut out = Vec::new();
         assert!(matches!(
-            global_get(&primary, &me(), "status", "agent", &mut out),
+            global_get(&primary, &me(), "status", "agent", None, &mut out),
             Err(GlobalError::NotFound)
         ));
         assert!(
@@ -639,10 +921,10 @@ mod tests {
         .unwrap();
         let mut out = Vec::new();
         assert!(matches!(
-            global_get(&primary, &other, "notes", "todo", &mut out),
+            global_get(&primary, &other, "notes", "todo", None, &mut out),
             Err(GlobalError::NotFound)
         ));
-        let unknown = global_get(&primary, &me(), "nowhere", "todo", &mut out).unwrap_err();
+        let unknown = global_get(&primary, &me(), "nowhere", "todo", None, &mut out).unwrap_err();
         assert_eq!(unknown.code(), "unknown_namespace");
         assert!(!unknown.is_unavailable());
     }
@@ -678,5 +960,226 @@ mod tests {
         );
         let mut reader: &[u8] = b"1234";
         assert_eq!(read_bounded(&mut reader, 4).unwrap(), b"1234");
+    }
+
+    /// The upload door as the hosted worker runs it: check the bytes
+    /// against the assertion, publish them, answer the reference.
+    struct Door<'a> {
+        primary: &'a SqlitePrimary,
+        seen: std::sync::Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl crate::sweep::BlobUploader for Door<'_> {
+        fn upload(
+            &self,
+            upload: &crate::sweep::BlobUpload<'_>,
+            bytes: &mut dyn Read,
+        ) -> central::Result<crate::blob::KvBlobRefV1> {
+            let mut body = Vec::new();
+            bytes
+                .read_to_end(&mut body)
+                .map_err(|error| CentralError::Unavailable(error.to_string()))?;
+            assert_eq!(body.len() as u64, upload.bytes_len);
+            assert_eq!(blake3::hash(&body).to_hex().as_str(), upload.digest);
+            let reference = crate::blob::KvBlobRefV1 {
+                digest: upload.digest.to_string(),
+                bytes_len: upload.bytes_len,
+                partition: upload.partition.clone(),
+                locator: format!(
+                    "r2:kv/blobs/{}/{}/{}",
+                    upload.partition.jurisdiction, upload.partition.tier, upload.digest
+                ),
+            };
+            crate::blob_central::mark_published(self.primary, &reference)?;
+            self.seen.lock().unwrap().push(body);
+            Ok(reference)
+        }
+    }
+
+    fn placed_primary(threshold: u64) -> SqlitePrimary {
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut status = Namespace::shared("status", "fleet-status");
+        status.blob_threshold = threshold;
+        status.placement = Some(crate::blob::Partition::new("eu", "standard"));
+        define_namespace(&primary, &status).unwrap();
+        let mut bare = Namespace::shared("bare", "fleet-status");
+        bare.blob_threshold = threshold;
+        define_namespace(&primary, &bare).unwrap();
+        primary
+    }
+
+    fn set(
+        primary: &SqlitePrimary,
+        door: Option<&Door<'_>>,
+        namespace: &str,
+        key: &str,
+        value: GlobalValue,
+        force_blob: bool,
+    ) -> Result<u64, GlobalError> {
+        let store = LocalStore::in_memory().unwrap();
+        global_set(
+            &store,
+            primary,
+            &me(),
+            namespace,
+            key,
+            value,
+            force_blob,
+            None,
+            door.map(|door| door as &dyn crate::sweep::BlobUploader),
+            &mut no_sleep(),
+        )
+    }
+
+    fn reference_at(primary: &SqlitePrimary, key: &str) -> crate::blob::KvBlobRefV1 {
+        let head = central::head(primary, &Address::new("fleet-status", "status", key))
+            .unwrap()
+            .unwrap();
+        assert_eq!(head.envelope, "kv:ref-v1");
+        crate::blob::KvBlobRefV1::decode(&head.value).unwrap()
+    }
+
+    #[test]
+    fn central_global_set_streams_large_and_forced_values_through_the_door() {
+        let primary = placed_primary(4);
+        let door = Door {
+            primary: &primary,
+            seen: std::sync::Mutex::new(Vec::new()),
+        };
+        // At the threshold: inline, the door never sees it.
+        assert_eq!(
+            set(
+                &primary,
+                Some(&door),
+                "status",
+                "small",
+                GlobalValue::Bytes(b"1234".to_vec()),
+                false
+            )
+            .unwrap(),
+            1
+        );
+        let small = central::head(&primary, &Address::new("fleet-status", "status", "small"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(small.envelope, "kv:raw-v1");
+        assert_eq!(small.value, b"1234");
+        // Over it: a blob, and central holds only the reference.
+        assert_eq!(
+            set(
+                &primary,
+                Some(&door),
+                "status",
+                "big",
+                GlobalValue::Bytes(b"12345".to_vec()),
+                false
+            )
+            .unwrap(),
+            1
+        );
+        let big = reference_at(&primary, "big");
+        assert_eq!(big.bytes_len, 5);
+        assert_eq!(big.digest, blake3::hash(b"12345").to_hex().as_str());
+        assert_eq!(big.partition, crate::blob::Partition::new("eu", "standard"));
+        // --force-blob: a small value goes to a blob too.
+        assert_eq!(
+            set(
+                &primary,
+                Some(&door),
+                "status",
+                "forced",
+                GlobalValue::Bytes(b"ok".to_vec()),
+                true
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(reference_at(&primary, "forced").bytes_len, 2);
+        assert_eq!(
+            *door.seen.lock().unwrap(),
+            vec![b"12345".to_vec(), b"ok".to_vec()]
+        );
+    }
+
+    #[test]
+    fn central_global_set_blob_needs_a_placement_and_a_door() {
+        let primary = placed_primary(4);
+        let door = Door {
+            primary: &primary,
+            seen: std::sync::Mutex::new(Vec::new()),
+        };
+        let refused = set(
+            &primary,
+            Some(&door),
+            "bare",
+            "big",
+            GlobalValue::Bytes(b"12345".to_vec()),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "no_blob_placement");
+        let refused = set(
+            &primary,
+            None,
+            "status",
+            "big",
+            GlobalValue::Bytes(b"12345".to_vec()),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "pending_needs_phase3");
+        assert!(door.seen.lock().unwrap().is_empty());
+        for namespace in ["bare", "status"] {
+            assert!(
+                central::head(&primary, &Address::new("fleet-status", namespace, "big"))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn central_global_set_uploads_a_spool_exactly_and_removes_it() {
+        let primary = placed_primary(4);
+        let door = Door {
+            primary: &primary,
+            seen: std::sync::Mutex::new(Vec::new()),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-kv-spool-{}-{}",
+            std::process::id(),
+            fresh_request_id()
+        ));
+        let value: Vec<u8> = (0..70_000u32).map(|n| (n % 251) as u8).collect();
+        let mut rest = &value[10..];
+        let spool = Spool::create(&dir, &value[..10], &mut rest).unwrap();
+        assert_eq!(spool.len(), value.len() as u64);
+        assert!(!spool.is_empty());
+        let path = spool.path.clone();
+        assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+        }
+        assert_eq!(
+            set(
+                &primary,
+                Some(&door),
+                "status",
+                "spooled",
+                GlobalValue::Spooled(spool),
+                false
+            )
+            .unwrap(),
+            1
+        );
+        assert!(!path.exists(), "the spool file outlived the set");
+        assert_eq!(*door.seen.lock().unwrap(), vec![value.clone()]);
+        let reference = reference_at(&primary, "spooled");
+        assert_eq!(reference.bytes_len, value.len() as u64);
+        assert_eq!(reference.digest, blake3::hash(&value).to_hex().as_str());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

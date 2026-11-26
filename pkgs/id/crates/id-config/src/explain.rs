@@ -90,6 +90,8 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     peers(&written, &resolved, &mut entries)?;
     storage(&written, &resolved, &mut entries);
     tiers(&written, &resolved, &mut entries);
+    links(&written, &resolved, &mut entries)?;
+    namespaces(&written, &resolved, &mut entries);
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -396,6 +398,26 @@ fn peers(
         for (key, value) in fields {
             push(entries, &format!("{prefix}.{key}"), value, source(key));
         }
+        // Overrides that set nothing are dropped at resolution, so each
+        // one listed here was written.
+        for (operation, over) in &peer.overrides {
+            if let Some(adapter) = &over.adapter {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.adapter", operation.as_str()),
+                    adapter.clone(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+            if let Some(timeout) = over.timeout_ms {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.timeout_ms", operation.as_str()),
+                    timeout.to_string(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -447,6 +469,112 @@ fn storage(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<Explain
             source("object_store", "retention_class"),
         );
     }
+}
+
+fn links(
+    written: &Value,
+    resolved: &ResolvedConfig,
+    entries: &mut Vec<ExplainEntry>,
+) -> Result<(), ConfigError> {
+    // As in `storage`: only a non-null written value is the document's.
+    let source = |link: &str, key: &str| {
+        let set = written
+            .get("links")
+            .and_then(|l| l.get(link))
+            .and_then(|k| k.get(key))
+            .is_some_and(|v| !v.is_null());
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT }
+    };
+    let links = &resolved.links;
+    // An unset sync scope and query timeout come from another plane.
+    let sync_scope = links
+        .sync
+        .sync_scope
+        .unwrap_or(resolved.behavior.sync_scope);
+    let sync_scope_source = if links.sync.sync_scope.is_some() {
+        SOURCE_DOCUMENT
+    } else {
+        "behavior.sync_scope"
+    };
+    let timeout = links
+        .query
+        .timeout_ms
+        .unwrap_or(resolved.fanout.per_peer_timeout_ms);
+    let timeout_source = if links.query.timeout_ms.is_some() {
+        SOURCE_DOCUMENT
+    } else {
+        "fanout.per_peer_timeout_ms"
+    };
+    let fields: [(&str, &str, String, &str); 9] = [
+        (
+            "sync",
+            "enabled",
+            links.sync.enabled.to_string(),
+            source("sync", "enabled"),
+        ),
+        (
+            "sync",
+            "adapter",
+            links.sync.adapter.clone(),
+            source("sync", "adapter"),
+        ),
+        ("sync", "sync_scope", json(&sync_scope)?, sync_scope_source),
+        (
+            "sync",
+            "retention_class",
+            links.sync.retention_class.clone(),
+            source("sync", "retention_class"),
+        ),
+        (
+            "query",
+            "enabled",
+            links.query.enabled.to_string(),
+            source("query", "enabled"),
+        ),
+        ("query", "timeout_ms", timeout.to_string(), timeout_source),
+        (
+            "send_only",
+            "enabled",
+            links.send_only.enabled.to_string(),
+            source("send_only", "enabled"),
+        ),
+        (
+            "send_only",
+            "adapter",
+            links.send_only.adapter.clone(),
+            source("send_only", "adapter"),
+        ),
+        (
+            "send_only",
+            "retention_class",
+            links.send_only.retention_class.clone(),
+            source("send_only", "retention_class"),
+        ),
+    ];
+    for (link, key, value, from) in fields {
+        push(entries, &format!("links.{link}.{key}"), value, from);
+    }
+    push(
+        entries,
+        "links.control.enabled",
+        "true".to_owned(),
+        SOURCE_FIXED,
+    );
+    Ok(())
+}
+
+fn namespaces(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // As in `storage`: only a non-null written value is the document's.
+    let set = written
+        .get("namespaces")
+        .and_then(|n| n.get("registry"))
+        .is_some_and(|v| !v.is_null());
+    push(
+        entries,
+        "namespaces.registry",
+        Value::String(resolved.namespaces.registry.clone()).to_string(),
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT },
+    );
 }
 
 fn tiers(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {

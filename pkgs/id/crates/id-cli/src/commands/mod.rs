@@ -80,6 +80,7 @@ pub mod serve;
 #[cfg(feature = "web")]
 pub mod serve_publications;
 pub mod tag;
+pub mod talk;
 pub mod text;
 pub mod walk;
 #[cfg(feature = "world")]
@@ -116,6 +117,7 @@ pub use serve::{
     is_process_alive, remove_serve_lock,
 };
 pub use tag::{cmd_migrate_tags, cmd_tag};
+pub use talk::cmd_talk;
 pub use walk::cmd_walk;
 #[cfg(feature = "world")]
 pub use world::cmd_world;

@@ -329,6 +329,7 @@ async fn main() -> Result<()> {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_host,
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
@@ -381,6 +382,7 @@ async fn main() -> Result<()> {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_host,
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
@@ -444,6 +446,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
+        }
+        Some(Command::Talk { json, command }) => {
+            id::commands::cmd_talk(cli.event_store, json, command).await
         }
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await

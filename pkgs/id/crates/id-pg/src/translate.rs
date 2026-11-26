@@ -495,9 +495,9 @@ mod tests {
         ];
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "select"), Some("title,id"));
-        assert!(request.cursor_only.is_empty());
+        assert_eq!(request.cursor_only, [] as [std::string::String; 0]);
         let star = translator().translate(&Query::read("items")).unwrap();
-        assert!(star.cursor_only.is_empty());
+        assert_eq!(star.cursor_only, [] as [std::string::String; 0]);
     }
 
     #[test]

@@ -64,7 +64,7 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
 #[cfg(feature = "client")]
-pub mod needs_drew;
+pub mod needs_user;
 pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;

@@ -1292,7 +1292,11 @@ async function runDashboardNotificationTick(
         try {
           const item = await getNeedsDrew(cfg.needsDrewFile, candidate.needsDrew.ledgerId);
           if (item) {
-            const answerUrl = `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+            // #13469: with the edge relay configured, the answer page
+            // and its POST live on the Worker, so a push answers even
+            // while the laptop is away; the drain applies it here.
+            const answerOrigin = cfg.notifyRelay.url ? cfg.notifyRelay.url.replace(/\/+$/, "") : cfg.publicOrigin;
+            const answerUrl = `${answerOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
             payload.answer = { ledgerId: item.ledgerId, options: item.options, url: answerUrl };
             payload.url = answerUrl;
           }

@@ -76,7 +76,7 @@ fn crash_child_writer() {
         .unwrap_or(0);
     let store = LocalStore::open(PathBuf::from(path)).expect("child open");
     let mut stdout = std::io::stdout().lock();
-    for round in first.. {
+    for round in first..=u64::MAX {
         let key = key_for(round);
         let version = store
             .set(&identity(), NAMESPACE, &key, &value_for(round))

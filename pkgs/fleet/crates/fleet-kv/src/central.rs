@@ -29,6 +29,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::types::{ToSqlOutput, ValueRef};
+
+use crate::blob::Partition;
 use rusqlite::{Connection, TransactionBehavior};
 
 /// The registry handle of the distributed fleet registry (design §2).
@@ -41,7 +43,15 @@ pub const MAX_ATTEMPTS: u32 = 5;
 pub const BACKOFF_CAP: Duration = Duration::from_secs(1);
 
 /// The numbered migrations, oldest first.
-pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_central.sql"))];
+pub const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_central.sql")),
+    (2, include_str!("../migrations/0002_archive.sql")),
+    (3, include_str!("../migrations/0003_blobs.sql")),
+    (4, include_str!("../migrations/0004_placement.sql")),
+    (5, include_str!("../migrations/0005_envelope.sql")),
+    (6, include_str!("../migrations/0006_gc.sql")),
+    (7, include_str!("../migrations/0007_purge.sql")),
+];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,21 +64,21 @@ pub enum Value {
 }
 
 impl Value {
-    fn as_i64(&self) -> Option<i64> {
+    pub(crate) fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(*value),
             _ => None,
         }
     }
 
-    fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
             Self::Text(value) => Some(value),
             _ => None,
         }
     }
 
-    fn into_bytes(self) -> Option<Vec<u8>> {
+    pub(crate) fn into_bytes(self) -> Option<Vec<u8>> {
         match self {
             Self::Blob(value) => Some(value),
             Self::Text(value) => Some(value.into_bytes()),
@@ -89,11 +99,11 @@ impl rusqlite::ToSql for Value {
     }
 }
 
-fn text(value: &str) -> Value {
+pub(crate) fn text(value: &str) -> Value {
     Value::Text(value.to_string())
 }
 
-fn integer(value: u64) -> Value {
+pub(crate) fn integer(value: u64) -> Value {
     Value::Integer(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
@@ -108,7 +118,7 @@ impl Statement {
     /// A statement bound to the leading arguments it numbers: SQLite counts
     /// a statement's parameters up to its highest `?N`, so the shared
     /// argument list is cut to that length.
-    fn numbered(sql: &str, args: &[Value]) -> Self {
+    pub(crate) fn numbered(sql: &str, args: &[Value]) -> Self {
         let highest = highest_parameter(sql);
         Self {
             sql: sql.to_string(),
@@ -117,7 +127,7 @@ impl Statement {
     }
 }
 
-fn highest_parameter(sql: &str) -> usize {
+pub(crate) fn highest_parameter(sql: &str) -> usize {
     let bytes = sql.as_bytes();
     let mut highest = 0;
     let mut index = 0;
@@ -179,10 +189,10 @@ impl CentralError {
             Self::Unavailable(_) => "unavailable",
             Self::Store(_) => "central_store",
             Self::IdempotencyKeyReuse { .. } => "idempotency_key_reuse",
-            Self::Malformed(code) => *code,
+            Self::Malformed(code) => code,
             Self::UnknownNamespace { .. } => "unknown_namespace",
             Self::NotConfigured(_) => "central_not_configured",
-            Self::Refused { code, .. } => *code,
+            Self::Refused { code, .. } => code,
         }
     }
 
@@ -271,8 +281,17 @@ fn from_sqlite(value: rusqlite::types::Value) -> Value {
     }
 }
 
-impl Pipeline for SqlitePrimary {
-    fn transaction(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
+impl SqlitePrimary {
+    /// Runs statements that are not in the [`crate::catalog`], such as a
+    /// test fixture's bulk seed. Everything else goes through
+    /// [`Pipeline::transaction`], which in tests refuses unlisted SQL so the
+    /// hosted door's catalog cannot fall behind the client.
+    #[cfg(test)]
+    pub(crate) fn transaction_unlisted(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
+        self.run(statements)
+    }
+
+    fn run(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
         let mut connection = self
             .connection
             .lock()
@@ -283,11 +302,7 @@ impl Pipeline for SqlitePrimary {
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
             let mut prepared = transaction.prepare(&statement.sql).map_err(store)?;
-            let columns: Vec<String> = prepared
-                .column_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect();
+            let columns: Vec<String> = prepared.column_names().map(str::to_string).collect();
             let mut rows = prepared
                 .query(rusqlite::params_from_iter(statement.args.iter()))
                 .map_err(store)?;
@@ -310,6 +325,21 @@ impl Pipeline for SqlitePrimary {
     }
 }
 
+impl Pipeline for SqlitePrimary {
+    fn transaction(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
+        if cfg!(test) {
+            for statement in statements {
+                assert!(
+                    crate::catalog::is_known(&statement.sql),
+                    "a statement the hosted kv door would refuse, missing from catalog.rs: {}",
+                    statement.sql
+                );
+            }
+        }
+        self.run(statements)
+    }
+}
+
 /// The statements of one migration file, in order.
 pub fn migration_statements(source: &str) -> Vec<String> {
     let without_comments: String = source
@@ -329,14 +359,8 @@ pub fn migration_statements(source: &str) -> Vec<String> {
 /// transaction with its `kv_central_migrations` row. Re-running is a no-op.
 pub fn migrate(primary: &dyn Pipeline) -> Result<()> {
     let applied = primary.transaction(&[
-        Statement::numbered(
-            "CREATE TABLE IF NOT EXISTS kv_central_migrations (
-                 version INTEGER PRIMARY KEY,
-                 applied_at_ms INTEGER NOT NULL
-             )",
-            &[],
-        ),
-        Statement::numbered("SELECT version FROM kv_central_migrations", &[]),
+        Statement::numbered(MIGRATIONS_TABLE, &[]),
+        Statement::numbered(MIGRATIONS_READ, &[]),
     ])?;
     let applied: Vec<i64> = applied
         .get(1)
@@ -351,7 +375,7 @@ pub fn migrate(primary: &dyn Pipeline) -> Result<()> {
             .map(|sql| Statement::numbered(sql, &[]))
             .collect();
         statements.push(Statement::numbered(
-            "INSERT OR IGNORE INTO kv_central_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+            MIGRATION_RECORD,
             &[Value::Integer(*version), Value::Integer(now_ms())],
         ));
         primary.transaction(&statements)?;
@@ -359,7 +383,7 @@ pub fn migrate(primary: &dyn Pipeline) -> Result<()> {
     Ok(())
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
@@ -395,14 +419,14 @@ pub enum Op {
 }
 
 impl Op {
-    fn state(&self) -> &'static str {
+    pub(crate) fn state(&self) -> &'static str {
         match self {
             Self::Set(_) => "live",
             Self::Tombstone => "tombstone",
         }
     }
 
-    fn value(&self) -> &[u8] {
+    pub(crate) fn value(&self) -> &[u8] {
         match self {
             Self::Set(value) => value,
             Self::Tombstone => &[],
@@ -473,7 +497,10 @@ pub struct Receipt {
     pub replayed: bool,
 }
 
-const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
+/// The receipt insert as a literal, so the publish-CAS can extend it.
+macro_rules! receipt_insert {
+    () => {
+        "INSERT OR IGNORE INTO idem_receipts (
         writer, host_incarnation, outbox_id, request_fingerprint, attempt,
         scope_id, registry_id, namespace, key, expected_version,
         outcome, version, recorded_at_ms)
@@ -482,39 +509,92 @@ const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
         CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,
         ?13
     FROM (SELECT COALESCE((SELECT version FROM kv_heads
-        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head";
+        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head"
+    };
+}
 
-const THIS_ATTEMPT: &str = "receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12";
+/// The inline CAS receipt. Central refuses inline bytes above the
+/// namespace's threshold (#13318 acceptance 1): such a request records no
+/// receipt, so nothing else in the transaction moves, and [`cas`] answers
+/// `inline_above_ceiling`. A tombstone carries no bytes and always passes.
+pub(crate) const RECEIPT_INSERT: &str = concat!(
+    receipt_insert!(),
+    "\n    WHERE NOT EXISTS (SELECT 1 FROM kv_namespaces AS ns\n        WHERE ns.registry_id = ?2 AND ns.namespace = ?3\n          AND IFNULL(length(?7), 0) > ns.blob_threshold)"
+);
 
-fn conflict_insert() -> String {
-    format!(
-        "INSERT INTO kv_conflicts (
+/// The publish-CAS receipt (#13318, design §8): decided only while the
+/// blob it names is published in its partition (`?14` jurisdiction, `?15`
+/// tier, `?16` content id). With no published row no receipt is written,
+/// so nothing else in the transaction moves.
+pub(crate) const BLOB_RECEIPT_INSERT: &str = concat!(
+    receipt_insert!(),
+    "\n    WHERE EXISTS (SELECT 1 FROM kv_blobs AS blob\n        WHERE blob.jurisdiction = ?14 AND blob.tier = ?15 AND blob.content_id = ?16)"
+);
+
+macro_rules! this_attempt {
+    () => {
+        "receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12"
+    };
+}
+
+pub(crate) const CONFLICT_INSERT: &str = concat!(
+    "INSERT INTO kv_conflicts (
             scope_id, registry_id, namespace, key, expected_version, actual_version,
             proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13
         FROM idem_receipts AS receipt
-        WHERE {THIS_ATTEMPT} AND receipt.outcome = 'conflict'"
-    )
-}
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'conflict'"
+);
 
-fn version_insert() -> String {
-    format!(
-        "INSERT INTO kv_versions (
+pub(crate) const VERSION_INSERT: &str = concat!(
+    "INSERT INTO kv_versions (
             scope_id, registry_id, namespace, key, version, parent_version,
             state, value, writer, host_incarnation, outbox_id, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13
         FROM idem_receipts AS receipt
-        WHERE {THIS_ATTEMPT} AND receipt.outcome = 'committed'"
-    )
-}
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'"
+);
 
-fn head_upsert() -> String {
-    format!(
-        "INSERT INTO kv_heads (
+/// The publish-CAS conflict body: as [`CONFLICT_INSERT`], proposing a
+/// blob reference (design §11).
+pub(crate) const BLOB_CONFLICT_INSERT: &str = concat!(
+    "INSERT INTO kv_conflicts (
+            scope_id, registry_id, namespace, key, expected_version, actual_version,
+            proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms,
+            proposed_envelope)
+        SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'
+        FROM idem_receipts AS receipt
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'conflict'"
+);
+
+/// The publish-CAS version: as [`VERSION_INSERT`], whose value is a blob
+/// reference (design §11). The head the same transaction writes takes its
+/// envelope from this row.
+pub(crate) const BLOB_VERSION_INSERT: &str = concat!(
+    "INSERT INTO kv_versions (
+            scope_id, registry_id, namespace, key, version, parent_version,
+            state, value, writer, host_incarnation, outbox_id, written_at_ms, envelope)
+        SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'
+        FROM idem_receipts AS receipt
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'"
+);
+
+pub(crate) const HEAD_UPSERT: &str = concat!(
+    "INSERT INTO kv_heads (
             scope_id, registry_id, namespace, key, version, state, value, writer, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, receipt.version, ?6, ?7, ?8, ?13
         FROM idem_receipts AS receipt
-        WHERE {THIS_ATTEMPT} AND receipt.outcome = 'committed'
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'
         ON CONFLICT (scope_id, registry_id, namespace, key) DO UPDATE SET
             version = excluded.version,
             state = excluded.state,
@@ -522,10 +602,10 @@ fn head_upsert() -> String {
             writer = excluded.writer,
             written_at_ms = excluded.written_at_ms
         WHERE kv_heads.version = ?5"
-    )
-}
+);
 
-const RECEIPT_READ: &str = "SELECT receipt.request_fingerprint, receipt.attempt, receipt.outcome,
+pub(crate) const RECEIPT_READ: &str =
+    "SELECT receipt.request_fingerprint, receipt.attempt, receipt.outcome,
         receipt.expected_version, receipt.version,
         (SELECT conflict.id FROM kv_conflicts AS conflict
          WHERE conflict.writer = ?8 AND conflict.host_incarnation = ?9
@@ -534,7 +614,7 @@ const RECEIPT_READ: &str = "SELECT receipt.request_fingerprint, receipt.attempt,
     WHERE receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10";
 
 /// A nonce for one transaction attempt; unique per process and call.
-fn attempt_nonce() -> String {
+pub(crate) fn attempt_nonce() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut hasher = blake3::Hasher::new();
@@ -552,7 +632,19 @@ fn attempt_nonce() -> String {
 
 /// The statements of one CAS transaction, for `attempt`.
 pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
-    let args = [
+    let args = cas_args(intent, attempt);
+    vec![
+        Statement::numbered(RECEIPT_INSERT, &args),
+        Statement::numbered(CONFLICT_INSERT, &args),
+        Statement::numbered(VERSION_INSERT, &args),
+        Statement::numbered(HEAD_UPSERT, &args),
+        Statement::numbered(RECEIPT_READ, &args),
+    ]
+}
+
+/// The thirteen positional arguments every CAS statement shares.
+pub(crate) fn cas_args(intent: &Intent, attempt: &str) -> Vec<Value> {
+    vec![
         text(&intent.address.scope_id),
         text(&intent.address.registry_id),
         text(&intent.address.namespace),
@@ -566,13 +658,6 @@ pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
         text(&intent.fingerprint()),
         text(attempt),
         Value::Integer(now_ms()),
-    ];
-    vec![
-        Statement::numbered(RECEIPT_INSERT, &args),
-        Statement::numbered(&conflict_insert(), &args),
-        Statement::numbered(&version_insert(), &args),
-        Statement::numbered(&head_upsert(), &args),
-        Statement::numbered(RECEIPT_READ, &args),
     ]
 }
 
@@ -580,11 +665,33 @@ pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
 pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
     validate(&intent.address)?;
     let attempt = attempt_nonce();
-    let results = primary.transaction(&cas_statements(intent, &attempt))?;
-    let row = results
-        .last()
-        .and_then(|rows| rows.rows.first())
-        .ok_or_else(|| CentralError::Store("the CAS transaction returned no receipt".into()))?;
+    decide(primary, intent, &cas_statements(intent, &attempt), &attempt)?.ok_or_else(|| {
+        CentralError::Refused {
+            code: INLINE_ABOVE_CEILING,
+            message: format!(
+                "{} bytes are above namespace {}'s inline threshold; central keeps them only as a blob",
+                intent.op.value().len(),
+                intent.address.namespace
+            ),
+        }
+    })
+}
+
+/// The typed refusal for inline bytes above the namespace's threshold.
+pub const INLINE_ABOVE_CEILING: &str = "inline_above_ceiling";
+
+/// Run one CAS-shaped transaction whose last statement reads the receipt,
+/// and decode it. `None` when no receipt was recorded for the key.
+pub(crate) fn decide(
+    primary: &dyn Pipeline,
+    intent: &Intent,
+    statements: &[Statement],
+    attempt: &str,
+) -> Result<Option<Receipt>> {
+    let results = primary.transaction(statements)?;
+    let Some(row) = results.last().and_then(|rows| rows.rows.first()) else {
+        return Ok(None);
+    };
     let field = |index: usize| row.get(index).cloned().unwrap_or(Value::Null);
     let recorded_fingerprint = field(0).as_str().unwrap_or_default().to_string();
     let fingerprint = intent.fingerprint();
@@ -594,7 +701,7 @@ pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
             fingerprint,
         });
     }
-    let replayed = field(1).as_str() != Some(attempt.as_str());
+    let replayed = field(1).as_str() != Some(attempt);
     let expected = field(3).as_i64().unwrap_or(0).max(0) as u64;
     let version = field(4).as_i64().unwrap_or(0).max(0) as u64;
     let outcome = match field(2).as_str() {
@@ -612,7 +719,7 @@ pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
             )));
         }
     };
-    Ok(Receipt { outcome, replayed })
+    Ok(Some(Receipt { outcome, replayed }))
 }
 
 /// Bounded retries for one CAS (design §5): at most [`MAX_ATTEMPTS`]
@@ -625,10 +732,21 @@ pub fn cas_with_retry(
     intent: &Intent,
     sleep: &mut dyn FnMut(Duration),
 ) -> Result<Receipt> {
+    with_retry(intent, sleep, || cas(primary, intent))
+}
+
+/// Run `attempt` until it succeeds, fails for good, or [`MAX_ATTEMPTS`]
+/// attempts have met an unavailable primary, with full-jitter backoff
+/// seeded by `intent`'s fingerprint between them.
+pub(crate) fn with_retry<T>(
+    intent: &Intent,
+    sleep: &mut dyn FnMut(Duration),
+    mut attempt_once: impl FnMut() -> Result<T>,
+) -> Result<T> {
     let mut jitter = Jitter::seeded(&intent.fingerprint());
     let mut attempt = 1;
     loop {
-        match cas(primary, intent) {
+        match attempt_once() {
             Err(error) if error.is_retryable() && attempt < MAX_ATTEMPTS => {
                 sleep(jitter.backoff(attempt));
                 attempt += 1;
@@ -670,9 +788,21 @@ impl Jitter {
 pub struct Head {
     pub version: u64,
     pub live: bool,
+    /// The stored bytes: the value itself, or for a `kv:ref-v1` head the
+    /// encoded blob reference.
     pub value: Vec<u8>,
     pub writer: String,
     pub written_at_ms: i64,
+    /// The row envelope version (design §11): `kv:raw-v1` or `kv:ref-v1`.
+    pub envelope: String,
+}
+
+impl Head {
+    /// The head's value under its envelope. An envelope this client does
+    /// not know is refused, never read as bytes.
+    pub fn envelope(&self) -> std::result::Result<crate::blob::Envelope, crate::blob::BlobError> {
+        crate::blob::Envelope::from_row(&self.envelope, &self.value)
+    }
 }
 
 /// One row of a key's history.
@@ -696,7 +826,119 @@ pub struct Conflict {
     pub idempotency: IdempotencyKey,
 }
 
-const ADDRESS_FILTER: &str = "scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4";
+macro_rules! address_filter {
+    () => {
+        "scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4"
+    };
+}
+
+pub(crate) const HEAD_READ: &str = concat!(
+    "SELECT version, state, value, writer, written_at_ms FROM kv_heads WHERE ",
+    address_filter!()
+);
+
+pub(crate) const HISTORY_READ: &str = concat!(
+    "SELECT version, parent_version, state, value, writer, host_incarnation, outbox_id
+             FROM kv_versions WHERE ",
+    address_filter!(),
+    " ORDER BY version"
+);
+
+pub(crate) const CONFLICTS_READ: &str = concat!(
+    "SELECT id, expected_version, actual_version, proposed_state, proposed_value,
+                    writer, host_incarnation, outbox_id
+             FROM kv_conflicts WHERE ",
+    address_filter!(),
+    " ORDER BY id"
+);
+
+/// The envelope of a head: its version row's, inline bytes when that row
+/// is absent (a head written before history was kept).
+macro_rules! head_envelope {
+    () => {
+        "COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row
+            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id
+              AND version_row.namespace = head.namespace AND version_row.key = head.key
+              AND version_row.version = head.version), 'kv:raw-v1')"
+    };
+}
+
+/// [`HEAD_READ`] with the head's envelope (design §11).
+pub(crate) const HEAD_ENVELOPED_READ: &str = concat!(
+    "SELECT head.version, head.state, head.value, head.writer, head.written_at_ms, ",
+    head_envelope!(),
+    "
+         FROM kv_heads AS head
+         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3 AND head.key = ?4"
+);
+
+/// [`HEADS_READ`] with each head's envelope (design §11).
+pub(crate) const HEADS_ENVELOPED_READ: &str = concat!(
+    "SELECT head.key, head.version, head.state, head.value, head.writer, head.written_at_ms, ",
+    head_envelope!(),
+    "
+         FROM kv_heads AS head
+         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3
+         ORDER BY head.key"
+);
+
+pub(crate) const HEADS_READ: &str =
+    "SELECT key, version, state, value, writer, written_at_ms FROM kv_heads
+         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key";
+
+pub(crate) const LISTING_READ: &str = "SELECT key, version, state FROM kv_heads
+         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key";
+
+pub(crate) const NAMESPACE_UPSERT: &str = "INSERT INTO kv_namespaces (
+                 registry_id, namespace, scope_kind, shared_scope_id, core_binding,
+                 global_flag, blob_threshold, policy_epoch, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (registry_id, namespace) DO UPDATE SET
+                 scope_kind = excluded.scope_kind,
+                 shared_scope_id = excluded.shared_scope_id,
+                 core_binding = excluded.core_binding,
+                 global_flag = excluded.global_flag,
+                 blob_threshold = excluded.blob_threshold,
+                 policy_epoch = MAX(kv_namespaces.policy_epoch + 1, excluded.policy_epoch),
+                 updated_at_ms = excluded.updated_at_ms";
+
+pub(crate) const NAMESPACE_EPOCH_READ: &str =
+    "SELECT policy_epoch FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2";
+
+pub(crate) const NAMESPACES_READ: &str =
+    "SELECT registry_id, namespace, scope_kind, shared_scope_id, core_binding,
+                global_flag, blob_threshold, policy_epoch
+         FROM kv_namespaces WHERE registry_id = ?1 ORDER BY namespace";
+
+/// Set a namespace's blob placement, only beside its definition: `?1`
+/// registry, `?2` namespace, `?3` jurisdiction, `?4` tier, `?5` now.
+pub(crate) const PLACEMENT_UPSERT: &str = "INSERT INTO kv_namespace_placement (
+                 registry_id, namespace, jurisdiction, tier, updated_at_ms)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE EXISTS (SELECT 1 FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2)
+             ON CONFLICT (registry_id, namespace) DO UPDATE SET
+                 jurisdiction = excluded.jurisdiction,
+                 tier = excluded.tier,
+                 updated_at_ms = excluded.updated_at_ms";
+
+/// Drop a namespace's blob placement: `?1` registry, `?2` namespace.
+pub(crate) const PLACEMENT_DELETE: &str =
+    "DELETE FROM kv_namespace_placement WHERE registry_id = ?1 AND namespace = ?2";
+
+/// Every placement in a registry: `?1` registry.
+pub(crate) const PLACEMENTS_READ: &str =
+    "SELECT namespace, jurisdiction, tier FROM kv_namespace_placement
+         WHERE registry_id = ?1 ORDER BY namespace";
+
+pub(crate) const MIGRATIONS_TABLE: &str = "CREATE TABLE IF NOT EXISTS kv_central_migrations (
+                 version INTEGER PRIMARY KEY,
+                 applied_at_ms INTEGER NOT NULL
+             )";
+
+pub(crate) const MIGRATIONS_READ: &str = "SELECT version FROM kv_central_migrations";
+
+pub(crate) const MIGRATION_RECORD: &str =
+    "INSERT OR IGNORE INTO kv_central_migrations (version, applied_at_ms) VALUES (?1, ?2)";
 
 fn address_args(address: &Address) -> [Value; 4] {
     [
@@ -707,7 +949,7 @@ fn address_args(address: &Address) -> [Value; 4] {
     ]
 }
 
-fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Value>>> {
+pub(crate) fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Value>>> {
     Ok(primary
         .transaction(&[Statement::numbered(sql, args)])?
         .into_iter()
@@ -716,11 +958,11 @@ fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Val
         .unwrap_or_default())
 }
 
-fn unsigned(value: &Value) -> u64 {
+pub(crate) fn unsigned(value: &Value) -> u64 {
     value.as_i64().unwrap_or(0).max(0) as u64
 }
 
-fn string(value: &Value) -> String {
+pub(crate) fn string(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 
@@ -734,13 +976,7 @@ fn op_of(state: &Value, value: Value) -> Op {
 
 /// The authoritative head of `address`, tombstones included.
 pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
-    let rows = read(
-        primary,
-        &format!(
-            "SELECT version, state, value, writer, written_at_ms FROM kv_heads WHERE {ADDRESS_FILTER}"
-        ),
-        &address_args(address),
-    )?;
+    let rows = read(primary, HEAD_ENVELOPED_READ, &address_args(address))?;
     Ok(rows.into_iter().next().map(|mut row| {
         let value = std::mem::replace(&mut row[2], Value::Null);
         Head {
@@ -749,6 +985,7 @@ pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
             value: value.into_bytes().unwrap_or_default(),
             writer: string(&row[3]),
             written_at_ms: row[4].as_i64().unwrap_or(0),
+            envelope: string(&row[5]),
         }
     }))
 }
@@ -762,8 +999,7 @@ pub fn heads(
 ) -> Result<Vec<(String, Head)>> {
     let rows = read(
         primary,
-        "SELECT key, version, state, value, writer, written_at_ms FROM kv_heads
-         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key",
+        HEADS_ENVELOPED_READ,
         &[text(scope_id), text(registry_id), text(namespace)],
     )?;
     Ok(rows
@@ -778,6 +1014,7 @@ pub fn heads(
                     value: value.into_bytes().unwrap_or_default(),
                     writer: string(&row[4]),
                     written_at_ms: row[5].as_i64().unwrap_or(0),
+                    envelope: string(&row[6]),
                 },
             )
         })
@@ -801,8 +1038,7 @@ pub fn listing(
 ) -> Result<Vec<Listed>> {
     let rows = read(
         primary,
-        "SELECT key, version, state FROM kv_heads
-         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key",
+        LISTING_READ,
         &[text(scope_id), text(registry_id), text(namespace)],
     )?;
     Ok(rows
@@ -817,14 +1053,7 @@ pub fn listing(
 
 /// Every committed version of `address`, oldest first.
 pub fn history(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Version>> {
-    let rows = read(
-        primary,
-        &format!(
-            "SELECT version, parent_version, state, value, writer, host_incarnation, outbox_id
-             FROM kv_versions WHERE {ADDRESS_FILTER} ORDER BY version"
-        ),
-        &address_args(address),
-    )?;
+    let rows = read(primary, HISTORY_READ, &address_args(address))?;
     Ok(rows
         .into_iter()
         .map(|mut row| {
@@ -848,15 +1077,7 @@ pub fn history(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Version>
 
 /// Every failed CAS on `address`, oldest first.
 pub fn conflicts(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Conflict>> {
-    let rows = read(
-        primary,
-        &format!(
-            "SELECT id, expected_version, actual_version, proposed_state, proposed_value,
-                    writer, host_incarnation, outbox_id
-             FROM kv_conflicts WHERE {ADDRESS_FILTER} ORDER BY id"
-        ),
-        &address_args(address),
-    )?;
+    let rows = read(primary, CONFLICTS_READ, &address_args(address))?;
     Ok(rows
         .into_iter()
         .map(|mut row| {
@@ -896,6 +1117,9 @@ pub struct Namespace {
     pub global_flag: bool,
     pub blob_threshold: u64,
     pub policy_epoch: u64,
+    /// The partition every blob of this namespace goes to; `None` places
+    /// none (no default partition, acceptance item 6).
+    pub placement: Option<Partition>,
 }
 
 impl Namespace {
@@ -909,6 +1133,7 @@ impl Namespace {
             global_flag: false,
             blob_threshold: DEFAULT_BLOB_THRESHOLD,
             policy_epoch: 1,
+            placement: None,
         }
     }
 
@@ -931,15 +1156,35 @@ impl Namespace {
     }
 }
 
-/// The private scope of `(owner, context)`: a hash, so no choice of names can
-/// make two identities share a scope or collide with a shared scope id.
+/// The private scope of `(owner, context)`: `private:`, the owner's id in
+/// lowercase hex, `:`, then a hash of both. The hash means no choice of names
+/// can make two identities share a scope or collide with a shared scope id;
+/// the hex owner lets the hosted door check that a private scope belongs to
+/// the authenticated caller without knowing the context.
 pub fn private_scope_id(owner_user_id: &str, context_id: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     for field in [owner_user_id, context_id] {
         hasher.update(&(field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
     }
-    format!("private:{}", hasher.finalize().to_hex())
+    format!(
+        "{}{}",
+        private_scope_prefix(owner_user_id),
+        hasher.finalize().to_hex()
+    )
+}
+
+/// The prefix every private scope of `owner_user_id` starts with.
+pub fn private_scope_prefix(owner_user_id: &str) -> String {
+    let mut prefix = String::with_capacity(9 + owner_user_id.len() * 2);
+    prefix.push_str("private:");
+    for byte in owner_user_id.bytes() {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        prefix.push(char::from(HEX[usize::from(byte >> 4)]));
+        prefix.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    prefix.push(':');
+    prefix
 }
 
 /// Writes a namespace definition. The stored policy epoch becomes one more
@@ -968,26 +1213,33 @@ pub fn define_namespace(primary: &dyn Pipeline, definition: &Namespace) -> Resul
         integer(definition.policy_epoch.max(1)),
         Value::Integer(now_ms()),
     ];
+    let placement = match &definition.placement {
+        Some(partition) => {
+            if !crate::blob::valid_label(&partition.jurisdiction)
+                || !crate::blob::valid_label(&partition.tier)
+            {
+                return Err(CentralError::Malformed("malformed_partition"));
+            }
+            Statement::numbered(
+                PLACEMENT_UPSERT,
+                &[
+                    text(&definition.registry_id),
+                    text(&definition.namespace),
+                    text(&partition.jurisdiction),
+                    text(&partition.tier),
+                    Value::Integer(now_ms()),
+                ],
+            )
+        }
+        None => Statement::numbered(
+            PLACEMENT_DELETE,
+            &[text(&definition.registry_id), text(&definition.namespace)],
+        ),
+    };
     let results = primary.transaction(&[
-        Statement::numbered(
-            "INSERT INTO kv_namespaces (
-                 registry_id, namespace, scope_kind, shared_scope_id, core_binding,
-                 global_flag, blob_threshold, policy_epoch, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT (registry_id, namespace) DO UPDATE SET
-                 scope_kind = excluded.scope_kind,
-                 shared_scope_id = excluded.shared_scope_id,
-                 core_binding = excluded.core_binding,
-                 global_flag = excluded.global_flag,
-                 blob_threshold = excluded.blob_threshold,
-                 policy_epoch = MAX(kv_namespaces.policy_epoch + 1, excluded.policy_epoch),
-                 updated_at_ms = excluded.updated_at_ms",
-            &args,
-        ),
-        Statement::numbered(
-            "SELECT policy_epoch FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2",
-            &args,
-        ),
+        Statement::numbered(NAMESPACE_UPSERT, &args),
+        placement,
+        Statement::numbered(NAMESPACE_EPOCH_READ, &args),
     ])?;
     results
         .last()
@@ -998,13 +1250,29 @@ pub fn define_namespace(primary: &dyn Pipeline, definition: &Namespace) -> Resul
 
 /// Every namespace defined in `registry_id`, by name.
 pub fn namespaces(primary: &dyn Pipeline, registry_id: &str) -> Result<Vec<Namespace>> {
-    let rows = read(
-        primary,
-        "SELECT registry_id, namespace, scope_kind, shared_scope_id, core_binding,
-                global_flag, blob_threshold, policy_epoch
-         FROM kv_namespaces WHERE registry_id = ?1 ORDER BY namespace",
-        &[text(registry_id)],
-    )?;
+    let registry = [text(registry_id)];
+    let mut results = primary.transaction(&[
+        Statement::numbered(NAMESPACES_READ, &registry),
+        Statement::numbered(PLACEMENTS_READ, &registry),
+    ])?;
+    if results.len() != 2 {
+        return Err(CentralError::Store(
+            "the namespace read answered the wrong number of results".into(),
+        ));
+    }
+    let placements: std::collections::HashMap<String, Partition> = results
+        .pop()
+        .map(|rows| rows.rows)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| {
+            (
+                string(&row[0]),
+                Partition::new(&string(&row[1]), &string(&row[2])),
+            )
+        })
+        .collect();
+    let rows = results.pop().map(|rows| rows.rows).unwrap_or_default();
     Ok(rows
         .into_iter()
         .map(|row| Namespace {
@@ -1019,6 +1287,7 @@ pub fn namespaces(primary: &dyn Pipeline, registry_id: &str) -> Result<Vec<Names
             global_flag: row[5].as_i64() == Some(1),
             blob_threshold: unsigned(&row[6]),
             policy_epoch: unsigned(&row[7]),
+            placement: placements.get(&string(&row[1])).cloned(),
         })
         .collect())
 }
@@ -1037,7 +1306,7 @@ pub fn resolve(primary: &dyn Pipeline, registry_id: &str, namespace: &str) -> Re
         })
 }
 
-fn validate(address: &Address) -> Result<()> {
+pub(crate) fn validate(address: &Address) -> Result<()> {
     crate::validate_namespace(&address.namespace)
         .map_err(|_| CentralError::Malformed("malformed_namespace"))?;
     crate::validate_key(&address.key).map_err(|_| CentralError::Malformed("malformed_key"))?;
@@ -1093,8 +1362,16 @@ mod tests {
         assert!(statements.iter().all(|sql| !sql.contains(';')));
         let primary = SqlitePrimary::in_memory().expect("primary");
         migrate(&primary).expect("second run is a no-op");
-        let recorded = read(&primary, "SELECT COUNT(*) FROM kv_central_migrations", &[]).unwrap();
-        assert_eq!(recorded[0][0], Value::Integer(MIGRATIONS.len() as i64));
+        let recorded = primary
+            .transaction_unlisted(&[Statement::numbered(
+                "SELECT COUNT(*) FROM kv_central_migrations",
+                &[],
+            )])
+            .unwrap();
+        assert_eq!(
+            recorded[0].rows[0][0],
+            Value::Integer(MIGRATIONS.len() as i64)
+        );
     }
 
     #[test]
@@ -1104,6 +1381,28 @@ mod tests {
         for statement in cas_statements(&intent(&status(), 0, set("x"), "a", "1"), "nonce") {
             assert_eq!(statement.args.len(), highest_parameter(&statement.sql));
         }
+    }
+
+    #[test]
+    fn central_refuses_inline_bytes_above_the_namespace_threshold() {
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut tight = Namespace::shared("status", "shared:team");
+        tight.blob_threshold = 4;
+        define_namespace(&primary, &tight).unwrap();
+        let refused = cas(&primary, &intent(&status(), 0, set("12345"), "a", "1")).unwrap_err();
+        assert_eq!(refused.code(), INLINE_ABOVE_CEILING);
+        assert!(!refused.is_retryable());
+        assert_eq!(head(&primary, &status()).unwrap(), None);
+        assert!(history(&primary, &status()).unwrap().is_empty());
+        // At the threshold it commits, and a tombstone always passes.
+        let at = cas(&primary, &intent(&status(), 0, set("1234"), "a", "2")).unwrap();
+        assert_eq!(committed(&at), 1);
+        let gone = cas(&primary, &intent(&status(), 1, Op::Tombstone, "a", "3")).unwrap();
+        assert_eq!(committed(&gone), 2);
+        // An undefined namespace has no threshold to hold to here.
+        let elsewhere = Address::new("shared:team", "other", "k");
+        let free = cas(&primary, &intent(&elsewhere, 0, set("123456789"), "a", "4")).unwrap();
+        assert_eq!(committed(&free), 1);
     }
 
     #[test]
@@ -1212,6 +1511,8 @@ mod tests {
     fn central_private_scope_ids_do_not_collide_by_concatenation() {
         assert_ne!(private_scope_id("ab", "c"), private_scope_id("a", "bc"));
         assert!(private_scope_id("a", "b").starts_with("private:"));
+        assert!(private_scope_id("drew", "laptop").starts_with("private:64726577:"));
+        assert_eq!(private_scope_prefix("drew"), "private:64726577:");
     }
 
     #[test]
@@ -1250,6 +1551,47 @@ mod tests {
                 .code(),
             "malformed_namespace"
         );
+    }
+
+    #[test]
+    fn central_namespace_placement_is_stored_read_and_dropped() {
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut status = Namespace::shared("status", "shared:team");
+        assert_eq!(resolve_after(&primary, &status).placement, None);
+        status.placement = Some(Partition::new("eu", "standard"));
+        assert_eq!(
+            resolve_after(&primary, &status).placement,
+            Some(Partition::new("eu", "standard"))
+        );
+        define_namespace(&primary, &Namespace::private("notes")).unwrap();
+        let listed = namespaces(&primary, REGISTRY_ID).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].placement, None);
+        assert_eq!(listed[1].placement, Some(Partition::new("eu", "standard")));
+        // Moving or dropping the placement is a redefinition like any other.
+        status.placement = Some(Partition::new("us", "cold"));
+        let moved = resolve_after(&primary, &status);
+        assert_eq!(moved.placement, Some(Partition::new("us", "cold")));
+        assert_eq!(moved.policy_epoch, 3);
+        status.placement = None;
+        assert_eq!(resolve_after(&primary, &status).placement, None);
+        // A malformed label is refused before anything is written.
+        status.placement = Some(Partition::new("EU", "standard"));
+        assert_eq!(
+            define_namespace(&primary, &status).unwrap_err().code(),
+            "malformed_partition"
+        );
+        assert_eq!(
+            resolve(&primary, REGISTRY_ID, "status")
+                .unwrap()
+                .policy_epoch,
+            4
+        );
+    }
+
+    fn resolve_after(primary: &SqlitePrimary, definition: &Namespace) -> Namespace {
+        define_namespace(primary, definition).unwrap();
+        resolve(primary, REGISTRY_ID, &definition.namespace).unwrap()
     }
 
     #[test]

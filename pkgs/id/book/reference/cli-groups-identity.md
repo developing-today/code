@@ -1,17 +1,17 @@
 # Groups, documents, claims and keys
 
-Source: `pkgs/id/crates/id-cli/src/cli/mod.rs`, `pkgs/id/crates/id-cli/src/cli/groups.rs`, `pkgs/id/crates/id-cli/src/cli/doc.rs`, `pkgs/id/crates/id-cli/src/cli/claim.rs`, `pkgs/id/crates/id-cli/src/cli/writer_sets.rs` under https://github.com/developing-today/code/blob/main/pkgs/id/crates/id-cli/src/cli/mod.rs — provenance only; this chapter is complete without following it.
+Source: `pkgs/id/crates/id-cli/src/cli/mod.rs`, `pkgs/id/crates/id-cli/src/cli/groups.rs`, `pkgs/id/crates/id-cli/src/cli/doc.rs`, `pkgs/id/crates/id-cli/src/cli/claim.rs`, `pkgs/id/crates/id-cli/src/cli/talk.rs`, `pkgs/id/crates/id-cli/src/cli/writer_sets.rs` under https://github.com/developing-today/code/blob/main/pkgs/id/crates/id-cli/src/cli/mod.rs — provenance only; this chapter is complete without following it.
 
-This chapter covers the event-backed identity surface of `id`: `group` with `delegate` and `revoke`; `doc`; `claim`; `writer-sets`; and the identity commands `id`, `key`, `keyset` and `peers`. The concepts behind them are in [Identity, the directory and groups](../concepts/identity-directory.md) and [Events and the signed audit chain](../concepts/events.md). The event-backed claims here are a separate store from the file tags of [The tag family](cli-tags.md).
+This chapter covers the event-backed identity surface of `id`: `group` with `delegate` and `revoke`; `doc`; `claim`; `talk`; `writer-sets`; and the identity commands `id`, `key`, `keyset` and `peers`. The concepts behind them are in [Identity, the directory and groups](../concepts/identity-directory.md) and [Events and the signed audit chain](../concepts/events.md). The event-backed claims here are a separate store from the file tags of [The tag family](cli-tags.md).
 
 Two global flags place the stores (see [The id command line](cli.md) and [Configuration and environment](configuration.md)):
 
-| Flag            | Argument       | Default                        | Meaning                                                                                            |
-| --------------- | -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `--groups-log`  | file path      | `groups.jsonl` in the data dir | The group log for `group`, `delegate` and `revoke`. A relative path is relative to the data dir.   |
-| `--event-store` | directory path | `events` in the data dir       | The event store for `doc`, `claim` and `writer-sets`. A relative path is relative to the data dir. |
+| Flag            | Argument       | Default                        | Meaning                                                                                                    |
+| --------------- | -------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `--groups-log`  | file path      | `groups.jsonl` in the data dir | The group log for `group`, `delegate` and `revoke`. A relative path is relative to the data dir.           |
+| `--event-store` | directory path | `events` in the data dir       | The event store for `doc`, `claim`, `talk` and `writer-sets`. A relative path is relative to the data dir. |
 
-`group`, `doc`, `claim` and `writer-sets` each take a `--json` flag that is global to that parent command: it may appear before or after the subcommand. With `--json`, an action prints one JSON object; `group list`, `doc` lists, `claim list`/`search` and `writer-sets discover` print one JSON array. `delegate` and `revoke` are top-level commands with their own `--json` flag.
+`group`, `doc`, `claim`, `talk` and `writer-sets` each take a `--json` flag that is global to that parent command: it may appear before or after the subcommand. With `--json`, an action prints one JSON object; `group list`, `doc` lists, `claim list`/`search`, `talk list` and `writer-sets discover` print one JSON array. `delegate` and `revoke` are top-level commands with their own `--json` flag.
 
 Exit behaviour, all commands in this chapter unless a command states otherwise: success exits `0`; a handler error prints `Error: <message>` to stderr and exits `1`; a clap parse error prints the error and usage to stderr and exits `2`. Accounts and groups are 64 hex characters throughout. The toy group used in the examples is the invented ID `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef`; the toy accounts are `fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210` and `1111111111111111111111111111111111111111111111111111111111111111`.
 
@@ -504,6 +504,64 @@ $ id claim list toy-document-event-id
 ```
 
 Failures: none specific to this subcommand beyond the common exit behaviour.
+
+## `talk`
+
+A talk page is the signed discussion attached to one object, where an object is any event ID this node holds, such as a document's or a note's. Each post is a signed `talk.post.v1` event in the event store (the global `--event-store`), attributed to this node's key. The record is the #5834 design's: a post is never edited, and a correction is a new post that supersedes the old one.
+
+Visibility is the only gate. This node may post on, and list, the talk page of an object it can see: an event its store has applied, and, when that event belongs to a group, one whose group this node's key is a member of. An object it cannot see and an object it does not hold are refused with the same message, `the object is not visible to this node`, so the refusal never confirms that an object exists.
+
+Post IDs are content IDs in their text form, `content/raw-blake3-256.<HEX>`. `--reply-to` and `--supersedes` take them as `talk list` prints them.
+
+### `talk post`
+
+Posts on an object's talk page, signed by this node.
+
+```
+id talk post <OBJECT> <BODY> [--reply-to <POST>] [--supersedes <POST>]
+```
+
+| Flag           | Argument | Default             | Meaning                                                           |
+| -------------- | -------- | ------------------- | ----------------------------------------------------------------- |
+| `<OBJECT>`     | event ID | required positional | The object's event ID.                                            |
+| `<BODY>`       | text     | required positional | The post text, at most 64 KiB.                                    |
+| `--reply-to`   | post ID  | — (none)            | The post this one replies to. It must be on the same talk page.   |
+| `--supersedes` | post ID  | — (none)            | This node's earlier post on the same page that this one corrects. |
+| `--json`       | switch   | off                 | Parent flag: print one JSON object instead of a line.             |
+
+Behaviour: prints `post object= post= author= authored_at= [reply_to=] [supersedes=] event= body=`. A superseded post is not changed: `talk list` keeps listing it and marks it `superseded_by=` the correction.
+
+Example — a post, then a correction of it:
+
+```
+$ id talk post toy-document-event-id "teh wording"
+$ id talk post toy-document-event-id "the wording" --supersedes toy-post-id
+```
+
+Failures: an object this node cannot see, a `--reply-to` or `--supersedes` post that is not on the page, a `--supersedes` post by another author, and an empty or oversized body are refused, exit `1`.
+
+### `talk list`
+
+Lists every post on an object's talk page, oldest first by the author's clock.
+
+```
+id talk list <OBJECT>
+```
+
+| Flag       | Argument | Default             | Meaning                                             |
+| ---------- | -------- | ------------------- | --------------------------------------------------- |
+| `<OBJECT>` | event ID | required positional | The object's event ID.                              |
+| `--json`   | switch   | off                 | Parent flag: print one JSON array instead of lines. |
+
+Behaviour: one line per post, with the fields `talk post` prints and no command word. A post that a later post by the same author supersedes carries `superseded_by=<POST>`; a display may collapse it, and it stays listed. A post synced from a peer is listed only if its signature verifies, its author is the event's signer and, for a group's object, its author is a member of that group.
+
+Example:
+
+```
+$ id talk list toy-document-event-id --json
+```
+
+Failures: an object this node cannot see is refused, exit `1`.
 
 ## `writer-sets`
 

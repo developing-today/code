@@ -1387,6 +1387,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1437,6 +1438,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, Some(body), ext).unwrap()
     }
@@ -1541,6 +1543,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -1595,6 +1598,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1685,6 +1689,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1746,6 +1751,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -2215,6 +2221,7 @@ mod tests {
 
             chat: None,
             anchor: None,
+            thread: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -2276,6 +2283,7 @@ mod tests {
 
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -2682,6 +2690,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -2780,13 +2789,17 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
         let first = grouped(0, None);
         let second = grouped(1, Some(first.id));
         ingest(&mut store, &second);
-        assert!(store.group_members(&group).unwrap().is_empty());
+        assert_eq!(
+            store.group_members(&group).unwrap(),
+            [] as [([u8; 32], p2panda_core::SeqNum); 0]
+        );
         ingest(&mut store, &first);
         assert_eq!(
             store.group_members(&group).unwrap(),
@@ -2818,6 +2831,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -3636,7 +3650,7 @@ mod tests {
             "the released event applies"
         );
         assert_eq!(store.chain(&who).unwrap().unwrap().next_seq, 2);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -3669,7 +3683,7 @@ mod tests {
         // Due at 1_000 ms, so the open drops it and its row.
         let store = reopen(&dir, limits, 1_000);
         assert_eq!(store.waiting_len(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         let txn = store.db.begin_read().unwrap();
         assert!(
             txn.open_table(DEVICE_OPS)
@@ -3697,7 +3711,7 @@ mod tests {
         }
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert_eq!(store.waiting_len(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
     }
 
     /// #2690, at the mirror itself: a release whose `arrived` expires another
@@ -3759,7 +3773,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -3795,7 +3809,7 @@ mod tests {
         // events[2] (or any waiting row) survives.
         assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
         assert_eq!(store.waiting_len(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -4034,7 +4048,7 @@ mod tests {
             }
         );
         assert!(!store.is_waiting(&waits.id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         assert_eq!(store.event(&author(&x), 2).unwrap(), Some(waits.clone()));
         assert_eq!(
             store.chain(&author(&x)).unwrap(),
@@ -4132,7 +4146,7 @@ mod tests {
                 let held = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
                 assert_eq!(held, waiting_rows::Hold::Held);
                 let released = m.release(&events[1].id, 0)?;
-                assert!(released.is_empty());
+                assert_eq!(released, [] as [id_store::chain::Event; 0]);
                 Ok(((), true))
             })
             .unwrap();
@@ -4201,7 +4215,7 @@ mod tests {
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), WEEK_MS);
         assert!(!store.is_waiting(&held.id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -4227,7 +4241,7 @@ mod tests {
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert!(!store.is_waiting(&events[0].id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 

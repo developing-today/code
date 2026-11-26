@@ -512,6 +512,7 @@ mod tests {
                 note: hash(note),
                 content: content(bytes),
                 parents: parents.iter().map(|parent| hash(*parent)).collect(),
+                proposal: None,
             },
         }
     }

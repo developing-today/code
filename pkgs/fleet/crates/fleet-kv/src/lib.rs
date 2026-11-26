@@ -13,12 +13,21 @@
 //! `clear-override`, masking `delete` and history `revert` are the three
 //! delete-related states from the fleet-kv design (D005) and stay distinct.
 
+pub mod archive;
 pub mod backup;
+pub mod blob;
+pub mod blob_central;
+pub mod blob_read;
+pub mod catalog;
 pub mod central;
 pub mod cli;
+pub mod grants;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod launch;
+#[cfg(test)]
+mod load_probe;
+pub mod plane;
 pub mod read;
 pub mod sweep;
 pub mod sync;
@@ -31,7 +40,13 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
 use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 10;
+
+/// The outbox op of an ordinary set.
+pub const OP_SET: &str = "set";
+/// The outbox op of a set made with `--force-blob`: the sweep places it in a
+/// blob at or below the inline threshold too (design §8, D009).
+pub const OP_SET_BLOB: &str = "set-blob";
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -239,12 +254,36 @@ impl LocalStore {
         key: &str,
         value: &[u8],
     ) -> Result<u64, KvError> {
+        self.set_as(identity, namespace, key, value, OP_SET)
+    }
+
+    /// [`LocalStore::set`], marking the intent `--force-blob` (code#13318):
+    /// the sweep places it in a blob whatever its size. It changes nothing
+    /// about the local row.
+    pub fn set_forcing_blob(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<u64, KvError> {
+        self.set_as(identity, namespace, key, value, OP_SET_BLOB)
+    }
+
+    fn set_as(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        value: &[u8],
+        op: &str,
+    ) -> Result<u64, KvError> {
         if value.len() > INLINE_LIMIT && self.working_dir.is_some() {
-            return self.set_reader(identity, namespace, key, &mut &value[..]);
+            return self.set_reader_as(identity, namespace, key, &mut &value[..], op);
         }
         validate_namespace(namespace)?;
         validate_key(key)?;
-        self.commit_head(identity, namespace, key, Body::Inline(value), "set")
+        self.commit_head(identity, namespace, key, Body::Inline(value), op)
     }
 
     /// Store the bytes `reader` yields, streaming them. Up to
@@ -258,6 +297,28 @@ impl LocalStore {
         key: &str,
         reader: &mut dyn Read,
     ) -> Result<u64, KvError> {
+        self.set_reader_as(identity, namespace, key, reader, OP_SET)
+    }
+
+    /// [`LocalStore::set_reader`], marking the intent `--force-blob`.
+    pub fn set_reader_forcing_blob(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+    ) -> Result<u64, KvError> {
+        self.set_reader_as(identity, namespace, key, reader, OP_SET_BLOB)
+    }
+
+    fn set_reader_as(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+        op: &str,
+    ) -> Result<u64, KvError> {
         validate_namespace(namespace)?;
         validate_key(key)?;
         let mut head = Vec::new();
@@ -267,16 +328,16 @@ impl LocalStore {
             .read_to_end(&mut head)
             .map_err(KvError::Io)?;
         if head.len() <= INLINE_LIMIT {
-            return self.commit_head(identity, namespace, key, Body::Inline(&head), "set");
+            return self.commit_head(identity, namespace, key, Body::Inline(&head), op);
         }
         let Some(dir) = &self.working_dir else {
             // An in-memory store has nowhere to stream to.
             reader.read_to_end(&mut head).map_err(KvError::Io)?;
-            return self.commit_head(identity, namespace, key, Body::Inline(&head), "set");
+            return self.commit_head(identity, namespace, key, Body::Inline(&head), op);
         };
         let reference = working::stage(dir, &head, reader).map_err(KvError::Io)?;
         drop(head);
-        self.commit_head(identity, namespace, key, Body::Working(&reference), "set")
+        self.commit_head(identity, namespace, key, Body::Working(&reference), op)
     }
 
     fn commit_head(
@@ -614,7 +675,10 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 /// lets rows refer to working files; version 5 adds the host incarnation, the
 /// per-key central base and local copies of sweep receipts; version 6 adds
 /// the cached namespace definitions pulled by `fleet kv sync`; version 7 adds
-/// the short-lived cache of central heads read through a local miss.
+/// the short-lived cache of central heads read through a local miss; version
+/// 8 records each partition's last survival-archive checkpoint; version 9
+/// caches each namespace's blob placement; version 10 keeps each cached
+/// central head's row envelope.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -631,6 +695,9 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
     sweep::migrate_to_v5(&tx)?;
     sync::migrate_to_v6(&tx)?;
     read::migrate_to_v7(&tx)?;
+    archive::migrate_to_v8(&tx)?;
+    sync::migrate_to_v9(&tx)?;
+    read::migrate_to_v10(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql)?;
     tx.commit().map_err(sql)
@@ -839,7 +906,7 @@ fn signed(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn working_ref(id: Option<String>, len: Option<i64>) -> Option<WorkingRef> {
+pub(crate) fn working_ref(id: Option<String>, len: Option<i64>) -> Option<WorkingRef> {
     id.map(|id| WorkingRef {
         id,
         len: len.map_or(0, unsigned),

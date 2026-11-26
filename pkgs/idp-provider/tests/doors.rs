@@ -5,9 +5,11 @@
 //! key) and a GitHub-shaped OAuth upstream (code exchange + user
 //! fetch, numeric id subject).
 //!
-//! Proven here: a door login mints tokens for the SAME account as
-//! the local door; a first allowlisted login links the identity
-//! (audited, history written); a non-allowlisted upstream identity
+//! Proven here: a door login for one of the account's declared
+//! identities mints tokens for the SAME account as the local
+//! door; a never-seen allowlisted identity that is NOT declared
+//! enrolls into its own read-only account (#15249, design #9086
+//! §4.4) — never the owner's; a non-allowlisted upstream identity
 //! is denied and audited; an operator-unlinked identity is denied
 //! while the account stays reachable via the local door, with the
 //! history intact; door state handles are single-use; a door
@@ -204,9 +206,11 @@ struct Harness {
     provider_pubkey: RsaPublicKey,
 }
 
-/// The pre-drill (production-shaped) allowlist: only the owner's
-/// own door identities. The H7 drill must end with exactly this
-/// list in force.
+/// The baseline allowlist: the owner's local identity plus the
+/// owner's own Google/GitHub door identities (both also declared
+/// in the account row — the owner's identity set). This is the
+/// pre-drill (production-shaped) list: the H7 drill must end with
+/// exactly this list in force.
 fn baseline_allowlist() -> Vec<String> {
     vec![
         "devtoday-local:drew".to_string(),
@@ -271,10 +275,23 @@ async fn harness_with_allowlist(allowlist: Vec<String>) -> Harness {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
             roles: ROLES.iter().map(|s| s.to_string()).collect(),
-            identities: vec![Identity {
-                provider: "devtoday-local".to_string(),
-                subject: "drew".to_string(),
-            }],
+            // The owner's declared identity set: these seed active
+            // under the owner account. Any OTHER allowlisted
+            // identity enrolls into its own account (#15249).
+            identities: vec![
+                Identity {
+                    provider: "devtoday-local".to_string(),
+                    subject: "drew".to_string(),
+                },
+                Identity {
+                    provider: "google".to_string(),
+                    subject: GOOGLE_SUB.to_string(),
+                },
+                Identity {
+                    provider: "github".to_string(),
+                    subject: GITHUB_ID.to_string(),
+                },
+            ],
             local_credential_hash: credential_hash,
         },
         allowlist,
@@ -443,9 +460,9 @@ async fn drive_door(h: &Harness, door: &str) -> reqwest::Response {
         .expect("door callback")
 }
 
-/// Exchange a code from a callback redirect Location for tokens
-/// and verify the ID token against the harness's provider key.
-async fn exchange_and_verify(h: &Harness, loc: &str) -> serde_json::Value {
+/// Exchange a code from a callback redirect Location for the
+/// full token document.
+async fn exchange_doc(h: &Harness, loc: &str) -> serde_json::Value {
     let code = loc
         .split("code=")
         .nth(1)
@@ -467,7 +484,13 @@ async fn exchange_and_verify(h: &Harness, loc: &str) -> serde_json::Value {
         .await
         .expect("token exchange");
     assert_eq!(resp.status(), 200, "token exchange succeeds");
-    let doc: serde_json::Value = resp.json().await.expect("token json");
+    resp.json().await.expect("token json")
+}
+
+/// Exchange a code and verify the ID token against the harness's
+/// provider key, returning its claims.
+async fn exchange_and_verify(h: &Harness, loc: &str) -> serde_json::Value {
+    let doc = exchange_doc(h, loc).await;
     let id_token = doc["id_token"].as_str().expect("id token");
     verify_with(id_token, &h.provider_pubkey)
 }
@@ -514,7 +537,7 @@ async fn login_form_lists_enabled_doors_only() {
 }
 
 #[tokio::test]
-async fn google_door_full_loop_links_and_reaches_same_account() {
+async fn google_door_full_loop_reaches_same_account() {
     let h = harness().await;
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), 302, "callback redirects to the RP");
@@ -530,21 +553,17 @@ async fn google_door_full_loop_links_and_reaches_same_account() {
         serde_json::json!(ROLES),
         "account role set on the token"
     );
-    // First login linked the identity: store row active, history
-    // has the link, and the audit record carries both events.
+    // The identity is one of the account's declared identities:
+    // seeded active under the account at startup (history carries
+    // the seed), and the login's code issuance is audited. No
+    // door-login link/enrollment happens for a declared identity.
     assert!(h.identities.is_active("google", GOOGLE_SUB));
     let events = h.identities.events().unwrap();
-    assert!(events.iter().any(|e| e.event == "link"
+    assert!(events.iter().any(|e| e.event == "seed"
         && e.provider == "google"
         && e.subject == GOOGLE_SUB
-        && e.actor == "door-login"));
-    assert!(audit_has(
-        &h,
-        "link",
-        "allowed",
-        "link",
-        &format!("google:{GOOGLE_SUB}")
-    ));
+        && e.account_id == "drew"
+        && e.actor == "config-seed"));
     assert!(audit_has(
         &h,
         "door/google",
@@ -553,28 +572,32 @@ async fn google_door_full_loop_links_and_reaches_same_account() {
         &format!("google:{GOOGLE_SUB}")
     ));
 
-    // Second login: already linked — succeeds, no second link event.
+    // Second login: still the same account, no new history events.
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), 302);
     let _ = exchange_and_verify(&h, &location(&resp)).await;
-    let link_events = h
+    let google_events = h
         .identities
         .events()
         .unwrap()
         .iter()
-        .filter(|e| e.event == "link" && e.provider == "google")
+        .filter(|e| e.provider == "google")
         .count();
-    assert_eq!(link_events, 1, "link recorded once");
+    assert_eq!(google_events, 1, "only the seed event is recorded");
 }
 
 #[tokio::test]
 async fn pending_identity_is_acknowledged_without_issuing_a_code() {
-    let h = harness().await;
+    const PENDING_SUB: &str = "pending-sub";
+    let mut allowlist = baseline_allowlist();
+    allowlist.push(format!("google:{PENDING_SUB}"));
+    let h = harness_with_allowlist(allowlist).await;
     assert!(
         h.identities
-            .register_pending("google", GOOGLE_SUB, "drew", "email-match")
+            .register_pending("google", PENDING_SUB, "drew", "email-match")
             .unwrap()
     );
+    *h.mock.subject.lock().unwrap() = PENDING_SUB.to_string();
 
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -587,11 +610,11 @@ async fn pending_identity_is_acknowledged_without_issuing_a_code() {
         "door/google",
         "denied",
         "identity_pending",
-        &format!("google:{GOOGLE_SUB}")
+        &format!("google:{PENDING_SUB}")
     ));
     assert_eq!(
         h.identities
-            .status("google", GOOGLE_SUB)
+            .status("google", PENDING_SUB)
             .unwrap()
             .as_deref(),
         Some("pending")
@@ -651,6 +674,49 @@ fn identity_history_records_pending_disposition_and_provisioning_events() {
     assert!(approved.claimed_at.is_some());
 }
 
+#[test]
+fn enrolled_identity_can_be_relinked_to_another_account_by_an_operator() {
+    let store = IdentityStore::open(None).unwrap();
+    let (account_id, event) = store
+        .enroll("google", "teammate-sub", "door-login")
+        .unwrap();
+    assert_eq!(event, "link");
+    assert_ne!(account_id, "drew");
+    assert_eq!(
+        store.account(&account_id).unwrap().unwrap().roles,
+        vec!["read-only".to_string()],
+        "enrolled accounts hold only read-only"
+    );
+    // Deterministic: the same identity always maps to the same
+    // enrolled account id.
+    assert_eq!(
+        idp_provider::identities::enrolled_account_id("google", "teammate-sub"),
+        account_id
+    );
+    // The explicit afterwards grant (#15249): an operator unlinks
+    // and re-links the identity onto the owner account, and the
+    // row itself moves — not just the event.
+    assert!(
+        store
+            .unlink("google", "teammate-sub", "operator-cli")
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .link("google", "teammate-sub", "drew", "operator-cli")
+            .unwrap(),
+        "relink"
+    );
+    let row = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.subject == "teammate-sub")
+        .unwrap();
+    assert_eq!(row.account_id, "drew");
+    assert_eq!(row.status, "active");
+}
+
 #[tokio::test]
 async fn github_door_full_loop_reaches_same_account() {
     let h = harness().await;
@@ -664,6 +730,182 @@ async fn github_door_full_loop_reaches_same_account() {
         "github subject is the numeric user id"
     );
     assert!(h.identities.is_active("github", &GITHUB_ID.to_string()));
+}
+
+/// Regression test for #15249 (oracle: design #9086 §4.4). A
+/// never-seen allowlisted identity that is NOT one of the owner
+/// account's declared identities must enroll into a NEW account
+/// holding only `read-only` — it must not land on the owner
+/// account or carry the owner's roles, at first login or later.
+#[tokio::test]
+async fn non_owner_allowlisted_identity_enrolls_into_its_own_read_only_account() {
+    const TEAMMATE_SUB: &str = "teammate-sub";
+    let mut allowlist = baseline_allowlist();
+    allowlist.push(format!("google:{TEAMMATE_SUB}"));
+    let h = harness_with_allowlist(allowlist).await;
+    *h.mock.subject.lock().unwrap() = TEAMMATE_SUB.to_string();
+
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 302, "enrolled identity logs in");
+    let doc = exchange_doc(&h, &location(&resp)).await;
+    let claims = verify_with(doc["id_token"].as_str().unwrap(), &h.provider_pubkey);
+    assert_ne!(
+        claims["sub"], "drew",
+        "a non-owner identity must not land on the owner account"
+    );
+    assert_eq!(
+        claims["roles"],
+        serde_json::json!(["read-only"]),
+        "a newly enrolled account holds only read-only (design #9086 §4.4)"
+    );
+    assert_eq!(
+        claims["preferred_username"],
+        format!("google:{TEAMMATE_SUB}")
+    );
+    let enrolled_id = claims["sub"].as_str().unwrap().to_string();
+
+    // The identity row names the same new account, and the
+    // store's account row for it holds only read-only.
+    let row = h
+        .identities
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.provider == "google" && r.subject == TEAMMATE_SUB)
+        .expect("enrollment wrote an identity row");
+    assert_eq!(row.status, "active");
+    assert_eq!(row.account_id, enrolled_id);
+    let account = h
+        .identities
+        .account(&enrolled_id)
+        .unwrap()
+        .expect("enrollment wrote an account row");
+    assert_eq!(account.roles, vec!["read-only".to_string()]);
+    // The link event and the audit record name the NEW account.
+    assert!(h.identities.events().unwrap().iter().any(|e| {
+        e.event == "link"
+            && e.provider == "google"
+            && e.subject == TEAMMATE_SUB
+            && e.account_id == enrolled_id
+            && e.actor == "door-login"
+    }));
+    assert!(audit_has(
+        &h,
+        "link",
+        "allowed",
+        "link",
+        &format!("google:{TEAMMATE_SUB}")
+    ));
+
+    // userinfo serves the enrolled account, not the owner's.
+    let resp = h
+        .client
+        .get(format!("{}/userinfo", h.issuer))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", doc["access_token"].as_str().unwrap()),
+        )
+        .send()
+        .await
+        .expect("userinfo");
+    assert_eq!(resp.status(), 200);
+    let info: serde_json::Value = resp.json().await.expect("userinfo json");
+    assert_eq!(info["sub"], enrolled_id);
+    assert_eq!(info["roles"], serde_json::json!(["read-only"]));
+
+    // Second login: the SAME enrolled account, still read-only,
+    // and no second enrollment event.
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 302);
+    let claims = exchange_and_verify(&h, &location(&resp)).await;
+    assert_eq!(claims["sub"], enrolled_id);
+    assert_eq!(claims["roles"], serde_json::json!(["read-only"]));
+    let enroll_events = h
+        .identities
+        .events()
+        .unwrap()
+        .iter()
+        .filter(|e| e.event == "link" && e.subject == TEAMMATE_SUB)
+        .count();
+    assert_eq!(enroll_events, 1, "enrollment recorded once");
+}
+
+#[tokio::test]
+async fn merged_secondary_signs_in_as_the_primary_and_old_tokens_resolve() {
+    // #13975 slice 2 acceptance over mock upstreams: two
+    // auto-enrolled accounts for one person merge into the one they
+    // pick; a login through the former-secondary identity reaches the
+    // primary, and a token issued before the merge still resolves.
+    const FIRST_SUB: &str = "person-first-sub";
+    const SECOND_SUB: &str = "person-second-sub";
+    let mut allowlist = baseline_allowlist();
+    allowlist.push(format!("google:{FIRST_SUB}"));
+    allowlist.push(format!("google:{SECOND_SUB}"));
+    let h = harness_with_allowlist(allowlist).await;
+
+    *h.mock.subject.lock().unwrap() = FIRST_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    let primary = exchange_and_verify(&h, &location(&resp)).await["sub"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *h.mock.subject.lock().unwrap() = SECOND_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    let old_doc = exchange_doc(&h, &location(&resp)).await;
+    let old_claims = verify_with(old_doc["id_token"].as_str().unwrap(), &h.provider_pubkey);
+    let secondary = old_claims["sub"].as_str().unwrap().to_string();
+    assert_ne!(primary, secondary);
+
+    let preview = h.identities.merge_preview(&primary, &secondary).unwrap();
+    assert!(preview.secondary_only_roles.is_empty());
+    h.identities
+        .merge(&primary, &secondary, &[], &[], "established-sessions")
+        .unwrap();
+
+    // A fresh login through the former-secondary identity lands on
+    // the primary.
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 302);
+    let claims = exchange_and_verify(&h, &location(&resp)).await;
+    assert_eq!(claims["sub"], primary.as_str());
+    assert_eq!(claims["roles"], serde_json::json!(["read-only"]));
+
+    // The pre-merge token keeps its `sub`; userinfo answers with it
+    // and names the account it now reads as.
+    let resp = h
+        .client
+        .get(format!("{}/userinfo", h.issuer))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", old_doc["access_token"].as_str().unwrap()),
+        )
+        .send()
+        .await
+        .expect("userinfo");
+    assert_eq!(resp.status(), 200);
+    let info: serde_json::Value = resp.json().await.expect("userinfo json");
+    assert_eq!(info["sub"], secondary.as_str());
+    assert_eq!(info["merged_into"], primary.as_str());
+
+    // Both histories carry the merge; the secondary's enrollment
+    // event still names the secondary.
+    let events = h.identities.events().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "link" && e.subject == SECOND_SUB && e.account_id == secondary)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "merge" && e.subject == SECOND_SUB && e.account_id == primary)
+    );
+    let account_events = h.identities.account_events().unwrap();
+    assert!(
+        account_events
+            .iter()
+            .any(|e| e.event == "merge-into" && e.account_id == secondary)
+    );
 }
 
 #[tokio::test]
@@ -686,7 +928,7 @@ async fn google_door_non_allowlisted_denied_and_audited() {
 #[tokio::test]
 async fn unlinked_identity_denied_but_account_reachable_via_local_door() {
     let h = harness().await;
-    // Link via a first login.
+    // First login over the identity's seeded link.
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), 302);
     let _ = exchange_and_verify(&h, &location(&resp)).await;
@@ -717,7 +959,7 @@ async fn unlinked_identity_denied_but_account_reachable_via_local_door() {
     assert!(
         events
             .iter()
-            .any(|e| e.event == "link" && e.provider == "google")
+            .any(|e| e.event == "seed" && e.provider == "google")
     );
     assert!(
         events

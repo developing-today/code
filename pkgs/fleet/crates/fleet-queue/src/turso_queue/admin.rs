@@ -1600,25 +1600,34 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
         &req.get("result").cloned().unwrap_or(json!({})),
     );
     let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
-               resolution = ?, resolution_category = ?, resolution_substatus = ?, \
-               resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
-               completed_at = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(result.to_string()),
-                Arg::Text(fields.resolution.clone()),
-                Arg::Text(fields.category.clone()),
-                arg_str(fields.substatus.as_deref()),
-                arg_str(fields.reason.as_deref()),
-                arg_str(fields.reference.as_deref()),
-                Arg::Text(worker.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Int(task_id),
-            ],
+        // #9487: the completion carries the holder guard; a claim
+        // that changed after claimed_by read it completes nothing.
+        let mut args = vec![
+            Arg::Text(result.to_string()),
+            Arg::Text(fields.resolution.clone()),
+            Arg::Text(fields.category.clone()),
+            arg_str(fields.substatus.as_deref()),
+            arg_str(fields.reason.as_deref()),
+            arg_str(fields.reference.as_deref()),
+            Arg::Text(worker.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!(
+                "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
+                   resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+                   resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
+                   completed_at = ?, updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+            ),
+            &args,
         )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("complete_task", task_id));
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         touch_worker(t, &worker, None)?;
         event(

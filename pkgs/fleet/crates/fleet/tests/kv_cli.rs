@@ -52,11 +52,14 @@ fn bad_arguments_and_unconfigured_central_are_answered_before_anything_is_create
     let dir = scratch("strict");
     let usage = fleet(&dir, &["kv", "get", "--namespace", "n", "k", "extra"], None);
     assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
-    // With no central store configured, --global and sync exit 69 before
-    // the session's identity or the local store is touched.
+    // With no central store configured, --global, sync, backup and
+    // restore --archive exit 69 before the session's identity or the local
+    // store is touched.
     for words in [
         &["kv", "list", "--global", "--namespace", "n"][..],
         &["kv", "sync"][..],
+        &["kv", "backup"][..],
+        &["kv", "restore", "--archive"][..],
     ] {
         let global = fleet(&dir, words, None);
         assert_eq!(global.status.code(), Some(69), "{}", stderr(&global));
@@ -66,9 +69,35 @@ fn bad_arguments_and_unconfigured_central_are_answered_before_anything_is_create
             stderr(&global)
         );
     }
-    let blob = fleet(
+    // Local --force-blob is wired (#13318, PR #15302): it now passes
+    // parsing and is answered by the fail-closed launch identity, like
+    // any other local verb with no launch record.
+    let local_blob = fleet(
         &dir,
         &["kv", "set", "--force-blob", "--namespace", "n", "k", "v"],
+        None,
+    );
+    assert_eq!(local_blob.status.code(), Some(69));
+    assert!(
+        stderr(&local_blob).contains("identity_unavailable"),
+        "{}",
+        stderr(&local_blob)
+    );
+    // --force-blob with --global is still pending: a --global write is
+    // one CAS from this command and has no upload step yet, so parsing
+    // refuses it before anything is created.
+    let blob = fleet(
+        &dir,
+        &[
+            "kv",
+            "set",
+            "--global",
+            "--force-blob",
+            "--namespace",
+            "n",
+            "k",
+            "v",
+        ],
         None,
     );
     assert_eq!(blob.status.code(), Some(69));

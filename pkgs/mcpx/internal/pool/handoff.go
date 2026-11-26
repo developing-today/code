@@ -257,7 +257,7 @@ func (p *Pool) AdoptSessions(hs []InstanceHandoff) ([]*Adopted, error) {
 		}
 		// Adoption dials an HTTP endpoint; nothing spawns, so the
 		// stored config is its own effective definition here.
-		tr, err := p.dial(context.Background(), p.cfg, "")
+		tr, err := p.dial(context.Background(), p.cfg, "", "")
 		if err != nil {
 			abortAll(out)
 			return nil, fmt.Errorf("instance %s: %w", h.ID, err)

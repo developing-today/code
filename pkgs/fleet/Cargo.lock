@@ -722,6 +722,7 @@ dependencies = [
  "fleet-kv",
  "fleet-laptop-agent",
  "fleet-orgs",
+ "fleet-pool",
  "fleet-proxy",
  "fleet-proxy-proto",
  "fleet-queue",

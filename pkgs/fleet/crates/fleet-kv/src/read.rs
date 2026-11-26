@@ -21,6 +21,8 @@ use std::collections::BTreeMap;
 
 use rusqlite::{OptionalExtension, params};
 
+use crate::blob::{BlobError, RAW_ENVELOPE};
+use crate::blob_read::{self, BlobReader, ValueError};
 use crate::central::{self, Address, CentralError, Head, Namespace, Pipeline, REGISTRY_ID};
 use crate::sync::{Lookup, lookup};
 use crate::{Identity, KvError, LocalStore, signed, sql, unsigned};
@@ -44,6 +46,25 @@ pub(crate) fn migrate_to_v7(tx: &rusqlite::Transaction<'_>) -> Result<(), KvErro
          ) WITHOUT ROWID;",
     )
     .map_err(sql)
+}
+
+/// Local schema version 10: a cached central head keeps its row envelope
+/// (design §11), so a cached blob reference is never served as bytes.
+pub(crate) fn migrate_to_v10(tx: &rusqlite::Transaction<'_>) -> Result<(), KvError> {
+    let present: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('kv_central_cache') WHERE name='envelope'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if present == 0 {
+        tx.execute_batch(
+            "ALTER TABLE kv_central_cache ADD COLUMN envelope TEXT NOT NULL DEFAULT 'kv:raw-v1';",
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
 }
 
 /// Where a read's bytes came from.
@@ -78,6 +99,8 @@ pub enum ReadError {
     Local(KvError),
     /// Central refused for a reason that is not about reaching it.
     Central(CentralError),
+    /// A blob-backed value could not be read and verified.
+    Blob(BlobError),
     /// Central could not be reached and nothing is cached for this key.
     Unavailable(String),
     /// Central could not be reached and the cached head is older than 1 s.
@@ -92,6 +115,7 @@ impl ReadError {
         match self {
             Self::Local(error) => error.code(),
             Self::Central(error) => error.code(),
+            Self::Blob(error) => error.code(),
             Self::Unavailable(_) => "unavailable",
             Self::Stale { .. } => "stale",
         }
@@ -99,7 +123,12 @@ impl ReadError {
 
     /// Exit 69 rather than 1.
     pub fn is_unavailable(&self) -> bool {
-        matches!(self, Self::Unavailable(_) | Self::Stale { .. })
+        matches!(
+            self,
+            Self::Unavailable(_)
+                | Self::Stale { .. }
+                | Self::Central(CentralError::Unavailable(_) | CentralError::NotConfigured(_))
+        )
     }
 }
 
@@ -108,6 +137,7 @@ impl std::fmt::Display for ReadError {
         match self {
             Self::Local(error) => write!(f, "{error}"),
             Self::Central(error) => write!(f, "{error}"),
+            Self::Blob(error) => write!(f, "{error}"),
             Self::Unavailable(reason) => write!(
                 f,
                 "the central store could not be reached and nothing is cached: {reason}"
@@ -128,6 +158,15 @@ impl From<KvError> for ReadError {
     }
 }
 
+impl From<ValueError> for ReadError {
+    fn from(error: ValueError) -> Self {
+        match error {
+            ValueError::Central(error) => Self::Central(error),
+            ValueError::Blob(error) => Self::Blob(error),
+        }
+    }
+}
+
 /// Turns a central failure into a read refusal: transient failures are
 /// `unavailable`, anything else (a refused credential, a malformed answer)
 /// is reported as itself.
@@ -145,6 +184,8 @@ pub struct Reader<'a> {
     pub store: &'a LocalStore,
     pub identity: &'a Identity<'a>,
     pub central: Option<&'a dyn Pipeline>,
+    /// The blob door's read side, for heads that hold a blob reference.
+    pub blobs: Option<&'a dyn BlobReader>,
     /// Read an expired cached head when central cannot be reached.
     pub allow_stale: bool,
     /// The current time, in Unix milliseconds.
@@ -167,6 +208,7 @@ struct Cached {
     version: u64,
     live: bool,
     value: Vec<u8>,
+    envelope: String,
     fetched_at_ms: i64,
 }
 
@@ -205,8 +247,8 @@ impl Reader<'_> {
         if !(cached.present && cached.live) {
             return Ok(Found::Absent);
         }
-        out.write_all(&cached.value)
-            .map_err(|error| ReadError::Local(KvError::Io(error)))?;
+        let address = Address::new(&scope_id, namespace, key);
+        blob_read::write_value(&cached.envelope, &cached.value, &address, self.blobs, out)?;
         Ok(Found::Value(source))
     }
 
@@ -266,6 +308,7 @@ impl Reader<'_> {
             version: 0,
             live: false,
             value: Vec::new(),
+            envelope: RAW_ENVELOPE.to_string(),
             fetched_at_ms: self.now_ms,
         })
     }
@@ -280,7 +323,7 @@ impl Reader<'_> {
             .store
             .connection
             .query_row(
-                "SELECT present, version, live, value, fetched_at_ms FROM kv_central_cache
+                "SELECT present, version, live, value, fetched_at_ms, envelope FROM kv_central_cache
                  WHERE scope_id = ?1 AND namespace = ?2 AND key = ?3",
                 params![scope_id, namespace, key],
                 |row| {
@@ -290,6 +333,7 @@ impl Reader<'_> {
                         live: row.get::<_, i64>(2)? == 1,
                         value: row.get(3)?,
                         fetched_at_ms: row.get(4)?,
+                        envelope: row.get(5)?,
                     })
                 },
             )
@@ -310,20 +354,23 @@ impl Reader<'_> {
             version: head.map_or(0, |head| head.version),
             live: head.is_some_and(|head| head.live),
             value: head.map(|head| head.value.clone()).unwrap_or_default(),
+            envelope: head.map_or_else(|| RAW_ENVELOPE.to_string(), |head| head.envelope.clone()),
             fetched_at_ms: self.now_ms,
         };
         self.store
             .connection
             .execute(
                 "INSERT INTO kv_central_cache
-                     (scope_id, namespace, key, present, version, live, value, fetched_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     (scope_id, namespace, key, present, version, live, value, fetched_at_ms,
+                      envelope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (scope_id, namespace, key) DO UPDATE SET
                      present = excluded.present,
                      version = excluded.version,
                      live = excluded.live,
                      value = excluded.value,
-                     fetched_at_ms = excluded.fetched_at_ms",
+                     fetched_at_ms = excluded.fetched_at_ms,
+                     envelope = excluded.envelope",
                 params![
                     scope_id,
                     namespace,
@@ -332,7 +379,8 @@ impl Reader<'_> {
                     signed(entry.version),
                     i64::from(entry.live),
                     entry.value,
-                    entry.fetched_at_ms
+                    entry.fetched_at_ms,
+                    entry.envelope
                 ],
             )
             .map_err(sql)?;
@@ -556,6 +604,7 @@ mod tests {
             store,
             identity,
             central: Some(central),
+            blobs: None,
             allow_stale,
             now_ms,
         }
@@ -594,6 +643,105 @@ mod tests {
         store.clear_override(&identity, "status", "agent").unwrap();
         assert_eq!(get(&read, "agent").unwrap().1, b"from central".to_vec());
         assert_eq!(get(&read, "missing").unwrap().0, Found::Absent);
+    }
+
+    /// A blob door that serves `bytes` and counts its reads.
+    struct Door {
+        bytes: Vec<u8>,
+        opened: Cell<u32>,
+    }
+
+    impl BlobReader for Door {
+        fn open(
+            &self,
+            address: &Address,
+            _reference: &crate::blob::KvBlobRefV1,
+        ) -> central::Result<Box<dyn std::io::Read>> {
+            assert_eq!(address, &Address::new("fleet-status", "status", "big"));
+            self.opened.set(self.opened.get() + 1);
+            Ok(Box::new(std::io::Cursor::new(self.bytes.clone())))
+        }
+    }
+
+    #[test]
+    fn central_read_blob_heads_stream_through_the_door_verified() {
+        use crate::blob::{KvBlobRefV1, Partition};
+        use crate::blob_central::{mark_published, publish_cas};
+        let central = central();
+        let store = LocalStore::in_memory().unwrap();
+        let identity = me();
+        pull_namespaces(&store, &central).unwrap();
+        let bytes = b"a value that lives in a blob".to_vec();
+        let reference = KvBlobRefV1 {
+            digest: blake3::hash(&bytes).to_hex().to_string(),
+            bytes_len: bytes.len() as u64,
+            partition: Partition::new("eu", "standard"),
+            locator: "r2:kv/blobs/eu/standard/x".to_string(),
+        };
+        mark_published(&central, &reference).unwrap();
+        let intent = Intent {
+            address: Address::new("fleet-status", "status", "big"),
+            expected_version: 0,
+            op: Op::Set(reference.encode()),
+            idempotency: IdempotencyKey {
+                writer: "other".into(),
+                host_incarnation: "elsewhere".into(),
+                outbox_id: "big".into(),
+            },
+        };
+        publish_cas(&central, &intent, &reference).unwrap();
+        // No blob door: refused, and the reference is never served as bytes.
+        let refused = get(&reader(&store, &identity, &central, 10_000, false), "big").unwrap_err();
+        assert_eq!(refused.code(), "central_not_configured");
+        assert!(refused.is_unavailable());
+        // With the door, the bytes; a cached head keeps its envelope, so the
+        // second read inside the second goes through the door too.
+        let door = Door {
+            bytes: bytes.clone(),
+            opened: Cell::new(0),
+        };
+        let mut read = reader(&store, &identity, &central, 10_200, false);
+        read.blobs = Some(&door);
+        assert_eq!(
+            get(&read, "big").unwrap(),
+            (Found::Value(Source::Central { version: 1 }), bytes.clone())
+        );
+        central.up.set(false);
+        assert_eq!(get(&read, "big").unwrap().1, bytes);
+        assert_eq!(door.opened.get(), 2);
+        // Bytes that differ from the reference are refused.
+        let liar = Door {
+            bytes: b"something else entirely, same length!".to_vec(),
+            opened: Cell::new(0),
+        };
+        read.blobs = Some(&liar);
+        assert_eq!(
+            get(&read, "big").unwrap_err().code(),
+            "blob_length_mismatch"
+        );
+    }
+
+    #[test]
+    fn central_read_inline_bytes_that_spell_a_reference_stay_bytes() {
+        use crate::blob::{KvBlobRefV1, Partition};
+        let central = central();
+        let store = LocalStore::in_memory().unwrap();
+        let identity = me();
+        pull_namespaces(&store, &central).unwrap();
+        let spelled = KvBlobRefV1 {
+            digest: "ab".repeat(32),
+            bytes_len: 3,
+            partition: Partition::new("eu", "standard"),
+            locator: "r2:x".to_string(),
+        }
+        .encode();
+        write(&central, "big", 0, Op::Set(spelled.clone()));
+        assert_eq!(
+            get(&reader(&store, &identity, &central, 10_000, false), "big")
+                .unwrap()
+                .1,
+            spelled
+        );
     }
 
     #[test]
@@ -677,6 +825,7 @@ mod tests {
             store: &store,
             identity: &identity,
             central: None,
+            blobs: None,
             allow_stale: false,
             now_ms: 0,
         };
