@@ -31,8 +31,8 @@
 // same trust model as the #8568 per-question answer token.
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { requireHome } from "./home.ts";
 
 export type DeferLean = "none" | "skeptical" | "approve";
 export const DEFER_LEANS: readonly DeferLean[] = ["none", "skeptical", "approve"];
@@ -218,7 +218,7 @@ export const DECISIONS_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 /** Default decision-set store path (mirrors src/config.ts decisionsFile). */
 export function defaultDecisionsFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.PM_AGG_DECISIONS_FILE?.trim();
-  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "decisions.json");
+  return v ? v : join(requireHome("PM_AGG_DECISIONS_FILE"), ".local", "state", "pm-aggregator", "decisions.json");
 }
 
 const SET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -1270,11 +1270,13 @@ export function decisionSetSummary(set: DecisionSet): DecisionSetSummary {
   };
 }
 
-/** Index views (#8867): "today" = raised on the current America/Chicago
- * calendar day; "week" = raised in the current America/Chicago calendar
- * week (Monday–Sunday); "all" = everything. */
-export type DecisionSetView = "today" | "week" | "all";
-export const DECISION_SET_VIEWS: readonly DecisionSetView[] = ["today", "week", "all"];
+/** Index views (#8867, #14064 "recent"): "today" = raised on the current
+ * America/Chicago calendar day; "week" = raised in the current
+ * America/Chicago calendar week (Monday–Sunday); "recent" = raised in
+ * the last 7 days, rolling — the index default, so the landing view is
+ * the current workload, not the backlog; "all" = everything. */
+export type DecisionSetView = "today" | "week" | "recent" | "all";
+export const DECISION_SET_VIEWS: readonly DecisionSetView[] = ["today", "week", "recent", "all"];
 
 export function isDecisionSetView(value: unknown): value is DecisionSetView {
   return typeof value === "string" && (DECISION_SET_VIEWS as readonly string[]).includes(value);
@@ -1313,11 +1315,18 @@ function chicagoWeekMonday(dayNum: number): number {
   return dayNum - ((weekday + 6) % 7);
 }
 
-/** The sets visible in an index view, newest first (#8867). A set with
- * an unparseable createdAt only ever appears in "all". */
+/** The sets visible in an index view, newest first. "recent" is the
+ * rolling last-7-days window behind the index default (#14064); a set
+ * with an unparseable createdAt only ever appears in "all". */
 export function decisionSetsForView(sets: DecisionSet[], view: DecisionSetView, now = Date.now()): DecisionSet[] {
   const sorted = [...sets].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   if (view === "all") return sorted;
+  if (view === "recent") {
+    return sorted.filter((s) => {
+      const raised = Date.parse(s.createdAt);
+      return Number.isFinite(raised) && now - raised < DECISIONS_OPEN_MAX_AGE_MS;
+    });
+  }
   const today = chicagoDayNumber(now);
   if (today === null) return sorted;
   if (view === "today") {
@@ -1327,6 +1336,171 @@ export function decisionSetsForView(sets: DecisionSet[], view: DecisionSetView, 
   return sorted.filter((s) => {
     const d = chicagoDayNumber(Date.parse(s.createdAt));
     return d !== null && d >= monday && d <= monday + 6;
+  });
+}
+
+/** Idle time after which an unresolved set is abandoned (#14064): no
+ * answer, deferral or request-info on any question for a full week.
+ * Matches the open-sets window (DECISIONS_OPEN_MAX_AGE_MS) so a set
+ * leaves the workload views and the abandoned fold in the same pass. */
+export const DECISIONS_ABANDONED_AFTER_MS = 7 * 24 * 60 * 60_000;
+
+/** Last activity instant of a set (#14064): the latest resolution
+ * `at` across its questions, else raise time. Unparseable stamps are
+ * ignored, never the max; a set with no datable instant reports 0 and
+ * ages as active (we never retire what we cannot date). */
+export function decisionSetLastActivityMs(set: DecisionSet): number {
+  let last = Date.parse(set.createdAt);
+  if (!Number.isFinite(last)) last = 0;
+  for (const item of set.items) {
+    for (const q of item.questions) {
+      const at = q.resolution ? Date.parse(q.resolution.at) : NaN;
+      if (Number.isFinite(at) && at > last) last = at;
+    }
+  }
+  return last;
+}
+
+/** Aging status of a set (#14064): "settled" (nothing open),
+ * "abandoned" (still open but idle past the abandonment window), else
+ * "active". Settled wins over idle: a set answered long ago is done,
+ * not abandoned. */
+export type DecisionSetAging = "settled" | "active" | "abandoned";
+
+export function decisionSetAging(set: DecisionSet, now = Date.now()): DecisionSetAging {
+  if (isDecisionSetFullyResolved(set)) return "settled";
+  const last = decisionSetLastActivityMs(set);
+  if (!(last > 0)) return "active";
+  return now - last >= DECISIONS_ABANDONED_AFTER_MS ? "abandoned" : "active";
+}
+
+/** One question answered outside the aggregator (#14064): the ledger
+ * (or another surface) already carries the ruling, so the mirror
+ * question closes here. optionId must name one of the question's
+ * options when given; a free-text-only close carries freeText. */
+export interface ExternallyAnsweredQuestion {
+  qid: string;
+  optionId?: string;
+  optionLabel?: string;
+  freeText?: string;
+  comment?: string;
+}
+
+/** One aging sweep (#14064): close every still-open question answered
+ * elsewhere (first resolution wins — a question Drew already ruled
+ * keeps his ruling), then report every set's aging status so the
+ * caller sees what the sweep settled and what is now abandoned. Backs
+ * the /api/decisions/sweep operator endpoint and the one-time Nov-16
+ * batch sweep. Writes only when at least one question closes. */
+export async function sweepDecisionSets(
+  file: string,
+  answeredElsewhere: ExternallyAnsweredQuestion[],
+  via = "ledger-sweep",
+  now = Date.now(),
+): Promise<{
+  applied: number;
+  skipped: Array<{ qid: string; reason: "already-resolved" | "unknown-question" | "bad-option" | "empty-answer" }>;
+  aging: Array<{ setId: string; status: DecisionSetAging }>;
+}> {
+  return serializeDecisions(file, async () => {
+    const sets = await readDecisionSets(file);
+    const byQid = new Map<string, ExternallyAnsweredQuestion>();
+    for (const e of answeredElsewhere) {
+      if (e && typeof e.qid === "string" && e.qid && !byQid.has(e.qid)) byQid.set(e.qid, e);
+    }
+    const stamp = new Date(now).toISOString();
+    let applied = 0;
+    const skipped: Array<{
+      qid: string;
+      reason: "already-resolved" | "unknown-question" | "bad-option" | "empty-answer";
+    }> = [];
+    const seen = new Set<string>();
+    for (const set of sets) {
+      for (const item of set.items) {
+        for (const q of item.questions) {
+          const ext = byQid.get(q.qid);
+          if (!ext) continue;
+          seen.add(q.qid);
+          if (q.resolution) {
+            skipped.push({ qid: q.qid, reason: "already-resolved" });
+            continue;
+          }
+          const picked = ext.optionId ? q.options.find((o) => o.id === ext.optionId) : undefined;
+          if (ext.optionId && !picked) {
+            skipped.push({ qid: q.qid, reason: "bad-option" });
+            continue;
+          }
+          const freeText = typeof ext.freeText === "string" ? ext.freeText.trim() : "";
+          if (!picked && !freeText) {
+            skipped.push({ qid: q.qid, reason: "empty-answer" });
+            continue;
+          }
+          const comment = typeof ext.comment === "string" && ext.comment.trim() ? ext.comment.trim() : "";
+          q.resolution = {
+            kind: "answered",
+            ...(picked ? { optionId: picked.id, optionLabel: picked.label } : {}),
+            ...(picked ? { optionIds: [picked.id], optionLabels: [picked.label] } : {}),
+            ...(ext.optionLabel && !picked ? { optionLabel: ext.optionLabel } : {}),
+            ...(freeText ? { freeText } : {}),
+            ...(comment ? { comment } : {}),
+            at: stamp,
+            via,
+          };
+          applied++;
+        }
+      }
+    }
+    for (const e of answeredElsewhere) {
+      if (e && typeof e.qid === "string" && e.qid && !seen.has(e.qid)) {
+        skipped.push({ qid: e.qid, reason: "unknown-question" });
+      }
+    }
+    if (applied > 0) await writeDecisionSets(file, sets);
+    return { applied, skipped, aging: sets.map((s) => ({ setId: s.setId, status: decisionSetAging(s, now) })) };
+  });
+}
+
+/** Bulk-dismiss named sets (#14064): every still-open question in each
+ * named set is recorded as a plain deferral (lean "none") via the
+ * aging policy, so the set leaves the workload with its provenance
+ * intact — the set page keeps showing who closed it and why.
+ * Unknown set ids are reported, never an error; already-resolved
+ * questions are untouched. Backs the /api/decisions/dismiss operator
+ * endpoint and the abandoned fold's dismiss-all. */
+export async function dismissDecisionSets(
+  file: string,
+  setIds: string[],
+  via = "aging-bulk-dismiss",
+  now = Date.now(),
+): Promise<{ dismissed: number; sets: string[]; unknown: string[] }> {
+  return serializeDecisions(file, async () => {
+    const sets = await readDecisionSets(file);
+    const want = new Set(setIds.filter((id) => typeof id === "string" && id));
+    const stamp = new Date(now).toISOString();
+    let dismissed = 0;
+    const touched: string[] = [];
+    for (const set of sets) {
+      if (!want.has(set.setId)) continue;
+      let n = 0;
+      for (const item of set.items) {
+        for (const q of item.questions) {
+          if (q.resolution) continue;
+          q.resolution = {
+            kind: "deferred",
+            lean: "none",
+            comment: "Bulk-dismissed by the decision-set aging policy.",
+            at: stamp,
+            via,
+          };
+          dismissed++;
+          n++;
+        }
+      }
+      if (n > 0) touched.push(set.setId);
+    }
+    const unknown = [...want].filter((id) => !sets.some((s) => s.setId === id));
+    if (dismissed > 0) await writeDecisionSets(file, sets);
+    return { dismissed, sets: touched, unknown };
   });
 }
 

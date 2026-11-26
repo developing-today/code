@@ -41,7 +41,7 @@
 - #14107 / PR #14124 — PM Cloudflare migration design: owns the PM surfaces' pipeline and commit-age drift machinery. This design composes with it; PM Workers join the pipeline through #14107's M-slices.
 - #12428 — the laptop rebuild record: the manual rectifier, today.
 - #14099 — the gh-cache ensure leg: the sandbox convergence seed.
-- #8546 — id program update channels: update flow for id *worlds*. A different plane (product, not estate); out of scope, noted so the names never collide.
+- #8546 — id program update channels: update flow for id _worlds_. A different plane (product, not estate); out of scope, noted so the names never collide.
 - Daily flake sync + `flake-inputs-update` — input freshness. This design consumes their output (fresh pins on main) and adds the missing half: convergence of running systems to those pins.
 
 ## 3. The model — pin, converge, verify, on three planes
@@ -59,7 +59,7 @@ Drew's shape: an override is allowed — home-manager applies a user-level fix i
 
 - **Record.** Applying an override writes an entry to an override ledger in the repo (slice U4 picks the exact form: one small file per override under `nixos/overrides/`, or a single ledger file). The entry states: what changed (unit / package / config), where (host, user, path), why, the issue link, when, and a **verification probe** that proves the fix is live (a version string, a file hash, a behaviour check). The home-manager apply path is wrapped so the entry is written in the same action. An override with no entry is drift, and drift detection treats it as such.
 - **Rectify.** The rebuild cycle reads the ledger before switching. For each open override:
-  - If the flake on main now expresses the change (the fix was upstreamed into the system or home-manager modules), the build absorbs it; the post-switch probe verifies the fix survived; the entry closes as *rectified*.
+  - If the flake on main now expresses the change (the fix was upstreamed into the system or home-manager modules), the build absorbs it; the post-switch probe verifies the fix survived; the entry closes as _rectified_.
   - If the flake does not yet express it, the change is landed on main first — the recorded override carries everything needed to open that PR — or the switch proceeds only with the override re-applied on top at the home-manager layer, the entry staying open.
 - **No silent revert — the hard rule.** If a pending generation would remove a live, recorded fix and neither rectification path is ready, the switch is **held** and the divergence is surfaced loudly (a PM needs-you item plus a comment on the override's issue). A build that quietly reverts a live fix is the one failure this protocol exists to prevent.
 - **Expiry.** An override still unrectified after N rebuild cycles (U4 sets N; this design suggests 3) escalates from a report line to a needs-you item. Overrides are a bridge, not a residence.

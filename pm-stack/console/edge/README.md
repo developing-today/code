@@ -13,21 +13,22 @@ does what only a machine can.
 With the switch on and both tokens there (the usual state; see
 "The two tokens" below):
 
-| Thing                                                                                                         | Where                                                                                       | With no machine connected                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The app's page, script and icons                                                                              | edge                                                                                        | unchanged                                                                                                                                                                    |
-| Checking who is calling                                                                                       | edge, and again on the laptop                                                               | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                        |
-| The board, the owner's prompts, pull requests, ranked issues, what is labelled as needing the owner           | edge, read from GitHub and the queue store on each section's own interval                   | unchanged                                                                                                                                                                    |
-| One pull request's page, the queue by state, roadmaps, bugs, intake, releases                                 | edge, read when asked for                                                                   | unchanged                                                                                                                                                                    |
-| Ask, reply, close a prompt, comment, rank, move a task, merge, start a deploy, file a note, a bug or a change | edge, at once; never sent to a machine, so never done twice                                 | unchanged                                                                                                                                                                    |
-| The queue task of a prompt, a note or a bug filed at the edge                                                 | a machine: the edge files the issue and holds the task (`prompt.enqueue`, `triage.enqueue`) | held, filed once when one connects, dropped after a day and said so                                                                                                          |
-| Sessions (and what one of them is waiting on the owner for), questions, units, agents                         | a machine's report, kept at the edge                                                        | as of its last report, and the app says how old                                                                                                                              |
-| Notifications: keys, subscriptions, sending                                                                   | edge                                                                                        | unchanged; a reply to a prompt is noticed by the edge itself, which wakes each minute while a device is subscribed; one says the laptop has gone quiet                       |
-| Linked phones and the widget's summary                                                                        | edge                                                                                        | unchanged                                                                                                                                                                    |
-| Actions only a machine can do, safe to do late (answers, messages to agents, …)                               | a machine, relayed at once                                                                  | held at the edge, run once when it is back, dropped after a day and said so                                                                                                  |
-| Actions only a machine can do, not safe to do late (units, unblock, …)                                        | a machine, relayed at once                                                                  | refused, saying why                                                                                                                                                          |
-| The dashboard's own pages, logs                                                                               | a machine                                                                                   | a plain notice with a link to the app                                                                                                                                        |
-| The signed Android build (`/console/pm-console.apk`)                                                          | GitHub's release first; else the laptop, and a copy at the edge                             | the release is served (checked against its own description of itself); with none published, the copy is, and the app says so when the copy is older than the laptop's newest |
+| Thing                                                                                                         | Where                                                                                                                 | With no machine connected                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The app's page, script and icons                                                                              | edge                                                                                                                  | unchanged                                                                                                                                                                    |
+| Checking who is calling                                                                                       | edge, and again on the laptop                                                                                         | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                        |
+| The board, the owner's prompts, pull requests, ranked issues, what is labelled as needing the owner           | edge, read from GitHub and the queue store on each section's own interval                                             | unchanged                                                                                                                                                                    |
+| One pull request's page, the queue by state, roadmaps, bugs, intake, releases                                 | edge, read when asked for                                                                                             | unchanged                                                                                                                                                                    |
+| Ask, reply, close a prompt, comment, rank, move a task, merge, start a deploy, file a note, a bug or a change | edge, at once; never sent to a machine, so never done twice                                                           | unchanged                                                                                                                                                                    |
+| Messages to agents; the agents list and the message log                                                       | edge, through the bridge Worker on its service binding, under the PM stack's own bridge identity (`service:pm-stack`) | unchanged while the bridge holds that identity; without it, a message is held for a machine as before, and the lists are a machine's report                                  |
+| The queue task of a prompt, a note or a bug filed at the edge                                                 | a machine: the edge files the issue and holds the task (`prompt.enqueue`, `triage.enqueue`)                           | held, filed once when one connects, dropped after a day and said so                                                                                                          |
+| Sessions (and what one of them is waiting on the owner for), questions, units                                 | a machine's report, kept at the edge                                                                                  | as of its last report, and the app says how old                                                                                                                              |
+| Notifications: keys, subscriptions, sending                                                                   | edge                                                                                                                  | unchanged; a reply to a prompt is noticed by the edge itself, which wakes each minute while a device is subscribed; one says the laptop has gone quiet                       |
+| Linked phones and the widget's summary                                                                        | edge                                                                                                                  | unchanged                                                                                                                                                                    |
+| Actions only a machine can do, safe to do late (answers, messages to agents, …)                               | a machine, relayed at once                                                                                            | held at the edge, run once when it is back, dropped after a day and said so                                                                                                  |
+| Actions only a machine can do, not safe to do late (units, unblock, …)                                        | a machine, relayed at once                                                                                            | refused, saying why                                                                                                                                                          |
+| The dashboard's own pages, logs                                                                               | a machine                                                                                                             | a plain notice with a link to the app                                                                                                                                        |
+| The signed Android build (`/console/pm-console.apk`)                                                          | GitHub's release first; else the laptop, and a copy at the edge                                                       | the release is served (checked against its own description of itself); with none published, the copy is, and the app says so when the copy is older than the laptop's newest |
 
 With the switch off, or a token missing, the edge reads and does
 nothing itself: every section is the laptop's last report, and every
@@ -225,6 +226,64 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
+- **A notification says what happened and carries what can be done
+  about it.** Each message the notifier sends has up to two buttons
+  (`PushAction` in `src/notify.ts`): on a reply from the fleet, "Reply"
+  (a line typed on the notification itself, where the device can take
+  one; where it cannot, the thread is opened) and "Close it"; on
+  something only the owner can do, "I did it" and "Open"; on a unit
+  that failed, "Restart it" and "Look". A button that does something
+  does it the way the app does anything: the service worker writes it
+  down on the device, sends it under a name, and with no connection it
+  is kept and sent later, never twice. With the app closed a
+  notification in the same place says what became of it ("Done.",
+  "Kept on this device…", or that it could not be done); with the app
+  open, the app says it. The body says enough to act on: the reply
+  itself, what to do and on which item, which unit and what it is for.
+  A push service takes a message of 4096 bytes and may refuse a longer
+  one (RFC 8030), so a message that would be longer as it is sealed is
+  cut to the longest start that fits, marked as cut, buttons kept.
+- **A prompt is sent as what it is.** On Ask the owner chooses "Do
+  this", "Answer this" or "From now on" (`ASK_INTENTS` in
+  `src/work.ts`: task, question, directive). The issue is titled for it
+  ("Owner: ", "Owner asks: ", "Owner directs: "), which is also how the
+  kind is told apart later, and its note and its task ask for what that
+  kind needs: a question is answered with what the answer rests on,
+  changes nothing and is left open for him to close; a standing
+  instruction is recorded where every agent reads it and work under way
+  is brought in line. Filed here with no machine, the kind is held with
+  the task for the machine that files it. A reply on a question is
+  queued as a question.
+- **What was finished lately is read here too.** The `done` document
+  (`Work.done()`, the Done screen, and the fifth tile on Now) is tasks
+  the queue says are done, pull requests merged and issues closed: one
+  round trip to the queue store and one question of GitHub. The tasks
+  are found by the events that say they were finished, which the store
+  keeps in order of time (the tasks themselves it does not, and there
+  are tens of thousands); a task is shown once, at its last finishing,
+  and only while it still stands as done. GitHub is asked for one page
+  of what is closed, at an address that does not change from one
+  asking to the next, so an answer that has not changed costs nothing.
+  A full page of things touched within the day is said as "at least".
+- **The app is told when something changes.** The open app holds a
+  WebSocket to the Worker (`/console/api/events`, the owner signed in
+  like any other request). The Worker's object keeps it by the
+  platform's hibernation API, so the connection stays open while the
+  object is put away and costs nothing between events. When a document
+  would be answered with another tag (a list read with other content
+  or another health, something the owner did, what is held), everyone
+  connected is told which documents, once however many changes arrive
+  together: `{"t":"changed","docs":["core"]}`. The app reads those
+  again by their tags. While someone is connected the object wakes
+  every twenty seconds to read again what it reads itself and has gone
+  stale; with nobody connected it does not wake for this. The app says
+  "ping" every 45 seconds, which the platform answers itself. What the
+  owner does still goes by its own requests (kept on the device and
+  sent again when there is no connection), never over this. With no
+  live connection (a machine serving the app by itself, or a network
+  that will not carry one) the app looks every twenty seconds, as
+  before; with one, once a minute in case something was missed. The
+  health answer says how many are connected (`listening`).
 - **The repository's settings are the platform's own.** Which
   repository and queue, where the queue's store answers and what its
   token is called, the Android app's package and the label that marks
@@ -260,9 +319,10 @@ it (the laptop's, the sign-in issuer's).
   the rest. A test holds the two readings to each other on the same
   issues. The search is not used for this: it is counted by the minute,
   it lags, and it takes issues and pull requests in separate queries
-  (asked for both at once it answers 422, which is what the dashboard's
-  own census did until #14103; it asks the same lists now, and a test
-  holds the two to asking for the same pages). The lists are asked for
+  (asked for both at once it answers 422 to some tokens, a GitHub App's
+  among them, though not to the one the dashboard runs with, whose
+  census asked it so until #14103; it asks the same lists now, and a
+  test holds the two to asking for the same pages). The lists are asked for
   by their tags like any other, so the eight of them cost nothing while
   nothing changes. A repository the token cannot see (404, or a 403
   that is not about calling too often) is named in what is shown, and

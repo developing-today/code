@@ -42,7 +42,7 @@ envelope reference.
 | engine             | what is stored                                                                                                                                  | engine and version                        |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | `chunked_binary`   | sorted canonical triples in u32-length-framed chunks of at most 4096 bytes, with a chunk directory and a trailer; immutable, no secondary index | in-test file format `idcb/1`              |
-| `redb_tuple`       | SPO and POS tables keyed by `id_core::tuple` encodings of the canonical term bytes (the current tuple-key materialization)                      | redb 4.6.0 (pinned)                       |
+| `redb_tuple`       | SPO and POS tables keyed by `id_core::tuple` encodings of the canonical term bytes (the current tuple-key materialization)                      | redb 5.0.0 (pinned)                       |
 | `sqlite_jsonb`     | one JSONB document per triple: structured terms plus hex term keys, with a unique (s, p, o) and a (p, o) expression index                       | SQLite 3.54.1 via rusqlite 0.42 (bundled) |
 | `sqlite_blob_rows` | interned `terms(bytes)` table plus a `WITHOUT ROWID` (s, p, o) table and a (p, o, s) index                                                      | SQLite 3.54.1 via rusqlite 0.42 (bundled) |
 
@@ -74,10 +74,10 @@ Timings are medians over the 3 runs, in microseconds, from a
 
 | engine             | load µs | subject µs | p/o µs | page µs | write µs |   bytes | compacted | bytes after writes |
 | ------------------ | ------: | ---------: | -----: | ------: | -------: | ------: | --------: | -----------------: |
-| `chunked_binary`   |    7982 |      17806 | 173268 |   12489 |  1085359 |  312475 |    312475 |             311511 |
-| `redb_tuple`       |  199808 |      20790 |   8298 |   27712 |   633849 | 1118208 |    974848 |            1945600 |
-| `sqlite_jsonb`     |  277592 |      25624 |   9329 |  116002 |   353003 | 2641920 |   2523136 |            2600960 |
-| `sqlite_blob_rows` |  178440 |      23801 |  10503 |   30377 |   357208 |  475136 |    438272 |             475136 |
+| `chunked_binary`   |    7581 |      17673 | 189198 |   13413 |   878302 |  312475 |    312475 |             311511 |
+| `redb_tuple`       |  211690 |      18406 |   8976 |   28300 |   650901 | 1118208 |    974848 |            1945600 |
+| `sqlite_jsonb`     |  261045 |      23969 |   9483 |  133828 |   373096 | 2641920 |   2523136 |            2600960 |
+| `sqlite_blob_rows` |  213948 |      21221 |  10266 |   33220 |   378740 |  475136 |    438272 |             475136 |
 
 <!-- bakeoff-table:end -->
 
@@ -104,7 +104,7 @@ Lowest value per column in this run (a reading of the table, not a ranking):
   every single-triple write rewrites the whole file, so its write column is
   the largest.
 - redb tuple keys answer both indexed queries by prefix range scans and need
-  no query planner, but storing SPO and POS copies of every key costs about
+  no query planner, but storing SPO and POS copies of every key costs
   between three and four times the chunked size, and the file grows under single-row writes
   until it is compacted.
 - SQLite JSONB is the largest store, roughly eight times the chunked file,

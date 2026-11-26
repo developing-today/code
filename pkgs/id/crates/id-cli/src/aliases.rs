@@ -205,7 +205,7 @@ mod tests {
             claim(3, subject, "seen", Some("Ann")),
             claim(4, Hash::digest(b"bo"), ALIAS_NAME, Some("Ann")),
         ];
-        assert!(aliases_of(&claims, &subject).is_empty());
+        assert_eq!(aliases_of(&claims, &subject), [] as [Alias; 0]);
     }
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
             claim(2, subject, ALIAS_NAME, Some("\t")),
             claim(3, subject, ALIAS_NAME, Some(" \t ")),
         ];
-        assert!(aliases_of(&claims, &subject).is_empty());
+        assert_eq!(aliases_of(&claims, &subject), [] as [Alias; 0]);
 
         // A non-blank alias keeps its exact text — no silent trimming.
         let claims = [claim(4, subject, ALIAS_NAME, Some("  Ann  "))];

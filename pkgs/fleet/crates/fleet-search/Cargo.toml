@@ -9,7 +9,7 @@ description = "The fleet search domain: the atlas-search client surface over the
 [features]
 default = ["client"]
 # The client surface (`fleet search`, `fleet search get-chunk`).
-client = ["dep:fleet-config", "dep:ureq"]
+client = ["dep:fleet-config", "dep:ureq", "dep:sha2", "dep:flate2", "dep:libc"]
 # The service role (`fleet serve search`): atlas-core / atlas-embed /
 # atlas-proto consumed as-is from the atlas-search workspace.
 serve = ["dep:atlas-core", "dep:atlas-embed", "dep:atlas-proto"]
@@ -23,6 +23,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # The atlas via-service client's own HTTP stack (atlas-search's
 # service.rs builds on ureq 3); same pin as fleet-queue.
 ureq = { version = "3", features = ["rustls", "json"], optional = true }
+# The backup verb's hashes, deterministic gzip, and flock/statvfs
+# (all already in the workspace lock; client feature only, #14129).
+sha2 = { workspace = true, optional = true }
+flate2 = { version = "1", optional = true }
+libc = { version = "0.2", optional = true }
 # The Atlas crates stay in their own workspace (pkgs/atlas-search) and
 # are consumed by path, untouched (design note §1/§6). The nix build
 # must put both trees in its source (pkgs/fleet/default.nix).

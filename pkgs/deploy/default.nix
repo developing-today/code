@@ -67,6 +67,15 @@ let
     # Issue #12909: ready-for-agent, packaged from its pinned npm
     # tarballs — the last of the four #12768 services to register.
     readyForAgent = callPackage ../ready-for-agent/package.nix { };
+    # Issue #5767, external-Worker slice: agent-inbox, webhook-gateway,
+    # and webhook-gateway-sink live in dezren39/hatch-personal (source
+    # verdict comment 6974159268), not this repo. Each deploy app
+    # carries the pinned hatch-personal rev and stages the worker dir
+    # at deploy time (sparse checkout — no full clone, no build, no
+    # deploy-time npm install; both workers are dependency-free).
+    agentInboxDeploy = callPackage ../external-workers/agent-inbox-deploy.nix { };
+    webhookGatewayDeploy = callPackage ../external-workers/webhook-gateway-deploy.nix { };
+    webhookGatewaySinkDeploy = callPackage ../external-workers/webhook-gateway-sink-deploy.nix { };
   };
   # The registry names each target's store path without depending on it
   # (code#12738): string context would make building the CLI realize every
