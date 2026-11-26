@@ -693,34 +693,6 @@ pub(crate) const DIRECTORY_PANEL_PERCENT: f32 = 28.0;
 #[derive(Resource)]
 pub(crate) struct DirectoryPanelLayout;
 
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PanelBounds {
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-}
-
-#[cfg(test)]
-fn directory_session_bounds(width: f32, height: f32) -> (PanelBounds, PanelBounds) {
-    let split = width * DIRECTORY_PANEL_PERCENT / 100.0;
-    (
-        PanelBounds {
-            left: 0.0,
-            top: 0.0,
-            right: split,
-            bottom: height,
-        },
-        PanelBounds {
-            left: split,
-            top: 0.0,
-            right: width,
-            bottom: height,
-        },
-    )
-}
-
 /// Marker for the root UI node the directory presenter owns.
 #[derive(Component)]
 struct DirectoryRoot;
@@ -753,19 +725,23 @@ impl Plugin for DirectoryPlugin {
     }
 }
 
+fn directory_root_node() -> Node {
+    Node {
+        position_type: bevy::prelude::PositionType::Absolute,
+        left: Val::Percent(0.0),
+        top: Val::Percent(0.0),
+        flex_direction: bevy::prelude::FlexDirection::Column,
+        width: Val::Percent(DIRECTORY_PANEL_PERCENT),
+        height: Val::Percent(100.0),
+        overflow: bevy::prelude::Overflow::clip(),
+        ..Default::default()
+    }
+}
+
 fn spawn_directory_root(mut commands: Commands<'_, '_>) {
     commands.spawn((
         DirectoryRoot,
-        Node {
-            position_type: bevy::prelude::PositionType::Absolute,
-            left: Val::Percent(0.0),
-            top: Val::Percent(0.0),
-            flex_direction: bevy::prelude::FlexDirection::Column,
-            width: Val::Percent(DIRECTORY_PANEL_PERCENT),
-            height: Val::Percent(100.0),
-            overflow: bevy::prelude::Overflow::clip(),
-            ..Default::default()
-        },
+        directory_root_node(),
         BackgroundColor(Color::srgb(0.08, 0.09, 0.12)),
     ));
 }
@@ -833,20 +809,35 @@ mod tests {
 
     #[test]
     fn directory_session_layout_has_disjoint_panels_and_preserves_sessions() {
-        for (width, height) in [(640.0, 480.0), (1280.0, 720.0)] {
-            let (directory, session) = directory_session_bounds(width, height);
-            // Oracle: independent panel geometry must stay within the
-            // viewport, share one edge, and have no positive-area overlap.
-            assert_eq!(directory.left, 0.0);
-            assert_eq!(directory.top, 0.0);
-            assert_eq!(directory.bottom, height);
-            assert_eq!(session.left, directory.right);
-            assert_eq!(session.right, width);
-            assert_eq!(session.top, 0.0);
-            assert_eq!(session.bottom, height);
-            assert!(directory.right > directory.left);
-            assert!(session.right > session.left);
+        let directory = directory_root_node();
+        let session = crate::render::screen_root_node(true);
+        let percent = |value: Val| match value {
+            Val::Percent(value) => value,
+            other => panic!("expected percentage layout value, got {other:?}"),
+        };
+        let directory_left_percent = percent(directory.left);
+        let directory_width_percent = percent(directory.width);
+        let session_left_percent = percent(session.left);
+        let session_width_percent = percent(session.width);
+
+        for width in [640.0, 1280.0] {
+            let directory_right =
+                width * (directory_left_percent + directory_width_percent) / 100.0;
+            let session_left = width * session_left_percent / 100.0;
+            let session_right = width * (session_left_percent + session_width_percent) / 100.0;
+            // Oracle: actual Bevy root-node styles stay in the viewport,
+            // share one edge, and have no positive-area overlap.
+            assert_eq!(directory_left_percent, 0.0);
+            assert_eq!(percent(directory.top), 0.0);
+            assert_eq!(percent(directory.height), 100.0);
+            assert_eq!(directory_right, session_left);
+            assert_eq!(session_right, width);
+            assert_eq!(percent(session.top), 0.0);
+            assert_eq!(percent(session.height), 100.0);
+            assert!(directory_right > 0.0);
+            assert!(session_right > session_left);
         }
+        assert_eq!(percent(crate::render::screen_root_node(false).width), 100.0);
 
         let mut registry = SessionRegistry::default();
         assert!(registry.enter("lobby"));

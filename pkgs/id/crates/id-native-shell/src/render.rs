@@ -332,11 +332,8 @@ impl Plugin for ShellRenderPlugin {
     }
 }
 
-fn spawn_root(
-    mut commands: Commands<'_, '_>,
-    directory_layout: Option<Res<'_, crate::directory::DirectoryPanelLayout>>,
-) {
-    let (left, width) = if directory_layout.is_some() {
+pub(crate) fn screen_root_node(directory_layout: bool) -> bevy::prelude::Node {
+    let (left, width) = if directory_layout {
         (
             Val::Percent(crate::directory::DIRECTORY_PANEL_PERCENT),
             Val::Percent(100.0 - crate::directory::DIRECTORY_PANEL_PERCENT),
@@ -344,19 +341,23 @@ fn spawn_root(
     } else {
         (Val::Percent(0.0), Val::Percent(100.0))
     };
-    commands.spawn((
-        ScreenRoot,
-        bevy::prelude::Node {
-            position_type: PositionType::Absolute,
-            left,
-            top: Val::Percent(0.0),
-            flex_direction: bevy::prelude::FlexDirection::Column,
-            width,
-            height: Val::Percent(100.0),
-            overflow: bevy::prelude::Overflow::clip(),
-            ..Default::default()
-        },
-    ));
+    bevy::prelude::Node {
+        position_type: PositionType::Absolute,
+        left,
+        top: Val::Percent(0.0),
+        flex_direction: bevy::prelude::FlexDirection::Column,
+        width,
+        height: Val::Percent(100.0),
+        overflow: bevy::prelude::Overflow::clip(),
+        ..Default::default()
+    }
+}
+
+fn spawn_root(
+    mut commands: Commands<'_, '_>,
+    directory_layout: Option<Res<'_, crate::directory::DirectoryPanelLayout>>,
+) {
+    commands.spawn((ScreenRoot, screen_root_node(directory_layout.is_some())));
 }
 
 /// Rebuild the row nodes when the presented view's sequence changes.
