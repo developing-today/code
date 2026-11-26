@@ -826,15 +826,15 @@ mod tests {
             let source = world_w(&[&chess, &board]);
             let template = through_the_wire(&source);
 
-            let mut import =
-                import_template(&template, "w2", &[chess.clone()]).expect("a gap is not a refusal");
+            let mut import = import_template(&template, "w2", std::slice::from_ref(&chess))
+                .expect("a gap is not a refusal");
             assert_eq!(identities(&import), vec![chess.identity()]);
             assert_eq!(import.gaps, vec![board.identity()]);
             assert_eq!(UNRESOLVED_REFERENCE, "template_reference_unresolved");
 
             assert_eq!(import.resolve_gaps(&[]), Ok(0));
             assert_eq!(import.gaps.len(), 1);
-            assert_eq!(import.resolve_gaps(&[board.clone()]), Ok(1));
+            assert_eq!(import.resolve_gaps(std::slice::from_ref(&board)), Ok(1));
             assert!(import.gaps.is_empty());
             assert_eq!(
                 identities(&import),
@@ -848,7 +848,7 @@ mod tests {
             let impostor = signed("chess", 3, b"\0asm\x01\0\0\0 not the same program");
             let template = through_the_wire(&world_w(&[&chess]));
 
-            let refusal = import_template(&template, "w2", &[impostor.clone()])
+            let refusal = import_template(&template, "w2", std::slice::from_ref(&impostor))
                 .expect_err("a different program under the template's name is refused");
             assert_eq!(refusal.check(), "provenance_violation");
             assert_eq!(
@@ -968,8 +968,8 @@ mod tests {
             fn every_exported_manifest_passes_the_import_checks(source in property::arb_unique_source()) {
                 let template = through_the_wire(&source);
                 let import = import_template(&template, "w2", &[]).expect("exported manifests import");
-                proptest::prop_assert_eq!(import.gaps, source.programs.clone());
-                proptest::prop_assert_eq!(import.state, source.state.clone());
+                proptest::prop_assert_eq!(import.gaps, source.programs);
+                proptest::prop_assert_eq!(import.state, source.state);
             }
         }
     }
