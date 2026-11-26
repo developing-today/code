@@ -477,6 +477,12 @@ pub struct SecretsConfig {
     /// create into (#14370). The `FLEET_BWS_PROJECT_ID` environment
     /// variable overrides it. Reads never need it.
     pub bws_project_id: Option<String>,
+    /// The secret-name prefix this instance works inside (#10358, D2
+    /// to D5): `get alpha` reads `<prefix>.alpha`. The
+    /// `FLEET_SECRETS_PREFIX` environment variable overrides it; an
+    /// empty value counts as unset. A namespace view, not access
+    /// control.
+    pub prefix: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -544,6 +550,19 @@ pub struct DispatchTestConfig {
     /// fork network.
     #[serde(default)]
     pub scopes: Vec<String>,
+}
+
+/// Whether a `[secrets] prefix` value is usable: a valid secret name
+/// (the rule of fleet-secrets' `validate_name`) that does not end with
+/// the `.` separator.
+fn valid_secrets_prefix(prefix: &str) -> bool {
+    !(prefix.is_empty()
+        || prefix == "."
+        || prefix == ".."
+        || prefix.ends_with('.')
+        || prefix.chars().any(|c| {
+            c == '/' || c == '?' || c == '#' || c == '%' || c.is_whitespace() || c.is_control()
+        }))
 }
 
 #[derive(Debug)]
@@ -933,6 +952,19 @@ impl Config {
                     message: format!(
                         "{field} must not be empty or blank; omit the field for the default"
                     ),
+                });
+            }
+        }
+        // [secrets] prefix (#10358 D9): an empty value counts as
+        // unset, so it is not a blank-field error; a set prefix must be
+        // a usable secret name and may not end with the separator. The
+        // refused characters mirror fleet-secrets' validate_name (that
+        // crate depends on this one, not the other way round).
+        if let Some(prefix) = self.secrets.prefix.as_deref() {
+            if !prefix.trim().is_empty() && !valid_secrets_prefix(prefix) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: "[secrets] prefix must be a valid secret name (no '/', '?', '#', '%', whitespace or control characters, not '.' or '..') and may not end with '.'".to_string(),
                 });
             }
         }
@@ -2538,6 +2570,35 @@ socket = "rel/s.sock"
         assert_eq!(cfg.dispatch_url(), None);
         assert_eq!(cfg.dispatch_token_name(), DEFAULT_DISPATCH_TOKEN_NAME);
     }
+    #[test]
+    fn secrets_prefix_parses_and_bad_prefixes_are_refused() {
+        // #10358 S1: the prefix key parses as written.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"42\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some("42"));
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"team.42\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some("team.42"));
+        // An empty value counts as unset (D9), not a blank-field error.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some(""));
+        // An empty table and an old-shape table both still load.
+        let (_d, _p, cfg) = cfg_from("[secrets]\n");
+        assert_eq!(cfg.secrets.prefix, None);
+        let (_d, _p, cfg) = cfg_from("[secrets]\ntoken_file = \"/run/token\"\n");
+        assert_eq!(cfg.secrets.prefix, None);
+        // A prefix ending in the separator, or holding a refused
+        // character, is a loud parse error naming the field.
+        for bad in ["42.", ".", "..", "a/b", "a b", "a%2f", "a?b", "a#b"] {
+            let (_dir, path) = write_temp(&format!("[secrets]\nprefix = {bad:?}\n"));
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => assert!(
+                    message.contains("[secrets] prefix"),
+                    "error should name the field for {bad:?}: {message}"
+                ),
+                other => panic!("expected Parse error for prefix {bad:?}, got {other:?}"),
+            }
+        }
+    }
+
     // ---- [host] manifest + location resolution (#6770, #5687) ----
 
     fn cfg_from(contents: &str) -> (tempfile_dir::Dir, PathBuf, Config) {
