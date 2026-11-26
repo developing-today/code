@@ -265,11 +265,12 @@
       "id": "id.nixos.vm",
       "paths": [
         "pkgs/id/nix/tests/serve-test.nix",
+        "pkgs/id/nix/tests/world-host-test.nix",
         "pkgs/id/nix/tests/e2e-test.nix",
         "pkgs/id/nix/tests/integration-test.nix",
         "pkgs/id/nix/tests/playwright-e2e-test.nix"
       ],
-      "invocation": "nix flake check for nixos-serve, nixos-e2e, nixos-integration, and nixos-playwright-e2e (runNixOSTest)",
+      "invocation": "nix flake check for nixos-serve, nixos-world-host, nixos-e2e, nixos-integration, and nixos-playwright-e2e (runNixOSTest)",
       "venue": {
         "workflow": ".github/workflows/id-e2e-nightly.yml",
         "job_step": "check / Run full nix flake check",
