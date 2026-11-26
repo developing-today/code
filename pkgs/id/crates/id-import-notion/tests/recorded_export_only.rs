@@ -250,7 +250,7 @@ fn re_import_recognises_path_keyed_pages_only_by_content_hash() {
     );
 
     let draft = path_of(&after, "Draft.md");
-    assert_eq!(report.unrecognised, [draft.clone()]);
+    assert_eq!(report.unrecognised, std::slice::from_ref(&draft));
     assert!(!after.page_id_to_note_id.contains_key(&draft));
 
     // Only the unrecognised page gets a new note; nothing is shared.
