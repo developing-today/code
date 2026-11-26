@@ -166,7 +166,7 @@ import {
   ghItemDerivedStatus,
 } from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
-import { effectiveProjectDisagreement } from "./conflicts.ts";
+import { effectiveProjectDisagreement, resolveTrustedProjectValue } from "./conflicts.ts";
 import type { ConflictRuling } from "./conflict-rulings.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
@@ -7250,19 +7250,22 @@ export function projectsBodyHtml(
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
-      const derived = derivedProjectState(p, opts.orchestration);
+      const detected = derivedProjectState(p, opts.orchestration);
       // #1282 slice 2: a standing ruling suppresses the clash — the
       // card applies the trusted value and labels it, so the page
       // cannot show a ⚠ the inbox no longer lists.
       const clash = effectiveProjectDisagreement(p, opts.orchestration, undefined, opts.ruling ?? null);
       const trusted = !clash && opts.ruling?.classId === "project-vs-derived" && p.status ? opts.ruling.trusted : null;
+      const trustedValue = resolveTrustedProjectValue(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const appliedStatus = trustedValue ?? p.status;
+      const appliedDerived = trustedValue ?? detected;
       const clashBadge = clash
         ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(clash.project)} · derived: ${esc(clash.derived)}</span>`
         : trusted
           ? ` <span class="badge src" title="A trust ruling stands for Project Status vs derived state (recorded in the source-conflict inbox): this card applies the trusted ${esc(trusted)} value while the disagreement is suppressed — revoke the ruling to re-surface it">trusts ${esc(trusted)}</span>`
           : "";
-      const statusBadge = p.status
-        ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+      const statusBadge = appliedStatus
+        ? `<span class="badge ${appliedStatus === "Done" ? "merged" : appliedStatus === "Todo" ? "closed" : "implementing"}">${esc(appliedStatus)}</span>`
         : `<span class="badge">no status</span>`;
       const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
       // #5082: only active work (canonical Project status
@@ -7305,7 +7308,7 @@ export function projectsBodyHtml(
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
         p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
         `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
-        `<span class="badge src">derived: ${esc(derived)}</span>`,
+        `<span class="badge src">derived: ${esc(appliedDerived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
       const statusCtl = opts.identities

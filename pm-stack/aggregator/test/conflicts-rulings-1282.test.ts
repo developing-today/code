@@ -11,7 +11,7 @@ import {
   resolveTrustedProjectValue,
   rulingForClass,
 } from "../src/conflicts.ts";
-import { buildBriefs } from "../src/brief.ts";
+import { buildBriefs, buildItemBrief } from "../src/brief.ts";
 import { buildHealth } from "../src/health.ts";
 import { buildQueueView, reconciledInProgress } from "../src/queue-view.ts";
 import { projectsBodyHtml, renderConflicts } from "../src/render.ts";
@@ -189,6 +189,10 @@ describe("renders apply the ruling (#1282 slice 2)", () => {
     expect(without.get("developing-today/code#1282")?.disagreement).not.toBeNull();
     const withRuling = buildBriefs(clashPool(), { orchestration: null, ruling: ruling() });
     expect(withRuling.get("developing-today/code#1282")?.disagreement).toBeNull();
+    expect(withRuling.get("developing-today/code#1282")?.state.value).toBe("Todo");
+    const projectTrusted = buildItemBrief(clashPool()[0], { orchestration: null, ruling: ruling("project") });
+    expect(projectTrusted.state.value).toBe("In Progress");
+    expect(projectTrusted.state.text).toContain("applied by a standing");
   });
 
   test("queue rows suppress the disagreement while a ruling stands", () => {
@@ -208,6 +212,13 @@ describe("renders apply the ruling (#1282 slice 2)", () => {
     const trusted = projectsBodyHtml(clashPool(), { orchestration: null, ruling: ruling("derived") });
     expect(trusted).not.toContain("⚠ project:");
     expect(trusted).toContain("trusts derived");
+    expect(trusted).toContain(">Todo</span>");
+    expect(trusted).toContain("derived: Todo");
+    expect(trusted).not.toContain(">In Progress</span>");
+    const projectTrusted = projectsBodyHtml(clashPool(), { orchestration: null, ruling: ruling("project") });
+    expect(projectTrusted).toContain("trusts project");
+    expect(projectTrusted).toContain(">In Progress</span>");
+    expect(projectTrusted).toContain("derived: In Progress");
   });
 
   test("/conflicts names the ruling, the suppressed count, and the revoke path", () => {
