@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DocumentsRefusal,
+  MAX_DOCUMENT_PAGES,
   collectDocuments,
   documentFrame,
   documentsFrame,
@@ -110,6 +111,17 @@ describe("collectDocuments pagination", () => {
     await expect(
       collectDocuments(async () => ({ type: "documents", names: [], next_after: "x" })),
     ).rejects.toThrow("cursor did not advance");
+  });
+
+  it("does not request beyond the maximum number of pages", async () => {
+    let requests = 0;
+    await expect(
+      collectDocuments(async () => {
+        requests += 1;
+        return { type: "documents", names: [], next_after: `cursor-${requests}` };
+      }),
+    ).rejects.toThrow(`listing exceeded ${MAX_DOCUMENT_PAGES} pages`);
+    expect(requests).toBe(MAX_DOCUMENT_PAGES);
   });
 });
 

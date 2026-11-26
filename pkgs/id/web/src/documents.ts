@@ -115,6 +115,25 @@ export type DocumentsPageRequest = (after: string | null) => Promise<unknown>;
 export const MAX_DOCUMENT_PAGES = 512;
 
 /**
+ * Validate one listing continuation. The panel and async collector share
+ * this so neither can loop on a repeated cursor or exceed the page bound.
+ */
+export function nextDocumentsCursor(
+  after: string | null,
+  nextAfter: string | null,
+  pagesRead: number,
+): string | null {
+  if (nextAfter === null) return null;
+  if (nextAfter === after) {
+    throw new Error("documents request failed: listing cursor did not advance");
+  }
+  if (pagesRead >= MAX_DOCUMENT_PAGES) {
+    throw new Error(`documents request failed: listing exceeded ${MAX_DOCUMENT_PAGES} pages`);
+  }
+  return nextAfter;
+}
+
+/**
  * Collect a complete listing by following `next_after` pages from the
  * first page. Throws DocumentsRefusal on an error frame, and Error on a
  * malformed reply, a non-advancing cursor, or the page bound — the
@@ -130,11 +149,9 @@ export async function collectDocuments(requestPage: DocumentsPageRequest): Promi
     const parsed = parseDocumentsPage(raw);
     if (!parsed) throw new Error("documents request failed: malformed documents frame");
     names.push(...parsed.names);
-    if (parsed.nextAfter === null) return names;
-    if (parsed.nextAfter === after) {
-      throw new Error("documents request failed: listing cursor did not advance");
-    }
-    after = parsed.nextAfter;
+    const nextAfter = nextDocumentsCursor(after, parsed.nextAfter, page + 1);
+    if (nextAfter === null) return names;
+    after = nextAfter;
   }
   throw new Error(`documents request failed: listing exceeded ${MAX_DOCUMENT_PAGES} pages`);
 }
