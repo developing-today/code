@@ -13,7 +13,6 @@ Sources: [Phase 11](../../.opencode/plans/phase-11-foundations.md), [Phase 12](.
 | Title                                               | Status      | Intent                                                                                                                                                                                                                   | Links        |
 | --------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------ |
 | Many worlds per node                                | in-progress | 1,000 idle / 100 active worlds with a per-world memory budget. Memory budget and eviction are done; the latency target is not: p99 measured 5,650 ms against 50 ms (#557, 2026-11-17). The profile comes before any fix. | F12.12 #557  |
-| Delta and binary frames                             | planned     | A typical redraw costs under 10 percent of a full frame. Waits on four protocol decisions, which are asked with defaults.                                                                                                | F12.11 #805  |
 | One end-to-end slice of the signed-record substrate | proposed    | Two nodes: a signed record written at an `id://` address, synced, a conflicting write reported, and a CLI command that shows it. The library modules are merged; nothing reaches them from the CLI yet.                  | #9106, #9112 |
 
 ## Next — Phase 12: platform flexibility
@@ -31,7 +30,6 @@ Phase 13 plan: [phase-13-client-shells.md](../../.opencode/plans/phase-13-client
 | Title                         | Status  | Intent                                                                               | Links      |
 | ----------------------------- | ------- | ------------------------------------------------------------------------------------ | ---------- |
 | Presentation capability tiers | planned | Terminal classes detected in-band; tiered rendering instead of one assumed terminal. | F13.4 #786 |
-| Kitty keyboard protocol       | planned | Disambiguated keys on the raw input path, so worlds can tell key combinations apart. | F13.5 #787 |
 | Native TUI client             | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.  | #1071      |
 | Native GUI client             | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.  | #1072      |
 

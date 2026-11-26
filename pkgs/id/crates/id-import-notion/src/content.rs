@@ -9,11 +9,21 @@
 //! (files are fetched during the run through an injected boundary and
 //! stored as content-addressed blobs).
 //!
-//! The full degradation table (toggle/callout/table structure, synced
-//! blocks, embeds) is slice 4 (#13524): in this slice the degraded and
-//! unsupported classes are preserved verbatim with their children, so no
-//! content is lost and no block identity changes when slice 4 upgrades
-//! their conversion. Database notes and relation claims are slice 3
+//! Slice 4 (#13524, design record §2.3–2.4) converts the degraded
+//! classes structurally: toggle, callout, columns, simple table and
+//! equation keep their structure, embeds and link previews become a URL
+//! plus a link reference, and every presentation attribute with no
+//! content form is dropped and counted per attribute in the page's
+//! [`LossLedger`]. A degraded block whose payload a converter cannot
+//! parse falls back to the slice-2 verbatim blob (counted as a
+//! fallback), so this slice only adds structure and never drops content.
+//! A synced block's content converts once, at the source block's page;
+//! every duplicate becomes a typed reference to that source, resolved by
+//! [`resolve_synced_references`] after all pages have converted (the
+//! same two-pass shape as §3 link rewriting). A duplicate whose source
+//! is outside the import set keeps its verbatim blob and is counted
+//! externalised. Unsupported classes stay verbatim for good: that is
+//! the forward-compatibility guarantee. Database notes and relation claims are slice 3
 //! (#13523); a `child_database` block emits its reference here, with
 //! the database's note ID resolved from slice 3's identity pass.
 
@@ -56,8 +66,9 @@ pub fn classify_block(block_type: &str) -> BlockClass {
         "paragraph" | "heading_1" | "heading_2" | "heading_3" | "bulleted_list_item"
         | "numbered_list_item" | "to_do" | "quote" | "code" | "divider" | "bookmark" | "image"
         | "video" | "file" | "audio" | "pdf" | "child_page" | "child_database" => BlockClass::Clean,
-        // §2.5 clean-to-degraded and degraded rows; structural conversion
-        // is slice 4, verbatim preservation is this slice.
+        // §2.5 clean-to-degraded and degraded rows: converted
+        // structurally with counted losses (slice 4), verbatim on a
+        // payload the converter cannot parse.
         "toggle" | "callout" | "column_list" | "column" | "table" | "table_row" | "equation"
         | "embed" | "link_preview" | "synced_block" => BlockClass::Degraded,
         _ => BlockClass::Unsupported,
@@ -107,6 +118,8 @@ pub enum ReferenceSurface {
     ChildDatabase,
     InlineLink,
     Mention,
+    /// A synced-block duplicate pointing at its source block.
+    SyncedBlock,
 }
 
 /// A typed reference emitted by conversion. Backlinks are the reverse
@@ -186,8 +199,32 @@ pub struct ContentBlock {
     /// Why this block's file could not be fetched (§4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing_file: Option<String>,
+    /// Callout icon kept as provenance: the emoji itself, or an
+    /// external icon's URL. A hosted icon file is a counted loss.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Equation source text (block equations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    /// Simple table width: the number of cells in each row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<u64>,
+    /// Table row cells, in column order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cells: Vec<Vec<RichSpan>>,
+    /// The link reference an embed or link preview carries at its block
+    /// position: a typed reference when the URL names an imported page,
+    /// the external URL otherwise (§3 rules, as for inline links).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<SpanLink>,
+    /// For a synced-block duplicate, the Notion UUID of its source
+    /// block. The duplicate carries no copy of the content: its `link`
+    /// names the source note and block once resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_from: Option<String>,
     /// The verbatim source block (with children embedded, file URLs
-    /// stripped) for degraded and unsupported blocks.
+    /// stripped) for unsupported blocks, synced blocks, and degraded
+    /// blocks whose payload could not be converted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbatim: Option<Value>,
 }
@@ -211,6 +248,42 @@ pub struct ClassCounts {
     pub unsupported: usize,
 }
 
+/// One page's degradation accounting (design record §2.4, slice 5's
+/// input): every degraded or unsupported block appends exactly one class
+/// entry, plus one entry per presentation attribute it lost. The class
+/// totals reconcile to [`ClassCounts`]: `per_class` sums to `degraded`
+/// and `unsupported` sums to `unsupported`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LossLedger {
+    /// Degraded block type -> blocks of that type on the page.
+    #[serde(default)]
+    pub per_class: BTreeMap<String, usize>,
+    /// Unsupported block type -> blocks preserved verbatim.
+    #[serde(default)]
+    pub unsupported: BTreeMap<String, usize>,
+    /// `<block type>.<attribute>` -> how many times it was dropped.
+    #[serde(default)]
+    pub per_attribute: BTreeMap<String, usize>,
+    /// Degraded block type -> blocks whose payload could not be
+    /// converted and were preserved verbatim instead.
+    #[serde(default)]
+    pub verbatim_fallback: BTreeMap<String, usize>,
+    /// Synced-block duplicates whose source is outside the import set.
+    #[serde(default)]
+    pub synced_externalised: usize,
+}
+
+impl LossLedger {
+    /// Total class entries: one per degraded or unsupported block.
+    pub fn class_total(&self) -> usize {
+        self.per_class.values().sum::<usize>() + self.unsupported.values().sum::<usize>()
+    }
+
+    fn bump(map: &mut BTreeMap<String, usize>, key: &str) {
+        *map.entry(key.to_owned()).or_default() += 1;
+    }
+}
+
 /// The result of converting one page: its content form plus everything
 /// the manifest and the fidelity report must account for.
 #[derive(Clone, Debug, PartialEq)]
@@ -223,6 +296,141 @@ pub struct PageConversion {
     /// bytes appear once however many blocks referenced them (§4).
     pub blobs: BTreeMap<String, Vec<u8>>,
     pub counts: ClassCounts,
+    pub losses: LossLedger,
+    /// Synced-block duplicates awaiting [`resolve_synced_references`].
+    pub pending_synced: Vec<PendingSynced>,
+}
+
+/// A synced-block duplicate whose source is resolved in the reference
+/// pass, once every page's block tree has converted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingSynced {
+    pub from_block_id: String,
+    pub source_block_id: String,
+    /// The duplicate's sanitized source, kept if the source turns out to
+    /// be outside the import set.
+    pub verbatim: Value,
+}
+
+/// What [`resolve_synced_references`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncedResolution {
+    pub resolved: usize,
+    pub externalised: usize,
+}
+
+/// The reference pass for synced blocks (design record §2.3): run once
+/// every page in the import set has converted. Each pending duplicate
+/// whose source block has an identity becomes a typed reference to
+/// (source note, source block); a duplicate whose source is outside the
+/// import set keeps its verbatim blob and is counted externalised, in
+/// the conversion and in the manifest's loss ledger. A source that
+/// belongs to an imported page which has not converted yet fails the
+/// pass rather than being misread as external. Pending entries are
+/// consumed, so running the pass again changes nothing.
+pub fn resolve_synced_references(
+    manifest: &mut Manifest,
+    conversions: &mut [PageConversion],
+) -> Result<SyncedResolution> {
+    for conversion in conversions.iter() {
+        for pending in &conversion.pending_synced {
+            if manifest
+                .block_id_to_identity
+                .contains_key(&pending.source_block_id)
+            {
+                continue;
+            }
+            if let Some(page) = inventory_owning_page(manifest, &pending.source_block_id)
+                && manifest.page_id_to_note_id.contains_key(&page)
+            {
+                bail!(
+                    "synced block {} has its source {} on imported page {page}, \
+                     which has not converted yet; convert every page before \
+                     resolving synced references",
+                    pending.from_block_id,
+                    pending.source_block_id
+                );
+            }
+        }
+    }
+    let mut outcome = SyncedResolution::default();
+    for conversion in conversions.iter_mut() {
+        for pending in std::mem::take(&mut conversion.pending_synced) {
+            let identity = manifest
+                .block_id_to_identity
+                .get(&pending.source_block_id)
+                .cloned();
+            let block = find_block_mut(&mut conversion.content.blocks, &pending.from_block_id)
+                .with_context(|| {
+                    format!(
+                        "synced block {} is not in its page's content",
+                        pending.from_block_id
+                    )
+                })?;
+            match identity {
+                Some((note_id, block_identity)) => {
+                    block.link = Some(SpanLink::Note {
+                        note_id: note_id.clone(),
+                        block_id: Some(block_identity.clone()),
+                    });
+                    conversion.references.push(TypedReference {
+                        from_block_id: pending.from_block_id.clone(),
+                        target_id: pending.source_block_id.clone(),
+                        target_note_id: Some(note_id),
+                        target_block_id: Some(block_identity),
+                        surface: ReferenceSurface::SyncedBlock,
+                    });
+                    outcome.resolved += 1;
+                }
+                None => {
+                    block.verbatim = Some(pending.verbatim);
+                    conversion.externalised.push(Externalised {
+                        from_block_id: pending.from_block_id.clone(),
+                        target_id: normalize_uuid(&pending.source_block_id),
+                        surface: ReferenceSurface::SyncedBlock,
+                    });
+                    conversion.losses.synced_externalised += 1;
+                    manifest.page_losses.insert(
+                        conversion.content.page_id.clone(),
+                        conversion.losses.clone(),
+                    );
+                    outcome.externalised += 1;
+                }
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// The page a block belongs to, per the inventory's parent chain.
+fn inventory_owning_page(manifest: &Manifest, block_id: &str) -> Option<String> {
+    let mut current = block_id.to_owned();
+    let mut guard = BTreeSet::new();
+    loop {
+        if !guard.insert(current.clone()) {
+            return None;
+        }
+        let object = manifest.inventory.objects.get(&current)?;
+        if object.kind == "page" {
+            return Some(current);
+        }
+        current = object.parent_id.clone()?;
+    }
+}
+
+fn find_block_mut<'a>(
+    blocks: &'a mut [ContentBlock],
+    block_id: &str,
+) -> Option<&'a mut ContentBlock> {
+    for block in blocks {
+        if block.block_id == block_id {
+            return Some(block);
+        }
+        if let Some(found) = find_block_mut(&mut block.children, block_id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Convert one inventoried page to its content form, updating the
@@ -281,6 +489,8 @@ pub fn convert_page(
         missing_files: Vec::new(),
         blobs: BTreeMap::new(),
         counts: ClassCounts::default(),
+        losses: LossLedger::default(),
+        pending_synced: Vec::new(),
     };
     let mut blocks = Vec::with_capacity(raw_blocks.len());
     for raw in &raw_blocks {
@@ -292,9 +502,14 @@ pub fn convert_page(
         missing_files,
         blobs,
         counts,
+        losses,
+        pending_synced,
         manifest,
         ..
     } = converter;
+    manifest
+        .page_losses
+        .insert(page_id.to_owned(), losses.clone());
 
     let files_outcome = if missing_files.is_empty() {
         Outcome::Clean
@@ -336,6 +551,8 @@ pub fn convert_page(
         missing_files,
         blobs,
         counts,
+        losses,
+        pending_synced,
     })
 }
 
@@ -395,7 +612,17 @@ fn fetch_raw_tree(
                 .get("has_children")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if has_children && block_type != "child_page" && block_type != "child_database" {
+            // A synced-block duplicate's children are its source's
+            // children: they convert once, at the source's page.
+            let synced_duplicate = block_type == "synced_block"
+                && raw
+                    .pointer("/synced_block/synced_from")
+                    .is_some_and(|from| !from.is_null());
+            if has_children
+                && !synced_duplicate
+                && block_type != "child_page"
+                && block_type != "child_database"
+            {
                 let children = fetch_raw_tree(api, &id, visited)?;
                 raw["children"] = Value::Array(children);
             }
@@ -408,7 +635,7 @@ fn fetch_raw_tree(
 /// Extract the page title from an inventoried page object: the plain
 /// text of its title property (§2.2's title-property rule, applied to
 /// pages). Pages without a title property yield an empty title.
-fn page_title(page_source: &Value) -> String {
+pub(crate) fn page_title(page_source: &Value) -> String {
     let Some(properties) = page_source.get("properties").and_then(Value::as_object) else {
         return String::new();
     };
@@ -493,6 +720,8 @@ struct Converter<'a> {
     missing_files: Vec<MissingFile>,
     blobs: BTreeMap<String, Vec<u8>>,
     counts: ClassCounts,
+    losses: LossLedger,
+    pending_synced: Vec<PendingSynced>,
 }
 
 impl Converter<'_> {
@@ -533,18 +762,172 @@ impl Converter<'_> {
             title: None,
             blob_hash: None,
             missing_file: None,
+            icon: None,
+            expression: None,
+            columns: None,
+            cells: Vec::new(),
+            link: None,
+            synced_from: None,
             verbatim: None,
         };
-        if class != BlockClass::Clean {
-            // Degraded and unsupported blocks are preserved verbatim in
-            // this slice (children were embedded by the tree fetch);
-            // slice 4 upgrades their structural conversion. File URLs
-            // are stripped: they are expiring credentials (§6.5).
-            block.verbatim = Some(sanitized_source(raw.clone()));
-            return Ok(block);
-        }
-
         let payload = raw.get(block_type.as_str()).cloned().unwrap_or(Value::Null);
+        match class {
+            BlockClass::Unsupported => {
+                // Preserved verbatim with its children (embedded by the
+                // tree fetch). File URLs are stripped: they are expiring
+                // credentials (§6.5).
+                LossLedger::bump(&mut self.losses.unsupported, &block_type);
+                block.verbatim = Some(sanitized_source(raw.clone()));
+                return Ok(block);
+            }
+            BlockClass::Degraded => {
+                LossLedger::bump(&mut self.losses.per_class, &block_type);
+                match self.convert_degraded(&mut block, &payload, &block_id) {
+                    Some(lost) => {
+                        for attribute in lost {
+                            LossLedger::bump(&mut self.losses.per_attribute, &attribute);
+                        }
+                        if let Some(source_block_id) = &block.synced_from {
+                            self.pending_synced.push(PendingSynced {
+                                from_block_id: block_id.clone(),
+                                source_block_id: source_block_id.clone(),
+                                verbatim: sanitized_source(raw.clone()),
+                            });
+                        }
+                    }
+                    None => {
+                        // A payload the converter could not parse: the
+                        // slice-2 verbatim blob keeps every byte.
+                        LossLedger::bump(&mut self.losses.verbatim_fallback, &block_type);
+                        block.verbatim = Some(sanitized_source(raw.clone()));
+                        return Ok(block);
+                    }
+                }
+            }
+            BlockClass::Clean => self.convert_clean(fetcher, &mut block, &payload, &block_id)?,
+        }
+        if let Some(children) = raw.get("children").and_then(Value::as_array) {
+            for child in children {
+                block.children.push(self.convert_block(fetcher, child)?);
+            }
+        }
+        Ok(block)
+    }
+
+    /// Structural conversion of one degraded block (design record §2.3).
+    /// Returns the presentation attributes it dropped, each named
+    /// `<block type>.<attribute>`, or `None` when the payload does not
+    /// have the shape the converter needs; the caller then keeps the
+    /// slice-2 verbatim blob. The payload is checked before anything is
+    /// converted, so a fallback leaves no half-recorded references.
+    fn convert_degraded(
+        &mut self,
+        block: &mut ContentBlock,
+        payload: &Value,
+        block_id: &str,
+    ) -> Option<Vec<String>> {
+        let block_type = block.block_type.clone();
+        let mut lost = Vec::new();
+        let drop_color = |lost: &mut Vec<String>| {
+            if payload
+                .get("color")
+                .and_then(Value::as_str)
+                .is_some_and(|color| color != "default")
+            {
+                lost.push(format!("{block_type}.color"));
+            }
+        };
+        match block_type.as_str() {
+            "toggle" => {
+                payload.get("rich_text")?.as_array()?;
+                block.rich_text = self.convert_rich_text(payload.get("rich_text"), block_id);
+                drop_color(&mut lost);
+            }
+            "callout" => {
+                payload.get("rich_text")?.as_array()?;
+                block.rich_text = self.convert_rich_text(payload.get("rich_text"), block_id);
+                drop_color(&mut lost);
+                match payload.pointer("/icon/type").and_then(Value::as_str) {
+                    None => {}
+                    Some("emoji") => {
+                        block.icon = payload
+                            .pointer("/icon/emoji")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                    }
+                    Some("external") => {
+                        block.icon = payload
+                            .pointer("/icon/external/url")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                    }
+                    // A hosted icon is an expiring file URL (§6.5) and a
+                    // custom emoji is workspace art with no content form.
+                    Some(other) => lost.push(format!("callout.icon_{other}")),
+                }
+            }
+            "column_list" => {}
+            "column" => {
+                if payload.get("width_ratio").is_some() {
+                    lost.push("column.width_ratio".to_owned());
+                }
+            }
+            "table" => {
+                block.columns = Some(payload.get("table_width")?.as_u64()?);
+                for header in ["has_column_header", "has_row_header"] {
+                    if payload.get(header).and_then(Value::as_bool) == Some(true) {
+                        lost.push(format!("table.{header}"));
+                    }
+                }
+            }
+            "table_row" => {
+                let cells = payload.get("cells")?.as_array()?;
+                if cells.iter().any(|cell| !cell.is_array()) {
+                    return None;
+                }
+                block.cells = cells
+                    .iter()
+                    .map(|cell| self.convert_rich_text(Some(cell), block_id))
+                    .collect();
+            }
+            "equation" => {
+                block.expression = Some(payload.get("expression")?.as_str()?.to_owned());
+            }
+            "embed" | "link_preview" => {
+                let url = payload.get("url")?.as_str()?.to_owned();
+                block.rich_text = self.convert_rich_text(payload.get("caption"), block_id);
+                block.link = Some(self.resolve_link(&url, block_id));
+                block.url = Some(url);
+                lost.push(format!("{block_type}.preview"));
+            }
+            "synced_block" => {
+                // The source (`synced_from: null`) converts its children
+                // here, once. A duplicate names its source and carries no
+                // copy; the reference pass resolves it.
+                let synced_from = payload.get("synced_from")?;
+                if !synced_from.is_null() {
+                    if synced_from.get("type")?.as_str()? != "block_id" {
+                        return None;
+                    }
+                    block.synced_from = Some(synced_from.get("block_id")?.as_str()?.to_owned());
+                }
+            }
+            _ => return None,
+        }
+        Some(lost)
+    }
+
+    /// Conversion of one clean-class block's own payload; children are
+    /// converted by the caller.
+    fn convert_clean(
+        &mut self,
+        fetcher: &mut impl FileFetcher,
+        block: &mut ContentBlock,
+        payload: &Value,
+        block_id: &str,
+    ) -> Result<()> {
+        let block_id = block_id.to_owned();
+        let block_type = block.block_type.clone();
         match block_type.as_str() {
             "paragraph" | "heading_1" | "heading_2" | "heading_3" | "bulleted_list_item"
             | "numbered_list_item" | "to_do" | "quote" | "code" => {
@@ -568,7 +951,7 @@ impl Converter<'_> {
                 block.rich_text = self.convert_rich_text(payload.get("caption"), &block_id);
             }
             "image" | "video" | "file" | "audio" | "pdf" => {
-                self.convert_media(fetcher, &mut block, &payload, &block_id)?;
+                self.convert_media(fetcher, block, payload, &block_id)?;
             }
             "child_page" => {
                 block.title = payload
@@ -634,12 +1017,7 @@ impl Converter<'_> {
                 bail!("no conversion for clean block type {block_type}");
             }
         }
-        if let Some(children) = raw.get("children").and_then(Value::as_array) {
-            for child in children {
-                block.children.push(self.convert_block(fetcher, child)?);
-            }
-        }
-        Ok(block)
+        Ok(())
     }
 
     fn convert_media(
@@ -857,18 +1235,7 @@ impl Converter<'_> {
 
     /// The page a block belongs to, per the inventory's parent chain.
     fn owning_page(&self, block_id: &str) -> Option<String> {
-        let mut current = block_id.to_owned();
-        let mut guard = BTreeSet::new();
-        loop {
-            if !guard.insert(current.clone()) {
-                return None;
-            }
-            let object = self.manifest.inventory.objects.get(&current)?;
-            if object.kind == "page" {
-                return Some(current);
-            }
-            current = object.parent_id.clone()?;
-        }
+        inventory_owning_page(self.manifest, block_id)
     }
 }
 

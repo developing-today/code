@@ -927,7 +927,7 @@ mod tests {
         assert_eq!(counted(&from_v2), vec![h(20)]);
         assert_eq!(reason(&from_v2, 21), Some(WhyNotCounted::RescindedSince(3)));
         let from_v1 = build(1);
-        assert!(counted(&from_v1).is_empty());
+        assert_eq!(counted(&from_v1), [] as [p2panda_core::Hash; 0]);
     }
 
     #[test]
@@ -980,7 +980,7 @@ mod tests {
         let p = w.project(&view, &[]);
         assert_eq!(counted(&p), vec![h(21)]);
         assert_eq!(p.counted[0].governed_by, None);
-        assert!(p.uncounted.is_empty());
+        assert_eq!(p.uncounted, [] as [UncountedHit; 0]);
     }
 
     #[test]
