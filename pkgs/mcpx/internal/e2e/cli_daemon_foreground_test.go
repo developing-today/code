@@ -121,8 +121,12 @@ func parentOf(pid int) int {
 // TestSuperviseKeepsTheChildAcrossADaemonStop exercises `mcpx supervise`
 // (#8461), the re-exec target of the supervised transport: a server with
 // mcpx.supervised runs under `mcpx supervise --socket <path> -- <command>`,
-// and its child outlives a stopped daemon, so the next daemon answers
-// through the same child.
+// and its child outlives the daemon process, so the next daemon answers
+// through the same child. The daemon here is killed, not stopped:
+// since the #9963 restore an explicit `mcpx stop` reaps the config's
+// supervisors (that is the no-orphan guarantee), so what this test
+// pins is survival across the daemon's death and restart — the
+// boundary the supervisor exists for.
 func TestSuperviseKeepsTheChildAcrossADaemonStop(t *testing.T) {
 	if _, err := os.Stat("/proc/self/stat"); err != nil {
 		t.Skip("needs /proc to see the supervisor process")
@@ -156,10 +160,16 @@ func TestSuperviseKeepsTheChildAcrossADaemonStop(t *testing.T) {
 		t.Fatal("the supervisor should be its own process, not the daemon")
 	}
 
-	e.run("stop")
+	daemonProc, err := os.FindProcess(before.PID)
+	if err != nil {
+		t.Fatalf("find the daemon process %d: %v", before.PID, err)
+	}
+	if err := daemonProc.Kill(); err != nil {
+		t.Fatalf("kill the daemon process %d: %v", before.PID, err)
+	}
 	awaitExit(t, before.PID, "the daemon")
 	if !processExists(child) || !processExists(sup) {
-		t.Fatalf("the supervisor %d and its child %d should outlive the stopped daemon", sup, child)
+		t.Fatalf("the supervisor %d and its child %d should outlive the dead daemon", sup, child)
 	}
 	if out := e.run("call", "demo.echo", `{"message":"after"}`); !strings.Contains(out, "after") {
 		t.Fatalf("the next daemon should answer through the supervised child:\n%s", out)

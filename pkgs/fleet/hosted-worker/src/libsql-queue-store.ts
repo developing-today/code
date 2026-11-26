@@ -284,6 +284,17 @@ export class LibSQLQueueStore implements QueueStore {
     for (const stmt of LIBSQL_QUEUE_SCHEMA) {
       db.exec(stmt);
     }
+    // The tasks schema-generation migration (#14985): CREATE TABLE
+    // IF NOT EXISTS never alters an existing table, and databases
+    // carrying the live generation (an export of the live plane)
+    // predate manual_only and metadata — ALTER them in additively,
+    // idempotently, here at open. The same migration runs in
+    // D1QueueStore.ready() and HranaQueueStore.ready(); the native
+    // broker's ensure_schema does it for its full column set. The
+    // live-generation fixture and the determinations (max_attempts
+    // default, native-only columns) are recorded in
+    // test/queue-live-generation-fixture.ts and pinned by
+    // test/live-generation-queue-parity.test.ts.
     const cols = db.exec("SELECT name FROM pragma_table_info('tasks')").toArray();
     if (!cols.some((col) => col["name"] === "manual_only")) {
       db.exec("ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0");

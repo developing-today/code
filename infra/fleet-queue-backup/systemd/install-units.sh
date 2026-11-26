@@ -11,8 +11,9 @@ if [[ $# -ne 0 ]]; then
 fi
 set -euo pipefail
 FQ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if ! GIT_DIR="$(git -C "$FQ_DIR" rev-parse --git-dir 2>/dev/null)" ||
-  ! GIT_COMMON_DIR="$(git -C "$FQ_DIR" rev-parse --git-common-dir 2>/dev/null)"; then
+# Both values must use the same path format even from a subdirectory.
+if ! GIT_DIR="$(git -C "$FQ_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null)" ||
+  ! GIT_COMMON_DIR="$(git -C "$FQ_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
   echo "fleet-queue-backup: refusing to install from a directory that is not a Git checkout: $FQ_DIR" >&2
   exit 1
 fi
@@ -24,10 +25,16 @@ fi
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
 for u in fleet-queue-backup-export.service fleet-queue-backup-export.timer \
-  fleet-queue-backup-d1-home.service fleet-queue-backup-d1-home.timer; do
+  fleet-queue-backup-d1-home.service fleet-queue-backup-d1-home.timer \
+  fleet-queue-backup-export-d1.service fleet-queue-backup-export-d1.timer; do
   sed "s#__FQ_DIR__#$FQ_DIR#g" "$FQ_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 systemctl --user daemon-reload
 systemctl --user enable --now fleet-queue-backup-export.timer
 systemctl --user enable --now fleet-queue-backup-d1-home.timer
+# The CF-3 D1 -> D1 units are installed but deliberately NOT enabled
+# here: they take over the daily 02:15 schedule only when CF-2's
+# cutover is verified, in the same step that disables the Turso leg's
+# timer (docs/RUNBOOK.md, "CF-3 activation"). Enabling both export
+# timers at once would race two writers on the backup copy.
 systemctl --user list-timers 'fleet-queue-backup-*' --no-pager

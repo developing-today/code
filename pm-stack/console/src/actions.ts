@@ -14,7 +14,9 @@ import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts"
 
 type Args = Record<string, unknown>;
 export interface Action {
-  run: (args: Args) => Promise<unknown>;
+  /** `by` is who asked, where the side running it knows (the edge's
+   * own actions that record who changed something need it). */
+  run: (args: Args, by?: string) => Promise<unknown>;
   /** Sections to read again afterwards. */
   touch: string[];
   /** What the audit log keeps of the arguments. */
@@ -194,6 +196,14 @@ export function actions(
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
     "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
+    // Start a Turso management operation (create-db / mint-token) in
+    // its workflow (#14257). The audit keeps names only — the operation,
+    // the database and the secret's name — never a token value.
+    "store.admin": {
+      run: (a) => ops.tursoAdmin(a),
+      touch: [],
+      audit: ids("operation", "database", "secret_name"),
+    },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],

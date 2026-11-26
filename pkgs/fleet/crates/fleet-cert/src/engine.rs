@@ -27,7 +27,7 @@ use crate::model::{
     ParentRef, RootCreateRequest,
 };
 use crate::naming::{GenerationPartition, slugify};
-use crate::profile::{KeyCustody, SanPolicy, check_broker_sans, leaf_profile};
+use crate::profile::{check_broker_sans, resolve_profile, KeyCustody, SanPolicy};
 use crate::timeparse::Rfc3339;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, DnValue, IsCa, Issuer, KeyPair, KeyUsagePurpose,
@@ -108,6 +108,56 @@ pub fn inspect_key(algo: AlgorithmId, pkcs8: &[u8]) -> Result<Vec<u8>> {
         .public_key_raw()
         .to_vec()),
     }
+}
+
+/// DER-encode the X.509 SubjectPublicKeyInfo (RFC 5280 §4.1.2.7) for a
+/// public key as [`inspect_key`] returns it: the raw Ed25519 point, the
+/// uncompressed P-256 point, the PKCS#1 `RSAPublicKey`, or the FIPS 204
+/// ML-DSA-44 public key. The algorithm identifiers are the registry's
+/// SPKI OIDs: `rsaEncryption` carries a NULL parameter, P-256 carries
+/// the `prime256v1` named curve, and Ed25519 / ML-DSA-44 (RFC 8410,
+/// RFC 9881) carry none.
+pub fn public_key_spki_der(algo: AlgorithmId, public_key: &[u8]) -> Vec<u8> {
+    const ED25519: &[u8] = &[0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70];
+    const P256: &[u8] = &[
+        0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86,
+        0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+    ];
+    const RSA: &[u8] = &[
+        0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+    ];
+    const ML_DSA_44: &[u8] = &[
+        0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11,
+    ];
+    let algorithm_identifier = match algo {
+        AlgorithmId::Ed25519 => ED25519,
+        AlgorithmId::P256 => P256,
+        AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => RSA,
+        AlgorithmId::MlDsa44 => ML_DSA_44,
+    };
+    let mut bit_string = Vec::with_capacity(public_key.len() + 1);
+    bit_string.push(0); // no unused bits
+    bit_string.extend_from_slice(public_key);
+    let mut body = algorithm_identifier.to_vec();
+    der_push(&mut body, 0x03, &bit_string);
+    let mut spki = Vec::with_capacity(body.len() + 4);
+    der_push(&mut spki, 0x30, &body);
+    spki
+}
+
+/// Append one DER TLV (definite-length encoding) to `out`.
+fn der_push(out: &mut Vec<u8>, tag: u8, content: &[u8]) {
+    out.push(tag);
+    let len = content.len();
+    if len < 0x80 {
+        out.push(len as u8);
+    } else {
+        let bytes = len.to_be_bytes();
+        let skip = bytes.iter().take_while(|b| **b == 0).count();
+        out.push(0x80 | (bytes.len() - skip) as u8);
+        out.extend_from_slice(&bytes[skip..]);
+    }
+    out.extend_from_slice(content);
 }
 
 impl rcgen::PublicKeyData for MlDsa44Signer {
@@ -881,12 +931,12 @@ fn clamp_window(
 /// `cert leaf issue`: issue one leaf from an issuer bundle, signed
 /// by the selected issuer key loaded from `req.issuer_signer`.
 pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManifest> {
-    let profile = leaf_profile(&req.profile)?;
+    let profile = resolve_profile(&req.profile)?;
     // Request-level policy first: nothing is loaded or signed for a
     // request the profile refuses.
     if profile.san_policy == SanPolicy::Broker {
         check_broker_sans(
-            profile.name,
+            &profile.name,
             req.common_name.as_deref(),
             &req.dns_names,
             &req.ip_addresses,
@@ -953,6 +1003,18 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
             )));
         }
     }
+    if profile.is_custom {
+        if let Some(requested) = req.key_algorithm {
+            if requested != profile.key_algorithm {
+                return Err(CertError::policy(format!(
+                    "profile '{}' fixes key algorithm {}, not {}",
+                    profile.name,
+                    profile.key_algorithm.name(),
+                    requested.name()
+                )));
+            }
+        }
+    }
     let issuer_partition = req
         .issuer_partition
         .clone()
@@ -1017,6 +1079,12 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         &req.name,
         &mut warnings,
     )?;
+    if na.0 - nb.0 > time::Duration::days(i64::from(profile.max_validity_days)) {
+        return Err(CertError::policy(format!(
+            "profile '{}' validity exceeds its {} day ceiling",
+            profile.name, profile.max_validity_days
+        )));
+    }
 
     // Subject + SANs.
     let mut sans: Vec<String> = req.dns_names.clone();
@@ -1042,8 +1110,8 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         &cn,
     );
     params.is_ca = IsCa::ExplicitNoCa;
-    params.key_usages = profile.key_usages.to_vec();
-    params.extended_key_usages = profile.extended_key_usages.to_vec();
+    params.key_usages = profile.key_usages;
+    params.extended_key_usages = profile.extended_key_usages;
     params.not_before = nb.0;
     params.not_after = na.0;
     params.serial_number = Some(random_serial());

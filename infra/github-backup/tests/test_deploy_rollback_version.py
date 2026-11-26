@@ -41,9 +41,13 @@ DEPLOY = os.path.abspath(os.path.join(HERE, "..", "worker", "deploy.mjs"))
 # fails there rather than skipping.
 if shutil.which("node") is None:
     if os.environ.get("GITHUB_BACKUP_REQUIRE_NODE") == "1":
-        print("FAIL test_deploy_rollback_version.py: node is not on PATH and GITHUB_BACKUP_REQUIRE_NODE=1")
+        print(
+            "FAIL test_deploy_rollback_version.py: node is not on PATH and GITHUB_BACKUP_REQUIRE_NODE=1"
+        )
         sys.exit(1)
-    print("SKIP test_deploy_rollback_version.py: node is not on PATH; it drives the real deploy.mjs")
+    print(
+        "SKIP test_deploy_rollback_version.py: node is not on PATH; it drives the real deploy.mjs"
+    )
     sys.exit(0)
 
 PASS = []

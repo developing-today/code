@@ -465,7 +465,6 @@ test("wiring: buildDeps selects the D1 store when the QUEUE_D1 binding is presen
   }
 });
 
-
 // ---------------------------------------------------------------------------
 // Real D1 (gated, #14870): the production D1DatabaseClient over a
 // D1Database-shaped binding whose statements travel the D1 HTTP API

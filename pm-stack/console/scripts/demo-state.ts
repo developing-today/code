@@ -803,11 +803,16 @@ const demoPlan = new Plan(demoOps, demoWork);
 const real = realActions(demoOps, demoWork, undefined, devices, demoPlan);
 const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
   get: (_t, kind) => {
-    if (typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send")) return real[kind];
+    if (typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send"))
+      return real[kind];
     const name = typeof kind === "string" ? kind : String(kind);
     const canned = done(
       name,
-      name === "ask.send" ? { issue: 12503, queued: true } : name === "questions.accept" ? { applied: 2, refused: [] } : { ok: true },
+      name === "ask.send"
+        ? { issue: 12503, queued: true }
+        : name === "questions.accept"
+          ? { applied: 2, refused: [] }
+          : { ok: true },
     );
     if (name !== "question.answer") return canned;
     return {
