@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyEdgeAnswer, tokenHashOf, type EdgeAnswer } from "../src/needs-drew-answer.ts";
 import { getNeedsDrew, raiseNeedsDrew, recordAnswer } from "../src/needs-drew.ts";
+import { handleDecisionRoutes } from "../src/server-decision-routes.ts";
 import type { NotificationCandidate } from "../src/notifications.ts";
 import { NotifyRelayClient, notificationMirrorEvent } from "../src/notify-relay.ts";
 
@@ -102,6 +103,18 @@ const needsDrewCandidate = (
       ...over,
     },
   }) as NotificationCandidate;
+
+test("the new needs-user answer URL uses the same token gate as the legacy URL", async () => {
+  const ledgerId = `compat-probe-${Date.now()}`;
+  const path = `/api/needs-user/${ledgerId}/answer`;
+  const request = new Request(`https://pm.example${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: "invalid-token", optionId: "yes" }),
+  });
+  const response = await handleDecisionRoutes(request, new URL(request.url), path);
+  expect(response?.status).toBe(403);
+});
 
 const answer = (over: Partial<EdgeAnswer> = {}): EdgeAnswer => ({
   answerId: "a-1",
