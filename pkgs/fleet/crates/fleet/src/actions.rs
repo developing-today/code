@@ -17,9 +17,8 @@
 //!   defaults, same claim, same handoff), runs one command, and
 //!   exits with its code. `run` sends one command and streams its
 //!   IO back; `attach` / `watch` stream a session after handoff;
-//!   command and streams its IO back; `attach` / `watch` stream a
-//!   session after handoff; `renew` extends the lease within the
-//!   max lifespan; `extend` asks past the max (the broker raises
+//!   `renew` extends the lease within the max
+//!   lifespan; `extend` asks past the max (the broker raises
 //!   the needs-drew alert; Drew's answer returns via `decide`);
 //!   `close` ends the session.
 //! - `fleet actions agent …` — the runner half, run by the
