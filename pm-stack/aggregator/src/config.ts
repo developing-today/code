@@ -323,7 +323,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_NOTIFICATIONS_FILE,
       fromHome("PM_AGG_NOTIFICATIONS_FILE", ...AGG_STATE, "notifications.jsonl"),
     ),
-    needsDrewFile: needsUserStatePath(env, fromHome("PM_AGG_NEEDS_DREW_FILE", ...AGG_STATE)),
+    needsDrewFile: needsUserStatePath(env, fromHome("PM_AGG_NEEDS_USER_FILE", ...AGG_STATE)),
     decisionsFile: s(env.PM_AGG_DECISIONS_FILE, fromHome("PM_AGG_DECISIONS_FILE", ...AGG_STATE, "decisions.json")),
     decisionsEventsFile: s(
       env.PM_AGG_DECISION_EVENTS_FILE,
