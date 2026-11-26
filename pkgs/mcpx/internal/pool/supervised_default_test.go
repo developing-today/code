@@ -95,7 +95,7 @@ func TestSameServerTwoScopesGetDistinctSupervisors(t *testing.T) {
 	bin := testsupport.EraMCPBinary(t)
 	log := filepath.Join(t.TempDir(), "frames")
 	cfgPath := filepath.Join(t.TempDir(), "mcpx.json")
-	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}}}}`
+	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}, "mcpx": {"scope": "cwd", "max": 4}}}}`
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +114,7 @@ func TestSameServerTwoScopesGetDistinctSupervisors(t *testing.T) {
 	rootA, rootB := t.TempDir(), t.TempDir()
 	scopeA := config.ResolvedScope{Key: "cwd:" + rootA, Root: rootA}
 	scopeB := config.ResolvedScope{Key: "cwd:" + rootB, Root: rootB}
+	defer func() { _ = testsupport.StopSupervisors(stateDir) }()
 	leaseA, err := p.Acquire(ctx, scopeA)
 	if err != nil {
 		t.Fatalf("acquire scope A: %v", err)

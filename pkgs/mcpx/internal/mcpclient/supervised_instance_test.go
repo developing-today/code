@@ -83,7 +83,6 @@ func TestTwoInstancesSameServerDistinctSupervisors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-attach A after frontend restart: %v", err)
 	}
-	defer func() { _ = reattached.Close() }()
 	if reattached.PID() != pidA {
 		t.Fatalf("re-attached child pid = %d, want the surviving child %d", reattached.PID(), pidA)
 	}
@@ -91,6 +90,7 @@ func TestTwoInstancesSameServerDistinctSupervisors(t *testing.T) {
 	if !pidAlive(trB.PID()) {
 		t.Fatalf("instance B child %d died during A's restart", trB.PID())
 	}
+	_ = reattached.Close()
 	_ = trB.Close()
 	waitAttachFree(t, optsB)
 	waitAttachFree(t, optsA)

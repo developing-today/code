@@ -35,15 +35,19 @@ func TestStopAllReapsStoppedConfigsSupervisors(t *testing.T) {
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	var srv *http.Server
 	mux.HandleFunc("/v1/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		shutdowns.Add(1)
 		_, _ = w.Write([]byte(`{}`))
+		// Close the whole server, not just the listener: the client's
+		// pooled health connection must break too, or waitUntilStopped
+		// keeps pinging a live connection to a dead daemon.
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			_ = ln.Close()
+			_ = srv.Close()
 		}()
 	})
-	srv := &http.Server{Handler: mux}
+	srv = &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	defer func() { _ = srv.Close() }()
 
