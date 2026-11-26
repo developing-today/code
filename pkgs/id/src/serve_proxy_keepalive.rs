@@ -284,6 +284,7 @@ impl ResumeWindow {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unchecked_time_subtraction)]
 mod tests {
     use super::*;
     use crate::serve_proxy::SchedulingClass;
@@ -432,7 +433,7 @@ mod tests {
         fn death_lands_between_sixty_and_ninety_seconds_after_the_first_ping(
             samples in proptest::collection::vec(any::<u32>(), 4),
         ) {
-            let mut it = samples.clone().into_iter().cycle();
+            let mut it = samples.into_iter().cycle();
             let mut k = EndpointKeepalive::new(secs(0), move || it.next().unwrap());
             let first = k.next_deadline().unwrap();
             prop_assert_eq!(k.poll(first), KeepaliveAction::SendPing);
