@@ -1712,7 +1712,7 @@ mod tests {
         // refused before anything is recorded, like the sibling validators
         // (tag.clear claim lists, ChainExt.after, note.revise parents).
         let (_dir, mut events) = open_events();
-        assert!(events.frontier().unwrap().is_empty());
+        assert_eq!(events.frontier().unwrap(), [] as [Head; 0]);
         for tags in [
             vec![
                 ("city".to_owned(), Some("Seattle".to_owned())),
@@ -1757,11 +1757,9 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, id);
         assert_eq!(visible[0].scope, TagScope::Local);
-        assert!(
-            events
-                .read_store(|store| store.tag_claims())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            [] as [Claim; 0]
         );
         assert_eq!(
             events.read_store(|store| store.sync_entries()).unwrap(),
@@ -1841,7 +1839,7 @@ mod tests {
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].scope, TagScope::Shared);
         assert_ne!(shared[0].id, local_id);
-        assert!(events.local.claims().is_empty());
+        assert_eq!(events.local.claims(), [] as [LocalClaim; 0]);
         assert_eq!(
             events.read_store(|store| store.tag_claims()).unwrap(),
             shared
@@ -1856,11 +1854,9 @@ mod tests {
         let local = events.tags_on(subject).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
-        assert!(
-            events
-                .read_store(|store| store.tag_claims())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            [] as [Claim; 0]
         );
     }
 
@@ -1910,7 +1906,7 @@ mod tests {
         let (count, _) = events.clear_tag(subject, "city").unwrap();
 
         assert_eq!(count, 1);
-        assert!(events.tags_on(subject).unwrap().is_empty());
+        assert_eq!(events.tags_on(subject).unwrap(), [] as [Claim; 0]);
         assert_eq!(
             events.read_store(|store| store.sync_entries()).unwrap(),
             before
@@ -2057,7 +2053,7 @@ mod tests {
             ]
         );
         assert_eq!(chunks.last().unwrap().0, event);
-        assert!(events.tags_on(subject).unwrap().is_empty());
+        assert_eq!(events.tags_on(subject).unwrap(), [] as [Claim; 0]);
     }
 
     #[test]
@@ -2172,11 +2168,9 @@ mod chat_tests {
         // A non-member's write is refused at admission: nothing is signed or recorded.
         let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
         assert!(refused.is_err());
-        assert!(
-            node_c
-                .read_store(|store| store.chat_records(&group))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            node_c.read_store(|store| store.chat_records(&group)).unwrap(),
+            [] as [id_store::chat::ChatRecord; 0]
         );
 
         let first = node_a

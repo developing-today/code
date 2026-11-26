@@ -593,7 +593,7 @@ mod tests {
         // mid-append, before the event was ever acknowledged.
         std::fs::write(&path, "{\"id\":\"abc").unwrap();
         let log = GroupLog::open(&path).unwrap();
-        assert!(log.events().is_empty());
+        assert_eq!(log.events(), []);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     }
 

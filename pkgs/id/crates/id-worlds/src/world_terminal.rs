@@ -812,7 +812,7 @@ pub fn encode_sixel(rgb: &[u8], width: usize, height: usize) -> Option<String> {
     }
     let mut colors: Vec<(u8, u8, u8)> = Vec::new();
     let mut index = vec![0_usize; pixels];
-    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+    for (i, pixel) in rgb.as_chunks::<3>().0.iter().enumerate() {
         let key = (pixel[0], pixel[1], pixel[2]);
         index[i] = match colors.iter().position(|color| *color == key) {
             Some(position) => position,
@@ -1169,7 +1169,9 @@ fn decode_hex(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;
