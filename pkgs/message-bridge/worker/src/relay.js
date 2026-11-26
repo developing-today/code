@@ -4,15 +4,23 @@
 //
 // Addresses (case-insensitive; a list or a comma-separated string):
 //
-//   drew (or owner, central)   Drew: from a connector, an outbound row on
+//   owner (or drew, central)   Drew: from a connector, an outbound row on
 //                              its own channel (what send_message always
 //                              did); from an agent, a post to central
 //   claude, chatgpt            a connector's channel (also channel:<name>)
 //   connectors                 every other connector
-//   agent:<name>               one fleet agent (a bare name works too)
+//   agent:<name>               one fleet agent (a bare name works too);
+//                              "*" in the name makes it a glob over
+//                              registered agents (agent:f*), resolved
+//                              in name order, optionally capped by limit
 //   group:<name>               every registered agent in that group
 //   agents                     every registered agent
 //   all                        every other connector and every agent
+//
+// A fleet send records a distribution (batch, pattern, matched and
+// delivered sets); a later send with broaden: <batch> and an optional
+// new pattern and/or limit delivers the same body to exactly the
+// matched-but-undelivered remainder — never a duplicate.
 //
 // The sender is never its own recipient: "all" and "connectors" leave it
 // out, and naming yourself is an error. kind is "message" (default) or
@@ -22,11 +30,14 @@
 //
 // Every row another assistant or agent sends records who sent it in
 // from_addr ("channel:claude", "agent:muse-3"), so the recipient can tell
-// it from something Drew sent and answer it with reply_to.
+// it from something Drew sent and answer it with reply_to. A platform
+// service sends as service:<name> ("service:pm-stack", #14373): not an
+// agent and not Drew, and the owner's log tells the three apart.
 
+import { GLOB_SEGMENT, isGlob } from "./glob.js";
 import { CHANNELS, CHANNEL_NAMES, InputError, MAX_BODY } from "./messages.js";
 
-export const ADDRESS_HELP = "drew, claude, chatgpt, connectors, agent:<name>, group:<name>, agents or all";
+export const ADDRESS_HELP = "owner, claude, chatgpt, connectors, agent:<name or glob>, group:<name>, agents or all";
 const DREW = ["drew", "owner", "central"];
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_ADDRESSES = 200;
@@ -38,10 +49,13 @@ export function relayKind(kind) {
   throw new InputError("kind must be message or instruction");
 }
 
-/** The sender's own channel or agent name, from its address. */
+/** The sender's own channel or agent name, from its address. A
+ * service sender (service:<name>, a platform service like the PM
+ * stack, #14373) counts as its own name here: it is never its own
+ * recipient, and a post to central lands under its name. */
 function self(from) {
   const [type, name] = from.split(":");
-  return { channel: type === "channel" ? name : null, agent: type === "agent" ? name : null };
+  return { channel: type === "channel" ? name : null, agent: type === "agent" || type === "service" ? name : null };
 }
 
 /**
@@ -83,8 +97,12 @@ export function parseAddresses(to, from) {
       out.fleet.push(t);
     } else {
       const name = t.startsWith("agent:") ? t.slice(6) : t;
-      if (!NAME.test(name)) throw new InputError(`unknown address ${JSON.stringify(raw)}; use ${ADDRESS_HELP}`);
-      if (name === me.agent) throw new InputError("an agent can't send to itself");
+      if (isGlob(name)) {
+        if (!GLOB_SEGMENT.test(name)) throw new InputError(`unknown address ${JSON.stringify(raw)}; use ${ADDRESS_HELP}`);
+      } else {
+        if (!NAME.test(name)) throw new InputError(`unknown address ${JSON.stringify(raw)}; use ${ADDRESS_HELP}`);
+        if (name === me.agent) throw new InputError("an agent can't send to itself");
+      }
       out.fleet.push(`agent:${name}`);
     }
   }
@@ -100,19 +118,42 @@ export function parseAddresses(to, from) {
  * the fleet rows it stored, so the caller can wake their recipients.
  * Everything is validated before the first row is written; the fleet
  * send goes first because only it can fail on state (an empty group).
+ *
+ * With `broaden` (a batch from an earlier fleet send) there is no body:
+ * the fleet part re-delivers the original body to the distribution's
+ * matched-but-undelivered remainder, widened by `to` when given. The
+ * fleet outcome rides back as `report` (the send's match report).
  */
-export async function relay(store, { from, to, body, kind, sender }) {
+export async function relay(store, { from, to, body, kind, sender, limit, broaden }) {
+  const me = self(from);
+  if (broaden !== undefined && broaden !== null) {
+    // No `to` is fine: it widens nothing, it just delivers more of the
+    // original distribution's remainder (up to the new limit).
+    const hasTo = !(to === undefined || to === null || to === "" || (Array.isArray(to) && !to.length));
+    const where = hasTo ? parseAddresses(to, from) : { drew: false, channels: [], fleet: [] };
+    if (where.drew || where.channels.length) {
+      throw new InputError("broaden only widens a fleet distribution: name agent, group or all addresses");
+    }
+    const out = await store.fleet("broaden", {
+      batch: broaden,
+      to: where.fleet.length ? where.fleet : undefined,
+      limit,
+      from_addr: from,
+      exclude: me.agent,
+    });
+    return { messages: [], fleet: out.messages, unregistered: out.unregistered ?? [], report: out };
+  }
   if (typeof body !== "string" || body.trim() === "") throw new InputError("body must be a non-empty string");
   if (body.length > MAX_BODY) throw new InputError(`body is longer than ${MAX_BODY} characters`);
   const k = relayKind(kind);
   const where = parseAddresses(to, from);
   if (where.drew && k === "instruction") {
-    throw new InputError("Drew gets messages, not instructions: send kind message to drew");
+    throw new InputError("Drew gets messages, not instructions: send kind message to owner");
   }
-  const me = self(from);
   const source = me.channel ? "mcp" : "fleet";
   let fleet = [];
   let unregistered = [];
+  let report = null;
   if (where.fleet.length) {
     const out = await store.fleet("send", {
       body,
@@ -122,9 +163,11 @@ export async function relay(store, { from, to, body, kind, sender }) {
       from_addr: from,
       exclude: me.agent,
       lenient: where.all,
+      limit,
     });
     fleet = out.messages;
     unregistered = out.unregistered ?? [];
+    report = out;
   }
   const messages = [];
   for (const channel of where.channels) {
@@ -137,8 +180,12 @@ export async function relay(store, { from, to, body, kind, sender }) {
       fleet.push((await store.fleet("post", { agent: me.agent, body })).message);
     }
   }
-  return { messages, fleet, unregistered };
+  return { messages, fleet, unregistered, report };
 }
 
-/** A from_addr as the address that answers it: null (Drew) stays "drew". */
-export const replyAddress = (fromAddr) => fromAddr ?? "drew";
+/**
+ * A from_addr as the address that answers it: null (the owner) is
+ * "owner". The role term is the shown form (#13507); "drew" and
+ * "central" stay accepted aliases in parseAddresses.
+ */
+export const replyAddress = (fromAddr) => fromAddr ?? "owner";

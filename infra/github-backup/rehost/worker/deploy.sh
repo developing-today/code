@@ -7,7 +7,7 @@
 # (cloudflare.api-token-account-wide) and piped to wrangler on stdin
 # via pkgs/cf/wrangler-authed.py; it never lands in an argument, a
 # file, or this script's output.
-if [[ $# -gt 1 || ( $# -eq 1 && $1 != "--dry-run" ) ]]; then
+if [[ $# -gt 1 || ($# -eq 1 && $1 != "--dry-run") ]]; then
   printf 'Unknown argument: %q\n' "${1:-}" >&2
   printf 'Usage: %s [--dry-run]\n' "$0" >&2
   exit 2

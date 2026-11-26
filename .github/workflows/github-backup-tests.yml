@@ -67,6 +67,10 @@ jobs:
           node-version: 24
 
       - name: Run the github-backup regression suite (each file as a script)
+        env:
+          # The deploy tests skip without node elsewhere (#14267); here
+          # node is set up above, so a missing node must fail.
+          GITHUB_BACKUP_REQUIRE_NODE: "1"
         run: |
           fail=0
           count=0

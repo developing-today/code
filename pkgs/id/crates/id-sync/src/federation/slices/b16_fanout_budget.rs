@@ -202,15 +202,24 @@ impl ScopedLedger {
         if now >= expires_at {
             return Err(BudgetError::Expired);
         }
-        for scope in &binding.scopes {
-            for (&dim, &want) in &binding.vector {
-                let limit = self
-                    .limit(scope, dim)
-                    .ok_or_else(|| BudgetError::NoLimit(scope.clone(), dim))?;
-                let used = self.held(scope, dim) + self.spent(scope, dim);
-                if used.checked_add(want).is_none_or(|total| total > limit) {
-                    return Err(BudgetError::OverCap(scope.clone(), dim));
+        let over_cap = |this: &Self| -> Result<Option<BudgetError>, BudgetError> {
+            for scope in &binding.scopes {
+                for (&dim, &want) in &binding.vector {
+                    let limit = this
+                        .limit(scope, dim)
+                        .ok_or_else(|| BudgetError::NoLimit(scope.clone(), dim))?;
+                    let used = this.held(scope, dim) + this.spent(scope, dim);
+                    if used.checked_add(want).is_none_or(|total| total > limit) {
+                        return Ok(Some(BudgetError::OverCap(scope.clone(), dim)));
+                    }
                 }
+            }
+            Ok(None)
+        };
+        if let Some(err) = over_cap(self)? {
+            self.close_expired(now);
+            if let Some(err) = over_cap(self)? {
+                return Err(err);
             }
         }
         for scope in &binding.scopes {

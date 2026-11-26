@@ -67,6 +67,8 @@ mod gh_cache;
 #[cfg(feature = "gh")]
 mod gh_closure;
 #[cfg(feature = "gh")]
+mod gh_content_ledger;
+#[cfg(feature = "gh")]
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
@@ -74,9 +76,17 @@ mod gh_metadata;
 mod gh_sync;
 #[cfg(feature = "http")]
 mod http;
+#[cfg(feature = "id")]
+mod id_key;
+#[cfg(feature = "id")]
+mod id_proxy;
 mod invocation_ledger;
+#[cfg(feature = "kv")]
+mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
+#[cfg(feature = "host")]
+mod host;
 mod session_state;
 #[cfg(feature = "ssh")]
 mod ssh;
@@ -126,6 +136,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "orgs") {
         caps.insert(Capability::Orgs);
+    }
+    if cfg!(feature = "kv") {
+        caps.insert(Capability::Kv);
     }
     if cfg!(feature = "dispatch-test") {
         caps.insert(Capability::DispatchTest);
@@ -910,6 +923,17 @@ fn run_domain_with_initializer(
     {
         return fleet_agent::run_shell(&surface.config, args);
     }
+    // The kv domain's own parser answers `fleet kv --help`, usage
+    // errors and the --force-blob refusal before session resolution, so
+    // a malformed command line touches nothing (code#13314) — the
+    // same carve-out the actions domain gets above.
+    #[cfg(feature = "kv")]
+    if d.name == "kv"
+        && surface.cap_state(Capability::Kv, d.name) == CapState::Available
+        && let Some(code) = kv::preflight(args)
+    {
+        return code;
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {
@@ -1057,6 +1081,12 @@ fn run_domain_with_initializer(
             if d.name == "laptop" {
                 return laptop::run(&surface.config, args);
             }
+            // developing-today/code#14716: host resolution and
+            // selection over the #13717 forms, through fleet-pool.
+            #[cfg(feature = "host")]
+            if d.name == "host" {
+                return host::run(args);
+            }
             // #13774: the actions domain runs for real — live exec
             // sessions inside Actions runners (seat + agent + put).
             #[cfg(feature = "actions")]
@@ -1074,9 +1104,20 @@ fn run_domain_with_initializer(
             if d.name == "orgs" {
                 return fleet_orgs::run(&surface.config, args);
             }
+            #[cfg(feature = "kv")]
+            if d.name == "kv" {
+                return kv::run(args);
+            }
+            // code#15430 (design #10391 §4.1): the id domain runs
+            // for real — session key lifecycle + stamping. Later
+            // slices add the proxy/initiator/serve-ws verbs.
+            #[cfg(feature = "id")]
+            if d.name == "id" {
+                return id_key::run(args);
+            }
             // The bridge domain runs for real: fleet mailboxes on the
-            // message bridge (central send/agents/log; agent
-            // hello/inbox/post/ack).
+            // message bridge (central send/agents/log/pipeline/
+            // directory/credentials/revoke; agent hello/inbox/post/ack).
             #[cfg(feature = "bridge")]
             if d.name == "bridge" {
                 return fleet_bridge::run(&surface.config, args);

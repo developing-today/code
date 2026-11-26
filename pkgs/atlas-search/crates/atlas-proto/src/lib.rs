@@ -38,6 +38,21 @@ impl Sensitivity {
         }
     }
 
+    /// Parse a requested ceiling (#13506): a legacy spelling or a
+    /// canonical ladder name (`public < internal < private <
+    /// sensitive`). Stored and reported values stay on
+    /// [`Sensitivity::from_name`] and [`Sensitivity::name`] until the
+    /// output cutover is decided.
+    pub fn from_ceiling_name(name: &str) -> Option<Sensitivity> {
+        Sensitivity::from_name(name).or(match name {
+            "public" => Some(Sensitivity::Shareable),
+            "internal" => Some(Sensitivity::Personal),
+            "private" => Some(Sensitivity::LocalOnly),
+            "sensitive" => Some(Sensitivity::SecretBearing),
+            _ => None,
+        })
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Sensitivity::Shareable => "shareable",
@@ -47,10 +62,45 @@ impl Sensitivity {
         }
     }
 
+    /// The canonical ladder name for this rung (#13506).
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            Sensitivity::Shareable => "public",
+            Sensitivity::Personal => "internal",
+            Sensitivity::LocalOnly => "private",
+            Sensitivity::SecretBearing => "sensitive",
+        }
+    }
+
     /// `min(self, cap)` under the sensitivity ordering.
     pub fn clamped_to(self, cap: Sensitivity) -> Sensitivity {
         std::cmp::min(self, cap)
     }
+}
+
+/// Every spelling a requested ceiling may take on the wire: the
+/// legacy names, then the canonical names (#13506).
+const CEILING_NAMES: [&str; 8] = [
+    "shareable",
+    "personal",
+    "local-only",
+    "secret-bearing",
+    "public",
+    "internal",
+    "private",
+    "sensitive",
+];
+
+/// Deserialize a requested ceiling, accepting either spelling. Only
+/// request ceilings use this; every other sensitivity field keeps
+/// the strict legacy serde names.
+fn deserialize_ceiling<'de, D>(deserializer: D) -> Result<Sensitivity, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let name = String::deserialize(deserializer)?;
+    Sensitivity::from_ceiling_name(&name)
+        .ok_or_else(|| serde::de::Error::unknown_variant(&name, &CEILING_NAMES))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -493,8 +543,9 @@ pub struct SearchRequest {
     pub filters: FilterSpec,
     /// The requested ceiling. The server clamps this to the
     /// authenticated client's cap and reports the result as the
-    /// job's effective ceiling.
-    #[serde(default)]
+    /// job's effective ceiling. Either the legacy or the canonical
+    /// spelling is accepted (#13506).
+    #[serde(default, deserialize_with = "deserialize_ceiling")]
     pub ceiling: Sensitivity,
     /// Final result entries to compute (flat results, or sessions
     /// when `group_by_session` is set).
@@ -824,6 +875,34 @@ mod tests {
             serde_json::to_string(&Sensitivity::LocalOnly).unwrap(),
             "\"local-only\""
         );
+    }
+
+    #[test]
+    fn a_request_ceiling_takes_either_spelling() {
+        for (legacy, canonical) in [
+            ("shareable", "public"),
+            ("personal", "internal"),
+            ("local-only", "private"),
+            ("secret-bearing", "sensitive"),
+        ] {
+            let old: SearchRequest =
+                serde_json::from_value(serde_json::json!({"query": "q", "ceiling": legacy}))
+                    .unwrap();
+            let new: SearchRequest =
+                serde_json::from_value(serde_json::json!({"query": "q", "ceiling": canonical}))
+                    .unwrap();
+            assert_eq!(old.ceiling, new.ceiling);
+            assert_eq!(new.ceiling.name(), legacy);
+            assert_eq!(new.ceiling.canonical_name(), canonical);
+            // The request still serializes the legacy spelling.
+            assert_eq!(serde_json::to_value(&new).unwrap()["ceiling"], legacy);
+        }
+        let bad = serde_json::from_value::<SearchRequest>(
+            serde_json::json!({"query": "q", "ceiling": "secret"}),
+        );
+        assert!(bad.is_err());
+        // Other sensitivity fields stay strict.
+        assert!(serde_json::from_str::<Sensitivity>("\"internal\"").is_err());
     }
 
     #[test]

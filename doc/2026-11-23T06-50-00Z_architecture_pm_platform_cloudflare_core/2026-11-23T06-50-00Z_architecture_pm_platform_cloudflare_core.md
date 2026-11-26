@@ -1840,3 +1840,150 @@ and driven: the default look is unchanged; choosing Black with Inter
 gives a page whose background the browser reports as `rgb(0, 0, 0)`
 and a bar colour of `#000000`; all 22 typeface files load; pressing a
 theme, then "One theme", then another keeps and shows each.
+
+## 2026-11-24T14:26:00Z Feature: Trends, read and kept by Cloudflare; charts; pages as modules
+
+**Asked for.** "Build some analytics dashboard pages that show: trends
+over time, PRs merged, major feature items merged per project, and so
+on", and that it be "straightforward to implement new pages for both
+the website and the app".
+
+**What was built.** A Trends screen (More → Trends) over 7, 14, 30 or 90
+days: pull requests merged by kind, features merged by project with
+each project's latest features listed, issues opened against closed,
+bugs reported against fixed, the middle time from opened to merged, and
+tasks finished by kind; five leading numbers, each set against the same
+number of days before. A chart kit (`public/charts.js`) and the first
+page that is a module of its own (`public/pages/trends.js`).
+
+**Where the numbers come from.** Whoever serves the app reads them, by
+the same code on Cloudflare and on a machine (`src/trends.ts`); no
+machine is needed.
+
+- _Tasks_ are one read of the queue's finishing events grouped by day,
+  by the index the Done screen uses, each task once on the day it was
+  last finished.
+- _GitHub has no "merged per day" to ask for._ Search would answer it,
+  and is refused to some tokens and limited to thirty questions a
+  minute. The list of issues is not: asked for everything changed at or
+  after a time, oldest change first, it gives every issue and pull
+  request once, at its last change (checked on GitHub itself: an item
+  is in the answer to its own time). Read a page at a time, each page's
+  last change being where the next starts, that is everything touched
+  since, each seen at least once in its present state however they
+  change meanwhile. What a pull request is comes from its title
+  (`feat(scope): …`); the project from the scope.
+- _Newest first._ The first version read from ninety days back toward
+  now, which made the days anyone looks at the last to be whole. It is
+  read in stretches instead: the last day to the end of the list (that
+  reading then goes on for good, asking from where it stopped), then
+  three days back, a week, two weeks, a month, two months, ninety days,
+  each up to where the one after it began. The screen says from which
+  day on the counts are whole, and a total is set against the days
+  before only when those are whole too.
+- _Kept small, in the Worker's own storage_: per day, the numbers of
+  what was opened and closed, and for a merged pull request its kind,
+  project, minutes open and (a feature only) its words. A day is about
+  50 kB at this repository's rate.
+- _Not kept among the answers it asks for again._ The Worker remembers
+  GitHub's answers by address to ask "changed?" cheaply. An address
+  with a time in it is never asked twice, so those are not remembered:
+  they would push out the ones that are.
+- _The screen waits for GitHub only when the wait is short._ Looked at
+  on the laptop, a screen that read three pages on at every opening
+  made every opening slow for as long as the older stretches were
+  coming in. It waits now only for the first reading (until the last
+  day is in), for one look at what changed once the history is whole,
+  and when the owner presses refresh. In between it answers from what
+  is kept and says how far back that is whole; the rest is read behind
+  it, by Cloudflare's clock, or after the answer on a machine.
+- _It reads on only while somebody looks._ For a day after the screen
+  was last asked for, the object's own clock reads the history on (six
+  pages a minute until whole, then what changed, each half hour). After
+  that it does not wake for it, which keeps to the rule that an object
+  nobody needs is not kept awake; the tests that hold that rule pass
+  unchanged.
+
+**Measured on the laptop, reading the real repository** (the machine's
+own reader, through the fleet binary): after 44 asks of the screen
+(three pages each) in about eight and a half minutes, everything
+changed in the last two weeks had been read. A day of changes here is
+several thousand items, because sweeps touch old ones.
+With the history whole back to 11 November, the 23rd read as 526 pull
+requests merged: 151 features, 95 fixes, 71 docs, 29 tests, 180 other;
+the middle pull request of the week waited five minutes to merge.
+
+**Charts.** The kit's rules are written at the top of the file and held
+by its tests. Colour says which series a mark belongs to and nothing
+else: six colours in a fixed order (blue, orange, aqua, yellow, magenta,
+green), in a set stepped for dark themes and a set for light ones,
+chosen with a palette validator that measures whether neighbours can be
+told apart under each kind of colour vision. Run against the card
+colour of all 33 themes, nothing failed; on eleven (the light ones,
+Nord and Dracula) one or more colours has under 3 to 1 against the
+card, which the rule answers with what every chart has anyway: a legend
+with each series' total, every series read out for the day pointed at,
+and the numbers as a table. "Everything else" is always grey; the
+status colours are never used for a series. One scale to a chart;
+columns at most 24 wide with gaps and rounded tops; today drawn fainter
+because it is not over; arrow keys, a pointer or a finger choose a day.
+Nothing writes a style: marks take classes, the classes take the
+theme's variables.
+
+**Pages as modules.** `app.js` is one file of four thousand lines. A new
+screen can now be a file in `public/pages/` that exports its address,
+title, tile and `view`; the app gives it its route, its tile on More
+and its offline copy, and hands it the app's own parts. Adding one is
+the file, a line in `pages/index.js` and a line in `files.json`; a test
+checks the three agree. The element builder moved to `public/ui.js` so
+that pages and the app build with the same one.
+
+**Checked.** 636 tests. Sixty-five faults planted one at a time; the
+five that survived were closed (a one-word scope taken for a kind; an
+older stretch counting what was not its own, now held by which days it
+writes; a condition that could not be false, removed; the dot at the
+end of a tile's shape drawn half off its edge, which is how it first
+looked on the laptop; Cloudflare reading on behind an answer instead of
+by its clock). In the real
+Worker runtime (58 checks) the Worker reads the history from the
+stand-in GitHub, keeps it in its storage, and answers a second ask
+without asking again. In Chromium on the laptop, on the real
+repository's numbers, in a dark theme and a light one: the charts draw,
+the series take the theme's colours, and arrowing to a day reads it
+out.
+
+## 2026-11-24T14:46:00Z Feature: reports, made when asked for
+
+**Asked for.** "To request reports which generate and are accessible
+through the app."
+
+**What was built.** More → Reports: a day, a week or thirty days in
+sentences. What merged and how that stands against the time before, the
+features by project with the latest three of each to open, issues
+opened and closed and what that did to the backlog, bugs, the queue's
+finished tasks, and, in a report that ends today, the queue as it
+stands. Earlier and Later step a report back and forth by its own
+length as far as the history goes. Copy and Share give it as text.
+
+**Decisions.**
+
+- _Made from the history, not written and stored._ The history behind
+  Trends is kept by day, so a report for any stretch of it can be made
+  at any time; the read was given a day to end on, and a single day as
+  a window. That leaves nothing to store, nothing to go stale, and no
+  machine in it. The second page written as a module of its own, it is
+  one file, a line in the list of pages and a line in the list of
+  files.
+- _It says what it cannot vouch for._ A total is set against the days
+  before only when those are whole; a report over days not yet read
+  says from which day on its numbers are whole; one that ends today
+  says the day is not over.
+- _What it does not cover goes to Ask._ A question there is answered by
+  an agent, with what the answer rests on. A kind of ask that is "a
+  report" with its own listing on this screen is not built: it needs
+  the queue task filed, which is still a machine's (#13490).
+
+**Checked.** 639 tests; every sentence of a report is worked out by
+hand from a small history written out in the test. Fourteen faults
+planted, the one survivor closed (every feature listed instead of the
+latest three).

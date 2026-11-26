@@ -3,6 +3,8 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
@@ -15,6 +17,14 @@ import (
 func TestSocketReResolvesAfterRecordChanges(t *testing.T) {
 	t.Setenv("MCPX_SOCKET", "")
 	dir := t.TempDir()
+	// WriteInfo mirrors custom-state records into DefaultStateDir() (#278).
+	// Without this isolation the mirror lands in the caller's real state
+	// dir and disturbs a concurrently running e2e TestMain snapshot (#1992).
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "xdg"))
+	t.Setenv("MCPX_STATE_DIR", "")
+	if want := filepath.Join(dir, "xdg", "mcpx"); daemon.DefaultStateDir() != want {
+		t.Fatalf("DefaultStateDir() = %q, want isolated %q", daemon.DefaultStateDir(), want)
+	}
 	paths := daemon.PathsAt(filepath.Join(dir, "state"), filepath.Join(dir, "cache"))
 	if err := paths.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -34,6 +44,60 @@ func TestSocketReResolvesAfterRecordChanges(t *testing.T) {
 	if got := c.Socket(); got != sockB {
 		t.Fatalf("Socket() after record republish = %q, want %q", got, sockB)
 	}
+}
+
+// TestSocketWritesStayInsideIsolatedState is the #1992 regression for this
+// file: the exercise above publishes records through WriteInfo, which
+// mirrors custom-state records into DefaultStateDir() (#278). This test
+// pins the isolation itself — DefaultStateDir() resolves inside the test's
+// temp dir, and a WriteInfo through the same PathsAt pattern leaves the
+// caller's real default dir exactly as found. Read-only against the real
+// dir: it only lists names, never writes there.
+func TestSocketWritesStayInsideIsolatedState(t *testing.T) {
+	callerDef := daemon.DefaultStateDir()
+	callerBefore := dirEntryNames(callerDef)
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "xdg"))
+	t.Setenv("MCPX_STATE_DIR", "")
+	if want := filepath.Join(dir, "xdg", "mcpx"); daemon.DefaultStateDir() != want {
+		t.Fatalf("DefaultStateDir() = %q, want isolated %q", daemon.DefaultStateDir(), want)
+	}
+	paths := daemon.PathsAt(filepath.Join(dir, "state"), filepath.Join(dir, "cache"))
+	if err := paths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.WriteInfo(daemon.Info{PID: os.Getpid(), Socket: filepath.Join(dir, "probe.sock")}); err != nil {
+		t.Fatal(err)
+	}
+	if after := dirEntryNames(callerDef); !equalStrings(after, callerBefore) {
+		t.Fatalf("WriteInfo touched the caller's real state dir %q: before=[%s] after=[%s]",
+			callerDef, strings.Join(callerBefore, " "), strings.Join(after, " "))
+	}
+}
+
+func dirEntryNames(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Codex round 2 on PR #2561: a record-targeted client (stop --all,

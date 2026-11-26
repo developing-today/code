@@ -218,6 +218,11 @@ func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any
 		return nil, err
 	}
 	defer done()
+	// Fleet context (build 4/5, #14190): legacy task-augmented calls
+	// send without withMeta, so the originating queue task id is merged
+	// here, set-if-absent; modern polls re-merge it idempotently.
+	params = withFleetMetaParams(params, ctx)
+	ctx = withFleetHeaders(ctx)
 	var created json.RawMessage
 	if err := c.call(ctx, "tools/call", params, &created); err != nil {
 		return nil, err

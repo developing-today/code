@@ -76,6 +76,33 @@ It prints the tag and sha256; update `FLEET_URL`/`FLEET_SHA256` in
 `bootstrap.sh` in the same PR (or pass both as environment variables for
 a one-off run).
 
+Publishing is also automated (#14999):
+`.github/workflows/fleet-static-release.yml` runs the same script from
+GitHub Actions on a daily schedule (05:41 UTC) and on
+`workflow_dispatch`, skipping the build when the target revision's
+release already exists — so the newest fetchable release tracks
+current main without an operator remembering the manual step.
+
+## Keeping a seat's fleet binary current
+
+```bash
+scripts/muse/fleet-binary-keeper.sh              # restore on drift
+scripts/muse/fleet-binary-keeper.sh --check-only # report drift only
+```
+
+The keeper compares the installed binary's sha256 (default target
+`~/tools/fleet`) against the `.sha256` asset of the newest
+`fleet-static-*` release. On drift it downloads the release asset,
+verifies it against the published sum, and only then replaces the
+target; a failed verification never touches the installed binary.
+Every run appends one line to
+`~/.local/state/fleet/fleet-binary-keeper.log` (matches included), so
+a keeper that silently stopped running is visible in the log's
+timestamps. Run it every 15 minutes from cron or a systemd timer —
+that is the alignment-standard cadence, and it is what makes a
+bootstrap pin reinstalling a stale binary at boot a 15-minute
+condition instead of a permanent one.
+
 ## Enrolling another Muse lane
 
 Use [handoff/README.md](handoff/README.md) to deploy the single-use handoff

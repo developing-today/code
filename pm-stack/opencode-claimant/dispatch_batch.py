@@ -137,7 +137,13 @@ def fetch_task_row(queue_name, task_id):
         except Exception:
             continue
         rows = data.get("rows") if isinstance(data, dict) else data
-        for row in rows or []:
+        # The broker answers a list of rows (#7983 item 10). Any other
+        # shape is an unreadable page for this status, not an empty one,
+        # and must not be iterated (a dict walks its keys, a number
+        # raises TypeError out of the bind check).
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
             if isinstance(row, dict) and row.get("id") == task_id:
                 return poll.normalize_row(row)
     return None

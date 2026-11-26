@@ -13,9 +13,9 @@ index is a distinct namespace and is not reused here.
 
 ## Records
 
-| ID          | Record                                                                                             | Status                          | Domain / current links |
-| ----------- | -------------------------------------------------------------------------------------------------- | ------------------------------- | ---------------------- |
-| FDR-RA-001  | [Chat operating model: category side chats, insert-only job writes](FDR-RA-001-chat-operating-model-category-sinks.md) | accepted; implementation partially complete | #9569, #9568, #9180    |
+| ID         | Record                                                                                                                 | Status                                      | Domain / current links |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ---------------------- |
+| FDR-RA-001 | [Chat operating model: category side chats, insert-only job writes](FDR-RA-001-chat-operating-model-category-sinks.md) | accepted; implementation partially complete | #9569, #9568, #9180    |
 
 ## Adoption and maintenance
 

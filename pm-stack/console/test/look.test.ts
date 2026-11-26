@@ -190,8 +190,9 @@ test("the two standard themes are what the app looks like before anything is cho
   const light = { ...dark, ...vars(block(appCss.indexOf(":root", lightAt))) };
   const colours = (id: string) =>
     Object.fromEntries(COLOURS.map((k) => [k, (themes.get(id) as Record<string, string>)[k]]));
-  expect(colours("slate")).toEqual(dark);
-  expect(colours("paper")).toEqual(light);
+  const only = (all: Record<string, string>) => Object.fromEntries(COLOURS.map((k) => [k, all[k]]));
+  expect(colours("slate")).toEqual(only(dark));
+  expect(colours("paper")).toEqual(only(light));
   // Until something is chosen, the system is followed between those two.
   expect([L.DEFAULTS.follow, L.DEFAULTS.day, L.DEFAULTS.night]).toEqual([true, "paper", "slate"]);
   // The themes come after the app's own colours, or a chosen theme
@@ -363,6 +364,7 @@ test("following the system shows the day's theme when it is light and the night'
   expect(L.attrs({ ...s, font: "lexend", size: "xl", space: "tight", corners: "round", motion: "less" }, true)).toEqual(
     {
       "data-theme": "black",
+      "data-scheme": "dark",
       "data-font": "lexend",
       "data-size": "xl",
       "data-space": "tight",
@@ -373,6 +375,7 @@ test("following the system shows the day's theme when it is light and the night'
   // Movement left to the device is no attribute at all: the style sheet asks the device.
   expect(L.attrs({}, false)).toEqual({
     "data-theme": "paper",
+    "data-scheme": "light",
     "data-font": "system",
     "data-size": "m",
     "data-space": "regular",
@@ -458,6 +461,7 @@ test("opened, the page wears what this device chose, and the bar around it takes
     "data-corners": "square",
     "data-font": "jetbrains-mono",
     "data-motion": "full",
+    "data-scheme": "dark",
     "data-size": "l",
     "data-space": "snug",
     "data-theme": "black-amber",
@@ -469,6 +473,7 @@ test("opened, the page wears what this device chose, and the bar around it takes
   expect(shown(fresh)).toEqual({
     "data-corners": "regular",
     "data-font": "system",
+    "data-scheme": "light",
     "data-size": "m",
     "data-space": "regular",
     "data-theme": "paper",

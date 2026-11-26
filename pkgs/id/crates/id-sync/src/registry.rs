@@ -683,7 +683,10 @@ mod tests {
         // A mirror refuses to import from a list that does not verify.
         let mut mirror = registry(101, "mirror");
         assert!(mirror.import(&forged, None, NOW, |_| true).is_err());
-        assert!(mirror.publish(NOW).unwrap().list.entries.is_empty());
+        assert_eq!(
+            mirror.publish(NOW).unwrap().list.entries,
+            [] as [RegistryEntry; 0]
+        );
     }
 
     #[test]
@@ -722,8 +725,8 @@ mod tests {
         reg.include(world(1, "harbor", &[], 1), NOW).unwrap();
         let list = reg.publish(NOW + 3 * DAY).unwrap();
         list.verify().unwrap();
-        assert!(list.list.entries.is_empty());
-        assert!(list.list.tombstones.is_empty());
+        assert_eq!(list.list.entries, [] as [RegistryEntry; 0]);
+        assert_eq!(list.list.tombstones, [] as [Tombstone; 0]);
     }
 
     #[test]
