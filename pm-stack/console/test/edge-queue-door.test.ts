@@ -351,9 +351,9 @@ describe("Edge prompt queue door (#13490)", () => {
         ]),
       ),
     );
-    expect(rows).toEqual(oracle.allTasks());
+    expect(rows).toEqual(await oracle.allTasks());
     expect(rows).toHaveLength(1);
-    expect(w.queue.events).toEqual(oracle.allEvents());
+    expect(w.queue.events).toEqual(await oracle.allEvents());
     expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
     await Promise.all(w.later);
   });

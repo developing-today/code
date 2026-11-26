@@ -150,7 +150,7 @@ describe("the edge queue door", () => {
         { queue: edge.queue, packet: packet() },
         nativeQueueEnv(() => now / 1000),
       );
-      const expected = oracle.allTasks()[0];
+      const expected = (await oracle.allTasks())[0];
       const row = db.query("SELECT * FROM tasks").get() as Record<string, unknown>;
       for (const key of ["payload", "progress", "result", "ready_condition", "blocked_deps"]) {
         if (typeof row[key] === "string") row[key] = JSON.parse(row[key] as string);
