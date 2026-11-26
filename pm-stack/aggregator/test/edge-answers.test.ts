@@ -155,6 +155,19 @@ describe("mirroring an answerable question", () => {
     expect(events[2]).toMatchObject({ objectRef: "needs-drew:q-1", payload: { class: "needs-user" } });
   });
 
+  test("a needs-user object ref is withdrawn when its question stops candidating", async () => {
+    const { client, calls } = await makeClient((call) =>
+      call.url.endsWith("/heartbeat") ? { status: 200, body: { pendingAnswers: 0 } } : { status: 200 },
+    );
+    await client.mirrorCandidates([{ ...needsDrewCandidate(), objectRef: "needs-user:q-1" }]);
+    await client.mirrorCandidates([]);
+    await client.beat();
+
+    const events = calls.filter((call) => call.url.endsWith("/mirror/event")).map((call) => call.body!);
+    expect(events.map((event) => event.transition)).toEqual(["raised", "cleared"]);
+    expect(events[1]).toMatchObject({ objectRef: "needs-user:q-1", payload: { class: "needs-user" } });
+  });
+
   test("a quota wall that recovers is not withdrawn (only needs-Drew questions are)", async () => {
     const { client, calls } = await makeClient((call) =>
       call.url.endsWith("/heartbeat") ? { status: 200, body: { pendingAnswers: 0 } } : { status: 200 },
