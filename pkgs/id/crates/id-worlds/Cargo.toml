@@ -51,6 +51,9 @@ anyhow = "1"
 base64 = "0.23"
 blake3 = "1"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
+# zlib for kitty graphics RGBA payloads (`o=z`, kitty_graphics.rs, #13623);
+# already in the workspace graph through id-core's `world` feature.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-lite = "2"
 id-caps = { path = "../id-caps", default-features = false }
 id-core = { path = "../id-core", default-features = false, features = [

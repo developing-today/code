@@ -5384,6 +5384,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "ed25519-dalek 3.0.0",
+ "flate2",
  "futures-lite",
  "id-caps",
  "id-core",
