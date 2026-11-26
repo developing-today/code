@@ -120,12 +120,12 @@ impl SnapshotServing {
     ///
     /// The gate's stable named [`ServingRefusal`] — rate limited,
     /// owner aggregate exceeded, or owner concurrency exceeded.
-    pub fn serve_page<T: AsRef<[u8]>>(
+    pub fn serve_page<'s, T: AsRef<[u8]>>(
         &mut self,
         context: &SnapshotReadContext<'_>,
-        snapshot: &[T],
+        snapshot: &'s [T],
         from: u64,
-    ) -> Result<SnapshotPage<'_, T>, ServingRefusal> {
+    ) -> Result<SnapshotPage<'s, T>, ServingRefusal> {
         let limits =
             ShareServingLimits::effective(context.owner_tuned_limits, &self.platform_ceilings);
         self.gate.begin_owner_fetch(context.owner)?;
