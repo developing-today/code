@@ -125,7 +125,10 @@ export async function handleAlertIntakeRoutes(req: Request, path: string): Promi
       const ext =
         rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
       const needsUserExtension = selectNeedsUserExtension(ext);
-      const hasNeedsDrew = needsUserExtension.kind === "selected";
+      if (needsUserExtension.kind === "ambiguous") {
+        return json({ error: "needsUser and needsDrew are aliases; supply only one" }, 400);
+      }
+      const hasNeedsUserQuestion = needsUserExtension.kind === "selected";
       const hasStackHealth = ext.stackHealth !== undefined;
       const hasDecisionSet = ext.decisionSet !== undefined;
       const hasHealthHook = ext.healthHook !== undefined;
@@ -146,17 +149,16 @@ export async function handleAlertIntakeRoutes(req: Request, path: string): Promi
       }
       const { incident, created } = await store.postIncident(parsed.value, healthHook ? { healthHook } : undefined);
       const status = created ? 201 : 200;
-      // #8568/#8766 producer extensions: exactly one of needsDrew /
-      // stackHealth / decisionSet may ride an incident post; #12602 adds
-      // healthHook, which may co-ride with stackHealth (health-hook
-      // source only, gated above) and with nothing else. A VALIDATION
-      // failure of an extension is a 400 (the poster's bug should be
-      // loud at the poster), while a store failure is logged and never
-      // fails the incident post.
-      if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
-        return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      // #8568/#8766 producer extensions: exactly one needsUser or
+      // legacy needsDrew / stackHealth / decisionSet may ride an incident
+      // post. #12602 adds healthHook, which may co-ride with stackHealth
+      // (health-hook source only, gated above) and with nothing else. An
+      // extension validation failure is a 400; a store failure is logged
+      // and never fails the incident post.
+      if ([hasNeedsUserQuestion, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
+        return json({ error: "needsUser/needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
       }
-      if (hasHealthHook && (hasNeedsDrew || hasDecisionSet)) {
+      if (hasHealthHook && (hasNeedsUserQuestion || hasDecisionSet)) {
         return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);
       }
       if (needsUserExtension.kind === "selected") {
@@ -174,11 +176,15 @@ export async function handleAlertIntakeRoutes(req: Request, path: string): Promi
           }
           requestAlertTick();
           return json(
-            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            {
+              incident,
+              created,
+              [needsUserExtension.alias]: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) },
+            },
             status,
           );
         } catch (err) {
-          console.error(`alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`);
+          console.error(`alerts intake: needs-user raise failed (${err instanceof Error ? err.message : "error"})`);
           return json({ incident, created }, status);
         }
       }

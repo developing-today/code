@@ -1,11 +1,14 @@
-/** The legacy needsDrew question extension is the current alert writer. */
 export type NeedsUserExtensionSelection =
   | { kind: "absent" }
-  | { kind: "selected"; alias: "needsDrew"; value: unknown };
+  | { kind: "ambiguous" }
+  | { kind: "selected"; alias: "needsDrew" | "needsUser"; value: unknown };
 
-/** Select the current alert extension shape. The needsUser alias is not
- * enabled until its compatibility test and reader land. */
+/** Select the new or legacy alert extension without allowing mixed shapes. */
 export function selectNeedsUserExtension(extensions: Record<string, unknown>): NeedsUserExtensionSelection {
-  if (extensions.needsDrew === undefined) return { kind: "absent" };
-  return { kind: "selected", alias: "needsDrew", value: extensions.needsDrew };
+  const hasNeedsDrew = extensions.needsDrew !== undefined;
+  const hasNeedsUser = extensions.needsUser !== undefined;
+  if (hasNeedsDrew && hasNeedsUser) return { kind: "ambiguous" };
+  if (hasNeedsUser) return { kind: "selected", alias: "needsUser", value: extensions.needsUser };
+  if (hasNeedsDrew) return { kind: "selected", alias: "needsDrew", value: extensions.needsDrew };
+  return { kind: "absent" };
 }
