@@ -7,11 +7,28 @@ license.workspace = true
 description = "The fleet laptop-agent domain: the transport ladder (broker, Cloudflare, Tailscale, SSH) and the verbs over the laptop-agent daemon (epic developing-today/code#5412, issue #10796)."
 
 [dependencies]
+fleet-cert = { workspace = true }
 fleet-config = { workspace = true }
 # The Cloudflare leg needs fleet-proxy's `serve` feature (connect_cf_tunnel,
 # HttpConn::from_tls): the same TLS stack the broker's own leg uses.
 fleet-proxy = { workspace = true, features = ["serve"] }
 fleet-secrets = { workspace = true }
+# Broker TLS Phase 1 client (BT-4, #14402): the Tailscale leg
+# validates the daemon's broker-server leaf against the BT-2 trust
+# store's anchors; same rustls (ring) the fleet-proxy leg uses.
+rustls = { version = "0.23", default-features = false, features = [
+  "std",
+  "tls12",
+  "ring",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# BT-4 tests: mint the laptop's key + CSR the way a real host does
+# before fleet-cert issues its broker-server leaf.
+rcgen = { version = "0.14.10", default-features = false, features = [
+  "ring",
+  "pem",
+] }

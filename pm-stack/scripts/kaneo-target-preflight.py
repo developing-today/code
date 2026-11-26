@@ -27,8 +27,10 @@ def host_identity(value):
     value = decode(value).lower().rstrip(".")
     if not value or "muse-dev2" in value:
         raise ValueError("retired or absent host")
-    if any(value == suffix or value.endswith("." + suffix)
-           for suffix in ("supabase.com", "supabase.co")):
+    if any(
+        value == suffix or value.endswith("." + suffix)
+        for suffix in ("supabase.com", "supabase.co")
+    ):
         raise ValueError("Supabase endpoints are not cluster-postgres targets")
     try:
         return str(ipaddress.ip_address(value))
@@ -37,7 +39,9 @@ def host_identity(value):
             re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
             for label in value.split(".")
         ):
-            raise ValueError("unsupported host (require one TCP hostname or IP)") from None
+            raise ValueError(
+                "unsupported host (require one TCP hostname or IP)"
+            ) from None
         return value
 
 
@@ -54,7 +58,9 @@ def identity(filename):
     # Only connection options that cannot redirect the endpoint are supported.
     pairs = parse_qsl(uri.query, keep_blank_values=True, strict_parsing=True)
     allowed = {"sslmode", "connect_timeout", "application_name"}
-    if any(key not in allowed or not val for key, val in pairs) or len({k for k, _ in pairs}) != len(pairs):
+    if any(key not in allowed or not val for key, val in pairs) or len(
+        {k for k, _ in pairs}
+    ) != len(pairs):
         raise ValueError("unsupported or duplicate URI query option")
     host = host_identity(uri.hostname or "")
     port = uri.port if uri.port is not None else 5432
@@ -77,15 +83,28 @@ def identity(filename):
 
 
 def main():
-    if len(sys.argv) != 4 or any(not arg or arg.startswith("--") for arg in sys.argv[1:]):
-        print("kaneo target preflight: require SOURCE_FILE TARGET_FILE TARGET_HOST", file=sys.stderr)
+    if len(sys.argv) != 4 or any(
+        not arg or arg.startswith("--") for arg in sys.argv[1:]
+    ):
+        print(
+            "kaneo target preflight: require SOURCE_FILE TARGET_FILE TARGET_HOST",
+            file=sys.stderr,
+        )
         return 2
     try:
         # URI mode must not silently inherit libpq's out-of-band endpoints.
-        if any(os.environ.get(name) for name in (
-            "PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGSERVICE",
-            "PGSERVICEFILE", "PGOPTIONS",
-        )):
+        if any(
+            os.environ.get(name)
+            for name in (
+                "PGHOST",
+                "PGHOSTADDR",
+                "PGPORT",
+                "PGDATABASE",
+                "PGSERVICE",
+                "PGSERVICEFILE",
+                "PGOPTIONS",
+            )
+        ):
             raise ValueError("ambient libpq endpoint override")
         source = identity(sys.argv[1])
         target = identity(sys.argv[2])
@@ -94,9 +113,14 @@ def main():
         if source == target:
             raise ValueError("source and target identify the same host/port/database")
     except (ValueError, OSError, UnicodeError):
-        print("kaneo target preflight: rejected target identity or unsupported DSN; require distinct explicit TCP postgres URIs and matching cluster target host", file=sys.stderr)
+        print(
+            "kaneo target preflight: rejected target identity or unsupported DSN; require distinct explicit TCP postgres URIs and matching cluster target host",
+            file=sys.stderr,
+        )
         return 2
-    print("kaneo-cutover: PREFLIGHT OK — distinct source and declared cluster-postgres target")
+    print(
+        "kaneo-cutover: PREFLIGHT OK — distinct source and declared cluster-postgres target"
+    )
     return 0
 
 

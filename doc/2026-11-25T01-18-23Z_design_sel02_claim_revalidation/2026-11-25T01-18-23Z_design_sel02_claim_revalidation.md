@@ -26,7 +26,7 @@ Governing decisions consumed, not re-opened:
 
 - **Component #9204 V2** — the immutable `SelectionInput`
   snapshot; both predicates (`TaskRequirements AND
-  ClaimerFilter`); hard gates are exclusions, not weights;
+ClaimerFilter`); hard gates are exclusions, not weights;
   `do_now`/direct-session does not bypass auth, hard
   dependencies, lease, concurrency cap or claim guards; an
   exploration draw does not claim, and a stale selected item is
@@ -84,10 +84,10 @@ Verified at the current `main` (source, not deployment proof):
 
 - `claim_repo_task_turso` (`turso_queue/lifecycle.rs`) already
   picks first and claims by id: a `SELECT id ... ORDER BY ...
-  LIMIT 1` over the pick predicate, then
+LIMIT 1` over the pick predicate, then
   `claim_update_sql(&pick_predicate)` — a conditional
   `UPDATE ... WHERE id = ? AND (pick predicate) AND
-  platform-limit clause AND scope`. If the row changed in
+platform-limit clause AND scope`. If the row changed in
   between, the `UPDATE` affects 0 rows and the loop re-picks
   (bounded by a 32 race budget, #9609). This is the #7617 fix,
   and it is the right shape: the conditional `UPDATE` _is_ the
@@ -164,14 +164,14 @@ Every other claim names a specific item that someone else chose.
 It carries the shared command envelope (`fleet.command/v1`,
 `work/contracts.rs`) with:
 
-| Field                    | Meaning                                                                 |
-| ------------------------ | ----------------------------------------------------------------------- |
-| `work`                   | `(authority_id, work_id)` pair; never a bare number at another authority |
-| `expected_work_version`  | REL-02 work version the chooser saw (canonical decimal string)         |
-| `observed_snapshot_ref`  | the chooser's snapshot: queue snapshot, `graph_revision`, `policy_ref`, `comparator_ref`, lane context |
-| `lease_generation`       | for `work resume` only: the fence generation the resumer last held      |
-| `reason.code`            | the intent's **source**: `exploration`, `directive`, `operator_pick`, `resume`, `handoff` |
-| `operation_id`           | idempotency key (§4.4)                                                  |
+| Field                   | Meaning                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `work`                  | `(authority_id, work_id)` pair; never a bare number at another authority                               |
+| `expected_work_version` | REL-02 work version the chooser saw (canonical decimal string)                                         |
+| `observed_snapshot_ref` | the chooser's snapshot: queue snapshot, `graph_revision`, `policy_ref`, `comparator_ref`, lane context |
+| `lease_generation`      | for `work resume` only: the fence generation the resumer last held                                     |
+| `reason.code`           | the intent's **source**: `exploration`, `directive`, `operator_pick`, `resume`, `handoff`              |
+| `operation_id`          | idempotency key (§4.4)                                                                                 |
 
 The source decides which snapshot inputs are compared (§4.2).
 Shape B never chooses a substitute: when revalidation fails it
@@ -207,15 +207,15 @@ bump would turn a correct check into a livelock.
 These decide _why this item_ was chosen. They matter only for the
 sources whose choice depended on them:
 
-| Source          | Compared at commit                                              | On mismatch            |
-| --------------- | --------------------------------------------------------------- | ---------------------- |
-| any             | `expected_work_version` = current REL-02 work version           | `stale_item` (`VERSION_CONFLICT`) |
-| `exploration`   | `policy_ref` and exploration profile version = current          | `stale_policy`         |
-| `exploration`   | urgent gate (§4.3) recomputed for this lane                     | `preempted`            |
-| `directive`     | directive still active and its issuer still authorized (AUTH-01, protected-owner policy) | `stale_directive` |
-| `resume`        | `lease_generation` equals the item's current fence generation (no takeover since the resumer last held it) | `fenced` |
-| `operator_pick` | nothing beyond version: a person chose this item on purpose     | —                      |
-| `handoff`       | the sink row is still addressed to this claimant                | `stale_item`           |
+| Source          | Compared at commit                                                                                         | On mismatch                       |
+| --------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| any             | `expected_work_version` = current REL-02 work version                                                      | `stale_item` (`VERSION_CONFLICT`) |
+| `exploration`   | `policy_ref` and exploration profile version = current                                                     | `stale_policy`                    |
+| `exploration`   | urgent gate (§4.3) recomputed for this lane                                                                | `preempted`                       |
+| `directive`     | directive still active and its issuer still authorized (AUTH-01, protected-owner policy)                   | `stale_directive`                 |
+| `resume`        | `lease_generation` equals the item's current fence generation (no takeover since the resumer last held it) | `fenced`                          |
+| `operator_pick` | nothing beyond version: a person chose this item on purpose                                                | —                                 |
+| `handoff`       | the sink row is still addressed to this claimant                                                           | `stale_item`                      |
 
 `comparator_ref` and `graph_revision` are never compared for
 Shape B: Shape B items are not chosen by order, and order-based
@@ -273,7 +273,7 @@ A Shape B claim runs, in one `BEGIN IMMEDIATE` (the pattern
 3. idempotency lookup (§4.4);
 4. the choice comparisons of §4.2, including the urgent gate;
 5. `UPDATE tasks SET <claim fields, REL-02 generation + version
-   bump> WHERE id = ? AND <claim clause> AND work_version = ?`;
+bump> WHERE id = ? AND <claim clause> AND work_version = ?`;
 6. if 0 rows: the diagnosis in §5.2, then `COMMIT` of nothing but
    the refusal event;
 7. if 1 row: lease row, binding, `claimed` event with the
@@ -298,19 +298,19 @@ stands and the result says the remote effect is `pending`, never
 Every claim returns the shared `fleet.result/v1` envelope with
 one of these outcomes:
 
-| Outcome            | Meaning                                                         | Carries                                       |
-| ------------------ | --------------------------------------------------------------- | --------------------------------------------- |
-| `claimed`          | lease granted                                                   | `work_version`, `fence_generation`, `lease_until`, remote effects `pending` |
-| `stale_item`       | work version moved since the chooser looked (`VERSION_CONFLICT`) | current version                               |
-| `stale_policy`     | exploration profile or policy changed                           | current `policy_ref`                          |
-| `stale_directive`  | directive withdrawn or issuer no longer authorized              | directive state                               |
-| `preempted`        | urgent work for this lane exists                                | the urgent item's ref                         |
-| `ineligible`       | the claim clause refuses the item                               | reason codes (§5.2)                           |
-| `held`             | another holder has a live lease                                 | holder kind (lane/session/person), `lease_until` |
-| `fenced`           | resume after a takeover                                         | current generation                            |
-| `nothing_claimable`| Shape A found no row (today's `None`)                           | —                                             |
-| `unsupported`      | this store or adapter cannot validate atomically                | missing capability                            |
-| `unauthorized`, `ambiguous_ref`, `wrong_authority`, `idempotency_conflict` | refused before any read of the item's state | — |
+| Outcome                                                                    | Meaning                                                          | Carries                                                                     |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `claimed`                                                                  | lease granted                                                    | `work_version`, `fence_generation`, `lease_until`, remote effects `pending` |
+| `stale_item`                                                               | work version moved since the chooser looked (`VERSION_CONFLICT`) | current version                                                             |
+| `stale_policy`                                                             | exploration profile or policy changed                            | current `policy_ref`                                                        |
+| `stale_directive`                                                          | directive withdrawn or issuer no longer authorized               | directive state                                                             |
+| `preempted`                                                                | urgent work for this lane exists                                 | the urgent item's ref                                                       |
+| `ineligible`                                                               | the claim clause refuses the item                                | reason codes (§5.2)                                                         |
+| `held`                                                                     | another holder has a live lease                                  | holder kind (lane/session/person), `lease_until`                            |
+| `fenced`                                                                   | resume after a takeover                                          | current generation                                                          |
+| `nothing_claimable`                                                        | Shape A found no row (today's `None`)                            | —                                                                           |
+| `unsupported`                                                              | this store or adapter cannot validate atomically                 | missing capability                                                          |
+| `unauthorized`, `ambiguous_ref`, `wrong_authority`, `idempotency_conflict` | refused before any read of the item's state                      | —                                                                           |
 
 None of these is a `claimed` with a caveat: every non-`claimed`
 outcome wrote no lease, no generation bump and no `claimed` event.
@@ -344,14 +344,14 @@ Per `census/command-slice-map.jsonl`: `current.claim.filter`,
 `work.open`, `work.resume`. Final names are reconciled by CLI-02 /
 CLI-13; this record fixes only which shape each one uses:
 
-| Command                 | Shape | Source / note                                                     |
-| ----------------------- | ----- | ----------------------------------------------------------------- |
-| `queue claim`, `work next` | A  | broker pick; existing flags unchanged                             |
-| `queue fallback claim`  | A     | the existing fallback/handoff pick mode (`HANDOFF_SQL`)           |
-| `work open <work>`      | B     | `operator_pick`; requires `--expected-version` (the version the operator's view showed) |
-| `work resume <work>`    | B     | `resume`; carries the last `lease_generation`                     |
-| `--claim` on a read command (`flag.claim`) | B | the read's returned version becomes `expected_work_version`, so "show then claim" is one intent |
-| `current claim filter`  | —     | read-only: prints the claimer's effective scope (filter AST and requirement args) exactly as the claim clause binds them |
+| Command                                    | Shape | Source / note                                                                                                            |
+| ------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------ |
+| `queue claim`, `work next`                 | A     | broker pick; existing flags unchanged                                                                                    |
+| `queue fallback claim`                     | A     | the existing fallback/handoff pick mode (`HANDOFF_SQL`)                                                                  |
+| `work open <work>`                         | B     | `operator_pick`; requires `--expected-version` (the version the operator's view showed)                                  |
+| `work resume <work>`                       | B     | `resume`; carries the last `lease_generation`                                                                            |
+| `--claim` on a read command (`flag.claim`) | B     | the read's returned version becomes `expected_work_version`, so "show then claim" is one intent                          |
+| `current claim filter`                     | —     | read-only: prints the claimer's effective scope (filter AST and requirement args) exactly as the claim clause binds them |
 
 The legacy by-id claim without a version stays available for
 compatibility (§9) and reports `version_checked: false` in its
@@ -368,22 +368,22 @@ SEL-04's. No CEN-04 §5 admission entry is needed.
 
 ## 8. Failure and recovery
 
-| Scenario                                                   | Outcome                                                         |
-| ---------------------------------------------------------- | --------------------------------------------------------------- |
-| Two lanes claim the same item at once                      | One `claimed`; the other `held` (Shape B) or re-picks (Shape A) |
-| Item edited between view and `work open`                   | `stale_item` with the current version                           |
-| Hard edge added after the draw                             | `ineligible` / `hard_blocked`                                   |
-| Graph changed elsewhere, item still unblocked              | `claimed` (graph is live, not compared)                         |
-| Urgent item for this lane arrives after an exploration draw| `preempted` with its ref                                        |
-| Directive withdrawn before its claim                       | `stale_directive`                                               |
-| Item made `manual_only` after a draw                       | `ineligible` / `manual_only`                                    |
-| Old holder resumes after a takeover                        | `fenced`                                                        |
-| Replay of a successful claim                               | the original `claimed`, no second bump                          |
-| Version from another authority                             | `wrong_authority`                                               |
-| Forged `actor_ref` claiming to be the owner                | `unauthorized`                                                  |
-| Store lacks `work_version` (pre-REL-02) or a hosted adapter cannot do the conditional update | `unsupported`; no claim |
-| Outbox fails after commit                                  | claim stands; remote effect `pending`                           |
-| Crash between `UPDATE` and lease write                     | impossible: one transaction; rollback leaves the row unclaimed  |
+| Scenario                                                                                     | Outcome                                                         |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Two lanes claim the same item at once                                                        | One `claimed`; the other `held` (Shape B) or re-picks (Shape A) |
+| Item edited between view and `work open`                                                     | `stale_item` with the current version                           |
+| Hard edge added after the draw                                                               | `ineligible` / `hard_blocked`                                   |
+| Graph changed elsewhere, item still unblocked                                                | `claimed` (graph is live, not compared)                         |
+| Urgent item for this lane arrives after an exploration draw                                  | `preempted` with its ref                                        |
+| Directive withdrawn before its claim                                                         | `stale_directive`                                               |
+| Item made `manual_only` after a draw                                                         | `ineligible` / `manual_only`                                    |
+| Old holder resumes after a takeover                                                          | `fenced`                                                        |
+| Replay of a successful claim                                                                 | the original `claimed`, no second bump                          |
+| Version from another authority                                                               | `wrong_authority`                                               |
+| Forged `actor_ref` claiming to be the owner                                                  | `unauthorized`                                                  |
+| Store lacks `work_version` (pre-REL-02) or a hosted adapter cannot do the conditional update | `unsupported`; no claim                                         |
+| Outbox fails after commit                                                                    | claim stands; remote effect `pending`                           |
+| Crash between `UPDATE` and lease write                                                       | impossible: one transaction; rollback leaves the row unclaimed  |
 
 ## 9. Compatibility and rollout
 

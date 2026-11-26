@@ -129,6 +129,50 @@ else
   [ "$?" -eq 2 ] && pass 'valueless option exits 2' || fail 'valueless option exits 2'
 fi
 
+# 10. Per-store fencing: Grist is fenced while the other stores are live.
+d="$TMP/per-store-grist"
+make_fixtures "$d"
+printf 'pm-pad running\npm-stack-kaneo-1 running\n' >"$d/containers.txt"
+if out="$("$BASH_BIN" "$CHECK" --store grist --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  case "$out" in
+  FENCED:*) pass 'grist fence ignores Kaneo and Pad writers' ;;
+  *) fail "grist fence ignores Kaneo and Pad writers (got: $out)" ;;
+  esac
+else
+  fail "grist fence ignores Kaneo and Pad writers (exit $?, got: $out)"
+fi
+
+# 11. Per-store fencing: an active Pad unit is named and blocks Pad.
+d="$TMP/per-store-pad"
+make_fixtures "$d"
+printf 'active' >"$d/units/docker-pm-pad.service"
+if out="$("$BASH_BIN" "$CHECK" --store pad --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "pad fence names its own active writer (exit 0, got: $out)"
+else
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*unit:docker-pm-pad.service* ]]; then
+    pass 'pad fence names its own active writer'
+  else
+    fail "pad fence names its own active writer (got: $out)"
+  fi
+fi
+
+# 12. Per-store unit fixtures fail closed when that store's unit is missing.
+d="$TMP/per-store-missing-unit"
+make_fixtures "$d"
+rm "$d/units/docker-pm-grist.service"
+if out="$("$BASH_BIN" "$CHECK" --store grist --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "missing Grist unit fixture fails closed (exit 0, got: $out)"
+else
+  [ "$?" -eq 1 ] && [[ $out == UNFENCED:*docker-pm-grist.service* ]] && pass 'missing Grist unit fixture fails closed' || fail "missing Grist unit fixture fails closed (got: $out)"
+fi
+
+# 13. Unknown store is a usage error.
+if "$BASH_BIN" "$CHECK" --store bogus >/dev/null 2>&1; then
+  fail '--store bogus exits 2'
+else
+  [ "$?" -eq 2 ] && pass '--store bogus exits 2' || fail '--store bogus exits 2'
+fi
+
 if ((FAILURES)); then
   printf 'fence-check.test.sh: %d check(s) failed\n' "$FAILURES"
   exit 1

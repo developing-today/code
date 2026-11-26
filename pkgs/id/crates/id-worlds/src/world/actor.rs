@@ -1050,9 +1050,8 @@ impl WorldActor {
                                     // and stays healthy; the same
                                     // input can succeed once the
                                     // account's window rolls.
-                                    Err(error.context(
-                                        "world program refused input at its fuel rate",
-                                    ))
+                                    Err(error
+                                        .context("world program refused input at its fuel rate"))
                                 } else {
                                     self.program_healthy = false;
                                     Err(error.context("world program rejected input"))
@@ -1163,6 +1162,18 @@ impl WorldActor {
             } => {
                 let result =
                     self.failover_write_lease(&pool, journal_tip, max_catch_up_lag, term_ms);
+                let _ = reply.send(result);
+            }
+            WorldCommand::DispatchSpillCopy {
+                holder,
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            } => {
+                let result =
+                    self.core
+                        .dispatch_spill_copy(&holder, epoch, replayed_position, journal_copy);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
@@ -1633,6 +1644,44 @@ impl WorldActor {
                 // would misattribute a participant read.
                 let _ = reply.send(profile);
             }
+            WorldCommand::SetPresentationPolicy { policy, reply } => {
+                // A summary, not the whole policy: its lists and maps are
+                // bounded but can run to hundreds of entries.
+                let audit_parameters = serde_json::json!({
+                    "user_uploads": policy.assets.user_uploads,
+                    "max_rung": policy.assets.max_rung,
+                    "disguise": policy.filters.disguise,
+                    "shaders": policy.shaders.enabled,
+                });
+                let result = self
+                    .check_writable()
+                    .and_then(|()| {
+                        policy.validate().map_err(|error| {
+                            anyhow::anyhow!("invalid presentation policy: {error}")
+                        })
+                    })
+                    .and_then(|()| {
+                        self.persist(JournalEntry::PresentationPolicy {
+                            policy: policy.clone(),
+                        })
+                    })
+                    .map(|()| {
+                        self.core.presentation = policy;
+                        self.core.presentation.clone()
+                    });
+                self.audit_admin_result(
+                    "admin",
+                    "SetPresentationPolicy",
+                    audit_parameters,
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::PresentationPolicyInfo { reply } => {
+                // No audit record: the policy is public pre-join metadata,
+                // readable without a capability (#5970 §5).
+                let _ = reply.send(self.core.presentation.clone());
+            }
             WorldCommand::ManifestState { reply } => {
                 let state = (self.core.active_seed, self.core.schedule_times());
                 // No audit record, for the same reason as Metrics below:
@@ -1836,6 +1885,20 @@ impl WorldActor {
                     authority_identity(&authority),
                     "SetIsolation",
                     serde_json::json!({"isolation": format!("{isolation:?}")}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::AuthorizeLifecycle {
+                authority,
+                act,
+                reply,
+            } => {
+                let result = self.require_ownership(&authority, act);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "AuthorizeLifecycle",
+                    serde_json::json!({"act": act}),
                     result.is_ok(),
                 );
                 let _ = reply.send(result);
@@ -2683,7 +2746,7 @@ mod replication_feed_tests {
         let snapshot = snapshot_source.read().unwrap();
         assert_eq!(reset.bytes, snapshot.bytes);
         let chunks = split_entry_payload(&snapshot.bytes).unwrap();
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [Vec<u8>; 0]);
         assert!(
             chunks
                 .iter()

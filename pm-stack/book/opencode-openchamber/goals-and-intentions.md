@@ -26,14 +26,14 @@ The OpenCode claimant/executor (code#3026, slice 1) is to discover unbound openc
 - The embedded-OpenCode upgrade on the OpenChamber side: [openchamber#384](https://github.com/developing-today-forks/openchamber/issues/384).
 - The deployed-plugin gap list at `doc/2026-11-23T03-45-00Z_opencode-v2-deployed-plugin-gap-list/` in the code repo: three v1 constructs with no v2 equivalent, each with a chosen workaround.
 
-The record disagrees with itself on this goal's state: opencode#2295 is titled "…core migration (**shipped** — tracking home)" while the parent migration opencode#374, the plugin follow-through opencode#2290 and the embedded upgrade openchamber#384 all remain open (D54). This book records the migration as open work with a shipped core, because the issues that carry the remaining work are open.
+The record disagrees with itself on this goal's state: opencode#2295 is titled "…core migration (**shipped** — tracking home)" while the parent migration opencode#374, the plugin follow-through opencode#2290 and the embedded upgrade openchamber#384 all remain open (D54). This book records the migration as open work with a shipped core, because the issues that carry the remaining work are open. **Update (2026-11-25, #13963 slice 1):** the two tracking-home issues were retitled to drop the "shipped" claim — opencode#2295 is now "OpenCode 2 fleet migration — core migration (tracking home)" and openchamber#2126 "OpenChamber retry-recovery controls — restart-with-new-model + force-next-pool-option (tracking home)" — while #374, #2290 and #384 remain open. D54 is settled.
 
 ## Routes, pools and quota as fork-native machinery
 
 - Model-route follow-ups: [opencode#2681](https://github.com/developing-today-forks/opencode/issues/2681).
 - The config-projection gap: [opencode#2782](https://github.com/developing-today-forks/opencode/issues/2782) ("needed by code#13675 Part 2") — the fork fix blocks that code work; the edge is in [The forks programme dependency map](dependency-map.md).
 - OpenChamber's pool-settings follow-ups: [openchamber#2498](https://github.com/developing-today-forks/openchamber/issues/2498).
-- Retry-recovery controls: [openchamber#2126](https://github.com/developing-today-forks/openchamber/issues/2126) — titled "(shipped — tracking home)"; it sits in the open map as a tracking home, under the same record tension as D54.
+- Retry-recovery controls: [openchamber#2126](https://github.com/developing-today-forks/openchamber/issues/2126) — titled "(shipped — tracking home)" at the survey read (retitled 2026-11-25, #13963 slice 1); it sits in the open map as a tracking home, under the same record tension as D54.
 - The provider doctrine: [opencode#1717](https://github.com/developing-today-forks/opencode/issues/1717) ("*-direct providers EMULATE the first-party wire").
 
 The deployed pools and routes this machinery serves are the LLM plans part's subject: [Pools, routes and the switchboard](../llm-plans/pools-and-routes.md). This chapter records the fork-side intention only.

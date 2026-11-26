@@ -86,7 +86,12 @@ function triagePacket(issue = 777): JsonObject {
   return p;
 }
 
-async function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): Promise<JsonObject> {
+async function enqueue(
+  store: QueueStore,
+  env: QueueEnv,
+  packet: JsonObject,
+  extra: JsonObject = {},
+): Promise<JsonObject> {
   return await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
 }
 
@@ -271,7 +276,12 @@ test("enqueue reports a work-identity collision and honours dedupe_override", as
 
 test("enqueue into a shadow queue requires deliberate intent", async () => {
   const { store } = setup();
-  const refused = await executeQueueVerb(store, "enqueue", { queue: "repo-health-shadow", packet: fixPacket() }, hostedEnv());
+  const refused = await executeQueueVerb(
+    store,
+    "enqueue",
+    { queue: "repo-health-shadow", packet: fixPacket() },
+    hostedEnv(),
+  );
   assert.equal(refused["ok"], false);
   assert.equal(refused["exit"], 2);
   const allowed = await executeQueueVerb(
@@ -493,9 +503,11 @@ test("the claim guard quarantines a stored packet that no longer validates (#544
   // corrupted in place).
   const row = await store.insertTask({
     queue: "repo-health",
+    manual_only: false,
     title: "rotten",
     body: null,
     payload: { schema: "repo-task/v1", kind: "small_fix" },
+    metadata: {},
     dedupe_key: null,
     priority: 30,
     status: "queued",
@@ -644,7 +656,11 @@ test("fail: transient requeues with backoff, blocked parks the row, fatal termin
 test("cancel is idempotent and terminal rows answer unchanged", async () => {
   const { store } = setup();
   await enqueue(store, nativeEnv(), fixPacket());
-  const cancelled = await verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
+  const cancelled = await verb(store, nativeEnv(), "cancel", {
+    task_id: 1,
+    worker: "fleet-monitor",
+    reason: "duplicate",
+  });
   assert.equal((cancelled["row"] as JsonObject)["status"], "cancelled");
   const again = await verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
   assert.equal((again["row"] as JsonObject)["status"], "cancelled");

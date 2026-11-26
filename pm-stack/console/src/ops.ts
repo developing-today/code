@@ -14,6 +14,10 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
+import { STORES_FILE, storesList, type StoreRow } from "./stores.ts";
+import { storeAnswered, storeLiveStatements, storeNotAnswering, type StoreLive } from "./store-live.ts";
+import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
+import { TURSO_ADMIN_WORKFLOW, tursoAdminInputs, tursoAdminRequest, tursoAdminRun } from "./turso-admin.ts";
 import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
@@ -52,6 +56,8 @@ function fromStore(cell: { type?: string; value?: string | number | null } | und
 }
 /** How long the queue store has to answer one asking, body and all. */
 export const QUEUE_ASK_MS = 20_000;
+/** How long one store has to answer the Platform screen's asking. */
+export const STORE_ASK_MS = 10_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
@@ -242,8 +248,75 @@ function matchReport(out: Record<string, unknown> | null, to: string[], command:
   };
 }
 
+/** How long what a token said of its expiry is kept before the token
+ * is fetched again: long enough that the notifier's minute does not
+ * fetch every secret every minute, short enough that a rotation shows
+ * the same hour. */
+export const TOKEN_EXPIRY_KEPT_MS = 10 * 60_000;
+
+/** Where the repository-described Cloudflare configuration was last
+ * successfully applied from: the apply workflow's own record. */
+export interface ApplyProvenance {
+  /** The workflow that applied it, and who set it going when GitHub
+   * says so: the source the configuration was applied from. */
+  source: string;
+  /** The commit the applying run had checked out, in full. */
+  commit: string;
+  /** When that run finished, as GitHub recorded it (ISO 8601). */
+  at: string;
+  /** The run's own page, for the owner to look at. */
+  url: string;
+}
+
+/** The latest successful apply in a workflow-runs answer, or null when
+ * there is none. Only a dispatched run can apply at all — pushes and
+ * pull requests of pm-cloudflare-config.yml only validate — and only a
+ * run that finished successfully applied anything: a failed or
+ * still-running one is never presented as an apply. A run whose record
+ * is malformed is passed over, not trusted. Nothing here dispatches a
+ * workflow or reads a secret: it only reads the runs GitHub already
+ * recorded. */
+export function latestApply(got: unknown): ApplyProvenance | null {
+  const runs = (got as { workflow_runs?: unknown } | null)?.workflow_runs;
+  if (!Array.isArray(runs)) return null;
+  let best: (ApplyProvenance & { done: number }) | null = null;
+  for (const raw of runs) {
+    const run = raw as {
+      event?: unknown;
+      status?: unknown;
+      conclusion?: unknown;
+      head_branch?: unknown;
+      head_sha?: unknown;
+      updated_at?: unknown;
+      html_url?: unknown;
+      name?: unknown;
+      triggering_actor?: { login?: unknown } | null;
+      actor?: { login?: unknown } | null;
+    } | null;
+    if (!run || typeof run !== "object") continue;
+    if (run.event !== "workflow_dispatch" || run.head_branch !== "main") continue;
+    if (run.status !== "completed" || run.conclusion !== "success") continue;
+    if (typeof run.head_sha !== "string" || !/^[0-9a-f]{40}$/.test(run.head_sha)) continue;
+    if (typeof run.html_url !== "string" || !run.html_url.startsWith("https://")) continue;
+    if (typeof run.updated_at !== "string") continue;
+    const done = Date.parse(run.updated_at);
+    if (!Number.isFinite(done)) continue;
+    const workflow = typeof run.name === "string" && run.name ? run.name : "pm-console-cloudflare config";
+    const actor = run.triggering_actor?.login ?? run.actor?.login;
+    const source = typeof actor === "string" && actor ? `${workflow}, dispatched by ${actor}` : workflow;
+    if (!best || done > best.done) best = { source, commit: run.head_sha, at: run.updated_at, url: run.html_url, done };
+  }
+  return best ? { source: best.source, commit: best.commit, at: best.at, url: best.url } : null;
+}
+
 export class Ops {
   private queueToken: string | null = null;
+  /** What each token said of when it runs out, by its name, and when
+   * that was read. Never the token itself. */
+  private expiries = new Map<string, { at: number; expiresAt: number | null | undefined }>();
+  /** Each store's token, by the name of the secret that holds it.
+   * Never a token under its store's name, and never returned. */
+  private storeTokens = new Map<string, string>();
 
   /** How the queue store and the dashboard are reached. Kept as a plain
    * caller: these classes also run at the edge, where the platform's
@@ -950,7 +1023,10 @@ export class Ops {
     if (n !== null) argv.push("--limit", String(n));
     // The text goes on stdin, so nothing in it is read as an option.
     argv.push("-");
-    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<string, unknown> | null;
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<
+      string,
+      unknown
+    > | null;
     return matchReport(out, targets, command === true);
   }
 
@@ -978,7 +1054,15 @@ export class Ops {
    * thread onto that batch. The answer is the bridge's offer row. */
   async offer(to: unknown, body: unknown, command: unknown, slots: unknown, ttlSeconds?: unknown) {
     const targets = bridgeTargets(to);
-    const argv = [this.cfg.fleetBin, "bridge", "offer", "--to", targets.join(","), "--slots", String(id(slots, "slots"))];
+    const argv = [
+      this.cfg.fleetBin,
+      "bridge",
+      "offer",
+      "--to",
+      targets.join(","),
+      "--slots",
+      String(id(slots, "slots")),
+    ];
     if (command === true) argv.push("--command");
     const ttl = optionalCount(ttlSeconds, "ttl", 7 * 24 * 3600);
     if (ttl !== null) argv.push("--ttl", String(ttl));
@@ -1061,25 +1145,60 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Have the edge do the core itself, or stop it. On gives the Worker
-   * the repository automation token and the queue store token, read
-   * from the secret store by the setup script and sent to Cloudflare;
-   * off takes them away, and is remembered. It can only be done on a
-   * machine, where the secret store is. */
-  async edgeDirect(on: unknown) {
+  /** Persist the desired direct-mode state in the repository, then ask
+   * Actions to apply it. Token rotation is explicit because Worker
+   * secret values cannot be read back to determine whether they changed. */
+  async edgeDirect(on: unknown, refreshTokens: unknown = false) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
-    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
-    const said = `${r.stdout}\n${r.stderr}`
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-    if (r.code !== 0) {
-      throw new OpError(
-        502,
-        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
-      );
+    if (typeof refreshTokens !== "boolean") throw new OpError(400, "refreshTokens: true or false");
+    if (refreshTokens && !on) throw new OpError(400, "refreshTokens requires direct mode on");
+    const file = `repos/${this.cfg.repo}/contents/infra/pm-cloudflare/state.json`;
+    const current = (await this.gh([file])) as { sha?: unknown; content?: unknown } | null;
+    if (typeof current?.sha !== "string" || typeof current.content !== "string") {
+      throw new OpError(502, "could not read the Cloudflare repository state");
     }
-    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+    let state: Record<string, unknown>;
+    try {
+      const binary = atob(current.content.replace(/\s/g, ""));
+      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      throw new OpError(502, "the Cloudflare repository state was not valid JSON");
+    }
+    const worker = state.worker as Record<string, unknown> | undefined;
+    if (!worker || (worker.direct !== "on" && worker.direct !== "off")) {
+      throw new OpError(502, "the Cloudflare repository state has no valid worker.direct setting");
+    }
+    worker.direct = on ? "on" : "off";
+    const bytes = new TextEncoder().encode(`${JSON.stringify(state, null, 2)}\n`);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    await this.gh(["-X", "PUT", file], {
+      message: `pm-console: ${on ? "enable" : "disable"} edge direct mode`,
+      sha: current.sha,
+      content: btoa(binary),
+      branch: "main",
+    });
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/dispatches`], {
+      ref: "main",
+      inputs: { mode: "apply", refresh_tokens: String(refreshTokens) },
+    });
+    return { on, started: "pm-cloudflare-config.yml" };
+  }
+
+  /** Where the repository-described Cloudflare configuration was last
+   * successfully applied from, per the apply workflow's runs on main.
+   * A read only: it dispatches nothing, changes no Cloudflare state,
+   * and returns no secret value — only the run's source, commit,
+   * completion time and page. `apply` is null when no successful apply
+   * is on record, which the screen says as provenance unavailable. */
+  async cloudflareApply() {
+    const got = await this.gh([
+      `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/runs?branch=main&event=workflow_dispatch&per_page=10`,
+    ]);
+    return { apply: latestApply(got) };
   }
 
   // ---- services ----------------------------------------------------------
@@ -1252,6 +1371,130 @@ export class Ops {
     };
   }
 
+  /** When each store token the platform holds runs out (#14255): the
+   * tokens the repository's list of stores names
+   * (pm-stack/platform/stores.json), each fetched by name the way the
+   * queue token is and read for its `exp` claim. Only the name and the
+   * date leave here; a token that could not be fetched says only that. */
+  async tokenExpiries(now: number = Date.now()): Promise<{ checkedAt: string; tokens: TokenExpiry[] }> {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    const held = heldTokens(storesList(parsed).stores);
+    const tokens = await Promise.all(
+      held.map(async (token) => {
+        const kept = this.expiries.get(token.name);
+        if (kept && now - kept.at < TOKEN_EXPIRY_KEPT_MS) return tokenExpiry(token, kept.expiresAt, now);
+        let expiresAt: number | null | undefined;
+        try {
+          const value =
+            token.name === this.cfg.queueTokenName && this.queueToken !== null
+              ? this.queueToken
+              : (await this.must([this.cfg.fleetBin, "secrets", "get", token.name])).trim();
+          expiresAt = jwtExpiry(value);
+        } catch {
+          // Why it could not be fetched is not said: what the fleet
+          // binary prints about a secret stays on the machine.
+          expiresAt = undefined;
+        }
+        this.expiries.set(token.name, { at: now, expiresAt });
+        return tokenExpiry(token, expiresAt, now);
+      }),
+    );
+    return { checkedAt: new Date(now).toISOString(), tokens };
+  }
+
+  /** Every store in the list of record, asked live (#14254): does it
+   * answer, its size, the rows in the tables the app reads, and its
+   * schema version. Each store is asked on its own — one that does
+   * not answer is returned as not answering, with the error said
+   * plainly, and the others still show. Reads only. */
+  async platformStores(): Promise<{ checked: string | null; malformed: number; stores: StoreLive[] }> {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    const list = storesList(parsed);
+    const stores = await Promise.all(list.stores.map((store) => this.askStore(store)));
+    return { checked: list.checked, malformed: list.malformed, stores };
+  }
+
+  /** One store, asked once (with one retry after a token rotation,
+   * as the queue store's pipeline does). Never throws: a failure is
+   * this store's own answer, said plainly. */
+  private async askStore(store: StoreRow): Promise<StoreLive> {
+    if (!/^[a-z0-9][a-z0-9._-]{0,119}$/.test(store.token)) {
+      return storeNotAnswering(store, `its token is not held under a secret's name, so it cannot be asked from here`);
+    }
+    const statements = storeLiveStatements(store);
+    const body = {
+      requests: [
+        ...statements.map((st) => ({ type: "execute", stmt: { sql: st.sql, args: [] } })),
+        { type: "close" },
+      ],
+    };
+    type Answer = {
+      results?: { type?: string; response?: { result?: StoreLiveResult } }[];
+    };
+    type StoreLiveResult = { cols: { name: string }[]; rows: { type?: string; value?: string | number | null }[][] };
+    const ask = async (): Promise<{ status: number; ok: boolean; body: Answer | null }> => {
+      let token = this.storeTokens.get(store.token);
+      if (token === undefined) {
+        token =
+          store.token === this.cfg.queueTokenName && this.queueToken !== null
+            ? this.queueToken
+            : (await this.must([this.cfg.fleetBin, "secrets", "get", store.token])).trim();
+        this.storeTokens.set(store.token, token);
+      }
+      const bearer = token;
+      return timed(STORE_ASK_MS, async (signal) => {
+        const res = await this.fetchImpl(`${store.address}/v2/pipeline`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal,
+        });
+        if (res.ok) return { status: res.status, ok: true, body: (await res.json()) as Answer };
+        unread(res);
+        return { status: res.status, ok: false, body: null };
+      });
+    };
+    try {
+      let answered = await ask();
+      if (answered.status === 401 || answered.status === 403) {
+        // The token was rotated: fetch it again, once.
+        this.storeTokens.delete(store.token);
+        if (store.token === this.cfg.queueTokenName) this.queueToken = null;
+        answered = await ask();
+      }
+      if (!answered.ok) return storeNotAnswering(store, `the store answered http ${answered.status}`);
+      const results = (answered.body?.results ?? []).map((r) =>
+        r?.type === "ok" ? r.response?.result : undefined,
+      );
+      if (!results.some((result) => result !== undefined)) {
+        return storeNotAnswering(store, "the store refused the asking");
+      }
+      return storeAnswered(store, results);
+    } catch (error) {
+      if ((error as Error).name === "TimeoutError") {
+        return storeNotAnswering(store, `the store did not answer within ${STORE_ASK_MS / 1000} seconds`);
+      }
+      // What a secret fetch prints stays on the machine; only that
+      // the asking failed, and how it failed in kind, is said.
+      const message = error instanceof OpError ? "its token could not be fetched" : (error as Error).message;
+      return storeNotAnswering(store, message || "the store could not be asked");
+    }
+  }
+
   async releases() {
     const runs = async (workflow: string) => {
       const got = (await this.gh([
@@ -1295,6 +1538,32 @@ export class Ops {
       ...(fromNothing ? { inputs: { scratch: "true" } } : {}),
     });
     return { started: what, scratch: fromNothing };
+  }
+
+  /** Start a Turso management operation (#14257): create a database or
+   * mint a token for one. The operation runs in the pm-turso-admin
+   * workflow, which alone holds the organisation's token (by secret
+   * name, in the runner only); this console never sees a token value —
+   * it dispatches names and choices, like deploy() above. */
+  async tursoAdmin(args: Record<string, unknown>) {
+    const req = tursoAdminRequest(args);
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${TURSO_ADMIN_WORKFLOW}/dispatches`], {
+      ref: "main",
+      inputs: tursoAdminInputs(req),
+    });
+    return { started: req.operation, database: req.database };
+  }
+
+  /** The last pm-turso-admin run, for the Stores section: its outcome
+   * as GitHub records it, with a failure kept a failure (#14257). */
+  async tursoAdminLastRun() {
+    const found = (await this.gh([
+      `repos/${this.cfg.repo}/actions/workflows/${TURSO_ADMIN_WORKFLOW}/runs?per_page=1`,
+    ])) as {
+      workflow_runs?: { status: string; conclusion: string | null; created_at: string; html_url: string }[];
+    } | null;
+    const run = found?.workflow_runs?.[0];
+    return run ? tursoAdminRun(run) : null;
   }
 
   // ---- one screen --------------------------------------------------------

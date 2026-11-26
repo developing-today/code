@@ -41,10 +41,10 @@ Governing decisions consumed, not re-opened:
   (`owner/repo#n` display string, no stable provider id),
   `Provenance` (a per-page string map) and `ProvenanceFacet` with
   `state: live | partial-fixtures | fixtures | stale | absent |
-  invalid | error` (#1138). That facet vocabulary is page-level
+invalid | error` (#1138). That facet vocabulary is page-level
   (board, items, quota…), not per work item.
-- `src/work-items.ts` (#1206) assembles the canonical *orchestration
-  section* work list for the existing pages: identity
+- `src/work-items.ts` (#1206) assembles the canonical _orchestration
+  section_ work list for the existing pages: identity
   `orch:<goal>/<title>`, one collapsed `status`, queue rank. It
   folds tiers into one status by design. It is the page list, not a
   per-fact read model, and MOB-01 does not change it.
@@ -53,7 +53,7 @@ Governing decisions consumed, not re-opened:
   `expected_revision` to preview against; nothing yet produces one per
   work item.
 - `src/queue-view.ts` and `pm-stack/projector` produce queue
-  *snapshots*; neither is a live claim truth source (#9201 V1).
+  _snapshots_; neither is a live claim truth source (#9201 V1).
 - The Fleet broker has no `work_version` column yet (REL-02 owns it).
   The only fleet-side revision available today is the snapshot's own
   observation time.
@@ -62,7 +62,7 @@ Governing decisions consumed, not re-opened:
   required check.
 
 Gap: no module turns the independent GitHub, Project, queue and
-session readings of *one* work item into a single view that keeps
+session readings of _one_ work item into a single view that keeps
 each reading apart with its provenance and names their disagreements.
 Every consumer (cards, detail, MOB-05 previews, MOB-02 columns) would
 otherwise re-derive that, which is how #1206's divergence started.
@@ -102,7 +102,7 @@ The issue oracle spells the schema as both `pm_work_view/v1` and
 keys are exactly those in §3.1: `schema_version`, `generated_at`,
 `work`, `source_refs`, `revisions`, `facts`, `projection`,
 `available_actions` and `freshness`. Adding a key requires `v2`.
-Unknown keys in *input* snapshots are ignored. An input snapshot with
+Unknown keys in _input_ snapshots are ignored. An input snapshot with
 an unknown `snapshot_version` becomes that facet's `invalid` state
 (D4), never a guess.
 
@@ -115,7 +115,7 @@ an unknown `snapshot_version` becomes that facet's `invalid` state
 - Each `source_refs[]` entry is
   `{kind, provider, repository_id, resource_id, locator}`.
   - `kind` is one of `github_issue | github_pr | project_item |
-    fleet_work | session`.
+fleet_work | session`.
   - `locator` is the display string, e.g. `owner/repo#12`.
   - `repository_id` and `resource_id` are stable provider ids (GitHub
     node ids), or `null` when the source did not supply them. Today's
@@ -133,17 +133,9 @@ Every entry under `facts` is one of the five tagged states below.
 None of them has a default numeric value.
 
 ```ts
-type Fact<T> =
-  | { state: "present"; value: T; source: SourceKind; source_ref: number | null;
-      revision: Revision; observed_at: string;
-      freshness: "live" | "stale" | "fixtures" }
-  | { state: "absent"; source: SourceKind | null; reason: AbsentReason }
-  | { state: "invalid"; source: SourceKind; observed_at: string; reason: string }
-  | { state: "error"; source: SourceKind; observed_at: string | null; error_code: string }
-  | { state: "policy_undefined"; policy: "9199" | "9200"; source_value?: SourceValue };
+type Fact<T> = { state: "present"; value: T; source: SourceKind; source_ref: number | null; revision: Revision; observed_at: string; freshness: "live" | "stale" | "fixtures" } | { state: "absent"; source: SourceKind | null; reason: AbsentReason } | { state: "invalid"; source: SourceKind; observed_at: string; reason: string } | { state: "error"; source: SourceKind; observed_at: string | null; error_code: string } | { state: "policy_undefined"; policy: "9199" | "9200"; source_value?: SourceValue };
 
-type Revision = { kind: "work_version" | "updated_at" | "etag" | "item_revision"
-                       | "observed_at"; value: string };
+type Revision = { kind: "work_version" | "updated_at" | "etag" | "item_revision" | "observed_at"; value: string };
 ```
 
 - `source_ref` indexes `source_refs[]`. It is `null` only for facts
@@ -151,12 +143,12 @@ type Revision = { kind: "work_version" | "updated_at" | "etag" | "item_revision"
 - **Absent** means the source answered and has no value, or no source
   for this dimension is connected. `reason` is one of
   `not_sourced | source_has_no_value | not_applicable`. An absent
-  urgency is *absent*, not `"0"`, and it is not taken from a label.
+  urgency is _absent_, not `"0"`, and it is not taken from a label.
 - **Stale** facts keep their last value with `freshness: "stale"`. A
   stale value is never zeroed, dropped or relabelled live.
   `observed_at` older than `now - stale_after_ms[source]` decides
   staleness. A source's own staleness flag (e.g. `ProvenanceFacet.state
-  === "stale"` or the feed's freshness notice) also forces stale, and
+=== "stale"` or the feed's freshness notice) also forces stale, and
   the stricter of the two wins.
 - **Fixtures** maps `ProvenanceFacet` `fixtures | partial-fixtures`.
   A fixture value is never presented as live.
@@ -179,19 +171,19 @@ type Revision = { kind: "work_version" | "updated_at" | "etag" | "item_revision"
 
 ### D5. Facts and their single sources
 
-| Fact                | Source (sole)                    | Notes |
-| ------------------- | -------------------------------- | ----- |
-| `intrinsic_urgency` | fleet policy snapshot            | canonical decimal string; label-only → `policy_undefined` with `source_value` |
-| `importance`        | fleet metadata (#9199)           | `absent/not_sourced` until sourced |
-| `effective_pressure`| #9199/#9200                      | `policy_undefined` until defined |
-| `dispatch_directive`| fleet                            | `normal \| do_now \| …`; `expedite=15` stays a priority readback, not `do_now` |
-| `workflow_state`    | fleet lifecycle                  | `open \| parked \| blocked \| completed \| …` verbatim |
-| `eligibility`       | fleet broker read                | `eligible \| ineligible \| manual_only`, plus `hard_blocker_refs` and reason codes as the broker returned them; never recomputed client-side, never OR-ed |
-| `claim`             | fleet broker read                | `unclaimed \| claimed{lane, lease_expires_at}`; a queue row status alone is not a claim |
-| `session`           | provider adapter readback        | `none \| bound{verified: bool, capabilities}`; a shell without a task binding is `bound{verified:false}` |
-| `project`           | GitHub Project #4 snapshot       | Status/Kind/Area/Horizon verbatim from `model.ts`; no second Status field |
-| `github`            | GitHub issue and linked PR reads | `issue_state`, `pr_states[]` (`open\|closed\|merged`) per linked PR |
-| `relations`         | DEP-03/DEP-04 edges when present, else `ProjectPoolItem.parentRef/blockedBy/blocks` | `parent_refs`, `hard_blocker_refs`, `advisory_refs`; provider hierarchy is advisory (DEP-04) |
+| Fact                 | Source (sole)                                                                       | Notes                                                                                                                                                     |
+| -------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intrinsic_urgency`  | fleet policy snapshot                                                               | canonical decimal string; label-only → `policy_undefined` with `source_value`                                                                             |
+| `importance`         | fleet metadata (#9199)                                                              | `absent/not_sourced` until sourced                                                                                                                        |
+| `effective_pressure` | #9199/#9200                                                                         | `policy_undefined` until defined                                                                                                                          |
+| `dispatch_directive` | fleet                                                                               | `normal \| do_now \| …`; `expedite=15` stays a priority readback, not `do_now`                                                                            |
+| `workflow_state`     | fleet lifecycle                                                                     | `open \| parked \| blocked \| completed \| …` verbatim                                                                                                    |
+| `eligibility`        | fleet broker read                                                                   | `eligible \| ineligible \| manual_only`, plus `hard_blocker_refs` and reason codes as the broker returned them; never recomputed client-side, never OR-ed |
+| `claim`              | fleet broker read                                                                   | `unclaimed \| claimed{lane, lease_expires_at}`; a queue row status alone is not a claim                                                                   |
+| `session`            | provider adapter readback                                                           | `none \| bound{verified: bool, capabilities}`; a shell without a task binding is `bound{verified:false}`                                                  |
+| `project`            | GitHub Project #4 snapshot                                                          | Status/Kind/Area/Horizon verbatim from `model.ts`; no second Status field                                                                                 |
+| `github`             | GitHub issue and linked PR reads                                                    | `issue_state`, `pr_states[]` (`open\|closed\|merged`) per linked PR                                                                                       |
+| `relations`          | DEP-03/DEP-04 edges when present, else `ProjectPoolItem.parentRef/blockedBy/blocks` | `parent_refs`, `hard_blocker_refs`, `advisory_refs`; provider hierarchy is advisory (DEP-04)                                                              |
 
 `github` is added beside the §3.1 list. §3.1 says "separate underlying
 GitHub issue/PR state", and its example omits a home for that state.
@@ -216,16 +208,16 @@ To avoid two precedence rules:
   `code`, then `facets`. Only facets in the `present` state take part,
   so an error or absent facet can never manufacture a conflict.
 
-| Code | Fires when |
-| ---- | ---------- |
-| `issue_open_pr_merged` | issue `open` and a linked PR `merged` |
-| `issue_closed_work_open` | issue `closed` and `workflow_state` not terminal |
-| `work_terminal_issue_open` | `workflow_state=completed` and issue `open` |
+| Code                       | Fires when                                                                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issue_open_pr_merged`     | issue `open` and a linked PR `merged`                                                                                                              |
+| `issue_closed_work_open`   | issue `closed` and `workflow_state` not terminal                                                                                                   |
+| `work_terminal_issue_open` | `workflow_state=completed` and issue `open`                                                                                                        |
 | `project_status_disagrees` | Project Status ∈ {Todo, In Progress, Done} contradicts `workflow_state`/`eligibility` (e.g. Todo with blocked/parked, Done with non-terminal work) |
-| `claimed_binding_unknown` | `claim=claimed` and `session` is not `bound{verified:true}` |
-| `binding_without_claim` | `session=bound{verified:true}` and `claim=unclaimed` |
-| `held_with_active_binding` | `workflow_state ∈ {parked, blocked}` and `session=bound{verified:true}` |
-| `identity_ambiguous` | D3 |
+| `claimed_binding_unknown`  | `claim=claimed` and `session` is not `bound{verified:true}`                                                                                        |
+| `binding_without_claim`    | `session=bound{verified:true}` and `claim=unclaimed`                                                                                               |
+| `held_with_active_binding` | `workflow_state ∈ {parked, blocked}` and `session=bound{verified:true}`                                                                            |
+| `identity_ambiguous`       | D3                                                                                                                                                 |
 
 `Done` needs a verified completion receipt. That is the completion
 policy's to supply, so MOB-01 adds reason code
@@ -235,8 +227,8 @@ receipt input is present.
 ### D7. Freshness roll-up
 
 `freshness.facets` maps each source kind to `live | stale | fixtures |
-error | absent`. `freshness.state` is the worst state among *present or
-error* facets, in the order `live < fixtures < stale < error`. Absent
+error | absent`. `freshness.state` is the worst state among _present or
+error_ facets, in the order `live < fixtures < stale < error`. Absent
 facets do not degrade it. A view with every facet absent is
 `absent`. `mutation_blockers(view, facets)` is exported, so MOB-06 can
 disable a control that depends on a stale or error facet (#9201 §3.5,
@@ -266,17 +258,15 @@ and `evidence` indices.
 ```ts
 interface WorkViewInput {
   authority: { authority_id: string; work_id: string } | null;
-  fleet?: SourceRead<FleetWorkSnapshot>;      // broker read: lifecycle, eligibility, claim, policy
+  fleet?: SourceRead<FleetWorkSnapshot>; // broker read: lifecycle, eligibility, claim, policy
   github_issue?: SourceRead<GhItemSnapshot>;
-  github_prs?: SourceRead<GhItemSnapshot>[];  // linked PRs
-  project?: SourceRead<ProjectItemSnapshot>;  // Project #4 item
+  github_prs?: SourceRead<GhItemSnapshot>[]; // linked PRs
+  project?: SourceRead<ProjectItemSnapshot>; // Project #4 item
   session?: SourceRead<SessionBindingSnapshot>;
   relations?: SourceRead<RelationSnapshot>;
   completion_receipt?: SourceRead<CompletionReceiptRef>;
 }
-type SourceRead<T> =
-  | { ok: true; observed_at: string; provenance_state?: ProvenanceFacet["state"]; data: T }
-  | { ok: false; observed_at: string | null; error_code: string };
+type SourceRead<T> = { ok: true; observed_at: string; provenance_state?: ProvenanceFacet["state"]; data: T } | { ok: false; observed_at: string | null; error_code: string };
 ```
 
 An omitted key means that source is not connected (`absent/not_sourced`).
@@ -293,7 +283,7 @@ issue".
   relations.
 - No adapter for the fleet broker read or session binding is added
   here. Their snapshot types are defined, and the aggregator's existing
-  fleet-feed/session-feed entries are *not* mapped to `claim` or
+  fleet-feed/session-feed entries are _not_ mapped to `claim` or
   `session.bound{verified:true}`, because neither is an authoritative
   claim or binding readback (#9201 V1). Until a real reader exists,
   those facts stay `absent/not_sourced`. That is truthful, and MOB-02's

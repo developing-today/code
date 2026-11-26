@@ -20,6 +20,7 @@ Grammar (canonical form only; every other spelling is rejected):
 Identity is the path. Query hints and the fragment never change what is named
 and are removed by `identity()`.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -179,6 +180,8 @@ def format_uri(ref: ObjRef | HeadRef) -> str:
 def _parse_u64(text: str) -> int:
     if not _DEC.fullmatch(text):
         raise UriError("noncanonical_decimal")
+    if len(text) > 20:  # 2^64-1 has 20 digits; also keeps int() off huge strings
+        raise UriError("decimal_out_of_range")
     value = int(text)
     if value > _U64_MAX:
         raise UriError("decimal_out_of_range")
@@ -250,7 +253,9 @@ def parse(uri: str) -> ObjRef | HeadRef:
             if end is not None and end <= start:
                 raise UriError("invalid_byte_range")
             rng = (start, end)
-        ref: ObjRef | HeadRef = ObjRef(alias, namespace, digest, rng, tuple(via), fragment)
+        ref: ObjRef | HeadRef = ObjRef(
+            alias, namespace, digest, rng, tuple(via), fragment
+        )
     elif tail[0] == "head" and len(tail) in (2, 4):
         root = _cid_parse(tail[1])
         expected = None
@@ -335,7 +340,9 @@ def self_test() -> int:
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f/bytes/100-",
         ),
         "head_at_hinted": (
-            HeadRef("any", "graph", d1, empty, ("pkarr:yb4ndy", "https:relay.example/x y")),
+            HeadRef(
+                "any", "graph", d1, empty, ("pkarr:yb4ndy", "https:relay.example/x y")
+            ),
             "id://any/graph/v2/head/raw-blake3-256."
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f/at/raw-blake3-256."
             + empty.hex()
@@ -360,19 +367,34 @@ def self_test() -> int:
         return 1
 
     rejects = {
-        "id://local/main/v1/content/raw-blake3-256." + "00" * 32: "unsupported_critical_version",
-        "id://any/main/v2/obj/raw-blake3-256." + "00" * 32: "portable_hint_requires_graph_namespace",
+        "id://local/main/v1/content/raw-blake3-256."
+        + "00" * 32: "unsupported_critical_version",
+        "id://any/main/v2/obj/raw-blake3-256."
+        + "00" * 32: "portable_hint_requires_graph_namespace",
         "id://any/graph/v2/obj/raw-blake3-256." + "AB" * 32: "invalid_digest_text",
         "id://any/graph/v2/obj/william3-256." + "00" * 32: "unsupported_hash_profile",
-        "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "/bytes/05-9": "noncanonical_decimal",
-        "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "/bytes/9-9": "invalid_byte_range",
-        "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "?cap=abc": "undeclared_query_parameter",
-        "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "?via=ftp:x": "invalid_via_hint",
+        "id://any/graph/v2/obj/raw-blake3-256."
+        + "00" * 32
+        + "/bytes/05-9": "noncanonical_decimal",
+        "id://any/graph/v2/obj/raw-blake3-256."
+        + "00" * 32
+        + "/bytes/9-9": "invalid_byte_range",
+        "id://any/graph/v2/obj/raw-blake3-256."
+        + "00" * 32
+        + "?cap=abc": "undeclared_query_parameter",
+        "id://any/graph/v2/obj/raw-blake3-256."
+        + "00" * 32
+        + "?via=ftp:x": "invalid_via_hint",
         "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "?": "empty_query",
         "id://any/graph/v2/set/abc": "reserved_shape_not_in_slice_1",
-        "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "?via=https:a%2fb": "invalid_percent_escape",
-        "id://any/graph/v2/obj/raw-blake3-256." + "00" * 32 + "?via=https:%61": "noncanonical_percent_escape",
-        "id://any/gr%61ph/v2/obj/raw-blake3-256." + "00" * 32: "noncanonical_percent_escape",
+        "id://any/graph/v2/obj/raw-blake3-256."
+        + "00" * 32
+        + "?via=https:a%2fb": "invalid_percent_escape",
+        "id://any/graph/v2/obj/raw-blake3-256."
+        + "00" * 32
+        + "?via=https:%61": "noncanonical_percent_escape",
+        "id://any/gr%61ph/v2/obj/raw-blake3-256."
+        + "00" * 32: "noncanonical_percent_escape",
         "id://Any/graph/v2/obj/raw-blake3-256." + "00" * 32: "invalid_resolver_hint",
     }
     for text, code in rejects.items():
@@ -405,10 +427,14 @@ def self_test() -> int:
         )
         if rng.random() < 0.5:
             start = rng.randrange(1 << 20)
-            rngv = rng.choice([None, (start, None), (start, start + 1 + rng.randrange(99))])
+            rngv = rng.choice(
+                [None, (start, None), (start, start + 1 + rng.randrange(99))]
+            )
             ref: ObjRef | HeadRef = ObjRef(alias, ns, rng.randbytes(32), rngv, via)
         else:
-            ref = HeadRef(alias, ns, rng.randbytes(32), rng.choice([None, rng.randbytes(32)]), via)
+            ref = HeadRef(
+                alias, ns, rng.randbytes(32), rng.choice([None, rng.randbytes(32)]), via
+            )
         text = format_uri(ref)
         if parse(text) != ref:
             print(f"FAIL round trip {text}", file=sys.stderr)

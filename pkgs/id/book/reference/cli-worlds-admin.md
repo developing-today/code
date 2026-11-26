@@ -71,6 +71,33 @@ $ id world profile 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 
 Failures: a limit flag without the admin token is refused, exit `1`.
 
+## `presentation`
+
+Shows or replaces a world's presentation policy: whether user-uploaded art renders, the richest rung the world draws, which filters and shaders are allowed, and the world's own fallback art.
+
+```
+id world presentation <NODE> [--set <FILE> --admin-token <TOKEN>]
+```
+
+| Flag            | Argument          | Default                        | Meaning                                                                                 |
+| --------------- | ----------------- | ------------------------------ | --------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                     |
+| `--set`         | file path (JSON)  | — (none)                       | Replace the policy with the one in this file. A duplicated key or unknown field is refused. |
+| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required with `--set`.                                         |
+
+Behaviour: without `--set` it prints the current policy, and needs no token, because the policy is public before anyone joins. With `--set` the host checks the policy, journals it and applies it at once. An empty file object `{}` is the default policy, which denies user shaders and disguise filters.
+
+Example: stop rendering user uploads and draw nothing richer than tiles.
+
+```
+$ cat presentation.json
+{"assets": {"user_uploads": "deny", "max_rung": "tileset"}}
+$ id world presentation 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    --set presentation.json
+```
+
+Failures: `--set` without the admin token, a malformed file or a wrong admin token is refused, exit `1`.
+
 ## `doctor`
 
 Diagnoses a broken world setup and prints the fix for each problem. It takes no `<NODE>`: every check is local.
@@ -141,7 +168,15 @@ id world apply <NODE> --file <FILE> --admin-token <TOKEN> --capability <CAP> [--
 | `--capability`  | capability string | required (env `ID_WORLD_CAPABILITY`)  | A guest capability, used to read the current state. Applying reads before it writes, so both credentials are required. |
 | `--dry-run`     | switch            | off                                   | Print the plan only; change nothing.                                                                                   |
 
-Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, presentation policy, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+
+A `[presentation]` table sets the world's presentation policy, in the same shape `id world presentation --set` takes. Leaving the table out leaves the live policy alone. A present table replaces the policy whole, and its omitted fields take their defaults, so an empty `[presentation]` resets a changed policy:
+
+```toml
+[presentation.assets]
+user_uploads = "deny"
+max_rung = "tileset"
+```
 
 Example — preview, then apply, a toy manifest:
 
@@ -539,3 +574,49 @@ $ id world journal backup ./toy-world-dir ./toy-world-journal-backup.jsonl
 ```
 
 Failures: an `<OUT>` path that already exists fails the command, exit `1`, and the existing file is not overwritten. A journal that does not check valid fails the backup, exit `1`.
+
+## `announce` and `lookup`
+
+Publishes a world's signed announcement to pkarr relays, and reads one back, so anyone holding the world id can find the node that hosts it (#10706). The encoding, timing and relay rules are in the design addendum `doc/2026-11-25T03-10-00Z_design_id10706_announcement_pkarr`. No world host is contacted: these commands talk only to the relays.
+
+```
+id world announce --key-file <PATH> --node <NODE> --name <NAME> [--description <TEXT>] [--tag <TAG>]... [--listed] [--occupancy <has_room|near_full|full>] [--relay-hint <URL>] [--relay <BASE>]... [--lifetime <DURATION>] [--watch]
+id world lookup <WORLD_ID> [--relay <BASE>]...
+```
+
+### `announce`
+
+| Flag            | Argument     | Default                    | Meaning                                                                                                              |
+| --------------- | ------------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `--key-file`    | file path    | required                   | The world's signing key, an owner-only file created on first use. The world id is its public key.                    |
+| `--node`        | 64 hex chars | required                   | The node that hosts the world. It must not be the world key itself.                                                  |
+| `--name`        | text         | required                   | Display name, at most 64 characters.                                                                                 |
+| `--description` | text         | empty                      | At most 200 characters.                                                                                              |
+| `--tag`         | text         | none                       | Repeatable, at most 8 tags of at most 32 characters.                                                                 |
+| `--listed`      | switch       | off (unlisted)             | Lets registries include the world. An unlisted world is found only by its id.                                        |
+| `--occupancy`   | name         | `has_room`                 | Coarse occupancy: `has_room`, `near_full` or `full`.                                                                 |
+| `--relay-hint`  | URL          | none                       | A relay URL that reaches the node, never a raw IP and port.                                                          |
+| `--relay`       | base URL     | the developing-today relay | Repeatable. Each publish is `PUT <base>/<z32 world id>`.                                                             |
+| `--lifetime`    | duration     | `3h`                       | How long each announcement stays valid, at most 7 days.                                                              |
+| `--watch`       | switch       | off                        | Stay up and republish on the heartbeat (half of the lifetime or of 2 hours, whichever is shorter) until interrupted. |
+
+Behaviour: signs a fresh announcement (its `seq` is the publish time in microseconds), sends it to every relay and prints one JSON line per publish: `world_id`, `world_z32`, `seq`, `expires_at`, `published` (at least one relay accepted), `contested` (a relay holds a newer announcement, so another publisher has the key) and one `relays` entry per relay with its outcome (`accepted`, `stale`, `refused` or `unreachable`).
+
+Exit behaviour: without `--watch`, exits `1` when no relay accepted the announcement. With `--watch`, a failed publish is printed and retried at the next heartbeat, and an interrupt exits `0`.
+
+Example:
+
+```
+$ id world announce --key-file ./toy-world.key --node 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --name harbor --tag calm
+```
+
+### `lookup`
+
+| Flag         | Argument     | Default                    | Meaning                    |
+| ------------ | ------------ | -------------------------- | -------------------------- |
+| `<WORLD_ID>` | 64 hex chars | required                   | The world id to look up.   |
+| `--relay`    | base URL     | the developing-today relay | Repeatable relay base URL. |
+
+Behaviour: fetches the world's packet from every relay, keeps only what verifies (the pkarr signature, exactly one announcement record, the world id, the announcement's own signature, a `seq` equal to the packet time, not expired) and prints the newest as one JSON object.
+
+Exit behaviour: exits `1` when no relay served a valid announcement.

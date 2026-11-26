@@ -8,7 +8,12 @@ Issue: #13886 (parent epic #13880). Inputs: R1 Willow URI review
 
 Status: proposal. Slice 1 of 5. Slices 2 (collections), 3 (failure matrix), 4
 (carriers and hints) and 5 (display forms) follow; this record reserves room for them
-and sketches only what the grammar needs from them.
+and sketches only what the grammar needs from them. Slice 2 has landed as
+`slice-2-collection-form.md` in this folder: it fills `set/` and closes R1 rows 3, 8
+and 16. Slice 5 has landed as `slice-5-display-forms.md`: angle
+brackets in plain text, short labels and state words. Slice 4 has landed as
+`slice-4-carriers-and-hints.md`: extensible hint kinds, when a hint is followed, and
+a profile per carrier.
 
 Executable reference: `graph_uri_reference.py` in this folder
 (`python3 -I graph_uri_reference.py self-test`, stdlib only). It holds the golden
@@ -31,7 +36,7 @@ id-graph-uri  = "id://" resolver-hint "/" namespace "/v2/" shape
 resolver-hint = alias / "any"                    ; "any" reserved, see §4
 alias         = alnum-lc *62( alnum-lc / "." / "_" / "-" )   ; same as V1
 namespace     = 1*( unreserved / pct-encoded )   ; UTF-8, not "." or ".."
-shape         = obj-shape / head-shape           ; "set/" reserved for slice 2
+shape         = obj-shape / head-shape           ; slice 2 adds set-shape
 obj-shape     = "obj/" cid [ "/bytes/" byte-range ]
 head-shape    = "head/" cid [ "/at/" cid ]
 cid           = "raw-blake3-256." 64HEXLC        ; V1 content-id spelling
@@ -57,8 +62,8 @@ Rules the ABNF does not carry:
   dedupe keys store the identity form, never hints or fragments.
 - **Critical vs non-critical.** The version segment and the shape tokens are critical:
   an unknown one is rejected (`unknown_critical_shape`, `unsupported_critical_version`),
-  as in V1. In slice 1 the `via` kinds are a closed list too; slice 4 decides whether
-  unknown hint kinds are skipped instead of rejected.
+  as in V1. In slice 1 the `via` kinds were a closed list too; slice 4 makes them
+  extensible: an unknown well-formed kind is kept and skipped.
 - **Length.** The 8 KiB cap from #9117 applies. The portable identity forms are fixed
   length: 101 characters for an object, 185 for a chain head with an expected head.
 - **V1 is untouched.** `v1` URIs keep their meaning and their parser. A `v2` parser
@@ -66,11 +71,11 @@ Rules the ABNF does not carry:
 
 ## 3. The object forms
 
-| Form | Example (portable, digest shortened) | Names |
-|---|---|---|
-| Object | `id://any/graph/v2/obj/raw-blake3-256.0001…1f` | One immutable D3 object, ContentObject or LinkObject. The digest is the `object_id`. |
-| Object slice | `…/obj/raw-blake3-256.0001…1f/bytes/100-200` | Bytes 100 up to 200 of that object's `body` (never its signed envelope). `100-` means to the end. |
-| Chain head | `id://any/graph/v2/head/raw-blake3-256.0001…1f` | "The current version of the object this chain started from", resolved through `supersede` links (D3 §5). |
+| Form               | Example (portable, digest shortened)                    | Names                                                                                                                                          |
+| ------------------ | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Object             | `id://any/graph/v2/obj/raw-blake3-256.0001…1f`          | One immutable D3 object, ContentObject or LinkObject. The digest is the `object_id`.                                                           |
+| Object slice       | `…/obj/raw-blake3-256.0001…1f/bytes/100-200`            | Bytes 100 up to 200 of that object's `body` (never its signed envelope). `100-` means to the end.                                              |
+| Chain head         | `id://any/graph/v2/head/raw-blake3-256.0001…1f`         | "The current version of the object this chain started from", resolved through `supersede` links (D3 §5).                                       |
 | Chain head, pinned | `…/head/raw-blake3-256.<root>/at/raw-blake3-256.<head>` | As above, with the head the writer saw. A resolver that finds a newer head says so (stale link) instead of silently showing different content. |
 
 Choices in these forms:
@@ -103,7 +108,8 @@ reserved alias:
 
 - `any` means "any resolver that can fetch and verify this". It is valid only with
   the `graph` namespace, and the `graph` namespace under `any` carries only
-  self-certifying shapes (every v2 shape in slice 1).
+  self-certifying shapes (every v2 shape in slice 1). Slice 2's `set/` is allowed
+  on the same footing as `head/`: a fixed query over self-certifying roots.
 - `resolve_context("any", selected)` returns the selected resolver instead of failing.
 - `any` is a legal V1 alias today, so reserving it needs a check that no deployed
   resolver is named `any`.
@@ -115,9 +121,10 @@ This touches a settled ruling, so it is a proposal for Drew, not a decision (§9
 - **Hints** are `via=<kind>:<value>`, ordered, repeatable, untrusted and droppable.
   Kinds in slice 1: `broker:` (a broker name), `pkarr:` (z-base32 key), `bundle:`
   (a D4 bundle id), `https:` (a door). Because the name is a hash, a hostile hint can
-  waste time but cannot substitute content. Slice 4 adds per-carrier rules, the
+  waste time but cannot substitute content. Slice 4
+  (`slice-4-carriers-and-hints.md`) adds value rules per kind, per-carrier rules, the
   resolver privacy policy R1 asks for (following a hint tells its host someone is
-  resolving this name), and decides on `mailto:`.
+  resolving this name), and rejects a `mailto:` kind.
 - **Any other query parameter is rejected** (`undeclared_query_parameter`, as in
   #9117). That is how "no capability in a URI" is enforced: there is no place to put
   one. A carrier that needs access too, such as a QR invite, carries the URI and a
@@ -137,7 +144,7 @@ version 8. The equivalent Willow pinned entry needs version 11 in byte mode (R1)
 The QR form is a transport encoding, defined only for portable identity forms with no
 hints or fragment: the reader lower-cases the whole string and parses it normally.
 Non-portable forms are excluded because their namespace may be case-sensitive.
-Slice 4 covers paper and email survival in full.
+Slice 4 covers paper and email survival in full, and puts set URIs in byte mode.
 
 ## 7. Failure semantics, only as far as the grammar needs them (slice 3 owns the matrix)
 
@@ -153,27 +160,27 @@ Slice 4 covers paper and email survival in full.
 
 ## 8. R1 verdicts, consumed row by row
 
-| R1 row | R1 verdict | D1 slice 1 |
-|---|---|---|
-| 1 Generic RFC 3986 skeleton | adopt | Adopted: `id://authority/path?query#fragment`. |
-| 2 Authority = namespace.subspace keys | reject | Rejected. Authority is the V1 resolver alias plus portable `any` (§4). No keys in the host, so no DNS label overflow. |
-| 3 Path with dot-segments | reject / adapt in collections | Rejected for objects: every path segment has a fixed alphabet except the namespace, which forbids `.` and `..`. A display-alias selector inside collections is slice 2. |
-| 4 Entry form | adapt | `obj/<object_id>`: one URI, one immutable object. Links named the same way (§3). |
-| 5 Slice form | adapt | `/bytes/from-to` in the path, body bytes only, truncation at resolve time; the name `bytes` cannot collide with time bounds (R1 erratum 4). |
-| 6 Expected digest | adapt | Only on the mutable form, as `/at/<cid>`; algorithm-tagged by the profile token. |
-| 7 Prune fails | adopt principle, adapt semantics | Naming never pins (§7). The cause matrix is slice 3. |
-| 8 Area form | adapt | Reserved `set/` shape; slice 2. |
-| 9 Hint sequence | adapt | Typed `via=` hints in the query, ordered, max 8, outside identity (§5). |
-| 10 Fragment | adopt | Adopted, client-side, outside identity (§5). |
-| 11 Parameterised encodings | reject | Rejected: one encoding per field, fixed by the `v2` segment. |
-| 12 Willow'25 hex codec | reject | Diverges in part, see §8.1: lower-case hex kept, mixed case and `+`/`-` prefixes rejected, QR density recovered by the upper-case transport form. |
-| 13 Many codes per value | reject | Rejected harder than R1 suggests, see §8.1: non-canonical input is rejected, not accepted. |
-| 14 RFC 3986 classes and percent-encoding | adopt | Adopted, upper-case escapes, only in namespace, hint values and fragment. |
-| 15 Dot-segment normalisation | reject | Rejected; `.`/`..` cannot appear (row 3). |
-| 16 Relative references | reject for identity | Rejected: the parser accepts only absolute `id://` strings. Collection-relative selectors are slice 2. |
-| 17 Scheme name `willow://` | reject | Rejected; proposal is to keep `id` (§9). |
-| 18 No capability in the URI | adopt | Adopted and enforced by the closed query vocabulary (§5). |
-| 19 Mutable-link semantics | adapt | Explicit `head/` form, never the default (§3). |
+| R1 row                                   | R1 verdict                       | D1 slice 1                                                                                                                                                             |
+| ---------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 Generic RFC 3986 skeleton              | adopt                            | Adopted: `id://authority/path?query#fragment`.                                                                                                                         |
+| 2 Authority = namespace.subspace keys    | reject                           | Rejected. Authority is the V1 resolver alias plus portable `any` (§4). No keys in the host, so no DNS label overflow.                                                  |
+| 3 Path with dot-segments                 | reject / adapt in collections    | Rejected for objects: every path segment has a fixed alphabet except the namespace, which forbids `.` and `..`. Slice 2: no selector; a display alias is the fragment. |
+| 4 Entry form                             | adapt                            | `obj/<object_id>`: one URI, one immutable object. Links named the same way (§3).                                                                                       |
+| 5 Slice form                             | adapt                            | `/bytes/from-to` in the path, body bytes only, truncation at resolve time; the name `bytes` cannot collide with time bounds (R1 erratum 4).                            |
+| 6 Expected digest                        | adapt                            | Only on the mutable form, as `/at/<cid>`; algorithm-tagged by the profile token.                                                                                       |
+| 7 Prune fails                            | adopt principle, adapt semantics | Naming never pins (§7). The cause matrix is slice 3.                                                                                                                   |
+| 8 Area form                              | adapt                            | `set/` shape, filled by slice 2: root plus verbs, direction, depth, container, authors, time window, count and bytes.                                                  |
+| 9 Hint sequence                          | adapt                            | Typed `via=` hints in the query, ordered, max 8, outside identity (§5).                                                                                                |
+| 10 Fragment                              | adopt                            | Adopted, client-side, outside identity (§5).                                                                                                                           |
+| 11 Parameterised encodings               | reject                           | Rejected: one encoding per field, fixed by the `v2` segment.                                                                                                           |
+| 12 Willow'25 hex codec                   | reject                           | Diverges in part, see §8.1: lower-case hex kept, mixed case and `+`/`-` prefixes rejected, QR density recovered by the upper-case transport form.                      |
+| 13 Many codes per value                  | reject                           | Rejected harder than R1 suggests, see §8.1: non-canonical input is rejected, not accepted.                                                                             |
+| 14 RFC 3986 classes and percent-encoding | adopt                            | Adopted, upper-case escapes, only in namespace, hint values and fragment.                                                                                              |
+| 15 Dot-segment normalisation             | reject                           | Rejected; `.`/`..` cannot appear (row 3).                                                                                                                              |
+| 16 Relative references                   | reject for identity              | Rejected: the parser accepts only absolute `id://` strings. Slice 2 keeps collections absolute too.                                                                    |
+| 17 Scheme name `willow://`               | reject                           | Rejected; proposal is to keep `id` (§9).                                                                                                                               |
+| 18 No capability in the URI              | adopt                            | Adopted and enforced by the closed query vocabulary (§5).                                                                                                              |
+| 19 Mutable-link semantics                | adapt                            | Explicit `head/` form, never the default (§3).                                                                                                                         |
 
 ### 8.1 The two places this record departs from R1's recommendation
 
@@ -201,16 +208,19 @@ Everything else in this record is the designer's call and can be changed by revi
 
 ## 10. What slices 2 to 5 inherit
 
-- Slice 2 fills the reserved `set/` shape: root object plus verb set, direction,
-  depth, author, time as a display filter, and max-count/max-bytes bounds, with "omitted
-  means unbounded" and "any author" expressible (R1 errata 3 and 5). It also decides
-  the verb-filter question once D3's verb registry lands.
+- Slice 2 (landed, `slice-2-collection-form.md`) fills `set/`: a root plus optional
+  verbs, direction, depth, container, authors, claimed-time window, count and bytes,
+  where omitted means unbounded or any. It decides the verb filter (sorted verb tokens,
+  `supersede` never walked) and the "collect" question below.
 - Slice 3 writes the failure matrix against #13779's revocation decision points,
   starting from §7.
-- Slice 4 adds per-carrier hint rules, hint-kind extensibility, resolver privacy and
-  `mailto:`, with one worked URI per carrier.
-- Slice 5 hands D5 the display rules: angle-bracket delimiting in plain text (RFC 3986
-  Appendix C), elision of the digest middle, and the "edited / removed" badges the
-  head form makes possible.
-- The core-app PoC (#14037) has a "collect" action with no D3 verb yet; whether a
-  collection is a `nest` projection or its own verb is a D3 question slice 2 will need.
+- Slice 4 (landed, `slice-4-carriers-and-hints.md`) adds per-carrier hint rules,
+  hint-kind extensibility and resolver privacy, rejects a `mailto:` kind, and gives one
+  worked URI per carrier.
+- Slice 5 (landed, `slice-5-display-forms.md`) hands D5 the display rules: angle
+  brackets in plain text (RFC 3986 Appendix C), labels with the digest middle elided,
+  and the `edited`, `removed`, `stale` and other state words the head form makes
+  possible.
+- The core-app PoC (#14037) has a "collect" action with no D3 verb yet. Slice 2
+  recommends a `nest` projection, not a new verb: the collection is
+  `set/obj/<collection>/verbs=nest/dir=in/depth=1`.

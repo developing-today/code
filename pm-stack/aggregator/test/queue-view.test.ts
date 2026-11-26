@@ -404,4 +404,63 @@ describe("buildQueueView reconciled in-progress parity (#1162)", () => {
     });
     expect(row?.disagreement).toEqual(shared[0]?.disagreement);
   });
+
+  test("a board card linking an issue and its open PR yields one canonical issue row (#14063)", () => {
+    const issueRef = "developing-today/code#100";
+    const prRef = "developing-today/code#101";
+    const items = new Map<string, GhItem>([
+      [
+        issueRef,
+        {
+          ref: issueRef,
+          kind: "issue",
+          url: "https://github.com/developing-today/code/issues/100",
+          title: "Tracked issue",
+          state: "open",
+          labels: [],
+          author: "agent",
+          updatedAt: recent,
+        },
+      ],
+      [
+        prRef,
+        {
+          ref: prRef,
+          kind: "pr",
+          url: "https://github.com/developing-today/code/pull/101",
+          title: "PR for issue",
+          state: "open",
+          labels: [],
+          author: "agent",
+          updatedAt: recent,
+        },
+      ],
+    ]);
+    // PR link listed first: the canonical identity is still the issue.
+    const board = [
+      boardItem({
+        title: "Card with issue and PR",
+        status: "in-flight",
+        source: "orchestrator",
+        orchStatus: "in-progress",
+        links: [
+          { ref: prRef, relation: "implements" },
+          { ref: issueRef, relation: "implements" },
+        ],
+      }),
+    ];
+    const reconciled = reconciledInProgress({ pool: [], board, items, orchestration: null });
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].ref).toBe(issueRef);
+    expect(reconciled[0].signals).toEqual(["active-session", "open-pr"]);
+  });
+
+  test("queue and overview subtitles name their board-derived source and cross-link the console (#14063)", () => {
+    const view = buildQueueView({ board: [], pool: [], items: new Map(), orchestration: null, now: NOW });
+    const body = renderQueueBody(view);
+    expect(body).toContain("Board-derived work items");
+    expect(body).toContain("not fleet queue tasks");
+    expect(body).toContain('href="/console/#now"');
+    expect(body).toContain("Console Now — what its counts mean");
+  });
 });

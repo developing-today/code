@@ -41,10 +41,17 @@ class SnapshotSetOracleTests(unittest.TestCase):
             "drive": completed("drive", ["b", "c", "a"]),
         }
 
-        with patch.object(MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]):
-            result = MODULE.verify_snapshot_sets("restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"})
+        with patch.object(
+            MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]
+        ):
+            result = MODULE.verify_snapshot_sets(
+                "restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"}
+            )
 
-        self.assertEqual(result, {"status": "equal", "source": "r2", "snapshots": 3, "divergence": {}})
+        self.assertEqual(
+            result,
+            {"status": "equal", "source": "r2", "snapshots": 3, "divergence": {}},
+        )
 
     def test_divergence_reports_missing_and_extra_snapshot_ids(self):
         responses = {
@@ -53,8 +60,12 @@ class SnapshotSetOracleTests(unittest.TestCase):
             "drive": completed("drive", ["a", "b"]),
         }
 
-        with patch.object(MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]):
-            result = MODULE.verify_snapshot_sets("restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"})
+        with patch.object(
+            MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]
+        ):
+            result = MODULE.verify_snapshot_sets(
+                "restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"}
+            )
 
         self.assertEqual(
             result,
@@ -80,8 +91,13 @@ class SnapshotSetOracleTests(unittest.TestCase):
                     "laptop": completed("laptop", sorted(target)),
                     "drive": completed("drive", sorted(source)),
                 }
-                with self.subTest(source=source, target=target), patch.object(
-                    MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]
+                with (
+                    self.subTest(source=source, target=target),
+                    patch.object(
+                        MODULE.subprocess,
+                        "run",
+                        side_effect=lambda argv, **_: responses[argv[-1]],
+                    ),
                 ):
                     result = MODULE.verify_snapshot_sets(
                         "restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"}
@@ -93,9 +109,13 @@ class SnapshotSetOracleTests(unittest.TestCase):
             "r2": completed("r2", [""]),
         }
 
-        with patch.object(MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]):
+        with patch.object(
+            MODULE.subprocess, "run", side_effect=lambda argv, **_: responses[argv[-1]]
+        ):
             with self.assertRaises(MODULE.VerificationError):
-                MODULE.verify_snapshot_sets("restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"})
+                MODULE.verify_snapshot_sets(
+                    "restic", {"r2": "r2", "laptop": "laptop", "drive": "drive"}
+                )
 
     def test_unknown_argument_is_rejected_before_restic_runs(self):
         restic = unittest.mock.Mock()

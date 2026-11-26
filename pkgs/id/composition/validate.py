@@ -21,9 +21,11 @@ Checks (all strict; any failure exits non-zero):
     profile (core-default overlap warns until S6 wires the switches).
  6. Unrepresentable names (currency-poc-tb, test-*) appear in no
     feature, profile, or group.
- 7. The golden hash vector's feature set equals the catalogue
+  7. The golden hash vector's feature set equals the catalogue
     resolution of examples/basement-store-node.toml, with owning-crate
     versions matching today's workspace crates.
+ 8. The S2 variant source matches root defaults, names existing root
+    features, and is consumed by Nix, just and build.sh.
 
 Usage: python3 -I validate.py   (run from this directory)
 """
@@ -61,11 +63,31 @@ def main() -> int:
     catalogue = load_toml(HERE / "catalogue.toml")
     root_manifest = load_toml(ID / "Cargo.toml")
     root_features = set(root_manifest.get("features", {}).keys()) - {"default"}
+    root_defaults = set(root_manifest.get("features", {}).get("default", []))
     root_deps = root_manifest.get("dependencies", {})
     features = {f["name"]: f for f in catalogue.get("feature", [])}
     groups = catalogue.get("groups", {})
     profiles = {p["name"]: p for p in catalogue.get("profile", [])}
     unrepresentable = set(catalogue.get("unrepresentable", []))
+
+    # --- 8. build variant source pin (S2) -------------------------------
+    variants = load_toml(HERE / "variants.toml")
+    variant_features = variants.get("variant", {})
+    source_defaults = set(variants.get("root", {}).get("default", []))
+    if source_defaults != root_defaults:
+        fail(f"variant source root defaults {sorted(source_defaults)} != Cargo defaults {sorted(root_defaults)}")
+    for variant, config in variant_features.items():
+        for feature in config.get("features", []):
+            if feature not in root_features:
+                fail(f"variant `{variant}` names unknown root feature `{feature}`")
+    consumers = {
+        "flake.nix": (ID / "flake.nix", "variantsConfig"),
+        "justfile": (ID / "justfile", "variant-features.sh"),
+        "scripts/build.sh": (ID / "scripts" / "build.sh", "variant-features.sh"),
+    }
+    for name, (path, marker) in consumers.items():
+        if marker not in path.read_text():
+            fail(f"variant consumer `{name}` does not read the single variant source")
 
     # --- 6. unrepresentable hygiene -------------------------------------
     for name in list(features) + [f for p in profiles.values() for f in p.get("features", [])]:

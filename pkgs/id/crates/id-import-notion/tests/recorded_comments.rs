@@ -8,9 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use id_import_notion::comments::{
-    CommentConversion, CommentsCoverage, convert_comments,
-};
+use id_import_notion::comments::{CommentClaim, CommentConversion, CommentsCoverage, convert_comments};
 use id_import_notion::{Inventory, Manifest, NOTION_API_VERSION, NotionApi};
 use serde_json::{Value, json};
 
@@ -110,8 +108,26 @@ impl NotionApi for FixtureApi {
                 "next_cursor": "page-2",
             }),
             Some("page-2") => list(vec![
-                comment("c4", "d3", page_parent(ALPHA), "user-ada", "Ada", "2026-11-20T10:10:00Z", "Fixed", Some(true)),
-                comment("c5", "d1", page_parent(ALPHA), "user-ada", "Ada", "2026-11-20T10:12:00Z", "Also this", None),
+                comment(
+                    "c4",
+                    "d3",
+                    page_parent(ALPHA),
+                    "user-ada",
+                    "Ada",
+                    "2026-11-20T10:10:00Z",
+                    "Fixed",
+                    Some(true),
+                ),
+                comment(
+                    "c5",
+                    "d1",
+                    page_parent(ALPHA),
+                    "user-ada",
+                    "Ada",
+                    "2026-11-20T10:12:00Z",
+                    "Also this",
+                    None,
+                ),
             ]),
             _ => bail!("unexpected comments cursor"),
         })
@@ -186,8 +202,7 @@ fn recorded_comments_become_claims_with_coverage_accounting() {
 
     assert_eq!(manifest.assign_page_identities(&mut mint).unwrap(), 3);
 
-    let conversion: CommentConversion =
-        convert_comments(&mut api, &mut manifest, ALPHA).unwrap();
+    let conversion: CommentConversion = convert_comments(&mut api, &mut manifest, ALPHA).unwrap();
     assert_eq!(conversion.page_id, ALPHA);
     assert_eq!(conversion.note_id, format!("note-{ALPHA}"));
     assert_eq!(conversion.coverage, CommentsCoverage::Covered);
@@ -229,10 +244,7 @@ fn recorded_comments_become_claims_with_coverage_accounting() {
 
     // Manifest state: claims and coverage recorded per page.
     assert_eq!(manifest.comment_claims[ALPHA].len(), 5);
-    assert_eq!(
-        manifest.comments_coverage[ALPHA],
-        CommentsCoverage::Covered
-    );
+    assert_eq!(manifest.comments_coverage[ALPHA], CommentsCoverage::Covered);
 
     // Beta: the acquisition path cannot see comments, so the page is
     // listed as uncovered and no comments endpoint call is made.
@@ -245,18 +257,15 @@ fn recorded_comments_become_claims_with_coverage_accounting() {
         manifest.comments_coverage[BETA],
         CommentsCoverage::Unavailable
     );
-    assert!(manifest.comment_claims[BETA].is_empty());
+    assert_eq!(manifest.comment_claims[BETA], [] as [CommentClaim; 0]);
 
     // Gamma: available but no comments — covered with an empty claim set,
     // distinct from Beta's unavailable.
     let gamma = convert_comments(&mut api, &mut manifest, GAMMA).unwrap();
     assert_eq!(gamma.claims.len(), 0);
     assert_eq!(gamma.coverage, CommentsCoverage::Covered);
-    assert_eq!(
-        manifest.comments_coverage[GAMMA],
-        CommentsCoverage::Covered
-    );
-    assert!(manifest.comment_claims[GAMMA].is_empty());
+    assert_eq!(manifest.comments_coverage[GAMMA], CommentsCoverage::Covered);
+    assert_eq!(manifest.comment_claims[GAMMA], [] as [CommentClaim; 0]);
 
     // §8 check 3 at conversion level: re-running over the unchanged
     // corpus reproduces identical claims and coverage.
@@ -276,10 +285,7 @@ fn recorded_comments_become_claims_with_coverage_accounting() {
     assert_eq!(loaded, manifest);
     let mut encoded = serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap();
     encoded.as_object_mut().unwrap().remove("comment_claims");
-    encoded
-        .as_object_mut()
-        .unwrap()
-        .remove("comments_coverage");
+    encoded.as_object_mut().unwrap().remove("comments_coverage");
     let old_path = dir.path().join("manifest-old.json");
     std::fs::write(&old_path, serde_json::to_string(&encoded).unwrap()).unwrap();
     let old = Manifest::load(&old_path).unwrap();
