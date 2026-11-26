@@ -61,11 +61,12 @@
       "group": "fleet",
       "path": "pm-stack/notify-relay",
       "does": "The edge half of the pm-stack dead-man's switch: sends one Web Push when the laptop aggregator goes silent, and one when it recovers.",
-      "state": "not deployed",
-      "deploy": "none",
+      "state": "in service",
+      "deploy": "by hand",
       "workflow": null,
-      "address": null,
-      "next": "Local only until its deploy step (wrangler deploy) is run; step 1 of the notifications design. Listed here so the Platform screen shows it once it is deployed."
+      "address": "https://pm-notify.developing-today.workers.dev",
+      "next": "Deployed 2026-11-26 (CF-10, #14950) by hand via the sanctioned wrangler-authed pattern; Worker version 45db0876-46f9-4a80-85ef-9bf3836a6ca5, RELAY_SHARED_SECRET + VAPID_PRIVATE_KEY set from Bitwarden by name. GET /status answers live. Remaining: the aggregator's PM_AGG_NOTIFY_RELAY_URL wiring on the laptop and the real-device dead-man's-switch drill, both recorded on #14950. Adopts the CF-1 versions pipeline when it lands.",
+      "lastDeployedCommit": "59a48f5e17718904f72b3ceabd0231e904bf31e0"
     },
     {
       "name": "mcpx",

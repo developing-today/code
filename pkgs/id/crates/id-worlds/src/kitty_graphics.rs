@@ -25,8 +25,9 @@
 //! take presenter-owned pixels or PNG bytes, never guest-supplied escape
 //! bytes, and nothing here is journaled.
 //!
-//! Not in this slice: decoding and resizing with the `image` crate (the
-//! shared front half), unicode placeholders, animation frames, and sixel.
+//! Decoding and resizing with the `image` crate (the shared front half)
+//! is [`crate::kitty_still`]. Not here: unicode placeholders, animation
+//! frames, and sixel.
 
 use std::fmt::Write as _;
 use std::io::Write as _;

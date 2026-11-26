@@ -754,3 +754,32 @@ What this run settles and what it does not: the 10x tier's first wall
 is measured and is the hub's 256 concurrent-lease ceiling (#15056).
 The fleet run at the full tier, and any laptop-class 10x number, wait
 on that fix and on a reference-laptop run; #13087 stays open for them.
+
+## Fuel-spinning hub lifecycle profile (#1067, 2026-11-26, AMD Ryzen 7 7840U)
+
+Reference host: AMD Ryzen 7 7840U, 8 cores / 16 logical threads, 123 GiB
+RAM; `rustc 1.99.1`. This is a local reference-host measurement, not a
+CI container result. Both phases used 300 victim samples, 3 seconds,
+100 victim commands/s, 15 spinner worlds, fuel admission bound 14 and
+20,000,000 fuel per respawn attempt. Command from `pkgs/id/`:
+
+```sh
+ID_BENCH_GUEST_BURN_CONCURRENCY=14 cargo bench --bench world_bench -- --only fuel_spin_isolation
+ID_BENCH_GUEST_BURN_CONCURRENCY=14 cargo bench --bench world_bench -- --only fuel_spin_persistent
+```
+
+The respawn profile (`fuel_spin_isolation`) measured victim p99 at
+1.463 ms calm and 40.764 ms under burn (27.859x); its spinner worlds
+settled 29.8B fuel. The persistent-world profile measured p99 at
+1.976 ms calm and 4.023 ms under burn (2.036x); its spinner worlds
+settled 202.2B fuel. Both exceed the 1.10x target. The persistent run
+completed 87,142 finite updates versus 1,490 trapped respawn spins.
+
+These are diagnostic, not workload-matched numbers: the persistent
+profile settled 6.8x more total fuel in the same phase. They show that
+world/guest respawn churn strongly worsens victim latency, while also
+showing that keeping guests alive does not meet the latency target by
+itself. A follow-up must match the per-world fuel workload and measure
+the scheduler's fairness policy before drawing a target verdict. No
+existing `baseline.txt` measurement is replaced by these diagnostic
+profiles.

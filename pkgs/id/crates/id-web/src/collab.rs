@@ -72,11 +72,14 @@ use super::markdown::{
 };
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
+use id_grants::{Grant, GrantError, GrantId, GrantSet, GrantSetSnapshot, LoadError, Scope};
 use id_store::documents::{DocumentError, DocumentRef};
+use id_store::grant_authority::{identity_key, may_read_with_grants};
 use id_store::note_checkpoints::{
     CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints, NotePolicyRecord,
 };
 use id_store::notes::{AppliedNote, NoteRecord};
+use id_store::read_authority::ReadDefaults;
 use id_store::talk_page::{
     ChainError, ChangeKind, ChangelogEntry, EntryDraft, OpLogRange, SignedEntry, TalkPageError,
     verify_chain,
@@ -506,6 +509,14 @@ pub struct NoteCheckpointSnapshot {
     /// with none, so those read and write exactly as before.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changelogs: Vec<NoteChangelogRecord>,
+    /// The node's selective-sharing grants (#14790): every grant,
+    /// revocation and served `snapshot_once` grant, in the grants
+    /// model's own stored form. Absent from snapshots written before
+    /// grants were stored, and from snapshots with none, so those read
+    /// and write exactly as before. Grants are node-local here;
+    /// replicating them as signed events is #5800.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants: Option<GrantSetSnapshot>,
 }
 
 /// One note's changelog in the persisted snapshot (#14272): its
@@ -543,6 +554,10 @@ pub enum NoteSnapshotError {
     /// A note's changelog in the snapshot does not decode, or does not
     /// verify end to end (#14272).
     Changelog(SessionEntryError),
+    /// The snapshot's grants do not load: a grant fails the grants
+    /// model's checks, a delegation is wider than its parent, or a
+    /// revocation names no grant (#14790).
+    Grants(LoadError),
 }
 
 impl std::fmt::Display for NoteSnapshotError {
@@ -562,6 +577,7 @@ impl std::fmt::Display for NoteSnapshotError {
             ),
             Self::Checkpoint(err) => write!(f, "{err}"),
             Self::Changelog(err) => write!(f, "note changelog: {err}"),
+            Self::Grants(err) => write!(f, "note grants: {err}"),
         }
     }
 }
@@ -573,6 +589,7 @@ impl std::error::Error for NoteSnapshotError {
             Self::Corrupt { source, .. } => Some(source),
             Self::Checkpoint(err) => Some(err),
             Self::Changelog(err) => Some(err),
+            Self::Grants(err) => Some(err),
         }
     }
 }
@@ -587,6 +604,60 @@ impl From<SessionEntryError> for NoteSnapshotError {
     fn from(err: SessionEntryError) -> Self {
         Self::Changelog(err)
     }
+}
+
+impl From<LoadError> for NoteSnapshotError {
+    fn from(err: LoadError) -> Self {
+        Self::Grants(err)
+    }
+}
+
+/// Why the node refused to issue or revoke a note grant (#14790).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteGrantError {
+    /// The grant's issuer is not the account issuing it.
+    NotIssuer,
+    /// The grant covers something other than notes: only
+    /// object-scoped grants naming notes are stored here.
+    NotANote,
+    /// A note the grant covers is not one the issuer owns. Unknown
+    /// notes get the same answer, so a refusal never confirms that a
+    /// note exists.
+    NotOwner,
+    /// No grant with that id was issued by this account.
+    UnknownGrant,
+    /// The grants model refused the grant (an invalid grant, a
+    /// duplicate id, or a parent on a root grant).
+    Grant(GrantError),
+}
+
+impl std::fmt::Display for NoteGrantError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotIssuer => write!(f, "the grant's issuer is not the account issuing it"),
+            Self::NotANote => write!(f, "the grant covers something other than notes"),
+            Self::NotOwner => write!(f, "the grant covers a note the issuer does not own"),
+            Self::UnknownGrant => write!(f, "no such grant issued by this account"),
+            Self::Grant(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for NoteGrantError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Grant(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+/// Parses a note id written exactly as [`Hash::to_hex`] writes it:
+/// 64 lowercase hex characters. Any other spelling is refused, because
+/// the read check matches grant scopes against that exact form.
+fn parse_note_hash(id: &str) -> Option<Hash> {
+    let hash: Hash = id.parse().ok()?;
+    (hash.to_hex() == id).then_some(hash)
 }
 
 /// Decodes the changelogs of a persisted snapshot (#14272), verifying
@@ -724,6 +795,13 @@ pub struct CollabState {
     /// first entry after every append, and is persisted with the
     /// checkpoint snapshot.
     note_changelogs: Mutex<HashMap<Hash, Vec<ChangelogEntry>>>,
+    /// The node's selective-sharing grants over notes (#14790): issued
+    /// and revoked by note owners through
+    /// [`CollabState::grant_note_access`] and
+    /// [`CollabState::revoke_note_grant`], consulted by
+    /// [`CollabState::may_read_note`], and persisted with the
+    /// checkpoint snapshot.
+    note_grants: Mutex<GrantSet>,
 }
 
 impl CollabState {
@@ -780,6 +858,93 @@ impl CollabState {
             self.persist_note_snapshot().await;
         }
         result
+    }
+
+    /// Issues a root grant over notes the issuer owns (#14790): `owner`
+    /// must be the grant's issuer, every scope must name a note `owner`
+    /// owns, and the grant must pass the grants model's checks. A
+    /// stored grant is persisted with the checkpoint snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteGrantError`] naming the refusal; nothing is
+    /// stored on any refusal.
+    pub async fn grant_note_access(
+        &self,
+        owner: AuthorKey,
+        grant: Grant,
+    ) -> Result<(), NoteGrantError> {
+        if grant.issuer != identity_key(owner) {
+            return Err(NoteGrantError::NotIssuer);
+        }
+        {
+            let log = self.note_log.lock().await;
+            for scope in &grant.scopes {
+                let Scope::Object(object) = scope else {
+                    return Err(NoteGrantError::NotANote);
+                };
+                let note = parse_note_hash(object).ok_or(NoteGrantError::NotANote)?;
+                match log.access(note) {
+                    Some((note_owner, _)) if note_owner == owner => {}
+                    _ => return Err(NoteGrantError::NotOwner),
+                }
+            }
+        }
+        self.note_grants
+            .lock()
+            .await
+            .insert_root(grant)
+            .map_err(NoteGrantError::Grant)?;
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Revokes a grant `by` issued (#14790): it, and every grant
+    /// delegated from it, stops admitting anyone at the next check.
+    /// The revocation is persisted with the checkpoint snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteGrantError::UnknownGrant`] when no grant with that
+    /// id was issued by `by`, whether it is someone else's or absent.
+    pub async fn revoke_note_grant(
+        &self,
+        by: AuthorKey,
+        id: &GrantId,
+    ) -> Result<(), NoteGrantError> {
+        {
+            let mut grants = self.note_grants.lock().await;
+            match grants.get(id) {
+                Some(grant) if grant.issuer == identity_key(by) => {}
+                _ => return Err(NoteGrantError::UnknownGrant),
+            }
+            grants.revoke(id);
+        }
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Whether `reader` may read `note` under the read order with the
+    /// owner's live grants added at the object tier, as of `now` (Unix
+    /// seconds, UTC) (#14790). Unknown notes are denied.
+    pub async fn may_read_note(
+        &self,
+        note: Hash,
+        reader: AuthorKey,
+        defaults: &ReadDefaults,
+        now: u64,
+    ) -> bool {
+        let log = self.note_log.lock().await;
+        let grants = self.note_grants.lock().await;
+        may_read_with_grants(
+            &log,
+            note,
+            reader,
+            &self.note_group_roles,
+            defaults,
+            &grants,
+            now,
+        )
     }
 
     /// Get or create a document for editing.
@@ -946,10 +1111,19 @@ impl CollabState {
             .collect::<Result<Vec<_>, TalkPageError>>()
             .map_err(SessionEntryError::Entry)?;
         changelogs.sort_by_key(|record| *record.note.as_bytes());
+        let grants = {
+            let grants = self.note_grants.lock().await;
+            grants
+                .grants()
+                .next()
+                .is_some()
+                .then(|| grants.to_snapshot())
+        };
         Ok(NoteCheckpointSnapshot {
             events: log.events().to_vec(),
             policies: log.policies()?,
             changelogs,
+            grants,
         })
     }
 
@@ -972,8 +1146,13 @@ impl CollabState {
         let rebuilt =
             NoteCheckpoints::from_events_with_policies(snapshot.events, snapshot.policies)?;
         let changelogs = restore_changelogs(snapshot.changelogs)?;
+        let grants = match snapshot.grants {
+            Some(grants) => GrantSet::from_snapshot(grants)?,
+            None => GrantSet::new(),
+        };
         *self.note_log.lock().await = rebuilt;
         *self.note_changelogs.lock().await = changelogs;
+        *self.note_grants.lock().await = grants;
         self.persist_note_snapshot().await;
         Ok(())
     }
@@ -3665,6 +3844,218 @@ mod tests {
 
         let fresh = CollabState::new().with_note_snapshot_path(dir.path().join("absent.json"));
         assert!(!fresh.restore_persisted_note_snapshot().await.unwrap());
+    }
+
+    /// A note owned by `owner`, scoped so nobody else reads it, in a
+    /// state persisting to `path`; returns the state and the note.
+    async fn private_note_state(path: PathBuf, owner: AuthorKey, byte: u8) -> (CollabState, Hash) {
+        let state = CollabState::new().with_note_snapshot_path(path);
+        let note = Hash::from_bytes([byte; 32]);
+        state
+            .get_or_create_for_note(&note, "", Some(b"# Private"), Some("g.md"))
+            .await;
+        state
+            .publish_note_checkpoint(&note_session_key(&note), owner)
+            .await
+            .unwrap();
+        state
+            .set_note_access(note, owner, NoteAccess::Scoped(vec![]))
+            .await
+            .unwrap();
+        (state, note)
+    }
+
+    fn note_read_grant(name: &str, issuer: AuthorKey, reader: AuthorKey, note: Hash) -> Grant {
+        use id_grants::{Delegation, Duration, Operation, Subject};
+        Grant {
+            id: GrantId(name.to_owned()),
+            issuer: identity_key(issuer),
+            subject: Subject::Identity(identity_key(reader)),
+            scopes: std::collections::BTreeSet::from([Scope::Object(note.to_hex())]),
+            operations: std::collections::BTreeSet::from([Operation::Read]),
+            duration: Duration::Standing,
+            delegation: Delegation::default(),
+            parent: None,
+        }
+    }
+
+    const GRANT_NOW: u64 = 1_800_000_000;
+
+    #[tokio::test]
+    async fn test_an_owner_grant_admits_a_reader_and_revoke_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let (state, note) =
+            private_note_state(dir.path().join(".note-checkpoints.json"), owner, 61).await;
+        let defaults = ReadDefaults::none();
+
+        assert!(
+            !state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        state
+            .grant_note_access(owner, note_read_grant("g1", owner, reader, note))
+            .await
+            .unwrap();
+        assert!(
+            state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        // The grant names one reader; another stays refused.
+        assert!(
+            !state
+                .may_read_note(note, [9u8; 32], &defaults, GRANT_NOW)
+                .await
+        );
+
+        // Only the issuer revokes, and a stranger's attempt gets the
+        // same answer as an unknown id.
+        assert_eq!(
+            state
+                .revoke_note_grant(reader, &GrantId("g1".to_owned()))
+                .await,
+            Err(NoteGrantError::UnknownGrant)
+        );
+        assert_eq!(
+            state
+                .revoke_note_grant(owner, &GrantId("absent".to_owned()))
+                .await,
+            Err(NoteGrantError::UnknownGrant)
+        );
+        state
+            .revoke_note_grant(owner, &GrantId("g1".to_owned()))
+            .await
+            .unwrap();
+        assert!(
+            !state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_only_a_note_owner_issues_a_grant_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner: AuthorKey = [7u8; 32];
+        let other: AuthorKey = [8u8; 32];
+        let (state, note) =
+            private_note_state(dir.path().join(".note-checkpoints.json"), owner, 62).await;
+
+        // The issuer field must be the account issuing.
+        assert_eq!(
+            state
+                .grant_note_access(other, note_read_grant("g1", owner, other, note))
+                .await,
+            Err(NoteGrantError::NotIssuer)
+        );
+        // Someone else's grant over the owner's note is refused, and an
+        // unknown note gets the same answer.
+        assert_eq!(
+            state
+                .grant_note_access(other, note_read_grant("g1", other, other, note))
+                .await,
+            Err(NoteGrantError::NotOwner)
+        );
+        assert_eq!(
+            state
+                .grant_note_access(
+                    owner,
+                    note_read_grant("g1", owner, other, Hash::from_bytes([99u8; 32]))
+                )
+                .await,
+            Err(NoteGrantError::NotOwner)
+        );
+        // A scope that is not a note id is refused.
+        let mut collection = note_read_grant("g1", owner, other, note);
+        collection.scopes =
+            std::collections::BTreeSet::from([Scope::Object(note.to_hex().to_uppercase())]);
+        assert_eq!(
+            state.grant_note_access(owner, collection).await,
+            Err(NoteGrantError::NotANote)
+        );
+        assert!(
+            !state
+                .may_read_note(note, other, &ReadDefaults::none(), GRANT_NOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_note_grants_survive_a_restart_through_the_snapshot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let gone: AuthorKey = [9u8; 32];
+        let (live, note) = private_note_state(path.clone(), owner, 63).await;
+
+        // Before any grant, the file carries no grants field at all, so
+        // it reads exactly as snapshots written before grants existed.
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(raw.get("grants").is_none());
+
+        live.grant_note_access(owner, note_read_grant("keep", owner, reader, note))
+            .await
+            .unwrap();
+        live.grant_note_access(owner, note_read_grant("drop", owner, gone, note))
+            .await
+            .unwrap();
+        live.revoke_note_grant(owner, &GrantId("drop".to_owned()))
+            .await
+            .unwrap();
+
+        let restarted = CollabState::new().with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        let defaults = ReadDefaults::none();
+        assert!(
+            restarted
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        assert!(
+            !restarted
+                .may_read_note(note, gone, &defaults, GRANT_NOW)
+                .await
+        );
+        assert_eq!(
+            restarted.note_snapshot().await.unwrap(),
+            live.note_snapshot().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_tampered_grant_snapshot_fails_the_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let (live, note) = private_note_state(path.clone(), owner, 64).await;
+        live.grant_note_access(owner, note_read_grant("g1", owner, reader, note))
+            .await
+            .unwrap();
+
+        // A revocation naming no grant does not load, so the whole
+        // restart fails and nothing is replaced.
+        let mut snapshot = live.note_snapshot().await.unwrap();
+        snapshot
+            .grants
+            .as_mut()
+            .unwrap()
+            .revoked
+            .insert(GrantId("absent".to_owned()));
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+        let restarted = CollabState::new().with_note_snapshot_path(path);
+        let err = restarted
+            .restore_persisted_note_snapshot()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NoteSnapshotError::Grants(_)), "{err}");
+        assert!(restarted.note_events().await.is_empty());
     }
 
     #[tokio::test]

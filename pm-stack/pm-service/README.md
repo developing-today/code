@@ -160,11 +160,6 @@ not caller input. Every accepted request awaits an attribution audit
 Actions still need their own operation/outcome audit at the API layer.
 
 This is an unwired acceptance seam, **not a production surface**.
-Remaining H4 work: authenticated owner issuance API/UI, metadata schema
-extension/adapter for agent credentials (the existing E4 credential
-table scopes are DB permissions), provider client-credentials exchange,
-and HTTP handler integration. H2's identity-link library accepts a
-resolved session; it does not itself mint a browser session.
 Provisional provider contract: `jti` names the revocable credential
 metadata handle, `scope` is the tenant binding, `roles` is `["agent"]`.
 No token/secret values are stored by this module.
@@ -173,6 +168,50 @@ Focused oracle tests live in `test/front-door.test.ts` alongside H1:
 
 ```sh
 cd pm-stack/pm-service && bun test test/front-door.test.ts
+```
+
+## H4 slice 2 — issuance, metadata store, exchange, surface C HTTP (#14262)
+
+`src/agent-credentials.ts`, `src/agent-credential-store.ts`, and
+`src/surface-c-api.ts` complete the H4 server-side path on top of the
+acceptance seam above:
+
+- **Issuance** (`issueAgentCredential`): minted from the H2 owner
+  session (the front-door-resolved principal). Only `owner` /
+  `orchestrator` sessions mint; the tenant is the session's own
+  binding, exactly one tenant, never `'*'`; TTL is at most 30 days,
+  rotation by re-issuance. The secret is generated at issuance,
+  returned exactly once, and never stored.
+- **Metadata store**: the central tenancy plane (E's `credential`
+  home), NOT a tenant-DB migration — the tenant plane holds no
+  credential rows. A row is metadata (`jti`, owner
+  `account_id`/`binding_id`, `tenant_id`, audience, lifetime,
+  revocation stamp) plus a SHA-256 digest of the secret so the
+  exchange can verify a presented secret; presenting the digest
+  itself does not authenticate. In-memory and `SqlDb` adapters are
+  provided; every read is live, so revocation by `jti` lands within
+  one request.
+- **Exchange** (`exchangeClientCredentials`): the surface C
+  client-credentials flow. A live, unrevoked, unexpired credential
+  plus its secret exchanges for an audience-bound token with a
+  15-minute TTL and no refresh token; signing is injected (the
+  provider owns the keys). All failures are one `invalid_client`.
+- **HTTP** (`createSurfaceCHandler`): `POST /api/agent-credentials`
+  (owner session; the 201 is the only response that ever shows a
+  secret), `DELETE /api/agent-credentials/<jti>` (owner-scoped
+  revocation), `POST /oauth/token` (the exchange), and
+  `GET /api/agent/whoami` — a protected resource accepted only
+  through `resolveAgentFrontDoor`, returning the agent principal
+  plus its audit attribution (`jti` + owning account/binding).
+
+Remaining before H4 closes: the browser issuance UI (the API above
+is its backend) and wiring this handler into the deployed Worker
+entry with the real H2 session resolver and provider signer.
+
+Oracle tests live in `test/agent-credentials.test.ts`:
+
+```sh
+cd pm-stack/pm-service && bun test test/agent-credentials.test.ts test/front-door.test.ts
 ```
 
 Dispatch this command remotely using Fleet; no production credentials
