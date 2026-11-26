@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use id_import_notion::content::{
-    BlockClass, FileFetcher, ReferenceSurface, SpanLink, convert_page,
+    BlockClass, FileFetcher, ReferenceSurface, SpanLink, convert_page, resolve_synced_references,
 };
 use id_import_notion::{Inventory, Manifest, NOTION_API_VERSION, NotionApi, Outcome};
 use serde_json::{Value, json};
@@ -251,7 +251,7 @@ fn degraded_classes_convert_structurally_with_counted_losses_13524() {
     let mut manifest = fixture_manifest();
     manifest.assign_page_identities(&mut mint).unwrap();
     let mut api = FixtureApi::new();
-    let conversion = convert_page(&mut api, &mut NoFiles, &mut manifest, PAGE).unwrap();
+    let mut conversion = convert_page(&mut api, &mut NoFiles, &mut manifest, PAGE).unwrap();
     let blocks = &conversion.content.blocks;
 
     // Toggle: text and children convert; the colour is the named loss.
@@ -320,8 +320,11 @@ fn degraded_classes_convert_structurally_with_counted_losses_13524() {
             && reference.surface == ReferenceSurface::InlineLink
     }));
 
-    // Synced blocks wait on their reference pass: verbatim, not a fallback.
-    assert!(find(blocks, "deg-synced").verbatim.is_some());
+    // A synced duplicate names its source and waits on the reference pass.
+    let synced = find(blocks, "deg-synced");
+    assert_eq!(synced.synced_from.as_deref(), Some("elsewhere"));
+    assert!(synced.verbatim.is_none());
+    assert_eq!(conversion.pending_synced.len(), 1);
     // Unsupported stays verbatim.
     let toc = find(blocks, "deg-toc");
     assert_eq!(toc.class, BlockClass::Unsupported);
@@ -386,6 +389,19 @@ fn degraded_classes_convert_structurally_with_counted_losses_13524() {
     let rerun = convert_page(&mut api, &mut NoFiles, &mut manifest, PAGE).unwrap();
     assert_eq!(rerun.content, conversion.content);
     assert_eq!(rerun.losses, conversion.losses);
+
+    // The reference pass finds the synced source outside the import set:
+    // the duplicate keeps its verbatim blob and is counted externalised.
+    let resolution =
+        resolve_synced_references(&mut manifest, std::slice::from_mut(&mut conversion)).unwrap();
+    assert_eq!(resolution.externalised, 1);
+    assert!(
+        find(&conversion.content.blocks, "deg-synced")
+            .verbatim
+            .is_some()
+    );
+    assert_eq!(conversion.losses.synced_externalised, 1);
+    assert_eq!(manifest.page_losses[PAGE].synced_externalised, 1);
 }
 
 #[test]

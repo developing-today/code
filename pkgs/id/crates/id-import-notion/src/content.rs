@@ -17,9 +17,13 @@
 //! [`LossLedger`]. A degraded block whose payload a converter cannot
 //! parse falls back to the slice-2 verbatim blob (counted as a
 //! fallback), so this slice only adds structure and never drops content.
-//! Synced blocks stay verbatim until their reference pass lands
-//! (sub-slice 3), and unsupported classes stay verbatim for good: that
-//! is the forward-compatibility guarantee. Database notes and relation claims are slice 3
+//! A synced block's content converts once, at the source block's page;
+//! every duplicate becomes a typed reference to that source, resolved by
+//! [`resolve_synced_references`] after all pages have converted (the
+//! same two-pass shape as §3 link rewriting). A duplicate whose source
+//! is outside the import set keeps its verbatim blob and is counted
+//! externalised. Unsupported classes stay verbatim for good: that is
+//! the forward-compatibility guarantee. Database notes and relation claims are slice 3
 //! (#13523); a `child_database` block emits its reference here, with
 //! the database's note ID resolved from slice 3's identity pass.
 
@@ -114,6 +118,8 @@ pub enum ReferenceSurface {
     ChildDatabase,
     InlineLink,
     Mention,
+    /// A synced-block duplicate pointing at its source block.
+    SyncedBlock,
 }
 
 /// A typed reference emitted by conversion. Backlinks are the reverse
@@ -211,6 +217,11 @@ pub struct ContentBlock {
     /// the external URL otherwise (§3 rules, as for inline links).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<SpanLink>,
+    /// For a synced-block duplicate, the Notion UUID of its source
+    /// block. The duplicate carries no copy of the content: its `link`
+    /// names the source note and block once resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_from: Option<String>,
     /// The verbatim source block (with children embedded, file URLs
     /// stripped) for unsupported blocks, synced blocks, and degraded
     /// blocks whose payload could not be converted.
@@ -257,7 +268,7 @@ pub struct LossLedger {
     /// converted and were preserved verbatim instead.
     #[serde(default)]
     pub verbatim_fallback: BTreeMap<String, usize>,
-    /// Synced blocks whose source is outside the import set (sub-slice 3).
+    /// Synced-block duplicates whose source is outside the import set.
     #[serde(default)]
     pub synced_externalised: usize,
 }
@@ -286,6 +297,140 @@ pub struct PageConversion {
     pub blobs: BTreeMap<String, Vec<u8>>,
     pub counts: ClassCounts,
     pub losses: LossLedger,
+    /// Synced-block duplicates awaiting [`resolve_synced_references`].
+    pub pending_synced: Vec<PendingSynced>,
+}
+
+/// A synced-block duplicate whose source is resolved in the reference
+/// pass, once every page's block tree has converted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingSynced {
+    pub from_block_id: String,
+    pub source_block_id: String,
+    /// The duplicate's sanitized source, kept if the source turns out to
+    /// be outside the import set.
+    pub verbatim: Value,
+}
+
+/// What [`resolve_synced_references`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncedResolution {
+    pub resolved: usize,
+    pub externalised: usize,
+}
+
+/// The reference pass for synced blocks (design record §2.3): run once
+/// every page in the import set has converted. Each pending duplicate
+/// whose source block has an identity becomes a typed reference to
+/// (source note, source block); a duplicate whose source is outside the
+/// import set keeps its verbatim blob and is counted externalised, in
+/// the conversion and in the manifest's loss ledger. A source that
+/// belongs to an imported page which has not converted yet fails the
+/// pass rather than being misread as external. Pending entries are
+/// consumed, so running the pass again changes nothing.
+pub fn resolve_synced_references(
+    manifest: &mut Manifest,
+    conversions: &mut [PageConversion],
+) -> Result<SyncedResolution> {
+    for conversion in conversions.iter() {
+        for pending in &conversion.pending_synced {
+            if manifest
+                .block_id_to_identity
+                .contains_key(&pending.source_block_id)
+            {
+                continue;
+            }
+            if let Some(page) = inventory_owning_page(manifest, &pending.source_block_id)
+                && manifest.page_id_to_note_id.contains_key(&page)
+            {
+                bail!(
+                    "synced block {} has its source {} on imported page {page}, \
+                     which has not converted yet; convert every page before \
+                     resolving synced references",
+                    pending.from_block_id,
+                    pending.source_block_id
+                );
+            }
+        }
+    }
+    let mut outcome = SyncedResolution::default();
+    for conversion in conversions.iter_mut() {
+        for pending in std::mem::take(&mut conversion.pending_synced) {
+            let identity = manifest
+                .block_id_to_identity
+                .get(&pending.source_block_id)
+                .cloned();
+            let block = find_block_mut(&mut conversion.content.blocks, &pending.from_block_id)
+                .with_context(|| {
+                    format!(
+                        "synced block {} is not in its page's content",
+                        pending.from_block_id
+                    )
+                })?;
+            match identity {
+                Some((note_id, block_identity)) => {
+                    block.link = Some(SpanLink::Note {
+                        note_id: note_id.clone(),
+                        block_id: Some(block_identity.clone()),
+                    });
+                    conversion.references.push(TypedReference {
+                        from_block_id: pending.from_block_id.clone(),
+                        target_id: pending.source_block_id.clone(),
+                        target_note_id: Some(note_id),
+                        target_block_id: Some(block_identity),
+                        surface: ReferenceSurface::SyncedBlock,
+                    });
+                    outcome.resolved += 1;
+                }
+                None => {
+                    block.verbatim = Some(pending.verbatim);
+                    conversion.externalised.push(Externalised {
+                        from_block_id: pending.from_block_id.clone(),
+                        target_id: normalize_uuid(&pending.source_block_id),
+                        surface: ReferenceSurface::SyncedBlock,
+                    });
+                    conversion.losses.synced_externalised += 1;
+                    manifest.page_losses.insert(
+                        conversion.content.page_id.clone(),
+                        conversion.losses.clone(),
+                    );
+                    outcome.externalised += 1;
+                }
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// The page a block belongs to, per the inventory's parent chain.
+fn inventory_owning_page(manifest: &Manifest, block_id: &str) -> Option<String> {
+    let mut current = block_id.to_owned();
+    let mut guard = BTreeSet::new();
+    loop {
+        if !guard.insert(current.clone()) {
+            return None;
+        }
+        let object = manifest.inventory.objects.get(&current)?;
+        if object.kind == "page" {
+            return Some(current);
+        }
+        current = object.parent_id.clone()?;
+    }
+}
+
+fn find_block_mut<'a>(
+    blocks: &'a mut [ContentBlock],
+    block_id: &str,
+) -> Option<&'a mut ContentBlock> {
+    for block in blocks {
+        if block.block_id == block_id {
+            return Some(block);
+        }
+        if let Some(found) = find_block_mut(&mut block.children, block_id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Convert one inventoried page to its content form, updating the
@@ -345,6 +490,7 @@ pub fn convert_page(
         blobs: BTreeMap::new(),
         counts: ClassCounts::default(),
         losses: LossLedger::default(),
+        pending_synced: Vec::new(),
     };
     let mut blocks = Vec::with_capacity(raw_blocks.len());
     for raw in &raw_blocks {
@@ -357,6 +503,7 @@ pub fn convert_page(
         blobs,
         counts,
         losses,
+        pending_synced,
         manifest,
         ..
     } = converter;
@@ -405,6 +552,7 @@ pub fn convert_page(
         blobs,
         counts,
         losses,
+        pending_synced,
     })
 }
 
@@ -464,7 +612,17 @@ fn fetch_raw_tree(
                 .get("has_children")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if has_children && block_type != "child_page" && block_type != "child_database" {
+            // A synced-block duplicate's children are its source's
+            // children: they convert once, at the source's page.
+            let synced_duplicate = block_type == "synced_block"
+                && raw
+                    .pointer("/synced_block/synced_from")
+                    .is_some_and(|from| !from.is_null());
+            if has_children
+                && !synced_duplicate
+                && block_type != "child_page"
+                && block_type != "child_database"
+            {
                 let children = fetch_raw_tree(api, &id, visited)?;
                 raw["children"] = Value::Array(children);
             }
@@ -563,6 +721,7 @@ struct Converter<'a> {
     blobs: BTreeMap<String, Vec<u8>>,
     counts: ClassCounts,
     losses: LossLedger,
+    pending_synced: Vec<PendingSynced>,
 }
 
 impl Converter<'_> {
@@ -608,6 +767,7 @@ impl Converter<'_> {
             columns: None,
             cells: Vec::new(),
             link: None,
+            synced_from: None,
             verbatim: None,
         };
         let payload = raw.get(block_type.as_str()).cloned().unwrap_or(Value::Null);
@@ -627,15 +787,18 @@ impl Converter<'_> {
                         for attribute in lost {
                             LossLedger::bump(&mut self.losses.per_attribute, &attribute);
                         }
+                        if let Some(source_block_id) = &block.synced_from {
+                            self.pending_synced.push(PendingSynced {
+                                from_block_id: block_id.clone(),
+                                source_block_id: source_block_id.clone(),
+                                verbatim: sanitized_source(raw.clone()),
+                            });
+                        }
                     }
                     None => {
-                        // Synced blocks wait on their reference pass;
-                        // any other class here had a payload its
-                        // converter could not parse. Either way the
+                        // A payload the converter could not parse: the
                         // slice-2 verbatim blob keeps every byte.
-                        if block_type != "synced_block" {
-                            LossLedger::bump(&mut self.losses.verbatim_fallback, &block_type);
-                        }
+                        LossLedger::bump(&mut self.losses.verbatim_fallback, &block_type);
                         block.verbatim = Some(sanitized_source(raw.clone()));
                         return Ok(block);
                     }
@@ -736,6 +899,18 @@ impl Converter<'_> {
                 block.link = Some(self.resolve_link(&url, block_id));
                 block.url = Some(url);
                 lost.push(format!("{block_type}.preview"));
+            }
+            "synced_block" => {
+                // The source (`synced_from: null`) converts its children
+                // here, once. A duplicate names its source and carries no
+                // copy; the reference pass resolves it.
+                let synced_from = payload.get("synced_from")?;
+                if !synced_from.is_null() {
+                    if synced_from.get("type")?.as_str()? != "block_id" {
+                        return None;
+                    }
+                    block.synced_from = Some(synced_from.get("block_id")?.as_str()?.to_owned());
+                }
             }
             _ => return None,
         }
@@ -1060,18 +1235,7 @@ impl Converter<'_> {
 
     /// The page a block belongs to, per the inventory's parent chain.
     fn owning_page(&self, block_id: &str) -> Option<String> {
-        let mut current = block_id.to_owned();
-        let mut guard = BTreeSet::new();
-        loop {
-            if !guard.insert(current.clone()) {
-                return None;
-            }
-            let object = self.manifest.inventory.objects.get(&current)?;
-            if object.kind == "page" {
-                return Some(current);
-            }
-            current = object.parent_id.clone()?;
-        }
+        inventory_owning_page(self.manifest, block_id)
     }
 }
 
