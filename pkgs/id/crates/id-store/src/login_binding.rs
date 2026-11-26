@@ -8,7 +8,7 @@ use id_core::login_binding::{
     AuthAccount, AuthenticatedAccount, BindingRegistry, RecoveryThreshold, SignedBinding,
     StoredBinding,
 };
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 const HISTORY: TableDefinition<'static, &'static str, &'static [u8]> =
     TableDefinition::new("login_binding_history_v1");
