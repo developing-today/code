@@ -1553,7 +1553,7 @@ mod tests {
             .unwrap();
             assert_eq!(again.steps.as_deref(), Some(steps.as_slice()));
         }
-        // Following edges forward only, other cannot reach reply.
+        // Following edges forward only, other reaches reply through the post.
         let forward = path(
             &graph,
             &Request::new(id("other"), 1).with_direction(Direction::Out),
@@ -1563,7 +1563,23 @@ mod tests {
             &bounds,
         )
         .unwrap();
-        assert_eq!(forward.steps, None);
+        assert_eq!(
+            forward.steps.as_deref().map(names),
+            Some(vec!["note", "post", "reply"])
+        );
+        // Following edges forward only, reply cannot reach other: nothing
+        // points out of the version it is anchored to.
+        let unreachable = path(
+            &graph,
+            &Request::new(id("reply"), 1).with_direction(Direction::Out),
+            &id("other"),
+            6,
+            &everyone,
+            &bounds,
+        )
+        .unwrap();
+        assert_eq!(unreachable.steps, None);
+        assert_eq!(unreachable.truncated, None);
         // A depth cap that stops the search says so instead of "no path".
         let shallow = path(
             &graph,
