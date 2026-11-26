@@ -29,6 +29,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::types::{ToSqlOutput, ValueRef};
+
+use crate::blob::Partition;
 use rusqlite::{Connection, TransactionBehavior};
 
 /// The registry handle of the distributed fleet registry (design §2).
@@ -45,6 +47,7 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_central.sql")),
     (2, include_str!("../migrations/0002_archive.sql")),
     (3, include_str!("../migrations/0003_blobs.sql")),
+    (4, include_str!("../migrations/0004_placement.sql")),
 ];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
@@ -816,6 +819,26 @@ pub(crate) const NAMESPACES_READ: &str =
                 global_flag, blob_threshold, policy_epoch
          FROM kv_namespaces WHERE registry_id = ?1 ORDER BY namespace";
 
+/// Set a namespace's blob placement, only beside its definition: `?1`
+/// registry, `?2` namespace, `?3` jurisdiction, `?4` tier, `?5` now.
+pub(crate) const PLACEMENT_UPSERT: &str = "INSERT INTO kv_namespace_placement (
+                 registry_id, namespace, jurisdiction, tier, updated_at_ms)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE EXISTS (SELECT 1 FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2)
+             ON CONFLICT (registry_id, namespace) DO UPDATE SET
+                 jurisdiction = excluded.jurisdiction,
+                 tier = excluded.tier,
+                 updated_at_ms = excluded.updated_at_ms";
+
+/// Drop a namespace's blob placement: `?1` registry, `?2` namespace.
+pub(crate) const PLACEMENT_DELETE: &str =
+    "DELETE FROM kv_namespace_placement WHERE registry_id = ?1 AND namespace = ?2";
+
+/// Every placement in a registry: `?1` registry.
+pub(crate) const PLACEMENTS_READ: &str =
+    "SELECT namespace, jurisdiction, tier FROM kv_namespace_placement
+         WHERE registry_id = ?1 ORDER BY namespace";
+
 pub(crate) const MIGRATIONS_TABLE: &str = "CREATE TABLE IF NOT EXISTS kv_central_migrations (
                  version INTEGER PRIMARY KEY,
                  applied_at_ms INTEGER NOT NULL
@@ -1001,6 +1024,9 @@ pub struct Namespace {
     pub global_flag: bool,
     pub blob_threshold: u64,
     pub policy_epoch: u64,
+    /// The partition every blob of this namespace goes to; `None` places
+    /// none (no default partition, acceptance item 6).
+    pub placement: Option<Partition>,
 }
 
 impl Namespace {
@@ -1014,6 +1040,7 @@ impl Namespace {
             global_flag: false,
             blob_threshold: DEFAULT_BLOB_THRESHOLD,
             policy_epoch: 1,
+            placement: None,
         }
     }
 
@@ -1093,8 +1120,32 @@ pub fn define_namespace(primary: &dyn Pipeline, definition: &Namespace) -> Resul
         integer(definition.policy_epoch.max(1)),
         Value::Integer(now_ms()),
     ];
+    let placement = match &definition.placement {
+        Some(partition) => {
+            if !crate::blob::valid_label(&partition.jurisdiction)
+                || !crate::blob::valid_label(&partition.tier)
+            {
+                return Err(CentralError::Malformed("malformed_partition"));
+            }
+            Statement::numbered(
+                PLACEMENT_UPSERT,
+                &[
+                    text(&definition.registry_id),
+                    text(&definition.namespace),
+                    text(&partition.jurisdiction),
+                    text(&partition.tier),
+                    Value::Integer(now_ms()),
+                ],
+            )
+        }
+        None => Statement::numbered(
+            PLACEMENT_DELETE,
+            &[text(&definition.registry_id), text(&definition.namespace)],
+        ),
+    };
     let results = primary.transaction(&[
         Statement::numbered(NAMESPACE_UPSERT, &args),
+        placement,
         Statement::numbered(NAMESPACE_EPOCH_READ, &args),
     ])?;
     results
@@ -1106,7 +1157,29 @@ pub fn define_namespace(primary: &dyn Pipeline, definition: &Namespace) -> Resul
 
 /// Every namespace defined in `registry_id`, by name.
 pub fn namespaces(primary: &dyn Pipeline, registry_id: &str) -> Result<Vec<Namespace>> {
-    let rows = read(primary, NAMESPACES_READ, &[text(registry_id)])?;
+    let registry = [text(registry_id)];
+    let mut results = primary.transaction(&[
+        Statement::numbered(NAMESPACES_READ, &registry),
+        Statement::numbered(PLACEMENTS_READ, &registry),
+    ])?;
+    if results.len() != 2 {
+        return Err(CentralError::Store(
+            "the namespace read answered the wrong number of results".into(),
+        ));
+    }
+    let placements: std::collections::HashMap<String, Partition> = results
+        .pop()
+        .map(|rows| rows.rows)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| {
+            (
+                string(&row[0]),
+                Partition::new(&string(&row[1]), &string(&row[2])),
+            )
+        })
+        .collect();
+    let rows = results.pop().map(|rows| rows.rows).unwrap_or_default();
     Ok(rows
         .into_iter()
         .map(|row| Namespace {
@@ -1121,6 +1194,7 @@ pub fn namespaces(primary: &dyn Pipeline, registry_id: &str) -> Result<Vec<Names
             global_flag: row[5].as_i64() == Some(1),
             blob_threshold: unsigned(&row[6]),
             policy_epoch: unsigned(&row[7]),
+            placement: placements.get(&string(&row[1])).cloned(),
         })
         .collect())
 }
@@ -1362,6 +1436,47 @@ mod tests {
                 .code(),
             "malformed_namespace"
         );
+    }
+
+    #[test]
+    fn central_namespace_placement_is_stored_read_and_dropped() {
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut status = Namespace::shared("status", "shared:team");
+        assert_eq!(resolve_after(&primary, &status).placement, None);
+        status.placement = Some(Partition::new("eu", "standard"));
+        assert_eq!(
+            resolve_after(&primary, &status).placement,
+            Some(Partition::new("eu", "standard"))
+        );
+        define_namespace(&primary, &Namespace::private("notes")).unwrap();
+        let listed = namespaces(&primary, REGISTRY_ID).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].placement, None);
+        assert_eq!(listed[1].placement, Some(Partition::new("eu", "standard")));
+        // Moving or dropping the placement is a redefinition like any other.
+        status.placement = Some(Partition::new("us", "cold"));
+        let moved = resolve_after(&primary, &status);
+        assert_eq!(moved.placement, Some(Partition::new("us", "cold")));
+        assert_eq!(moved.policy_epoch, 3);
+        status.placement = None;
+        assert_eq!(resolve_after(&primary, &status).placement, None);
+        // A malformed label is refused before anything is written.
+        status.placement = Some(Partition::new("EU", "standard"));
+        assert_eq!(
+            define_namespace(&primary, &status).unwrap_err().code(),
+            "malformed_partition"
+        );
+        assert_eq!(
+            resolve(&primary, REGISTRY_ID, "status")
+                .unwrap()
+                .policy_epoch,
+            4
+        );
+    }
+
+    fn resolve_after(primary: &SqlitePrimary, definition: &Namespace) -> Namespace {
+        define_namespace(primary, definition).unwrap();
+        resolve(primary, REGISTRY_ID, &definition.namespace).unwrap()
     }
 
     #[test]

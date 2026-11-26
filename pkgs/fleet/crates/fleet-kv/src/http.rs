@@ -77,11 +77,6 @@ impl HttpPipeline {
     }
 }
 
-/// The environment variables naming the partition this host's blobs go to
-/// (#3401 jurisdiction and sensitivity tier). Unset: no blob plane, and
-/// over-threshold values stay local.
-pub const BLOB_JURISDICTION_VAR: &str = "FLEET_KV_BLOB_JURISDICTION";
-pub const BLOB_TIER_VAR: &str = "FLEET_KV_BLOB_TIER";
 /// An upload streams a value of any size, so it gets far longer than a
 /// pipeline request.
 pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -111,27 +106,15 @@ impl HttpBlobUploader {
         })
     }
 
-    /// The uploader and partition the environment configures, or `None`
-    /// when the central endpoint or the blob partition is not configured.
-    pub fn from_env() -> Result<Option<(Self, Partition)>> {
-        let jurisdiction = std::env::var(BLOB_JURISDICTION_VAR).unwrap_or_default();
-        let tier = std::env::var(BLOB_TIER_VAR).unwrap_or_default();
-        let (jurisdiction, tier) = (jurisdiction.trim(), tier.trim());
-        if jurisdiction.is_empty() && tier.is_empty() {
-            return Ok(None);
-        }
-        if jurisdiction.is_empty() || tier.is_empty() {
-            return Err(CentralError::NotConfigured(format!(
-                "set both {BLOB_JURISDICTION_VAR} and {BLOB_TIER_VAR}, or neither"
-            )));
-        }
+    /// The uploader the environment configures beside the central
+    /// endpoint, or `None` when no central endpoint is configured. The
+    /// partition is not the host's to pick: each blob goes to its
+    /// namespace's placement (design §10).
+    pub fn from_env() -> Result<Option<Self>> {
         let Some(pipeline) = HttpPipeline::from_env()? else {
             return Ok(None);
         };
-        Ok(Some((
-            Self::new(&pipeline.url, &pipeline.bearer)?,
-            Partition::new(jurisdiction, tier),
-        )))
+        Self::new(&pipeline.url, &pipeline.bearer).map(Some)
     }
 }
 

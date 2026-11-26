@@ -130,9 +130,11 @@ function sqlOf(name: string): string {
 async function primaryWithNamespaces(): Promise<SqlitePrimary> {
   const primary = new SqlitePrimary();
   await ensureKvMigrated(primary);
-  for (const [namespace, scope] of [
-    ["files", "shared:team"],
-    ["notes", null],
+  for (const [namespace, scope, jurisdiction] of [
+    ["files", "shared:team", "eu"],
+    ["notes", null, "eu"],
+    ["archive", "shared:archive", "us"],
+    ["loose", "shared:loose", null],
   ] as const) {
     await runKvTransaction(primary, [
       {
@@ -149,6 +151,14 @@ async function primaryWithNamespaces(): Promise<SqlitePrimary> {
           int(Date.now()),
         ],
       },
+      ...(jurisdiction === null
+        ? []
+        : [
+            {
+              sql: sqlOf("placement.upsert"),
+              args: [text(REGISTRY), text(namespace), text(jurisdiction), text("standard"), int(Date.now())],
+            },
+          ]),
     ]);
   }
   return primary;
@@ -257,7 +267,12 @@ test("the upload door deduplicates inside a partition and never across one", asy
   const bytes = pattern(5000);
   const first = (await (await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).json()) as Answer;
   const again = (await (await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).json()) as Answer;
-  const us = (await (await dispatch(uploadReq(UPLOAD_TOKEN, { bytes, jurisdiction: "us" }), d)).json()) as Answer;
+  const us = (await (
+    await dispatch(
+      uploadReq(UPLOAD_TOKEN, { bytes, namespace: "archive", scope: "shared:archive", jurisdiction: "us" }),
+      d,
+    )
+  ).json()) as Answer;
   assert.equal(first.deduplicated, false);
   assert.equal(again.deduplicated, true);
   assert.equal(again.reference, first.reference);
@@ -307,6 +322,27 @@ test("the upload door checks the caller's scope and route", async () => {
   // No credential at all.
   res = await dispatch(new Request("https://fleet-hosted.test/v1/kv/blobs", { method: "PUT" }), d);
   assert.equal(res.status, 401);
+});
+
+test("the upload door places blobs only in the namespace's partition", async () => {
+  const primary = await primaryWithNamespaces();
+  const bucket = new MemoryKvBlobBucket();
+  const d = await deps({ primary, bucket });
+  const bytes = pattern(64);
+  // Another partition than the namespace's placement.
+  let res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes, jurisdiction: "us" }), d);
+  assert.equal(res.status, 403);
+  assert.equal(((await res.json()) as { error: string }).error, "partition_mismatch");
+  res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes, tier: "restricted" }), d);
+  assert.equal(res.status, 403);
+  assert.equal(((await res.json()) as { error: string }).error, "partition_mismatch");
+  // A namespace with no placement takes no blob at all.
+  res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes, namespace: "loose", scope: "shared:loose" }), d);
+  assert.equal(res.status, 403);
+  assert.equal(((await res.json()) as { error: string }).error, "kv_blob_placement_missing");
+  // Nothing was staged or published.
+  assert.equal(bucket.objects.size, 0);
+  assert.equal(publishedRows(primary).length, 0);
 });
 
 test("the upload door refuses a malformed query", async () => {
