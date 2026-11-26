@@ -51,7 +51,7 @@ pub enum HostedCommand {
 impl HostedCommand {
     /// The hosted store this action talks to.
     #[must_use]
-    pub fn target(&self) -> &HostedTarget {
+    pub const fn target(&self) -> &HostedTarget {
         match self {
             Self::Heads { target } | Self::Push { target } | Self::Pull { target } => target,
         }

@@ -540,7 +540,7 @@ impl TransferReport {
             PushOutcome::Waiting { .. } => self.waiting += 1,
             PushOutcome::Fork { .. } => self.forks += 1,
             PushOutcome::Refused { reason, message } => {
-                self.refused.push(format!("{reason}: {message}"))
+                self.refused.push(format!("{reason}: {message}"));
             }
         }
     }
@@ -605,8 +605,9 @@ fn key_author_seq(key: &[u8]) -> Option<(String, u64)> {
     Some((hex_encode(author), u64::from_be_bytes(seq)))
 }
 
-/// Pushes every local event the hosted store has not applied: it
-/// reads the hosted heads, sends each author's events from the
+/// Pushes every local event the hosted store has not applied.
+///
+/// It reads the hosted heads, sends each author's events from the
 /// hosted next sequence on, in bounded batches, and tallies the
 /// outcomes. A re-sent event is a duplicate, never a second copy,
 /// so a push that stopped part way is safe to run again.
@@ -649,8 +650,10 @@ pub async fn push_all<S: BridgeStore, H: BridgeHttp>(
 }
 
 /// Pulls everything the hosted store holds beyond the local heads
-/// into `store`, one bounded batch per call, until the hosted side
-/// reports nothing more. Positions advance past every event
+/// into `store`.
+///
+/// It reads one bounded batch per call until the hosted side reports
+/// nothing more. Positions advance past every event
 /// received, applied or not, so an event that waits locally is not
 /// pulled again; a call that reports more but advances nothing is
 /// an error rather than a loop.
