@@ -59,7 +59,10 @@ fn every_registered_element_has_a_parser_corpus_case() {
         .map(|spec| spec.name)
         .filter(|name| !names.contains(*name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "vocabulary elements without corpus cases: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "vocabulary elements without corpus cases: {missing:?}"
+    );
 }
 
 #[test]
@@ -68,7 +71,10 @@ fn every_web_and_native_assertion_role_has_a_corpus_case() {
     let web_roles = web_table::ROLE_ROWS
         .iter()
         .map(|row| (row.property.to_string(), row.token.to_string()))
-        .chain([("density".to_string(), "comfortable".to_string()), ("density".to_string(), "compact".to_string())])
+        .chain([
+            ("density".to_string(), "comfortable".to_string()),
+            ("density".to_string(), "compact".to_string()),
+        ])
         .chain((0..=8).flat_map(|n| {
             ["gap", "pad"].map(move |property| (property.to_string(), format!("space-{n}")))
         }))
@@ -81,14 +87,19 @@ fn every_web_and_native_assertion_role_has_a_corpus_case() {
         }))
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(cases, web_roles, "web assertion roles and corpus cases differ");
-    assert_eq!(cases, native_roles, "native assertion roles and corpus cases differ");
+    assert_eq!(
+        cases, web_roles,
+        "web assertion roles and corpus cases differ"
+    );
+    assert_eq!(
+        cases, native_roles,
+        "native assertion roles and corpus cases differ"
+    );
 }
 
 #[test]
 fn assertion_role_corpus_reaches_each_lowering_target() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/conformance/target-goldens");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conformance/target-goldens");
     let source = fs::read_to_string(dir.join("basic.id")).expect("read target corpus source");
     let document = id_render::parse_and_validate(&source).expect("target corpus validates");
     let target = |name: &str| TargetSpec {
@@ -121,7 +132,8 @@ fn assertion_role_corpus_reaches_each_lowering_target() {
         for platform in native_table::PLATFORMS {
             let native = compose_document(&document, &target(platform), &data)
                 .expect("compose native target");
-            let (_, report) = lower_native(&document, &native).expect("lower native assertion case");
+            let (_, report) =
+                lower_native(&document, &native).expect("lower native assertion case");
             let is_platform_default = native_table::role_row(&property, &token)
                 .is_some_and(|row| row.rendering_on(platform).is_none());
             if is_platform_default {
