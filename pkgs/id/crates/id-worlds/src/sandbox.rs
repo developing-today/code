@@ -153,10 +153,86 @@ static COMPILED_MODULES: std::sync::Mutex<Vec<([u8; 32], Engine, Module)>> =
 fn sandbox_engine() -> Result<Engine> {
     let mut config = Config::new();
     config.consume_fuel(true);
+    // Quantum boundaries for the burn scheduler (#15577): see
+    // [`GUEST_QUANTUM`]. Epoch checks spend no fuel, so a guest's
+    // results and fuel accounting are the same with them as without.
+    config.epoch_interruption(true);
     config.max_wasm_stack(512 * 1024);
     config.wasm_multi_memory(false);
     config.wasm_memory64(false);
-    Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))
+    let engine =
+        Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))?;
+    tick_quanta(&engine);
+    Ok(engine)
+}
+
+/// The burn scheduler's quantum (#15577). Every guest store's epoch
+/// deadline is one tick away, and the tick comes this often, so a
+/// guest call reaches a quantum boundary at least this often while
+/// it runs. At each boundary the call offers its burn permit back to
+/// the queue ([`crate::guest_burn::GuestBurnPermit::yield_turn`]): a
+/// light world queued behind a spinner waits about one quantum, not
+/// the spinner's whole fuel budget.
+const GUEST_QUANTUM: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Advance the epoch of `engine`, and of every other live sandbox
+/// engine, once per [`GUEST_QUANTUM`], from one background thread
+/// started with the first engine. Engines are held weakly, so a
+/// dropped engine leaves the list at the next tick. If the thread
+/// cannot be started, guest calls run to completion without
+/// boundaries, as they did before quanta existed.
+fn tick_quanta(engine: &Engine) {
+    static ENGINES: std::sync::Mutex<Vec<wasmtime::EngineWeak>> = std::sync::Mutex::new(Vec::new());
+    static TICKER: std::sync::Once = std::sync::Once::new();
+    let lock = || {
+        ENGINES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    lock().push(engine.weak());
+    TICKER.call_once(|| {
+        let spawned = std::thread::Builder::new()
+            .name("id-guest-quantum".to_owned())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(GUEST_QUANTUM);
+                    lock().retain(|weak| {
+                        weak.upgrade()
+                            .map(|engine| engine.increment_epoch())
+                            .is_some()
+                    });
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "guest quantum ticker not started; guest calls run unsliced");
+        }
+    });
+}
+
+/// A store's guest call, as its quantum boundaries see it: the burn
+/// permit the call holds, if it holds one (#15577).
+type GuestTurn = std::sync::Arc<std::sync::Mutex<Option<crate::guest_burn::GuestBurnPermit>>>;
+
+fn lock_turn(
+    turn: &std::sync::Mutex<Option<crate::guest_burn::GuestBurnPermit>>,
+) -> std::sync::MutexGuard<'_, Option<crate::guest_burn::GuestBurnPermit>> {
+    turn.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Arm `store`'s quantum boundaries: at each epoch tick, the call
+/// holding a permit in `turn` charges the fuel it spent so far and
+/// gives way to a waiter the grant rule puts first. The guest's
+/// state and fuel are untouched; it resumes where it stopped.
+fn arm_quanta<T: Send + 'static>(store: &mut Store<T>, turn: GuestTurn, fuel_limit: u64) {
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(move |context| {
+        if let Some(permit) = lock_turn(&turn).as_mut() {
+            let spent = fuel_limit.saturating_sub(context.get_fuel().unwrap_or(fuel_limit));
+            permit.yield_turn(spent);
+        }
+        Ok(wasmtime::UpdateDeadline::Continue(1))
+    });
 }
 
 /// The compiled module for `wasm` under [`sandbox_engine`]. With
@@ -520,6 +596,8 @@ impl Sandbox {
         store
             .set_fuel(self.limits.fuel)
             .map_err(|e| anyhow::anyhow!("set guest fuel: {e}"))?;
+        let turn = GuestTurn::default();
+        arm_quanta(&mut store, std::sync::Arc::clone(&turn), self.limits.fuel);
 
         let instance = Instance::new(&mut store, &self.module, &[]).map_err(|e| {
             anyhow::anyhow!("instantiate guest (start functions are fuel-limited): {e}")
@@ -646,7 +724,7 @@ impl Sandbox {
             account_registry: None,
             creator_account: None,
             caller_account: None,
-            active_permit: None,
+            active_permit: turn,
             store,
             memory,
             alloc,
@@ -715,8 +793,9 @@ pub struct WorldInstance {
     /// The permit of the call currently inside
     /// [`Self::run_guest_call`]; taken and settled by
     /// [`Self::settle`] with the call's measured fuel spend, the
-    /// same shape as `trap_fuel`.
-    active_permit: Option<crate::guest_burn::GuestBurnPermit>,
+    /// same shape as `trap_fuel`. Shared with the store's quantum
+    /// boundaries, which yield it mid-call (#15577).
+    active_permit: GuestTurn,
     store: Store<StoreLimits>,
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
@@ -894,17 +973,17 @@ impl WorldInstance {
         let allowance = self.limits.fuel;
         let admitted = |instance: &mut Self| {
             let permit = budget.acquire_charged(&key, &account, allowance);
-            let result = call(instance);
-            (result, permit)
+            // Held where the call's quantum boundaries can yield it.
+            *lock_turn(&instance.active_permit) = Some(permit);
+            call(instance)
         };
-        let (result, permit) = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+        let result = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
             handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
         }) {
             tokio::task::block_in_place(|| admitted(self))
         } else {
             admitted(self)
         };
-        self.active_permit = Some(permit);
         Ok(result)
     }
 
@@ -961,7 +1040,8 @@ impl WorldInstance {
             .take()
             .unwrap_or_else(|| fuel_spent(&self.store, self.limits.fuel));
         self.metrics.record(call, spent);
-        if let Some(permit) = self.active_permit.take() {
+        let permit = lock_turn(&self.active_permit).take();
+        if let Some(permit) = permit {
             permit.settle(spent);
         }
     }
@@ -1641,6 +1721,70 @@ mod tests {
     }
 
     #[test]
+    fn a_light_world_waits_a_quantum_not_a_spinners_whole_budget() {
+        // Oracle (#15577): with one burn permit, a spinner that holds
+        // it gives way at its next quantum boundary, so a light
+        // world's call completes while the spinner is still burning,
+        // instead of after the spinner's whole fuel budget. The
+        // spinner then finishes with the same outcome and full charge.
+        const SPIN_FUEL: u64 = 2_000_000_000;
+        let spinner_runner = compile(
+            SPIN,
+            SandboxLimits {
+                fuel: SPIN_FUEL,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let victim_runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(1));
+        let mut spinner = spinner_runner.instantiate(1).unwrap();
+        spinner.set_charge_key("spinner".to_owned());
+        spinner.set_burn_budget(std::sync::Arc::clone(&budget));
+        let mut victim = victim_runner.instantiate(2).unwrap();
+        victim.set_charge_key("victim".to_owned());
+        victim.set_burn_budget(std::sync::Arc::clone(&budget));
+
+        let started = std::time::Instant::now();
+        let spinning = std::thread::spawn(move || {
+            let message = format!("{:#}", spinner.update(1, b"spin").unwrap_err());
+            assert!(message.contains("fuel exhausted"), "{message}");
+            started.elapsed()
+        });
+        while budget
+            .snapshot()
+            .keys
+            .get("spinner")
+            .is_none_or(|charge| charge.in_flight == 0)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let asked = std::time::Instant::now();
+        victim.update(7, b"light").unwrap();
+        let victim_wait = asked.elapsed();
+        let spinner_still_burning = !spinning.is_finished();
+        let spin_time = spinning.join().unwrap();
+        println!(
+            "quantum oracle (#15577): victim call {victim_wait:?} beside a spinner \
+             burning {spin_time:?}"
+        );
+        assert!(
+            spinner_still_burning,
+            "the light call finished while the spinner held a turn"
+        );
+        assert!(
+            victim_wait * 4 < spin_time,
+            "victim waited {victim_wait:?}, spinner ran {spin_time:?}"
+        );
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight_max, 1, "the bound held throughout");
+        assert!(snapshot.keys["spinner"].yields >= 1, "{snapshot:?}");
+        assert_eq!(snapshot.keys["spinner"].settled_fuel, SPIN_FUEL);
+        assert_eq!(snapshot.keys["spinner"].admitted, 1);
+        assert_eq!(snapshot.keys["victim"].admitted, 1);
+    }
+
+    #[test]
     fn a_registry_entry_charges_the_registry_account() {
         // Oracle (#1067 per-account quotas): a world with an admin
         // registry entry is charged to the registry's account, not
@@ -2009,6 +2153,7 @@ mod tests {
         ] {
             let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
             let mut store = Store::new(&runner.engine, ());
+            store.set_epoch_deadline(u64::MAX / 2);
             store.set_fuel(runner.limits.fuel).unwrap();
             let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
             let abi_version = instance
@@ -2095,6 +2240,7 @@ mod tests {
 
     fn conformance_raw_instance(runner: &Sandbox) -> (Store<()>, Instance) {
         let mut store = Store::new(&runner.engine, ());
+        store.set_epoch_deadline(u64::MAX / 2);
         store.set_fuel(runner.limits.fuel).unwrap();
         let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
         (store, instance)
