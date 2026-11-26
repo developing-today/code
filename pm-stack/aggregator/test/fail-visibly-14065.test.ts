@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { Provenance } from "../src/model.ts";
-import { renderItem } from "../src/render.ts";
-import { emptyQuotaView, liveSource } from "../src/sources/live.ts";
+import { freshnessChips, renderItem, unavailableSinceText } from "../src/render.ts";
+import { emptyQuotaView, isUnavailableProvenance, liveSource, trackUnavailable } from "../src/sources/live.ts";
 
 async function withNoSources<T>(run: (src: ReturnType<typeof liveSource>) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pm-fail-visibly-14065-"));
@@ -126,5 +126,86 @@ describe("live mode fails visibly for items and comments (#14065 slice 3)", () =
       );
       expect(html).not.toContain("fixture-sourced");
     });
+  });
+});
+
+// #14065 slice 4: an unavailable facet says since when. The time is
+// recorded where the provenance string turns unavailable, kept while it
+// stays so, and dropped once the source is back.
+describe("an unavailable facet says since when (#14065 slice 4)", () => {
+  const base = (): Provenance => ({
+    board: "fixtures",
+    roadmap: "fixtures",
+    items: "fixtures",
+    comments: "fixtures",
+    quota: "fixtures",
+    usage: "fixtures",
+    attention: "fixtures",
+    orchestration: "fixtures",
+    dns: "fixtures",
+    registry: "fixtures",
+    aa: "fixtures",
+  });
+
+  test("the unavailable strings are recognised, partial ones included", () => {
+    expect(isUnavailableProvenance("unavailable (projector unreachable; fixtures withheld in live mode)")).toBe(true);
+    expect(
+      isUnavailableProvenance(
+        "live (fleet feed project pool) + unavailable for 2 ref(s) outside the pool (no projector configured; fixtures withheld in live mode)",
+      ),
+    ).toBe(true);
+    expect(isUnavailableProvenance("live (projector)")).toBe(false);
+    expect(isUnavailableProvenance("fixtures")).toBe(false);
+  });
+
+  test("the first time stands while the facet stays unavailable, and clears when it recovers", () => {
+    let clock = 1_000;
+    const since: Partial<Record<keyof Provenance, number>> = {};
+    const p = trackUnavailable(since, base(), () => clock);
+    expect(since.comments).toBeUndefined();
+    p.comments = "unavailable (projector unreachable; fixtures withheld in live mode)";
+    expect(since.comments).toBe(1_000);
+    clock = 5_000;
+    p.comments = "unavailable (no projector configured; fixtures withheld in live mode)";
+    expect(since.comments).toBe(1_000);
+    p.comments = "live (projector)";
+    expect(since.comments).toBeUndefined();
+    expect(p.comments).toBe("live (projector)");
+    clock = 9_000;
+    p.comments = "unavailable (projector unreachable; fixtures withheld in live mode)";
+    expect(since.comments).toBe(9_000);
+    // The record still reads and serialises like a plain one.
+    expect(JSON.parse(JSON.stringify(p)).comments).toBe(p.comments);
+    expect(Object.keys(p)).toEqual(Object.keys(base()));
+  });
+
+  test("a facet that starts unavailable is timed from the start", () => {
+    const since: Partial<Record<keyof Provenance, number>> = {};
+    trackUnavailable(since, { ...base(), dns: "unavailable (no fleet feed)" }, () => 42);
+    expect(since).toEqual({ dns: 42 });
+  });
+
+  test("the live source reports since when, and the chip shows it", async () => {
+    await withNoSources(async (src) => {
+      const before = Date.now();
+      await src.comments(["developing-today/code#752"]);
+      const after = Date.now();
+      const detail = src.provenanceDetail!();
+      const at = detail.comments.unavailableSince;
+      expect(at).toBeDefined();
+      const ms = Date.parse(at!);
+      expect(ms).toBeGreaterThanOrEqual(before);
+      expect(ms).toBeLessThanOrEqual(after);
+      // A facet that is not unavailable carries no time.
+      expect(detail.board.unavailableSince).toBeUndefined();
+      const chip = freshnessChips(detail, ["comments"]);
+      expect(chip).toContain(`since ${unavailableSinceText(at!)}`);
+      expect(chip).toContain(`unavailable since ${at}`);
+    });
+  });
+
+  test("the since text is UTC to the minute", () => {
+    expect(unavailableSinceText("2026-11-26T03:41:59.123Z")).toBe("2026-11-26 03:41 UTC");
+    expect(unavailableSinceText("not a time")).toBe("not a time");
   });
 });

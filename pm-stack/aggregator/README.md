@@ -758,6 +758,8 @@ the load-bearing claims against the code and configuration (see
 | **Projector** (service)      | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it                                                                        |
 | **Pad** (service)            | — (the aggregator reads no Pad data; Pad is not a facet source)                                                                                                         | —                                                          | **Deployed as the planning layer only**: NixOS OCI container `pm-pad`, declared by `services.pm-apps` (`nixos/services/pm-apps/default.nix`); named here so its absence from the facet rows is a stated fact, not an omission |
 
+A facet that is `unavailable` or `partial-unavailable` also says since when: `provenanceDetail` carries `unavailableSince`, the time the facet's string turned unavailable in this process, and its freshness chip shows it in UTC minutes (#14065).
+
 Observed runtime (checked 2026-11-02 by task 6104 via the stack's status
 surfaces): at `06:04:56.726Z`, the aggregator briefly reported the
 projector `down` (1.5s probe timeout) and Comments `fixtures`, while Pad
