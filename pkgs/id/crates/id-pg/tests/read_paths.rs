@@ -210,6 +210,33 @@ fn live_short_page_is_complete_and_states_per_request_consistency() {
 }
 
 #[test]
+fn live_short_page_with_explicit_incomplete_range_continues_keyset_read() {
+    // Oracle: #15704 — a short body must not override an explicit
+    // Content-Range total that says more rows remain.
+    let mut transport = Scripted::new(vec![
+        page(&[1], Some("0-0/100"), 1_000),
+        page(&[2], Some("1-1/2"), 2_000),
+    ]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &Query::read("items"),
+        2,
+    )
+    .unwrap();
+
+    assert_eq!(ids(&result.rows), vec![1, 2]);
+    assert!(result.complete);
+    assert!(!result.truncated);
+    assert_eq!(result.pages, 2);
+    assert_eq!(result.next_cursor, None);
+    assert_eq!(transport.sent.len(), 2);
+    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.1)"));
+}
+
+#[test]
 fn live_full_page_without_a_total_is_truncated_with_a_cursor() {
     let mut transport = Scripted::new(vec![page(&[1, 2], Some("0-1/*"), 5)]);
     let result = live_read(
