@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyEdgeAnswer, tokenHashOf, type EdgeAnswer } from "../src/needs-drew-answer.ts";
 import { getNeedsDrew, raiseNeedsDrew, recordAnswer } from "../src/needs-drew.ts";
+import { handleDecisionRoutes } from "../src/server-decision-routes.ts";
 import type { NotificationCandidate } from "../src/notifications.ts";
 import { NotifyRelayClient, notificationMirrorEvent } from "../src/notify-relay.ts";
 
@@ -103,6 +104,18 @@ const needsDrewCandidate = (
     },
   }) as NotificationCandidate;
 
+test("the new needs-user answer URL uses the same token gate as the legacy URL", async () => {
+  const ledgerId = `compat-probe-${Date.now()}`;
+  const path = `/api/needs-user/${ledgerId}/answer`;
+  const request = new Request(`https://pm.example${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: "invalid-token", optionId: "yes" }),
+  });
+  const response = await handleDecisionRoutes(request, new URL(request.url), path);
+  expect(response?.status).toBe(403);
+});
+
 const answer = (over: Partial<EdgeAnswer> = {}): EdgeAnswer => ({
   answerId: "a-1",
   ledgerId: "q-1",
@@ -140,6 +153,19 @@ describe("mirroring an answerable question", () => {
     events = calls.filter((c) => c.url.endsWith("/mirror/event")).map((c) => c.body!);
     expect(events.map((e) => e.transition)).toEqual(["raised", "raised", "cleared"]);
     expect(events[2]).toMatchObject({ objectRef: "needs-drew:q-1", payload: { class: "needs-user" } });
+  });
+
+  test("a needs-user object ref is withdrawn when its question stops candidating", async () => {
+    const { client, calls } = await makeClient((call) =>
+      call.url.endsWith("/heartbeat") ? { status: 200, body: { pendingAnswers: 0 } } : { status: 200 },
+    );
+    await client.mirrorCandidates([{ ...needsDrewCandidate(), objectRef: "needs-user:q-1" }]);
+    await client.mirrorCandidates([]);
+    await client.beat();
+
+    const events = calls.filter((call) => call.url.endsWith("/mirror/event")).map((call) => call.body!);
+    expect(events.map((event) => event.transition)).toEqual(["raised", "cleared"]);
+    expect(events[1]).toMatchObject({ objectRef: "needs-user:q-1", payload: { class: "needs-user" } });
   });
 
   test("a quota wall that recovers is not withdrawn (only needs-Drew questions are)", async () => {

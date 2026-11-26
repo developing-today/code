@@ -7,35 +7,40 @@
 #
 # What it does, in order:
 #   1. Interlocks (any failure = refuse to start, nothing is touched):
-#      - an flock on the drill lock (a second drill, manual or scheduled,
-#        cannot overlap this one);
+#      - a shared flock on the drill lock (the age-feed and kill-collector
+#        drills, manual or scheduled, cannot overlap one another);
 #      - an incident flag file ($PM_DRILL_INCIDENT_FLAG) must not exist —
 #        during a real incident the stack is not a drill canvas;
-#      - the collector timer must be active and the feed must currently
+#      - the legacy collector timer must be inactive and the feed must currently
 #        be FRESH (age < the staleness threshold). A feed that is
 #        already stale is a real incident, not a drill.
-#   2. Stops fleet-feed-collector.timer (and any in-flight oneshot).
+#   2. Creates the pm-core pause file; subsequent in-process collector ticks
+#      leave the existing feed untouched until the drill restores it.
+#      Limitation: the gate is read only when a tick starts (pm-core-wiring.ts
+#      runFleetFeed). A collector run already in flight when the file appears
+#      finishes and may write one more fresh stamp. That delays the signal by
+#      up to one collector run; it cannot produce a false pass, because the
+#      drill passes only once the feed age actually crosses FEED_STALE_MS.
 #   3. Polls the aggregator's /api/health until the feed's age crosses
 #      FEED_STALE_MS — 10 minutes (two collector cadences, #14062), the
 #      #1148 watchdog threshold the code
 #      itself uses (src/health.ts, src/sources/live.ts) — and records
 #      the health payload at that moment as the fired-signal evidence.
 #   4. Restores, ALWAYS once the kill has happened (trap on
-#      EXIT/INT/TERM plus an explicit restore step): starts the timer
-#      again and immediately runs the collector once so the feed is
-#      fresh, then confirms via /api/health that the feed age is back
+#      EXIT/INT/TERM plus an explicit restore step): removes the pause
+#      file so the next in-process tick can refresh the feed, then confirms
+#      via /api/health that the feed age is back
 #      under the threshold. The restore is gated on the kill: a drill
 #      that refuses to start (step 1, or the preconditions below)
-#      touches nothing — no timer/service start on any refusal path.
+#      touches nothing — no pause file is created on any refusal path.
 #   5. Reports: writes a JSON result to the state dir; with gh available
 #      it posts the result as a comment on #1283. If the expected signal
 #      does NOT fire, it instead files a new issue under epic #1184 with
 #      the drill evidence (that is the drill doing its job: a silent
 #      failure of the honesty signals is a finding, not a drill error).
 #
-# The old sandbox systemd timer was retired when the collector moved to
-# the laptop. This drill is laptop-only until a laptop-hosted schedule is
-# deliberately installed; the host guard below also protects manual runs.
+# The collector now runs inside the laptop aggregator. The drill is
+# laptop-only and pauses that in-process job through its state-file gate.
 #
 # Environment knobs:
 #   PM_DRILL_STATE_DIR     state/lock/result dir (default ~/.local/state/pm-drills)
@@ -56,7 +61,7 @@ INCIDENT_FLAG="${PM_DRILL_INCIDENT_FLAG:-$STATE_DIR/incident.flag}"
 MAX_WAIT_MIN="${PM_DRILL_MAX_WAIT_MIN:-25}"
 STALE_MS=600000 # FEED_STALE_MS in aggregator src/feed.ts (two collector cadences, #14062)
 COLLECTOR_TIMER="fleet-feed-collector.timer"
-COLLECTOR_SERVICE="fleet-feed-collector.service"
+AGG_ENV_FILE="$HOME/.local/state/pm-aggregator/.env"
 ISSUE_REPO="developing-today/code"
 EPIC=1184
 ISSUE=1283
@@ -79,7 +84,7 @@ HOST="$(hostname -s)"
 [ "$HOST" = "amd" ] || die "must run on laptop host 'amd'; refusing on '$HOST'"
 
 # --- interlock: one drill at a time ---------------------------------------
-exec 9>"$STATE_DIR/kill-collector.lock"
+exec 9>"$STATE_DIR/pm-drills.lock"
 if ! flock -n 9; then
   die "another kill-collector drill holds the lock; not starting"
 fi
@@ -120,47 +125,62 @@ except Exception:
 
 # --- restore: idempotent, and gated on the kill ---------------------------
 # The trap is installed before the precondition checks, so without the
-# gate a REFUSAL (die -> exit) would fire restore() and start the
+# gate a REFUSAL (die -> exit) would fire restore() and remove the
 # collector the drill just refused to touch — masking the very
 # findings the interlocks exist to surface (#2865). KILLED is armed
-# immediately BEFORE the destructive timer stop — after every
+# immediately BEFORE pause-file creation — after every
 # precondition refusal — so until that point restore() is a no-op and
 # every refusal path leaves the system exactly as it found it, while
-# a signal interrupting the stop itself (this drill's systemd service
-# is cancelled via TERM) still restores a timer the stop may already
-# have deactivated (Codex P2 on PR #3027).
+# a signal interrupting pause-file creation still removes a file that
+# may already have been created.
 KILLED=0
 RESTORED=0
 restore() {
   [ "$KILLED" = 1 ] || return 0
   [ "$RESTORED" = 1 ] && return 0
   RESTORED=1
-  log "restoring collector (timer start + immediate collection run)"
-  sudo -n systemctl start "$COLLECTOR_TIMER" 2>/dev/null || log "WARN: could not start $COLLECTOR_TIMER"
-  sudo -n systemctl start "$COLLECTOR_SERVICE" 2>/dev/null || log "WARN: could not start $COLLECTOR_SERVICE"
+  log "restoring collector (removing pm-core pause file)"
+  rm -f "$PAUSE_FILE" || log "WARN: could not remove $PAUSE_FILE"
 }
 trap restore EXIT INT TERM
 
+# --- pause file: derive exactly as the aggregator does, or refuse ----------
+# pm-core-wiring.ts resolves the pause file as PM_CORE_FEED_PAUSE_FILE, else
+# <dirname of PM_AGG_FEED_FILE>/fleet-feed.pause. The aggregator reads its
+# config from AGG_ENV_FILE (EnvironmentFile of pm-aggregator.service). A
+# drill that pauses a different file than the aggregator reads would pass its
+# honesty signal without pausing anything, so refuse on any disagreement.
+agg_env_value() {
+  [ -r "$AGG_ENV_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$AGG_ENV_FILE" | tail -n 1
+}
+[ -r "$AGG_ENV_FILE" ] || die "cannot read aggregator config $AGG_ENV_FILE; refusing to pause a collector path it may not read"
+AGG_FEED_FILE="$(agg_env_value PM_AGG_FEED_FILE)"
+AGG_FEED_FILE="${AGG_FEED_FILE:-$HOME/.local/state/pm-aggregator/fleet-feed.json}"
+AGG_PAUSE_FILE="$(agg_env_value PM_CORE_FEED_PAUSE_FILE)"
+AGG_PAUSE_FILE="${AGG_PAUSE_FILE:-$(dirname "$AGG_FEED_FILE")/fleet-feed.pause}"
+if [ -n "${PM_CORE_FEED_PAUSE_FILE:-}" ] && [ "$PM_CORE_FEED_PAUSE_FILE" != "$AGG_PAUSE_FILE" ]; then
+  die "PM_CORE_FEED_PAUSE_FILE ($PM_CORE_FEED_PAUSE_FILE) disagrees with the aggregator's pause file ($AGG_PAUSE_FILE); refusing"
+fi
+PAUSE_FILE="$AGG_PAUSE_FILE"
+
 # --- preconditions ----------------------------------------------------------
-systemctl is-active --quiet "$COLLECTOR_TIMER" || die "$COLLECTOR_TIMER is not active; nothing to kill, and a stopped collector outside a drill is itself a finding"
+if systemctl is-active --quiet "$COLLECTOR_TIMER"; then
+  die "$COLLECTOR_TIMER is still active; pm-core drill requires the legacy timer to be retired"
+fi
+[ ! -e "$PAUSE_FILE" ] || die "collector pause file already exists ($PAUSE_FILE); refusing to inherit another pause"
 BASELINE="$(health_json | feed_facts)"
 BASE_AGE="${BASELINE%% *}"
 [ "$BASE_AGE" -ge 0 ] || die "cannot read aggregator /api/health; refusing to drill blind"
 [ "$BASE_AGE" -lt "$STALE_MS" ] || die "feed is already stale at drill start (age ${BASE_AGE}ms >= ${STALE_MS}ms): that is a real incident, not a drill"
-log "preconditions ok: collector active, feed fresh (age ${BASE_AGE}ms), no incident flag, lock held"
+log "preconditions ok: legacy timer inactive, feed fresh (age ${BASE_AGE}ms), no incident flag, lock held"
 
-# --- kill -------------------------------------------------------------------
-log "stopping $COLLECTOR_TIMER"
-# Arm restoration BEFORE the destructive stop: if TERM/INT lands
-# while systemctl stop is in flight, the timer may already be
-# deactivated even though the stop never returns success — with the
-# gate armed only after a successful stop, both traps would skip
-# restore and leave the collector stopped indefinitely. Every
-# precondition refusal is above this point, so arming here can never
-# fire restore on a refusal.
+# --- pause -----------------------------------------------------------------
+# Arm restoration BEFORE creating the pause file: if TERM/INT lands
+# during creation, restore removes it if it exists. Every precondition
+# refusal is above this point, so restoration never masks a refusal.
 KILLED=1
-sudo -n systemctl stop "$COLLECTOR_TIMER" || die "failed to stop $COLLECTOR_TIMER (sudo -n systemctl required)"
-sudo -n systemctl stop "$COLLECTOR_SERVICE" 2>/dev/null || true
+touch "$PAUSE_FILE" || die "failed to create collector pause file ($PAUSE_FILE)"
 
 # --- wait for the honesty signal ---------------------------------------------
 SIGNAL=0
@@ -185,7 +205,7 @@ done
 restore
 trap - EXIT INT TERM
 CONFIRMED=0
-for _ in 1 2 3 4 5 6; do
+for _ in $(seq 1 20); do
   sleep 20
   FACTS="$(health_json | feed_facts)"
   AGE="${FACTS%% *}"
@@ -195,7 +215,7 @@ for _ in 1 2 3 4 5 6; do
     break
   fi
 done
-[ "$CONFIRMED" = 1 ] || log "WARN: restoration not confirmed within ~2min (feed age ${AGE:-unknown}ms)"
+[ "$CONFIRMED" = 1 ] || log "WARN: restoration not confirmed within ~7min (feed age ${AGE:-unknown}ms)"
 
 # --- report -------------------------------------------------------------------
 OUTCOME="failed"
@@ -219,8 +239,8 @@ if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
   if [ "$OUTCOME" = "passed" ]; then
     gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — kill-collector** (queue task 2667, first slice of this issue, epic #$EPIC)
 
-- Stopped \`$COLLECTOR_TIMER\` on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 10-minute \`FEED_STALE_MS\` (#1148) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
-- Collector restored (timer restarted + immediate collection run) and restoration confirmed via \`/api/health\`: feed fresh again.
+- Paused pm-core's in-process fleet-feed scheduler on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 10-minute `FEED_STALE_MS` (#1148, two collector cadences) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
+- Collector restored by removing the pause file; restoration was confirmed via `/api/health` after an in-process tick: feed fresh again.
 - Script: \`pm-stack/aggregator/scripts/kill-collector-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/kill-collector-result.json\` on laptop host amd per run." >/dev/null 2>&1 &&
       log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
   else

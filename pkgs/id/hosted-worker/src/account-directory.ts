@@ -24,6 +24,25 @@ import { FailClosed, parseBindingId, parseJurisdiction, SUPPORTED_JURISDICTIONS,
 export const HOSTED_MIGRATION_PHASES = ["stable", "pending", "frozen", "verified", "switched"] as const;
 export type HostedMigrationPhase = (typeof HOSTED_MIGRATION_PHASES)[number];
 
+/**
+ * #3401 data-minimal allowlist: the only columns the shared directory
+ * may hold — pseudonymous subject/binding identifiers plus minimal
+ * jurisdiction and migration metadata. No graph content, journals,
+ * blob bytes, or private profile data. The D1 migration, the query
+ * layer (`COLUMNS` in persistent-account-directory.ts), and the
+ * hosted-directory-allowlist suite all pin this one list, so widening
+ * the shared residency exception needs its own reviewed slice.
+ */
+export const HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS = [
+  "subject_key",
+  "binding_id",
+  "jurisdiction",
+  "jurisdiction_pending",
+  "migration_id",
+  "phase",
+  "routing_epoch",
+] as const;
+
 /** Durable routing metadata required before a hosted user object is derived. */
 export interface HostedAccountRecord {
   /** Pseudonymous provider subject key; never an email address. */

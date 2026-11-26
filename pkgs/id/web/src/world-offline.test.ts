@@ -125,9 +125,7 @@ describe("world snapshot store (#10927)", () => {
     expect(parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, sequence: -1 }))).toBeNull();
     expect(parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, sequence: 1.5 }))).toBeNull();
     expect(
-      parseStoredWorldSnapshot(
-        JSON.stringify({ ...sampleSnapshot, participants: [{ id: "1", display_name: "ada" }] }),
-      ),
+      parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, participants: [{ id: "1", display_name: "ada" }] })),
     ).toBeNull();
     expect(
       parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, view: { kind: "text", text: 42 } })),
@@ -215,7 +213,9 @@ describe("world page offline read model (#10927)", () => {
 
     // Offline is a reader, not a writer: a chat submit is refused.
     q<HTMLInputElement>("[data-world-chat]").value = "anyone there?";
-    q<HTMLFormElement>("[data-world-chat-form]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    q<HTMLFormElement>("[data-world-chat-form]").dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
     expect(status()).toBe("Join the world before chatting");
     expect(FakeSocket.all).toHaveLength(0);
 
