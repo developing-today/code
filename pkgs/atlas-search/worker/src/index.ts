@@ -18,6 +18,11 @@
  *   POST /mcp                       (gated) -> MCP endpoint (#8625; src/mcp.ts)
  *   POST /v1/admin/retained/audit {object, version} (gated) -> pin a version for audit (#9140)
  *   GET  /v1/admin/retained/compare?object=&from=&to= (gated) -> before/after report (#9140)
+ *   POST /v1/admin/retained/report  (gated) -> on-demand retention dry-run report (#9140)
+ *   POST /v1/admin/retained/promote {class} (gated) -> move a class to live-cold once earned (#9140)
+ *
+ * Cron (wrangler.toml [triggers]): each scheduled event runs one retention
+ * cycle (#9140 slice 7) when a RETAINED binding exists; otherwise nothing.
  */
 import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
@@ -26,6 +31,7 @@ import { handleMcp } from "./mcp";
 import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
 import { AuditError, compareAudited, pinForAudit } from "./audit_report";
 import { RetainedObjectError } from "./retained_object";
+import { promoteClass, RetentionReportError, runRetentionReport, runScheduledCycle } from "./retention_report";
 import { recordSearch, validSession } from "./search_history";
 import { CONTEXT } from "./space";
 
@@ -60,7 +66,7 @@ function versionNumber(value: unknown): number | undefined {
   return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? n : undefined;
 }
 
-/** The admin audit routes (#9140 slice 5). */
+/** The admin retained-object routes (#9140 slices 5 and 6). */
 async function retainedAdmin(req: Request, env: Env, url: URL): Promise<Response> {
   const db = env.RETAINED;
   if (!db) return errorJson(503, "retained_off", "no retained-object store is configured");
@@ -93,14 +99,46 @@ async function retainedAdmin(req: Request, env: Env, url: URL): Promise<Response
       }
       return Response.json(await compareAudited(db, object, from, to));
     }
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/report") {
+      // On-demand only: these reports never count toward promotion.
+      return Response.json(await runRetentionReport(db, `on-demand-${crypto.randomUUID()}`, "on-demand"));
+    }
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/promote") {
+      // The reviewed step (design §6): a class goes live only on this call,
+      // and only once its two latest scheduled reports agree.
+      const raw = await readTextUpTo(req);
+      if (raw === null) return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return errorJson(400, "bad_request", "body must be JSON");
+      }
+      const name = (typeof body === "object" && body !== null ? body : {}) as { class?: unknown };
+      if (typeof name.class !== "string" || name.class.length === 0) {
+        return errorJson(400, "bad_request", "class must be a non-empty string");
+      }
+      const earned = await promoteClass(db, name.class);
+      return Response.json({ class: name.class, mode: "live-cold", promoted_from: earned });
+    }
   } catch (error) {
     if (error instanceof AuditError) {
       return errorJson(error.code === "family_mismatch" ? 409 : 404, error.code, error.message);
     }
     if (error instanceof RetainedObjectError) return errorJson(409, error.code, error.message);
+    if (error instanceof RetentionReportError) {
+      return errorJson(error.code === "unknown_retention_class" ? 404 : 409, error.code, error.message);
+    }
     throw error;
   }
-  return errorJson(405, "method_not_allowed", "use POST for audit and GET for compare");
+  const known = [
+    "/v1/admin/retained/audit",
+    "/v1/admin/retained/compare",
+    "/v1/admin/retained/report",
+    "/v1/admin/retained/promote",
+  ];
+  if (!known.includes(url.pathname)) return errorJson(404, "not_found", "no route");
+  return errorJson(405, "method_not_allowed", "use POST for audit, report and promote, GET for compare");
 }
 
 /** Constant-time bearer comparison (via digests, so length-safe). */
@@ -235,7 +273,7 @@ export default {
       return Response.json({ key, query, purged: result.purged });
     }
 
-    if (url.pathname === "/v1/admin/retained/audit" || url.pathname === "/v1/admin/retained/compare") {
+    if (url.pathname.startsWith("/v1/admin/retained/")) {
       if (!(await gateOk(env, req))) {
         return errorJson(401, "unauthorized", "missing or invalid gate token");
       }
@@ -258,5 +296,20 @@ export default {
     }
 
     return errorJson(404, "not_found", "no route");
+  },
+
+  /** One retention cycle per cron event (#9140 slice 7); a no-op with no RETAINED binding. */
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (!env.RETAINED) return;
+    const cycle = await runScheduledCycle(env.RETAINED, controller.scheduledTime);
+    console.log(
+      JSON.stringify({
+        event: "retention_cycle",
+        run_id: cycle.run_id,
+        ran: cycle.ran,
+        retired: cycle.retired.length,
+        deferred: cycle.deferred,
+      }),
+    );
   },
 };

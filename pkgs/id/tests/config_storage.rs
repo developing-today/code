@@ -151,7 +151,7 @@ fn an_unadvertised_durability_is_a_load_error() {
 
 #[test]
 fn no_object_store_adapter_is_advertised_yet() {
-    assert!(ADVERTISED_OBJECT_STORE_ADAPTERS.is_empty());
+    assert_eq!(ADVERTISED_OBJECT_STORE_ADAPTERS, [] as [&str; 0]);
     for adapter in ["fs", "s3", "r2"] {
         let err = load_err(&with_storage(
             json!({ "object_store": { "adapter": adapter } }),

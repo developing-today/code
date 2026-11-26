@@ -43,6 +43,8 @@
 - [fleet agent](reference/agent.md)
 - [fleet shell](reference/shell.md)
 - [fleet search](reference/search.md)
+- [fleet orgs](reference/orgs.md)
+- [fleet cert](reference/cert.md)
 - [fleet laptop-agent](reference/laptop-agent.md)
 - [fleet laptop route forms](reference/laptop-route-forms.md)
 - [fleet actions](reference/actions.md)

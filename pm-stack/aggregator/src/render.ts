@@ -508,6 +508,13 @@ const FACET_LABELS: Record<keyof Provenance, string> = {
   aa: "aa",
 };
 
+/** #14065: "2026-11-26 03:40 UTC" from an ISO time. */
+export function unavailableSinceText(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return iso;
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
 /**
  * Per-source freshness chips (#1138): only the sources the page being
  * rendered actually uses, each with its state word, its age when the
@@ -522,7 +529,10 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
       const facet = detail[key];
       const count = facet.count !== undefined ? ` · ${facet.count} ${esc(facet.countLabel ?? "")}`.trimEnd() : "";
       const age = facet.ageMs !== undefined && facet.state !== "fixtures" ? ` · ${ageMsText(facet.ageMs)}` : "";
-      return `<span class="fchip ${facet.state}" title="${esc(facet.text)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}</span>`;
+      // #14065: an unavailable facet says since when, in UTC minutes.
+      const since = facet.unavailableSince ? ` · since ${esc(unavailableSinceText(facet.unavailableSince))}` : "";
+      const title = facet.unavailableSince ? `${facet.text} (unavailable since ${facet.unavailableSince})` : facet.text;
+      return `<span class="fchip ${facet.state}" title="${esc(title)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}${since}</span>`;
     })
     .join("");
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;

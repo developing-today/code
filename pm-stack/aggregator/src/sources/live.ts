@@ -578,6 +578,35 @@ const FIXTURES_WITHHELD = "fixtures withheld in live mode";
 const COMMENTS_UNCONFIGURED = `unavailable (no projector configured; ${FIXTURES_WITHHELD})`;
 const COMMENTS_UNREACHABLE = `unavailable (projector unreachable; ${FIXTURES_WITHHELD})`;
 
+/** #14065: a provenance string that says the facet's source is gone,
+ * wholly ("unavailable (...)") or for the refs outside the pool. */
+export function isUnavailableProvenance(text: string): boolean {
+  return text.startsWith("unavailable") || /\+ unavailable for \d+ ref\(s\) outside the pool/.test(text);
+}
+
+/** #14065: wrap a Provenance record so each facet remembers when its
+ * string turned unavailable, and forgets when it stops being so. A
+ * string that stays unavailable keeps its first time. */
+export function trackUnavailable(
+  since: Partial<Record<keyof Provenance, number>>,
+  initial: Provenance,
+  now: () => number = Date.now,
+): Provenance {
+  for (const key of Object.keys(initial) as (keyof Provenance)[]) {
+    if (isUnavailableProvenance(initial[key])) since[key] = now();
+  }
+  return new Proxy(initial, {
+    set(target, prop, value) {
+      const key = prop as keyof Provenance;
+      if (typeof value === "string" && key in target) {
+        if (!isUnavailableProvenance(value)) delete since[key];
+        else if (since[key] === undefined) since[key] = now();
+      }
+      return Reflect.set(target, prop, value);
+    },
+  });
+}
+
 export function liveSource(
   cfg: Config,
   opts?: {
@@ -620,7 +649,11 @@ export function liveSource(
     snapshotRemote?: SnapshotsRemote;
   },
 ): Source {
-  const provenance: Provenance = {
+  // #14065: when each facet's string last turned unavailable. Recorded
+  // where the string is assigned (the proxy below), so the time is the
+  // read that failed, not the first page that happened to look.
+  const unavailableSince: Partial<Record<keyof Provenance, number>> = {};
+  const provenance: Provenance = trackUnavailable(unavailableSince, {
     board: "fixtures",
     roadmap: "fixtures",
     items: "fixtures",
@@ -632,7 +665,7 @@ export function liveSource(
     dns: "fixtures",
     registry: "fixtures",
     aa: "fixtures",
-  };
+  });
 
   // #1139/#1140: the last orchestration diagnosis, recomputed on every
   // orchestration() read from the raw feed value — the honesty
@@ -2262,6 +2295,10 @@ export function liveSource(
           state = "stale";
         }
         const out: ProvenanceFacet = { text, state };
+        const since = unavailableSince[key];
+        if ((state === "unavailable" || state === "partial-unavailable") && since !== undefined) {
+          out.unavailableSince = new Date(since).toISOString();
+        }
         if (key === "orchestration") {
           if (lastOrchestrationDiagnosis.state === "stale" && state === "live") out.state = "stale";
           if (lastOrchestrationDiagnosis.state === "invalid") out.state = "invalid";

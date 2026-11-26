@@ -582,7 +582,7 @@ mod tests {
             ..inputs()
         });
         assert_eq!(finding.severity, Severity::Fail);
-        assert!(!finding.fix.is_empty());
+        assert_ne!(finding.fix, "");
     }
 
     #[test]

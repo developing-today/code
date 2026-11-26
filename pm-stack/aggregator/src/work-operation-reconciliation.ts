@@ -142,7 +142,11 @@ function classify(effect: DesiredEffect, reads: readonly Readback[]): { result: 
   if (relevant.length === 0) return { result: "unread", read: null };
   // An ambiguous or mis-targeted read poisons the effect: it is never verified from it.
   const wrong = relevant.find(
-    (r) => r.matchedObjects !== 1 || r.objectRef !== effect.objectRef || r.source !== effect.source || r.field !== effect.field,
+    (r) =>
+      r.matchedObjects !== 1 ||
+      r.objectRef !== effect.objectRef ||
+      r.source !== effect.source ||
+      r.field !== effect.field,
   );
   if (wrong) return { result: "ambiguous", read: wrong };
   const latest = [...relevant].sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))[0] as Readback;

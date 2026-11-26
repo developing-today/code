@@ -119,6 +119,14 @@ directory's accessible text table (`DirectoryApp::text_table`).
 Without `--node`/`--capability` the window opens without a
 session and the startup line on stdout says so.
 
+Inside a session, key presses go to the world as the terminal's own
+`input` bytes. Ctrl+Shift+V and Shift+Insert paste the system
+clipboard instead, as one contract `paste` frame, the chords
+terminal emulators use (a plain Ctrl+V stays the literal-next byte).
+An empty clipboard sends nothing, and text over the contract's
+4096-byte bound is refused with a notice on stderr rather than
+split or truncated.
+
 ## Recording / checking a session
 
 The step-1 transcript harness stands in for a recorded session:

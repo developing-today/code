@@ -35,7 +35,7 @@ use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use crate::world::{WorldHandle, WorldLimits};
+use crate::world::{Authority, WorldHandle, WorldLimits};
 use crate::world_doctor::{JournalFacts, journal_facts};
 use crate::world_export::{
     ExportManifest, export_world_to_file, import_world_from_file, read_export_manifest,
@@ -1081,6 +1081,38 @@ pub struct LiveWorld {
     pub report: OpenReport,
 }
 
+/// The refusal anyone but the operator gets for a restore.
+fn restore_refusal() -> anyhow::Error {
+    crate::directory::Refusal::Forbidden("only the operator restores an archived world".to_owned())
+        .into()
+}
+
+/// A lifecycle change one authority may ask of a world (#10694).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleAct {
+    /// Asleep to live.
+    Wake,
+    /// Live to asleep.
+    Pause,
+    /// Asleep to archived.
+    Archive,
+    /// Archived to asleep: the operator's alone.
+    Restore,
+}
+
+impl LifecycleAct {
+    /// How a refusal names the act.
+    #[must_use]
+    pub const fn phrase(self) -> &'static str {
+        match self {
+            Self::Wake => "wakes the world",
+            Self::Pause => "pauses the world",
+            Self::Archive => "archives the world",
+            Self::Restore => "restores the world",
+        }
+    }
+}
+
 /// The supervisor: one data root, the host file beside it, and the held
 /// live worlds. Created by [`Supervisor::open`], which replays every
 /// world the host file records live.
@@ -1330,6 +1362,71 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Whether `authority` may take `act` on `name`, evaluated against the
+    /// world's own authority data exactly as a local host evaluates it
+    /// (#10694, design §4): the operator (the process admin) may take
+    /// every act; the world's owner (an admin seat in one of its groups)
+    /// may wake, pause and archive; restore is the operator's alone.
+    /// Everyone else gets the world's forbidden refusal. A world that is
+    /// not live is opened from its journal to ask and shut again, unrecorded.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, or a failure to open the world to ask.
+    pub async fn authorize(
+        &self,
+        name: &str,
+        act: LifecycleAct,
+        authority: &Authority,
+    ) -> Result<()> {
+        if *authority == Authority::Admin {
+            return Ok(());
+        }
+        if act == LifecycleAct::Restore {
+            return Err(restore_refusal());
+        }
+        if let Some(held) = self.live.get(name) {
+            return held
+                .service
+                .world()
+                .authorize_lifecycle(authority.clone(), act.phrase())
+                .await;
+        }
+        let (service, _) = self.open_unrecorded(name).await?;
+        let verdict = service
+            .world()
+            .authorize_lifecycle(authority.clone(), act.phrase())
+            .await;
+        service
+            .world()
+            .shutdown()
+            .await
+            .with_context(|| format!("closing world {name:?} after asking it"))?;
+        verdict
+    }
+
+    /// Take `act` on `name` for `authority`, recorded as `actor`, once
+    /// [`Self::authorize`] allows it. Returns the replay report of a wake.
+    ///
+    /// # Errors
+    ///
+    /// The refusal (nothing changes), or as the act itself.
+    pub async fn act_as(
+        &mut self,
+        name: &str,
+        act: LifecycleAct,
+        authority: &Authority,
+        actor: &str,
+    ) -> Result<Option<OpenReport>> {
+        self.authorize(name, act, authority).await?;
+        match act {
+            LifecycleAct::Wake => self.start(name, actor).await.map(Some),
+            LifecycleAct::Pause => self.stop(name, actor).await.map(|()| None),
+            LifecycleAct::Archive => self.archive(name, actor).map(|()| None),
+            LifecycleAct::Restore => self.restore(name, actor).map(|()| None),
+        }
+    }
+
     /// Stop every held world, newest-first by name for determinism.
     pub async fn stop_all(&mut self, actor: &str) -> Result<()> {
         let mut names: Vec<String> = self.live.keys().cloned().collect();
@@ -1385,19 +1482,25 @@ impl Supervisor {
 
     /// Replay `name`'s journal and hold the world live. The caller must
     /// already have validated (and, on success, recorded) the transition.
-    async fn replay_live(&mut self, name: &str) -> Result<OpenReport> {
+    /// Replay `name` from its journal without recording or holding it.
+    async fn open_unrecorded(&self, name: &str) -> Result<(WorldService, OpenReport)> {
+        validate_name(name)?;
         let dir = self.root.join(name);
-        let world_id = name.to_owned();
+        anyhow::ensure!(dir.is_dir(), "no world named {name:?} in this data root");
         let (world_limits, runtime_limits) = host_limits();
-        let (service, report) = open_world(
+        open_world(
             &dir,
-            &world_id,
+            name,
             world_limits,
             runtime_limits,
             |handle: WorldHandle| WorldService::new(handle, None),
         )
         .await
-        .with_context(|| format!("replaying world {name:?}"))?;
+        .with_context(|| format!("replaying world {name:?}"))
+    }
+
+    async fn replay_live(&mut self, name: &str) -> Result<OpenReport> {
+        let (service, report) = self.open_unrecorded(name).await?;
         self.live.insert(
             name.to_owned(),
             LiveWorld {
@@ -1408,6 +1511,11 @@ impl Supervisor {
         Ok(report)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[path = "host_parity_tests.rs"]
+mod parity_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1532,12 +1640,12 @@ mod tests {
     async fn supervisor_replays_live_worlds_on_open() {
         let root = data_root_with(&["alpha", "beta"]);
         let mut sup = Supervisor::open(root.path()).await.unwrap();
-        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.live_names(), [] as [String; 0]);
 
         // Append a durable entry to alpha, then stop: the journal now
         // proves replay on the next open.
         sup.start("alpha", actor()).await.unwrap();
-        let world = sup.live.get("alpha").unwrap().service.world();
+        let world = sup.live["alpha"].service.world();
         world
             .set_isolation(Authority::Admin, Isolation::Unisolated)
             .await
@@ -1545,7 +1653,7 @@ mod tests {
         let before = sup.live_report("alpha").unwrap().journal_entries;
         assert_eq!(before, 1);
         sup.stop_all(actor()).await.unwrap();
-        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.live_names(), [] as [String; 0]);
         drop(sup);
 
         // Clean restart: nothing is live, so nothing replays, and the
@@ -1553,7 +1661,7 @@ mod tests {
         let journal_before =
             std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         let sup2 = Supervisor::open(root.path()).await.unwrap();
-        assert!(sup2.live_names().is_empty());
+        assert_eq!(sup2.live_names(), [] as [String; 0]);
         assert_eq!(sup2.file().worlds["alpha"].last_recovery, None);
         drop(sup2);
         assert_eq!(
@@ -1579,6 +1687,150 @@ mod tests {
         assert_eq!(recovery.sequence, reopened.sequence);
         let replayed = std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         assert!(replayed.starts_with(&journal_before));
+    }
+
+    #[tokio::test]
+    async fn a_woken_world_serves_only_its_members() {
+        use crate::world::{JoinCapability, WorldScopes};
+
+        let root = data_root_with(&["alpha"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        let world = sup.live["alpha"].service.world();
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let (bo_id, bo) = world.issue("bo", WorldScopes::GUEST).await.unwrap();
+        world.chat(ann.clone(), "before sleep").await.unwrap();
+        assert!(world.revoke(bo_id.id).await.unwrap());
+        sup.stop("alpha", actor()).await.unwrap();
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Asleep);
+
+        // A connection to the asleep world wakes it; membership comes back
+        // from the journal before anything is served.
+        sup.start("alpha", actor()).await.unwrap();
+        let woken = sup.live["alpha"].service.world();
+        assert!(
+            woken
+                .chat(JoinCapability::from_wire("not-a-member".into()), "hi")
+                .await
+                .is_err(),
+            "a stranger's token means nothing after wake"
+        );
+        assert!(
+            woken.chat(bo, "still here?").await.is_err(),
+            "a member revoked before sleep stays revoked after wake"
+        );
+        assert!(woken.participant_id(ann.clone()).await.is_ok());
+        woken.chat(ann, "after wake").await.unwrap();
+        sup.stop_all(actor()).await.unwrap();
+    }
+
+    fn key_hex(seed: u8) -> String {
+        use std::fmt::Write as _;
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            })
+    }
+
+    async fn directory_as(
+        service: &WorldService,
+        key: &str,
+        action: crate::directory_view::DirectoryAction,
+    ) {
+        let caller = crate::directory_auth::Caller {
+            key: Some(key.to_owned()),
+            ..crate::directory_auth::Caller::default()
+        };
+        service.directory(caller, action).await.unwrap();
+    }
+
+    fn forbidden(error: &anyhow::Error) -> bool {
+        matches!(
+            error.downcast_ref::<crate::directory::Refusal>(),
+            Some(crate::directory::Refusal::Forbidden(_))
+        )
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_or_the_operator_changes_a_world_lifecycle() {
+        use crate::directory_view::DirectoryAction;
+
+        let root = data_root_with(&["alpha"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        let owner = key_hex(1);
+        let guest = key_hex(2);
+        {
+            let service = &sup.live["alpha"].service;
+            for (key, name) in [(&owner, "Owner"), (&guest, "Guest")] {
+                directory_as(
+                    service,
+                    key,
+                    DirectoryAction::SignUpKey { name: name.into() },
+                )
+                .await;
+            }
+            directory_as(
+                service,
+                &owner,
+                DirectoryAction::CreateGroup {
+                    name: "keepers".into(),
+                    description: String::new(),
+                    scopes: Vec::new(),
+                },
+            )
+            .await;
+        }
+        let owner = Authority::Signed(owner);
+        let guest = Authority::Signed(guest);
+
+        // A guest may not pause a live world; nothing is recorded.
+        let history = sup.file().worlds["alpha"].history.len();
+        let refused = sup
+            .act_as("alpha", LifecycleAct::Pause, &guest, "guest")
+            .await
+            .unwrap_err();
+        assert!(forbidden(&refused), "{refused:#}");
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Live);
+        assert_eq!(sup.file().worlds["alpha"].history.len(), history);
+
+        // The owner may pause, archive and wake; restore is the operator's.
+        sup.act_as("alpha", LifecycleAct::Pause, &owner, "owner")
+            .await
+            .unwrap();
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Asleep);
+        let refused = sup
+            .act_as("alpha", LifecycleAct::Wake, &guest, "guest")
+            .await
+            .unwrap_err();
+        assert!(
+            forbidden(&refused),
+            "an asleep world asks its own directory"
+        );
+        assert!(sup.live_names().is_empty(), "a refused wake holds nothing");
+        sup.act_as("alpha", LifecycleAct::Archive, &owner, "owner")
+            .await
+            .unwrap();
+        let refused = sup
+            .act_as("alpha", LifecycleAct::Restore, &owner, "owner")
+            .await
+            .unwrap_err();
+        assert!(forbidden(&refused), "{refused:#}");
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Archived);
+        sup.act_as("alpha", LifecycleAct::Restore, &Authority::Admin, actor())
+            .await
+            .unwrap();
+        let report = sup
+            .act_as("alpha", LifecycleAct::Wake, &owner, "owner")
+            .await
+            .unwrap();
+        assert!(report.is_some());
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Live);
+        sup.stop_all(actor()).await.unwrap();
     }
 
     #[tokio::test]
@@ -1618,7 +1870,7 @@ mod tests {
         let file_before = sup.file().clone();
         let journal_before =
             std::fs::read(root.path().join("live-one").join("journal.jsonl")).unwrap();
-        assert!(!journal_before.is_empty());
+        assert_ne!(journal_before, [] as [u8; 0]);
 
         sup.shutdown().await.unwrap();
 
@@ -1657,7 +1909,7 @@ mod tests {
         let journal_a = std::fs::read(root.path().join("a").join("journal.jsonl")).unwrap();
         let mut sup = Supervisor::open(root.path()).await.unwrap();
         sup.start("a", actor()).await.unwrap();
-        let world = sup.live.get("a").unwrap().service.world();
+        let world = sup.live["a"].service.world();
         world
             .set_isolation(Authority::Admin, Isolation::Isolated)
             .await
@@ -1726,7 +1978,7 @@ mod tests {
         host.undo_wake("w", admission).unwrap();
         let saved = HostFile::load(root.path()).unwrap();
         assert_eq!(saved.worlds["w"].state, LifecycleState::Asleep);
-        assert!(saved.worlds["w"].history.is_empty());
+        assert_eq!(saved.worlds["w"].history, [] as [StateChange; 0]);
 
         host.admit_wake("w").unwrap();
         host.undo_wake("w", Admission::AlreadyLive).unwrap();
@@ -1768,7 +2020,7 @@ mod tests {
         let saved = HostFile::load(root.path()).unwrap();
         assert!(saved.worlds["kept"].pinned);
         assert_eq!(saved.worlds["kept"].wake, WakeMode::Operator);
-        assert!(saved.worlds["kept"].history.is_empty());
+        assert_eq!(saved.worlds["kept"].history, [] as [StateChange; 0]);
         let seen = inspect_world(root.path(), &saved, "kept").unwrap();
         assert!(seen.pinned);
         assert_eq!(seen.wake, WakeMode::Operator);
@@ -1900,6 +2152,76 @@ mod tests {
         file.save(root).unwrap();
     }
 
+    /// World process killed (#10695): a world's actor dies with its
+    /// runtime, mid-stream and with a write in flight, never shut down.
+    /// The next host open replays it, every acknowledged entry is there,
+    /// nothing half-applied is, and the asleep sibling's directory is not
+    /// touched.
+    #[test]
+    fn a_killed_world_keeps_every_acknowledged_entry() {
+        use crate::world::{WorldEventKind, WorldScopes};
+
+        let root = data_root_with(&["alpha", "beta"]);
+        let beta_journal = root.path().join("beta").join(JOURNAL_FILE);
+        let beta_before = std::fs::read(&beta_journal).unwrap();
+        let acknowledged: Vec<String> = (0..5).map(|i| format!("line {i}")).collect();
+
+        let doomed = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (held, ann) = doomed.block_on(async {
+            let mut sup = Supervisor::open(root.path()).await.unwrap();
+            sup.start("alpha", actor()).await.unwrap();
+            let world = sup.live["alpha"].service.world();
+            let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+            for line in &acknowledged {
+                world.chat(ann.clone(), line.as_str()).await.unwrap();
+            }
+            let (inflight, token) = (world.clone(), ann.clone());
+            tokio::spawn(async move { inflight.chat(token, "in flight").await });
+            (sup, ann)
+        });
+        // Kill: the runtime and every task on it stop where they stand.
+        doomed.shutdown_timeout(std::time::Duration::from_secs(10));
+        drop(held);
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let sup = Supervisor::open(root.path()).await.unwrap();
+            assert_eq!(sup.live_names(), vec!["alpha".to_owned()]);
+            let recovery = sup.file().worlds["alpha"].last_recovery.clone().unwrap();
+            assert_eq!(recovery.error, None);
+            let world = sup.live["alpha"].service.world();
+            let chats: Vec<String> = world
+                .snapshot(ann)
+                .await
+                .unwrap()
+                .events
+                .into_iter()
+                .filter_map(|event| match event.kind {
+                    WorldEventKind::Chat(text) => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                chats.starts_with(&acknowledged),
+                "every acknowledged line survives, in order: {chats:?}"
+            );
+            assert!(chats.len() <= acknowledged.len() + 1, "{chats:?}");
+            if let Some(extra) = chats.get(acknowledged.len()) {
+                assert_eq!(
+                    extra, "in flight",
+                    "an in-flight write lands whole or not at all"
+                );
+            }
+            assert_eq!(sup.file().worlds["beta"].state, LifecycleState::Asleep);
+            assert_eq!(std::fs::read(&beta_journal).unwrap(), beta_before);
+            drop(sup);
+        });
+    }
+
     #[tokio::test]
     async fn a_save_cut_off_before_its_rename_leaves_the_last_host_file() {
         // #10695 power loss: the host died after writing `host.json.tmp`
@@ -1948,7 +2270,7 @@ mod tests {
         std::fs::write(HostFile::path_for(root.path()), &stale).unwrap();
 
         let mut sup = Supervisor::open(root.path()).await.unwrap();
-        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.live_names(), [] as [String; 0]);
         assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Asleep);
         let got = sup.start("alpha", actor()).await.unwrap();
         assert!(got.journal_entries >= want.journal_entries);

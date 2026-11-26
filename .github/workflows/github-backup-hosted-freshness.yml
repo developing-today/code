@@ -8,13 +8,16 @@ name: github-backup hosted freshness
 # state is consulted, which is the point: the laptop leg dying must
 # not blind the freshness check.
 #
-# Trigger policy: workflow_dispatch ONLY for now. A cron schedule is
-# a live schedule change and lands — together with its
+# Trigger policy: daily cron (05:17 UTC) plus workflow_dispatch.
+# The schedule landed — together with its
 # doc/fleet-schedule-registry.md entry — in the #15001 slice that
-# wires deduplicated alert issues and the external missed-run
-# watchdog; a scheduled probe with no alerting behind it would be a
-# new silent failure domain of its own. CI tier policy: see
-# .github/ci-policy.md.
+# wires deduplicated alert issues (hosted_alerts.py, applied below)
+# and the external missed-run watchdog (github-backup-hosted-
+# watchdog.yml): a scheduled probe with no alerting behind it would
+# be a new silent failure domain of its own. Every run also
+# publishes its report as a heartbeat object in R2, outside this
+# workflow's failure domain, which is the only evidence the
+# watchdog judges. CI tier policy: see .github/ci-policy.md.
 #
 # A leg whose credentials are not yet provisioned reports "failed"
 # with the reason in the report — that is the probe working as
@@ -24,9 +27,12 @@ name: github-backup hosted freshness
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -54,17 +60,29 @@ jobs:
       - name: Run the hosted freshness probe
         id: probe
         env:
+          # The probe shells out to `gh api` for the source and
+          # plain-mirror heads (all public repos, so the workflow
+          # token suffices). Without a token gh refuses to run at
+          # all and every leg reports "source head unavailable"
+          # (#15515); the alerts step below and the watchdog carry
+          # the same line.
+          GH_TOKEN: ${{ github.token }}
           # D1 export leg (values arrive via environment only; the
           # probe never reads credential files).
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # rclone's r2bak remote, configured purely from the
-          # environment (no config file is written).
+          # environment (no config file is written). REGION and
+          # NO_CHECK_BUCKET match the laptop's proven r2bak config
+          # for this token: the r2-backups token cannot HeadBucket
+          # (403), so rclone must skip its bucket check (#15515).
           RCLONE_CONFIG_R2BAK_TYPE: s3
           RCLONE_CONFIG_R2BAK_PROVIDER: Cloudflare
           RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          RCLONE_CONFIG_R2BAK_REGION: auto
+          RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET: "true"
         run: |
           set +e
           python3 infra/github-backup/bin/hosted_freshness.py \
@@ -79,6 +97,56 @@ jobs:
         with:
           name: hosted-freshness-${{ github.run_id }}
           path: hosted-freshness-report.json
+
+      - name: Publish the probe heartbeat to R2
+        if: always()
+        env:
+          # Same rclone r2bak remote as the probe step, configured
+          # purely from the environment (including the REGION /
+          # NO_CHECK_BUCKET pair the r2-backups token requires).
+          RCLONE_CONFIG_R2BAK_TYPE: s3
+          RCLONE_CONFIG_R2BAK_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          RCLONE_CONFIG_R2BAK_REGION: auto
+          RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET: "true"
+        run: |
+          # The heartbeat is the report itself, at the key
+          # hosted_watchdog.HEARTBEAT_KEY names in
+          # infra/github-backup/bin/hosted_watchdog.py; keep the two
+          # in step. It is published whenever a report exists — an
+          # "attention" report still proves the probe ran — and
+          # skipped when the probe died before producing one, which
+          # is exactly the miss the watchdog exists to catch.
+          if [ -f hosted-freshness-report.json ]; then
+            rclone copyto hosted-freshness-report.json \
+              "r2bak:supabase-backups/github-backup/hosted-freshness/heartbeat.json"
+            echo "heartbeat published for run ${{ github.run_id }}"
+          else
+            echo "no report file; no heartbeat published (probe died before reporting)"
+          fi
+
+      - name: File deduplicated freshness alerts
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # hosted_alerts.py exits 1 when it creates or updates an
+          # alert — that is the alerting working, not a workflow
+          # error; the verdict gate below remains the job's failure
+          # signal. A missing report means the probe died before
+          # reporting; there is nothing to alert on from this job
+          # (the missed-run watchdog covers that case).
+          if [ -f hosted-freshness-report.json ]; then
+            set +e
+            python3 infra/github-backup/bin/hosted_alerts.py \
+              --report hosted-freshness-report.json --apply
+            echo "hosted_alerts exit: $?"
+            set -e
+          else
+            echo "no report file; alert step skipped"
+          fi
 
       - name: Verdict gate
         if: always()

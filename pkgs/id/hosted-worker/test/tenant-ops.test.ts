@@ -249,6 +249,22 @@ test("the §4 lifecycle, end to end, with two-phase deletion", async () => {
   ]);
 });
 
+test("tenant requests require an active account in the tenancy registry", async () => {
+  // Oracle: the authoritative account.state and binding.status rows in
+  // the real tenancy migration jointly decide whether provisioning may start.
+  const db = freshTenancyDb();
+  seedBinding(db);
+  db.prepare("UPDATE account SET state = 'suspended' WHERE account_id = ?").run(ACCOUNT);
+  const ops = makeOps(db);
+
+  const res = await post(ops, "/v1/tenant/request", OWNER, { jurisdiction: "us", at: T0 });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.state, "failed");
+  const events = db.prepare("SELECT detail FROM ops_journal WHERE event = 'failed'").all() as { detail: string }[];
+  assert.equal(JSON.parse(events[0].detail).reason, "account_not_active");
+});
+
 test("concurrent sign-ups create exactly one database (§11 item 2)", async () => {
   const db = freshTenancyDb();
   seedBinding(db);

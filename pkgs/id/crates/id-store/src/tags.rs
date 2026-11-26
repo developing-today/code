@@ -2609,8 +2609,8 @@ mod tests {
 
     #[test]
     fn test_parse_search_empty() {
-        assert!(parse_search_query("").unwrap().is_empty());
-        assert!(parse_search_query("   ").unwrap().is_empty());
+        assert_eq!(parse_search_query("").unwrap(), [] as [SearchTerm; 0]);
+        assert_eq!(parse_search_query("   ").unwrap(), [] as [SearchTerm; 0]);
     }
 
     #[test]

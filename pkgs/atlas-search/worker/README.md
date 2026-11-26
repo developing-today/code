@@ -164,6 +164,29 @@ fields, added, removed and moved items, score changes (only within one rule
 id), and added or removed search result refs. Both routes sit behind the
 gate token and answer 503 without a `RETAINED` binding.
 
+Slice 6 (`src/retention_report.ts`, `migrations/0005_retention_modes_and_reports.sql`):
+retention wiring after the rule engine design (#6041). Every class has a
+mode and starts in `dry-run`, where nothing is retired. A report lists, per
+class, the live versions past the class window and outside its floor
+(action `report-only`, or `cold-tier` once live), the versions the floor
+protected, and deltas against the previous report of the same kind; it
+names versions by id only. `promoteClass` moves a class to `live-cold` only
+after it appears unchanged in the two latest scheduled reports, and
+changing a class's window or floor returns it to `dry-run`. Nothing
+deletes. `POST /v1/admin/retained/report` runs an on-demand report, which
+never counts toward promotion.
+
+Slice 7 (`runScheduledCycle`, the `scheduled` handler and the `[triggers]`
+cron in `wrangler.toml`, every six hours at minute 17): each cron event
+stores a scheduled report under run id `scheduled-<cron time>`, then
+retires what that report lists in `live-cold` classes, at most 200 objects
+per cycle (the rest wait for the next). A repeated delivery of the same
+cron time finds its report stored and does nothing. Without a `RETAINED`
+binding the handler does nothing. `POST /v1/admin/retained/promote {class}`
+is the reviewed step that moves a class to `live-cold`; it answers 409
+`not_earned` until the class's two latest scheduled reports agree, and 404
+for an unknown class.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client

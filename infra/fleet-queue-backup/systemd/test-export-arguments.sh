@@ -4,7 +4,7 @@
 # Oracle: each script returns usage status 2 and names the offending argument.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-for script in "$here/run-export.sh" "$here/run-d1-home-export.sh" "$here/install-units.sh"; do
+for script in "$here/run-export.sh" "$here/run-d1-home-export.sh" "$here/run-export-d1.sh" "$here/install-units.sh"; do
   set +e
   output="$(bash "$script" --unexpected 2>&1)"
   status=$?

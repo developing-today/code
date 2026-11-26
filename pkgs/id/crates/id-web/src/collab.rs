@@ -72,11 +72,18 @@ use super::markdown::{
 };
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
+use id_grants::{Grant, GrantError, GrantId, GrantSet, GrantSetSnapshot, LoadError, Scope};
 use id_store::documents::{DocumentError, DocumentRef};
+use id_store::grant_authority::{identity_key, may_read_with_grants};
 use id_store::note_checkpoints::{
     CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints, NotePolicyRecord,
 };
 use id_store::notes::{AppliedNote, NoteRecord};
+use id_store::read_authority::ReadDefaults;
+use id_store::talk_page::{
+    ChainError, ChangeKind, ChangelogEntry, EntryDraft, OpLogRange, SignedEntry, TalkPageError,
+    verify_chain,
+};
 use p2panda_core::Hash;
 
 /// Message type tags for the wire protocol.
@@ -441,6 +448,46 @@ impl From<DocumentError> for PublishCheckpointError {
     }
 }
 
+/// Why a note session's end could not be recorded in the note's
+/// changelog (#14272).
+#[derive(Debug)]
+pub enum SessionEntryError {
+    /// The session entry could not be drafted or signed.
+    Entry(TalkPageError),
+    /// The note's changelog would not verify with the entry appended.
+    Chain(ChainError),
+}
+
+impl std::fmt::Display for SessionEntryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Entry(err) => write!(f, "{err}"),
+            Self::Chain(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for SessionEntryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Entry(err) => Some(err),
+            Self::Chain(err) => Some(err),
+        }
+    }
+}
+
+impl From<TalkPageError> for SessionEntryError {
+    fn from(err: TalkPageError) -> Self {
+        Self::Entry(err)
+    }
+}
+
+impl From<ChainError> for SessionEntryError {
+    fn from(err: ChainError) -> Self {
+        Self::Chain(err)
+    }
+}
+
 /// The file name of the persisted note checkpoint snapshot (#3819):
 /// the serving host keeps it beside the identity store
 /// (`.identity.redb`), the node's other durable local state.
@@ -457,6 +504,30 @@ pub struct NoteCheckpointSnapshot {
     pub events: Vec<AppliedNote>,
     /// The effective policy of every note in the log, in note ID order.
     pub policies: Vec<NotePolicyRecord>,
+    /// Every note's changelog (#14272), in note ID order. Absent from
+    /// snapshots written before changelogs existed, and from snapshots
+    /// with none, so those read and write exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changelogs: Vec<NoteChangelogRecord>,
+    /// The node's selective-sharing grants (#14790): every grant,
+    /// revocation and served `snapshot_once` grant, in the grants
+    /// model's own stored form. Absent from snapshots written before
+    /// grants were stored, and from snapshots with none, so those read
+    /// and write exactly as before. Grants are node-local here;
+    /// replicating them as signed events is #5800.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants: Option<GrantSetSnapshot>,
+}
+
+/// One note's changelog in the persisted snapshot (#14272): its
+/// entries' canonical bytes, in chain order. A restore decodes them
+/// and verifies the chain end to end from its first entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteChangelogRecord {
+    /// The note the changelog belongs to.
+    pub note: Hash,
+    /// The entries' canonical bytes, in chain order.
+    pub entries: Vec<Vec<u8>>,
 }
 
 /// Why restoring a persisted note checkpoint snapshot failed (#3819).
@@ -480,6 +551,13 @@ pub enum NoteSnapshotError {
     /// checkpoint core: the events do not fold, or a policy names
     /// an unknown note or the wrong owner.
     Checkpoint(CheckpointError),
+    /// A note's changelog in the snapshot does not decode, or does not
+    /// verify end to end (#14272).
+    Changelog(SessionEntryError),
+    /// The snapshot's grants do not load: a grant fails the grants
+    /// model's checks, a delegation is wider than its parent, or a
+    /// revocation names no grant (#14790).
+    Grants(LoadError),
 }
 
 impl std::fmt::Display for NoteSnapshotError {
@@ -498,6 +576,8 @@ impl std::fmt::Display for NoteSnapshotError {
                 path.display()
             ),
             Self::Checkpoint(err) => write!(f, "{err}"),
+            Self::Changelog(err) => write!(f, "note changelog: {err}"),
+            Self::Grants(err) => write!(f, "note grants: {err}"),
         }
     }
 }
@@ -508,6 +588,8 @@ impl std::error::Error for NoteSnapshotError {
             Self::Io { source, .. } => Some(source),
             Self::Corrupt { source, .. } => Some(source),
             Self::Checkpoint(err) => Some(err),
+            Self::Changelog(err) => Some(err),
+            Self::Grants(err) => Some(err),
         }
     }
 }
@@ -516,6 +598,89 @@ impl From<CheckpointError> for NoteSnapshotError {
     fn from(err: CheckpointError) -> Self {
         Self::Checkpoint(err)
     }
+}
+
+impl From<SessionEntryError> for NoteSnapshotError {
+    fn from(err: SessionEntryError) -> Self {
+        Self::Changelog(err)
+    }
+}
+
+impl From<LoadError> for NoteSnapshotError {
+    fn from(err: LoadError) -> Self {
+        Self::Grants(err)
+    }
+}
+
+/// Why the node refused to issue or revoke a note grant (#14790).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteGrantError {
+    /// The grant's issuer is not the account issuing it.
+    NotIssuer,
+    /// The grant covers something other than notes: only
+    /// object-scoped grants naming notes are stored here.
+    NotANote,
+    /// A note the grant covers is not one the issuer owns. Unknown
+    /// notes get the same answer, so a refusal never confirms that a
+    /// note exists.
+    NotOwner,
+    /// No grant with that id was issued by this account.
+    UnknownGrant,
+    /// The grants model refused the grant (an invalid grant, a
+    /// duplicate id, or a parent on a root grant).
+    Grant(GrantError),
+}
+
+impl std::fmt::Display for NoteGrantError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotIssuer => write!(f, "the grant's issuer is not the account issuing it"),
+            Self::NotANote => write!(f, "the grant covers something other than notes"),
+            Self::NotOwner => write!(f, "the grant covers a note the issuer does not own"),
+            Self::UnknownGrant => write!(f, "no such grant issued by this account"),
+            Self::Grant(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for NoteGrantError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Grant(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+/// Parses a note id written exactly as [`Hash::to_hex`] writes it:
+/// 64 lowercase hex characters. Any other spelling is refused, because
+/// the read check matches grant scopes against that exact form.
+fn parse_note_hash(id: &str) -> Option<Hash> {
+    let hash: Hash = id.parse().ok()?;
+    (hash.to_hex() == id).then_some(hash)
+}
+
+/// Decodes the changelogs of a persisted snapshot (#14272), verifying
+/// each chain end to end from its first entry. A note named twice is
+/// refused: a snapshot holds one chain per note.
+fn restore_changelogs(
+    records: Vec<NoteChangelogRecord>,
+) -> Result<HashMap<Hash, Vec<ChangelogEntry>>, SessionEntryError> {
+    let mut changelogs = HashMap::new();
+    for record in records {
+        let entries = record
+            .entries
+            .iter()
+            .map(|bytes| ChangelogEntry::from_canonical_bytes(bytes))
+            .collect::<Result<Vec<_>, _>>()?;
+        verify_chain(record.note.as_bytes(), None, &entries)?;
+        if changelogs.insert(record.note, entries).is_some() {
+            return Err(SessionEntryError::Entry(TalkPageError::Invalid(
+                "a snapshot holds one changelog per note",
+            )));
+        }
+    }
+    Ok(changelogs)
 }
 
 /// Writes a snapshot to `path` atomically: the new document lands
@@ -559,6 +724,16 @@ fn mint_checkpoint_event_id(
     version: u64,
 ) -> Hash {
     Hash::digest(format!("{note}:{author:?}:{heads:?}:{}:{version}", content.content).as_bytes())
+}
+
+/// Now, in milliseconds since the Unix epoch: the receipt time a
+/// session's changelog entry is stamped with.
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// A `doc_id` naming a note session over the wire: the
@@ -608,6 +783,25 @@ pub struct CollabState {
     /// groups, so scoped notes honor user grants and the owner, and
     /// public notes behave exactly as before the boundary existed.
     note_group_roles: GroupRoles,
+    /// The checkpoints each open note session has published so far,
+    /// by session key (#14272): the run of the merge layer's log the
+    /// session covers. [`CollabState::end_note_session`] takes it
+    /// when the session's last editor leaves and records it as the
+    /// session's one changelog entry.
+    note_session_ops: Mutex<HashMap<String, OpLogRange>>,
+    /// Each note's changelog (#5834, #14272): the hash-chained
+    /// `session` entries its multiplayer sessions ended with, in
+    /// chain order. It verifies end to end from its
+    /// first entry after every append, and is persisted with the
+    /// checkpoint snapshot.
+    note_changelogs: Mutex<HashMap<Hash, Vec<ChangelogEntry>>>,
+    /// The node's selective-sharing grants over notes (#14790): issued
+    /// and revoked by note owners through
+    /// [`CollabState::grant_note_access`] and
+    /// [`CollabState::revoke_note_grant`], consulted by
+    /// [`CollabState::may_read_note`], and persisted with the
+    /// checkpoint snapshot.
+    note_grants: Mutex<GrantSet>,
 }
 
 impl CollabState {
@@ -664,6 +858,93 @@ impl CollabState {
             self.persist_note_snapshot().await;
         }
         result
+    }
+
+    /// Issues a root grant over notes the issuer owns (#14790): `owner`
+    /// must be the grant's issuer, every scope must name a note `owner`
+    /// owns, and the grant must pass the grants model's checks. A
+    /// stored grant is persisted with the checkpoint snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteGrantError`] naming the refusal; nothing is
+    /// stored on any refusal.
+    pub async fn grant_note_access(
+        &self,
+        owner: AuthorKey,
+        grant: Grant,
+    ) -> Result<(), NoteGrantError> {
+        if grant.issuer != identity_key(owner) {
+            return Err(NoteGrantError::NotIssuer);
+        }
+        {
+            let log = self.note_log.lock().await;
+            for scope in &grant.scopes {
+                let Scope::Object(object) = scope else {
+                    return Err(NoteGrantError::NotANote);
+                };
+                let note = parse_note_hash(object).ok_or(NoteGrantError::NotANote)?;
+                match log.access(note) {
+                    Some((note_owner, _)) if note_owner == owner => {}
+                    _ => return Err(NoteGrantError::NotOwner),
+                }
+            }
+        }
+        self.note_grants
+            .lock()
+            .await
+            .insert_root(grant)
+            .map_err(NoteGrantError::Grant)?;
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Revokes a grant `by` issued (#14790): it, and every grant
+    /// delegated from it, stops admitting anyone at the next check.
+    /// The revocation is persisted with the checkpoint snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteGrantError::UnknownGrant`] when no grant with that
+    /// id was issued by `by`, whether it is someone else's or absent.
+    pub async fn revoke_note_grant(
+        &self,
+        by: AuthorKey,
+        id: &GrantId,
+    ) -> Result<(), NoteGrantError> {
+        {
+            let mut grants = self.note_grants.lock().await;
+            match grants.get(id) {
+                Some(grant) if grant.issuer == identity_key(by) => {}
+                _ => return Err(NoteGrantError::UnknownGrant),
+            }
+            grants.revoke(id);
+        }
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Whether `reader` may read `note` under the read order with the
+    /// owner's live grants added at the object tier, as of `now` (Unix
+    /// seconds, UTC) (#14790). Unknown notes are denied.
+    pub async fn may_read_note(
+        &self,
+        note: Hash,
+        reader: AuthorKey,
+        defaults: &ReadDefaults,
+        now: u64,
+    ) -> bool {
+        let log = self.note_log.lock().await;
+        let grants = self.note_grants.lock().await;
+        may_read_with_grants(
+            &log,
+            note,
+            reader,
+            &self.note_group_roles,
+            defaults,
+            &grants,
+            now,
+        )
     }
 
     /// Get or create a document for editing.
@@ -800,19 +1081,49 @@ impl CollabState {
     }
 
     /// The checkpoint log's durable snapshot: the applied events
-    /// and the per-note policies together (#3819) — the document
+    /// and the per-note policies together (#3819), with every note's
+    /// changelog (#14272) — the document
     /// [`Self::restore_note_snapshot`] rebuilds from, and the form
     /// persisted at the installed snapshot path.
     ///
     /// # Errors
     ///
-    /// Returns [`CheckpointError`] when the recorded events do not
-    /// fold (a log built through this type's methods does not).
-    pub async fn note_snapshot(&self) -> Result<NoteCheckpointSnapshot, CheckpointError> {
+    /// Returns [`NoteSnapshotError::Checkpoint`] when the recorded
+    /// events do not fold (a log built through this type's methods
+    /// does not), and [`NoteSnapshotError::Changelog`] when an entry
+    /// cannot be encoded.
+    pub async fn note_snapshot(&self) -> Result<NoteCheckpointSnapshot, NoteSnapshotError> {
         let log = self.note_log.lock().await;
+        let mut changelogs = self
+            .note_changelogs
+            .lock()
+            .await
+            .iter()
+            .map(|(note, entries)| {
+                Ok(NoteChangelogRecord {
+                    note: *note,
+                    entries: entries
+                        .iter()
+                        .map(ChangelogEntry::canonical_bytes)
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            })
+            .collect::<Result<Vec<_>, TalkPageError>>()
+            .map_err(SessionEntryError::Entry)?;
+        changelogs.sort_by_key(|record| *record.note.as_bytes());
+        let grants = {
+            let grants = self.note_grants.lock().await;
+            grants
+                .grants()
+                .next()
+                .is_some()
+                .then(|| grants.to_snapshot())
+        };
         Ok(NoteCheckpointSnapshot {
             events: log.events().to_vec(),
             policies: log.policies()?,
+            changelogs,
+            grants,
         })
     }
 
@@ -825,14 +1136,23 @@ impl CollabState {
     ///
     /// # Errors
     ///
-    /// Returns the checkpoint core's refusal unchanged.
+    /// Returns the checkpoint core's refusal as
+    /// [`NoteSnapshotError::Checkpoint`], and a changelog that does not
+    /// decode or verify as [`NoteSnapshotError::Changelog`].
     pub async fn restore_note_snapshot(
         &self,
         snapshot: NoteCheckpointSnapshot,
-    ) -> Result<(), CheckpointError> {
+    ) -> Result<(), NoteSnapshotError> {
         let rebuilt =
             NoteCheckpoints::from_events_with_policies(snapshot.events, snapshot.policies)?;
+        let changelogs = restore_changelogs(snapshot.changelogs)?;
+        let grants = match snapshot.grants {
+            Some(grants) => GrantSet::from_snapshot(grants)?,
+            None => GrantSet::new(),
+        };
         *self.note_log.lock().await = rebuilt;
+        *self.note_changelogs.lock().await = changelogs;
+        *self.note_grants.lock().await = grants;
         self.persist_note_snapshot().await;
         Ok(())
     }
@@ -976,25 +1296,100 @@ impl CollabState {
             return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
         };
         let content = DocumentRef::for_bytes("text/markdown", text.as_bytes())?;
-        let published = {
+        let (published, op) = {
             let mut log = self.note_log.lock().await;
             if log.record(note)?.is_none() {
-                log.create(note, author, content)?
+                (log.create(note, author, content)?, note)
             } else {
                 let heads = log.heads(note)?;
                 let event_id =
                     mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
-                log.checkpoint_on_heads_checked(
+                let record = log.checkpoint_on_heads_checked(
                     note,
                     event_id,
                     author,
                     content,
                     &self.note_group_roles,
-                )?
+                )?;
+                (record, event_id)
             }
         };
+        self.note_session_ops
+            .lock()
+            .await
+            .entry(key.to_owned())
+            .and_modify(|range| *range = range.extended(*op.as_bytes()))
+            .or_insert_with(|| OpLogRange::single(*op.as_bytes()));
         self.persist_note_snapshot().await;
         Ok(published)
+    }
+
+    /// Ends a note session in the note's changelog (#14272, slice 4 of
+    /// #5834): called when the session's last editor leaves. When the
+    /// session published checkpoints, exactly one `session` entry is
+    /// appended to the note's changelog naming the run of checkpoints
+    /// it covers ([`OpLogRange`]); the checkpoints themselves stay in
+    /// the merge layer, never in the changelog. `sign` turns the draft
+    /// into the entry its actor signs (the host signs with its own
+    /// key), and `received_at` is the receipt time stamped on it. The
+    /// grown chain must verify end to end from its first entry before
+    /// the entry is kept.
+    ///
+    /// Returns `Ok(None)` when the session published nothing, or when
+    /// `key` names no note session: there is nothing to record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEntryError`] when the entry cannot be drafted
+    /// or signed, or the chain would not verify with it. The session's
+    /// range is then kept open, so the next session end records it.
+    pub async fn end_note_session<F>(
+        &self,
+        key: &str,
+        received_at: u64,
+        sign: F,
+    ) -> Result<Option<ChangelogEntry>, SessionEntryError>
+    where
+        F: FnOnce(EntryDraft) -> Result<SignedEntry, TalkPageError>,
+    {
+        let Some(note) = self.note_id_for_key(key).await else {
+            return Ok(None);
+        };
+        let entry = {
+            let mut sessions = self.note_session_ops.lock().await;
+            let Some(range) = sessions.get(key).copied() else {
+                return Ok(None);
+            };
+            let mut changelogs = self.note_changelogs.lock().await;
+            let chain = changelogs.entry(note).or_default();
+            let draft = match chain.last() {
+                None => {
+                    EntryDraft::genesis(note.as_bytes().to_vec(), ChangeKind::Session, received_at)
+                }
+                Some(previous) => EntryDraft::after(previous, ChangeKind::Session, received_at)?,
+            }
+            .with_op_log(range);
+            let entry = sign(draft)?.receive(received_at);
+            let mut grown = chain.clone();
+            grown.push(entry.clone());
+            verify_chain(note.as_bytes(), None, &grown)?;
+            *chain = grown;
+            sessions.remove(key);
+            entry
+        };
+        self.persist_note_snapshot().await;
+        Ok(Some(entry))
+    }
+
+    /// The note's changelog (#14272): the `session` entries its ended
+    /// multiplayer sessions recorded, in chain order.
+    pub async fn note_changelog(&self, note: Hash) -> Vec<ChangelogEntry> {
+        self.note_changelogs
+            .lock()
+            .await
+            .get(&note)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The content reference a reopened note session hydrates from:
@@ -2032,6 +2427,30 @@ async fn handle_collab_socket(
     // server's key. A refusal (notably a multi-head note, which needs
     // an explicit merge) is logged, never fatal to the disconnect.
     if remaining_clients == 0 {
+        // The session's one changelog entry (#14272): the run of
+        // checkpoints it published, signed with this server's key.
+        if let Some(note) = &note_session {
+            let key = note_session_key(note);
+            match collab
+                .end_note_session(&key, unix_millis(), |draft| {
+                    identity_store.sign_changelog_entry(draft)
+                })
+                .await
+            {
+                Ok(Some(entry)) => tracing::debug!(
+                    "[collab] Note session '{}' ended; changelog entry {} covers {:?}",
+                    key,
+                    entry.signed().seq(),
+                    entry.signed().op_log().map(|range| range.count)
+                ),
+                Ok(None) => {}
+                Err(err) => tracing::warn!(
+                    "[collab] Could not record the end of note session '{}' in its changelog: {}",
+                    key,
+                    err
+                ),
+            }
+        }
         tracing::debug!(
             "[collab] Note/filename session '{}' ended at version {} (connected at {}); \
              publication is client-driven, never a disconnect side effect",
@@ -2663,14 +3082,14 @@ mod tests {
             mode: "raw".to_owned(),
         };
         let init_bytes = init.encode();
-        assert!(!init_bytes.is_empty());
+        assert_ne!(init_bytes, [] as [u8; 0]);
         // MessagePack fixarray of 4 elements starts with 0x94
         // First element should decode to 0 (INIT)
 
         let ack = CollabMessage::Ack { version: 0 };
         let ack_bytes = ack.encode();
         // MessagePack fixarray of 2 elements starts with 0x92
-        assert!(!ack_bytes.is_empty());
+        assert_ne!(ack_bytes, [] as [u8; 0]);
     }
 
     #[test]
@@ -3164,7 +3583,7 @@ mod tests {
             matches!(err, PublishCheckpointError::NotNoteSession(_)),
             "a filename session has no note to checkpoint: {err}"
         );
-        assert!(state.note_events().await.is_empty());
+        assert_eq!(state.note_events().await, [] as [AppliedNote; 0]);
     }
 
     #[tokio::test]
@@ -3427,6 +3846,218 @@ mod tests {
         assert!(!fresh.restore_persisted_note_snapshot().await.unwrap());
     }
 
+    /// A note owned by `owner`, scoped so nobody else reads it, in a
+    /// state persisting to `path`; returns the state and the note.
+    async fn private_note_state(path: PathBuf, owner: AuthorKey, byte: u8) -> (CollabState, Hash) {
+        let state = CollabState::new().with_note_snapshot_path(path);
+        let note = Hash::from_bytes([byte; 32]);
+        state
+            .get_or_create_for_note(&note, "", Some(b"# Private"), Some("g.md"))
+            .await;
+        state
+            .publish_note_checkpoint(&note_session_key(&note), owner)
+            .await
+            .unwrap();
+        state
+            .set_note_access(note, owner, NoteAccess::Scoped(vec![]))
+            .await
+            .unwrap();
+        (state, note)
+    }
+
+    fn note_read_grant(name: &str, issuer: AuthorKey, reader: AuthorKey, note: Hash) -> Grant {
+        use id_grants::{Delegation, Duration, Operation, Subject};
+        Grant {
+            id: GrantId(name.to_owned()),
+            issuer: identity_key(issuer),
+            subject: Subject::Identity(identity_key(reader)),
+            scopes: std::collections::BTreeSet::from([Scope::Object(note.to_hex())]),
+            operations: std::collections::BTreeSet::from([Operation::Read]),
+            duration: Duration::Standing,
+            delegation: Delegation::default(),
+            parent: None,
+        }
+    }
+
+    const GRANT_NOW: u64 = 1_800_000_000;
+
+    #[tokio::test]
+    async fn test_an_owner_grant_admits_a_reader_and_revoke_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let (state, note) =
+            private_note_state(dir.path().join(".note-checkpoints.json"), owner, 61).await;
+        let defaults = ReadDefaults::none();
+
+        assert!(
+            !state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        state
+            .grant_note_access(owner, note_read_grant("g1", owner, reader, note))
+            .await
+            .unwrap();
+        assert!(
+            state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        // The grant names one reader; another stays refused.
+        assert!(
+            !state
+                .may_read_note(note, [9u8; 32], &defaults, GRANT_NOW)
+                .await
+        );
+
+        // Only the issuer revokes, and a stranger's attempt gets the
+        // same answer as an unknown id.
+        assert_eq!(
+            state
+                .revoke_note_grant(reader, &GrantId("g1".to_owned()))
+                .await,
+            Err(NoteGrantError::UnknownGrant)
+        );
+        assert_eq!(
+            state
+                .revoke_note_grant(owner, &GrantId("absent".to_owned()))
+                .await,
+            Err(NoteGrantError::UnknownGrant)
+        );
+        state
+            .revoke_note_grant(owner, &GrantId("g1".to_owned()))
+            .await
+            .unwrap();
+        assert!(
+            !state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_only_a_note_owner_issues_a_grant_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner: AuthorKey = [7u8; 32];
+        let other: AuthorKey = [8u8; 32];
+        let (state, note) =
+            private_note_state(dir.path().join(".note-checkpoints.json"), owner, 62).await;
+
+        // The issuer field must be the account issuing.
+        assert_eq!(
+            state
+                .grant_note_access(other, note_read_grant("g1", owner, other, note))
+                .await,
+            Err(NoteGrantError::NotIssuer)
+        );
+        // Someone else's grant over the owner's note is refused, and an
+        // unknown note gets the same answer.
+        assert_eq!(
+            state
+                .grant_note_access(other, note_read_grant("g1", other, other, note))
+                .await,
+            Err(NoteGrantError::NotOwner)
+        );
+        assert_eq!(
+            state
+                .grant_note_access(
+                    owner,
+                    note_read_grant("g1", owner, other, Hash::from_bytes([99u8; 32]))
+                )
+                .await,
+            Err(NoteGrantError::NotOwner)
+        );
+        // A scope that is not a note id is refused.
+        let mut collection = note_read_grant("g1", owner, other, note);
+        collection.scopes =
+            std::collections::BTreeSet::from([Scope::Object(note.to_hex().to_uppercase())]);
+        assert_eq!(
+            state.grant_note_access(owner, collection).await,
+            Err(NoteGrantError::NotANote)
+        );
+        assert!(
+            !state
+                .may_read_note(note, other, &ReadDefaults::none(), GRANT_NOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_note_grants_survive_a_restart_through_the_snapshot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let gone: AuthorKey = [9u8; 32];
+        let (live, note) = private_note_state(path.clone(), owner, 63).await;
+
+        // Before any grant, the file carries no grants field at all, so
+        // it reads exactly as snapshots written before grants existed.
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(raw.get("grants").is_none());
+
+        live.grant_note_access(owner, note_read_grant("keep", owner, reader, note))
+            .await
+            .unwrap();
+        live.grant_note_access(owner, note_read_grant("drop", owner, gone, note))
+            .await
+            .unwrap();
+        live.revoke_note_grant(owner, &GrantId("drop".to_owned()))
+            .await
+            .unwrap();
+
+        let restarted = CollabState::new().with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        let defaults = ReadDefaults::none();
+        assert!(
+            restarted
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        assert!(
+            !restarted
+                .may_read_note(note, gone, &defaults, GRANT_NOW)
+                .await
+        );
+        assert_eq!(
+            restarted.note_snapshot().await.unwrap(),
+            live.note_snapshot().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_tampered_grant_snapshot_fails_the_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let (live, note) = private_note_state(path.clone(), owner, 64).await;
+        live.grant_note_access(owner, note_read_grant("g1", owner, reader, note))
+            .await
+            .unwrap();
+
+        // A revocation naming no grant does not load, so the whole
+        // restart fails and nothing is replaced.
+        let mut snapshot = live.note_snapshot().await.unwrap();
+        snapshot
+            .grants
+            .as_mut()
+            .unwrap()
+            .revoked
+            .insert(GrantId("absent".to_owned()));
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+        let restarted = CollabState::new().with_note_snapshot_path(path);
+        let err = restarted
+            .restore_persisted_note_snapshot()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NoteSnapshotError::Grants(_)), "{err}");
+        assert!(restarted.note_events().await.is_empty());
+    }
+
     #[tokio::test]
     async fn test_seed_note_policies_before_events_is_refused() {
         use id_store::note_checkpoints::{NoteGrant, NotePrincipal, NoteRole};
@@ -3548,6 +4179,195 @@ mod tests {
         assert_eq!(record.revisions[0].content, expected);
         let base = DocumentRef::for_bytes("text/markdown", b"# Base").unwrap();
         assert_ne!(record.revisions[0].content, base);
+    }
+
+    #[tokio::test]
+    async fn test_a_note_session_ends_with_one_changelog_entry_naming_its_checkpoints() {
+        use ed25519_dalek::SigningKey;
+        use id_store::talk_page::{EntryRef, verify_chain};
+
+        let state = CollabState::new();
+        let note = Hash::from_bytes([37u8; 32]);
+        let key = note_session_key(&note);
+        state
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        let server = SigningKey::from_bytes(&[5u8; 32]);
+        let author: AuthorKey = server.verifying_key().to_bytes();
+        let sign = |draft: EntryDraft| SignedEntry::sign(draft, &server);
+
+        // A session that published nothing records nothing.
+        assert!(
+            state
+                .end_note_session(&key, 1, sign)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.note_changelog(note).await.is_empty());
+
+        // A session that published three checkpoints ends with exactly
+        // one `session` entry, naming the first and last of them.
+        state
+            .publish_note_checkpoint_text(&key, author, "one")
+            .await
+            .unwrap();
+        state
+            .publish_note_checkpoint_text(&key, author, "two")
+            .await
+            .unwrap();
+        let last = state
+            .publish_note_checkpoint_text(&key, author, "three")
+            .await
+            .unwrap();
+        let head = last.heads[0];
+        let entry = state
+            .end_note_session(&key, 10, sign)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.signed().kind(), ChangeKind::Session);
+        assert_eq!(entry.signed().actor(), &author);
+        assert_eq!(
+            entry.signed().refs(),
+            &[EntryRef::OpLog(OpLogRange {
+                first: *note.as_bytes(),
+                last: *head.as_bytes(),
+                count: 3,
+            })]
+        );
+        let changelog = state.note_changelog(note).await;
+        assert_eq!(changelog, vec![entry.clone()]);
+        assert!(verify_chain(note.as_bytes(), None, &changelog).is_ok());
+
+        // Ending again records nothing more: the range was taken.
+        assert!(
+            state
+                .end_note_session(&key, 11, sign)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // The next session covers only its own checkpoint, and chains
+        // after the first entry; the whole log verifies end to end.
+        let next = state
+            .publish_note_checkpoint_text(&key, author, "four")
+            .await
+            .unwrap();
+        let second = state
+            .end_note_session(&key, 20, sign)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.signed().seq(), 1);
+        assert_eq!(
+            second.signed().prev_hash(),
+            Some(entry.entry_hash().unwrap())
+        );
+        assert_eq!(
+            second.signed().op_log(),
+            Some(OpLogRange::single(*next.heads[0].as_bytes()))
+        );
+        let changelog = state.note_changelog(note).await;
+        assert_eq!(changelog.len(), 2);
+        assert!(verify_chain(note.as_bytes(), None, &changelog).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_a_note_changelog_survives_a_restart_and_keeps_chaining() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let note = Hash::from_bytes([41u8; 32]);
+        let key = note_session_key(&note);
+        let server = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+        let author: AuthorKey = server.verifying_key().to_bytes();
+        let sign = |draft: EntryDraft| SignedEntry::sign(draft, &server);
+
+        let live = CollabState::new().with_note_snapshot_path(path.clone());
+        live.get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        live.publish_note_checkpoint_text(&key, author, "one")
+            .await
+            .unwrap();
+        let first = live
+            .end_note_session(&key, 10, sign)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The entry reached the file.
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.changelogs.len(), 1);
+        assert_eq!(persisted.changelogs[0].note, note);
+
+        // Restart: the changelog comes back verified, and the next
+        // session's entry chains after the restored one.
+        let restarted = CollabState::new().with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        assert_eq!(restarted.note_changelog(note).await, vec![first.clone()]);
+        restarted
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        restarted
+            .publish_note_checkpoint_text(&key, author, "two")
+            .await
+            .unwrap();
+        let second = restarted
+            .end_note_session(&key, 20, sign)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            second.signed().prev_hash(),
+            Some(first.entry_hash().unwrap())
+        );
+        let changelog = restarted.note_changelog(note).await;
+        assert!(verify_chain(note.as_bytes(), None, &changelog).is_ok());
+
+        // A snapshot whose changelog was tampered with is a failed
+        // restart, never a silently shortened history.
+        let mut tampered: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        tampered.changelogs[0].entries.remove(0);
+        let fresh = CollabState::new();
+        assert!(matches!(
+            fresh.restore_note_snapshot(tampered).await,
+            Err(NoteSnapshotError::Changelog(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_a_failed_session_entry_keeps_the_range_open() {
+        let state = CollabState::new();
+        let note = Hash::from_bytes([39u8; 32]);
+        let key = note_session_key(&note);
+        state
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        let author: AuthorKey = [7u8; 32];
+        state
+            .publish_note_checkpoint_text(&key, author, "kept")
+            .await
+            .unwrap();
+        let refuse = |_draft: EntryDraft| -> Result<SignedEntry, TalkPageError> {
+            Err(TalkPageError::Invalid("refused"))
+        };
+        assert!(state.end_note_session(&key, 1, refuse).await.is_err());
+        assert!(state.note_changelog(note).await.is_empty());
+
+        // The next session end records the range the failed one held.
+        let server = ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]);
+        let entry = state
+            .end_note_session(&key, 2, |draft| SignedEntry::sign(draft, &server))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entry.signed().op_log(),
+            Some(OpLogRange::single(*note.as_bytes()))
+        );
     }
 
     #[tokio::test]

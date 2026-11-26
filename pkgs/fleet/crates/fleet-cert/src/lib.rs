@@ -28,6 +28,11 @@
 //!   index, checksum verification.
 //! - [`inventory`] — read-only cross-bundle inventory: `inventory
 //!   list|show|search|audit` over bundle directories (spec §6.1).
+//! - [`batch`] — `batch validate | plan | apply | status`: a
+//!   reviewed multi-step plan (issuer + leaf sets) applied
+//!   all-or-nothing over bundle directories (§6.5, #13730).
+//! - [`dns`] — offline CAA and TLSA/DANE change-sets: `dns plan |
+//!   render | verify` against the #13724 contract (no live DNS).
 //! - [`trust`] — §3.5 trust-bundle export and the broker-client
 //!   trust store: two-phase rollover (stage → acknowledge →
 //!   activate → retire) with last-known-good retention (BT-2,
@@ -44,9 +49,11 @@
 
 pub mod algorithm;
 pub mod algorithm_lab;
+pub mod batch;
 pub mod bundle;
 pub mod chain;
 pub mod cli;
+pub mod dns;
 pub mod engine;
 pub mod error;
 pub mod graph;
