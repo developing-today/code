@@ -2119,6 +2119,7 @@ mod identity_register_rate_limit_tests {
     use iroh_blobs::{api::Store, store::mem::MemStore};
     use iroh_docs::protocol::Docs;
     use iroh_gossip::net::Gossip;
+    use tower::ServiceExt as _;
 
     use super::*;
     use id_store::tags::TagStore;
@@ -2171,6 +2172,22 @@ mod identity_register_rate_limit_tests {
 
     async fn response_json(response: Response) -> serde_json::Value {
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn oidc_start_route_is_registered_and_disabled_without_provider_config() {
+        let state = state_with_limit(2).await;
+        let app = create_router(state, WebSecurity::default());
+        let request = axum::http::Request::builder()
+            .uri("/api/login/oidc/start")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["error"], "oidc_login_not_configured");
     }
 
     #[tokio::test]

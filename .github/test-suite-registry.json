@@ -89,7 +89,7 @@
     },
     {
       "id": "id.rust.unit",
-      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**", "pkgs/id/crates/id-store/src/**"],
+      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**", "pkgs/id/crates/id-store/src/**", "pkgs/id/crates/id-web/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
