@@ -529,7 +529,7 @@ mod tests {
         store.ingest(&forged.bytes, 0).unwrap();
         assert!(!store.event_applied(&forged.id).unwrap());
         let timeline = store.chat_timeline(&group, &author(&alice)).unwrap();
-        assert!(timeline.is_empty());
+        assert_eq!(timeline, [] as [id_store::chat::ChatRecord; 0]);
     }
 
     #[test]

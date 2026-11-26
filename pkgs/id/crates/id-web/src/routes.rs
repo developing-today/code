@@ -146,7 +146,9 @@ fn decode_utf16_text(data: &[u8]) -> Option<String> {
         return None;
     };
     let units: Vec<u16> = body
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             if little_endian {
                 u16::from_le_bytes([c[0], c[1]])

@@ -45,7 +45,7 @@ fn invalid_signatures_never_enter_pending_or_accepted() {
         AdmissionError::InvalidSignature
     );
     assert!(admission.pending().is_empty());
-    assert!(admission.accepted().is_empty());
+    assert_eq!(admission.accepted(), []);
 }
 
 #[test]

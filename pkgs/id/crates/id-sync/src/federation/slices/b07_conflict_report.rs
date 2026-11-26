@@ -186,7 +186,7 @@ impl VersionHeader {
             .as_chunks::<32>()
             .0
             .iter()
-            .map(|chunk| chunk.try_into().unwrap_or([0; 32]))
+            .map(|chunk| *chunk)
             .collect();
         if parents.windows(2).any(|pair| pair[0] >= pair[1]) {
             return None;

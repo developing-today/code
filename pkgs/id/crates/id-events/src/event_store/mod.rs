@@ -1818,7 +1818,7 @@ mod tests {
         let (_dir, store) = open_temp();
         for n in 0u64..(MAX_ROSTER_CACHE_ENTRIES as u64 + 64) {
             let group = Hash::digest(n.to_be_bytes());
-            assert!(store.roster(&group).unwrap().is_empty());
+            assert_eq!(store.roster(&group).unwrap(), [] as [[u8; 32]; 0]);
             assert!(store.roster_cache_entries() <= MAX_ROSTER_CACHE_ENTRIES);
             assert!(store.roster_cache_payload_bytes() <= MAX_ROSTER_CACHE_PAYLOAD_BYTES);
         }
@@ -1829,7 +1829,7 @@ mod tests {
         );
         let last_group = Hash::digest((MAX_ROSTER_CACHE_ENTRIES as u64 + 63).to_be_bytes());
         let resolutions = store.roster_resolutions();
-        assert!(store.roster(&last_group).unwrap().is_empty());
+        assert_eq!(store.roster(&last_group).unwrap(), [] as [[u8; 32]; 0]);
         assert_eq!(
             store.roster_resolutions(),
             resolutions,
@@ -1909,11 +1909,9 @@ mod tests {
         assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
         assert_eq!(store.event_by_id(&event.id).unwrap(), Some(event.clone()));
         assert_eq!(store.group_members(&group).unwrap(), vec![(who, 0)]);
-        assert!(
-            store
-                .group_members(&Hash::digest(b"other"))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.group_members(&Hash::digest(b"other")).unwrap(),
+            [] as [([u8; 32], p2panda_core::SeqNum); 0]
         );
         store.check_invariants().unwrap();
     }
@@ -2030,17 +2028,15 @@ mod tests {
             seqs(store.applied_events(&who, None, None, 2).unwrap()),
             vec![0, 1]
         );
-        assert!(
-            store
-                .applied_events(&who, Some(3), None, 10)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.applied_events(&who, Some(3), None, 10).unwrap(),
+            [] as [Event; 0]
         );
-        assert!(
+        assert_eq!(
             store
                 .applied_events(&author(&key(17)), None, None, 10)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [Event; 0]
         );
         // A fork at seq 2 leaves seq 0 and 1 applied. Seq 3 stays stored, but it is not returned.
         let rival = sign(&signer, 2, Some(events[1].id), None, ext("rival", None)).unwrap();
@@ -2345,7 +2341,7 @@ mod tests {
             !store.remove_block(BlockKind::Ip, b"198.51.100.7").unwrap(),
             "removing an absent block is false, not an error"
         );
-        assert!(store.blocks().unwrap().is_empty());
+        assert_eq!(store.blocks().unwrap(), [] as [Block; 0]);
     }
 }
 

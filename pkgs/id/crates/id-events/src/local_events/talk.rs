@@ -478,7 +478,10 @@ mod tests {
             alice.talk_page(unknown).unwrap_err().to_string(),
             NOT_VISIBLE
         );
-        assert!(alice.read_store(|store| store.chains()).unwrap().is_empty());
+        assert_eq!(
+            alice.read_store(|store| store.chains()).unwrap(),
+            [] as [([u8; 32], id_store::event_types::Chain); 0]
+        );
     }
 
     #[test]

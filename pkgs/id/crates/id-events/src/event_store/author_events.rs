@@ -367,11 +367,9 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            store
-                .author_events(&alice.author(), None, Some(0), 0)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.author_events(&alice.author(), None, Some(0), 0).unwrap(),
+            [] as [AuthorEvent; 0]
         );
     }
 
