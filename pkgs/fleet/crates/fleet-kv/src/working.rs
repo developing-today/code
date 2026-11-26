@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(version, 1);
         let dir = crate::working_dir_for(&db);
         let id = blake3::hash(&big).to_hex().to_string();
-        assert_eq!(files_in(&dir), [id.clone()]);
+        assert_eq!(files_in(&dir), std::slice::from_ref(&id));
         let mut out = Vec::new();
         assert!(store.get_to(&me(), "notes", "big", &mut out).expect("get"));
         assert_eq!(out, big);

@@ -83,7 +83,7 @@ package's pinned baseline `a038f084d`.
   flattened onto one line; heading "## 14.5 Live-session adapters"):
   candidate targets OpenCode, Fleet lanes, other providers, Muse,
   Slack, GitHub comments; the abstraction `agent.session.find / send
-  / status / start / resume / stop`; "Each adapter must honestly
+/ status / start / resume / stop`; "Each adapter must honestly
   report supported capabilities. A Slack message being posted is not
   proof that an agent received and acted upon it."
 
@@ -266,17 +266,17 @@ queue, scheduler, service, resolver, executable or provider adapter
 One read-only projection of the existing records, computed by the
 broker inside one read transaction:
 
-| Field              | Source                                                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------ |
-| `work`             | `(authority_id, work_id)`; `work_id` is the task id as a canonical decimal string          |
-| `task_status`      | `tasks.status`                                                                             |
-| `lease_until`      | `tasks.lease_until`, compared with the **store** clock                                     |
-| `ledger_session`   | `repo_task_lane_ledger.session_id`                                                         |
-| `progress_session` | `tasks.progress.session_id`                                                                |
-| `cleared_session`  | `tasks.progress.session_cleared.session_id`                                                |
-| `launched_by`      | `tasks.progress.launched_by`                                                               |
-| `binding_ref`      | id of the latest `session_bound` event for this task (the existing `events.id`)            |
-| `provider`         | `opencode` for every binding written by today's bind paths (they only accept `ses_` ids)   |
+| Field              | Source                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `work`             | `(authority_id, work_id)`; `work_id` is the task id as a canonical decimal string              |
+| `task_status`      | `tasks.status`                                                                                 |
+| `lease_until`      | `tasks.lease_until`, compared with the **store** clock                                         |
+| `ledger_session`   | `repo_task_lane_ledger.session_id`                                                             |
+| `progress_session` | `tasks.progress.session_id`                                                                    |
+| `cleared_session`  | `tasks.progress.session_cleared.session_id`                                                    |
+| `launched_by`      | `tasks.progress.launched_by`                                                                   |
+| `binding_ref`      | id of the latest `session_bound` event for this task (the existing `events.id`)                |
+| `provider`         | `opencode` for every binding written by today's bind paths (they only accept `ses_` ids)       |
 | `directory`        | worktree directory when a provider read returns one (`sessionStatusView`, `server.ts:897-910`) |
 
 `binding_ref` is the staleness token. It costs no new column: every
@@ -311,13 +311,13 @@ is persisted.
 Each step is a fact a named source can show; a higher step never
 implies a lower one was observed unless its evidence covers it.
 
-| Level              | Meaning                                                              | Evidence that may set it                                                              |
-| ------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `reserved`         | operation durably accepted, send intent recorded ("queued")          | the operation journal row (REL-03 / DSP-03 home)                                      |
-| `adapter_accepted` | the provider API returned success for the send request               | adapter response, e.g. OpenCode prompt 2xx                                            |
-| `delivered`        | the message is readable inside the bound session                     | a provider read-back that finds the correlation marker in that session                |
-| `acknowledged`     | the agent in that session responded to this message                  | an authenticated provider signal naming this message; **none is verified today**      |
-| `progressing`      | the session did work after the message                               | provider activity for that session after `delivered`, e.g. #9046 `route_attempt` rows |
+| Level              | Meaning                                                     | Evidence that may set it                                                              |
+| ------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `reserved`         | operation durably accepted, send intent recorded ("queued") | the operation journal row (REL-03 / DSP-03 home)                                      |
+| `adapter_accepted` | the provider API returned success for the send request      | adapter response, e.g. OpenCode prompt 2xx                                            |
+| `delivered`        | the message is readable inside the bound session            | a provider read-back that finds the correlation marker in that session                |
+| `acknowledged`     | the agent in that session responded to this message         | an authenticated provider signal naming this message; **none is verified today**      |
+| `progressing`      | the session did work after the message                      | provider activity for that session after `delivered`, e.g. #9046 `route_attempt` rows |
 
 `progressing` is weaker than `acknowledged` for attribution: activity
 after a message does not prove the activity answers it. It is
@@ -347,12 +347,12 @@ outcome enum (component `:87`, `:95`).
 
 ### 4.1 Inputs
 
-| Input                    | Required | Meaning                                                                                         |
-| ------------------------ | -------- | ----------------------------------------------------------------------------------------------- |
-| `work`                   | yes      | resolved `(authority_id, work_id)` from DSP-04; never a bare issue number                       |
-| `expected_session_ref`   | no       | the session the caller believes is bound (`--session-id`, an env value, the #9075 marker)       |
-| `expected_binding_ref`   | no       | `binding_ref` from an earlier lookup the caller is acting on                                    |
-| `probe_provider`         | no       | default true for `send`; false for a pure status read that must not touch the provider          |
+| Input                  | Required | Meaning                                                                                   |
+| ---------------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `work`                 | yes      | resolved `(authority_id, work_id)` from DSP-04; never a bare issue number                 |
+| `expected_session_ref` | no       | the session the caller believes is bound (`--session-id`, an env value, the #9075 marker) |
+| `expected_binding_ref` | no       | `binding_ref` from an earlier lookup the caller is acting on                              |
+| `probe_provider`       | no       | default true for `send`; false for a pure status read that must not touch the provider    |
 
 `expected_session_ref` is an **expectation to compare, never the
 target** (component `:78`). A caller's own identity from
@@ -459,17 +459,17 @@ receipt, and receipts stay per work item.
 `agent.session.send` (final spelling: CLI-02 / CLI-13) carries the
 shared envelope with `kind = "session_send"` and:
 
-| Field                     | Meaning                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------ |
-| `operation_id`            | REL-03 operation identity; also the correlation id                                               |
-| `idempotency_key`         | for a webhook comment, the DSP-01 semantic key (`operations.rs:208-211`); else caller-supplied   |
-| `request_digest`          | REL-03 digest of the canonical request, body included                                            |
-| `work`                    | resolved pair                                                                                    |
-| `session_ref`             | optional expectation (section 4.1)                                                               |
-| `arguments.body_ref`      | where the message text is held (the operation journal); the text itself is not in the receipt    |
-| `arguments.require`       | `delivered` (default) or `acknowledged`                                                          |
-| `arguments.wait_seconds`  | optional bound for waiting on `delivered` / `acknowledged`; zero returns after `adapter_accepted` |
-| `source_ref`, `source_event_ref`, `delivery_id` | origin (comment, PM action, CLI) for audit                                  |
+| Field                                           | Meaning                                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `operation_id`                                  | REL-03 operation identity; also the correlation id                                                |
+| `idempotency_key`                               | for a webhook comment, the DSP-01 semantic key (`operations.rs:208-211`); else caller-supplied    |
+| `request_digest`                                | REL-03 digest of the canonical request, body included                                             |
+| `work`                                          | resolved pair                                                                                     |
+| `session_ref`                                   | optional expectation (section 4.1)                                                                |
+| `arguments.body_ref`                            | where the message text is held (the operation journal); the text itself is not in the receipt     |
+| `arguments.require`                             | `delivered` (default) or `acknowledged`                                                           |
+| `arguments.wait_seconds`                        | optional bound for waiting on `delivered` / `acknowledged`; zero returns after `adapter_accepted` |
+| `source_ref`, `source_event_ref`, `delivery_id` | origin (comment, PM action, CLI) for audit                                                        |
 
 ### 5.2 Order of operations
 
@@ -550,13 +550,13 @@ Facts are stated only from the inspected sources; everything else is
 marked **unverified**. Nothing below has been exercised against a live
 provider in this pass.
 
-| Adapter                         | find / status                                                                                     | send                                                                                                                                           | max_evidence today                                                                  | resume / stop                                                                                                                                         | reconcile                          |
-| ------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| OpenCode (`opencode.ts`)        | supported: `GET /api/session/<id>`, 404 is gone (`:170-181`); list fails closed at 200 (`:150-163`) | endpoint exists and is used at launch (`:142-144`, `server.ts:345`); its semantics for an **existing busy** session are **unverified**           | `adapter_accepted` (2xx). `delivered`: **unverified** (no message-read call in the client). `acknowledged`: **unverified**, not advertised. `progressing`: candidate via #9046 `route_attempt` join (`commands_query.rs:922-1000`), **unverified** as a delivery signal | resume: **unverified**. stop: **unsupported**; `deleteSession` deletes the session (`:146-148`) and is not a stop                                      | **unverified** until a message read exists |
-| Fleet execution lane (queue claimant) | supported via broker `/list` and the binding view                                         | **unsupported**: a lane has no inbound message channel; the queue is not a message bus                                                          | `none`                                                                              | resume belongs to #9178 resume-by-session and DSP-06; stop **unsupported**                                                                              | n/a                                |
-| Slack                           | none identified                                                                                   | no approved integration identified in `pm-stack/dispatch/src` or `fleet-queue/src/work`; **unsupported** until one is (`DSP-05.md:134`)          | if added: at most `delivered` meaning **transport** delivery; `acknowledged` never without an authenticated session ack (O 14.5; FDR-PMO-007 `:37`) | **unsupported**                                                                                                                                       | n/a                                |
-| Muse                            | none identified                                                                                   | **unsupported** until an approved integration is identified (`DSP-05.md:134`)                                                                   | `none`                                                                              | **unsupported**                                                                                                                                       | n/a                                |
-| GitHub comment fallback         | n/a                                                                                               | not a session send. O 14.5 lists it "when direct session messaging is unavailable"; it is a remote write owned by the REL/AUTH outbox path      | at most a created comment id with read-back; never `delivered` to a session or `acknowledged` | n/a                                                                                                                                                   | comment id read-back (REL-06)      |
+| Adapter                               | find / status                                                                                       | send                                                                                                                                       | max_evidence today                                                                                                                                                                                                                                                      | resume / stop                                                                                                     | reconcile                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| OpenCode (`opencode.ts`)              | supported: `GET /api/session/<id>`, 404 is gone (`:170-181`); list fails closed at 200 (`:150-163`) | endpoint exists and is used at launch (`:142-144`, `server.ts:345`); its semantics for an **existing busy** session are **unverified**     | `adapter_accepted` (2xx). `delivered`: **unverified** (no message-read call in the client). `acknowledged`: **unverified**, not advertised. `progressing`: candidate via #9046 `route_attempt` join (`commands_query.rs:922-1000`), **unverified** as a delivery signal | resume: **unverified**. stop: **unsupported**; `deleteSession` deletes the session (`:146-148`) and is not a stop | **unverified** until a message read exists |
+| Fleet execution lane (queue claimant) | supported via broker `/list` and the binding view                                                   | **unsupported**: a lane has no inbound message channel; the queue is not a message bus                                                     | `none`                                                                                                                                                                                                                                                                  | resume belongs to #9178 resume-by-session and DSP-06; stop **unsupported**                                        | n/a                                        |
+| Slack                                 | none identified                                                                                     | no approved integration identified in `pm-stack/dispatch/src` or `fleet-queue/src/work`; **unsupported** until one is (`DSP-05.md:134`)    | if added: at most `delivered` meaning **transport** delivery; `acknowledged` never without an authenticated session ack (O 14.5; FDR-PMO-007 `:37`)                                                                                                                     | **unsupported**                                                                                                   | n/a                                        |
+| Muse                                  | none identified                                                                                     | **unsupported** until an approved integration is identified (`DSP-05.md:134`)                                                              | `none`                                                                                                                                                                                                                                                                  | **unsupported**                                                                                                   | n/a                                        |
+| GitHub comment fallback               | n/a                                                                                                 | not a session send. O 14.5 lists it "when direct session messaging is unavailable"; it is a remote write owned by the REL/AUTH outbox path | at most a created comment id with read-back; never `delivered` to a session or `acknowledged`                                                                                                                                                                           | n/a                                                                                                               | comment id read-back (REL-06)              |
 
 Consequences for the oracle: "unsupported adapter says unsupported"
 is the lane, Slack, Muse and stop rows; "Slack delivered is not ack"
@@ -601,25 +601,25 @@ JavaScript safe range are canonical decimal strings
 Outcome is one of the shared eight. Stage detail lives in three
 `Effect` entries (`contracts.rs:828-840`):
 
-| `effect.field`     | `requested`                   | `observed`                                              | `verified`                                          |
-| ------------------ | ----------------------------- | ------------------------------------------------------- | --------------------------------------------------- |
-| `session_binding`  | expected `binding_ref` or null | `binding_ref` read at send                              | same value when the post-send re-read matches       |
-| `message_delivery` | `delivered`                   | highest `DeliveryState` with evidence                   | highest state confirmed by read-back, else null     |
-| `session_ack`      | `acknowledged` or `not_requested` | `acknowledged` / `unsupported` / null               | `acknowledged` only from an authenticated signal    |
+| `effect.field`     | `requested`                       | `observed`                            | `verified`                                       |
+| ------------------ | --------------------------------- | ------------------------------------- | ------------------------------------------------ |
+| `session_binding`  | expected `binding_ref` or null    | `binding_ref` read at send            | same value when the post-send re-read matches    |
+| `message_delivery` | `delivered`                       | highest `DeliveryState` with evidence | highest state confirmed by read-back, else null  |
+| `session_ack`      | `acknowledged` or `not_requested` | `acknowledged` / `unsupported` / null | `acknowledged` only from an authenticated signal |
 
 Outcome mapping:
 
-| Situation                                                        | `outcome`           | `error.code`                                                    |
-| ---------------------------------------------------------------- | ------------------- | ---------------------------------------------------------------- |
-| refused before reservation (auth, capability, no binding, ambiguity, gone, provider unreachable) | `rejected` | section 8 code |
-| stale binding or session mismatch; same key, different digest    | `conflict`          | `stale_binding`, `session_mismatch`, `idempotency_conflict`      |
-| reserved, not yet sent                                           | `accepted`          | none                                                             |
-| sent, waiting within `wait_seconds`                              | `running`           | none                                                             |
-| `adapter_accepted`, requested level not yet confirmed            | `pending_sync`      | none; `next_action` names the read-back                          |
-| provider definitively refused                                    | `rejected`          | `send_failed`                                                    |
-| `unknown`                                                        | `uncertain`         | `send_timeout`; `next_action: reconcile`                         |
-| requested level confirmed; ack asked and timed out               | `partial`           | `ack_timeout`                                                    |
-| every requested effect verified                                  | `verified_complete` | none                                                             |
+| Situation                                                                                        | `outcome`           | `error.code`                                                |
+| ------------------------------------------------------------------------------------------------ | ------------------- | ----------------------------------------------------------- |
+| refused before reservation (auth, capability, no binding, ambiguity, gone, provider unreachable) | `rejected`          | section 8 code                                              |
+| stale binding or session mismatch; same key, different digest                                    | `conflict`          | `stale_binding`, `session_mismatch`, `idempotency_conflict` |
+| reserved, not yet sent                                                                           | `accepted`          | none                                                        |
+| sent, waiting within `wait_seconds`                                                              | `running`           | none                                                        |
+| `adapter_accepted`, requested level not yet confirmed                                            | `pending_sync`      | none; `next_action` names the read-back                     |
+| provider definitively refused                                                                    | `rejected`          | `send_failed`                                               |
+| `unknown`                                                                                        | `uncertain`         | `send_timeout`; `next_action: reconcile`                    |
+| requested level confirmed; ack asked and timed out                                               | `partial`           | `ack_timeout`                                               |
+| every requested effect verified                                                                  | `verified_complete` | none                                                        |
 
 `verified_complete` here means "this send reached the verified level
 asked for"; it never completes the work item (`contracts.rs:508-511`).
@@ -652,49 +652,49 @@ Stable snake_case strings for `Result.error.code` and lookup
 `reason`. They are not added to the priority `ReasonCode` registry by
 this record.
 
-| Code                     | Raised by                         |
-| ------------------------ | --------------------------------- |
-| `unauthorized`           | 5.2 step 1, step 6                |
-| `idempotency_conflict`   | 5.2 step 2                        |
-| `capability_unsupported` | 5.2 step 3                        |
-| `capability_unverified`  | 5.2 step 3                        |
-| `ack_unsupported`        | 5.2 step 3                        |
-| `not_found`              | 4.2 step 2                        |
-| `task_not_live`          | 4.2 step 3                        |
-| `lease_expired`          | 4.2 step 4                        |
-| `never_bound`, `cleared` | 4.2 step 5                        |
-| `binding_inconsistent`, `binding_partial` | 4.2 step 6      |
-| `binding_malformed`      | 4.2 step 7                        |
-| `stale_binding`          | 4.2 step 8, 5.2 step 6            |
-| `session_mismatch`       | 4.2 step 9, 4.3                   |
-| `session_gone`           | 4.3, 5.2 step 7                   |
-| `provider_unreachable`   | 4.3, 5.2 step 7                   |
-| `send_failed`            | 5.2 step 8 (component `:95`)      |
-| `send_timeout`           | 5.2 step 8                        |
-| `ack_timeout`            | 5.2 step 9 (component `:95`)      |
-| `ambiguous_target`       | DSP-04, passed through unchanged  |
+| Code                                      | Raised by                        |
+| ----------------------------------------- | -------------------------------- |
+| `unauthorized`                            | 5.2 step 1, step 6               |
+| `idempotency_conflict`                    | 5.2 step 2                       |
+| `capability_unsupported`                  | 5.2 step 3                       |
+| `capability_unverified`                   | 5.2 step 3                       |
+| `ack_unsupported`                         | 5.2 step 3                       |
+| `not_found`                               | 4.2 step 2                       |
+| `task_not_live`                           | 4.2 step 3                       |
+| `lease_expired`                           | 4.2 step 4                       |
+| `never_bound`, `cleared`                  | 4.2 step 5                       |
+| `binding_inconsistent`, `binding_partial` | 4.2 step 6                       |
+| `binding_malformed`                       | 4.2 step 7                       |
+| `stale_binding`                           | 4.2 step 8, 5.2 step 6           |
+| `session_mismatch`                        | 4.2 step 9, 4.3                  |
+| `session_gone`                            | 4.3, 5.2 step 7                  |
+| `provider_unreachable`                    | 4.3, 5.2 step 7                  |
+| `send_failed`                             | 5.2 step 8 (component `:95`)     |
+| `send_timeout`                            | 5.2 step 8                       |
+| `ack_timeout`                             | 5.2 step 9 (component `:95`)     |
+| `ambiguous_target`                        | DSP-04, passed through unchanged |
 
 ## 9. Failure modes
 
-| Scenario                                                              | Result                                                                                 |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Task claimed, bound, lease live, session live                         | one send; receipt at the adapter's ceiling                                             |
-| Task queued or parked (binding cleared on park, `lifecycle.rs:2094`)  | `rejected` / `task_not_live`; DSP-04 routes to DSP-06 or triage                        |
-| Lease passed, expiry sweep not yet run                                | `rejected` / `lease_expired`; no send to a session that may be gone                    |
-| Task `done`, row still carries `session_id`                           | `rejected` / `task_not_live`, `last_session_ref` reported                              |
-| Ledger and progress disagree                                          | `rejected` / `binding_inconsistent`; nothing chosen                                    |
-| Comment names a session id                                            | ignored as a target; compared as `expected_session_ref` only if passed as one          |
-| Rebind between lookup and send                                        | `conflict` / `stale_binding`; nothing sent                                             |
-| OpenCode session archived or 404                                      | `rejected` / `session_gone`; binding not auto-cleared                                  |
-| OpenCode server down before send                                      | `rejected` / `provider_unreachable`; nothing sent                                      |
-| Provider 2xx received, then the read-back wait times out              | `pending_sync`: `adapter_accepted` stands; `delivered` not yet observed                 |
-| Request sent, connection lost                                         | `uncertain` / `unknown`; reconcile before any retry                                    |
-| Duplicate webhook delivery of the same comment                        | stored receipt returned; one send                                                      |
-| Same key, edited body                                                 | `conflict` / `idempotency_conflict` (an edited comment is a new candidate, component `:71`) |
-| Principal revoked after reservation                                   | `rejected` at step 6; nothing sent                                                     |
-| Slack post succeeds (if an adapter is ever added)                     | `delivered` (transport) at most; `session_ack` stays `unsupported`                     |
-| Broker crash after reservation, before send                           | operation stays `queued`; resumed by the operation owner, sent once                    |
-| Broker crash after send, before recording                             | `unknown` on recovery; reconcile                                                       |
+| Scenario                                                             | Result                                                                                      |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Task claimed, bound, lease live, session live                        | one send; receipt at the adapter's ceiling                                                  |
+| Task queued or parked (binding cleared on park, `lifecycle.rs:2094`) | `rejected` / `task_not_live`; DSP-04 routes to DSP-06 or triage                             |
+| Lease passed, expiry sweep not yet run                               | `rejected` / `lease_expired`; no send to a session that may be gone                         |
+| Task `done`, row still carries `session_id`                          | `rejected` / `task_not_live`, `last_session_ref` reported                                   |
+| Ledger and progress disagree                                         | `rejected` / `binding_inconsistent`; nothing chosen                                         |
+| Comment names a session id                                           | ignored as a target; compared as `expected_session_ref` only if passed as one               |
+| Rebind between lookup and send                                       | `conflict` / `stale_binding`; nothing sent                                                  |
+| OpenCode session archived or 404                                     | `rejected` / `session_gone`; binding not auto-cleared                                       |
+| OpenCode server down before send                                     | `rejected` / `provider_unreachable`; nothing sent                                           |
+| Provider 2xx received, then the read-back wait times out             | `pending_sync`: `adapter_accepted` stands; `delivered` not yet observed                     |
+| Request sent, connection lost                                        | `uncertain` / `unknown`; reconcile before any retry                                         |
+| Duplicate webhook delivery of the same comment                       | stored receipt returned; one send                                                           |
+| Same key, edited body                                                | `conflict` / `idempotency_conflict` (an edited comment is a new candidate, component `:71`) |
+| Principal revoked after reservation                                  | `rejected` at step 6; nothing sent                                                          |
+| Slack post succeeds (if an adapter is ever added)                    | `delivered` (transport) at most; `session_ack` stays `unsupported`                          |
+| Broker crash after reservation, before send                          | operation stays `queued`; resumed by the operation owner, sent once                         |
+| Broker crash after send, before recording                            | `unknown` on recovery; reconcile                                                            |
 
 ## 10. Commands allocated
 
@@ -705,18 +705,18 @@ reach DSP-05 only through the merged `CLI-11` facade
 (`DSP-05.md:139-141`). This record fixes semantics for the primary
 rows; spelling is CLI-02's and registration is CLI-13's.
 
-| Key                                   | Inventory | DSP-05 semantics                                                                                     |
-| ------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| `agent.session.send`                  | absent    | section 5                                                                                            |
-| `agent.status`, `agent.slash.agent-status` | absent | lookup (section 4) plus capability snapshot; read-only, `probe_provider` optional                    |
-| `agent.session.resume`                | absent    | capability answer only: OpenCode resume unverified, so `rejected` / `capability_unverified`; resume of parked work is #9178 / DSP-06 |
-| `agent.session.stop`                  | absent    | `rejected` / `capability_unsupported` for every adapter in section 6                                 |
-| `agent.slash.resume`                  | absent    | lookup first: a live binding returns `bound` with no new session (H-R044); otherwise hand to DSP-04/DSP-06 |
-| `flag.session-id`                     | implemented (claim mark) | on DSP-05 commands it is `expected_session_ref`, never the target                       |
-| `current.claim.bind`, `current.claim.from-session` | implemented | V1 bind paths consumed unchanged (section 2.1)                                                   |
-| `session.status`, `session.list`, `session.result` | implemented | placement sessions; explicitly **not** agent session status (section 4.6)                         |
-| `agent.dispatch`, `agent.slash.start` | absent    | DSP-06 primary; DSP-05 supplies the "already bound" check only                                        |
-| the other `agent.slash.*` and `flag.*` rows | mixed | owned by their primary slices (DSP-02, DSP-03, DSP-04, DSP-08, DSP-09); DSP-05 adds nothing      |
+| Key                                                | Inventory                | DSP-05 semantics                                                                                                                     |
+| -------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `agent.session.send`                               | absent                   | section 5                                                                                                                            |
+| `agent.status`, `agent.slash.agent-status`         | absent                   | lookup (section 4) plus capability snapshot; read-only, `probe_provider` optional                                                    |
+| `agent.session.resume`                             | absent                   | capability answer only: OpenCode resume unverified, so `rejected` / `capability_unverified`; resume of parked work is #9178 / DSP-06 |
+| `agent.session.stop`                               | absent                   | `rejected` / `capability_unsupported` for every adapter in section 6                                                                 |
+| `agent.slash.resume`                               | absent                   | lookup first: a live binding returns `bound` with no new session (H-R044); otherwise hand to DSP-04/DSP-06                           |
+| `flag.session-id`                                  | implemented (claim mark) | on DSP-05 commands it is `expected_session_ref`, never the target                                                                    |
+| `current.claim.bind`, `current.claim.from-session` | implemented              | V1 bind paths consumed unchanged (section 2.1)                                                                                       |
+| `session.status`, `session.list`, `session.result` | implemented              | placement sessions; explicitly **not** agent session status (section 4.6)                                                            |
+| `agent.dispatch`, `agent.slash.start`              | absent                   | DSP-06 primary; DSP-05 supplies the "already bound" check only                                                                       |
+| the other `agent.slash.*` and `flag.*` rows        | mixed                    | owned by their primary slices (DSP-02, DSP-03, DSP-04, DSP-08, DSP-09); DSP-05 adds nothing                                          |
 
 ## 11. Open questions
 
@@ -879,64 +879,64 @@ is provider_unknown`, `prompt 2xx is adapter_accepted not delivered`,
 "contributes" means DSP-05 supplies one input and another slice owns
 the outcome. Statuses are from `census/requirements-crosswalk.jsonl`.
 
-| ID     | Crosswalk line / status          | Outcome (abridged)                                                    | Here                                                                  |
-| ------ | -------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| C-R005 | L5, partially implemented        | cohesive Fleet CLI incl. `agent session status/send/resume`           | contributes: section 10 semantics; spelling CLI-02                    |
-| C-R009 | L9, partially implemented (group)| discover, claim, execute, handle new activity, park, complete        | contributes: section 4 (new activity reaches the bound session)      |
-| C-R087 | L87, open implementation         | authenticated slash grammar incl. `agent status`                      | contributes: section 10 (`agent.slash.agent-status`)                 |
-| C-R088 | L88, design-only                 | authorized plain-language requests on live/parked items               | contributes: section 5 is the live-item delivery; classification DSP-04 |
-| C-R089 | L89, partially implemented       | live-issue comment routes to current session, records delivery/ack    | addresses: sections 4, 5, 7                                          |
-| C-R090 | L90, partially implemented       | parked-item comment launches or triages, not merely queued            | contributes: section 4.2 step 3 hands parked work to DSP-06          |
-| C-R091 | L91, partially implemented       | verify, authorize, resolve, dedupe, find session, send, record        | addresses "find live session, send, record": sections 4, 5          |
-| C-R093 | L93, partially implemented       | repeated deliveries must not double-launch                            | contributes: section 5.4 (no double send); launch is DSP-06          |
-| C-R107 | L107, partially implemented      | cohesive agent-facing CLI                                             | contributes: section 10                                              |
-| C-R108 | L108, partially implemented      | common flags incl. `--session-id`, `--idempotency-key`, `--wait`      | addresses `--session-id` semantics (4.1), `wait_seconds` (5.1)       |
-| C-R150 | L150, partially implemented      | scenario A, standard agent                                            | contributes: binding view used by the scenario                       |
-| C-R151 | L151, partially implemented      | scenario B, blocked/parked/resumed                                    | contributes: cleared binding on park is `no_binding` (4.2)           |
-| C-R152 | L152, partially implemented      | scenario C, live comment to bound OpenCode session with ack           | addresses: sections 1, 4, 5, 6 (ack limits stated)                   |
-| C-R153 | L153, open implementation        | scenario D, near-timeout checkpoint and park                          | contributes: post-park sends are refused (9, row 2)                  |
-| H-R001 | L168, design-only                | preserve the two coordinated tracks                                   | contributes: DSP-05 stays in the dispatch track                      |
-| H-R012 | L179, partially implemented      | live-session routing, durable receipts, idempotent webhooks           | addresses live-session routing and receipts: 4, 5, 7                 |
-| H-R014 | L181, design-only                | session attribution among lifecycle guarantees                        | contributes: 7.3, test 18 (HYD-07 owns attribution)                  |
-| H-R016 | L183, design-only                | late comment, duplicate webhook, stale lease scenarios                | addresses for sends: section 9                                       |
-| H-R017 | L184, partially implemented      | preserve full command inventory                                       | contributes: section 10                                              |
-| H-R021 | L188, unverified                 | verify prompt delivery, session identity; reuse active sessions       | addresses for messages: 3.3, 4, 6                                    |
-| H-R022 | L189, unverified                 | "continue" is not recovery until ack or resumed work                  | addresses: 3.3 (`acknowledged` vs `progressing`), 6                  |
-| H-R024 | L191, design-only                | keep every command, error, receipt in coverage                        | contributes: sections 7, 8, 10                                       |
-| H-R031 | L198, design-only                | keep schema, errors, receipts, failures in coverage                   | contributes: sections 7, 8, 9                                        |
-| H-R034 | L201, design-only (history)      | verify task/session binding and durable handoff                       | addresses binding verification: 4.2                                  |
-| H-R041 | L208, design-only                | bind canonical task and launch authorized session                     | contributes: lookup only; launch DSP-06                              |
-| H-R042 | L209, design-only                | verify prompt delivery, session identity, ownership/lease             | addresses for messages: 4.2 steps 3-9, 5.2, 6                        |
-| H-R043 | L210, design-only                | label, queue position, bare shell, pending outbox is not a receipt    | addresses: 3.3, 7.2                                                  |
-| H-R044 | L211, design-only                | reuse a compatible active session, no duplicate claim                 | addresses: section 10 `agent.slash.resume`, 4.4                      |
-| H-R054 | L221, duplicate of H-R041        | as H-R041                                                             | as H-R041                                                            |
-| H-R055 | L222, duplicate of H-R042        | as H-R042                                                             | as H-R042                                                            |
-| H-R057 | L224, duplicate of H-R044        | as H-R044                                                             | as H-R044                                                            |
-| O-R011 | L241, design-only candidate      | do-now routes to live session or dispatches, binds, acknowledges      | contributes: live-session half (5); directive DSP-08                 |
-| O-R014 | L244, design-only candidate      | honest adapter delivery/ack, replay, audit, visible failure           | addresses: 5, 6, 7, 9                                                |
-| O-R021 | L251, design-only candidate      | coordinate discovery through completion                               | contributes: binding view                                            |
-| O-R022 | L252, design-only candidate      | separate broker, adapters, direct-dispatch responsibilities           | addresses: 2.3 (no new service), 6 (adapter boundary)                |
-| O-R023 | L253, design-only candidate      | preserve CLI families, no parallel dispatch mechanism                 | contributes: section 10                                              |
-| O-R026 | L256, design-only candidate      | stable Fleet identity, qualified external links                       | contributes: `work` pair in 4.1 and 5.1                              |
-| O-R033 | L263, design-only candidate      | lifecycle distinct from ownership; park preserves provenance          | contributes: 4.2 step 3 (history kept, not a target)                 |
-| O-R040 | L270, design-only history        | preserve two-track history, current dispatch authority                | contributes: 2.1 uses current authority                              |
-| O-R047 | L277, design-only history        | bind issue/task/session, verify identity, report failure honestly     | addresses for messages: 4, 7                                         |
-| O-R049 | L279, design-only example        | ordinary-worker walkthrough                                           | contributes: binding view                                            |
-| O-R050 | L280, design-only example        | resume walkthrough with new activity                                  | contributes: sends after resume target the new binding (5.4)         |
-| O-R051 | L281, design-only example        | live-instruction walkthrough: route, record delivery, no queueing     | addresses: sections 1, 4, 5                                          |
-| O-R052 | L282, design-only example        | near-timeout walkthrough                                              | contributes: 9, row 2                                                |
-| O-R063 | L293, design-only candidate      | comments on active work to bound session with delivery/ack           | addresses: 4, 5, 7                                                   |
-| O-R064 | L294, design-only candidate      | capability-aware adapters; Slack post is not receipt                  | addresses: 3.2, 6                                                    |
-| O-R075 | L305, duplicate of O-R063        | as O-R063                                                             | as O-R063                                                            |
-| O-R076 | L306, duplicate of O-R064        | as O-R064                                                             | as O-R064                                                            |
-| P-R002 | L309, design-only candidate      | Fleet coordinates without replacing tools                             | contributes: 2.3 reuses existing adapter                             |
-| P-R009 | L316, design-only candidate      | cohesive CLI incl. agent/session operations                           | contributes: section 10                                              |
-| P-R012 | L319, design-only candidate      | session flags, idempotency, wait, timeout                             | addresses: 4.1, 5.1, 5.4                                             |
-| P-R013 | L320, design-only candidate      | work identity, ownership/lease fields                                 | contributes: 3.1 (derived, no new field)                             |
-| P-R027 | L334, design-only candidate      | realistic end-to-end acceptance scenarios                             | contributes: section 14                                              |
-| P-R035 | L342, design-only example        | worker walkthrough                                                    | contributes: binding view                                            |
-| P-R036 | L343, design-only example        | resume/finish walkthrough with new feedback                           | contributes: 5.4                                                     |
-| S-R004 | L381, partially implemented      | route comments to a live session or start one, not merely queue       | addresses live-session half: 4, 5; start is DSP-06                   |
+| ID     | Crosswalk line / status           | Outcome (abridged)                                                 | Here                                                                    |
+| ------ | --------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| C-R005 | L5, partially implemented         | cohesive Fleet CLI incl. `agent session status/send/resume`        | contributes: section 10 semantics; spelling CLI-02                      |
+| C-R009 | L9, partially implemented (group) | discover, claim, execute, handle new activity, park, complete      | contributes: section 4 (new activity reaches the bound session)         |
+| C-R087 | L87, open implementation          | authenticated slash grammar incl. `agent status`                   | contributes: section 10 (`agent.slash.agent-status`)                    |
+| C-R088 | L88, design-only                  | authorized plain-language requests on live/parked items            | contributes: section 5 is the live-item delivery; classification DSP-04 |
+| C-R089 | L89, partially implemented        | live-issue comment routes to current session, records delivery/ack | addresses: sections 4, 5, 7                                             |
+| C-R090 | L90, partially implemented        | parked-item comment launches or triages, not merely queued         | contributes: section 4.2 step 3 hands parked work to DSP-06             |
+| C-R091 | L91, partially implemented        | verify, authorize, resolve, dedupe, find session, send, record     | addresses "find live session, send, record": sections 4, 5              |
+| C-R093 | L93, partially implemented        | repeated deliveries must not double-launch                         | contributes: section 5.4 (no double send); launch is DSP-06             |
+| C-R107 | L107, partially implemented       | cohesive agent-facing CLI                                          | contributes: section 10                                                 |
+| C-R108 | L108, partially implemented       | common flags incl. `--session-id`, `--idempotency-key`, `--wait`   | addresses `--session-id` semantics (4.1), `wait_seconds` (5.1)          |
+| C-R150 | L150, partially implemented       | scenario A, standard agent                                         | contributes: binding view used by the scenario                          |
+| C-R151 | L151, partially implemented       | scenario B, blocked/parked/resumed                                 | contributes: cleared binding on park is `no_binding` (4.2)              |
+| C-R152 | L152, partially implemented       | scenario C, live comment to bound OpenCode session with ack        | addresses: sections 1, 4, 5, 6 (ack limits stated)                      |
+| C-R153 | L153, open implementation         | scenario D, near-timeout checkpoint and park                       | contributes: post-park sends are refused (9, row 2)                     |
+| H-R001 | L168, design-only                 | preserve the two coordinated tracks                                | contributes: DSP-05 stays in the dispatch track                         |
+| H-R012 | L179, partially implemented       | live-session routing, durable receipts, idempotent webhooks        | addresses live-session routing and receipts: 4, 5, 7                    |
+| H-R014 | L181, design-only                 | session attribution among lifecycle guarantees                     | contributes: 7.3, test 18 (HYD-07 owns attribution)                     |
+| H-R016 | L183, design-only                 | late comment, duplicate webhook, stale lease scenarios             | addresses for sends: section 9                                          |
+| H-R017 | L184, partially implemented       | preserve full command inventory                                    | contributes: section 10                                                 |
+| H-R021 | L188, unverified                  | verify prompt delivery, session identity; reuse active sessions    | addresses for messages: 3.3, 4, 6                                       |
+| H-R022 | L189, unverified                  | "continue" is not recovery until ack or resumed work               | addresses: 3.3 (`acknowledged` vs `progressing`), 6                     |
+| H-R024 | L191, design-only                 | keep every command, error, receipt in coverage                     | contributes: sections 7, 8, 10                                          |
+| H-R031 | L198, design-only                 | keep schema, errors, receipts, failures in coverage                | contributes: sections 7, 8, 9                                           |
+| H-R034 | L201, design-only (history)       | verify task/session binding and durable handoff                    | addresses binding verification: 4.2                                     |
+| H-R041 | L208, design-only                 | bind canonical task and launch authorized session                  | contributes: lookup only; launch DSP-06                                 |
+| H-R042 | L209, design-only                 | verify prompt delivery, session identity, ownership/lease          | addresses for messages: 4.2 steps 3-9, 5.2, 6                           |
+| H-R043 | L210, design-only                 | label, queue position, bare shell, pending outbox is not a receipt | addresses: 3.3, 7.2                                                     |
+| H-R044 | L211, design-only                 | reuse a compatible active session, no duplicate claim              | addresses: section 10 `agent.slash.resume`, 4.4                         |
+| H-R054 | L221, duplicate of H-R041         | as H-R041                                                          | as H-R041                                                               |
+| H-R055 | L222, duplicate of H-R042         | as H-R042                                                          | as H-R042                                                               |
+| H-R057 | L224, duplicate of H-R044         | as H-R044                                                          | as H-R044                                                               |
+| O-R011 | L241, design-only candidate       | do-now routes to live session or dispatches, binds, acknowledges   | contributes: live-session half (5); directive DSP-08                    |
+| O-R014 | L244, design-only candidate       | honest adapter delivery/ack, replay, audit, visible failure        | addresses: 5, 6, 7, 9                                                   |
+| O-R021 | L251, design-only candidate       | coordinate discovery through completion                            | contributes: binding view                                               |
+| O-R022 | L252, design-only candidate       | separate broker, adapters, direct-dispatch responsibilities        | addresses: 2.3 (no new service), 6 (adapter boundary)                   |
+| O-R023 | L253, design-only candidate       | preserve CLI families, no parallel dispatch mechanism              | contributes: section 10                                                 |
+| O-R026 | L256, design-only candidate       | stable Fleet identity, qualified external links                    | contributes: `work` pair in 4.1 and 5.1                                 |
+| O-R033 | L263, design-only candidate       | lifecycle distinct from ownership; park preserves provenance       | contributes: 4.2 step 3 (history kept, not a target)                    |
+| O-R040 | L270, design-only history         | preserve two-track history, current dispatch authority             | contributes: 2.1 uses current authority                                 |
+| O-R047 | L277, design-only history         | bind issue/task/session, verify identity, report failure honestly  | addresses for messages: 4, 7                                            |
+| O-R049 | L279, design-only example         | ordinary-worker walkthrough                                        | contributes: binding view                                               |
+| O-R050 | L280, design-only example         | resume walkthrough with new activity                               | contributes: sends after resume target the new binding (5.4)            |
+| O-R051 | L281, design-only example         | live-instruction walkthrough: route, record delivery, no queueing  | addresses: sections 1, 4, 5                                             |
+| O-R052 | L282, design-only example         | near-timeout walkthrough                                           | contributes: 9, row 2                                                   |
+| O-R063 | L293, design-only candidate       | comments on active work to bound session with delivery/ack         | addresses: 4, 5, 7                                                      |
+| O-R064 | L294, design-only candidate       | capability-aware adapters; Slack post is not receipt               | addresses: 3.2, 6                                                       |
+| O-R075 | L305, duplicate of O-R063         | as O-R063                                                          | as O-R063                                                               |
+| O-R076 | L306, duplicate of O-R064         | as O-R064                                                          | as O-R064                                                               |
+| P-R002 | L309, design-only candidate       | Fleet coordinates without replacing tools                          | contributes: 2.3 reuses existing adapter                                |
+| P-R009 | L316, design-only candidate       | cohesive CLI incl. agent/session operations                        | contributes: section 10                                                 |
+| P-R012 | L319, design-only candidate       | session flags, idempotency, wait, timeout                          | addresses: 4.1, 5.1, 5.4                                                |
+| P-R013 | L320, design-only candidate       | work identity, ownership/lease fields                              | contributes: 3.1 (derived, no new field)                                |
+| P-R027 | L334, design-only candidate       | realistic end-to-end acceptance scenarios                          | contributes: section 14                                                 |
+| P-R035 | L342, design-only example         | worker walkthrough                                                 | contributes: binding view                                               |
+| P-R036 | L343, design-only example         | resume/finish walkthrough with new feedback                        | contributes: 5.4                                                        |
+| S-R004 | L381, partially implemented       | route comments to a live session or start one, not merely queue    | addresses live-session half: 4, 5; start is DSP-06                      |
 
 Issue negative coverage (`DSP-05.md:106`): stale input (tests 3, 6),
 duplicate/replay (12, 13), ambiguous resource (5; DSP-04's

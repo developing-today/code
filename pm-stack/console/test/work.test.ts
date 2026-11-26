@@ -1916,12 +1916,19 @@ describe("the interface's endpoints", () => {
     // Refused before it began: nothing was recorded as started.
     expect(audited.filter((e) => e.phase === "start")).toHaveLength(0);
     // Looked at again and sent anyway: it is taken.
-    const sure = await handle(post("/console/api/act", body("0e000000-0000-4000-8000-000000000102", { sure: true })), d);
+    const sure = await handle(
+      post("/console/api/act", body("0e000000-0000-4000-8000-000000000102", { sure: true })),
+      d,
+    );
     expect(sure.status).not.toBe(409);
     expect(audited.filter((e) => e.phase === "start")).toHaveLength(1);
     // One that says nothing of when it was done is done now.
     const now = await handle(
-      post("/console/api/act", { kind: "task.cancel", args: { task: 21016, reason: "dup" }, id: "0e000000-0000-4000-8000-000000000103" }),
+      post("/console/api/act", {
+        kind: "task.cancel",
+        args: { task: 21016, reason: "dup" },
+        id: "0e000000-0000-4000-8000-000000000103",
+      }),
       d,
     );
     expect(now.status).not.toBe(409);

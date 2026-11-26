@@ -57,7 +57,7 @@ as the laptop's open list.
   token and an unknown question get the same 403 page; a withdrawn
   or expired question gets 410; an answered one shows the receipt.
 - `POST /api/needs-drew/:ledgerId/answer` takes `{token, optionId |
-  optionIds | freeText}` under the laptop route's rules. The first
+optionIds | freeText}` under the laptop route's rules. The first
   answer per question wins; a repeat (double tap, retry) returns the
   first answer id with `duplicate: true` and stores nothing.
 - The aggregator drains with `GET /answers`, applies each answer to

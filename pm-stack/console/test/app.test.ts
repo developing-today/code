@@ -52,6 +52,9 @@ import {
   needsLead,
   recommendedSets,
   machinesMark,
+  reposTyped,
+  settingSaid,
+  settingsTakenSaid,
   matchReportSaid,
   mergeMatchReport,
   offerSaid,
@@ -880,6 +883,8 @@ test("a machine, as the Machines screen says it: what only it reports and does, 
     // Nothing said of the code Cloudflare runs, and it is on main's settings.
     otherCode: "",
     differs: [],
+    // The owner has changed no setting: nothing to take.
+    settings: "",
   });
   // Cloudflare's own commit, where it is known: said when the machine runs another, and only then.
   expect(machineSaid(machine, platform, now, "0123abcd4567").otherCode).toBe("");
@@ -963,6 +968,7 @@ test("the Machines screen is drawn again when what it shows has changed, and not
     ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
     ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
     ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
+    ["it took the owner's settings", answer({ machines: [{ ...machine, settingsRev: 2 }] })],
     ["there is none", answer({ machines: [] })],
     ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
     ["what waits now waits for someone else", answer({ held: [{ id: "h1", kind: "task.move", waits: "asked" }] })],
@@ -974,6 +980,10 @@ test("the Machines screen is drawn again when what it shows has changed, and not
     [
       "the platform was turned away for something",
       answer({ platform: { primary: true, actions: [], sections: ["board"], refused: ["pr.merge"] } }),
+    ],
+    [
+      "the owner changed a setting",
+      answer({ platform: { primary: true, actions: ["ask.send"], sections: ["board"], refused: [], settingsRev: 3 } }),
     ],
     ["nothing is in front any more", answer({ platform: null })],
   ] as const) {
@@ -1765,4 +1775,70 @@ test("every screen is kept in the background only on a connection that is not me
   // A time that cannot be read, or one ahead of the clock, is taken as never.
   expect(keepAllDue("soon", now)).toBe(true);
   expect(keepAllDue(String(now + 60_000), now)).toBe(true);
+});
+
+// The oracle is the design's §5 (doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md):
+// each setting with its value, whose it is and since when, main's beside
+// an owner's change, and a way to change only the two the owner may.
+test("a platform setting is said with its value, whose it is and since when, and whether the owner may change it", () => {
+  const now = Date.parse("2026-11-25T12:00:00Z");
+  expect(
+    settingSaid(
+      {
+        name: "promptLabel",
+        source: "owner",
+        since: now - 20 * 60_000,
+        value: "owner/now",
+        repository: "owner/prompt",
+        by: "owner@example.com",
+        rev: 2,
+      },
+      now,
+    ),
+  ).toEqual({
+    name: "promptLabel",
+    what: "The label that marks an instruction",
+    value: "owner/now",
+    whose: "Yours: changed 20 min ago by owner@example.com.",
+    main: "Main says owner/prompt.",
+    changeable: true,
+    changed: true,
+  });
+  // Main's, and changeable: no main's beside it, since it is main's.
+  expect(
+    settingSaid({ name: "needsRepos", source: "repository", since: null, value: ["a/b", "c/d"], repository: ["a/b", "c/d"] }, now),
+  ).toMatchObject({ value: "a/b and c/d", whose: "Main's.", main: null, changeable: true, changed: false });
+  // A machine's list, for now.
+  expect(settingSaid({ name: "needsRepos", source: "machine", since: null, value: ["a/b"] }, now).whose).toBe(
+    "The machine's: Cloudflare goes by the list it reports until it runs main's.",
+  );
+  // Main's alone decides it: nothing to press.
+  expect(settingSaid({ name: "queue", source: "repository", since: null, value: "repo-health-code-pilot" }, now)).toMatchObject({
+    what: "The queue",
+    changeable: false,
+    changed: false,
+  });
+  // What is not one is not a crash.
+  expect(settingSaid(null, now)).toMatchObject({ what: "A setting", value: "nothing", changeable: false });
+});
+
+test("a list of repositories is read as typed: commas, spaces or lines between them", () => {
+  expect(reposTyped("a/b, c/d\ne/f  g/h,,")).toEqual(["a/b", "c/d", "e/f", "g/h"]);
+  expect(reposTyped("")).toEqual([]);
+  expect(reposTyped(undefined)).toEqual([]);
+});
+
+test("a machine that has not taken the owner's latest change to the settings is said to, and one that has is not", () => {
+  // The owner has changed none: nothing to say, whatever the machine says.
+  expect(settingsTakenSaid(0, 0)).toBe("");
+  expect(settingsTakenSaid(null, 0)).toBe("");
+  expect(settingsTakenSaid(undefined, undefined)).toBe("");
+  // It runs with the latest.
+  expect(settingsTakenSaid(3, 3)).toBe("");
+  // It is behind: it takes it with its next report.
+  expect(settingsTakenSaid(2, 3)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
+  expect(settingsTakenSaid(0, 1)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
+  // Its console does not take them at all.
+  expect(settingsTakenSaid(null, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
+  expect(settingsTakenSaid(undefined, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
 });

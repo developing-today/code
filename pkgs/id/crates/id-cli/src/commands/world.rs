@@ -1282,10 +1282,9 @@ async fn current_world_state(
     .context("host returned a malformed execution profile")?;
     // The presentation policy is public pre-join metadata, so it is read
     // with no token at all.
-    let presentation: id_core::presentation_policy::PresentationPolicy = serde_json::from_value(
-        client.fresh_session().await?.presentation_policy().await?,
-    )
-    .context("host returned a malformed presentation policy")?;
+    let presentation: id_core::presentation_policy::PresentationPolicy =
+        serde_json::from_value(client.fresh_session().await?.presentation_policy().await?)
+            .context("host returned a malformed presentation policy")?;
     // The report carries the world's own ceiling as a list; the shared
     // fold turns a report equal to the default ceiling into None, which
     // means the default ceiling — the one meaning of None for a live
@@ -2684,9 +2683,17 @@ mod tests {
             r#"{"from": "server", "frame": {"type": "view", "sequence": 3, "data": "Harbor Controls", "view_revision": 3, "surface": {"kind": "widget", "version": 1, "title": "Harbor Controls", "controls": [{"kind": "toggle", "id": "lights", "label": "Lights", "action": "lights", "on": true}]}}}"#,
         ]
         .join("\n");
+        // Derive the expected contract version from the embedded
+        // contract, formatted the way check_contract formats it, so
+        // a contract revision bump cannot strand this expectation
+        // (#15330).
+        let contract = id_worlds::shell_contract::ShellContract::embedded().unwrap();
         assert_eq!(
             check_contract(&good).unwrap(),
-            "6 frames conform to shell contract v1.16"
+            format!(
+                "6 frames conform to shell contract v{}.{}",
+                contract.version, contract.revision
+            )
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

@@ -51,6 +51,26 @@ pub(crate) fn migrate_to_v6(tx: &rusqlite::Transaction<'_>) -> Result<(), KvErro
     .map_err(sql)
 }
 
+/// Local schema version 9: the cached definition carries the namespace's
+/// blob placement (code#13318).
+pub(crate) fn migrate_to_v9(tx: &rusqlite::Transaction<'_>) -> Result<(), KvError> {
+    let present: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('kv_namespace_cache') WHERE name='blob_jurisdiction'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if present == 0 {
+        tx.execute_batch(
+            "ALTER TABLE kv_namespace_cache ADD COLUMN blob_jurisdiction TEXT;
+             ALTER TABLE kv_namespace_cache ADD COLUMN blob_tier TEXT;",
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
+}
+
 /// What the host's cache says about one namespace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lookup {
@@ -83,8 +103,8 @@ pub fn pull_namespaces(store: &LocalStore, primary: &dyn Pipeline) -> Result<usi
         tx.execute(
             "INSERT INTO kv_namespace_cache (
                  namespace, registry_id, scope_kind, shared_scope_id, core_binding,
-                 global_flag, blob_threshold, policy_epoch)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 global_flag, blob_threshold, policy_epoch, blob_jurisdiction, blob_tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 definition.namespace,
                 definition.registry_id,
@@ -94,6 +114,14 @@ pub fn pull_namespaces(store: &LocalStore, primary: &dyn Pipeline) -> Result<usi
                 i64::from(definition.global_flag),
                 i64::try_from(definition.blob_threshold).unwrap_or(i64::MAX),
                 i64::try_from(definition.policy_epoch).unwrap_or(i64::MAX),
+                definition
+                    .placement
+                    .as_ref()
+                    .map(|partition| partition.jurisdiction.as_str()),
+                definition
+                    .placement
+                    .as_ref()
+                    .map(|partition| partition.tier.as_str()),
             ],
         )
         .map_err(sql)?;
@@ -135,7 +163,7 @@ pub fn lookup(store: &LocalStore, namespace: &str) -> Result<Lookup, KvError> {
         .connection
         .query_row(
             "SELECT registry_id, scope_kind, shared_scope_id, core_binding, global_flag,
-                    blob_threshold, policy_epoch
+                    blob_threshold, policy_epoch, blob_jurisdiction, blob_tier
              FROM kv_namespace_cache WHERE namespace = ?1",
             params![namespace],
             |row| {
@@ -152,6 +180,15 @@ pub fn lookup(store: &LocalStore, namespace: &str) -> Result<Lookup, KvError> {
                     global_flag: row.get::<_, i64>(4)? == 1,
                     blob_threshold: unsigned(row.get(5)?),
                     policy_epoch: unsigned(row.get(6)?),
+                    placement: match (
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                    ) {
+                        (Some(jurisdiction), Some(tier)) => {
+                            Some(crate::blob::Partition::new(&jurisdiction, &tier))
+                        }
+                        _ => None,
+                    },
                 })
             },
         )
@@ -232,6 +269,8 @@ pub fn sync_with_blobs(
 pub enum GlobalError {
     Local(KvError),
     Central(CentralError),
+    /// A blob-backed value could not be read and verified.
+    Blob(crate::blob::BlobError),
     NotFound,
     /// The value is over the namespace's inline threshold; central has no
     /// blob plane before Phase 3.
@@ -249,6 +288,7 @@ impl GlobalError {
         match self {
             Self::Local(error) => error.code(),
             Self::Central(error) => error.code(),
+            Self::Blob(error) => error.code(),
             Self::NotFound => "not_found",
             Self::NeedsPhase3 { .. } => "pending_needs_phase3",
             Self::Conflict { .. } => "conflict",
@@ -269,6 +309,7 @@ impl std::fmt::Display for GlobalError {
         match self {
             Self::Local(error) => write!(f, "{error}"),
             Self::Central(error) => write!(f, "{error}"),
+            Self::Blob(error) => write!(f, "{error}"),
             Self::NotFound => f.write_str("no live central value for this key"),
             Self::NeedsPhase3 { threshold } => write!(
                 f,
@@ -296,6 +337,15 @@ impl From<CentralError> for GlobalError {
     }
 }
 
+impl From<crate::blob_read::ValueError> for GlobalError {
+    fn from(error: crate::blob_read::ValueError) -> Self {
+        match error {
+            crate::blob_read::ValueError::Central(error) => Self::Central(error),
+            crate::blob_read::ValueError::Blob(error) => Self::Blob(error),
+        }
+    }
+}
+
 /// The central address `identity` reaches for `namespace`/`key`, from the
 /// authoritative definition.
 fn address(
@@ -313,25 +363,21 @@ fn address(
 }
 
 /// `--global get`: the authoritative central head, bypassing the overlay and
-/// any cache. Writes the value's bytes to `out`.
+/// any cache. Writes the value's bytes to `out`: a blob-backed head through
+/// `blobs`, verified against its reference.
 pub fn global_get(
     primary: &dyn Pipeline,
     identity: &Identity<'_>,
     namespace: &str,
     key: &str,
+    blobs: Option<&dyn crate::blob_read::BlobReader>,
     out: &mut dyn Write,
 ) -> Result<u64, GlobalError> {
     let (_, address) = address(primary, identity, namespace, key)?;
     match central::head(primary, &address)? {
-        Some(Head {
-            live: true,
-            value,
-            version,
-            ..
-        }) => {
-            out.write_all(&value)
-                .map_err(|error| GlobalError::Local(KvError::Io(error)))?;
-            Ok(version)
+        Some(head @ Head { live: true, .. }) => {
+            crate::blob_read::write_value(&head.envelope, &head.value, &address, blobs, out)?;
+            Ok(head.version)
         }
         _ => Err(GlobalError::NotFound),
     }
@@ -506,6 +552,39 @@ mod tests {
     }
 
     #[test]
+    fn central_sync_pull_caches_the_blob_placement() {
+        let primary = primary();
+        let mut placed = Namespace::shared("status", "fleet-status");
+        placed.placement = Some(crate::blob::Partition::new("eu", "standard"));
+        define_namespace(&primary, &placed).unwrap();
+        let store = LocalStore::in_memory().unwrap();
+        pull_namespaces(&store, &primary).unwrap();
+        let Lookup::Known(status) = lookup(&store, "status").unwrap() else {
+            panic!("status should be cached");
+        };
+        assert_eq!(
+            status,
+            central::resolve(&primary, REGISTRY_ID, "status").unwrap()
+        );
+        assert_eq!(
+            status.placement,
+            Some(crate::blob::Partition::new("eu", "standard"))
+        );
+        let Lookup::Known(notes) = lookup(&store, "notes").unwrap() else {
+            panic!("notes should be cached");
+        };
+        assert_eq!(notes.placement, None);
+        // Dropping the placement reaches hosts on their next pull.
+        placed.placement = None;
+        define_namespace(&primary, &placed).unwrap();
+        pull_namespaces(&store, &primary).unwrap();
+        let Lookup::Known(status) = lookup(&store, "status").unwrap() else {
+            panic!("status should be cached");
+        };
+        assert_eq!(status.placement, None);
+    }
+
+    #[test]
     fn central_sync_sweeps_with_pulled_definitions() {
         let primary = primary();
         let store = LocalStore::in_memory().unwrap();
@@ -563,7 +642,7 @@ mod tests {
         assert_eq!(version, 1);
         let mut out = Vec::new();
         assert_eq!(
-            global_get(&primary, &me(), "status", "agent", &mut out).unwrap(),
+            global_get(&primary, &me(), "status", "agent", None, &mut out).unwrap(),
             1
         );
         assert_eq!(out, b"one");
@@ -592,7 +671,7 @@ mod tests {
         assert_eq!(deleted, 2);
         let mut out = Vec::new();
         assert!(matches!(
-            global_get(&primary, &me(), "status", "agent", &mut out),
+            global_get(&primary, &me(), "status", "agent", None, &mut out),
             Err(GlobalError::NotFound)
         ));
         assert!(
@@ -653,10 +732,10 @@ mod tests {
         .unwrap();
         let mut out = Vec::new();
         assert!(matches!(
-            global_get(&primary, &other, "notes", "todo", &mut out),
+            global_get(&primary, &other, "notes", "todo", None, &mut out),
             Err(GlobalError::NotFound)
         ));
-        let unknown = global_get(&primary, &me(), "nowhere", "todo", &mut out).unwrap_err();
+        let unknown = global_get(&primary, &me(), "nowhere", "todo", None, &mut out).unwrap_err();
         assert_eq!(unknown.code(), "unknown_namespace");
         assert!(!unknown.is_unavailable());
     }

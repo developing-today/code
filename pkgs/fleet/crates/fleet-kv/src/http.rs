@@ -18,7 +18,8 @@ use std::time::Duration;
 use serde_json::{Value as Json, json};
 
 use crate::blob::{KvBlobRefV1, Partition};
-use crate::central::{CentralError, Pipeline, Result, Rows, Statement, Value};
+use crate::blob_read::BlobReader;
+use crate::central::{Address, CentralError, Pipeline, Result, Rows, Statement, Value};
 use crate::sweep::{BlobUpload, BlobUploader};
 
 /// The environment variable naming the central endpoint.
@@ -77,11 +78,6 @@ impl HttpPipeline {
     }
 }
 
-/// The environment variables naming the partition this host's blobs go to
-/// (#3401 jurisdiction and sensitivity tier). Unset: no blob plane, and
-/// over-threshold values stay local.
-pub const BLOB_JURISDICTION_VAR: &str = "FLEET_KV_BLOB_JURISDICTION";
-pub const BLOB_TIER_VAR: &str = "FLEET_KV_BLOB_TIER";
 /// An upload streams a value of any size, so it gets far longer than a
 /// pipeline request.
 pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -111,27 +107,15 @@ impl HttpBlobUploader {
         })
     }
 
-    /// The uploader and partition the environment configures, or `None`
-    /// when the central endpoint or the blob partition is not configured.
-    pub fn from_env() -> Result<Option<(Self, Partition)>> {
-        let jurisdiction = std::env::var(BLOB_JURISDICTION_VAR).unwrap_or_default();
-        let tier = std::env::var(BLOB_TIER_VAR).unwrap_or_default();
-        let (jurisdiction, tier) = (jurisdiction.trim(), tier.trim());
-        if jurisdiction.is_empty() && tier.is_empty() {
-            return Ok(None);
-        }
-        if jurisdiction.is_empty() || tier.is_empty() {
-            return Err(CentralError::NotConfigured(format!(
-                "set both {BLOB_JURISDICTION_VAR} and {BLOB_TIER_VAR}, or neither"
-            )));
-        }
+    /// The uploader the environment configures beside the central
+    /// endpoint, or `None` when no central endpoint is configured. The
+    /// partition is not the host's to pick: each blob goes to its
+    /// namespace's placement (design §10).
+    pub fn from_env() -> Result<Option<Self>> {
         let Some(pipeline) = HttpPipeline::from_env()? else {
             return Ok(None);
         };
-        Ok(Some((
-            Self::new(&pipeline.url, &pipeline.bearer)?,
-            Partition::new(jurisdiction, tier),
-        )))
+        Self::new(&pipeline.url, &pipeline.bearer).map(Some)
     }
 }
 
@@ -171,6 +155,135 @@ impl BlobUploader for HttpBlobUploader {
         }
         parse_upload_answer(&text)
     }
+}
+
+/// The read side of the blob door (design §9, D011): `POST
+/// {FLEET_KV_URL}/blobs/capability` mints a short-lived capability from the
+/// key's live reference, and `GET {FLEET_KV_URL}/blobs/read` streams the
+/// bytes it names. The caller verifies the stream against the reference.
+pub struct HttpBlobReader {
+    url: String,
+    bearer: String,
+    agent: ureq::Agent,
+}
+
+impl HttpBlobReader {
+    pub fn new(url: &str, bearer: &str) -> Result<Self> {
+        let pipeline = HttpPipeline::new(url, bearer)?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(UPLOAD_TIMEOUT))
+            .build()
+            .into();
+        Ok(Self {
+            url: pipeline.url,
+            bearer: pipeline.bearer,
+            agent,
+        })
+    }
+
+    /// The reader the environment configures beside the central endpoint,
+    /// or `None` when no central endpoint is configured.
+    pub fn from_env() -> Result<Option<Self>> {
+        let Some(pipeline) = HttpPipeline::from_env()? else {
+            return Ok(None);
+        };
+        Self::new(&pipeline.url, &pipeline.bearer).map(Some)
+    }
+}
+
+impl BlobReader for HttpBlobReader {
+    fn open(&self, address: &Address, reference: &KvBlobRefV1) -> Result<Box<dyn std::io::Read>> {
+        let body = json!({
+            "registry": address.registry_id,
+            "namespace": address.namespace,
+            "scope": address.scope_id,
+            "key": address.key,
+        })
+        .to_string();
+        let mut response = self
+            .agent
+            .post(&format!("{}/blobs/capability", self.url))
+            .header("Authorization", &format!("Bearer {}", self.bearer))
+            .header("Content-Type", "application/json")
+            .send(body.as_str())
+            .map_err(|error| CentralError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| CentralError::Unavailable(format!("reading the answer: {error}")))?;
+        if status == 429 || status >= 500 {
+            return Err(CentralError::Unavailable(format!(
+                "HTTP {status}: {}",
+                snippet(&text)
+            )));
+        }
+        if !(200..300).contains(&status) {
+            return Err(refusal(status, &text));
+        }
+        let query = parse_capability_answer(&text, reference)?;
+        // Only the query travels: the read goes to this endpoint, never to
+        // a host the answer names.
+        let response = self
+            .agent
+            .get(&format!("{}/blobs/read?{query}", self.url))
+            .call()
+            .map_err(|error| CentralError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let text = response.into_body().read_to_string().unwrap_or_default();
+            if status == 429 || status >= 500 {
+                return Err(CentralError::Unavailable(format!(
+                    "HTTP {status}: {}",
+                    snippet(&text)
+                )));
+            }
+            return Err(refusal(status, &text));
+        }
+        Ok(Box::new(response.into_body().into_reader()))
+    }
+}
+
+/// [`HttpBlobReader`] as the environment configures it, opened only when a
+/// read meets a blob-backed value, so an inline read never needs the blob
+/// door.
+pub struct EnvBlobReader;
+
+impl BlobReader for EnvBlobReader {
+    fn open(&self, address: &Address, reference: &KvBlobRefV1) -> Result<Box<dyn std::io::Read>> {
+        HttpBlobReader::from_env()?
+            .ok_or_else(|| {
+                CentralError::NotConfigured(format!(
+                    "this value is a blob; set {URL_VAR} and {TOKEN_FILE_VAR} to read it"
+                ))
+            })?
+            .open(address, reference)
+    }
+}
+
+/// The read query in the capability door's answer, once the capability
+/// names exactly the reference the caller read. A capability for other
+/// bytes means the head moved since: retry the read.
+pub fn parse_capability_answer(text: &str, reference: &KvBlobRefV1) -> Result<String> {
+    let parsed: Json = serde_json::from_str(text)
+        .map_err(|error| CentralError::Store(format!("a non-JSON capability answer: {error}")))?;
+    let field = |name: &str| parsed.get(name).and_then(Json::as_str).unwrap_or_default();
+    let read_url = field("read_url");
+    let query = read_url
+        .strip_prefix("/v1/kv/blobs/read?")
+        .filter(|query| !query.is_empty() && !query.contains(['#', ' ']))
+        .ok_or_else(|| CentralError::Store("the capability answer has no read URL".into()))?;
+    let same = field("digest") == reference.digest
+        && parsed.get("bytes_len").and_then(Json::as_u64) == Some(reference.bytes_len)
+        && field("jurisdiction") == reference.partition.jurisdiction
+        && field("tier") == reference.partition.tier;
+    if !same {
+        return Err(CentralError::Unavailable(
+            "the key's head moved while it was being read; read it again".into(),
+        ));
+    }
+    Ok(query.to_string())
 }
 
 /// The reference in the upload door's answer.
@@ -588,6 +701,136 @@ mod tests {
         }
         assert!(HttpBlobUploader::new("http://kv.example.com", "token").is_err());
         assert!(HttpBlobUploader::new("https://kv.example.com/v1/kv", "token").is_ok());
+    }
+
+    fn blob_reference(bytes: &[u8]) -> crate::blob::KvBlobRefV1 {
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        crate::blob::KvBlobRefV1 {
+            locator: format!("r2:kv/blobs/eu/standard/{digest}"),
+            digest,
+            bytes_len: bytes.len() as u64,
+            partition: Partition::new("eu", "standard"),
+        }
+    }
+
+    fn capability_answer(reference: &crate::blob::KvBlobRefV1) -> Json {
+        json!({
+            "read_url": format!("/v1/kv/blobs/read?digest={}&mac=m", reference.digest),
+            "expires_at_ms": 1,
+            "digest": reference.digest,
+            "bytes_len": reference.bytes_len,
+            "jurisdiction": reference.partition.jurisdiction,
+            "tier": reference.partition.tier,
+        })
+    }
+
+    #[test]
+    fn central_http_capability_answer_must_name_the_reference_read() {
+        let reference = blob_reference(b"bytes");
+        let answer = capability_answer(&reference);
+        assert_eq!(
+            parse_capability_answer(&answer.to_string(), &reference).unwrap(),
+            format!("digest={}&mac=m", reference.digest)
+        );
+        // The head moved: another blob's capability is a retryable miss.
+        let other = blob_reference(b"other");
+        let moved = parse_capability_answer(&capability_answer(&other).to_string(), &reference)
+            .unwrap_err();
+        assert!(moved.is_retryable(), "{moved}");
+        // A read URL elsewhere is never followed.
+        let mut elsewhere = answer.clone();
+        elsewhere["read_url"] = json!("https://evil.example/v1/kv/blobs/read?x=1");
+        assert!(matches!(
+            parse_capability_answer(&elsewhere.to_string(), &reference),
+            Err(CentralError::Store(_))
+        ));
+        assert!(parse_capability_answer("not json", &reference).is_err());
+    }
+
+    /// A door with the capability and read routes, one request at a time.
+    fn serve_blob_door(bytes: Vec<u8>, capability_status: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let reference = blob_reference(&bytes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap_or(0);
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                reader.read_exact(&mut body).unwrap();
+                let (status, content_type, answer) =
+                    if request_line.starts_with("POST /v1/kv/blobs/capability ") {
+                        let asked: Json = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(asked["key"], "big");
+                        assert_eq!(asked["scope"], "shared:team");
+                        (
+                            capability_status,
+                            "application/json",
+                            if capability_status.starts_with("200") {
+                                capability_answer(&reference).to_string().into_bytes()
+                            } else {
+                                json!({"error": "no_live_reference"})
+                                    .to_string()
+                                    .into_bytes()
+                            },
+                        )
+                    } else if request_line.starts_with(&format!(
+                        "GET /v1/kv/blobs/read?digest={}&mac=m ",
+                        reference.digest
+                    )) {
+                        ("200 OK", "application/octet-stream", bytes.clone())
+                    } else {
+                        ("404 Not Found", "text/plain", b"no route".to_vec())
+                    };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    answer.len()
+                );
+                let _ = stream.write_all(&answer);
+            }
+        });
+        format!("http://{address}/v1/kv")
+    }
+
+    #[test]
+    fn central_http_blob_reader_mints_then_streams_the_bytes() {
+        let bytes: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+        let reference = blob_reference(&bytes);
+        let url = serve_blob_door(bytes.clone(), "200 OK");
+        let reader = HttpBlobReader::new(&url, "agent-jwt").unwrap();
+        let address = Address::new("shared:team", "status", "big");
+        let mut out = Vec::new();
+        crate::blob_read::write_value(
+            crate::blob::REF_ENVELOPE,
+            &reference.encode(),
+            &address,
+            Some(&reader),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, bytes);
+
+        let refusing = serve_blob_door(bytes, "404 Not Found");
+        let reader = HttpBlobReader::new(&refusing, "agent-jwt").unwrap();
+        let error = match reader.open(&address, &reference) {
+            Ok(_) => panic!("a refused capability opened a stream"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "central_refused", "{error}");
     }
 
     /// A one-endpoint Hrana server that runs each batch's statements on a

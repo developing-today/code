@@ -44,7 +44,7 @@ pub use links::{
     ADVERTISED_LINK_ADAPTERS, ControlLink, Links, QueryLink, ResolvedLinks, ResolvedQueryLink,
     ResolvedSendOnlyLink, ResolvedSyncLink, SendOnlyLink, SyncLink,
 };
-pub use peers::{PeerClass, PeerEntry, PeerOperation};
+pub use peers::{OperationOverride, PeerClass, PeerEntry, PeerOperation};
 pub use remotes::FanoutRemote;
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
@@ -783,6 +783,29 @@ pub enum ConfigError {
     /// A fan-out remote's `scope` is present but empty.
     #[error("fanout.remotes[] peer {0:?} scope must not be empty; omit it for the peer's scope")]
     EmptyRemoteScope(String),
+    /// A per-operation override names an operation it may not override.
+    #[error("peer {peer_id:?} overrides.{operation} is not allowed: {rule}")]
+    InvalidOperationOverride {
+        /// The peer.
+        peer_id: String,
+        /// The operation's wire name.
+        operation: &'static str,
+        /// Why it is not allowed.
+        rule: &'static str,
+    },
+    /// A per-operation override names an adapter this build does not
+    /// advertise (record §6.5 step 4).
+    #[error(
+        "peer {peer_id:?} overrides.{operation}.adapter {adapter:?} is not advertised by this build"
+    )]
+    UnadvertisedOverrideAdapter {
+        /// The peer.
+        peer_id: String,
+        /// The operation's wire name.
+        operation: &'static str,
+        /// The adapter named.
+        adapter: String,
+    },
     /// A link names an adapter this build does not advertise (record §6.5
     /// step 4).
     #[error("links.{link}.adapter {adapter:?} is not advertised by this build")]
