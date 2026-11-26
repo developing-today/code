@@ -14,7 +14,11 @@ API (JSON):
   POST /jobs   {cwd, argv|shell, env?} -> {job_id}
   GET  /jobs                      -> {jobs:[{job_id, state, exit, ...}]}
   GET  /jobs/<id>?out_off&err_off -> {state, exit, stdout, stderr,
-                                      out_next, err_next, duration_ms}
+                                      out_next, err_next, out_size,
+                                      err_size, duration_ms}
+                                      (out_size/err_size: the spool
+                                      sizes, so a client pages a done
+                                      job to the end, #15420)
   POST /jobs/<id>/kill            -> {ok, state}
   POST /exec/<trip>/cancel        -> {ok, cancelled} (POST /cancel
                                       {trip} is the legacy spelling)
@@ -927,15 +931,22 @@ def job_public(job, out_off=0, err_off=0):
         d = None
     out = b""
     err = b""
+    # Spool sizes ride every reply (#15420) so a client draining a
+    # finished job knows where the end is, instead of stopping at the
+    # first page (at most MAX_OUT bytes per stream).
+    out_size = 0
+    err_size = 0
     if d is not None:
         try:
             with open(d / "stdout", "rb") as f:
+                out_size = os.fstat(f.fileno()).st_size
                 f.seek(out_off)
                 out = f.read(MAX_OUT)
         except OSError:
             pass
         try:
             with open(d / "stderr", "rb") as f:
+                err_size = os.fstat(f.fileno()).st_size
                 f.seek(err_off)
                 err = f.read(MAX_OUT)
         except OSError:
@@ -956,6 +967,8 @@ def job_public(job, out_off=0, err_off=0):
         "stderr": err.decode("utf-8", "replace"),
         "out_next": out_off + len(out),
         "err_next": err_off + len(err),
+        "out_size": max(out_size, out_off + len(out)),
+        "err_size": max(err_size, err_off + len(err)),
     }
 
 

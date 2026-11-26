@@ -460,6 +460,87 @@ class JobsListShapeTest(unittest.TestCase):
             os.unlink(token_path)
 
 
+class JobSpoolSizeTest(unittest.TestCase):
+    """Issue #15420: single-job replies carry the spool sizes.
+
+    A finished job with more than MAX_OUT (1 MiB) spooled used to read
+    as done after the first page, so a client stopped there. With
+    out_size/err_size on every reply, paging until the cursors reach
+    the sizes returns every byte.
+    """
+
+    def _import_agent(self):
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
+            f.write("spool-size-test-token\n")
+            token_path = f.name
+        os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
+        sys.path.insert(0, str(AGENT.parent))
+        import laptop_agent as la
+
+        return la
+
+    def test_paging_a_done_job_to_its_sizes_returns_every_byte(self):
+        la = self._import_agent()
+        out_bytes = bytes(ord("a") + i % 26 for i in range(3 * la.MAX_OUT + 123))
+        err_bytes = b"e" * (la.MAX_OUT + 7)
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch.object(la, "STATE_DIR", Path(state_dir)):
+                job_id = "job-spool-size"
+                spool = la.job_dir(job_id)
+                spool.mkdir(parents=True)
+                (spool / "stdout").write_bytes(out_bytes)
+                (spool / "stderr").write_bytes(err_bytes)
+                job = {
+                    "id": job_id,
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
+                first = la.job_public(job)
+                self.assertEqual(first["out_size"], len(out_bytes))
+                self.assertEqual(first["err_size"], len(err_bytes))
+                self.assertEqual(first["out_next"], la.MAX_OUT)
+                got_out, got_err = [], []
+                out_off = err_off = 0
+                pages = 0
+                while True:
+                    page = la.job_public(job, out_off, err_off)
+                    pages += 1
+                    got_out.append(page["stdout"])
+                    got_err.append(page["stderr"])
+                    out_off, err_off = page["out_next"], page["err_next"]
+                    if out_off >= page["out_size"] and err_off >= page["err_size"]:
+                        break
+                    self.assertLess(pages, 10)
+        self.assertEqual("".join(got_out).encode(), out_bytes)
+        self.assertEqual("".join(got_err).encode(), err_bytes)
+        self.assertEqual(pages, 4)
+
+    def test_missing_spool_reports_zero_sizes(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch.object(la, "STATE_DIR", Path(state_dir)):
+                job = {
+                    "id": "job-no-spool",
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
+                public = la.job_public(job)
+        self.assertEqual(public["out_size"], 0)
+        self.assertEqual(public["err_size"], 0)
+
+
 class JobSlotsTest(unittest.TestCase):
     """Issue #1545: POST /jobs shares the LAPTOP_AGENT_SLOTS pool.
 
@@ -1880,6 +1961,8 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     "stderr": "",
                     "out_next": 0,
                     "err_next": 0,
+                    "out_size": 0,
+                    "err_size": 0,
                 },
             )
 

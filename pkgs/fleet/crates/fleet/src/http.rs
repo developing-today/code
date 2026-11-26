@@ -52,6 +52,11 @@ Commands:
   run [--cwd D] [--shell] -- cmd...
            Submit as a background job; prints the job id
   poll JOB [--wait S]   Poll a job, optionally waiting
+  sessions [--json]     Daemon jobs as connect sessions: id, origin,
+                        state, start, spooled bytes, bytes dropped,
+                        owning context id (#15420)
+  attach JOB [--wait S] Stream a session's output from the saved
+                        cursor; a finished session is read to the end
   fetch REMOTE LOCAL    Fetch a file written by a job";
 
 fn build_ladder(config: &Config) -> Result<Arc<Ladder>, String> {
@@ -380,9 +385,17 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
                 client::command_spec(parsed.cwd.as_deref(), parsed.shell, &parsed.cmd),
             )
         }
-        "poll" => {
+        "sessions" => match args.get(1).map(String::as_str) {
+            None => client::sessions(&ladder, false),
+            Some("--json") => client::sessions(&ladder, true),
+            Some(other) => {
+                eprintln!("http: sessions: unexpected argument {other}\n{USAGE}");
+                EXIT_USAGE
+            }
+        },
+        "poll" | "attach" => {
             let Some(job) = args.get(1) else {
-                eprintln!("http: poll needs a job id\n{USAGE}");
+                eprintln!("http: {} needs a job id\n{USAGE}", args[0]);
                 return EXIT_USAGE;
             };
             let mut wait: u64 = 30;

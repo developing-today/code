@@ -1658,9 +1658,22 @@ def main():
                 sys.stdout.flush()
                 sys.stderr.write(out.get("stderr", ""))
                 sys.stderr.flush()
+                got = (out["out_next"] - offs["out"]) + (out["err_next"] - offs["err"])
                 offs = {"out": out["out_next"], "err": out["err_next"]}
                 off_file.write_text(json.dumps(offs))
                 if out["state"] == "done":
+                    # Drain a finished job's spool to the end (#15420):
+                    # one reply carries at most 1 MiB per stream. Stop
+                    # once the cursors reach the reported sizes, or a
+                    # page carries nothing (daemons without sizes).
+                    sizes = (out.get("out_size"), out.get("err_size"))
+                    drained = got <= 0 or (
+                        None not in sizes
+                        and offs["out"] >= sizes[0]
+                        and offs["err"] >= sizes[1]
+                    )
+                    if not drained:
+                        continue
                     state["done"] = True
                     print(
                         f"[laptop-agent] job {job_id} done "

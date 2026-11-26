@@ -79,6 +79,17 @@ fleet http exec -- sh -c 'jq . < /tmp/input.json'
 
 For interactive input, use `fleet ssh exec` (tier T3).
 
+Sessions are daemon jobs (developing-today/code#10356, section 3).
+`fleet http sessions` lists them with their origin, state, start
+time, spooled stdout and stderr bytes, bytes dropped by a spool cap,
+and the owning context id (the job's recorded `FLEET_CTX_ID`, shown
+only when the caller exported one). `--json` prints the same rows as
+`{"sessions": [...]}`. `fleet http attach JOB [--wait S]` streams a
+session's output from the saved cursor, like `poll`. Replies carry
+`out_size` and `err_size`, so a finished session is read to the end
+even when more than 1 MiB is spooled, instead of stopping at the
+first page.
+
 ## fleet ssh — tier T3
 
 SSH's endpoint-grade shape is a binary-owned client contract: the
