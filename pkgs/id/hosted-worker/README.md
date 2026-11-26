@@ -33,7 +33,14 @@ First local-only vertical slice of the hosted data plane (slice 3 of
 /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
   `GET /v1/bridge/ws`), covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
-  implemented, not later steps.
+  implemented, not later steps. So is the per-binding request
+  ceiling (#15485, #2046 §6): `USER_REQUEST_CEILING` requests
+  per window (`USER_REQUEST_WINDOW_MS`, default 24h) are
+  admitted; past it, requests are refused with a retryable
+  429 + `Retry-After` until the window resets, while
+  `GET /v1/usage` (which reports the count against the
+  ceiling) and the export routes stay available and do not
+  consume quota.
 
 ## Tenancy control plane (component E, #9083)
 
