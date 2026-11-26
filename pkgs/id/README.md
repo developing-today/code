@@ -317,6 +317,7 @@ it is — a valid world capability, minted by the host's admin with
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
 | `nav`          |                                | Navigate the typed object graph (links, threads, paths) |
 | `talk`         |                                | Talk pages: post on and list an object's discussion     |
+| `hosted`       |                                | Push to and pull from a hosted instance over the bridge |
 | `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
 
 ### Tag Subcommands
