@@ -9,7 +9,7 @@
 //!
 //! - [`EndpointKeepalive`] (each endpoint, per leg): a PING goes out
 //!   every [`PING_INTERVAL`] (25 s) with ±[`PING_JITTER_PERCENT`] (20 %)
-//!   jitter whenever the interval passes with no DATA or WINDOW_UPDATE
+//!   jitter whenever the interval passes with no DATA or `WINDOW_UPDATE`
 //!   frame on the leg; either of those frames, in either direction,
 //!   restarts the interval. A received PONG answers the outstanding
 //!   PINGs. After [`MAX_UNANSWERED_PINGS`] (3) consecutive unanswered
@@ -32,7 +32,7 @@
 //!
 //! Testing oracle (repo testing doctrine): with a fake clock, the PING
 //! schedule stays inside 20–30 s of the last reset for every jitter
-//! sample, DATA and WINDOW_UPDATE restart it while PING/PONG/OPEN do
+//! sample, DATA and `WINDOW_UPDATE` restart it while PING/PONG/OPEN do
 //! not, the leg is dead on the deadline after the third unanswered
 //! PING and not before, the broker closes at exactly 120 s of silence
 //! and any frame refreshes it, and the resume window is open until
@@ -45,7 +45,10 @@ use anyhow::Result;
 use super::serve_proxy::{Frame, FrameType};
 
 /// Base keepalive interval on a quiet leg (decision §4).
-pub const PING_INTERVAL: Duration = Duration::from_secs(25);
+pub const PING_INTERVAL: Duration = Duration::from_millis(PING_INTERVAL_MS);
+
+/// [`PING_INTERVAL`] in whole milliseconds, for integer jitter maths.
+const PING_INTERVAL_MS: u64 = 25_000;
 
 /// Jitter applied to [`PING_INTERVAL`], as a percentage either way, so
 /// fleets of clients do not synchronize (decision §4).
@@ -58,14 +61,15 @@ pub const MAX_UNANSWERED_PINGS: u32 = 3;
 pub const BROKER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long after leg death RESUME is accepted (decision §5).
-pub const RESUME_WINDOW: Duration = Duration::from_secs(5 * 60);
+pub const RESUME_WINDOW: Duration = Duration::from_mins(5);
 
-/// The jittered keepalive interval for one uniform `u32` sample:
+/// The jittered keepalive interval for one uniform `u32` sample.
+///
 /// `sample = 0` gives the shortest interval (−20 %), `u32::MAX` the
 /// longest (+20 %), and the mapping is monotonic in between. Whole
 /// milliseconds, so the result is exact and reproducible.
 pub fn jittered_interval(sample: u32) -> Duration {
-    let base = PING_INTERVAL.as_millis() as u64;
+    let base = PING_INTERVAL_MS;
     let spread = base * u64::from(PING_JITTER_PERCENT) / 100;
     let low = base - spread;
     // Scale the sample onto [0, 2·spread] without floating point.
@@ -375,11 +379,17 @@ mod tests {
     #[test]
     fn a_ping_is_answered_and_a_pong_clears_the_count() {
         let mut k = fixed(secs(0), 0);
-        assert_eq!(k.on_received(FrameType::Ping, secs(1)), ReceiveAction::SendPong);
+        assert_eq!(
+            k.on_received(FrameType::Ping, secs(1)),
+            ReceiveAction::SendPong
+        );
         assert_eq!(k.poll(secs(20)), KeepaliveAction::SendPing);
         assert_eq!(k.poll(secs(40)), KeepaliveAction::SendPing);
         assert_eq!(k.unanswered(), 2);
-        assert_eq!(k.on_received(FrameType::Pong, secs(41)), ReceiveAction::None);
+        assert_eq!(
+            k.on_received(FrameType::Pong, secs(41)),
+            ReceiveAction::None
+        );
         assert_eq!(k.unanswered(), 0);
         // The count starts over: three more unanswered PINGs are needed.
         assert_eq!(k.poll(secs(60)), KeepaliveAction::SendPing);
@@ -403,11 +413,17 @@ mod tests {
         assert_eq!(k.poll(due), KeepaliveAction::Dead(window));
         // About 75 s of silence after the first PING, as §4 states.
         let silence = due - pings[0];
-        assert!(silence >= ms(74_990) && silence <= ms(75_010), "{silence:?}");
+        assert!(
+            silence >= ms(74_990) && silence <= ms(75_010),
+            "{silence:?}"
+        );
         // Dead is final.
         assert!(k.is_dead());
         assert_eq!(k.next_deadline(), None);
-        assert_eq!(k.on_received(FrameType::Pong, due + secs(1)), ReceiveAction::None);
+        assert_eq!(
+            k.on_received(FrameType::Pong, due + secs(1)),
+            ReceiveAction::None
+        );
         assert_eq!(k.poll(due + secs(500)), KeepaliveAction::Dead(window));
     }
 
