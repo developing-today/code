@@ -71,6 +71,33 @@ $ id world profile 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 
 Failures: a limit flag without the admin token is refused, exit `1`.
 
+## `presentation`
+
+Shows or replaces a world's presentation policy: whether user-uploaded art renders, the richest rung the world draws, which filters and shaders are allowed, and the world's own fallback art.
+
+```
+id world presentation <NODE> [--set <FILE> --admin-token <TOKEN>]
+```
+
+| Flag            | Argument          | Default                        | Meaning                                                                                 |
+| --------------- | ----------------- | ------------------------------ | --------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                     |
+| `--set`         | file path (JSON)  | — (none)                       | Replace the policy with the one in this file. A duplicated key or unknown field is refused. |
+| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required with `--set`.                                         |
+
+Behaviour: without `--set` it prints the current policy, and needs no token, because the policy is public before anyone joins. With `--set` the host checks the policy, journals it and applies it at once. An empty file object `{}` is the default policy, which denies user shaders and disguise filters.
+
+Example: stop rendering user uploads and draw nothing richer than tiles.
+
+```
+$ cat presentation.json
+{"assets": {"user_uploads": "deny", "max_rung": "tileset"}}
+$ id world presentation 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    --set presentation.json
+```
+
+Failures: `--set` without the admin token, a malformed file or a wrong admin token is refused, exit `1`.
+
 ## `doctor`
 
 Diagnoses a broken world setup and prints the fix for each problem. It takes no `<NODE>`: every check is local.
@@ -141,7 +168,15 @@ id world apply <NODE> --file <FILE> --admin-token <TOKEN> --capability <CAP> [--
 | `--capability`  | capability string | required (env `ID_WORLD_CAPABILITY`)  | A guest capability, used to read the current state. Applying reads before it writes, so both credentials are required. |
 | `--dry-run`     | switch            | off                                   | Print the plan only; change nothing.                                                                                   |
 
-Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, presentation policy, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+
+A `[presentation]` table sets the world's presentation policy, in the same shape `id world presentation --set` takes. Leaving the table out leaves the live policy alone. A present table replaces the policy whole, and its omitted fields take their defaults, so an empty `[presentation]` resets a changed policy:
+
+```toml
+[presentation.assets]
+user_uploads = "deny"
+max_rung = "tileset"
+```
 
 Example — preview, then apply, a toy manifest:
 

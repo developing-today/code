@@ -77,18 +77,14 @@ class TestDumpSchemaDrift(unittest.TestCase):
             CREATE TABLE notes (task_id INTEGER, note TEXT);
             """
         )
-        conn.executemany(
-            "INSERT INTO tasks VALUES (?,?)", [(1, "one"), (2, "two")]
-        )
+        conn.executemany("INSERT INTO tasks VALUES (?,?)", [(1, "one"), (2, "two")])
         conn.executemany(
             "INSERT INTO notes VALUES (?,?)",
             [(1, "first"), (1, "second"), (2, "x")],
         )
         conn.commit()
         adapter = DriftAfterSchemaCapture(conn)
-        dump, counts, _splits = fq_common.build_dump(
-            adapter, "2026-11-25T00:00:00Z"
-        )
+        dump, counts, _splits = fq_common.build_dump(adapter, "2026-11-25T00:00:00Z")
         self.assertTrue(adapter.fired)
         self.assertEqual(counts, {"tasks": 2, "notes": 3})
         rebuilt = sqlite3.connect(":memory:")
@@ -98,9 +94,7 @@ class TestDumpSchemaDrift(unittest.TestCase):
             [(1, "one"), (2, "two")],
         )
         self.assertEqual(
-            rebuilt.execute(
-                "SELECT * FROM notes ORDER BY task_id, note"
-            ).fetchall(),
+            rebuilt.execute("SELECT * FROM notes ORDER BY task_id, note").fetchall(),
             [(1, "first", "migrated"), (1, "second", None), (2, "x", None)],
         )
 

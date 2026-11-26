@@ -3,13 +3,13 @@ name: transport adapter declarations
 on:
   pull_request:
     paths:
-      - 'config/transport-adapters/**'
-      - '.github/workflows/transport-adapter-schema.yml'
+      - "config/transport-adapters/**"
+      - ".github/workflows/transport-adapter-schema.yml"
   push:
     branches: [main]
     paths:
-      - 'config/transport-adapters/**'
-      - '.github/workflows/transport-adapter-schema.yml'
+      - "config/transport-adapters/**"
+      - ".github/workflows/transport-adapter-schema.yml"
 
 permissions:
   contents: read

@@ -26,9 +26,10 @@
 //! the record's endpoint table (§3) fixes: the proxy *terminates*
 //! streams (clients originate them — the client call path is
 //! step 3, the laptop broker's stream dispatch is step 4).
-//! [`MuxSession::open_stream`] exists so tests (and step 3, when
-//! it lands) can originate against the same table/interleaving
-//! code the proxy terminates with.
+//! [`MuxSession::open_stream`] exists so the client call path
+//! (`client::mux_roundtrip`, step 3) and tests can originate
+//! against the same table/interleaving code the proxy
+//! terminates with.
 //!
 //! Nothing here changes the pooled path: `serve` advertises
 //! [`fleet_proxy_proto::mux::CAP_PROXY_MUX`] now that this code
@@ -45,8 +46,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use fleet_proxy_proto::mux::{
-    MUX_KEEPALIVE_S, OpenIntent, RST_CANCELLED, RST_PROTOCOL_ERROR, RST_TIMEOUT, StreamCeiling,
-    StreamFrame, StreamId, StreamWindow,
+    MUX_KEEPALIVE_S, OpenIntent, RST_CANCELLED, RST_PROTOCOL_ERROR, RST_TIMEOUT, RequestMeta,
+    StreamCeiling, StreamFrame, StreamId, StreamWindow,
 };
 use fleet_proxy_proto::{ProtoError, read_frame, write_frame};
 
@@ -349,6 +350,42 @@ pub struct OpenInfo {
     pub port: u16,
     pub intent: OpenIntent,
     pub trip: Option<String>,
+    /// The request stream's per-request routing fields (#15552);
+    /// empty for a raw connect.
+    pub meta: RequestMeta,
+}
+
+/// The head a terminating side stamps on its first response
+/// frame, and the originating side reads back off it (#15552):
+/// the HTTP status, the transport leg that served, and the open's
+/// trip id echoed so the originator can tell the reply is for its
+/// own call. Every field is optional on the wire.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseHead {
+    pub status: Option<u16>,
+    pub transport: Option<String>,
+    pub trip: Option<String>,
+}
+
+impl ResponseHead {
+    fn is_empty(&self) -> bool {
+        self.status.is_none() && self.transport.is_none() && self.trip.is_none()
+    }
+
+    /// Stamp this head on an outbound data frame.
+    fn stamp(self, frame: &mut StreamFrame) {
+        if let StreamFrame::Data {
+            status,
+            transport,
+            trip,
+            ..
+        } = frame
+        {
+            *status = self.status;
+            *transport = self.transport;
+            *trip = self.trip;
+        }
+    }
 }
 
 /// The handler a terminating endpoint runs per opened stream, on
@@ -359,7 +396,7 @@ pub type StreamHandler = Arc<dyn Fn(MuxStream, OpenInfo) + Send + Sync>;
 
 /// Events the reader thread delivers to a stream's worker.
 enum StreamEvent {
-    Data { bytes: Vec<u8>, status: Option<u16> },
+    Data { bytes: Vec<u8>, head: ResponseHead },
     Fin,
     Rst(String),
     TunnelLost(Option<String>),
@@ -500,6 +537,19 @@ impl MuxSession {
         intent: &OpenIntent,
         trip: Option<String>,
     ) -> Result<MuxStream, StreamError> {
+        self.open_stream_with(port, intent, trip, RequestMeta::default())
+    }
+
+    /// [`MuxSession::open_stream`] carrying a request stream's
+    /// per-request routing fields (#15552). `meta` rides request
+    /// opens only; a raw connect never carries it.
+    pub fn open_stream_with(
+        &self,
+        port: u16,
+        intent: &OpenIntent,
+        trip: Option<String>,
+        meta: RequestMeta,
+    ) -> Result<MuxStream, StreamError> {
         if self.shared.is_dead() {
             return Err(StreamError::TunnelLost { trip });
         }
@@ -515,9 +565,14 @@ impl MuxSession {
         }
         self.shared.inboxes.lock().unwrap().insert(id, tx);
         let frame = match intent {
-            OpenIntent::Request { method, path } => {
-                StreamFrame::open_request(id, port, method.clone(), path.clone(), trip.clone())
-            }
+            OpenIntent::Request { method, path } => StreamFrame::open_request_with(
+                id,
+                port,
+                method.clone(),
+                path.clone(),
+                trip.clone(),
+                meta,
+            ),
             OpenIntent::RawConnect => StreamFrame::open_connect(id, port, trip.clone()),
         };
         if let Err(e) = self.shared.send_frame(&frame) {
@@ -592,6 +647,7 @@ impl MuxSession {
                     method,
                     path,
                     trip,
+                    meta,
                 } => {
                     // parse_stream_frame already validated the
                     // intent; the half-head arm is unreachable in
@@ -626,6 +682,7 @@ impl MuxSession {
                         port,
                         intent,
                         trip: handle.trip().map(|s| s.to_string()),
+                        meta,
                     };
                     let handler = handler.clone();
                     std::thread::spawn(move || handler(handle, info));
@@ -633,9 +690,16 @@ impl MuxSession {
                 StreamFrame::Data {
                     stream,
                     fin,
-                    status,
+                    ref status,
+                    ref transport,
+                    ref trip,
                     ..
                 } => {
+                    let head = ResponseHead {
+                        status: *status,
+                        transport: transport.clone(),
+                        trip: trip.clone(),
+                    };
                     let payload = match parsed.payload() {
                         Ok(Some(p)) => p,
                         _ => continue, // parse_stream_frame already validated it
@@ -661,7 +725,7 @@ impl MuxSession {
                         stream,
                         StreamEvent::Data {
                             bytes: payload,
-                            status,
+                            head,
                         },
                     );
                     if fin {
@@ -759,10 +823,11 @@ pub struct MuxStream {
     /// Terminal receive state, latched: once a stream has ended
     /// (fin, reset, tunnel loss), reads keep reporting that end.
     recv_end: Mutex<Option<Result<(), StreamError>>>,
-    /// Response status carried by the peer's first data frame.
-    status: Mutex<Option<u16>>,
-    /// Response status to stamp on this side's first data frame.
-    status_out: Mutex<Option<u16>>,
+    /// Response head carried by the peer's first data frame that
+    /// carried one (#15552: status, transport, trip echo).
+    head_in: Mutex<Option<ResponseHead>>,
+    /// Response head to stamp on this side's first data frame.
+    head_out: Mutex<Option<ResponseHead>>,
     fin_out_sent: AtomicBool,
 }
 
@@ -788,8 +853,8 @@ impl MuxStream {
             shared,
             inbox: Mutex::new(inbox),
             recv_end: Mutex::new(None),
-            status: Mutex::new(None),
-            status_out: Mutex::new(None),
+            head_in: Mutex::new(None),
+            head_out: Mutex::new(None),
             fin_out_sent: AtomicBool::new(false),
         }
     }
@@ -805,7 +870,27 @@ impl MuxStream {
     /// The response status the peer stamped on its first data
     /// frame, once one has been received.
     pub fn status(&self) -> Option<u16> {
-        *self.status.lock().unwrap()
+        self.head_in.lock().unwrap().as_ref().and_then(|h| h.status)
+    }
+
+    /// The transport the peer named on its first response frame
+    /// (#15552), once one has been received.
+    pub fn transport(&self) -> Option<String> {
+        self.head_in
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|h| h.transport.clone())
+    }
+
+    /// The trip id the peer echoed on its first response frame
+    /// (#15552), once one has been received.
+    pub fn echoed_trip(&self) -> Option<String> {
+        self.head_in
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|h| h.trip.clone())
     }
 
     /// Stamp `status` on this side's first outbound data frame —
@@ -814,9 +899,19 @@ impl MuxStream {
     /// send; a later call has no frame left to ride and is
     /// ignored.
     pub fn set_status(&self, status: u16) {
-        let mut slot = self.status_out.lock().unwrap();
+        self.set_head(ResponseHead {
+            status: Some(status),
+            ..ResponseHead::default()
+        });
+    }
+
+    /// Stamp a whole response head (status, transport, trip echo)
+    /// on this side's first outbound data frame (#15552). Like
+    /// [`MuxStream::set_status`], only the first call counts.
+    pub fn set_head(&self, head: ResponseHead) {
+        let mut slot = self.head_out.lock().unwrap();
         if slot.is_none() {
-            *slot = Some(status);
+            *slot = Some(head);
         }
     }
 
@@ -841,11 +936,11 @@ impl MuxStream {
             inbox.recv_timeout(timeout)
         };
         match event {
-            Ok(StreamEvent::Data { bytes, status }) => {
-                if let Some(status) = status {
-                    let mut slot = self.status.lock().unwrap();
+            Ok(StreamEvent::Data { bytes, head }) => {
+                if !head.is_empty() {
+                    let mut slot = self.head_in.lock().unwrap();
                     if slot.is_none() {
-                        *slot = Some(status);
+                        *slot = Some(head);
                     }
                 }
                 Ok(Some(bytes))
@@ -948,11 +1043,11 @@ impl MuxStream {
                     .note_data_out(self.id, piece.len())
                     .map_err(|e| StreamError::Protocol(e.to_string()))?;
             }
-            let status = self.status_out.lock().unwrap().take();
+            let head = self.head_out.lock().unwrap().take();
             let mut frame = StreamFrame::data(self.id, piece, false)
                 .map_err(|e| StreamError::Protocol(e.to_string()))?;
-            if let StreamFrame::Data { status: slot, .. } = &mut frame {
-                *slot = status;
+            if let Some(head) = head {
+                head.stamp(&mut frame);
             }
             self.shared
                 .send_frame(&frame)
@@ -970,11 +1065,11 @@ impl MuxStream {
         if self.fin_out_sent.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
-        let status = self.status_out.lock().unwrap().take();
+        let head = self.head_out.lock().unwrap().take();
         let mut frame = StreamFrame::data(self.id, &[], true)
             .map_err(|e| StreamError::Protocol(e.to_string()))?;
-        if let StreamFrame::Data { status: slot, .. } = &mut frame {
-            *slot = status;
+        if let Some(head) = head {
+            head.stamp(&mut frame);
         }
         self.shared
             .send_frame(&frame)
@@ -989,6 +1084,15 @@ impl MuxStream {
     /// send the whole body, and close the sending direction.
     pub fn respond(&self, status: u16, body: &[u8]) -> Result<(), StreamError> {
         self.set_status(status);
+        self.send_chunk(body)?;
+        self.close_send()
+    }
+
+    /// [`MuxStream::respond`] with a whole response head — the
+    /// broker dispatch stamps the serving transport and echoes the
+    /// open's trip id (#15552).
+    pub fn respond_with(&self, head: ResponseHead, body: &[u8]) -> Result<(), StreamError> {
+        self.set_head(head);
         self.send_chunk(body)?;
         self.close_send()
     }

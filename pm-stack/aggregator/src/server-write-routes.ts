@@ -7,7 +7,12 @@ import { validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, findTierItem, questionIdForOption } from "./tier-items.ts";
 import { authorizeCommentAuthor, validateNewComment } from "./comments.ts";
 import { PROMPT_STATUSES, syncBlockHttpResult, validateNewPrompt, type PromptStatus } from "./prompts.ts";
-import { readMultipartForm, submissionFieldsFromForm, uploadedFilesFromForm, type PromptAttachment } from "./prompt-attachments.ts";
+import {
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
 import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
 import { getAlertsStore } from "./alerts.ts";
 import { confirmOutageWrite, rejectOutageWrite } from "./outage-queue.ts";
@@ -18,9 +23,35 @@ import { authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { resolveBwsSecretLookup } from "./secrets.ts";
 import { readJsonBody } from "./request-body.ts";
-import { appendReportBlockConflictResolution, appendReportLateUpdate, compareReportBlock, ReportRecordConflictError, readReportRecords, readReportSnapshots, selectCurrentReportRecords, type ReportLateUpdateOperation, type ReportRecordSource } from "./report-records.ts";
+import {
+  appendReportBlockConflictResolution,
+  appendReportLateUpdate,
+  compareReportBlock,
+  ReportRecordConflictError,
+  readReportRecords,
+  readReportSnapshots,
+  selectCurrentReportRecords,
+  type ReportLateUpdateOperation,
+  type ReportRecordSource,
+} from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
-import { capUnits, cfg, promptsStore, promptAttachmentsStore, tryQueueOutageAction, roadmapAnnotationsStore, actionsStore, commentsStore, eventsStore, reportRecordsLocation, identityRegistryStore, breakGlassTokenStore, recordStreamEvent, outageQueueStore, source } from "./server-wiring.ts";
+import {
+  capUnits,
+  cfg,
+  promptsStore,
+  promptAttachmentsStore,
+  tryQueueOutageAction,
+  roadmapAnnotationsStore,
+  actionsStore,
+  commentsStore,
+  eventsStore,
+  reportRecordsLocation,
+  identityRegistryStore,
+  breakGlassTokenStore,
+  recordStreamEvent,
+  outageQueueStore,
+  source,
+} from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
 import { applyViewAction } from "./server-contexts.ts";
 
@@ -346,7 +377,12 @@ export async function handleIdentityRoutes(req: Request, path: string): Promise<
   return null;
 }
 
-export async function handleWriteRoutes(req: Request, url: URL, path: string, remoteAddress?: string): Promise<Response | null> {
+export async function handleWriteRoutes(
+  req: Request,
+  url: URL,
+  path: string,
+  remoteAddress?: string,
+): Promise<Response | null> {
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/roadmap/annotations") {
     try {

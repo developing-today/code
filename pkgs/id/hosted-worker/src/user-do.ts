@@ -34,6 +34,9 @@ import { issueNonce, verifyProof, type AuthContext } from "./bridge-auth.ts";
 import { BRIDGE_SCHEMA, BridgeStore, DEFAULT_WAITING_LIMITS, type WaitingLimits } from "./bridge-store.ts";
 import {
   BridgeSessionServer,
+  parseSessionSnapshot,
+  TAG,
+  type BridgeSessionSnapshot,
   decodeBatch,
   decodeEntries,
   encodeBatch,
@@ -87,6 +90,10 @@ interface DOState {
   id: { name?: string; jurisdiction?: string };
   storage: { sql: SqlStorage };
   blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
+  /** The WebSocket hibernation API (#15484): the runtime holds the
+   * socket and may evict the object between messages, waking it
+   * through webSocketMessage / webSocketClose. */
+  acceptWebSocket?(ws: WsSocketLike): void;
 }
 interface Env {
   BLOBS?: R2BucketLike;
@@ -94,6 +101,13 @@ interface Env {
    * string var. Absent/empty = no ceiling. A malformed value
    * fails writes closed (see ceilingBytes). */
   USER_CEILING_BYTES?: string;
+  /** #15485 (#2046 §6): most requests one binding may make in a
+   * window, as a string var. Absent/empty = no request cap. A
+   * malformed value fails every request closed (see requestCap). */
+  USER_REQUEST_CEILING?: string;
+  /** Length of the request-cap window in seconds; absent/empty =
+   * 86400 (one day). Only read when USER_REQUEST_CEILING is set. */
+  USER_REQUEST_WINDOW_SECONDS?: string;
   /** Bridge (#3818): waiting-pool bounds for the signed-object
    * bridge, as string vars. Absent = the native defaults
    * (bridge-store.ts). A malformed value fails bridge writes
@@ -108,6 +122,19 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** Default request-cap window: one day. */
+export const DEFAULT_REQUEST_WINDOW_SECONDS = 86_400;
+
+/** A refusal the caller may retry after `retryAfterSeconds`; the
+ * response carries it as `Retry-After` (#15485). */
+class RetryableRefusal extends FailClosed {
+  readonly retryAfterSeconds: number;
+  constructor(status: number, code: string, message: string, retryAfterSeconds: number) {
+    super(status, code, message);
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
 }
 
 function ceilingExceeded(headroom: number): FailClosed {
@@ -174,6 +201,9 @@ async function readTextUpTo(req: Request, limit: number): Promise<string | null>
 export class UserDO {
   private state: DOState;
   private ready: Promise<void>;
+  /** Bridge sessions live in this instance, by socket. Empty after
+   * an eviction: a socket missing here is rebuilt from its row. */
+  private liveSessions = new Map<WsSocketLike, HibernatingTransport>();
 
   private env: Env;
 
@@ -199,6 +229,12 @@ export class UserDO {
       // created before the bridge gains the tables on its next
       // bootstrap with its data untouched.
       for (const statement of BRIDGE_SCHEMA) sql.exec(statement);
+      // #15484: the state of each open bridge WebSocket session, so
+      // a session survives the object being evicted while its
+      // socket hibernates. One row per socket, removed on close.
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS bridge_ws_sessions (sid TEXT PRIMARY KEY, state TEXT NOT NULL, updated_ms INTEGER NOT NULL)",
+      );
       sql.exec(
         "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         "schema_version",
@@ -222,6 +258,66 @@ export class UserDO {
       );
     }
     return n;
+  }
+
+  /** The configured request cap; null = none. A malformed value
+   * is a configuration error and fails every request closed, so a
+   * typo never silently removes the cap. */
+  private requestCap(): { ceiling: number; windowMs: number } | null {
+    const raw = this.env.USER_REQUEST_CEILING;
+    if (raw === undefined || raw === "") return null;
+    const ceiling = Number(raw);
+    const rawWindow = this.env.USER_REQUEST_WINDOW_SECONDS;
+    const windowSeconds =
+      rawWindow === undefined || rawWindow === "" ? DEFAULT_REQUEST_WINDOW_SECONDS : Number(rawWindow);
+    if (!Number.isInteger(ceiling) || ceiling < 0 || !Number.isInteger(windowSeconds) || windowSeconds <= 0) {
+      throw new FailClosed(
+        500,
+        "request_cap_misconfigured",
+        "USER_REQUEST_CEILING must be a non-negative integer and USER_REQUEST_WINDOW_SECONDS a positive integer; requests fail closed",
+      );
+    }
+    return { ceiling, windowMs: windowSeconds * 1000 };
+  }
+
+  /** The current request window: its start and how many requests
+   * it has admitted. A window that has run out (or a clock that
+   * moved backwards past its start) reads as a fresh, empty one. */
+  private requestWindow(windowMs: number, now: number): { start: number; count: number } {
+    const rawStart = this.meta("request_window_start_ms");
+    const start = rawStart === null ? Number.NaN : Number(rawStart);
+    const count = Number(this.meta("request_window_count") ?? "0");
+    if (!Number.isFinite(start) || now < start || now - start >= windowMs) {
+      return { start: now, count: 0 };
+    }
+    return { start, count: Number.isFinite(count) ? count : 0 };
+  }
+
+  /** Admit one request against the cap, or refuse it with a
+   * retryable 429 until the window resets. A refused request does
+   * not use up the window. */
+  private admitRequest(cap: { ceiling: number; windowMs: number }) {
+    const now = Date.now();
+    const current = this.requestWindow(cap.windowMs, now);
+    if (current.count >= cap.ceiling) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((current.start + cap.windowMs - now) / 1000));
+      throw new RetryableRefusal(
+        429,
+        "request_cap_exceeded",
+        `request cap reached: ${cap.ceiling} requests per ${cap.windowMs / 1000} s; retry after ${retryAfterSeconds} s`,
+        retryAfterSeconds,
+      );
+    }
+    this.setMeta("request_window_start_ms", String(current.start));
+    this.setMeta("request_window_count", String(current.count + 1));
+  }
+
+  private setMeta(key: string, value: string) {
+    this.state.storage.sql.exec(
+      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      key,
+      value,
+    );
   }
 
   /** Usage accounting, derived from the tables on every read so
@@ -423,6 +519,124 @@ export class UserDO {
     return { bindingId, jurisdiction, clientSideEncryption: boundCse };
   }
 
+  /** Start (or, with a snapshot, continue) the bridge session on a
+   * hibernating socket. Its state is written after every message. */
+  private openBridgeSession(
+    socket: WsSocketLike,
+    attachment: BridgeSocketAttachment,
+    resume?: BridgeSessionSnapshot,
+  ): HibernatingTransport {
+    const transport = new HibernatingTransport(socket, () => this.forgetBridgeSession(socket, attachment.sid));
+    this.liveSessions.set(socket, transport);
+    const session = new BridgeSessionServer({
+      store: this.bridgeStore(),
+      bindingId: attachment.bindingId,
+      irohHex: attachment.irohHex,
+      transport,
+      resume,
+      onSettled: (snapshot) => this.saveBridgeSession(attachment.sid, snapshot),
+      guardBatch: (newBytes) => {
+        try {
+          this.assertWritable(newBytes);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
+    if (!resume) {
+      // Sweep rows a crash left behind, then record the new session.
+      this.state.storage.sql.exec(
+        "DELETE FROM bridge_ws_sessions WHERE updated_ms < ?",
+        Date.now() - BRIDGE_SESSION_ROW_TTL_MS,
+      );
+      this.saveBridgeSession(attachment.sid, session.snapshot());
+    }
+    return transport;
+  }
+
+  private saveBridgeSession(sid: string, snapshot: BridgeSessionSnapshot): void {
+    if (snapshot.closed) {
+      this.state.storage.sql.exec("DELETE FROM bridge_ws_sessions WHERE sid = ?", sid);
+      return;
+    }
+    this.state.storage.sql.exec(
+      "INSERT INTO bridge_ws_sessions (sid, state, updated_ms) VALUES (?, ?, ?) ON CONFLICT(sid) DO UPDATE SET state = excluded.state, updated_ms = excluded.updated_ms",
+      sid,
+      JSON.stringify(snapshot),
+      Date.now(),
+    );
+  }
+
+  private forgetBridgeSession(socket: WsSocketLike, sid: string | null): void {
+    this.liveSessions.delete(socket);
+    if (sid !== null) this.state.storage.sql.exec("DELETE FROM bridge_ws_sessions WHERE sid = ?", sid);
+  }
+
+  /** The live session for a socket, rebuilt from its row after an
+   * eviction. A socket whose session cannot be rebuilt is told so
+   * and closed: the client reconnects and resumes with its token. */
+  private bridgeSessionFor(socket: WsSocketLike): HibernatingTransport | null {
+    const live = this.liveSessions.get(socket);
+    if (live) return live;
+    const attachment = readAttachment(socket);
+    let snapshot: BridgeSessionSnapshot | null = null;
+    if (attachment) {
+      const rows = this.state.storage.sql
+        .exec("SELECT state FROM bridge_ws_sessions WHERE sid = ?", attachment.sid)
+        .toArray();
+      if (rows.length > 0) {
+        try {
+          snapshot = parseSessionSnapshot(JSON.parse(rows[0].state as string));
+        } catch {
+          snapshot = null;
+        }
+      }
+    }
+    if (!attachment || !snapshot || snapshot.closed) {
+      try {
+        socket.send(
+          sessionErrorFrame("session_lost", "the session's state is gone; reconnect and resume with your token"),
+        );
+      } catch {
+        // The socket may already be gone; closing below is enough.
+      }
+      this.forgetBridgeSession(socket, attachment?.sid ?? null);
+      closeQuietly(socket, 1011, "session_lost");
+      return null;
+    }
+    return this.openBridgeSession(socket, attachment, snapshot);
+  }
+
+  /** Hibernation handler: a frame arrived on a bridge socket. */
+  async webSocketMessage(ws: WsSocketLike, message: ArrayBuffer | string): Promise<void> {
+    await this.ready;
+    // Binary frames only: the bridge has no text frames.
+    if (typeof message === "string") return;
+    const transport = this.bridgeSessionFor(ws);
+    if (!transport) return;
+    await transport.deliver(new Uint8Array(message));
+  }
+
+  /** Hibernation handler: the peer closed the socket. */
+  async webSocketClose(ws: WsSocketLike, code: number, reason: string): Promise<void> {
+    await this.ready;
+    this.endBridgeSocket(ws);
+    closeQuietly(ws, code === 1005 || code === 1006 ? 1000 : code, reason);
+  }
+
+  /** Hibernation handler: the socket failed. */
+  async webSocketError(ws: WsSocketLike): Promise<void> {
+    await this.ready;
+    this.endBridgeSocket(ws);
+  }
+
+  private endBridgeSocket(ws: WsSocketLike): void {
+    const live = this.liveSessions.get(ws);
+    if (live) live.peerClosed();
+    this.forgetBridgeSession(ws, readAttachment(ws)?.sid ?? null);
+  }
+
   async fetch(req: Request): Promise<Response> {
     await this.ready;
     try {
@@ -431,9 +645,16 @@ export class UserDO {
         "INSERT INTO meta (key, value) VALUES ('requests', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
       );
       const url = new URL(req.url);
-      if (url.pathname === "/v1/usage" && req.method === "GET") {
+      const isUsage = url.pathname === "/v1/usage" && req.method === "GET";
+      const requestCap = this.requestCap();
+      // The usage read is exempt so a capped caller can still see
+      // where it stands and when the window resets (#15485).
+      if (requestCap !== null && !isUsage) this.admitRequest(requestCap);
+      if (isUsage) {
         const usage = this.usage();
         const ceiling = this.ceilingBytes();
+        const now = Date.now();
+        const current = requestCap === null ? null : this.requestWindow(requestCap.windowMs, now);
         return json({
           binding_id: bindingId,
           jurisdiction,
@@ -441,6 +662,12 @@ export class UserDO {
           ...usage,
           ceiling_bytes: ceiling,
           at_cap: ceiling !== null && usage.storage_bytes >= ceiling,
+          request_ceiling: requestCap === null ? null : requestCap.ceiling,
+          request_window_seconds: requestCap === null ? null : requestCap.windowMs / 1000,
+          window_requests: current === null ? null : current.count,
+          window_resets_at_ms:
+            requestCap === null || current === null || current.count === 0 ? null : current.start + requestCap.windowMs,
+          at_request_cap: requestCap !== null && current !== null && current.count >= requestCap.ceiling,
         });
       }
       if (url.pathname === "/v1/export" && req.method === "GET") {
@@ -609,24 +836,18 @@ export class UserDO {
         if ((req.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
           throw new FailClosed(400, "websocket_required", "the bridge session leg requires a WebSocket upgrade");
         }
+        if (!this.state.acceptWebSocket) {
+          throw new FailClosed(500, "websocket_hibernation_unavailable", "the runtime offers no hibernating WebSockets");
+        }
         const pair = new WebSocketPair();
         const client = pair[0];
         const server = pair[1];
-        server.accept();
-        new BridgeSessionServer({
-          store: this.bridgeStore(),
-          bindingId,
-          irohHex,
-          transport: new WsTransport(server),
-          guardBatch: (newBytes) => {
-            try {
-              this.assertWritable(newBytes);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-        });
+        // Hibernating, never server.accept(): an idle bridge socket
+        // must not keep the object resident (#15484, #3811).
+        this.state.acceptWebSocket(server);
+        const attachment: BridgeSocketAttachment = { v: 1, sid: crypto.randomUUID(), bindingId, irohHex };
+        server.serializeAttachment(attachment);
+        this.openBridgeSession(server, attachment);
         return new Response(null, { status: 101, webSocket: client } as unknown as ResponseInit);
       }
       const blobHashMatch = url.pathname.match(/^\/v1\/blobs\/([0-9a-f]{64})$/);
@@ -734,6 +955,11 @@ export class UserDO {
       }
       return json({ error: "not_found" }, 404);
     } catch (e) {
+      if (e instanceof RetryableRefusal) {
+        const response = json({ error: e.code, message: e.message, retry_after_seconds: e.retryAfterSeconds }, e.status);
+        response.headers.set("retry-after", String(e.retryAfterSeconds));
+        return response;
+      }
       if (e instanceof FailClosed) return json({ error: e.code, message: e.message }, e.status);
       throw e;
     }
@@ -761,35 +987,109 @@ function serializeOutcome(outcome: IngestOutcome): Record<string, unknown> {
  * needs (the package carries no workers-types dependency). */
 declare const WebSocketPair: new () => [WsSocketLike, WsSocketLike];
 
-interface WsSocketLike {
-  accept(): void;
+export interface WsSocketLike {
   send(data: Uint8Array): void;
-  close(): void;
-  addEventListener(type: string, cb: (event: { data?: unknown }) => void): void;
+  close(code?: number, reason?: string): void;
+  serializeAttachment(value: unknown): void;
+  deserializeAttachment(): unknown;
 }
 
-/** Adapts a workerd server WebSocket to the bridge session's
- * message transport. Binary messages only — the bridge has no text
- * frames, and anything else is ignored rather than guessed at. */
-class WsTransport implements FrameTransport {
-  constructor(private socket: WsSocketLike) {}
+/** What a bridge socket carries through hibernation (#15484). The
+ * session state itself is too large for an attachment, so it lives
+ * in bridge_ws_sessions under `sid`. */
+interface BridgeSocketAttachment {
+  v: 1;
+  sid: string;
+  bindingId: string;
+  irohHex: string;
+}
+
+/** Rows older than this belong to sockets that are long gone. */
+const BRIDGE_SESSION_ROW_TTL_MS = 24 * 60 * 60 * 1000;
+
+function readAttachment(socket: WsSocketLike): BridgeSocketAttachment | null {
+  let value: unknown;
+  try {
+    value = socket.deserializeAttachment();
+  } catch {
+    return null;
+  }
+  const a = value as Partial<BridgeSocketAttachment> | null;
+  if (
+    !a ||
+    typeof a !== "object" ||
+    a.v !== 1 ||
+    typeof a.sid !== "string" ||
+    typeof a.bindingId !== "string" ||
+    typeof a.irohHex !== "string"
+  ) {
+    return null;
+  }
+  return a as BridgeSocketAttachment;
+}
+
+function sessionErrorFrame(code: string, message: string): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify({ code, message }));
+  const out = new Uint8Array(1 + body.length);
+  out[0] = TAG.error;
+  out.set(body, 1);
+  return out;
+}
+
+function closeQuietly(socket: WsSocketLike, code: number, reason: string): void {
+  try {
+    socket.close(code, reason);
+  } catch {
+    // Already closed.
+  }
+}
+
+/** Adapts a hibernating server WebSocket to the bridge session's
+ * message transport. The runtime delivers frames to the object's
+ * webSocketMessage handler, which hands them here. */
+class HibernatingTransport implements FrameTransport {
+  private messageCb: ((data: Uint8Array) => void | Promise<void>) | null = null;
+  private closeCb: (() => void) | null = null;
+  private ended = false;
+
+  constructor(
+    private socket: WsSocketLike,
+    private onEnd: () => void,
+  ) {}
 
   send(data: Uint8Array): void {
     this.socket.send(data);
   }
 
-  onMessage(cb: (data: Uint8Array) => void): void {
-    this.socket.addEventListener("message", (event) => {
-      if (event.data instanceof ArrayBuffer) cb(new Uint8Array(event.data));
-      else if (event.data instanceof Uint8Array) cb(event.data);
-    });
+  onMessage(cb: (data: Uint8Array) => void | Promise<void>): void {
+    this.messageCb = cb;
   }
 
   onClose(cb: () => void): void {
-    this.socket.addEventListener("close", () => cb());
+    this.closeCb = cb;
   }
 
+  /** The session ends it (a named error): close the socket. */
   close(): void {
-    this.socket.close();
+    this.end();
+    closeQuietly(this.socket, 1011, "session_ended");
+  }
+
+  /** Hand a frame to the session; settles once it is handled. */
+  async deliver(data: Uint8Array): Promise<void> {
+    if (this.ended || !this.messageCb) return;
+    await this.messageCb(data);
+  }
+
+  /** The peer closed or the socket failed. */
+  peerClosed(): void {
+    this.end();
+  }
+
+  private end(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.closeCb?.();
+    this.onEnd();
   }
 }

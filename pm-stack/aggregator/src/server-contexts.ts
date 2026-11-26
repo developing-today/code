@@ -10,7 +10,13 @@ import { createWatchdogGapSyncQueue, watchdogDeliveries } from "./activity.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS } from "./aa.ts";
 import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
-import { buildHealth, resolveBuildVersion, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import {
+  buildHealth,
+  resolveBuildVersion,
+  summarizeItemCoverage,
+  type HealthView,
+  type ItemsCoverage,
+} from "./health.ts";
 import { computeEditionDrift, type EditionDrift } from "./edition-drift.ts";
 import { join } from "node:path";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
@@ -33,7 +39,24 @@ import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.
 import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
 import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
 import { quotaForecastContract, subjectForecastContracts, type ForecastContract } from "./forecast-contract.ts";
-import { cfg, itemHistoryStore, sloJournal, actionsStore, commentsStore, viewsStore, freshnessStore, freshnessReconciler, activityStore, recordActivity, watchdogEpisodes, source, briefCommentsFor, assembleConflicts, commentFormOpts, emptyQuotaView } from "./server-wiring.ts";
+import {
+  cfg,
+  itemHistoryStore,
+  sloJournal,
+  actionsStore,
+  commentsStore,
+  viewsStore,
+  freshnessStore,
+  freshnessReconciler,
+  activityStore,
+  recordActivity,
+  watchdogEpisodes,
+  source,
+  briefCommentsFor,
+  assembleConflicts,
+  commentFormOpts,
+  emptyQuotaView,
+} from "./server-wiring.ts";
 import { requireHome } from "./home.ts";
 
 export async function loadBoardContext() {
@@ -183,7 +206,11 @@ export async function roadmapContext() {
 
 type SearchTimings = Record<string, number>;
 
-export async function withSearchTiming<T>(timings: SearchTimings, stage: string, run: () => T | Promise<T>): Promise<T> {
+export async function withSearchTiming<T>(
+  timings: SearchTimings,
+  stage: string,
+  run: () => T | Promise<T>,
+): Promise<T> {
   const started = performance.now();
   try {
     return await run();
@@ -362,7 +389,9 @@ export async function loadAttentionContext(opts: { census?: boolean } = {}) {
 // stale-while-revalidate, one cache per census variant — the census
 // assembly costs up to ~64 s of GitHub search calls and must never
 // ride the JSON path, or vice versa.
-export const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+export const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(
+  TODAY_CACHE_TTL_MS,
+);
 export const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(
   TODAY_CACHE_TTL_MS,
 );
@@ -644,7 +673,9 @@ export function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   };
 }
 
-export function eventContextByRef(pool: readonly ProjectPoolItem[]): Map<string, { project: string; epic: string | null }> {
+export function eventContextByRef(
+  pool: readonly ProjectPoolItem[],
+): Map<string, { project: string; epic: string | null }> {
   const context = new Map<string, { project: string; epic: string | null }>();
   for (const item of pool) {
     const ref = item.ref.replace(/^gh:/i, "").toLowerCase();

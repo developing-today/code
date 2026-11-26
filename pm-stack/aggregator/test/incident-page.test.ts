@@ -123,9 +123,7 @@ describe("envelope contract (oracle: C6 design §1.1)", () => {
     expect(validatePageEnvelope(envelope)).toEqual({ ok: true });
     expect(validatePageEnvelope({ ...envelope, schema: "c6.page-data/v2" }).ok).toBe(false);
     expect(validatePageEnvelope({ ...envelope, sections: envelope.sections.slice(1) }).ok).toBe(false);
-    expect(
-      validatePageEnvelope({ ...envelope, sections: [...envelope.sections].reverse() }).ok,
-    ).toBe(false);
+    expect(validatePageEnvelope({ ...envelope, sections: [...envelope.sections].reverse() }).ok).toBe(false);
   });
 });
 

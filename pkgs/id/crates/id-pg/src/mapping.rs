@@ -408,6 +408,10 @@ impl PageDecoder for TypedDecoder {
             })
             .collect()
     }
+
+    fn drop_columns(&self, row: &mut TypedRow, columns: &[String]) {
+        row.columns.retain(|(name, _)| !columns.contains(name));
+    }
 }
 
 fn cursor_value(value: &MappedValue) -> Option<Value> {

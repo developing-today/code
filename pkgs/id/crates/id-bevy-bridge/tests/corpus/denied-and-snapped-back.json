@@ -1,0 +1,158 @@
+{
+  "name": "denied-and-snapped-back",
+  "description": "The gate denies writes to `name`. A rename is rejected, and so is a predicted move that also renames: its prediction snaps back and world state never changes. A predicted move without a rename is accepted and becomes world state only at its own position. An unclassified predicate shows the fail-closed schema boundary.",
+  "budget": 2,
+  "steps": [
+    {
+      "step": "deny",
+      "predicate": "name"
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "door",
+          "values": [["name", "Door"], ["position", [3.0, 1.0]]]
+        },
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "lamp",
+          "values": [["name", "Lamp"], ["secret.owner", "never projected"]]
+        }
+      ]
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "upsert",
+        "id": "door",
+        "values": [["name", "Open door"]]
+      }
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "upsert",
+        "id": "lamp",
+        "values": [["position", [0.25, -0.75]]]
+      },
+      "predict": [0.25, -0.75]
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "upsert",
+        "id": "door",
+        "values": [["position", [3.0, 2.0]], ["name", "Moved door"]]
+      },
+      "predict": [3.0, 2.0]
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "retract",
+        "id": "lamp"
+      }
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "lamp",
+          "values": [["name", "New lamp"], ["position", [1.0, 1.0]]]
+        }
+      ]
+    },
+    {
+      "step": "tick",
+      "times": 3
+    }
+  ],
+  "journal": [
+    {
+      "position": 1,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 1,
+          "id": "door",
+          "values": [["name", "Door"], ["position", [3.0, 1.0]]]
+        },
+        {
+          "op": "upsert",
+          "position": 1,
+          "id": "lamp",
+          "values": [["name", "Lamp"], ["secret.owner", "never projected"]]
+        }
+      ]
+    },
+    {
+      "position": 2,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 2,
+          "id": "lamp",
+          "values": [["position", [0.25, -0.75]]]
+        }
+      ]
+    },
+    {
+      "position": 3,
+      "deltas": [
+        {
+          "op": "retract",
+          "position": 3,
+          "id": "lamp"
+        }
+      ]
+    },
+    {
+      "position": 4,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 4,
+          "id": "lamp",
+          "values": [["name", "New lamp"], ["position", [1.0, 1.0]]]
+        }
+      ]
+    }
+  ],
+  "outcomes": {
+    "confirmed": [[2, 2], [4, 3]],
+    "rejected": [[1, "denied predicate `name`"], [3, "denied predicate `name`"]]
+  },
+  "expected": {
+    "applied": 4,
+    "entities": {
+      "door": {
+        "mapped_at": 1,
+        "name": "Door",
+        "position": [3.0, 1.0]
+      },
+      "lamp": {
+        "mapped_at": 4,
+        "name": "New lamp",
+        "position": [1.0, 1.0]
+      }
+    }
+  }
+}
