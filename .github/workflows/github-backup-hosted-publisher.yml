@@ -41,6 +41,7 @@ jobs:
             openchamber-mirror
             opencode-mirror
           permission-contents: write
+          permission-workflows: write
 
       - name: Create ephemeral backup root
         id: root
