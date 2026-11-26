@@ -62,6 +62,21 @@ jobs:
           gh auth setup-git
           python3 infra/github-backup/bin/plain_mirror_all.py --root "$HOSTED_BACKUP_ROOT"
 
+      - name: Install rclone for R2 bundles
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+
+      - name: Upload verified R2 bundles
+        env:
+          HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
+          RCLONE_CONFIG_R2BAK_TYPE: s3
+          RCLONE_CONFIG_R2BAK_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: python3 infra/github-backup/bin/bundle_r2_all.py --bucket supabase-backups --root "$HOSTED_BACKUP_ROOT"
+
       - name: Remove ephemeral backup root
         if: always() && steps.root.outputs.path != ''
         env:
