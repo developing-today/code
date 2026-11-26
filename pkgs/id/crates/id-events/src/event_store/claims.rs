@@ -85,7 +85,14 @@ impl EventStore {
             let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
+            resolve::load_with_decoder(
+                &events,
+                &actions,
+                &device_ops,
+                &forks,
+                &proof_headers,
+                |bytes| self.decode_stored_event(bytes),
+            )?
         };
         let residue = super::compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;

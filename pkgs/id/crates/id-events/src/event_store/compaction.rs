@@ -46,8 +46,8 @@ use id_core::waiting::AuthorKey;
 
 use super::{
     ACTIONS, APPLIED, BODIES, CHAINS, COMPACTED, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS,
-    GROUPS, PROOF_HEADERS, PROOF_IDS, StoreError, WAITING_BY_DEP, corrupt, decode_stored,
-    lowest_proof, position_key, split_position,
+    GROUPS, PROOF_HEADERS, PROOF_IDS, StoreError, WAITING_BY_DEP, corrupt, lowest_proof,
+    position_key, split_position,
 };
 
 /// The caller's retention policy for one compaction pass: which kinds are
@@ -272,7 +272,7 @@ fn compact_in(txn: &WriteTransaction, policy: &CompactionPolicy) -> Result<usize
         for row in events.iter()? {
             let (position, bytes) = row?;
             let (author, seq) = split_position(position.value())?;
-            let event = decode_stored(bytes.value())?;
+            let event = self.decode_stored_event(bytes.value())?;
             let kind = &event.header.extensions.kind;
             if !policy.live_kinds.contains(kind) || is_durable_kind(kind) {
                 continue;

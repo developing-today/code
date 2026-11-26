@@ -617,10 +617,33 @@ pub(super) fn load<T>(
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    load_with_decoder(
+        events,
+        actions,
+        device_ops,
+        forks,
+        proof_headers,
+        decode_stored,
+    )
+}
+
+/// Load resolved event inputs through the owning store's verified-decode memo.
+pub(super) fn load_with_decoder<T, F>(
+    events: &T,
+    actions: &T,
+    device_ops: &T,
+    forks: &T,
+    proof_headers: &T,
+    mut decode: F,
+) -> Result<Loaded, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+    F: FnMut(&[u8]) -> Result<Event, StoreError>,
+{
     let mut stored = Vec::new();
     for entry in events.iter()? {
         let (_, value) = entry?;
-        let event = decode_stored(value.value())?;
+        let event = decode(value.value())?;
         let action = match actions.get(event.id.as_bytes().as_slice())? {
             Some(row) => Some(decode_action(row.value())?),
             None => None,
@@ -647,7 +670,7 @@ where
     let mut headers = Vec::new();
     for entry in proof_headers.iter()? {
         let (_, value) = entry?;
-        headers.push(decode_stored(value.value())?);
+        headers.push(decode(value.value())?);
     }
     Ok((stored, fork_points, headers))
 }
