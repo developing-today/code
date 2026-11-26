@@ -15,7 +15,7 @@ import { appendFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held, type MachinesAnswer, machineName, STALE_ACT_ERROR, staleAct } from "./edge-proto.ts";
+import { HOLDABLE, type Held, keyId, type MachinesAnswer, machineName, STALE_ACT_ERROR, staleAct } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -318,6 +318,10 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
               queue: deps.cfg.queue,
               androidApp: await Bun.file(deps.cfg.androidApk).exists(),
               androidPackage: deps.cfg.androidPackage,
+              // This machine's enrollment code: the short name of its
+              // own key, which the owner approves on the Machines
+              // screen to enroll it under that key (#13492).
+              machine: deps.link ? { code: await keyId(await deps.link.publicKey()) } : null,
             });
           case "overview":
             return json(await ops.overview());
@@ -357,6 +361,9 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
               version: deps.self?.version ?? null,
               actions: Object.keys(deps.actions ?? {}).sort(),
               sections: (deps.docs?.names() ?? []).sort(),
+              // Its own key's short name: the code it shows for
+              // enrollment under that key (#13492).
+              ...(deps.link ? { kid: await keyId(await deps.link.publicKey()) } : {}),
             },
           ],
           held: [],
