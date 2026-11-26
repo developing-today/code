@@ -67,6 +67,8 @@ export const DIRECT_ACTIONS = [
   "hands.done",
   "issue.rank",
   "task.move",
+  "task.cancel",
+  "task.unblock",
   "pr.merge",
   "deploy.start",
   "intake.send",
@@ -1103,10 +1105,24 @@ async function bridgeCall(
 /** The edge's `run`: GitHub through REST, the queue token from its
  * Worker secret, the bridge through its binding with the PM
  * credential, and everything else refused as a machine's. */
-export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch): Run {
+export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch, queueAct?: QueueAct): Run {
   const origin = (secrets.githubApi || GITHUB_API).replace(/\/+$/, "");
   return async (argv, opts) => {
     const [bin, verb, ...rest] = argv;
+    if (bin === config.fleetBin && verb === "queue" && queueAct) {
+      const [action, task, taskFlag, worker, reasonFlag, reason, ...extra] = rest;
+      if (
+        (action === "cancel" || action === "unblock") &&
+        /^[1-9]\d*$/.test(task ?? "") &&
+        taskFlag === "--worker" &&
+        worker !== undefined &&
+        reasonFlag === "--reason" &&
+        reason !== undefined &&
+        extra.length === 0
+      ) {
+        return queueAct(action, Number(task), worker, reason);
+      }
+    }
     if (bin === config.fleetBin && verb === "gh" && rest[0] === "api") {
       return ghApi(
         rest.slice(1),
@@ -1200,115 +1216,16 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
       throw error;
     }
   };
-  const ops = new Ops(config, edgeRun(config, options, fetchImpl), options.seen ? queueFetch : fetchImpl);
+  const queueAct: QueueAct = (verb, task, worker, reason) =>
+    queueTaskAct(config, options, fetchImpl, verb, task, worker, reason);
+  const ops = new Ops(config, edgeRun(config, options, fetchImpl, queueAct), options.seen ? queueFetch : fetchImpl);
   const clock = options.now ? () => new Date((options.now as () => number)()) : undefined;
   const work = new Work(ops, undefined, clock);
   const queueEnqueue = async (packet: unknown): Promise<{ code: number; stdout: string; stderr: string }> => {
     // Only the synchronous verb's read set is staged locally. Decisions about
     // dedupe, identity, revival and label bands still belong to that verb.
-    const fields = [
-      "queue",
-      "manual_only",
-      "title",
-      "body",
-      "payload",
-      "metadata",
-      "dedupe_key",
-      "priority",
-      "status",
-      "not_before",
-      "worker_id",
-      "claimed_at",
-      "lease_until",
-      "lane_id",
-      "platform",
-      "attempts",
-      "max_attempts",
-      "claim_provider",
-      "claim_model",
-      "claim_variant",
-      "claim_session_id",
-      "progress",
-      "result",
-      "last_error",
-      "park_kind",
-      "wait_kind",
-      "ready_condition",
-      "required_budget_minutes",
-      "last_checked_at",
-      "check_outcome",
-      "created_at",
-      "updated_at",
-      "completed_at",
-      "blocked_deps",
-      "dep_next_recheck_at",
-      "dep_blocked_until",
-      "dep_recheck_seconds",
-    ];
-    const jsonFields = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
-    // SQL NULL is not JSON text "null" (notably for dependency columns).
-    // manual_only is an INTEGER 0/1 on the wire but a boolean in TaskRow.
-    const encode = (name: string, value: unknown): unknown => {
-      if (value == null) return null;
-      if (name === "manual_only") return value === true || value === 1 ? 1 : 0;
-      if (jsonFields.has(name)) return JSON.stringify(value);
-      return value;
-    };
-    const arg = (value: unknown) =>
-      typeof value === "number"
-        ? {
-            type: Number.isInteger(value) ? "integer" : "float",
-            value: Number.isInteger(value) ? String(value) : value,
-          }
-        : value == null
-          ? { type: "null" }
-          : { type: "text", value: String(value) };
-    const stmt = (sql: string, values: unknown[] = []) => ({ sql, args: values.map(arg) });
-    type Cell = { type: string; value?: string | number };
-    type SqlResult = { cols?: { name: string }[]; rows?: Cell[][]; affected_row_count?: number };
-    type BatchResult = { step_results?: (SqlResult | null)[]; step_errors?: ({ message?: string } | null)[] };
-    const pipeline = async (
-      request: unknown,
-      write: boolean,
-    ): Promise<{ result?: SqlResult; resultBatch?: BatchResult }> => {
-      const bearer = options.queueToken ?? "";
-      if (!bearer) throw new Error("queue token is unavailable");
-      const res = await fetchImpl(`${config.queueDbUrl.replace(/\/+$/, "")}/v2/pipeline`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ requests: [request, { type: "close" }] }),
-      }).catch((error: unknown) => {
-        options.seen?.({ to: "queue", write, status: 0 });
-        throw error;
-      });
-      options.seen?.({ to: "queue", write, status: res.status, ...(res.status === 429 ? { limited: true } : {}) });
-      if (!res.ok) throw new Error(`queue store answered http ${res.status}`);
-      const answer = (await res.json()) as {
-        results?: { type?: string; error?: { message?: string }; response?: { result?: SqlResult | BatchResult } }[];
-      };
-      const first = answer.results?.[0];
-      if (first?.type !== "ok" || !first.response?.result) {
-        throw new Error(first?.error?.message ?? "queue store returned an invalid response");
-      }
-      return { result: first.response.result as SqlResult, resultBatch: first.response.result as BatchResult };
-    };
-    const query = async (sql: string, values: unknown[] = []): Promise<Record<string, unknown>[]> => {
-      const { result } = await pipeline({ type: "execute", stmt: stmt(sql, values) }, false);
-      if (!result?.cols || !result.rows) throw new Error("queue store returned no query rows");
-      return result.rows.map((row) =>
-        Object.fromEntries(
-          result.cols!.map((col, i) => {
-            const cell = row[i];
-            if (!cell) throw new Error("queue store returned a short row");
-            if (cell.type === "null") return [col.name, null];
-            if (cell.type === "integer" || cell.type === "float") return [col.name, Number(cell.value)];
-            if (cell.type !== "text" || typeof cell.value !== "string")
-              throw new Error("queue store returned an invalid cell");
-            return [col.name, cell.value];
-          }),
-        ),
-      );
-    };
+    const { fields, encode, stmt, query, pipeline, decode } = queueWire(config, options, fetchImpl);
+
     try {
       const now = Math.floor((options.now?.() ?? Date.now()) / 1000);
       const env = nativeQueueEnv(() => now);
@@ -1385,16 +1302,7 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
         if (raw.some((row) => row.status === "done")) {
           return { code: 1, stdout: "", stderr: "queue enqueue requires native completed-work dedupe" };
         }
-        const snapshot = raw.map(
-          (row) =>
-            Object.fromEntries(
-              Object.entries(row).map(([name, value]) => {
-                if (name === "manual_only") return [name, value === 1 || value === true];
-                if (jsonFields.has(name) && typeof value === "string") return [name, JSON.parse(value)];
-                return [name, value];
-              }),
-            ) as unknown as TaskRow,
-        );
+        const snapshot = raw.map(decode);
         const store = new EnqueueStore(snapshot);
         const response = await executeQueueVerb(store, "enqueue", request, env);
         if (response.ok !== true) {
@@ -1491,6 +1399,262 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
     trends: new Trends(ops, options.shelf ?? memoryShelf(), clock, "leave"),
     queueEnqueue,
   };
+}
+
+/** The queue store's Hrana wire for the console's direct door: the
+ * task columns, the statements that read and write them, and the
+ * decoding of one row back into a TaskRow. */
+function queueWire(config: Config, options: DirectOptions, fetchImpl: Fetch) {
+  const fields = [
+    "queue",
+    "manual_only",
+    "title",
+    "body",
+    "payload",
+    "metadata",
+    "dedupe_key",
+    "priority",
+    "status",
+    "not_before",
+    "worker_id",
+    "claimed_at",
+    "lease_until",
+    "lane_id",
+    "platform",
+    "attempts",
+    "max_attempts",
+    "claim_provider",
+    "claim_model",
+    "claim_variant",
+    "claim_session_id",
+    "progress",
+    "result",
+    "last_error",
+    "park_kind",
+    "wait_kind",
+    "ready_condition",
+    "required_budget_minutes",
+    "last_checked_at",
+    "check_outcome",
+    "created_at",
+    "updated_at",
+    "completed_at",
+    "blocked_deps",
+    "dep_next_recheck_at",
+    "dep_blocked_until",
+    "dep_recheck_seconds",
+  ];
+  const jsonFields = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
+  // SQL NULL is not JSON text "null" (notably for dependency columns).
+  // manual_only is an INTEGER 0/1 on the wire but a boolean in TaskRow.
+  const encode = (name: string, value: unknown): unknown => {
+    if (value == null) return null;
+    if (name === "manual_only") return value === true || value === 1 ? 1 : 0;
+    if (jsonFields.has(name)) return JSON.stringify(value);
+    return value;
+  };
+  const arg = (value: unknown) =>
+    typeof value === "number"
+      ? {
+          type: Number.isInteger(value) ? "integer" : "float",
+          value: Number.isInteger(value) ? String(value) : value,
+        }
+      : value == null
+        ? { type: "null" }
+        : { type: "text", value: String(value) };
+  const stmt = (sql: string, values: unknown[] = []) => ({ sql, args: values.map(arg) });
+  type Cell = { type: string; value?: string | number };
+  type SqlResult = { cols?: { name: string }[]; rows?: Cell[][]; affected_row_count?: number };
+  type BatchResult = { step_results?: (SqlResult | null)[]; step_errors?: ({ message?: string } | null)[] };
+  const pipeline = async (
+    request: unknown,
+    write: boolean,
+  ): Promise<{ result?: SqlResult; resultBatch?: BatchResult }> => {
+    const bearer = options.queueToken ?? "";
+    if (!bearer) throw new Error("queue token is unavailable");
+    const res = await fetchImpl(`${config.queueDbUrl.replace(/\/+$/, "")}/v2/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ requests: [request, { type: "close" }] }),
+    }).catch((error: unknown) => {
+      options.seen?.({ to: "queue", write, status: 0 });
+      throw error;
+    });
+    options.seen?.({ to: "queue", write, status: res.status, ...(res.status === 429 ? { limited: true } : {}) });
+    if (!res.ok) throw new Error(`queue store answered http ${res.status}`);
+    const answer = (await res.json()) as {
+      results?: { type?: string; error?: { message?: string }; response?: { result?: SqlResult | BatchResult } }[];
+    };
+    const first = answer.results?.[0];
+    if (first?.type !== "ok" || !first.response?.result) {
+      throw new Error(first?.error?.message ?? "queue store returned an invalid response");
+    }
+    return { result: first.response.result as SqlResult, resultBatch: first.response.result as BatchResult };
+  };
+  const query = async (sql: string, values: unknown[] = []): Promise<Record<string, unknown>[]> => {
+    const { result } = await pipeline({ type: "execute", stmt: stmt(sql, values) }, false);
+    if (!result?.cols || !result.rows) throw new Error("queue store returned no query rows");
+    return result.rows.map((row) =>
+      Object.fromEntries(
+        result.cols!.map((col, i) => {
+          const cell = row[i];
+          if (!cell) throw new Error("queue store returned a short row");
+          if (cell.type === "null") return [col.name, null];
+          if (cell.type === "integer" || cell.type === "float") return [col.name, Number(cell.value)];
+          if (cell.type !== "text" || typeof cell.value !== "string")
+            throw new Error("queue store returned an invalid cell");
+          return [col.name, cell.value];
+        }),
+      ),
+    );
+  };
+  const decode = (row: Record<string, unknown>): TaskRow =>
+    Object.fromEntries(
+      Object.entries(row).map(([name, value]) => {
+        if (name === "manual_only") return [name, value === 1 || value === true];
+        if (jsonFields.has(name) && typeof value === "string") return [name, JSON.parse(value)];
+        return [name, value];
+      }),
+    ) as unknown as TaskRow;
+  return { fields, jsonFields, encode, stmt, query, pipeline, decode };
+}
+
+/** The one task a cancel or unblock names, as the shared verb reads it.
+ * What the verb changes is kept here until queueTaskAct writes it in one
+ * transaction. */
+class ActStore extends FixtureQueueStore {
+  private row: TaskRow | null;
+  /** Whether the verb changed the task or its lease, so there is
+   * something to write. Its events are the ones it appended. */
+  touched = false;
+  leaseDeleted = false;
+  constructor(row: TaskRow | null) {
+    super();
+    this.row = row;
+  }
+  current(): TaskRow | null {
+    return this.row;
+  }
+  override async getTask(id: number): Promise<TaskRow | null> {
+    return this.row !== null && this.row.id === id ? structuredClone(this.row) : null;
+  }
+  override async updateTask(id: number, set: Partial<TaskRow>): Promise<void> {
+    if (this.row === null || this.row.id !== id) return;
+    this.touched = true;
+    this.row = { ...this.row, ...set };
+  }
+  override async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {
+    const row = this.row;
+    if (row === null || row.id !== id) return false;
+    for (const [name, value] of Object.entries(guard)) {
+      if (row[name as keyof TaskRow] !== value) return false;
+    }
+    this.touched = true;
+    this.row = { ...row, ...set };
+    return true;
+  }
+  override async deleteLease(): Promise<void> {
+    this.touched = true;
+    this.leaseDeleted = true;
+  }
+}
+
+export type QueueAct = (
+  verb: "cancel" | "unblock",
+  task: number,
+  worker: string,
+  reason: string,
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** `fleet queue cancel|unblock` for the edge: the shared verb decides, on
+ * the one task of this queue that it names, and what it changes is
+ * written in a single transaction. The row is guarded by what was read,
+ * so a write that lost a race is decided again on the fresh row. */
+export async function queueTaskAct(
+  config: Config,
+  options: DirectOptions,
+  fetchImpl: Fetch,
+  verb: "cancel" | "unblock",
+  taskId: number,
+  worker: string,
+  reason: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { fields, encode, stmt, query, pipeline, decode } = queueWire(config, options, fetchImpl);
+  try {
+    const now = Math.floor((options.now?.() ?? Date.now()) / 1000);
+    const env = nativeQueueEnv(() => now);
+    const request = { task_id: taskId, worker, reason };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const [before] = await query(`SELECT id, ${fields.join(", ")} FROM tasks WHERE id = ? AND queue = ?`, [
+        taskId,
+        config.queue,
+      ]);
+      const store = new ActStore(before ? decode(before) : null);
+      const response = await executeQueueVerb(store, verb, request, env);
+      if (response.ok !== true) {
+        return { code: Number(response.exit ?? 2), stdout: "", stderr: String(response.error ?? `queue ${verb} refused`) };
+      }
+      const answer = JSON.stringify({ task: taskId, action: verb });
+      if (!store.touched) return { code: 0, stdout: answer, stderr: "" };
+      const after = store.current() as TaskRow;
+      const update = stmt(
+        `UPDATE tasks SET ${fields.map((name) => `${name} = ?`).join(", ")} WHERE id = ? AND ${fields.map((name) => `${name} IS ?`).join(" AND ")}`,
+        [
+          ...fields.map((name) => encode(name, after[name as keyof TaskRow])),
+          taskId,
+          ...fields.map((name) => before[name]),
+        ],
+      );
+      const steps: { stmt: ReturnType<typeof stmt>; condition?: unknown }[] = [
+        { stmt: stmt("BEGIN IMMEDIATE") },
+        { stmt: update, condition: { type: "ok", step: 0 } },
+      ];
+      for (const event of await store.allEvents()) {
+        steps.push({
+          stmt: stmt(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ?, ?, ?, ? WHERE changes() = 1",
+            [event.worker_id, taskId, event.kind, JSON.stringify(event.detail), event.created_at],
+          ),
+          condition: { type: "ok", step: steps.length - 1 },
+        });
+      }
+      if (store.leaseDeleted) {
+        steps.push({
+          stmt: stmt("DELETE FROM leases WHERE task_id = ? AND changes() = 1", [taskId]),
+          condition: { type: "ok", step: steps.length - 1 },
+        });
+      }
+      const commitStep = steps.length;
+      steps.push({ stmt: stmt("COMMIT"), condition: { type: "ok", step: commitStep - 1 } });
+      steps.push({
+        stmt: stmt("ROLLBACK"),
+        condition: {
+          type: "and",
+          conds: [
+            { type: "ok", step: 0 },
+            { type: "not", cond: { type: "ok", step: commitStep } },
+          ],
+        },
+      });
+      const { resultBatch } = await pipeline({ type: "batch", batch: { steps } }, true);
+      const error = resultBatch?.step_errors?.find((value) => value !== null);
+      if (error) throw new Error(error.message ?? `queue store refused the ${verb}`);
+      if (
+        !resultBatch?.step_results?.[commitStep] ||
+        typeof resultBatch.step_results[1]?.affected_row_count !== "number"
+      ) {
+        throw new Error(`queue store returned an invalid ${verb} batch`);
+      }
+      if (resultBatch.step_results[1].affected_row_count === 1) return { code: 0, stdout: answer, stderr: "" };
+    }
+    return { code: 1, stdout: "", stderr: `queue ${verb} lost concurrent writes; retry the request` };
+  } catch (error) {
+    return {
+      code: 1,
+      stdout: "",
+      stderr: `queue ${verb}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
 /** Whether a request of the queue store may change something: any
