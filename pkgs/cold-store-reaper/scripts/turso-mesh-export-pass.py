@@ -123,7 +123,8 @@ def _load_json(path, label):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run one due-cohort Turso export pass and write its run record (#13456)."
+        description="Run one due-cohort Turso export pass and write its run record (#13456).",
+        allow_abbrev=False,
     )
     parser.add_argument("--plan", required=True, metavar="FILE", help="planner JSON (turso-mesh-cohorts.py output)")
     parser.add_argument("--exporter", required=True, metavar="CMD", help="read-only exporter executable; run as CMD DATABASE")
