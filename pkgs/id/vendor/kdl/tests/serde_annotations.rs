@@ -40,7 +40,7 @@ fn single_node_annotation_is_a_one_element_list() {
 #[test]
 fn multiple_node_annotations_keep_order() {
     let doc: Doc<Triple> =
-        kdl::de::from_str("(object)(predicate#knows)triple (person)(agent)alice\n").unwrap();
+        kdl::de::from_str("(object)(\"predicate#knows\")triple (person)(agent)alice\n").unwrap();
     assert_eq!(doc.triple.annotations, vec!["object", "predicate#knows"]);
     assert_eq!(doc.triple.subject, "alice");
     assert_eq!(doc.triple.subject_annotations, vec!["person", "agent"]);
@@ -110,7 +110,6 @@ fn children_block_annotations() {
 #[test]
 fn property_key_annotations_are_not_serde_keys() {
     #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
     struct Props {
         #[serde(rename = "#@weight")]
         weight: f64,
@@ -121,6 +120,11 @@ fn property_key_annotations_are_not_serde_keys() {
     let doc: Doc<Props> = kdl::de::from_str("triple (k)weight=(v)0.5\n").unwrap();
     assert_eq!(doc.triple.weight, 0.5);
     assert_eq!(doc.triple.weight_annotations, vec!["v"]);
+
+    // Read as a map, the property is keyed by its bare name and nothing else.
+    let map: Doc<std::collections::BTreeMap<String, serde_json::Value>> =
+        kdl::de::from_str("triple (k)weight=(v)0.5\n").unwrap();
+    assert_eq!(map.triple.keys().collect::<Vec<_>>(), vec!["weight"]);
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -155,7 +159,7 @@ fn round_trip_multiple_annotations() {
     let text = kdl::se::to_string(&value).unwrap();
     assert_eq!(
         text,
-        "(object)(predicate#knows)triple (person)(agent)alice\n"
+        "(object)(\"predicate#knows\")triple (person)(agent)alice\n"
     );
     let back: Top = kdl::de::from_str(&text).unwrap();
     assert_eq!(back, value);
