@@ -65,6 +65,8 @@ async function harness() {
     pipeline: (qs = {}) => call(`/fleet/${cred}/pipeline?${new URLSearchParams(qs)}`),
     directory: () => call(`/fleet/${cred}/directory`),
     credentials: () => call(`/fleet/${cred}/credentials`),
+    offers: () => call(`/fleet/${cred}/offers`),
+    wakeHooks: () => call(`/fleet/${cred}/wake-hooks`),
     post: (what, body) => post(`/fleet/${cred}/${what}`, body),
   });
   return {
@@ -258,4 +260,85 @@ test("sql: credential state folds live and revoked rows per agent, hashes never 
   assert.equal(state[0].state, "revoked");
   assert.equal(state[0].revoked_at, "2026-11-24T03:00:00Z");
   assert.deepEqual(state[0].scopes, []);
+});
+
+test("read scope: the wake hooks through the PM credential match the owner's list; setting stays the owner's (#14544)", async () => {
+  const h = await seeded();
+  const postJson = (path, body) =>
+    h.call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  // The owner sets a hook through the wake-hooks API; a set with no
+  // URL removes it again, and the list reflects both acts.
+  const set = await postJson(`/api/${TOKEN}/wake-hooks`, {
+    address: "agent:felix",
+    url: "https://hooks.example/wake/felix",
+    token: "hook-secret",
+  });
+  assert.equal(set.status, 200, await set.text().catch(() => ""));
+  const ownerList = await (await h.call(`/api/${TOKEN}/wake-hooks`)).json();
+  assert.equal(ownerList.hooks.length, 1);
+
+  // The PM credential reads the same projection: host only, never
+  // the token or the path.
+  const res = await h.as(h.pm).wakeHooks();
+  assert.equal(res.status, 200);
+  const { hooks } = await res.json();
+  assert.deepEqual(hooks, ownerList.hooks);
+  assert.equal(hooks[0].address, "agent:felix");
+  assert.equal(hooks[0].host, "hooks.example");
+  assert.equal(hooks[0].has_token, true);
+  assert.ok(!JSON.stringify(hooks).includes("hook-secret") && !JSON.stringify(hooks).includes("/wake/felix"));
+
+  // A credential without the read scope is turned away, and no
+  // credential may set or remove through this address: those stay
+  // owner-token acts (the console holds them for a machine).
+  assert.equal((await h.as(h.felixCred).wakeHooks()).status, 404);
+  assert.equal((await postJson(`/fleet/${h.pm}/wake-hooks`, { address: "agent:felix" })).status, 405);
+
+  const removed = await (await postJson(`/api/${TOKEN}/wake-hooks`, { address: "agent:felix" })).json();
+  assert.equal(removed.removed, true);
+  assert.deepEqual((await (await h.as(h.pm).wakeHooks()).json()).hooks, []);
+});
+
+test("read scope: the offers list through the PM credential shows offers with their claims (#14375)", async () => {
+  const h = await seeded();
+  const postJson = (path, body) =>
+    h.call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  // The owner posts an offer; felix claims the one slot.
+  const posted = await postJson(`/api/${TOKEN}/fleet/offer`, {
+    body: "take the next bridge task",
+    to: "agent:f*",
+    kind: "command",
+    slots: 1,
+    sender: "drew",
+  });
+  assert.equal(posted.status, 201);
+  const ownerList = await (await h.call(`/api/${TOKEN}/fleet/offers`)).json();
+  assert.equal(ownerList.offers.length, 1);
+  const offerId = ownerList.offers[0].id;
+  const claim = await postJson(`/fleet/${h.ft}/claim`, { agent: "felix", offer_id: offerId });
+  assert.equal(claim.status, 200, await claim.text().catch(() => ""));
+
+  // The PM credential reads the same list, claims and claimant named.
+  const res = await h.as(h.pm).offers();
+  assert.equal(res.status, 200);
+  const { offers } = await res.json();
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].id, offerId);
+  assert.equal(offers[0].state, "filled");
+  assert.equal(offers[0].claimed, 1);
+  assert.equal(offers[0].claims.length, 1);
+  assert.equal(offers[0].claims[0].agent, "felix");
+  // The owner's list and the credential's list are the same projection.
+  const after = await (await h.call(`/api/${TOKEN}/fleet/offers`)).json();
+  assert.deepEqual(offers, after.offers);
+
+  // A credential without the read scope does not open the list.
+  assert.equal((await h.as(h.felixCred).offers()).status, 404);
+  // The shared fleet token at the same address gets the agent view,
+  // not the owner's: naming felix lists the offers felix may claim,
+  // projected for an agent — no claims, no claimants.
+  const agentView = await h.call(`/fleet/${h.ft}/offers?agent=felix`);
+  assert.equal(agentView.status, 200);
+  const agentOffers = (await agentView.json()).offers;
+  assert.equal(agentOffers.length, 0, "the one offer is filled, so nothing stands open for felix");
 });

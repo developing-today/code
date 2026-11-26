@@ -109,6 +109,32 @@ task is never left `queued` for a session that did not launch, nor
 `claimed` without a session id, nor claimed-and-running reported as
 failed.
 
+### `POST /v1/agent-wake` — start a Fleet agent run
+
+Use this as the Message Bridge wake hook for an `agent:<name>` address.
+Set the hook URL to `https://dispatch.security.cab/v1/agent-wake` and its
+bearer token to the dispatch API token. The bridge sends its generic wake
+event:
+
+```json
+{
+  "event": "message.created",
+  "address": "agent:agent-next-20-local",
+  "message_ids": [42]
+}
+```
+
+The endpoint starts an OpenCode session in the code checkout and sends a
+fixed prompt to run `fleet agent next --agent <name>`. The agent reads the
+bridge inbox through the normal intake ladder and claims the actual task;
+the wake request creates no separate issue or queue task. The webhook's
+summary text is ignored. A successful session start returns
+`202 {agent, session_id, status: "started"}`. If sending the prompt fails,
+dispatch logs the failure and leaves the session available to inspect. The
+OpenCode server may have accepted the prompt before the client saw the
+failure, so the session is retained and the bridge messages remain unread
+for a later poll or wake.
+
 ### `POST /v1/tasks` — enqueue only
 
 ```jsonc

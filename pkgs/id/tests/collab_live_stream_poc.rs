@@ -352,7 +352,7 @@ impl LiveSession {
     /// empty again.
     fn close_segment(&mut self) {
         let segment = std::mem::take(&mut self.segment);
-        debug_assert!(!segment.is_empty());
+        debug_assert_ne!(segment, [] as [Frame; 0]);
         let mut root = *blake3::hash(b"#2036 segment root v1").as_bytes();
         for frame in &segment {
             let digest = blake3::hash(&mac_input(
@@ -741,7 +741,7 @@ fn test_checkpoint_at_limits_and_explicit_commit() {
     }
     // Once the segment closes, the ephemeral stream starts empty: the
     // frames live on only as the checkpoint's root and count.
-    assert!(session.tail_since_checkpoint().is_empty());
+    assert_eq!(session.tail_since_checkpoint(), [] as [Frame; 0]);
 
     // Time limit: a frame arriving 2 s after the open segment's first
     // frame closes that segment before joining the stream.

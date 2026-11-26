@@ -1,4 +1,4 @@
-// Message model shared by the MCP tools, the page and the JSON API.
+// Message model shared by the MCP tools, the console and the JSON API.
 //
 // channel says which assistant the message is with: "claude" (the
 // Claude custom connector) or "chatgpt" (the ChatGPT connector, which
@@ -8,8 +8,9 @@
 //
 // direction is from that assistant's point of view:
 //   outbound  sent by the assistant through its connector (send_message)
-//   inbound   sent to the assistant, from the page or the JSON API
-// source says which door it came through: "mcp", "page" or "api".
+//   inbound   sent to the assistant, from the console or the JSON API
+// source says which door it came through: "mcp", "page" (the retired
+// page's sends, kept on old rows and still accepted by the API) or "api".
 // Inbound messages start unread; read_messages(mark_read) or
 // ack_messages marks them read, so the assistant can tell what is new.
 //
@@ -171,6 +172,17 @@ export const OAUTH_PENDING_GRACE = 600;
 // source can't keep the registry full; a real client registers once or twice.
 export const OAUTH_REG_PER_SOURCE = 10;
 
+/**
+ * What an inbox reader sees of one note row (design §4.4, #14370): an
+ * instruction is projected sender-free — the store keeps the sender,
+ * the recipient never sees it — while a plain note keeps its sender.
+ * kind and reply_to ride along so a reply can thread onto the row
+ * without naming its sender.
+ */
+export function noteForInbox({ id, sender, note, ts, kind, reply_to, work_state = null, work_task_id = null }) {
+  return { id, from: kind === "instruction" ? null : sender, note, ts, kind, reply_to: reply_to ?? null, work_state, work_task_id };
+}
+
 export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
     this.rows = [];
@@ -327,14 +339,14 @@ export class MemoryStore {
   async noteIdentities() {
     return [...this.noteCounters.keys()].sort();
   }
-  async noteDeliver({ from, recipients, note, batch = null, pattern = null, limit_n = null, matched = null }) {
+  async noteDeliver({ from, recipients, note, kind = "note", reply_to = null, batch = null, pattern = null, limit_n = null, matched = null }) {
     const notes = [];
     for (const recipient of recipients) {
       if (!this.noteCounters.has(recipient)) continue;
-      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, batch, ack_at: null };
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, ack_at: null, kind, reply_to, batch, work_state: null, work_task_id: null };
       this.noteRows.push(row);
       this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
-      notes.push({ id: row.id, recipient, from, note, ts: row.ts, batch });
+      notes.push({ id: row.id, recipient, from, note, ts: row.ts, kind, reply_to, batch });
     }
     if (batch) {
       this.distributions.set(batch, {
@@ -348,6 +360,10 @@ export class MemoryStore {
       });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+  async noteOrigin(identity, id) {
+    const row = this.noteRows.find((r) => r.id === id && r.recipient === identity);
+    return row ? row.from : null;
   }
   // Broadening a notes distribution (notes.js), same semantics as the
   // Durable Object: only the original sender, only the remainder. The
@@ -365,7 +381,7 @@ export class MemoryStore {
     const notes = [];
     for (const recipient of recipients) {
       if (!this.noteCounters.has(recipient)) continue;
-      const row = { id: this.noteNextId++, ts: this.now(), recipient, from: sample.from, note: sample.note, batch, ack_at: null };
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from: sample.from, note: sample.note, batch, ack_at: null, kind: "note", reply_to: null };
       this.noteRows.push(row);
       this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
       deliveredSet.add(recipient);
@@ -392,7 +408,19 @@ export class MemoryStore {
   async noteInbox(identity) {
     return this.noteRows
       .filter((r) => r.recipient === identity && r.ack_at === null)
-      .map((r) => ({ id: r.id, from: r.from, note: r.note, ts: r.ts }));
+      .map((r) => noteForInbox({ id: r.id, sender: r.from, note: r.note, ts: r.ts, kind: r.kind, reply_to: r.reply_to, work_state: r.work_state, work_task_id: r.work_task_id }));
+  }
+  // Work-item lifecycle (design §4.6): the receiving identity moves its
+  // own note forward; another identity's note is simply not found.
+  // State-dependent refusals come back as { error }, like the fleet ops.
+  async noteWork(identity, { id, state, task_id }) {
+    const row = this.noteRows.find((r) => r.id === id && r.recipient === identity);
+    if (!row) return { error: `note ${id} is not in ${identity}'s inbox` };
+    const err = workTransitionError(row.work_state, state);
+    if (err) return { error: err };
+    row.work_state = state;
+    row.work_task_id = task_id ?? row.work_task_id ?? null;
+    return { id: row.id, work_state: row.work_state, work_task_id: row.work_task_id };
   }
   async noteAck(identity, { ids, up_to_id }) {
     const ts = this.now();
@@ -426,7 +454,7 @@ export class MemoryStore {
     rows = q.order === "desc" ? rows.slice().reverse() : rows;
     return rows
       .slice(0, q.limit ?? 50)
-      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at }));
+      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at, work_state: r.work_state, work_task_id: r.work_task_id }));
   }
   // Owner directory (pipeline.js): one row per registered identity,
   // scopes folded over its tokens (any token granting a scope grants
@@ -580,6 +608,68 @@ export class MemoryStore {
       last_id: rows.length ? rows[rows.length - 1].id : 0,
     };
   }
+}
+
+/**
+ * The instruction work-item lifecycle (design §4.6, #14372), shared by
+ * the fleet and notes surfaces. A received instruction is a work item:
+ * the receiving agent records that it acted on it in-session (`acted`),
+ * queued it as a named fleet-queue task (`queued`, with the task id),
+ * and later that the work is finished (`done`). States move only
+ * forward — `received` -> `acted` | `queued` -> `done` — and re-marking
+ * the current state is a no-op, so a retry never fails. Rows store null
+ * until first marked; null reads as `received`. Only the receiving
+ * agent may move its own copy: the store ops scope every update to the
+ * caller's own mailbox/inbox, so another agent's row is simply not
+ * found. Connector-channel instructions carry no stored state in this
+ * build-out; the pipeline derives `received`/`acted` from read state.
+ */
+export const WORK_STATES = ["received", "acted", "queued", "done"];
+export const WORK_SETTABLE_STATES = ["acted", "queued", "done"];
+
+/** The lifecycle state of a stored row: unmarked rows are at `received`. */
+export function workStateOf(row) {
+  return row?.work_state ?? "received";
+}
+
+/**
+ * Validates one work mark `{id, state, task_id?}` (the fleet verb body
+ * and the notes verb body share the shape); throws InputError.
+ * `queued` must name the queue task the instruction became.
+ */
+export function normalizeWorkMark(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  if (!Number.isInteger(data.id) || data.id < 1) throw new InputError("id must be a positive integer");
+  if (!WORK_SETTABLE_STATES.includes(data.state)) {
+    throw new InputError(`state must be one of ${WORK_SETTABLE_STATES.join(", ")}`);
+  }
+  const task_id = data.task_id === undefined || data.task_id === null ? null : data.task_id;
+  if (task_id !== null && (!Number.isInteger(task_id) || task_id < 1)) {
+    throw new InputError("task_id must be a positive integer");
+  }
+  if (data.state === "queued" && task_id === null) {
+    throw new InputError("state queued needs task_id: the fleet queue task the instruction became");
+  }
+  return { id: data.id, state: data.state, task_id };
+}
+
+/**
+ * The forward-only rule: null when `next` may follow `current`, else
+ * the refusal text. The graph is exactly the design's: from `received`
+ * an instruction is acted on or queued; from either it completes to
+ * `done`. Sideways steps (acted <-> queued), skipping the middle
+ * (received -> done) and every backward step are refused; re-marking
+ * the current state is a no-op, so a retry never fails.
+ */
+export function workTransitionError(current, next) {
+  const cur = current ?? "received";
+  if (next === cur) return null;
+  const forward =
+    (cur === "received" && (next === "acted" || next === "queued")) ||
+    ((cur === "acted" || cur === "queued") && next === "done");
+  return forward
+    ? null
+    : `work_state moves only forward (received -> acted | queued -> done); ${cur} -> ${next} is not a step forward`;
 }
 
 /** Builds the id predicate for ack; throws InputError on bad input. */

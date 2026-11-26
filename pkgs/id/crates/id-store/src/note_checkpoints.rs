@@ -675,6 +675,7 @@ impl NoteCheckpoints {
             note,
             content,
             parents,
+            proposal: None,
         };
         check_note_op(REVISE_KIND, &op)?;
         self.append(AppliedNote {
@@ -1132,7 +1133,7 @@ mod tests {
         // the snapshot is empty — a note with no recorded policy
         // contributes no record.
         let unseeded = rebuilt.policies().unwrap();
-        assert!(unseeded.is_empty());
+        assert_eq!(unseeded, [] as [NotePolicyRecord; 0]);
         assert_eq!(rebuilt.recorded_access(note), None);
         assert_eq!(
             rebuilt.access(note).unwrap(),
@@ -1189,7 +1190,7 @@ mod tests {
         // with no recorded policy falls back to its create event's
         // author, and the snapshot carries no record for it.
         assert_eq!(log.access(note).unwrap().0, author(1));
-        assert!(log.policies().unwrap().is_empty());
+        assert_eq!(log.policies().unwrap(), [] as [NotePolicyRecord; 0]);
 
         // Restart: the events rebuild the log with no policies, and
         // the snapshot for a plain note is empty — the owner still
@@ -1199,7 +1200,7 @@ mod tests {
         let policies = log.policies().unwrap();
         let rebuilt = NoteCheckpoints::from_events(events.clone()).unwrap();
         assert_eq!(rebuilt.access(note).unwrap().0, author(1));
-        assert!(rebuilt.policies().unwrap().is_empty());
+        assert_eq!(rebuilt.policies().unwrap(), [] as [NotePolicyRecord; 0]);
         let restored = NoteCheckpoints::from_events_with_policies(events, policies).unwrap();
         assert_eq!(restored.access(note).unwrap().0, author(1));
         assert!(restored.may_append(note, author(1), &groups));
@@ -1236,10 +1237,7 @@ mod tests {
 
         let rebuilt =
             NoteCheckpoints::from_events_with_policies(log.events().to_vec(), policies).unwrap();
-        assert_eq!(
-            rebuilt.recorded_access(scoped),
-            log.recorded_access(scoped)
-        );
+        assert_eq!(rebuilt.recorded_access(scoped), log.recorded_access(scoped));
         assert_eq!(rebuilt.recorded_access(plain), None);
         assert_eq!(rebuilt.policies().unwrap(), log.policies().unwrap());
     }

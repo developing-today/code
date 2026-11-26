@@ -11,9 +11,9 @@
 // Every option is parsed strictly before the journal is read or a subprocess
 // is spawned. The caller must schedule this independently of the aggregator.
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { checkWatchdogHeartbeatJournal, type WatchdogHeartbeatCheck } from "../src/watchdog-heartbeat-checker.ts";
+import { requireHome } from "../src/home.ts";
 
 const USAGE = "usage: check-watchdog-heartbeat.ts [--journal <path>]";
 const FLAGS = ["--journal"] as const;
@@ -116,8 +116,10 @@ async function postAlert(check: WatchdogHeartbeatCheck): Promise<void> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const defaultJournal = join(homedir(), ".local", "state", "pm-aggregator", "slo-journal.jsonl");
-  const journal = args.journal ?? process.env.PM_AGG_SLO_JOURNAL_FILE ?? defaultJournal;
+  const journal =
+    args.journal ??
+    process.env.PM_AGG_SLO_JOURNAL_FILE ??
+    join(requireHome("PM_AGG_SLO_JOURNAL_FILE"), ".local", "state", "pm-aggregator", "slo-journal.jsonl");
   const nowMs = Date.now();
   // Startup grace is based on monitoring activation, not on the
   // journal's oldest sample: with no persisted activation, this run is
@@ -149,12 +151,12 @@ async function main(): Promise<void> {
     );
     return;
   }
-  await postAlert(result);
   if (result.alert === "needs-orchestrator") {
     // Publish the escalation on the same independent channel as the
-    // page: the page-health-push report reaches the orchestrator's main
-    // chat whether or not the aggregator is up. The post-alert incident
-    // above is the ledger record; a warning incident alone is never
+    // page, before the ledger write: the page-health-push report reaches
+    // the orchestrator's main chat whether or not the aggregator is up,
+    // and a failed post-alert must not lose this line. The post-alert
+    // incident is the ledger record; a warning incident alone is never
     // delivered (the alert engine delivers criticals only) and the
     // attention feed's orchestrator tier is derived inside the
     // aggregator, so the incident title by itself routes nothing.
@@ -162,6 +164,7 @@ async function main(): Promise<void> {
       `NEEDS_ORCHESTRATOR: PM-stack watchdog heartbeat missing. ${reference} ${result.missedCycles} five-minute cycles have been missed.`,
     );
   }
+  await postAlert(result);
 }
 
 await main();

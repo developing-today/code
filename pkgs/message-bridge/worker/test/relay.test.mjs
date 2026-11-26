@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fleetCall, fleetOp, fleetSchema, fleetToken } from "../src/fleet.js";
 import { EVENT_NAME } from "../src/events.js";
 import { MemoryStore } from "../src/messages.js";
-import { parseAddresses } from "../src/relay.js";
+import { ADDRESS_HELP, parseAddresses, replyAddress } from "../src/relay.js";
 import { route } from "../src/routes.js";
 import { wakeText } from "../src/wake.js";
 
@@ -82,6 +82,16 @@ const claude = (h, args) => h.tool(TOKEN, "send_message", args);
 const chatgpt = (h, args) => h.tool(GPT, "send_message", args);
 const unread = async (h, token) => (await h.tool(token, "read_messages", { unread_only: true })).messages;
 const fires = (h) => h.out.calls.filter((c) => String(c.url).startsWith("https://api.anthropic.com/"));
+
+test("addresses: owner is the shown role term, drew and central stay aliases (#13507)", () => {
+  assert.equal(replyAddress(null), "owner");
+  assert.equal(replyAddress(undefined), "owner");
+  assert.equal(replyAddress("agent:a1"), "agent:a1");
+  assert.ok(ADDRESS_HELP.startsWith("owner,"), ADDRESS_HELP);
+  for (const alias of ["owner", "drew", "central", "OWNER"]) {
+    assert.equal(parseAddresses(alias, "agent:a1").drew, true, alias);
+  }
+});
 
 test("addresses: names, groups, everyone but the sender, and refusals", () => {
   assert.deepEqual(parseAddresses(undefined, "channel:claude"), { drew: true, channels: [], fleet: [], all: false });
@@ -211,7 +221,7 @@ test("agents and connectors reach each other, and an agent answers whoever sent 
   assert.equal(hook.init.headers.authorization, "Bearer hooktoken123");
   assert.equal(hook.body.address, "agent:a2");
   assert.equal(hook.body.kind, "instruction");
-  assert.deepEqual(hook.body.from, ["drew"], "the hook names no sender for an instruction");
+  assert.deepEqual(hook.body.from, ["owner"], "the hook names no sender for an instruction");
 
   // a1 answers the row: it goes back to Claude, not to central.
   const inbox = await h.agent.inbox("a1");
@@ -256,24 +266,22 @@ test("'all' with no agents registered still reaches the other connector", async 
   assert.match((await chatgpt(h, { body: "x", to: "agents" })).error, /no agents/);
 });
 
-test("the page sets and removes a hook with the form, and shows peer rows", async () => {
+test("wake hooks are set and removed through the API (#14378: the page form is retired)", async () => {
   const h = await harness();
-  const form = (fields) =>
-    h.call(`/p/${TOKEN}`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(fields).toString(),
-    });
-  assert.equal((await form({ action: "wake_hook", address: "channel:claude", url: FIRE, token: ROUTINE_TOKEN })).status, 303);
+  assert.equal((await h.setHook({ address: "channel:claude", url: FIRE, token: ROUTINE_TOKEN })).status, 200);
   assert.equal((await h.store.wakeHooks()).length, 1);
   await chatgpt(h, { body: "peer row", to: "claude" });
-  const html = await (await h.call(`/p/${TOKEN}`)).text();
-  assert.match(html, /ChatGPT → Claude/);
-  assert.match(html, /channel:claude: claude-routine at api\.anthropic\.com \(token set\)/);
-  assert.ok(!html.includes(ROUTINE_TOKEN) && !html.includes("trig_01"));
-  assert.equal((await form({ action: "wake_hook", address: "channel:claude", remove: "1" })).status, 303);
+  const { hooks } = await (await h.call(`/api/${TOKEN}/wake-hooks`)).json();
+  assert.equal(hooks.length, 1);
+  assert.equal(hooks[0].address, "channel:claude");
+  assert.equal(hooks[0].kind, "claude-routine");
+  assert.equal(hooks[0].host, "api.anthropic.com");
+  assert.equal(hooks[0].has_token, true);
+  const listed = JSON.stringify(hooks);
+  assert.ok(!listed.includes(ROUTINE_TOKEN) && !listed.includes("trig_01"), "token and path stay hidden");
+  assert.equal((await h.setHook({ address: "channel:claude", url: null })).status, 200);
   assert.equal((await h.store.wakeHooks()).length, 0);
-  assert.equal((await form({ action: "wake_hook", address: "channel:claude", url: "http://insecure.example" })).status, 400);
+  assert.equal((await h.setHook({ address: "channel:claude", url: "http://insecure.example" })).status, 400);
 });
 
 test("the wake text names ids and message senders, an instruction as Drew's, never bodies", () => {

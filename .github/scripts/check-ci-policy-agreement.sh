@@ -27,10 +27,12 @@ REGISTRY=(
   "opencode-config-guard.yml|opencode-config-guard|nightly"
   "mcpx-fix-test-guard.yml|mcpx fix-test guard|nightly"
   "production-line-guard.yml|production-line guard|nightly"
+  "root-status-guard.yml|root-status guard|nightly"
   "go-modules-build.yml|go modules build|nightly"
   "identity-build.yml|identity build|nightly"
   "map-build.yml|map build|nightly"
   "mcpx-nixbuild.yml|mcpx nix build|nightly"
+  "pmo-contract-conformance.yml|pmo-contract-conformance|nightly"
 )
 
 # Waivers: workflow-file|tier-leg|phase issue. Each waiver records a

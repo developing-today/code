@@ -36,7 +36,7 @@ use id_groups::groups::log::hash_from_hex;
 
 /// Opens the event store the command reads, at `path` or the default
 /// events directory.
-fn open_store(path: Option<PathBuf>) -> Result<EventStore> {
+pub(crate) fn open_store(path: Option<PathBuf>) -> Result<EventStore> {
     let dir = path.unwrap_or_else(|| PathBuf::from(DIR_NAME));
     std::fs::create_dir_all(&dir)
         .map_err(|err| anyhow::anyhow!("create {}: {err}", dir.display()))?;
