@@ -49,7 +49,10 @@ export interface ReportRecord extends ReportRecordInput {
 /** Persistent PM-stack location; override for tests and managed deployments. */
 export function defaultReportRecordsFile(env: Record<string, string | undefined> = process.env): string {
   const configured = env.PM_AGG_REPORT_RECORDS_FILE?.trim();
-  return configured || join(requireHome("PM_AGG_REPORT_RECORDS_FILE"), ".local", "state", "pm-aggregator", "report-records.jsonl");
+  return (
+    configured ||
+    join(requireHome("PM_AGG_REPORT_RECORDS_FILE"), ".local", "state", "pm-aggregator", "report-records.jsonl")
+  );
 }
 
 const REPORT_UPDATE_OPERATIONS = ["edit", "replace", "quote", "append", "banner", "event-log", "feedback"] as const;

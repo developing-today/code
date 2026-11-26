@@ -1139,6 +1139,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_render",
  "bevy_shader",
+ "bevy_sprite_render",
  "bevy_transform",
  "bevy_utils",
  "bytemuck",
@@ -4888,7 +4889,7 @@ dependencies = [
  "iroh-mdns-address-lookup",
  "iroh-tickets",
  "libc",
- "n0-mainline 0.8.0",
+ "n0-mainline",
  "num-bigint 0.5.1",
  "p2panda-auth",
  "p2panda-core",
@@ -4922,6 +4923,44 @@ dependencies = [
  "wat",
  "webpki-roots",
  "zeroize",
+]
+
+[[package]]
+name = "id-android-remote"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id-worlds",
+ "iroh",
+ "iroh-blobs",
+ "jni 0.21.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "id-bevy-bridge"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "id-bevy-presenter"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "id-bevy-bridge",
+ "id-caps",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5102,6 +5141,7 @@ dependencies = [
  "anyhow",
  "cbor-core",
  "clap",
+ "ed25519-dalek 3.0.0",
  "id-core",
  "id-store",
  "iroh",
@@ -5344,6 +5384,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "ed25519-dalek 3.0.0",
+ "flate2",
  "futures-lite",
  "id-caps",
  "id-core",
@@ -5734,7 +5775,7 @@ dependencies = [
  "iroh-dns",
  "n0-error",
  "n0-future",
- "n0-mainline 0.7.2",
+ "n0-mainline",
  "tokio",
  "tracing",
  "url",
@@ -6536,26 +6577,6 @@ dependencies = [
  "serde",
  "serde_bencode",
  "serde_bytes",
- "sha1_smol",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "n0-mainline"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9624231d16070e2c4de0bbd37246eb8052ffdb832d6a3fa501abdbf4cb9549c9"
-dependencies = [
- "crc",
- "dyn-clone",
- "ed25519-dalek 3.0.0",
- "futures-core",
- "hex",
- "lru 0.19.0",
- "n0-error",
- "noq-udp",
- "rand 0.10.4",
  "sha1_smol",
  "tokio",
  "tracing",
@@ -7420,7 +7441,7 @@ dependencies = [
 [[package]]
 name = "p2panda-auth"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
+source = "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded"
 dependencies = [
  "p2panda-core",
  "petgraph",
@@ -7432,7 +7453,7 @@ dependencies = [
 [[package]]
 name = "p2panda-core"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
+source = "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded"
 dependencies = [
  "blake3",
  "cbor-core",
@@ -7469,7 +7490,7 @@ dependencies = [
 [[package]]
 name = "p2panda-store"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
+source = "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded"
 dependencies = [
  "async-stream",
  "futures-util",

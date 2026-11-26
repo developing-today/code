@@ -18,13 +18,13 @@ maps everything outside 401/402/403/429 to `ProviderInternal`. The
 session router in the fork is where routing decisions are made now, and it already does
 most of what #1084 asked for:
 
-| Concern | Where it lives in the fork | Behaviour today |
-|---|---|---|
-| Classifying a refusal | `packages/ai/src/provider-error.ts` `classifyProviderFailure` | A refusal becomes `ContentPolicyError` (`_tag: "ContentPolicy"`) when the error carries a known code (`CONTENT_POLICY_CODES`), or when a 4xx or mid-stream message matches `CONTENT_POLICY_TEXT`. Protocol adapters add their own codes too: MiniMax 1026/1027, Gemini `SAFETY`/`PROHIBITED_CONTENT` finishes, xAI `respect_moderation`, OpenRouter video. |
-| A refusal delivered as a finish | `session/runner/step.ts`, `policyFinish` | A `content-filter` finish with no output is recorded as `ContentPolicy`, never as a success. |
-| Route health | `step.ts` (the `!policyFailure` gate on `ModelRoute.failed`), `quotaFailureClassification`, and `model-route-log.ts` | A refusal never counts as a failure, a quota event, a cooldown or a demotion. It is counted separately as `policyRejections`, and any half-open probe claim is released. |
-| Same-request failover | `step.ts`, where `policyFailure` joins the failover gate and `policyFinishError` goes to `routing.fallback()` | A refusal with no output yet moves the request to the next member of the same route's pool. It is never retried on the same target. |
-| Terminal error | `session/to-session-error.ts` | When the pool runs out, the user sees `provider.content-filter`. |
+| Concern                         | Where it lives in the fork                                                                                           | Behaviour today                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Classifying a refusal           | `packages/ai/src/provider-error.ts` `classifyProviderFailure`                                                        | A refusal becomes `ContentPolicyError` (`_tag: "ContentPolicy"`) when the error carries a known code (`CONTENT_POLICY_CODES`), or when a 4xx or mid-stream message matches `CONTENT_POLICY_TEXT`. Protocol adapters add their own codes too: MiniMax 1026/1027, Gemini `SAFETY`/`PROHIBITED_CONTENT` finishes, xAI `respect_moderation`, OpenRouter video. |
+| A refusal delivered as a finish | `session/runner/step.ts`, `policyFinish`                                                                             | A `content-filter` finish with no output is recorded as `ContentPolicy`, never as a success.                                                                                                                                                                                                                                                               |
+| Route health                    | `step.ts` (the `!policyFailure` gate on `ModelRoute.failed`), `quotaFailureClassification`, and `model-route-log.ts` | A refusal never counts as a failure, a quota event, a cooldown or a demotion. It is counted separately as `policyRejections`, and any half-open probe claim is released.                                                                                                                                                                                   |
+| Same-request failover           | `step.ts`, where `policyFailure` joins the failover gate and `policyFinishError` goes to `routing.fallback()`        | A refusal with no output yet moves the request to the next member of the same route's pool. It is never retried on the same target.                                                                                                                                                                                                                        |
+| Terminal error                  | `session/to-session-error.ts`                                                                                        | When the pool runs out, the user sees `provider.content-filter`.                                                                                                                                                                                                                                                                                           |
 
 So the gap #3150 left open is narrow. When **every seated candidate on
 the route refused this request on policy grounds**, the request fails
@@ -40,14 +40,14 @@ source of truth, and the lane adds no matching of its own.
 
 Evidence per provider family, all already encoded in the classifier:
 
-| Family | Evidence that counts | Must **not** count |
-|---|---|---|
-| OpenAI / Azure OpenAI | `content_filter`, `ResponsibleAIPolicyViolation` (inner code), `moderation_blocked`, `cyber_policy`, `refusal`; `invalid_prompt` only when its message says "violating our usage policy" | A bare `invalid_prompt` (Bedrock Mantle reuses it for schema errors); a 403 for region or org access |
-| Anthropic | `invalid_request_error` only with refusal text matching `CONTENT_POLICY_TEXT`; a `refusal` stop reason before any output | Any other `invalid_request_error` (schema, size) |
-| Google (Gemini, Vertex) | finish `SAFETY`, `PROHIBITED_CONTENT`, `BLOCKLIST`, `IMAGE_SAFETY`; a 400 carrying those codes | A 400 for an invalid argument |
-| OpenRouter / Vercel gateway | typed `error_type` content-policy codes; a gateway `[code]` label naming one | `invalid_request` with no policy code or text |
-| Alibaba Model Studio | `DataInspectionFailed` | Other 400s |
-| MiniMax | 1026, 1027 | Other status codes |
+| Family                      | Evidence that counts                                                                                                                                                                     | Must **not** count                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| OpenAI / Azure OpenAI       | `content_filter`, `ResponsibleAIPolicyViolation` (inner code), `moderation_blocked`, `cyber_policy`, `refusal`; `invalid_prompt` only when its message says "violating our usage policy" | A bare `invalid_prompt` (Bedrock Mantle reuses it for schema errors); a 403 for region or org access |
+| Anthropic                   | `invalid_request_error` only with refusal text matching `CONTENT_POLICY_TEXT`; a `refusal` stop reason before any output                                                                 | Any other `invalid_request_error` (schema, size)                                                     |
+| Google (Gemini, Vertex)     | finish `SAFETY`, `PROHIBITED_CONTENT`, `BLOCKLIST`, `IMAGE_SAFETY`; a 400 carrying those codes                                                                                           | A 400 for an invalid argument                                                                        |
+| OpenRouter / Vercel gateway | typed `error_type` content-policy codes; a gateway `[code]` label naming one                                                                                                             | `invalid_request` with no policy code or text                                                        |
+| Alibaba Model Studio        | `DataInspectionFailed`                                                                                                                                                                   | Other 400s                                                                                           |
+| MiniMax                     | 1026, 1027                                                                                                                                                                               | Other status codes                                                                                   |
 
 Two tightening changes belong in the implementation slice:
 
@@ -160,10 +160,10 @@ precisely because it is sensitive. Before any pilot:
 **Benchmark plan (gates any seating).** It runs on the two candidates
 the #3150 ranking named:
 
-| Candidate | Why it is in the plan |
-|---|---|
-| Abliteration `abliterated-model-large-flash` | The only hosted candidate with documented tool calling and JSON Schema output (rank 1, conditional) |
-| Venice `venice-uncensored-1-2` | Cheapest, with zero retention claimed; tool support unverified (rank 2, text-only until it passes the tool test) |
+| Candidate                                    | Why it is in the plan                                                                                            |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Abliteration `abliterated-model-large-flash` | The only hosted candidate with documented tool calling and JSON Schema output (rank 1, conditional)              |
+| Venice `venice-uncensored-1-2`               | Cheapest, with zero retention claimed; tool support unverified (rank 2, text-only until it passes the tool test) |
 
 The task set is drawn from real fleet refusals. A collection run
 replays the last 30 days of `ContentPolicy` rows by metadata only, and

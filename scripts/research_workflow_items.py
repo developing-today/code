@@ -447,6 +447,17 @@ def run_status(state, concept_id):
 
 
 def check_state(state):
+    for key in ("tasks", "issues", "prs"):
+        for entry in state.get(key, []):
+            if not isinstance(entry, dict):
+                fail(f"{key} entries must be objects, not {entry!r}")
+    for concept in state["concepts"]:
+        for key in ("issues", "prs"):
+            for entry in concept.get(key, []):
+                if not isinstance(entry, dict):
+                    fail(
+                        f"{concept['id']}: {key} entries must be objects, not {entry!r}"
+                    )
     ids = set(concept_ids(state))
     for task in state.get("tasks", []):
         if "concept" not in task and "stage" not in task:

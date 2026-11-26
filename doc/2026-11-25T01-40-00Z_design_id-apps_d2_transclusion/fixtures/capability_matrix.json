@@ -1,11 +1,6 @@
 {
   "note": "D2 slice 2 capability matrix. Each cell names the right a party needs and the check in capability_reference.py that exercises it. 'grant' rows apply only when delegated views are enabled (off by default, open question 4).",
-  "kinds": [
-    "live-object",
-    "snapshot-object",
-    "live-collection",
-    "snapshot-collection"
-  ],
+  "kinds": ["live-object", "snapshot-object", "live-collection", "snapshot-collection"],
   "fixture_links": {
     "live-object": "lnk-embed-photo-live",
     "snapshot-object": "lnk-embed-photo-snapshot",

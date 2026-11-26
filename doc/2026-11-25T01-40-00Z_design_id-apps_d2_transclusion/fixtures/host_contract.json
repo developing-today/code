@@ -1,13 +1,6 @@
 {
   "note": "D2 slice 4 host rendering contract. Each item has an id, an area, the record section it comes from, the requirement in one sentence, and either the name of an executable check in host_contract_reference.py or a manual procedure. Hosts load this file and run their own adapter for each executable item against the slice 1 fixtures.",
-  "states": [
-    "shown",
-    "unavailable",
-    "removed",
-    "cycle-cut",
-    "depth-cut",
-    "budget-cut"
-  ],
+  "states": ["shown", "unavailable", "removed", "cycle-cut", "depth-cut", "budget-cut"],
   "badges": ["edited", "fork", "changed-since-embed"],
   "slot_keys": {
     "shown": {

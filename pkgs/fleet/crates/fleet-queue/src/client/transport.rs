@@ -296,6 +296,19 @@ fn with_ctx_frame(mut frame: Value) -> Value {
     frame
 }
 
+/// The host part of a `host:port` broker address — the name
+/// the broker's BT-1 leaf must carry as a SAN (its tailnet IP
+/// or its `.internal` DNS name) for TLS validation (BT-3).
+fn broker_host(hostport: &str) -> &str {
+    let host = hostport
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(hostport);
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
 pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
     let rest = url
         .strip_prefix("http://")
@@ -306,10 +319,15 @@ pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Resul
     }
     let token = direct_token()?;
     let payload = serde_json::to_vec(body).unwrap();
-    let mut s = TcpStream::connect(hostport)
+    let s = TcpStream::connect(hostport)
         .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(300))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    // BT-3 (#14401): with a trust store configured the leg is
+    // TLS and the broker leaf is validated, fail closed; with
+    // neither knob set this is the Phase 0 plaintext stream.
+    let mut s = crate::broker_tls::BrokerTlsClient::from_env()
+        .and_then(|mode| mode.wrap(s, broker_host(hostport)))?;
     let ctx = ctx_header_lines();
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -524,11 +542,14 @@ fn bounded_tcp_roundtrip(
         .map_err(|e| format!("cannot resolve queue-broker at {hostport}: {e}"))?
         .next()
         .ok_or_else(|| format!("cannot resolve queue-broker at {hostport}"))?;
-    let mut s = TcpStream::connect_timeout(&addr, budget)
+    let s = TcpStream::connect_timeout(&addr, budget)
         .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
     s.set_read_timeout(Some(budget)).ok();
     s.set_write_timeout(Some(budget)).ok();
-    bounded_direct_exchange(&mut s, hostport, path, body, &token)
+    // BT-3 (#14401): same TLS posture as the unbounded leg.
+    let s = crate::broker_tls::BrokerTlsClient::from_env()
+        .and_then(|mode| mode.wrap(s, broker_host(hostport)))?;
+    bounded_direct_exchange(s, hostport, path, body, &token)
 }
 
 fn bounded_uds_roundtrip(

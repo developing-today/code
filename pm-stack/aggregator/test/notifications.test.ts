@@ -406,6 +406,21 @@ describe("rollupNotificationSends", () => {
     const rollup = rollupNotificationSends([row], NOW);
     expect(rollup.classes[0].weeks[0].sent).toBe(1);
   });
+
+  test("an at-only row (the live ledger's shape) is dated by its at column", () => {
+    const row = send({ sent_at: null, created_at: null, at: "2026-10-07T00:00:00Z" });
+    expect(sendTimestamp(row)).toBe("2026-10-07T00:00:00Z");
+    const rollup = rollupNotificationSends([row], NOW);
+    expect(rollup.undated).toBe(0);
+    expect(rollup.classes[0].weeks[0].sent).toBe(1);
+  });
+
+  test("created_at wins over at when a row carries both", () => {
+    const row = send({ created_at: "2026-11-02T00:00:00Z", at: "2026-10-07T00:00:00Z" });
+    expect(sendTimestamp(row)).toBe("2026-11-02T00:00:00Z");
+    const rollup = rollupNotificationSends([row], NOW);
+    expect(rollup.classes[0].weeks[3].sent).toBe(1);
+  });
 });
 
 describe("AlertsStore.listSends", () => {

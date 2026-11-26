@@ -54,7 +54,10 @@ def run(account, *args, env=None, state=None):
         if account.health_misses > 0:
             account.health_misses -= 1
             return None
-        if not account.worker_up or url != f"https://{expose.WORKER}.acct.workers.dev/console/health":
+        if (
+            not account.worker_up
+            or url != f"https://{expose.WORKER}.acct.workers.dev/console/health"
+        ):
             return None
         return {"ok": True, "edge": True, "host": account.worker_host}
 
@@ -108,14 +111,20 @@ class Apply(unittest.TestCase):
         second.idps = copy.deepcopy(account.idps)
         code = run(second, "--apply")
         self.assertEqual(code, 0)
-        self.assertEqual(second.changes, [], f"a second apply changes nothing, changed: {second.changes}")
+        self.assertEqual(
+            second.changes,
+            [],
+            f"a second apply changes nothing, changed: {second.changes}",
+        )
 
     def test_check_reports_and_changes_nothing(self):
         account = test_expose.Account()
         before = (copy.deepcopy(account.apps), copy.deepcopy(account.ingress))
         code = run(account, "--check")
         self.assertEqual(code, 1)
-        self.assertTrue(any(line.startswith("would change: ") for line in account.printed))
+        self.assertTrue(
+            any(line.startswith("would change: ") for line in account.printed)
+        )
         self.assertEqual((account.apps, account.ingress), before)
 
     def test_an_up_to_date_account_changes_nothing_and_says_so(self):
@@ -138,8 +147,16 @@ class Apply(unittest.TestCase):
         # Direct-mode secrets now belong only to repository-driven apply;
         # expose.py must agree on the shared account configuration without
         # managing the Worker's secrets itself.
-        shared = [change for change in account.changes if not change.startswith("edge direct:")]
-        self.assertEqual(shared, laptop.changes, f"apply.py changes:\n{shared}\n\nexpose.py changes:\n{laptop.changes}")
+        shared = [
+            change
+            for change in account.changes
+            if not change.startswith("edge direct:")
+        ]
+        self.assertEqual(
+            shared,
+            laptop.changes,
+            f"apply.py changes:\n{shared}\n\nexpose.py changes:\n{laptop.changes}",
+        )
         self.assertFalse(laptop.worker_secrets)
 
     def test_a_renamed_tunnel_is_refused_before_anything_is_asked(self):
@@ -168,7 +185,10 @@ class Apply(unittest.TestCase):
             "id": "idp-google",
             "type": "google",
             "name": "Google",
-            "config": {"client_id": "configured-id", "client_secret": "configured-secret"},
+            "config": {
+                "client_id": "configured-id",
+                "client_secret": "configured-secret",
+            },
         }
         account.idps.append(copy.deepcopy(google))
 
@@ -208,7 +228,10 @@ class Apply(unittest.TestCase):
                 "BRIDGE_TOKEN": "bridge-value",
             },
         )
-        self.assertEqual(account.order, ["PUT /accounts/acc/workers/scripts/pm-console-edge/secrets"] * 4)
+        self.assertEqual(
+            account.order,
+            ["PUT /accounts/acc/workers/scripts/pm-console-edge/secrets"] * 4,
+        )
 
     def test_refresh_tokens_is_refused_when_direct_mode_is_off(self):
         account = test_expose.Account()
