@@ -112,7 +112,7 @@ fn oracle_rejects_any_attempt_to_disable_fixed_gates() {
         .keys()
         .cloned()
         .collect();
-    assert!(!gate_fields.is_empty());
+    assert_ne!(gate_fields, [] as [String; 0]);
     for field in gate_fields {
         let mut doc = valid_doc();
         doc["gates"] = json!({ field.clone(): false });

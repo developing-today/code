@@ -286,7 +286,7 @@ fn test_json_forms_print_one_object_for_publish_and_arrays_for_lists() {
 
     let events: serde_json::Value =
         serde_json::from_str(owner.ok(&["doc", "events", &doc, "--json"]).trim()).unwrap();
-    assert!(events.as_array().unwrap().is_empty());
+    assert_eq!(*events.as_array().unwrap(), [] as [serde_json::Value; 0]);
     let frontier: serde_json::Value =
         serde_json::from_str(owner.ok(&["doc", "frontier", "--json"]).trim()).unwrap();
     assert_eq!(frontier.as_array().unwrap().len(), 1);
