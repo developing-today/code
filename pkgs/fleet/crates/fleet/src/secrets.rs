@@ -19,7 +19,7 @@
 //! (3 matches the dispatch domain's unresolved-token exit, #5432).
 
 use fleet_config::Config;
-use fleet_secrets::{BrokerSource, Resolver};
+use fleet_secrets::{BrokerSource, Resolver, Scope};
 
 const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;
@@ -82,7 +82,11 @@ const GET_USAGE: &str = "\
 Usage: fleet secrets get <name>
 
 Resolve a secret by name: the secrets-broker first, Bitwarden (`bws`)
-as fallback. The value goes to stdout and nowhere else.";
+as fallback. The value goes to stdout and nowhere else.
+
+With a prefix configured ($FLEET_SECRETS_PREFIX, else `[secrets] prefix`
+in fleet.toml), a name reads `<prefix>.<name>`; a name that already
+starts with `<prefix>.` is used as is.";
 
 const LIST_USAGE: &str = "\
 Usage: fleet secrets list
@@ -120,7 +124,16 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let name = &args[0];
-    match Resolver::default_chain(config).resolve(name) {
+    // #10358 S1: a configured prefix maps the name once, before any
+    // source sees it; with none configured the scope is the identity.
+    let scope = match Scope::from_config(config) {
+        Ok(scope) => scope,
+        Err(e) => {
+            eprintln!("fleet secrets: secrets prefix: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    match Resolver::default_chain(config).resolve_scoped(&scope, name) {
         Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
