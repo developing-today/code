@@ -28,6 +28,11 @@
 //! There is no global lock here: the watermark is a value, the
 //! policy is a pure function of it plus the observed activity, and
 //! nothing in this module reads, writes or waits.
+//!
+//! The completion operation and its idempotent GitHub effects
+//! (REL-07, developing-today/code#9517) live in [`operation`].
+
+pub mod operation;
 
 /// Classes of activity that can arrive around a completion claim.
 ///
