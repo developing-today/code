@@ -127,7 +127,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
-import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { derivedProjectState, PROJECT_URL } from "./projects.ts";
 import {
   PHASE12_ISSUE_URL,
   joinPhase12Steps,
@@ -166,6 +166,8 @@ import {
   ghItemDerivedStatus,
 } from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
+import { effectiveProjectDisagreement, resolveTrustedProjectValue } from "./conflicts.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
 import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
@@ -4135,6 +4137,9 @@ export interface OverviewData {
    *  the same render-time suppression as /attention (Codex review on
    *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
   actionsByObject?: Map<string, DashAction[]>;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement on the reconciled in-progress list while it stands. */
+  ruling?: ConflictRuling | null;
 }
 
 export type OverviewInProgressSignal = InProgressSignal;
@@ -4215,7 +4220,7 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
       .sort(byRecency)
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
-    inProgress: reconciledInProgress(data),
+    inProgress: reconciledInProgress({ ...data, ruling: data.ruling ?? null }),
   };
 }
 
@@ -6516,14 +6521,16 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
-// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+// --- Source-conflict inbox (#1282, slices 1-2) --------------------------------
 
 /**
- * /conflicts — the read-only source-conflict inbox. Every disagreement the
- * facets already report, in one queue, grouped by conflict class, each entry
- * naming the item, both sources, both values and how long the pair has been
- * on record. It resolves nothing: slice 1 projects only, so this page is the
- * same list /api/conflicts.json serves, rendered.
+ * /conflicts — the source-conflict inbox. Every live disagreement the
+ * facets already report, in one queue, grouped by conflict class, each
+ * entry naming the item, both sources, both values and how long the pair
+ * has been on record. Slice 2 adds per-class trust rulings for the
+ * Project-vs-derived class: a standing ruling suppresses that class's
+ * entries (listed below with their suppressed count) and renders apply
+ * the trusted value; revoking re-surfaces the current disagreements.
  */
 export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
   const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
@@ -6554,8 +6561,31 @@ export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, de
     .join("");
   const oldest =
     inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const rulings = inbox.rulings ?? [];
+  const suppressed = inbox.suppressed ?? [];
+  const suppressedByClass = inbox.suppressedByClass ?? [];
+  const rulingFor = (classId: string) => rulings.find((r) => r.classId === classId) ?? null;
+  const projectRuling = rulingFor("project-vs-derived");
+  const rulingsHtml = `<h2>Trust rulings</h2>
+<p class="muted">One ruling per class, stored as data and applied to renders. Slice 2 rules only the Project-vs-derived class; revoking re-surfaces that class's current disagreements.</p>
+<div class="board">
+<div class="card"><strong>Project Status vs derived state</strong><br>${
+    projectRuling
+      ? `trusts <strong>${esc(projectRuling.trusted)}</strong> since ${esc(fmtDate(projectRuling.createdAt))} · suppresses <strong>${suppressed.length}</strong> entr${suppressed.length === 1 ? "y" : "ies"}`
+      : "no ruling — disagreements show as ⚠"
+  }${projectRuling?.reason ? `<br><span class="muted">${esc(projectRuling.reason)}</span>` : ""}</div>
+<div class="card"><strong>Quota records vs recorded reads</strong><br>no ruling path — always listed</div>
+</div>
+<div class="card"><strong>Record a ruling</strong><br><span class="muted">Owner-verified (Drew) write: POST /api/conflicts/rulings with <code>{"classId":"project-vs-derived","trusted":"project"|"derived"}</code>. Revoke with DELETE /api/conflicts/rulings with <code>{"classId":"project-vs-derived"}</code>.</span></div>`;
+  const suppressedNote = projectRuling
+    ? `<p class="muted">A trust ruling stands for Project Status vs derived state (trusts <strong>${esc(projectRuling.trusted)}</strong>): <strong>${suppressed.length}</strong> current disagreement${suppressed.length === 1 ? "" : "s"} suppressed from this queue while renders apply the trusted value. Revoking re-surfaces them.</p>`
+    : "";
+  const suppressedLine = suppressedByClass
+    .filter((c) => c.count > 0)
+    .map((c) => ` · ${esc(c.label)}: ${c.count} suppressed`)
+    .join("");
   const body = `<h1>Source conflicts</h1>
-<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}${suppressedLine}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>.${projectRuling ? "" : " No trust ruling stands, so nothing is suppressed."}</p>${suppressedNote}${rulingsHtml}
 <div class="board">
 <div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
 ${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
@@ -7149,6 +7179,10 @@ export function projectsBodyHtml(
     /** Spend beside progress (#4824): the #4823 rollup store's
      * reader view. Absent/null: cards render exactly as before. */
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282): a standing project-vs-derived
+     *  ruling suppresses the ⚠ clash badge — the card applies the
+     *  trusted value and says so, instead of showing both sides. */
+    ruling?: ConflictRuling | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -7216,13 +7250,22 @@ export function projectsBodyHtml(
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
-      const derived = derivedProjectState(p, opts.orchestration);
-      const clash = projectDisagreement(p, opts.orchestration);
+      const detected = derivedProjectState(p, opts.orchestration);
+      // #1282 slice 2: a standing ruling suppresses the clash — the
+      // card applies the trusted value and labels it, so the page
+      // cannot show a ⚠ the inbox no longer lists.
+      const clash = effectiveProjectDisagreement(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const trusted = !clash && opts.ruling?.classId === "project-vs-derived" && p.status ? opts.ruling.trusted : null;
+      const trustedValue = resolveTrustedProjectValue(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const appliedStatus = trustedValue ?? p.status;
+      const appliedDerived = trustedValue ?? detected;
       const clashBadge = clash
         ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(clash.project)} · derived: ${esc(clash.derived)}</span>`
-        : "";
-      const statusBadge = p.status
-        ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+        : trusted
+          ? ` <span class="badge src" title="A trust ruling stands for Project Status vs derived state (recorded in the source-conflict inbox): this card applies the trusted ${esc(trusted)} value while the disagreement is suppressed — revoke the ruling to re-surface it">trusts ${esc(trusted)}</span>`
+          : "";
+      const statusBadge = appliedStatus
+        ? `<span class="badge ${appliedStatus === "Done" ? "merged" : appliedStatus === "Todo" ? "closed" : "implementing"}">${esc(appliedStatus)}</span>`
         : `<span class="badge">no status</span>`;
       const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
       // #5082: only active work (canonical Project status
@@ -7265,7 +7308,7 @@ export function projectsBodyHtml(
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
         p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
         `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
-        `<span class="badge src">derived: ${esc(derived)}</span>`,
+        `<span class="badge src">derived: ${esc(appliedDerived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
       const statusCtl = opts.identities
@@ -7275,12 +7318,12 @@ export function projectsBodyHtml(
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
       const spendCard = opts.spend?.byScope.get(p.ref);
       const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
-      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
+      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration, ruling: opts.ruling ?? null });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
       return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
-  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values — unless a trust ruling stands for the class, in which case the card applies the trusted value and says so. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 <div class="chips"><span class="muted">Status:</span> ${[
     `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
@@ -7340,6 +7383,8 @@ export function renderProjects(
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282), passed through to the pool cards. */
+    ruling?: ConflictRuling | null;
   } = {},
 ): string {
   return layout(
@@ -7449,12 +7494,14 @@ export function renderProgram(
     flowAnalytics?: FlowAnalytics;
     /** Spend beside progress (#4824) for the pool section. */
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282), passed through to the pool cards. */
+    ruling?: ConflictRuling | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend, ruling: poolSection.ruling ?? null })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
