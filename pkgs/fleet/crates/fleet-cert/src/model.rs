@@ -319,6 +319,24 @@ pub struct IssuerRenewRequest {
     pub allow_key_reuse: bool,
 }
 
+/// `cert leaf renew` (§5.2): reissue a leaf on the key it already
+/// has. The profile, subject and SANs come from the leaf bundle; the
+/// issuer key comes only from the explicit signer source (§24.3).
+#[derive(Debug, Clone)]
+pub struct LeafRenewRequest {
+    /// The leaf bundle being renewed.
+    pub leaf_bundle: PathBuf,
+    /// The issuer set holding the issuer key that signed the leaf
+    /// (the original set or a renewal of it).
+    pub issuer_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the issuer key (§24.3).
+    pub issuer_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 key-reuse opt-in, as for issuer renew.
+    pub allow_key_reuse: bool,
+}
+
 /// `cert publish plan` (§4.4): read-only publication rendering.
 /// Never touches live endpoints; `host` is the proposed
 /// distribution host (§4.1) and `dns_target` the optional operator

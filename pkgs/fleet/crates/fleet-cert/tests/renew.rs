@@ -15,8 +15,8 @@ use fleet_cert::chain::TrustSelection;
 use fleet_cert::engine;
 use fleet_cert::graph::CrossSigningMode;
 use fleet_cert::model::{
-    IssuerCreateRequest, IssuerPurpose, IssuerRenewRequest, LeafIssueRequest, RootCreateRequest,
-    SignerSource,
+    IssuerCreateRequest, IssuerPurpose, IssuerRenewRequest, LeafIssueRequest, LeafRenewRequest,
+    RootCreateRequest, SignerSource,
 };
 use fleet_cert::timeparse::Rfc3339;
 use std::path::{Path, PathBuf};
@@ -344,4 +344,260 @@ fn the_cli_renews_and_inspect_shows_the_revision() {
     let json = std::fs::read_to_string(out.join("manifest.json")).unwrap();
     assert!(json.contains("\"revision\": 2"), "{json}");
     assert!(json.contains("\"predecessor\""), "{json}");
+}
+
+fn server_leaf(
+    issuer: &Path,
+    out: &Path,
+    algo: AlgorithmId,
+    csr: Option<PathBuf>,
+    profile: &str,
+    dns: &str,
+    ip: Option<&str>,
+) {
+    engine::issue_leaf(
+        &LeafIssueRequest {
+            issuer_bundle: issuer.to_path_buf(),
+            issuer_signer: SignerSource {
+                key_dir: issuer.join("private/keys"),
+            },
+            profile: profile.into(),
+            name: "svc".into(),
+            common_name: None,
+            dns_names: vec![dns.into()],
+            ip_addresses: ip.iter().map(|s| s.parse().unwrap()).collect(),
+            csr,
+            key_algorithm: Some(algo),
+            issuer_algorithm: Some(algo),
+            issuer_partition: Some("b".into()),
+            not_before: ts("2026-02-01T00:00:00Z"),
+            not_after: ts("2026-05-01T00:00:00Z"),
+            private_store: None,
+        },
+        out,
+    )
+    .unwrap();
+}
+
+fn leaf_renew_request(leaf: &Path, issuer: &Path, allow_key_reuse: bool) -> LeafRenewRequest {
+    LeafRenewRequest {
+        leaf_bundle: leaf.to_path_buf(),
+        issuer_bundle: issuer.to_path_buf(),
+        issuer_signer: SignerSource {
+            key_dir: issuer.join("private/keys"),
+        },
+        not_before: ts("2026-04-15T00:00:00Z"),
+        not_after: ts("2026-07-14T00:00:00Z"),
+        allow_key_reuse,
+    }
+}
+
+fn sans(der: &[u8]) -> Vec<String> {
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+    let (_, cert) = x509_parser::prelude::parse_x509_certificate(der).unwrap();
+    let mut out = Vec::new();
+    for ext in cert.tbs_certificate.extensions() {
+        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+            for name in &san.general_names {
+                match name {
+                    GeneralName::DNSName(d) => out.push(format!("dns:{d}")),
+                    GeneralName::IPAddress(b) => out.push(format!("ip:{b:?}")),
+                    other => out.push(format!("{other:?}")),
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn leaf_renewal_keeps_the_key_names_and_slot_and_chains() {
+    let tmp = TempDir::new("leaf");
+    let root_dir = tmp.path().join("roots");
+    let issuer_dir = tmp.path().join("web");
+    make_roots(&root_dir);
+    make_issuers(&root_dir, &issuer_dir);
+    let root = load_bundle(&root_dir).unwrap();
+    for algo in ALGOS {
+        let leaf_dir = tmp.path().join(format!("leaf-{}", algo.name()));
+        let renewed_dir = tmp.path().join(format!("leaf-{}-r2", algo.name()));
+        server_leaf(
+            &issuer_dir,
+            &leaf_dir,
+            algo,
+            None,
+            "server",
+            "www.example.test",
+            None,
+        );
+        let manifest = engine::renew_leaf(
+            &leaf_renew_request(&leaf_dir, &issuer_dir, true),
+            &renewed_dir,
+        )
+        .unwrap();
+        let old = load_bundle(&leaf_dir).unwrap();
+        let new = load_bundle(&renewed_dir).unwrap();
+        assert_eq!(manifest.revision, 2);
+        assert_eq!(
+            manifest.predecessor.as_deref(),
+            Some(old.manifest.bundle_id.as_str())
+        );
+        assert_eq!(manifest.purpose.as_deref(), Some("server"));
+        let (before, after) = (&old.manifest.certificates[0], &new.manifest.certificates[0]);
+        let old_der = cert_der(&old, &before.cert_path);
+        let new_der = cert_der(&new, &after.cert_path);
+        assert_eq!(
+            fleet_cert::dns::spki_der(&new_der).unwrap(),
+            fleet_cert::dns::spki_der(&old_der).unwrap(),
+            "{}: renewal must keep the leaf key",
+            algo.name()
+        );
+        assert_eq!(after.subject_dn, before.subject_dn);
+        assert_eq!(
+            after.aki_hex, before.aki_hex,
+            "signed by the same issuer key"
+        );
+        assert_eq!(after.partition, "b");
+        assert_ne!(after.serial_hex, before.serial_hex);
+        assert_eq!(after.not_before, ts("2026-04-15T00:00:00Z"));
+        assert_eq!(sans(&new_der), sans(&old_der));
+        let key = before.key_path.as_deref().unwrap();
+        assert_eq!(
+            read_artifact(&new, key).unwrap(),
+            read_artifact(&old, key).unwrap()
+        );
+        let report = engine::validate_leaf(
+            &new,
+            &[&load_bundle(&issuer_dir).unwrap(), &root],
+            TrustSelection::All,
+            ts("2026-06-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert!(
+            report.valid,
+            "{} renewed leaf must validate: {:?}",
+            algo.name(),
+            report.checks.iter().filter(|c| !c.ok).collect::<Vec<_>>()
+        );
+    }
+
+    // The same leaf renews from a renewal of its issuer set too: the
+    // issuer key is the same, only the issuer certificate is new.
+    let renewed_issuers = tmp.path().join("web-r2");
+    engine::renew_issuer_set(
+        &renew_request(&issuer_dir, &root_dir, true),
+        &renewed_issuers,
+    )
+    .unwrap();
+    let leaf_dir = tmp.path().join("leaf-p256");
+    let out = tmp.path().join("leaf-p256-from-r2");
+    let mut req = leaf_renew_request(&leaf_dir, &renewed_issuers, true);
+    req.not_before = ts("2027-02-01T00:00:00Z");
+    req.not_after = ts("2027-05-01T00:00:00Z");
+    engine::renew_leaf(&req, &out).unwrap();
+    let report = engine::validate_leaf(
+        &load_bundle(&out).unwrap(),
+        &[&load_bundle(&renewed_issuers).unwrap(), &root],
+        TrustSelection::All,
+        ts("2027-03-01T00:00:00Z"),
+    )
+    .unwrap();
+    assert!(report.valid, "{:?}", report.checks);
+}
+
+#[test]
+fn leaf_renewal_refuses_without_opt_in_or_from_another_issuer_key() {
+    let tmp = TempDir::new("leaf-refuse");
+    let root_dir = tmp.path().join("roots");
+    let issuer_dir = tmp.path().join("web");
+    let other_issuers = tmp.path().join("web-other");
+    make_roots(&root_dir);
+    make_issuers(&root_dir, &issuer_dir);
+    make_issuers(&root_dir, &other_issuers);
+    let leaf_dir = tmp.path().join("leaf");
+    server_leaf(
+        &issuer_dir,
+        &leaf_dir,
+        AlgorithmId::P256,
+        None,
+        "server",
+        "www.example.test",
+        None,
+    );
+
+    let out = tmp.path().join("out-a");
+    let err = engine::renew_leaf(&leaf_renew_request(&leaf_dir, &issuer_dir, false), &out)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("--allow-key-reuse"), "{err}");
+    assert!(!out.join("manifest.json").exists());
+
+    // A fresh issuer set has its own keys: the leaf's issuer key is
+    // not there, so renewal refuses rather than re-parenting the leaf.
+    let out = tmp.path().join("out-b");
+    let err = engine::renew_leaf(&leaf_renew_request(&leaf_dir, &other_issuers, true), &out)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("different"), "{err}");
+    assert!(!out.join("manifest.json").exists());
+}
+
+#[test]
+fn a_csr_issued_broker_leaf_renews_without_its_private_key() {
+    let tmp = TempDir::new("leaf-csr");
+    let root_dir = tmp.path().join("roots");
+    let issuer_dir = tmp.path().join("general");
+    make_roots(&root_dir);
+    engine::create_issuer_set(
+        &IssuerCreateRequest {
+            root_bundle: root_dir.clone(),
+            root_signer: SignerSource {
+                key_dir: root_dir.join("private/keys"),
+            },
+            name: "Base".into(),
+            purpose: IssuerPurpose::General,
+            ou: None,
+            slots: vec![
+                (AlgorithmId::P256, "a".into()),
+                (AlgorithmId::P256, "b".into()),
+            ],
+            cross_signing: CrossSigningMode::Both,
+            not_before: ts("2026-01-01T00:00:00Z"),
+            not_after: ts("2031-01-01T00:00:00Z"),
+            allow_legacy_root_strength: false,
+            permitted_dns: vec![],
+            private_store: None,
+        },
+        &issuer_dir,
+    )
+    .unwrap();
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let csr = rcgen::CertificateParams::new(vec!["ignored.example".to_string()])
+        .unwrap()
+        .serialize_request(&key)
+        .unwrap();
+    let csr_path = tmp.path().join("broker.csr.pem");
+    std::fs::write(&csr_path, csr.pem().unwrap()).unwrap();
+    let leaf_dir = tmp.path().join("broker");
+    server_leaf(
+        &issuer_dir,
+        &leaf_dir,
+        AlgorithmId::P256,
+        Some(csr_path),
+        "broker-server",
+        "queue-broker.fleet.internal",
+        Some("100.99.113.103"),
+    );
+    let out = tmp.path().join("broker-r2");
+    let manifest =
+        engine::renew_leaf(&leaf_renew_request(&leaf_dir, &issuer_dir, true), &out).unwrap();
+    assert_eq!(manifest.key_location, "host-local");
+    assert!(manifest.files.iter().all(|f| f.visibility != "private"));
+    let new = load_bundle(&out).unwrap();
+    let der = cert_der(&new, &new.manifest.certificates[0].cert_path);
+    // Oracle: the host's own key pair, which never left this test.
+    let spki = fleet_cert::dns::spki_der(&der).unwrap();
+    assert!(spki.ends_with(&key.public_key_raw()));
+    assert!(sans(&der).contains(&"dns:queue-broker.fleet.internal".to_string()));
+    assert!(sans(&der).iter().any(|s| s.starts_with("ip:")));
 }

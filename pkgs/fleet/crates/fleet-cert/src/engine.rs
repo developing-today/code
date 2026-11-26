@@ -1523,6 +1523,277 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
     Ok(manifest)
 }
 
+/// The subject alternative names of an issued leaf, as the DNS and
+/// IP entries this crate issues. Any other name form is refused, so
+/// a renewal never drops a name it cannot reproduce.
+fn issued_sans(der: &[u8], what: &str) -> Result<(Vec<String>, Vec<std::net::IpAddr>)> {
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+    let (_, cert) = x509_parser::prelude::parse_x509_certificate(der)
+        .map_err(|e| CertError::manifest(format!("{what}: certificate parse failed: {e}")))?;
+    let mut dns = Vec::new();
+    let mut ips = Vec::new();
+    for ext in cert.tbs_certificate.extensions() {
+        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+            for name in &san.general_names {
+                match name {
+                    GeneralName::DNSName(d) => dns.push(d.to_string()),
+                    GeneralName::IPAddress(bytes) => {
+                        let ip = match bytes.len() {
+                            4 => std::net::IpAddr::from(<[u8; 4]>::try_from(*bytes).unwrap()),
+                            16 => std::net::IpAddr::from(<[u8; 16]>::try_from(*bytes).unwrap()),
+                            n => {
+                                return Err(CertError::manifest(format!(
+                                    "{what} carries a {n}-byte IP address SAN"
+                                )));
+                            }
+                        };
+                        ips.push(ip);
+                    }
+                    other => {
+                        return Err(CertError::policy(format!(
+                            "{what} carries a SAN renewal cannot reproduce ({other:?})"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok((dns, ips))
+}
+
+/// `cert leaf renew` (§5.2): reissue a leaf on the key it already
+/// has, from the issuer key that signed it (the same issuer set or a
+/// renewal of it), under the profile it was issued under.
+///
+/// Renewal is key reuse, so it runs only with the explicit opt-in.
+/// The subject name and SANs carry over from the issued certificate;
+/// key usages, extended key usages and the validity ceiling come from
+/// the profile, as at issuance. The subject key is certified from the
+/// old certificate, so a CSR-issued (host-local) leaf renews without
+/// its key ever leaving the host. A bundle-private key is copied into
+/// the new bundle after a check that it is the certificate's key. The
+/// manifest records revision r2 (r3, ..) and the predecessor bundle.
+pub fn renew_leaf(req: &crate::model::LeafRenewRequest, out_dir: &Path) -> Result<BundleManifest> {
+    if !req.allow_key_reuse {
+        return Err(CertError::policy(
+            "leaf renew reissues the leaf on the same key; policy allows key reuse only when \
+             asked for explicitly (--allow-key-reuse). Issue a new leaf for a new key",
+        ));
+    }
+    let old = load_bundle(&req.leaf_bundle)?;
+    if old.manifest.bundle_type != BundleType::Leaf {
+        return Err(CertError::usage(format!(
+            "{} is a {} bundle, not a leaf",
+            req.leaf_bundle.display(),
+            old.manifest.bundle_type.as_str()
+        )));
+    }
+    let old_rec = old
+        .manifest
+        .certificates
+        .iter()
+        .find(|r| r.role == "leaf")
+        .ok_or_else(|| CertError::manifest("the leaf bundle has no leaf record"))?;
+    let profile_name =
+        old.manifest.purpose.clone().ok_or_else(|| {
+            CertError::manifest("the leaf bundle records no profile to renew under")
+        })?;
+    let profile = resolve_profile(&profile_name)?;
+    let what = format!("{} ({})", old_rec.subject_dn, req.leaf_bundle.display());
+    let old_der = first_certificate_der(&old, &old_rec.cert_path)?;
+    let old_info = parse_cert(&old_der)?;
+    let (dns_names, ip_addresses) = issued_sans(&old_der, &what)?;
+    let cn = extract_cn(&old_rec.subject_dn)
+        .ok_or_else(|| CertError::manifest(format!("{what} has no CN in its subject DN")))?;
+    if profile.san_policy == SanPolicy::Broker {
+        check_broker_sans(&profile.name, Some(&cn), &dns_names, &ip_addresses)?;
+    }
+
+    let issuer_bundle = load_bundle(&req.issuer_bundle)?;
+    if issuer_bundle.manifest.bundle_type != BundleType::IssuerSet {
+        return Err(CertError::usage(format!(
+            "{} is a {} bundle, not an issuer set",
+            req.issuer_bundle.display(),
+            issuer_bundle.manifest.bundle_type.as_str()
+        )));
+    }
+    if let Some(wanted) = profile.issuer_purpose {
+        let got = issuer_bundle.manifest.purpose.as_deref();
+        if got != Some(wanted) {
+            return Err(CertError::policy(format!(
+                "{} leaves issue only from a {wanted} issuer set; {} is {}",
+                profile.name,
+                req.issuer_bundle.display(),
+                got.unwrap_or("of no recorded purpose")
+            )));
+        }
+    }
+    // The same issuer key that signed the leaf: same slot, and the
+    // issuer's key identifier is the leaf's authority key identifier.
+    let signer_algo = old_rec.signer_algorithm.unwrap_or(old_rec.algorithm);
+    let slot_record = issuer_bundle
+        .manifest
+        .certificates
+        .iter()
+        .find(|r| {
+            r.role == "issuer"
+                && r.primary
+                && r.algorithm == signer_algo
+                && r.partition == old_rec.partition
+        })
+        .ok_or_else(|| {
+            CertError::usage(format!(
+                "{} has no primary {} partition {} issuer, which signed {what}",
+                req.issuer_bundle.display(),
+                signer_algo.name(),
+                old_rec.partition.to_ascii_uppercase()
+            ))
+        })?;
+    if !old_rec.aki_hex.is_empty() && slot_record.ski_hex != old_rec.aki_hex {
+        return Err(CertError::policy(format!(
+            "{} holds a different {} partition {} issuer key from the one that signed {what}; \
+             renew the leaf from its own issuer set or a renewal of it",
+            req.issuer_bundle.display(),
+            signer_algo.name(),
+            old_rec.partition.to_ascii_uppercase()
+        )));
+    }
+    let issuer_cn = extract_cn(&slot_record.subject_dn).ok_or_else(|| {
+        CertError::manifest("issuer record has no CN in its subject DN".to_string())
+    })?;
+    let issuer_ou = extract_ou(&slot_record.subject_dn);
+    let issuer = load_ca(
+        &issuer_bundle,
+        slot_record,
+        &req.issuer_signer,
+        &issuer_bundle.manifest.organization,
+        &issuer_bundle.manifest.country,
+        issuer_ou.as_deref(),
+        &issuer_cn,
+        0,
+    )?;
+
+    let mut warnings = Vec::new();
+    let (nb, na) = clamp_window(
+        req.not_before,
+        req.not_after,
+        issuer.cert.not_before,
+        issuer.cert.not_after,
+        &old.manifest.name,
+        &mut warnings,
+    )?;
+    if na.0 - nb.0 > time::Duration::days(i64::from(profile.max_validity_days)) {
+        return Err(CertError::policy(format!(
+            "profile '{}' validity exceeds its {} day ceiling",
+            profile.name, profile.max_validity_days
+        )));
+    }
+
+    let mut params =
+        CertificateParams::new(dns_names.clone()).map_err(|e| CertError::engine(e.to_string()))?;
+    params
+        .subject_alt_names
+        .extend(ip_addresses.iter().map(|ip| rcgen::SanType::IpAddress(*ip)));
+    params.distinguished_name =
+        distinguished_name(&old.manifest.organization, &old.manifest.country, None, &cn);
+    params.is_ca = IsCa::ExplicitNoCa;
+    params.key_usages = profile.key_usages.clone();
+    params.extended_key_usages = profile.extended_key_usages.clone();
+    params.not_before = nb.0;
+    params.not_after = na.0;
+    params.serial_number = Some(random_serial());
+    params.use_authority_key_identifier_extension = true;
+    if profile.ocsp_no_check {
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 5, 5, 7, 48, 1, 5],
+                vec![0x05, 0x00],
+            ));
+    }
+    let facts = issued_facts(&old_der, &what)?;
+    let subject_key = ExistingPublicKey {
+        raw: facts.public_key.clone(),
+        algorithm: signature_algorithm_for(old_rec.algorithm),
+    };
+    let cert = issuer.sign(&params, &subject_key)?;
+    let der = cert.der().to_vec();
+    let new_info = parse_cert(&der)?;
+    if new_info.subject_name_der != old_info.subject_name_der {
+        return Err(CertError::engine(format!(
+            "{what}: the reissued subject name does not match the original byte for byte"
+        )));
+    }
+    if crate::dns::spki_der(&der)? != crate::dns::spki_der(&old_der)? {
+        return Err(CertError::engine(format!(
+            "{what}: the reissued certificate does not carry the original key"
+        )));
+    }
+
+    let mut artifacts = Vec::new();
+    let key_path = match (&old_rec.key_path, old.manifest.key_location.as_str()) {
+        (Some(rel), "bundle-private") => {
+            let pkcs8 = read_artifact(&old, rel)?;
+            if inspect_key(old_rec.algorithm, &pkcs8)? != facts.public_key {
+                return Err(CertError::policy(format!(
+                    "{rel} does not hold the private key of {what}"
+                )));
+            }
+            artifacts.push(Artifact {
+                rel_path: rel.clone(),
+                kind: "private-key-pkcs8".into(),
+                visibility: "private".into(),
+                bytes: pkcs8,
+            });
+            Some(rel.clone())
+        }
+        _ => None,
+    };
+    let leaf_rel = old_rec.cert_path.clone();
+    artifacts.push(Artifact {
+        rel_path: leaf_rel.clone(),
+        kind: "certificate-pem".into(),
+        visibility: "public".into(),
+        bytes: pem_encode("CERTIFICATE", &der).into_bytes(),
+    });
+    let issuer_pem = read_artifact(&issuer_bundle, &slot_record.cert_path)?;
+    let mut chain = pem_encode("CERTIFICATE", &der);
+    chain.push_str(std::str::from_utf8(&issuer_pem).unwrap_or(""));
+    artifacts.push(Artifact {
+        rel_path: "chain.pem".into(),
+        kind: "chain-pem".into(),
+        visibility: "public".into(),
+        bytes: chain.into_bytes(),
+    });
+    let mut rec = record_from_der(&der, "leaf", &old_rec.partition, true, leaf_rel, key_path)?;
+    rec.signer_algorithm = Some(slot_record.algorithm);
+
+    let parent = ParentRef {
+        bundle_type: BundleType::IssuerSet,
+        bundle_id: issuer_bundle.manifest.bundle_id.clone(),
+        name: issuer_bundle.manifest.name.clone(),
+        anchor_fingerprints: vec![slot_record.fingerprint_sha256.clone()],
+    };
+    let mut manifest = base_manifest(
+        BundleType::Leaf,
+        &old.manifest.name,
+        &old.manifest.organization,
+        &old.manifest.country,
+        Some(profile_name),
+        issuer_bundle.manifest.generation,
+        Some(parent),
+        &old.manifest.key_location,
+        None,
+        warnings,
+    )?;
+    manifest.revision = old.manifest.revision + 1;
+    manifest.predecessor = Some(old.manifest.bundle_id.clone());
+    manifest.bundle_id = format!("leaf-{}-{}", manifest.slug, &rec.fingerprint_sha256[..12]);
+    manifest.certificates = vec![rec];
+    let manifest = write_bundle(out_dir, manifest, &artifacts)?;
+    Ok(manifest)
+}
+
 /// Read a PKCS#10 CSR (PEM or DER), verify its self-signature, and
 /// return the key it carries with that key's registered algorithm.
 /// Only the key is used: the CSR's subject, SANs and requested
