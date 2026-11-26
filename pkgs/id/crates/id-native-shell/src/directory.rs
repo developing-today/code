@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use bevy::input::ButtonInput;
 use bevy::prelude::{
-    App, Commands, Component, Entity, KeyCode, Local, Node, Plugin, Query, Res, Resource, Startup,
-    Text, Update, With,
+    App, Commands, Component, Entity, IntoScheduleConfigs, KeyCode, Local, Node, Plugin, Query,
+    Res, Resource, Startup, SystemSet, Text, Update, With,
 };
 use serde_json::{Value, json};
 
@@ -584,6 +584,21 @@ impl DirectoryApp {
         }
     }
 
+    /// Where a key press in the native window goes when it is not
+    /// the directory's (#15022, session-mode input): the
+    /// foreground world's name while a session has focus, so the
+    /// key reaches that world's session as terminal input. Nothing
+    /// goes anywhere while the directory has focus, and the leave
+    /// key (Esc) never reaches the world — it is how the user gets
+    /// back to this list.
+    #[must_use]
+    pub fn session_input_target(&self, is_leave_key: bool) -> Option<&str> {
+        if self.focus != DirectoryFocus::Session || is_leave_key {
+            return None;
+        }
+        self.registry.foreground()
+    }
+
     /// Take the effects queued since the last call, in order.
     pub fn take_effects(&mut self) -> Vec<DirectoryEffect> {
         std::mem::take(&mut self.effects)
@@ -665,6 +680,13 @@ pub const fn key_code_to_directory_key(code: KeyCode) -> Option<DirectoryKey> {
     }
 }
 
+/// The system set that feeds key presses to [`DirectoryApp`].
+/// Session-mode input forwarding runs before it, so a key that
+/// changes focus (Enter into a world, Esc out of one) is judged by
+/// the focus it was pressed in, never sent to a world it opened.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DirectoryInputSystems;
+
 /// Marker for the root UI node the directory presenter owns.
 #[derive(Component)]
 struct DirectoryRoot;
@@ -687,7 +709,13 @@ impl Plugin for DirectoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DirectoryApp>()
             .add_systems(Startup, spawn_directory_root)
-            .add_systems(Update, (directory_keyboard, rebuild_directory_rows));
+            .add_systems(
+                Update,
+                (
+                    directory_keyboard.in_set(DirectoryInputSystems),
+                    rebuild_directory_rows,
+                ),
+            );
     }
 }
 
@@ -1216,6 +1244,28 @@ mod tests {
         app.handle_key(DirectoryKey::Refresh);
         assert!(app.take_effects().is_empty());
         assert_eq!(app.focus, DirectoryFocus::Session);
+    }
+
+    #[test]
+    fn session_input_goes_only_to_the_foreground_world() {
+        let mut app = DirectoryApp::default();
+        app.set_listing("lobby", &listing());
+        // Directory focus: keys are the directory's, none reach a world.
+        assert_eq!(app.session_input_target(false), None);
+        app.handle_key(DirectoryKey::Activate);
+        // Oracle: #15022 — in a session, keys reach the foreground
+        // world, except the leave key, which stays the way back.
+        assert_eq!(app.session_input_target(false), Some("lobby"));
+        assert_eq!(app.session_input_target(true), None);
+        app.handle_key(DirectoryKey::Leave);
+        assert_eq!(app.session_input_target(false), None);
+        // A second world entered becomes the only target; the first
+        // stays live in the background without input. (Lobby is
+        // now the recent row on top; annex is the next row.)
+        app.handle_key(DirectoryKey::Down);
+        app.handle_key(DirectoryKey::Activate);
+        assert_eq!(app.session_input_target(false), Some("annex"));
+        assert!(app.registry.is_live("lobby"));
     }
 
     #[test]
