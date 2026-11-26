@@ -1285,10 +1285,14 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     fn empty_state() -> Arc<State> {
+        empty_state_with_peer_status_enabled(true)
+    }
+
+    fn empty_state_with_peer_status_enabled(enabled: bool) -> Arc<State> {
         Arc::new(State {
             secrets: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(Some(1)),
-            peer_status_enabled: true,
+            peer_status_enabled: enabled,
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
             refresh_progress: RwLock::new(None),
@@ -2087,5 +2091,41 @@ mod tests {
             out,
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
+    }
+
+    #[test]
+    fn peer_status_returns_keyed_set_metadata_to_an_authenticated_peer() {
+        let state = empty_state();
+        let secrets = set_of(&[("alpha", "1"), ("beta", "2")]);
+        *state.secrets.write().unwrap() = secrets.clone();
+        *state.last_refresh.write().unwrap() = Some(42);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+
+        assert_eq!(status, 200);
+        assert_eq!(body["set_hash"], keyed_set_hash("tok", &secrets).0);
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["last_upstream_refresh_at"], 42);
+    }
+
+    #[test]
+    fn peer_status_refuses_missing_or_wrong_peer_tokens() {
+        let state = empty_state();
+
+        for provided in [None, Some("wrong")] {
+            let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", provided);
+            assert_eq!(status, 401);
+            assert_eq!(body["error"], "unauthorized");
+        }
+    }
+
+    #[test]
+    fn peer_status_is_not_routed_when_the_feature_is_disabled() {
+        let state = empty_state_with_peer_status_enabled(false);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+
+        assert_eq!(status, 404);
+        assert_eq!(body["error"], "not found");
     }
 }
