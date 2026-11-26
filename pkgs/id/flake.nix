@@ -441,6 +441,70 @@
           ];
         };
 
+        # Native shell (F13.6, #12819 slice 1): the installable Bevy client,
+        # Linux first per the Q1 platform order on #6297. A separate output
+        # so the default `id` packages never acquire Bevy. Tests stay in the
+        # test-native-shell check; this derivation only builds and wraps.
+        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          id-native-shell = pkgs.rustPlatform.buildRustPackage {
+            pname = "id-native-shell";
+            version = "0.1.0";
+            src = ./.;
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
+              };
+            };
+
+            cargoBuildFlags = [
+              "-p"
+              "id-native-shell"
+            ];
+            doCheck = false;
+            dontUseCmakeConfigure = true;
+
+            # nix-common's buildInputs carry the GUI system libraries the
+            # Bevy window/render features link (wayland, X11, xkbcommon,
+            # Vulkan) next to OpenSSL.
+            inherit buildInputs;
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.cmake
+              pkgs.makeWrapper
+              rustToolchain
+            ];
+
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+            # winit and wgpu dlopen these at runtime; the dev shell sets the
+            # same LD_LIBRARY_PATH in nix-common's shellHook.
+            postFixup = ''
+              wrapProgram $out/bin/id-native-shell \
+                --prefix LD_LIBRARY_PATH : ${
+                  pkgs.lib.makeLibraryPath [
+                    pkgs.wayland
+                    pkgs.libxkbcommon
+                    pkgs.xorg.libX11
+                    pkgs.xorg.libXcursor
+                    pkgs.xorg.libXrandr
+                    pkgs.xorg.libXi
+                    pkgs.vulkan-loader
+                  ]
+                }
+            '';
+
+            meta = commonMeta // {
+              description = "Native reference shell for id: a Bevy client speaking the F13.1 shell contract";
+              mainProgram = "id-native-shell";
+              platforms = pkgs.lib.platforms.linux;
+            };
+          };
+        };
+
         # ─── Dynamic app generation from justfile ──────────────────────────
         #
         # Apps are generated from just-recipes.json (produced by `just just-recipes`).
@@ -1108,7 +1172,7 @@
         # =======================================================================
         # Packages: nix build
         # =======================================================================
-        packages = {
+        packages = nativeShellPackages // {
           # Web-enabled package (primary product)
           id-web =
             if craneLib != null && !checkRuntimePackages then
