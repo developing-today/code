@@ -4195,7 +4195,7 @@ describe("which settings are in force is said, and since when", () => {
     });
     // The two surfaces say the same sources.
     const said = (await health(w)).settingsInForce;
-    expect(after.map(({ name, source, since }) => ({ name, source, since }))).toEqual(said);
+    expect(after.map(({ name, source, since }) => ({ name, source, since })) as unknown).toEqual(said);
     // Nobody not signed in is told the values.
     expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
   });
