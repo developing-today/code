@@ -4430,6 +4430,38 @@ mod tests {
         }
     }
 
+    /// Oracle: the #5800 chunk-resume contract is the ordered partition of
+    /// the snapshot cut: each page reports the next index iff objects remain,
+    /// and concatenating pages serves every object exactly once.
+    #[test]
+    fn test_public_snapshot_page_reports_cap_and_resume_position() {
+        let serving = PublicServing::new(
+            generous_owner_limits(),
+            ShareServingLimits::v1_defaults(),
+        );
+        let limits = ShareServingLimits {
+            max_objects_per_fetch: 2,
+            max_bytes_per_fetch: 1_000,
+            max_requests_per_minute: 60,
+        };
+        let context = read_context(Some(&limits), 0);
+        let sizes = [10, 20, 30];
+
+        let first = serving
+            .serve_snapshot_page(&sizes, 0, &context)
+            .expect("first snapshot page is admitted");
+        assert_eq!(first.objects, 2);
+        assert_eq!(first.capped_by, Some(FetchCap::Objects));
+        assert_eq!(first.resume_from, Some(2));
+
+        let second = serving
+            .serve_snapshot_page(&sizes, first.resume_from.unwrap(), &context)
+            .expect("resumed snapshot page is admitted");
+        assert_eq!(second.objects, 1);
+        assert_eq!(second.capped_by, None);
+        assert_eq!(second.resume_from, None);
+    }
+
     /// Oracle: #14783 wiring — a public read inside every limit is
     /// served through the gate unchanged.
     #[tokio::test]
