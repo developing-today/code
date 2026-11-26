@@ -18,6 +18,7 @@ import {
   loadReleaseSnapshotsAsync,
   loadRoadmapRowsAsync,
 } from "./async-store.ts";
+import { freshnessFromSummaries, overviewFromPool, queueFromPool } from "./waves.ts";
 
 export interface AsyncReadApiDeps {
   db: AsyncSqlDb;
@@ -56,6 +57,25 @@ export async function roadmapJsonAsync(deps: AsyncReadApiDeps) {
   return { generatedAt: now(), rows: await loadRoadmapRowsAsync(deps.db, pool) };
 }
 
+/** CF-5d (#14970) wave, async twin of api.ts's overviewJson. */
+export async function overviewJsonAsync(deps: AsyncReadApiDeps) {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const [summaries, pool] = await Promise.all([loadBoardSummariesAsync(deps.db), loadPoolAsync(deps.db)]);
+  return {
+    generatedAt: now(),
+    freshness: freshnessFromSummaries(summaries),
+    ...overviewFromPool(pool, summaries),
+    projects: summaries,
+  };
+}
+
+/** CF-5d (#14970) wave, async twin of api.ts's queueJson. */
+export async function queueJsonAsync(deps: AsyncReadApiDeps) {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const [summaries, pool] = await Promise.all([loadBoardSummariesAsync(deps.db), loadPoolAsync(deps.db)]);
+  return { generatedAt: now(), freshness: freshnessFromSummaries(summaries), queue: queueFromPool(pool) };
+}
+
 export async function releasesJsonAsync(deps: AsyncReadApiDeps) {
   const now = deps.now ?? (() => new Date().toISOString());
   const pool = await loadPoolAsync(deps.db);
@@ -68,8 +88,9 @@ export async function releasesJsonAsync(deps: AsyncReadApiDeps) {
 
 const ITEM_PATH = /^\/api\/item\/(.+)\.json$/;
 
-/** The fetch handler the Worker entry mounts. Only the four GET
- * routes exist; anything else is a JSON 404. */
+/** The fetch handler the Worker entry mounts. Only the read API's
+ * GET routes exist (the four §6 routes plus the CF-5d overview and
+ * queue wave routes); anything else is a JSON 404. */
 export function createAsyncReadApiHandler(deps: AsyncReadApiDeps): (req: Request) => Promise<Response> {
   return async (req) => {
     const path = new URL(req.url).pathname;
@@ -87,6 +108,8 @@ export function createAsyncReadApiHandler(deps: AsyncReadApiDeps): (req: Request
     }
     if (req.method === "GET" && path === "/api/roadmap.json") return json(await roadmapJsonAsync(deps));
     if (req.method === "GET" && path === "/api/releases.json") return json(await releasesJsonAsync(deps));
+    if (req.method === "GET" && path === "/api/overview.json") return json(await overviewJsonAsync(deps));
+    if (req.method === "GET" && path === "/api/queue.json") return json(await queueJsonAsync(deps));
     return json({ error: `not found: ${path}` }, 404);
   };
 }

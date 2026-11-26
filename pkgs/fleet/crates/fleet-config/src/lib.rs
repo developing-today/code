@@ -364,7 +364,7 @@ pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-j
 
 /// The Turso jobs store the dispatch-test domain records jobs in.
 pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
-    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-dispatch-jobs";
 
 /// The default Actions-capacity threshold for dispatch-test scope
 /// selection: a scope is eligible below this many active jobs.

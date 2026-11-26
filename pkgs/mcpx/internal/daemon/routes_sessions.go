@@ -11,8 +11,9 @@ import (
 // The inventory is a read of what the pools already know: every live
 // instance, as pool.InstanceStatus — the same snapshot `mcpx status`
 // embeds per server, flattened into one list for a caller that wants the
-// sessions without the rest of the status document. Nothing here kills,
-// detaches or resumes; those are later slices of #1931.
+// sessions without the rest of the status document. Nothing here ends or
+// detaches; ending one is POST /v1/session/kill (slice 2) and detaching
+// one is POST /v1/session/release, resuming one is a later slice of #1931.
 func (s *Server) routesSessions(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/sessions", s.handleSessions)
 }
