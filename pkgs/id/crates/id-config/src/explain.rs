@@ -91,6 +91,7 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     storage(&written, &resolved, &mut entries);
     tiers(&written, &resolved, &mut entries);
     links(&written, &resolved, &mut entries)?;
+    namespaces(&written, &resolved, &mut entries);
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -560,6 +561,20 @@ fn links(
         SOURCE_FIXED,
     );
     Ok(())
+}
+
+fn namespaces(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // As in `storage`: only a non-null written value is the document's.
+    let set = written
+        .get("namespaces")
+        .and_then(|n| n.get("registry"))
+        .is_some_and(|v| !v.is_null());
+    push(
+        entries,
+        "namespaces.registry",
+        Value::String(resolved.namespaces.registry.clone()).to_string(),
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT },
+    );
 }
 
 fn tiers(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
