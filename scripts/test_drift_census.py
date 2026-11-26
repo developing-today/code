@@ -9,7 +9,9 @@ when converged, and the read-only rule. Run:
 (or execute this file directly).
 """
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import re
 import unittest
@@ -121,6 +123,18 @@ class ReadOnlyTests(unittest.TestCase):
     def test_subprocess_is_only_used_through_the_read_helper(self):
         source = (HERE / "drift-census.py").read_text()
         self.assertEqual(source.count("subprocess.run("), 1)
+
+
+class ArgumentContractTests(unittest.TestCase):
+    def test_abbreviated_options_are_rejected(self):
+        # argparse accepts --pla as --plane unless allow_abbrev is disabled.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                census.main([
+                    "--pla", "laptop", "--fixture",
+                    str(HERE / "fixture-that-does-not-exist.json"),
+                ])
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":
