@@ -154,6 +154,54 @@ pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
 pub const DEFAULT_BRIDGE_OWNER_TOKEN_NAME: &str = "message-bridge.access-token";
 pub const DEFAULT_BRIDGE_FLEET_TOKEN_NAME: &str = "message-bridge.fleet-token";
 
+/// Pass-1 tool endpoint sections (design mill #10389, pass 1 #10390):
+/// `[opencode]`, `[openchamber]`, `[id]` and `[mcpx]`. All optional:
+/// with no section fleet falls through to the tool's standard local
+/// endpoint. Resolution order for every tool is flag → this setting →
+/// env (`FLEET_<TOOL>_ENDPOINT`) → standard local endpoint (see
+/// [`resolve_tool_endpoint`]). The standard endpoints themselves are
+/// still TBD pending per-service confirmation — the next slice fills
+/// them in; this slice lands the mechanism plus its tests.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolEndpointConfig {
+    /// Explicit endpoint (`host[:port]`, socket path or base URL);
+    /// overrides the standard local endpoint for this tool.
+    pub endpoint: Option<String>,
+}
+
+/// Env var holding an explicit OpenCode endpoint (between the
+/// `[opencode]` setting and the standard local endpoint).
+pub const OPENCODE_ENDPOINT_ENV: &str = "FLEET_OPENCODE_ENDPOINT";
+/// Env var holding an explicit OpenChamber endpoint.
+pub const OPENCHAMBER_ENDPOINT_ENV: &str = "FLEET_OPENCHAMBER_ENDPOINT";
+/// Env var holding an explicit ID-tool endpoint.
+pub const FLEET_ID_ENDPOINT_ENV: &str = "FLEET_ID_ENDPOINT";
+/// Env var holding an explicit mcpx endpoint.
+pub const MCPX_ENDPOINT_ENV: &str = "FLEET_MCPX_ENDPOINT";
+
+/// Resolve one pass-1 tool endpoint in flag → setting → env → standard
+/// order (#10390). Blank levels (empty or whitespace-only) count as
+/// unset; the first non-blank wins, else `standard`. Values pass
+/// through byte-for-byte (no trimming of the winner). Pure function
+/// so the precedence is unit-testable; callers read the env var
+/// themselves.
+pub fn resolve_tool_endpoint(
+    flag: Option<&str>,
+    setting: Option<&str>,
+    env: Option<&str>,
+    standard: &str,
+) -> String {
+    for candidate in [flag, setting, env] {
+        if let Some(value) = candidate {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    standard.to_string()
+}
+
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
 /// set of its `[host.roles]` table; any other name is a loud parse
@@ -364,7 +412,7 @@ pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-j
 
 /// The Turso jobs store the dispatch-test domain records jobs in.
 pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
-    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-dispatch-jobs";
 
 /// The default Actions-capacity threshold for dispatch-test scope
 /// selection: a scope is eligible below this many active jobs.
@@ -400,6 +448,14 @@ pub struct Config {
     /// (fleet mailboxes): URL, this host's agent name and groups,
     /// and the secret names its tokens resolve under.
     pub bridge: BridgeConfig,
+    /// `[opencode]` — pass-1 endpoint view for OpenCode (#10390).
+    pub opencode: ToolEndpointConfig,
+    /// `[openchamber]` — pass-1 endpoint view for OpenChamber (#10390).
+    pub openchamber: ToolEndpointConfig,
+    /// `[id]` — pass-1 endpoint view for the ID tool (#10390).
+    pub id: ToolEndpointConfig,
+    /// `[mcpx]` — pass-1 endpoint view for mcpx (#10390).
+    pub mcpx: ToolEndpointConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -1718,6 +1774,55 @@ mod tests {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn tool_endpoint_resolution_is_flag_then_setting_then_env_then_standard() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(None, None, None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(None, None, Some("http://env:1"), std),
+            "http://env:1"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(None, Some("http://file:2"), Some("http://env:1"), std),
+            "http://file:2"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(
+                Some("http://flag:3"),
+                Some("http://file:2"),
+                Some("http://env:1"),
+                std
+            ),
+            "http://flag:3"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_blank_levels_count_as_unset() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(Some("  "), Some(""), None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(Some("  "), Some("http://file:2"), None, std),
+            "http://file:2"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_sections_default_to_unset_and_parse() {
+        let cfg = Config::default();
+        assert!(cfg.opencode.endpoint.is_none());
+        assert!(cfg.openchamber.endpoint.is_none());
+        assert!(cfg.id.endpoint.is_none());
+        assert!(cfg.mcpx.endpoint.is_none());
+        let (_dir, path) = write_temp("[opencode]\nendpoint = \"http://127.0.0.1:4096\"\n");
+        let cfg = Config::load_from(path.as_path()).unwrap();
+        assert_eq!(
+            cfg.opencode.endpoint.as_deref(),
+            Some("http://127.0.0.1:4096")
+        );
+        assert!(cfg.mcpx.endpoint.is_none());
     }
 
     #[test]

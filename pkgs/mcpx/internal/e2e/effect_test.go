@@ -199,6 +199,7 @@ var implementedEffectProbes = map[string]string{
 	"autostart.logTail":                  "TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment",
 	"daemon.watchConfig":                 "TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment",
 	"daemon.inlineStartTimeout":          "TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment",
+	"daemon.inlineStartPoll":             "TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment",
 	"daemon.probeTimeout":                "TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment",
 	"daemon.warmTimeout":                 "TestDaemonWarmTimeoutBoundsTheStartupWarm",
 	"autostart.connectTimeout":           "TestAutostartConnectTimeoutBoundsTheWaitForADaemon",
@@ -442,6 +443,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment":                  TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment,
 	"TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment":                        TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment,
 	"TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment":          TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment,
+	"TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment":             TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment,
 	"TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment": TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment,
 	"TestDaemonWarmTimeoutBoundsTheStartupWarm":                                      TestDaemonWarmTimeoutBoundsTheStartupWarm,
 	"TestAutostartConnectTimeoutBoundsTheWaitForADaemon":                             TestAutostartConnectTimeoutBoundsTheWaitForADaemon,
@@ -3594,6 +3596,63 @@ func TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment(t *te
 	}
 	if !strings.Contains(out, "the in-process daemon did not answer") {
 		t.Fatalf("the failure should be the inline rung's expired start, got:\n%s", out)
+	}
+}
+
+// readinessProbeCount reads the attempt count out of an inline timeout
+// diagnostic: "the in-process daemon did not answer after N readiness
+// probes".
+func readinessProbeCount(t *testing.T, out string) int {
+	t.Helper()
+	const marker = "did not answer after "
+	i := strings.Index(out, marker)
+	if i < 0 {
+		t.Fatalf("the failure should name its readiness probe count, got:\n%s", out)
+	}
+	rest := out[i+len(marker):]
+	end := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
+	if end <= 0 {
+		t.Fatalf("the failure should name its readiness probe count, got:\n%s", out)
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment is
+// the effect probe for daemon.inlineStartPoll (#13595). With
+// daemon.inline=always and autostart.pingTimeout=1ns no readiness ping
+// can answer, so the inline rung polls until daemon.inlineStartTimeout
+// and reports how many probes ran: many at a 100ms poll, few at 700ms,
+// at the same 800ms budget.
+func TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment(t *testing.T) {
+	probes := func(poll string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(
+			"MCPX_DAEMON_INLINE=always",
+			"MCPX_AUTOSTART_PING_TIMEOUT=1ns",
+			"MCPX_DAEMON_INLINE_START_TIMEOUT=800ms",
+			"MCPX_DAEMON_INLINE_START_POLL="+poll,
+		)
+		out, err := e.try("ls")
+		if err == nil {
+			t.Fatalf("with autostart.pingTimeout=1ns the inline ls should fail; got:\n%s", out)
+		}
+		return readinessProbeCount(t, out)
+	}
+	short := probes("100ms")
+	if short < 5 {
+		t.Fatalf("with daemon.inlineStartPoll=100ms the 800ms budget should run at least 5 probes, ran %d", short)
+	}
+	long := probes("700ms")
+	if long > 3 {
+		t.Fatalf("with daemon.inlineStartPoll=700ms the 800ms budget should run at most 3 probes, ran %d", long)
+	}
+	if long >= short {
+		t.Fatalf("a 700ms poll ran %d probes, want fewer than a 100ms poll (%d)", long, short)
 	}
 }
 

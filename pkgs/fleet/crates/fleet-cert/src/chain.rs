@@ -58,6 +58,12 @@ impl CertInfo {
     pub fn signature(&self) -> &[u8] {
         &self.signature
     }
+    /// The subject-key SPKI algorithm OID (dotted string), for error
+    /// detail when a certificate cannot be classified into a trust
+    /// bundle. The classified form is [`CertInfo::subject_algorithm`].
+    pub fn spki_oid(&self) -> &str {
+        &self.spki_oid
+    }
 }
 
 pub fn hex_bytes(bytes: &[u8]) -> String {

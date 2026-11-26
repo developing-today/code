@@ -1,0 +1,35 @@
+e22900d9e63633c6c90c9daa962179a52d2e9be4 2026-11-24T19:39:17-06:00 fix(pm-aggregator): module and script HOME defaults follow the home-resolution contract (#8220 slice 2) (#14746)
+76276eb8a44cf4003d56e46248c628f8595ae52d 2026-11-23T09:36:29-06:00 docs(mcpx): coverage audit — close the book's gaps against the binary
+232a5b3c6ceddaee3e82db3a2e1561447ed9c879 2026-11-23T08:16:47-06:00 fix(pm-dispatch): bound the gh subprocess, log launch legs, probe sessions at the server cap
+99008f9427efcf44336f0c94812a3ca7096e70f9 2026-11-22T20:45:59Z pm-dispatch: tear down the symlink-confinement fixture in afterAll
+be0d2b9f34cea2dfe1d426c7e8096728c7b1c6f0 2026-11-21T04:16:51Z refactor: remove the remaining Supabase code paths; Turso is the only remote store
+e2d64e36de73c46745af2705892c35d7f7ccc919 2026-11-16T23:02:22-06:00 fix(pm-dispatch): route queue writes through the queue broker (#9028)
+dcc16ddce96bbf74ab8ee172a44907a8cac85201 2026-11-17T03:35:46Z style(treefmt): auto-format on main
+b0464b4c0ce02c3416417c164b8e811114e2ba89 2026-11-16T21:08:58-06:00 docs(id): path-correction note for the #5996 hot-swap decision record
+2ce26dfc9ba843849cefe46d3b6387c546a3f05d 2026-11-17T01:41:19Z fix(pm-aggregator): jar restore keeps captured cookie attributes
+fc61b09fd028662d3b28977498b6f3c094136550 2026-11-16T19:14:40-06:00 Merge pull request #10837 from developing-today/queue/6693-4712-budget-remainder
+776470d98517406ec58b2eac05a836ca780210dc 2026-11-16T17:56:26-06:00 fix(pm-aggregator): meta keeper restores the browser jar from the stored credential on persistent session-expired (#10839)
+2d1c1b08b84a55b1f0338e3a35d19dfc5385b159 2026-11-16T12:12:18-06:00 fix(dispatch): trim optNonBlankString values (#10835) (#10848)
+cd78207c61698aeff80231a9aaf54db8b15874c4 2026-11-16T12:10:47-06:00 fix(dispatch): trim optNonBlankString values so padded dedupe_key cannot defeat dedupe (#10835)
+1106712e209e4310371a6756784ede44cbdbf4ff 2026-11-16T11:08:15-06:00 Implement #4712 budget remainder: schema, enqueue stamp, impossible-fit surfacing, dispatch emit
+cc68b84c54629ada9ead4e909d2bff43d0aceec2 2026-11-16T09:23:01-06:00 fix(dispatch): blank dedupe_key parses as omitted so it falls back to the canonical key (#10739) (#10806)
+43059d5cdb358f418626dfac5161b8eec8b69bff 2026-11-16T09:21:57-06:00 fix(dispatch): blank dedupe_key parses as omitted so it falls back to the canonical key (#10739)
+aed92bbf539e835f93ee46cb13590270559787e3 2026-11-16T06:52:03-06:00 pm-stack(dispatch): bound the intake body before buffering it (#10646)
+20af1ee22e877ddd696bc96c977508bad5bcc480 2026-11-16T06:12:02-06:00 fix(pm-dispatch): preserve ratified expedite=15/next-up=25 losslessly (#9452)
+d63abfebe74a2c343b0a3725b3c74ba38e3ed812 2026-11-16T04:56:43-06:00 Merge pull request #7637 from developing-today/queue/12996-5996-hot-swap-decision
+59ce15a419ae350046f4270f33f176a92faa9a95 2026-11-15T23:18:54-06:00 dispatch tests: restore the fetch stub so server.test.ts cannot leak into later files (#10609)
+8e118461696624f2836657dab9083412e89a6fa6 2026-11-14T15:25:12Z style(treefmt): auto-format on main
+17506ca51156409a32e1be61b2f4bdd1c582bcf1 2026-11-14T06:46:31-06:00 fix(mcpx): green the environment-doc and documentation-link guards (#8720)
+c2dcdcfaa17fb4efb0e46299fd3f78748c59dcce 2026-11-14T09:20:08Z style(treefmt): auto-format on main
+e9bca72416ecc92eb3e97a394ab49846ca966fc1 2026-11-13T04:03:06-06:00 feat(pm-stack): Meta provider-owned credential keeper — CDP capture, validate-before-store, alert + push on failure (#6120)
+1858531205ab98b5857eeaac94c11a8a67baf8f1 2026-11-12T10:46:54Z style(treefmt): auto-format on main
+3025e0326cf5098b033b7187bc0036f013d78d61 2026-11-10T23:48:26-06:00 fix(pm-dispatch): disposition CodeRabbit findings on the #5555 read routes
+081485c8fdb90ea57dd414583bd3ab6d2ea42872 2026-11-09T11:40:08-06:00 feat(pm-dispatch): authenticated read/status endpoints for tasks and sessions (#5555)
+9b4457ba0c436752371cb1aca68fcbf8730c39ef 2026-11-08T23:09:00-06:00 Merge pull request #7633 from developing-today/queue/12948-4925-pm-dispatch-spec-gate
+86b8b7be37911b4bd41a6eb9242a3cf8b63e4879 2026-11-08T05:11:02-06:00 Merge pull request #7636 from developing-today/queue/13001-6026-atlas-versioning-design
+25210239f337a1af19554048f2f364d7aec5f3de 2026-11-08T04:41:50-06:00 fix(pm-stack): Meta keeper re-arm restores each unit from its own .backup (#6366) (#7634)
+4601b33c59a3f996a975766e8ead9740aeb131e0 2026-11-08T04:27:35-06:00 docs(id): hot-swap alternatives decision — v1 is instance-per-function restart with warm compile cache (#5996)
+8f380698f4984f13b3ab79b47b2444944fd2ed18 2026-11-08T04:27:07-06:00 docs(atlas): content versioning + retention design (#6026)
+30c2611fd53c6f0bd1f65dceed86813514f33718 2026-11-08T04:22:35-06:00 docs(mcpx): show codemode:false opt-out for opencode users, correct stale v2 caveat (#7075)
+2589f41ddfe6c10b98e573fa793f48294b948f52 2026-11-08T04:19:28-06:00 fix(pm-stack): Meta keeper re-arm restores each unit from its own .backup (#6366)
+d6437cde170e83ed4a4f28b2a876877df8563724 2026-11-08T04:17:35-06:00 fix(pm-dispatch): minimum spec gate on session prompts (#4925)

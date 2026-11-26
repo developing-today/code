@@ -297,9 +297,11 @@ export interface ServerSessionOptions {
   params?: RangeParams;
   limits?: BridgeLimits;
   now?: () => number;
-  /** Storage-ceiling guard: given the bytes a batch is about to add,
-   * return false to refuse it before anything is written. */
-  guardBatch?: (newBytes: number) => boolean;
+  /** Write guard: given the bytes a batch is about to add, return true
+   * to commit it, false to refuse it as over the storage ceiling, or a
+   * named refusal (a migration fence, #3404) to end the session with
+   * that error. Nothing is written on a refusal. */
+  guardBatch?: (newBytes: number) => boolean | { code: string; message: string };
   /** #15484: continue a session from a snapshot instead of starting
    * one. The CHALLENGE is not re-sent: the peer is mid-session. */
   resume?: BridgeSessionSnapshot;
@@ -584,9 +586,11 @@ export class BridgeSessionServer {
         if ("malformed" in entry) continue;
         if (!this.opts.store.heldEvent(entry.id)) newBytes += entry.bytes.length;
       }
-      if (!this.opts.guardBatch(newBytes)) {
+      const verdict = this.opts.guardBatch(newBytes);
+      if (verdict === false) {
         return this.fail("storage_ceiling", "the batch would exceed the storage ceiling");
       }
+      if (verdict !== true) return this.fail(verdict.code, verdict.message);
     }
     const outcomes = this.opts.store.ingestBatch(entries, this.now());
     this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));

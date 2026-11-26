@@ -37,7 +37,7 @@ import urllib.request
 
 DBS = {
     "fleet-platform": (
-        "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
+        "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
         "turso.fleet-platform-rw-token",
     ),
     "fleet-mirror": (
@@ -115,6 +115,8 @@ def pipeline(base_url, token, sql):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+            "User-Agent": "fleet-d1-client/1",
         },
     )
     try:

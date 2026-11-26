@@ -89,7 +89,7 @@
     },
     {
       "id": "id.rust.unit",
-      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
+      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**", "pkgs/id/crates/id-store/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -302,6 +302,7 @@
         "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
         "pkgs/id/hosted-worker/test/enablement.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
@@ -314,11 +315,17 @@
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
         "pkgs/id/hosted-worker/test/bridge-do.test.ts",
         "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
+        "pkgs/id/hosted-worker/test/tenant-ops.test.ts",
+        "pkgs/id/hosted-worker/test/identity-link.test.ts",
+        "pkgs/id/hosted-worker/test/credentials.test.ts",
         "pkgs/id/hosted-worker/test/export.test.ts",
         "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
-        "pkgs/id/hosted-worker/test/migration-control.test.ts"
+        "pkgs/id/hosted-worker/test/migration-control.test.ts",
+        "pkgs/id/hosted-worker/test/object-plane-r2.test.ts",
+        "pkgs/id/hosted-worker/test/references.test.ts",
+        "pkgs/id/hosted-worker/test/reference-index.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",

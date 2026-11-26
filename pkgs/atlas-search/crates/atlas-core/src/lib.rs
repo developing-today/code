@@ -69,6 +69,7 @@ pub mod owner_inventory;
 pub mod repo_docs;
 pub mod reports;
 pub mod search;
+pub mod session_stage;
 pub mod shards;
 pub mod shingles;
 pub mod source_registry;

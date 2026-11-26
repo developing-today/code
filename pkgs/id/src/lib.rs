@@ -209,6 +209,7 @@ pub use id_core::admission_gate;
 pub mod artifact;
 pub use id_events::attestation;
 pub mod backup;
+pub mod bench_ack_mode;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;

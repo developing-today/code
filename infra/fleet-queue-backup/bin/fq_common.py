@@ -125,6 +125,8 @@ def _http_json_once(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECON
     """
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method=method)
+    # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+    req.add_header("User-Agent", "fleet-d1-client/1")
     req.add_header("Authorization", f"Bearer {token}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
@@ -254,9 +256,14 @@ def read_table_quoted(client, table, ncols):
     quote() as SQL literal text — the export's escaping oracle.
 
     Column names come from the schema itself, via a zero-row probe, so
-    quote() wraps the real columns in order. Paged by OFFSET with the
-    #6622 bound: a table whose pages never shorten past the bound
-    raises instead of looping forever.
+    quote() wraps the real columns in order. Rowid tables are paged by
+    rowid (WHERE rowid > last ORDER BY rowid), so each page reads only
+    its own rows; paging by OFFSET re-read every earlier row on every
+    page, which on a 400k-row Turso table cost hundreds of millions of
+    row reads and most of an hour. A table without a rowid (WITHOUT
+    ROWID) falls back to OFFSET. Both carry the #6622 bound: a table
+    whose pages never shorten past the bound raises instead of looping
+    forever.
     """
     colnames, _probe = client.execute(f'SELECT * FROM "{table}" LIMIT 0')
     if len(colnames) != ncols:
@@ -266,6 +273,27 @@ def read_table_quoted(client, table, ncols):
     # bound is on pages either way, so a smaller page only lowers the
     # admitted row ceiling, never the termination guarantee.
     page_rows = getattr(client, "page_rows", PAGE_ROWS)
+    try:
+        _cols, rows = client.execute(
+            f'SELECT _rowid_, {quoted} FROM "{table}" ORDER BY _rowid_ LIMIT {page_rows}'
+        )
+    except Exception:  # noqa: BLE001 - no rowid: the source says so as an error
+        rows = None
+    if rows is not None:
+        for _page in range(MAX_PAGES):
+            for row in rows:
+                yield tuple(row[1:])
+            if len(rows) < page_rows:
+                return
+            _cols, rows = client.execute(
+                f'SELECT _rowid_, {quoted} FROM "{table}" WHERE _rowid_ > ? '
+                f"ORDER BY _rowid_ LIMIT {page_rows}",
+                (rows[-1][0],),
+            )
+        raise RuntimeError(
+            f"{table}: pagination exceeded {MAX_PAGES} pages of {page_rows}; "
+            "refusing to page unboundedly"
+        )
     offset = 0
     for _page in range(MAX_PAGES):
         _cols, rows = client.execute(
@@ -563,6 +591,10 @@ def _fresh_table_shape(client, name):
     )
 
 
+def _is_unique_index(sql):
+    return bool(re.match(r"\s*CREATE\s+UNIQUE\s+INDEX\b", sql or "", re.IGNORECASE))
+
+
 def build_dump(client, exported_at):
     """A complete, re-importable SQL dump of the store as D1-safe text.
 
@@ -595,6 +627,7 @@ def build_dump(client, exported_at):
         "-- fleet-queue-backup export (#8584)",
         f"-- exported_at: {exported_at}",
         f"-- source tables: {len(tables)}",
+        "PRAGMA defer_foreign_keys = true;",
     ]
     # Drop every object the dump recreates, dependents first, so the
     # dump is idempotent against a target already holding a copy
@@ -619,9 +652,21 @@ def build_dump(client, exported_at):
             else:
                 body.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
     lines.extend(create_lines)
+    # D1 always enforces foreign keys. A key a child row points at must
+    # be unique when the row lands, so UNIQUE indexes go in before the
+    # rows (a parent whose id is unique only by index otherwise fails
+    # with "foreign key mismatch"), and the checks wait for the end of
+    # the import, since tables are not loaded parents first.
+    unique_indexes = [
+        sql
+        for kind, _name, _t, sql in schema
+        if kind == "index" and _is_unique_index(sql)
+    ]
+    for sql in unique_indexes:
+        lines.append(sql.rstrip().rstrip(";") + ";")
     lines.extend(body)
     for kind, _name, _t, sql in schema:
-        if kind in ("index", "view", "trigger"):
+        if kind in ("index", "view", "trigger") and sql not in unique_indexes:
             lines.append(sql.rstrip().rstrip(";") + ";")
     lines.append(f'DROP TABLE IF EXISTS "{META_TABLE}";')
     lines.append(
