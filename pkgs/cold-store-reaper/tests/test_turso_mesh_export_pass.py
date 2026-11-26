@@ -149,7 +149,9 @@ class TestExportPass(unittest.TestCase):
 
     def test_usage_errors_exit_2(self):
         plan_path = self.dir / "plan.json"
-        plan_path.write_text(json.dumps({
+        plan_path.write_text("{}")
+        valid_plan_path = self.dir / "valid-plan.json"
+        valid_plan_path.write_text(json.dumps({
             "date": "2026-11-24",
             "cohort": plan_cohort(self.day),
             "databases": ["db-valid"],
@@ -159,10 +161,12 @@ class TestExportPass(unittest.TestCase):
         }))
         base = [sys.executable, str(PASS), "--plan", str(plan_path), "--exporter", str(self.exporter)]
         self.assertEqual(subprocess.run(base + ["--bogus"], capture_output=True).returncode, 2)
-        self.assertEqual(subprocess.run(base + ["--pla", str(plan_path)], capture_output=True).returncode, 2)
         self.assertEqual(subprocess.run(base + ["extra-positional"], capture_output=True).returncode, 2)
         self.assertEqual(subprocess.run(base + ["--timeout", "0"], capture_output=True).returncode, 2)
         self.assertEqual(subprocess.run(base, capture_output=True).returncode, 2)
+        abbreviated = [sys.executable, str(PASS), "--plan", str(valid_plan_path),
+                       "--exporter", str(self.exporter), "--pla", str(valid_plan_path)]
+        self.assertEqual(subprocess.run(abbreviated, capture_output=True).returncode, 2)
 
     def test_missing_exporter_is_a_recorded_miss_not_a_crash(self):
         plan = {"date": "2026-11-24", "cohort": plan_cohort(self.day),
