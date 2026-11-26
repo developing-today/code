@@ -88,9 +88,9 @@ pub fn pong_frame() -> Result<Frame> {
 }
 
 /// Whether a frame of this type restarts the keepalive interval:
-/// DATA and WINDOW_UPDATE do (decision §4); keepalive traffic itself
+/// DATA and `WINDOW_UPDATE` do (decision §4); keepalive traffic itself
 /// and other control frames do not.
-pub fn resets_keepalive(ty: FrameType) -> bool {
+pub const fn resets_keepalive(ty: FrameType) -> bool {
     matches!(ty, FrameType::Data | FrameType::WindowUpdate)
 }
 
@@ -152,12 +152,12 @@ impl EndpointKeepalive {
     }
 
     /// PINGs sent since the last PONG.
-    pub fn unanswered(&self) -> u32 {
+    pub const fn unanswered(&self) -> u32 {
         self.unanswered
     }
 
     /// Whether the leg has been declared dead.
-    pub fn is_dead(&self) -> bool {
+    pub const fn is_dead(&self) -> bool {
         self.dead.is_some()
     }
 
@@ -223,7 +223,7 @@ pub struct BrokerIdle {
 
 impl BrokerIdle {
     /// Starts idle tracking for a leg established at `now`.
-    pub fn new(now: Duration) -> Self {
+    pub const fn new(now: Duration) -> Self {
         Self {
             last_frame_at: now,
             closed: None,
@@ -263,12 +263,12 @@ pub struct ResumeWindow {
 
 impl ResumeWindow {
     /// The window for a leg that died at `died_at`.
-    pub fn opened_at(died_at: Duration) -> Self {
+    pub const fn opened_at(died_at: Duration) -> Self {
         Self { died_at }
     }
 
     /// When the leg died.
-    pub fn died_at(&self) -> Duration {
+    pub const fn died_at(&self) -> Duration {
         self.died_at
     }
 
