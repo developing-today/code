@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use p2panda_core::Hash;
-use redb::{ReadableDatabase, ReadableTable};
+use redb::ReadableDatabase;
 
 use super::resolve::{self, author_of};
 use super::{
