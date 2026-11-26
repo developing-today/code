@@ -144,6 +144,9 @@ in
         # beside the sandbox seat's watermark puller that the cutover
         # decision waits on.
         services.archer-slack-collector.enable = true;
+        # Alignment request responder (code#6651): consume the collector
+        # event store and respond only in the written #alignment scope.
+        services.alignment-handler.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
