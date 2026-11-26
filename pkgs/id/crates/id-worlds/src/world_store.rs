@@ -4728,7 +4728,7 @@ mod tests {
             .unwrap()
             .view;
         let me = view.accounts.iter().find(|a| a.name == "Ann").unwrap();
-        assert!(me.outgoing.as_deref().unwrap_or_default().is_empty());
+        assert_eq!(me.outgoing.as_deref().unwrap_or_default(), []);
     }
 
     #[tokio::test]

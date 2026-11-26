@@ -305,7 +305,7 @@ mod tests {
         let payload = vec![0; MAX_ENTITY_TRANSFER_PAYLOAD_BYTES + 1];
         let (mut actor, _, journal, _, _) = transfer_actor(payload, false);
         assert!(export(&mut actor).await.is_err());
-        assert!(actor.core.handoff_transfers().is_empty());
+        assert_eq!(actor.core.handoff_transfers(), []);
         assert!(
             !journal
                 .entries()
@@ -535,7 +535,7 @@ mod tests {
         );
 
         assert_eq!(journal.entries().len(), before);
-        assert!(actor.core.handoff_transfers().is_empty());
+        assert_eq!(actor.core.handoff_transfers(), []);
         assert!(applied.lock().unwrap().is_empty());
     }
 
@@ -667,7 +667,7 @@ mod tests {
             })
             .await;
         assert!(response.await.unwrap().is_ok());
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
         assert!(actor.program_healthy);
         assert_eq!(
             *applied_after_install.lock().unwrap(),
@@ -694,7 +694,7 @@ mod tests {
             *applied_first.lock().unwrap(),
             vec!["add-entity".to_owned()]
         );
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
         assert!(actor.program_healthy);
 
         // A live reinstall of the same module must hand the replacement
@@ -724,7 +724,7 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
         assert_eq!(
             *applied_after_install.lock().unwrap(),
             vec!["add-entity".to_owned()],
@@ -906,7 +906,7 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
     }
 
     #[tokio::test]
@@ -1937,7 +1937,7 @@ mod tests {
         assert_eq!(lease.rejections().count(), 1);
         assert_eq!(lease.rejections().next().unwrap().operation_id, "op-1");
         assert_eq!(restored.core.current_sequence(), 0);
-        assert!(restored.replay.is_empty());
+        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
 
         // A second audit of the same attempt is a duplicate.
         let error = WorldCore::restore(
@@ -3439,7 +3439,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0]["text"], "first");
         assert_eq!(all[2]["text"], "third");
-        assert!(chat_history(&core.events, 0).is_empty());
+        assert_eq!(chat_history(&core.events, 0), [] as [serde_json::Value; 0]);
     }
 
     /// Asks the bounded-read questions of #796 item 9-5 once each and
@@ -3988,7 +3988,7 @@ mod tests {
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "grant-on-use");
         assert!(report.granted.contains(&"time.now".to_owned()));
-        assert!(report.missing.is_empty());
+        assert_eq!(report.missing, [] as [String; 0]);
     }
 
     #[test]
@@ -4826,7 +4826,7 @@ mod tests {
         ));
         let restored =
             WorldCore::restore("empty-presence", WorldLimits::default(), entries).unwrap();
-        assert!(restored.replay.is_empty());
+        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
         assert!(restored.core.open_presence.is_empty());
     }
 
@@ -7047,7 +7047,7 @@ mod tests {
         }
         let page = core.events_after(&token, 0).unwrap();
         assert!(page.needs_snapshot);
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 3);
         assert_eq!(snapshot.oldest_retained_sequence, 2);
@@ -7115,7 +7115,7 @@ mod tests {
         revoked.sort_unstable();
         assert_eq!(revoked, vec![owner.id, child.id]);
         // Revoking a revoked capability again changes no recorded time.
-        assert!(core.revoke_tree_at(owner.id, None, Some(9_999)).is_empty());
+        assert_eq!(core.revoke_tree_at(owner.id, None, Some(9_999)), [] as [u64; 0]);
 
         let expected = vec![
             (owner.id, Some(1_000), Some(4_000)),
@@ -7245,9 +7245,9 @@ mod tests {
         assert_eq!(core.revoke_tree_by(by_admin.id, None), vec![by_admin.id]);
         // A second revoke of a revoked capability changes nothing, the
         // recorded actor included.
-        assert!(
-            core.revoke_tree_by(moderated.id, Some(by_admin.id))
-                .is_empty()
+        assert_eq!(
+            core.revoke_tree_by(moderated.id, Some(by_admin.id)),
+            [] as [u64; 0]
         );
 
         let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
@@ -7268,7 +7268,7 @@ mod tests {
         let mut core = world(8);
         let (participant, token) = join(&mut core, "Ada");
         assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
-        assert!(core.revoke_tree(participant.id).is_empty());
+        assert_eq!(core.revoke_tree(participant.id), [] as [u64; 0]);
         assert!(core.snapshot(&token).is_err());
         assert!(core.chat(&token, "hello").is_err());
     }
@@ -7749,7 +7749,7 @@ mod tests {
         // Only chat so far: nothing to show, yet the cursor moves to the end
         // and retention is judged on the world, not the viewer.
         let page = core.events_after(&watcher, 0).unwrap();
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
         assert!(!page.needs_snapshot);
         assert_eq!(page.current_sequence, 2);
         assert_eq!(page.oldest_retained_sequence, 1);
@@ -7787,7 +7787,7 @@ mod tests {
         assert!(page.needs_snapshot, "the cursor fell behind retention");
         assert_eq!(page.oldest_retained_sequence, 2);
         let snapshot = core.snapshot(&watcher).unwrap();
-        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.events, [] as [WorldEvent; 0]);
         assert_eq!(snapshot.current_sequence, 4);
         assert_eq!(snapshot.oldest_retained_sequence, 5, "carries no events");
     }
@@ -7999,7 +7999,7 @@ mod tests {
             chat_texts(&core.snapshot(&reader).unwrap().events),
             ["hello"]
         );
-        assert!(chat_texts(&core.snapshot(&watcher).unwrap().events).is_empty());
+        assert_eq!(chat_texts(&core.snapshot(&watcher).unwrap().events), [] as [String; 0]);
         assert!(core.chat(&reader, "hi").is_err());
     }
 
@@ -8294,7 +8294,7 @@ mod tests {
         }
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 20);
-        assert!(!snapshot.events.is_empty());
+        assert_ne!(snapshot.events, [] as [WorldEvent; 0]);
         assert!(
             serde_json::to_vec(&snapshot.events).unwrap().len() <= 1024,
             "events fit the budget"
@@ -8308,11 +8308,11 @@ mod tests {
         assert_eq!(snapshot.events.last().unwrap().sequence, 20);
         // The snapshot is a valid rebase point: continuing from its cursor
         // yields only new events.
-        assert!(
+        assert_eq!(
             core.events_after(&token, snapshot.current_sequence)
                 .unwrap()
-                .events
-                .is_empty()
+                .events,
+            [] as [WorldEvent; 0]
         );
     }
 
@@ -14239,8 +14239,8 @@ mod schedule_tests {
         assert_eq!(delivers.len(), 1);
         assert_eq!(delivers[0].outcome, "accepted");
         assert_eq!(delivers[0].parameters, sends[0].parameters);
-        assert!(portal_audit(&b, "portal.send").is_empty());
-        assert!(portal_audit(&a, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.send"), [] as [AuditRecord; 0]);
+        assert_eq!(portal_audit(&a, "portal.deliver"), [] as [AuditRecord; 0]);
 
         for handle in [&a, &b] {
             let grants = portal_audit(handle, "AdminSetPortalGrant");
@@ -14274,7 +14274,7 @@ mod schedule_tests {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].outcome, "refused");
         assert_eq!(sends[0].parameters["refusal"], "portal.sender_not_granted");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -14299,7 +14299,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.peer_not_granted");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -14369,7 +14369,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "unreadable peer book must be Unavailable, got {error:?}"
         );
-        assert!(portal_audit(&a, "portal.send").is_empty());
+        assert_eq!(portal_audit(&a, "portal.send"), [] as [AuditRecord; 0]);
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a granted send
@@ -14391,7 +14391,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "sinkless send must be Unavailable, got {error:?}"
         );
-        assert!(portal_audit(&handle, "portal.send").is_empty());
+        assert_eq!(portal_audit(&handle, "portal.send"), [] as [AuditRecord; 0]);
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a message at the
@@ -14420,7 +14420,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.message_too_large");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
     /// Oracle: revoking mid-conversation refuses the next message as

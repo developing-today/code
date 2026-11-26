@@ -394,9 +394,9 @@ mod tests {
             state: BTreeMap::new(),
         };
         let bundle = export_template(&source).expect("empty source exports");
-        assert!(bundle.manifest.stripped.is_empty());
-        assert!(bundle.manifest.retained.is_empty());
-        assert!(bundle.manifest.roles.is_empty());
+        assert_eq!(bundle.manifest.stripped, [] as [String; 0]);
+        assert_eq!(bundle.manifest.retained, [] as [String; 0]);
+        assert_eq!(bundle.manifest.roles, [] as [RoleDefinition; 0]);
     }
 
     #[test]

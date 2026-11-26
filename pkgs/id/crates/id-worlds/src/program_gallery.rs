@@ -681,7 +681,7 @@ mod tests {
             vec![("chess".to_owned(), 2)]
         );
         assert_eq!(search(&gallery(), "stones"), vec![("go".to_owned(), 1)]);
-        assert!(search(&gallery(), "nothing-like-this").is_empty());
+        assert_eq!(search(&gallery(), "nothing-like-this"), [] as [(String, u64); 0]);
     }
 
     #[test]
@@ -761,7 +761,7 @@ mod tests {
         gallery
             .unpublish(&hash, &sign_unpublish(&hash, &bob()))
             .unwrap();
-        assert!(search(&gallery, "stones").is_empty());
+        assert_eq!(search(&gallery, "stones"), [] as [(String, u64); 0]);
         let racer = gallery
             .list(&ListQuery {
                 author: None,
@@ -772,7 +772,7 @@ mod tests {
             .unwrap()
             .content_hash;
         gallery.remove(&racer, ReasonClass::Spam, 0, None).unwrap();
-        assert!(search(&gallery, "arcade").is_empty());
+        assert_eq!(search(&gallery, "arcade"), [] as [(String, u64); 0]);
         assert_eq!(gallery.index().len(), 4);
     }
 
@@ -830,7 +830,7 @@ mod tests {
         }
         assert!(gallery.author_page("bob").is_err());
         let nobody = "ab".repeat(32);
-        assert!(gallery.author_page(&nobody).unwrap().records.is_empty());
+        assert_eq!(gallery.author_page(&nobody).unwrap().records, [] as [BundleRecord; 0]);
     }
 
     #[test]
@@ -883,10 +883,10 @@ mod tests {
                 .unwrap();
             assert_eq!(removed.action, AdmissionAction::Removed);
             assert_eq!(removed.record, chess.identity());
-            assert!(gallery.list(&ListQuery::default()).is_empty());
+            assert_eq!(gallery.list(&ListQuery::default()), [] as [BundleRecord; 0]);
             assert!(gallery.fetch(&hash).is_none());
-            assert!(search(&gallery, "board").is_empty());
-            assert!(gallery.author_page(&key).unwrap().records.is_empty());
+            assert_eq!(search(&gallery, "board"), [] as [(String, u64); 0]);
+            assert_eq!(gallery.author_page(&key).unwrap().records, [] as [BundleRecord; 0]);
             assert_eq!(gallery.unlisted_by(&hash), Some(&removed));
             assert_eq!(
                 gallery.registry().fetch(&hash),
@@ -939,13 +939,13 @@ mod tests {
                 .unwrap();
             gallery.publish(&chess.to_bytes()).unwrap();
             gallery.publish(&spam.to_bytes()).unwrap();
-            assert!(gallery.list(&ListQuery::default()).is_empty());
+            assert_eq!(gallery.list(&ListQuery::default()), [] as [BundleRecord; 0]);
             assert_eq!(gallery.pending().len(), 2);
             gallery.approve(&chess_hash).unwrap();
             gallery
                 .refuse(&spam_hash, ReasonClass::Spam, 1, None)
                 .unwrap();
-            assert!(gallery.pending().is_empty());
+            assert_eq!(gallery.pending(), [] as [BundleRecord; 0]);
             assert_eq!(gallery.list(&ListQuery::default()), vec![chess.record()]);
             assert_eq!(search(&gallery, "board").len(), 1);
         }

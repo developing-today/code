@@ -2746,7 +2746,7 @@ mod replication_feed_tests {
         let snapshot = snapshot_source.read().unwrap();
         assert_eq!(reset.bytes, snapshot.bytes);
         let chunks = split_entry_payload(&snapshot.bytes).unwrap();
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [Vec<u8>; 0]);
         assert!(
             chunks
                 .iter()
