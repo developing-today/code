@@ -1186,6 +1186,31 @@ pub enum WorldCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Install the programs a template-created world is still missing
+    /// (#8282).
+    ///
+    /// Reads the world's `template-gaps.json` and installs each recorded
+    /// program whose exact bundle is given with `--bundle`, through the
+    /// same verification as a sideloaded bundle. Programs still missing
+    /// stay recorded. Local only; no host or network is contacted.
+    #[cfg(feature = "sandbox")]
+    TemplateResume {
+        /// Directory of the template-created world.
+        dir: PathBuf,
+        /// A program bundle file that may fill a gap (repeatable).
+        #[arg(long = "bundle", value_name = "FILE")]
+        bundles: Vec<PathBuf>,
+        /// An author key (64 hex characters) whose bundles the world
+        /// trusts (repeatable). With none, the world keeps no trust list.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_keys: Vec<String>,
+        /// Deterministic seed supplied to the program's initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a durable world's provenance from its journal: its id and,
     /// for a fork, the world it was forked from, the module hash at the
     /// fork point, and whether it was marked a template (F12.2). Local

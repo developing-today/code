@@ -1090,6 +1090,14 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             )
             .await
         }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateResume {
+            dir,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => template::resume_template_world_dir(&dir, &bundles, &trust_keys, seed, json).await,
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
         WorldCommand::Owner { dir, since, json } => owner::print_world_owner(&dir, since, json),
         WorldCommand::Journal(args) => match args.action {

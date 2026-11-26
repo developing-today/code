@@ -65,6 +65,33 @@ pub(super) fn export_world_template(
     Ok(())
 }
 
+/// Decode and verify every bundle file before anything is written.
+#[cfg(feature = "sandbox")]
+fn read_bundles(
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<id_worlds::program_bundle::ProgramBundle>> {
+    paths
+        .iter()
+        .map(|path| {
+            let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+            id_worlds::program_bundle::ProgramBundle::decode(&bytes)
+                .with_context(|| format!("{} is not a valid program bundle", path.display()))
+        })
+        .collect()
+}
+
+/// Parse `--trust-key` values: each exactly 32 bytes of hex.
+#[cfg(feature = "sandbox")]
+fn parse_trust_keys(keys: &[String]) -> Result<Vec<[u8; 32]>> {
+    keys.iter()
+        .map(|key| {
+            id_worlds::world_session::decode_hex(key)
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                .with_context(|| format!("trust key {key:?} is not 64 hex characters"))
+        })
+        .collect()
+}
+
 /// Make a new world in `dir` from the template file at `template`.
 ///
 /// Every `--bundle` file is decoded and verified before anything is
@@ -92,20 +119,8 @@ pub(super) async fn create_world_from_template_file(
     let bytes = std::fs::read(template).with_context(|| format!("read {}", template.display()))?;
     let template_bundle: id_worlds::world_template::TemplateBundle = serde_json::from_slice(&bytes)
         .with_context(|| format!("{} is not a template file", template.display()))?;
-    let mut held = Vec::new();
-    for path in bundles {
-        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        let bundle = id_worlds::program_bundle::ProgramBundle::decode(&bytes)
-            .with_context(|| format!("{} is not a valid program bundle", path.display()))?;
-        held.push(bundle);
-    }
-    let mut trusted = Vec::new();
-    for key in trust_keys {
-        let bytes = id_worlds::world_session::decode_hex(key)
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            .with_context(|| format!("trust key {key:?} is not 64 hex characters"))?;
-        trusted.push(bytes);
-    }
+    let held = read_bundles(bundles)?;
+    let trusted = parse_trust_keys(trust_keys)?;
     let import = id_worlds::world_template::import_template(&template_bundle, &world_id, &held)?;
     let world =
         id_worlds::world_store::create_world_from_template(dir, &import, trusted, seed).await?;
@@ -138,6 +153,45 @@ pub(super) async fn create_world_from_template_file(
         }
         for key in &world.state_keys {
             println!("state: {key}");
+        }
+    }
+    Ok(())
+}
+
+/// Install the gaps recorded in a template-created world from the
+/// given bundle files, and report what is still missing.
+#[cfg(feature = "sandbox")]
+pub(super) async fn resume_template_world_dir(
+    dir: &Path,
+    bundles: &[std::path::PathBuf],
+    trust_keys: &[String],
+    seed: u64,
+    json: bool,
+) -> Result<()> {
+    let held = read_bundles(bundles)?;
+    let trusted = parse_trust_keys(trust_keys)?;
+    let resumed = id_worlds::world_store::resume_template_world(dir, &held, trusted, seed).await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "dir": dir.display().to_string(),
+                "installed": resumed.installed,
+                "gaps": resumed.gaps,
+            }))?
+        );
+    } else {
+        for hash in &resumed.installed {
+            println!("installed: {hash}");
+        }
+        for gap in &resumed.gaps {
+            println!(
+                "gap: {}/{}@{} {}",
+                gap.author, gap.name, gap.version, gap.content_hash
+            );
+        }
+        if resumed.gaps.is_empty() {
+            println!("no gaps left");
         }
     }
     Ok(())
@@ -289,5 +343,56 @@ mod tests {
             );
             assert!(!target.exists());
         }
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn a_world_created_without_its_bundle_resumes_from_the_bundle_file() {
+        use ed25519_dalek::SigningKey;
+        use id_worlds::program_bundle::{ProgramSpec, export};
+        use id_worlds::world_store::TEMPLATE_GAPS_FILE;
+        use id_worlds::world_template::{TemplateSource, export_template};
+
+        let author = SigningKey::from_bytes(&[62; 32]);
+        let wasm = include_bytes!("../../../../../examples/roc-counter/counter.wasm").to_vec();
+        let bundle = export(
+            wasm,
+            ProgramSpec {
+                name: "counter",
+                version: 1,
+                licence: None,
+                description: None,
+                categories: &[],
+            },
+            &author,
+        )
+        .unwrap();
+        let source = TemplateSource {
+            programs: vec![bundle.identity()],
+            roles: Vec::new(),
+            credentials: Vec::new(),
+            per_user_data: Vec::new(),
+            grants: Vec::new(),
+            state: Default::default(),
+        };
+        let files = tempfile::tempdir().unwrap();
+        let template = files.path().join("counter.template.json");
+        let bundle_file = files.path().join("counter.bundle");
+        std::fs::write(
+            &template,
+            serde_json::to_vec(&export_template(&source).unwrap()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(&bundle_file, bundle.to_bytes()).unwrap();
+
+        let world = files.path().join("counter-later");
+        create_world_from_template_file(&template, &world, None, &[], &[], 1, false)
+            .await
+            .unwrap();
+        assert!(world.join(TEMPLATE_GAPS_FILE).exists());
+        resume_template_world_dir(&world, std::slice::from_ref(&bundle_file), &[], 1, true)
+            .await
+            .unwrap();
+        assert!(!world.join(TEMPLATE_GAPS_FILE).exists());
     }
 }
