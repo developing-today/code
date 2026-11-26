@@ -290,8 +290,8 @@ zstd_leg() {
   mv "$ZSTD_TMP" "$outdir/$artifact"
   ZSTD_TMP=""
   ZSTD_DATE="$RUN_DATE" ZSTD_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    ZSTD_FILE="$artifact" ZSTD_SHA256="$zst_sha" ZSTD_BYTES="$zst_bytes" \
-    ZSTD_SRC_SHA256="$src_sha" ZSTD_SRC_BYTES="$src_bytes" \
+  ZSTD_FILE="$artifact" ZSTD_SHA256="$zst_sha" ZSTD_BYTES="$zst_bytes" \
+  ZSTD_SRC_SHA256="$src_sha" ZSTD_SRC_BYTES="$src_bytes" \
     python3 - "$outdir/manifest.json" <<'PYEOF' || fail "zstd manifest generation failed"
 import json, os, sys
 

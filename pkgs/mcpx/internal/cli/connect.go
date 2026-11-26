@@ -247,6 +247,20 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inline mode needs a configuration: %w", err)
 	}
+	// Inline mode is a one-shot frontend: the in-process daemon lives
+	// exactly as long as the command, so its servers spawn directly.
+	// Supervised children would outlive the command in the shared
+	// state directory — leftover sup-*.sock sockets and children were
+	// half of what forced #11343 to pause the supervised default —
+	// and supervision's value (a child surviving its frontend) needs
+	// a frontend that comes back. A real daemon start supervises
+	// this same config.
+	for _, s := range cfg.MCPServers {
+		if s.Mcpx != nil {
+			off := false
+			s.Mcpx.Supervised = &off
+		}
+	}
 	config.ApplyPoolSettings(cfg, a.Settings())
 	// A private socket in a private directory, so two inline runs in the
 	// same shell cannot find each other's servers.

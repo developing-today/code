@@ -9,9 +9,10 @@
 //   - Heartbeat: POST {stackEpoch, seq, at} every ~60s. The
 //     stackEpoch is minted per aggregator start; the edge treats
 //     an epoch change after silence as the recovery boundary.
-//     The response carries the pending-answer count (step 3's
-//     drain; this client only reads it, the drain itself is
-//     step 3).
+//     The response carries the pending-answer count; above 0, the
+//     same contact drains them (step 3, #13469): GET /answers,
+//     apply each through the laptop's own answer path, then
+//     POST /answers/ack for every answer with a final outcome.
 //   - Subscription mirror: on any subscription-store change (the
 //     server routes call requestNotifyRelaySubscriptionSync) the
 //     COMPLETE mirrored set is POSTed as one snapshot under a
@@ -27,10 +28,13 @@
 // aggregator's own sends — every public entry point swallows its
 // errors after recording them on the client for /status-style
 // inspection.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { AlertsStore, PushSubscriptionRow } from "./alerts.ts";
+import type { AlertsStore, IncidentMirrorRow, PushSubscriptionRow } from "./alerts.ts";
 import type { Config } from "./config.ts";
+import type { EdgeAnswer, EdgeApplyOutcome } from "./needs-drew-answer.ts";
+import type { NotificationCandidate } from "./notifications.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 
 /** Bitwarden name of the throat<->Worker shared secret (design
@@ -38,6 +42,103 @@ import { resolveBwsSecret } from "./secrets.ts";
  * as its RELAY_SHARED_SECRET). */
 export const NOTIFY_RELAY_SECRET_NAME = "pm-aggregator.notify-relay-shared-secret";
 export const NOTIFY_RELAY_HEARTBEAT_MS = 60_000;
+
+export interface MirroredEvent {
+  mirrorId: string;
+  objectRef: string;
+  transition: string;
+  raisedAt: string;
+  payload: Record<string, unknown>;
+}
+
+interface ActiveMirrorCandidate {
+  occurrenceId: string;
+  mirrorId: string;
+  raisedAt: string;
+}
+
+/** Stable across alert ticks and retries for one candidate state. */
+export function notificationMirrorId(event: Pick<MirroredEvent, "objectRef" | "transition" | "payload">): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        event.payload.class ?? null,
+        event.objectRef,
+        event.transition,
+        event.payload.stateFingerprint ?? null,
+      ]),
+    )
+    .digest("hex");
+}
+
+export function notificationMirrorEvent(
+  candidate: NotificationCandidate,
+  occurrenceId: string,
+  raisedAt = candidate.observedAt,
+): MirroredEvent {
+  const transition = "raised";
+  const payload = {
+    class: candidate.class,
+    title: candidate.title,
+    body: candidate.body,
+    url: candidate.url,
+    stateFingerprint: candidate.stateFingerprint,
+    ...(candidate.needsDrew ? { needsDrew: candidate.needsDrew } : {}),
+  };
+  // #13469: a question mirrored with its token hash is answerable at
+  // the edge. The marker gives it a new id, so a question mirrored
+  // before the edge could answer it is mirrored once more.
+  const identity: unknown[] = [
+    notificationMirrorId({ objectRef: candidate.objectRef, transition, payload }),
+    occurrenceId,
+  ];
+  if (candidate.needsDrew?.tokenHash) identity.push("answerable");
+  return {
+    mirrorId: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
+    objectRef: candidate.objectRef,
+    transition,
+    raisedAt,
+    payload,
+  };
+}
+
+/** #13469: a needs-Drew question that stopped candidating (answered
+ * here, or aged out) is withdrawn at the edge, so its answer page
+ * refuses further answers. One cleared event per raised occurrence. */
+export function needsDrewClearedEvent(objectRef: string, occurrenceId: string, clearedAt: string): MirroredEvent {
+  return {
+    mirrorId: createHash("sha256")
+      .update(JSON.stringify(["cleared", objectRef, occurrenceId]))
+      .digest("hex"),
+    objectRef,
+    transition: "cleared",
+    raisedAt: clearedAt,
+    payload: { class: "needs-user" },
+  };
+}
+
+export function incidentMirrorEvent(row: IncidentMirrorRow, origin: string): MirroredEvent | null {
+  if (row.severity !== "critical" || (row.mirror_event_kind !== "opened" && row.mirror_event_kind !== "escalated")) {
+    return null;
+  }
+  const escalation = row.mirror_event_kind === "escalated";
+  const base = row.body?.trim() ? `${row.title} — ${row.body.trim()}` : row.title;
+  const payload = {
+    class: "incident",
+    objectRef: `incident:${row.id}`,
+    url: `${origin}/alerts#incident-${row.id}`,
+    title: escalation ? `Escalation: ${row.title}` : row.title,
+    body: escalation ? `Still unacknowledged: ${base} (source: ${row.source})` : `${base} (source: ${row.source})`,
+    ...(escalation ? { escalation: true } : {}),
+  };
+  return {
+    mirrorId: `alerts-incident-event:${row.mirror_event_id}`,
+    objectRef: `incident:${row.id}`,
+    transition: row.mirror_event_kind,
+    raisedAt: row.mirror_event_at,
+    payload,
+  };
+}
 
 export interface MirroredSubscription {
   endpoint: string;
@@ -73,11 +174,29 @@ export function buildHeartbeatBody(stackEpoch: string, seq: number, at: string) 
 export interface NotifyRelayDeps {
   url: string;
   stateFile: string;
-  getStore: () => Promise<Pick<AlertsStore, "listSubscriptions"> | null>;
+  getStore: () => Promise<
+    | (Pick<AlertsStore, "listSubscriptions"> &
+        Partial<Pick<AlertsStore, "latestIncidentEventId" | "incidentEventsAfter">>)
+    | null
+  >;
   resolveSecret?: (name: string) => Promise<string | null>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   mintEpoch?: () => string;
+  /** #13469: apply one answer taken at the edge to the ledger. A
+   * returned outcome is final and acked; a throw leaves the answer at
+   * the edge for the next contact. Absent: answers are not drained. */
+  applyAnswer?: (answer: EdgeAnswer) => Promise<EdgeApplyOutcome>;
+}
+
+export interface AnswerDrainRecord {
+  at: string;
+  applied: number;
+  duplicate: number;
+  unknown: number;
+  rejected: number;
+  failed: number;
+  acked: number;
 }
 
 export class NotifyRelayClient {
@@ -97,9 +216,18 @@ export class NotifyRelayClient {
   private syncDirty = true;
   private syncInFlight: Promise<void> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private pendingEvents: MirroredEvent[] = [];
+  private ackedEvents = new Map<string, string>();
+  private activeCandidates = new Map<string, ActiveMirrorCandidate>();
+  private incidentEventCursor: number | null = null;
+  private persistInFlight: Promise<void> = Promise.resolve();
+  private stateOperation: Promise<void> = Promise.resolve();
+  private eventFlushInFlight: Promise<void> | null = null;
   lastError: string | null = null;
   lastHeartbeatAt: string | null = null;
   lastPendingAnswers: number | null = null;
+  lastDrain: AnswerDrainRecord | null = null;
+  private drainInFlight: Promise<void> | null = null;
 
   constructor(private readonly deps: NotifyRelayDeps) {
     this.stackEpoch = (deps.mintEpoch ?? (() => crypto.randomUUID()))();
@@ -109,7 +237,23 @@ export class NotifyRelayClient {
   }
 
   async start(): Promise<void> {
-    await this.loadSnapshotSeq();
+    await this.loadState();
+    if (this.incidentEventCursor === null) {
+      try {
+        const store = await this.deps.getStore();
+        if (store?.latestIncidentEventId) {
+          this.incidentEventCursor = await store.latestIncidentEventId();
+          try {
+            await this.persistState();
+          } catch (err) {
+            this.incidentEventCursor = null;
+            throw err;
+          }
+        }
+      } catch (err) {
+        this.lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
     await this.beat();
     if (!this.timer) {
       this.timer = setInterval(() => void this.beat(), NOTIFY_RELAY_HEARTBEAT_MS);
@@ -134,11 +278,270 @@ export class NotifyRelayClient {
    * recovery beat doesn't close an episode before the snapshot
    * that authorizes its push has landed), then heartbeat. */
   async beat(): Promise<void> {
+    if (this.syncDirty || this.pending) await this.syncSubscriptions();
     try {
-      if (this.syncDirty || this.pending) await this.syncSubscriptions();
       await this.postHeartbeat();
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
+    }
+    // Answers drain in the same contact as the beat that reported them
+    // (design §1), so answer latency while the stack is up is one beat.
+    if ((this.lastPendingAnswers ?? 0) > 0) await this.drainAnswers();
+    // Heartbeats must not queue behind an arbitrarily long mirror backlog.
+    await this.flushMirrorEvents();
+  }
+
+  /** Pull the answers taken at the edge, apply each once, and ack
+   * every answer whose outcome is final. Fail-soft: an answer whose
+   * application throws stays at the edge and is offered again. */
+  async drainAnswers(): Promise<void> {
+    if (!this.deps.applyAnswer) return;
+    if (this.drainInFlight) return this.drainInFlight;
+    const run = this.drainAnswersOnce().catch((err) => {
+      this.lastError = err instanceof Error ? err.message : String(err);
+    });
+    this.drainInFlight = run;
+    try {
+      await run;
+    } finally {
+      this.drainInFlight = null;
+    }
+  }
+
+  private async drainAnswersOnce(): Promise<void> {
+    const apply = this.deps.applyAnswer;
+    if (!apply) return;
+    const secret = await this.resolveSecret(NOTIFY_RELAY_SECRET_NAME);
+    if (!secret) throw new Error(`relay shared secret unavailable (bws: ${NOTIFY_RELAY_SECRET_NAME})`);
+    const res = await this.fetchImpl(`${this.deps.url}/answers`, {
+      headers: { authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`relay answers GET failed: HTTP ${res.status}`);
+    const body = (await res.json().catch(() => null)) as { answers?: unknown } | null;
+    const answers = Array.isArray(body?.answers) ? body.answers.filter(isEdgeAnswer) : [];
+    const record: AnswerDrainRecord = {
+      at: new Date(this.now()).toISOString(),
+      applied: 0,
+      duplicate: 0,
+      unknown: 0,
+      rejected: 0,
+      failed: 0,
+      acked: 0,
+    };
+    const ack: string[] = [];
+    for (const answer of answers) {
+      try {
+        const outcome = await apply(answer);
+        record[outcome] += 1;
+        ack.push(answer.answerId);
+      } catch (err) {
+        record.failed += 1;
+        this.lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (ack.length) {
+      const acked = await this.fetchImpl(`${this.deps.url}/answers/ack`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+        body: JSON.stringify({ answerIds: ack }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!acked.ok) throw new Error(`relay answers ack failed: HTTP ${acked.status}`);
+      const ackBody = (await acked.json().catch(() => null)) as { pendingAnswers?: unknown } | null;
+      record.acked = ack.length;
+      if (typeof ackBody?.pendingAnswers === "number") this.lastPendingAnswers = ackBody.pendingAnswers;
+    }
+    this.lastDrain = record;
+  }
+
+  /** Persist before sending; an ambiguous network failure retries the
+   * same mirrorId until the DO acknowledges it. */
+  async mirrorEvent(event: MirroredEvent): Promise<void> {
+    try {
+      const queued = await this.withStateLock(async () => {
+        if (this.ackedEvents.has(event.mirrorId)) return false;
+        const priorPending = [...this.pendingEvents];
+        if (!this.pendingEvents.some((pending) => pending.mirrorId === event.mirrorId)) this.pendingEvents.push(event);
+        try {
+          await this.persistState();
+        } catch (err) {
+          this.pendingEvents = priorPending;
+          throw err;
+        }
+        return true;
+      });
+      if (!queued) return;
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
+    void this.flushMirrorEvents();
+  }
+
+  get incidentCursor(): number | null {
+    return this.incidentEventCursor;
+  }
+
+  async mirrorIncidentEvents(rows: IncidentMirrorRow[], cursor: number, origin: string): Promise<void> {
+    const queued = await this.withStateLock(async () => {
+      const priorCursor = this.incidentEventCursor;
+      const priorPending = this.pendingEvents;
+      const nextPending = [...priorPending];
+      for (const row of rows) {
+        const event = incidentMirrorEvent(row, origin);
+        if (
+          event &&
+          !this.ackedEvents.has(event.mirrorId) &&
+          !nextPending.some((pending) => pending.mirrorId === event.mirrorId)
+        ) {
+          nextPending.push(event);
+        }
+      }
+      this.pendingEvents = nextPending;
+      this.incidentEventCursor = Math.max(priorCursor ?? 0, cursor);
+      try {
+        await this.persistState();
+      } catch (err) {
+        this.pendingEvents = priorPending;
+        this.incidentEventCursor = priorCursor;
+        throw err;
+      }
+      return nextPending.length > priorPending.length;
+    }).catch((err) => {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      throw err;
+    });
+    if (queued) void this.flushMirrorEvents();
+  }
+
+  async mirrorCandidates(candidates: NotificationCandidate[]): Promise<void> {
+    const queued = await this.withStateLock(async () => {
+      const mirrorable = candidates.filter(
+        (candidate) => candidate.class === "needs-user" || candidate.class === "quota-wall",
+      );
+      const current = new Set(
+        mirrorable.map((candidate) =>
+          JSON.stringify([candidate.class, candidate.objectRef, candidate.stateFingerprint]),
+        ),
+      );
+      const priorActive = this.activeCandidates;
+      const priorPending = this.pendingEvents;
+      const nextActive = new Map(priorActive);
+      const nextPending = [...priorPending];
+      const currentRefs = new Set(mirrorable.map((candidate) => candidate.objectRef));
+      const clearedAt = new Date(this.now()).toISOString();
+      for (const [key, active] of nextActive) {
+        if (current.has(key)) continue;
+        nextActive.delete(key);
+        // #13469: a needs-Drew question that stopped candidating is
+        // withdrawn at the edge (a new state of the same question is
+        // not a withdrawal: its raised event supersedes the old one).
+        const objectRef = activeObjectRef(key);
+        if (objectRef?.startsWith("needs-drew:") && !currentRefs.has(objectRef)) {
+          const cleared = needsDrewClearedEvent(objectRef, active.occurrenceId, clearedAt);
+          if (
+            !this.ackedEvents.has(cleared.mirrorId) &&
+            !nextPending.some((pending) => pending.mirrorId === cleared.mirrorId)
+          ) {
+            nextPending.push(cleared);
+          }
+        }
+      }
+      for (const candidate of mirrorable) {
+        const key = JSON.stringify([candidate.class, candidate.objectRef, candidate.stateFingerprint]);
+        let active = nextActive.get(key);
+        if (!active) {
+          const occurrenceId = crypto.randomUUID();
+          const event = notificationMirrorEvent(candidate, occurrenceId);
+          active = { occurrenceId, mirrorId: event.mirrorId, raisedAt: event.raisedAt };
+          nextActive.set(key, active);
+        }
+        const event = notificationMirrorEvent(candidate, active.occurrenceId, active.raisedAt);
+        if (
+          !this.ackedEvents.has(event.mirrorId) &&
+          !nextPending.some((pending) => pending.mirrorId === event.mirrorId)
+        ) {
+          nextPending.push(event);
+        }
+      }
+      this.activeCandidates = nextActive;
+      this.pendingEvents = nextPending;
+      try {
+        await this.persistState();
+      } catch (err) {
+        this.activeCandidates = priorActive;
+        this.pendingEvents = priorPending;
+        throw err;
+      }
+      return nextPending.length > 0;
+    }).catch((err) => {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      throw err;
+    });
+    if (queued) void this.flushMirrorEvents();
+  }
+
+  private async withStateLock<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.stateOperation;
+    let release!: () => void;
+    this.stateOperation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+
+  private async flushMirrorEvents(): Promise<void> {
+    if (this.eventFlushInFlight) return this.eventFlushInFlight;
+    const run = this.flushMirrorEventsOnce();
+    this.eventFlushInFlight = run;
+    try {
+      await run;
+    } finally {
+      this.eventFlushInFlight = null;
+    }
+  }
+
+  private async flushMirrorEventsOnce(): Promise<void> {
+    while (true) {
+      const event = await this.withStateLock(async () => this.pendingEvents[0] ?? null);
+      if (!event) return;
+      try {
+        const secret = await this.resolveSecret(NOTIFY_RELAY_SECRET_NAME);
+        if (!secret) throw new Error(`relay shared secret unavailable (bws: ${NOTIFY_RELAY_SECRET_NAME})`);
+        const res = await this.fetchImpl(`${this.deps.url}/mirror/event`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+          body: JSON.stringify(event),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!res.ok) throw new Error(`relay event POST failed: HTTP ${res.status}`);
+        await this.withStateLock(async () => {
+          const priorPending = this.pendingEvents;
+          const priorAcked = new Map(this.ackedEvents);
+          this.pendingEvents = this.pendingEvents.filter((pending) => pending.mirrorId !== event.mirrorId);
+          this.ackedEvents.set(event.mirrorId, event.raisedAt);
+          const cutoff = this.now() - 30 * 24 * 60 * 60_000;
+          for (const [id, raisedAt] of this.ackedEvents) {
+            if (!Number.isFinite(Date.parse(raisedAt)) || Date.parse(raisedAt) < cutoff) this.ackedEvents.delete(id);
+          }
+          try {
+            await this.persistState();
+          } catch (err) {
+            this.pendingEvents = priorPending;
+            this.ackedEvents = priorAcked;
+            throw err;
+          }
+        });
+      } catch (err) {
+        this.lastError = err instanceof Error ? err.message : String(err);
+        return; // keep the durable head item and retry on the next beat
+      }
     }
   }
 
@@ -220,18 +623,75 @@ export class NotifyRelayClient {
     const body = (await res.json().catch(() => null)) as { pendingAnswers?: unknown } | null;
     this.lastHeartbeatAt = new Date(this.now()).toISOString();
     this.lastPendingAnswers = typeof body?.pendingAnswers === "number" ? body.pendingAnswers : null;
-    this.lastError = null;
+    if (this.pendingEvents.length === 0) this.lastError = null;
   }
 
-  private async loadSnapshotSeq(): Promise<void> {
+  private async loadState(): Promise<void> {
     try {
-      const parsed = JSON.parse(await readFile(this.deps.stateFile, "utf8")) as { snapshotSeq?: unknown };
+      const parsed = JSON.parse(await readFile(this.deps.stateFile, "utf8")) as {
+        snapshotSeq?: unknown;
+        pendingEvents?: unknown;
+        ackedEvents?: unknown;
+        activeCandidates?: unknown;
+        incidentEventCursor?: unknown;
+      };
       if (
         typeof parsed.snapshotSeq === "number" &&
         Number.isSafeInteger(parsed.snapshotSeq) &&
         parsed.snapshotSeq > 0
       ) {
         this.snapshotSeq = parsed.snapshotSeq;
+      }
+      if (Array.isArray(parsed.pendingEvents)) {
+        this.pendingEvents = parsed.pendingEvents.filter(
+          (event): event is MirroredEvent =>
+            !!event &&
+            typeof event === "object" &&
+            typeof (event as MirroredEvent).mirrorId === "string" &&
+            typeof (event as MirroredEvent).objectRef === "string" &&
+            typeof (event as MirroredEvent).transition === "string" &&
+            typeof (event as MirroredEvent).raisedAt === "string" &&
+            !!(event as MirroredEvent).payload &&
+            typeof (event as MirroredEvent).payload === "object",
+        );
+      }
+      if (Array.isArray(parsed.ackedEvents)) {
+        this.ackedEvents = new Map(
+          parsed.ackedEvents
+            .filter(
+              (event): event is { mirrorId: string; raisedAt: string } =>
+                !!event &&
+                typeof event === "object" &&
+                typeof (event as { mirrorId?: unknown }).mirrorId === "string" &&
+                typeof (event as { raisedAt?: unknown }).raisedAt === "string",
+            )
+            .map((event) => [event.mirrorId, event.raisedAt]),
+        );
+        const cutoff = this.now() - 30 * 24 * 60 * 60_000;
+        for (const [id, raisedAt] of this.ackedEvents) {
+          if (!Number.isFinite(Date.parse(raisedAt)) || Date.parse(raisedAt) < cutoff) this.ackedEvents.delete(id);
+        }
+      }
+      if (Array.isArray(parsed.activeCandidates)) {
+        this.activeCandidates = new Map(
+          parsed.activeCandidates.filter(
+            (entry): entry is [string, ActiveMirrorCandidate] =>
+              Array.isArray(entry) &&
+              typeof entry[0] === "string" &&
+              !!entry[1] &&
+              typeof entry[1] === "object" &&
+              typeof entry[1].occurrenceId === "string" &&
+              typeof entry[1].mirrorId === "string" &&
+              typeof entry[1].raisedAt === "string",
+          ),
+        );
+      }
+      if (
+        typeof parsed.incidentEventCursor === "number" &&
+        Number.isSafeInteger(parsed.incidentEventCursor) &&
+        parsed.incidentEventCursor >= 0
+      ) {
+        this.incidentEventCursor = parsed.incidentEventCursor;
       }
     } catch {
       // No state file yet (first run) or unreadable: start at 0;
@@ -241,9 +701,60 @@ export class NotifyRelayClient {
   }
 
   private async saveSnapshotSeq(seq: number): Promise<void> {
-    await mkdir(dirname(this.deps.stateFile), { recursive: true });
-    await writeFile(this.deps.stateFile, JSON.stringify({ snapshotSeq: seq }), "utf8");
+    this.snapshotSeq = seq;
+    await this.persistState();
   }
+
+  private async persistState(): Promise<void> {
+    const write = this.persistInFlight.then(async () => {
+      const directory = dirname(this.deps.stateFile);
+      await mkdir(directory, { recursive: true });
+      const temporary = `${this.deps.stateFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        await writeFile(
+          temporary,
+          JSON.stringify({
+            snapshotSeq: this.snapshotSeq,
+            pendingEvents: this.pendingEvents,
+            ackedEvents: [...this.ackedEvents].map(([mirrorId, raisedAt]) => ({ mirrorId, raisedAt })),
+            activeCandidates: [...this.activeCandidates],
+            incidentEventCursor: this.incidentEventCursor,
+          }),
+          { encoding: "utf8", flag: "wx", mode: 0o600 },
+        );
+        await rename(temporary, this.deps.stateFile);
+      } catch (err) {
+        await rm(temporary, { force: true }).catch(() => {});
+        throw err;
+      }
+    });
+    this.persistInFlight = write.catch(() => {});
+    return write;
+  }
+}
+
+/** The object ref inside an active-candidate key
+ * (`JSON.stringify([class, objectRef, stateFingerprint])`). */
+function activeObjectRef(key: string): string | null {
+  try {
+    const parsed = JSON.parse(key) as unknown;
+    return Array.isArray(parsed) && typeof parsed[1] === "string" ? parsed[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function isEdgeAnswer(value: unknown): value is EdgeAnswer {
+  if (!value || typeof value !== "object") return false;
+  const answer = value as Record<string, unknown>;
+  return (
+    typeof answer.answerId === "string" &&
+    answer.answerId.length > 0 &&
+    typeof answer.ledgerId === "string" &&
+    answer.ledgerId.length > 0 &&
+    typeof answer.answeredAt === "string" &&
+    typeof answer.answerTokenHash === "string"
+  );
 }
 
 // ------------------------------------------------------ singleton wiring
@@ -257,11 +768,17 @@ let singleton: NotifyRelayClient | null = null;
  * beside startAlertEngine. */
 export function startNotifyRelay(
   cfg: Config,
-  getStore: () => Promise<Pick<AlertsStore, "listSubscriptions"> | null>,
+  getStore: NotifyRelayDeps["getStore"],
+  applyAnswer?: NotifyRelayDeps["applyAnswer"],
 ): NotifyRelayClient | null {
   if (!cfg.notifyRelay.url) return null;
   if (singleton) return singleton;
-  singleton = new NotifyRelayClient({ url: cfg.notifyRelay.url, stateFile: cfg.notifyRelay.stateFile, getStore });
+  singleton = new NotifyRelayClient({
+    url: cfg.notifyRelay.url,
+    stateFile: cfg.notifyRelay.stateFile,
+    getStore,
+    ...(applyAnswer ? { applyAnswer } : {}),
+  });
   void singleton.start().catch(() => {
     // start() records its own errors; the catch only keeps an
     // early rejection from surfacing as an unhandled rejection.
@@ -274,4 +791,28 @@ export function startNotifyRelay(
  * is configured and started. */
 export function requestNotifyRelaySubscriptionSync(): void {
   singleton?.requestSubscriptionSync();
+}
+
+/** Queue one push-worthy event for the silent edge mirror. */
+export function requestNotifyRelayEventMirror(event: MirroredEvent): Promise<void> {
+  return singleton?.mirrorEvent(event) ?? Promise.resolve();
+}
+
+/** Cursor for replaying the authoritative incident event ledger. */
+export function notifyRelayIncidentEventCursor(): number | null | undefined {
+  return singleton ? singleton.incidentCursor : undefined;
+}
+
+/** Enqueue a page from the incident event ledger and checkpoint its cursor atomically. */
+export function requestNotifyRelayIncidentEvents(
+  rows: IncidentMirrorRow[],
+  cursor: number,
+  origin: string,
+): Promise<void> {
+  return singleton?.mirrorIncidentEvents(rows, cursor, origin) ?? Promise.resolve();
+}
+
+/** Mirror active needs-Drew and quota-wall episodes, assigning a new id after recovery. */
+export function requestNotifyRelayCandidatesMirror(candidates: NotificationCandidate[]): Promise<void> {
+  return singleton?.mirrorCandidates(candidates) ?? Promise.resolve();
 }

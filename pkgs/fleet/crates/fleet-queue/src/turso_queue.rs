@@ -48,8 +48,11 @@ mod admin;
 mod claim;
 mod closed_bound;
 mod core;
+pub mod ctx_scope;
 mod label_enrich;
 mod lifecycle;
+mod links;
+mod notes;
 mod placement_coord;
 mod placement_sessions;
 mod repair;
@@ -64,6 +67,8 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use links::*;
+pub use notes::*;
 pub use placement_coord::*;
 pub use placement_sessions::*;
 pub use repair::*;
@@ -391,6 +396,46 @@ mod tests {
         })
     }
 
+    /// A canned pipeline reply for one INSERT.
+    fn exec_pipeline_reply() -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [], "rows": [], "affected_row_count": 1,
+                "last_insert_rowid": "1"}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    #[test]
+    fn events_carry_the_serving_requests_ctx_id_14191() {
+        // #14191 (build 5/5): an event written while the broker
+        // serves a request that carried context stores the context
+        // id in its detail, so the queue event store joins the
+        // trip logs on one id. Without context the row is unchanged.
+        let (url, captured) = stub_pipeline(exec_pipeline_reply());
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        {
+            let _scope = ctx_scope::enter(Some("task-22655"));
+            event(&backend, Some("w1"), Some(7), "ctx_probe", &json!({"a": 1})).unwrap();
+        }
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].contains(r#"\"ctx_id\":\"task-22655\""#),
+            "{bodies:?}"
+        );
+        drop(bodies);
+
+        let (url, captured) = stub_pipeline(exec_pipeline_reply());
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let out = verb_events_append(&backend, &json!({"kind": "ctx_probe", "detail": {"a": 1}}));
+        assert_eq!(out["ok"], true, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(!bodies[0].contains("ctx_id"), "{bodies:?}");
+    }
+
     #[test]
     fn enqueue_mirror_labels_select_band_12744() {
         // #12744 acceptance oracle, at the verb: a producer-path
@@ -586,48 +631,42 @@ mod tests {
     }
 
     /// One task row in TASK_COLS order for the #13091 stub replies.
+    /// Cells are keyed by column name and emitted in TASK_COLS
+    /// order, so a column added to TASK_COLS cannot silently shift
+    /// the row again (#14873: manual_only, metadata and the
+    /// resolution block did exactly that to the positional row).
     fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
         let text = |v: &str| json!({"type": "text", "value": v});
         let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
         let null = json!({"type": "null"});
-        json!([
-            int(id),
-            text("repo-health-code-pilot"),
-            text("probe"),
-            null,
-            text(&payload.to_string()),
-            text(dedupe_key),
-            int(30),
-            text(status),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            int(1),
-            int(1000),
-            null,
-            null,
-            null,
-            null,
-            text("{}"),
-            text("{}"),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            text("2026-11-20T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            null,
-            null,
-            null,
-            null
-        ])
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("manual_only", int(0));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text(&payload.to_string()));
+        cells.insert("dedupe_key", text(dedupe_key));
+        cells.insert("priority", int(30));
+        cells.insert("status", text(status));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-21T00:00:00Z"));
+        cells.insert("completed_at", text("2026-11-21T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        for key in cells.keys() {
+            assert!(
+                cols.iter().any(|c| c == key),
+                "stub cell {key} is not a task column"
+            );
+        }
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
     }
 
     fn insert_ok_13091(id: i64) -> String {
@@ -822,6 +861,111 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
+        // The fleet monitor's 2026-11-25 finding on #10627: a fresh
+        // filing under a standard key whose task already completed
+        // got the DONE row back with no signal it was a terminal
+        // return rather than a creation, so `queue/queued` issues
+        // silently held no live task. The absorption stands
+        // (#13091); the envelope must now name it.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![done]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "done", "{out}");
+        assert_eq!(
+            out["dedupe_match"]["dedupe_key"],
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_live_key_match_reports_dedupe_match_10627() {
+        // The live half of the same report: a filing absorbed by a
+        // live holder of the key names the match as live, so a
+        // caller can tell "attach to the holder" apart from both a
+        // creation and a terminal return.
+        let live = task_row_13091(
+            4242,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![live]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_live", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "queued", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_fresh_filing_carries_no_dedupe_match_10627() {
+        // Negative space: a filing that creates its row (here the
+        // revive-on-enqueue path over a failed predecessor) must
+        // NOT carry the absorption report — the field means
+        // "absorbed", never "filed".
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, _captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
+    }
+
+    #[test]
     fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
         // The parked half, at the exact SQL the serve path runs:
         // the default pick predicate (shared verbatim by the pick
@@ -834,7 +978,7 @@ mod tests {
         // its timer release, and a completed row is never servable.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, payload TEXT,
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, manual_only INTEGER NOT NULL DEFAULT 0, payload TEXT,
                status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
                priority INTEGER, created_at TEXT, progress TEXT);
@@ -946,6 +1090,89 @@ mod tests {
     }
 
     #[test]
+    fn manual_only_is_excluded_before_automatic_priority_pick_9178() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY, queue TEXT, payload TEXT, status TEXT,
+                attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+                manual_only INTEGER NOT NULL DEFAULT 0, priority INTEGER,
+                created_at TEXT, progress TEXT
+            );",
+        )
+        .unwrap();
+        let now = "2026-11-25T03:00:00Z";
+        let insert = |id: i64, manual_only: i64, priority: i64| {
+            conn.execute(
+                "INSERT INTO tasks (
+                    id, queue, payload, status, attempts, max_attempts, not_before,
+                    wait_kind, ready_condition, required_budget_minutes, manual_only,
+                    priority, created_at, progress
+                 ) VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}',
+                    'queued', 0, 1000, NULL, NULL, NULL, NULL, ?, ?,
+                    '2026-11-20T00:00:00Z', '{}')",
+                rusqlite::params![id, manual_only, priority],
+            )
+            .unwrap();
+        };
+        let predicate = default_pick_predicate();
+        // The predicate binds four arguments (now x2 for the
+        // queued/parked branches, the declared budget x2 for the
+        // bypass + gate). This harness runs it bare — the two
+        // platform-clause arguments of the full production pick
+        // SELECT do not belong here (#14873).
+        let args = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        let pick = || -> Vec<i64> {
+            let sql = format!(
+                "SELECT id FROM tasks WHERE payload IS NOT NULL AND payload <> '' \
+                 AND payload <> '{{}}' AND ({predicate}) \
+                 ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT 1"
+            );
+            conn.prepare(&sql)
+                .unwrap()
+                .query_map(rusqlite::params_from_iter(args.clone()), |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<i64>, _>>()
+                .unwrap()
+        };
+
+        // FDR-0004 oracle: the highest-priority row is manual-only, so
+        // the automatic pick sees no work rather than taking that row.
+        insert(1, 1, 10);
+        assert!(pick().is_empty(), "manual-only work is never auto-claimed");
+        conn.execute(
+            "UPDATE tasks SET status = 'handed_off', progress = '{\"lane\":\"opencode\"}' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let handoff = conn
+            .prepare(&format!(
+                "SELECT id FROM tasks WHERE {} ORDER BY priority ASC LIMIT 1",
+                handoff_pick_predicate()
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            handoff.is_empty(),
+            "handoff auto-pick also skips manual-only work"
+        );
+
+        // It is removed before ordering, so an ordinary lower-priority
+        // row remains eligible instead of being blocked behind it.
+        insert(2, 0, 50);
+        assert_eq!(pick(), vec![2]);
+    }
+
+    #[test]
     fn payload_issue_ref_shapes_12744() {
         // The identity the enrichment keys on: the payload's own
         // repo first, the repo-health dedupe key as fallback, and
@@ -1034,6 +1261,49 @@ mod tests {
         assert_eq!(
             not_claimed_reason(Some(&queued), Some(&reclaimed), "archer"),
             "it is queued"
+        );
+    }
+
+    #[test]
+    fn lease_renewal_guidance_names_heartbeat_only_14653() {
+        // #14653 oracle: the lease-expiry diagnostic advertises
+        // exactly one renewal action — heartbeat — and that action
+        // is the verb whose statement actually advances the
+        // deadline. Checkpoint is never advertised as renewal:
+        // verb_checkpoint writes progress only, and this test fails
+        // if it ever gains a lease_until write, so the guidance
+        // and the behaviour cannot drift apart silently again.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(reason.contains("heartbeat to keep a lease"), "{reason}");
+        assert!(
+            !reason.contains("or checkpoint"),
+            "checkpoint is not a renewal action: {reason}"
+        );
+        // The advertised action advances the deadline: the
+        // statement verb_heartbeat runs raises lease_until to the
+        // requested extension whenever that is later.
+        let heartbeat_sql = include_str!("turso_queue/heartbeat.sql");
+        assert!(
+            heartbeat_sql
+                .contains("SET lease_until = CASE WHEN julianday(lease_until) >= julianday(?1)"),
+            "heartbeat statement must advance lease_until: {heartbeat_sql}"
+        );
+        // Checkpoint's verb body touches no lease column.
+        let lifecycle_src = include_str!("turso_queue/lifecycle.rs");
+        let start = lifecycle_src
+            .find("pub(crate) fn verb_checkpoint")
+            .expect("verb_checkpoint exists");
+        let body = &lifecycle_src[start..];
+        let end = body.find("\npub(crate) fn ").unwrap_or(body.len());
+        assert!(
+            !body[..end].contains("lease_until"),
+            "verb_checkpoint must not write lease_until"
         );
     }
 
@@ -1903,6 +2173,10 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
+        assert!(
+            pred.starts_with("manual_only = 0 AND"),
+            "automatic pick excludes manual-only: {pred}"
+        );
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),
@@ -3457,6 +3731,71 @@ mod tests {
     }
 
     #[test]
+    fn suspect_completion_stamp_14268() {
+        // #14268 ask 2 oracle: the stamp fires exactly on the
+        // false-completion signature — the completion carries no
+        // result and no worker activity was recorded since the
+        // claim. Any result content, or any recorded activity,
+        // clears it.
+        let stamp = suspect_completion_stamp(&json!({}), 0)
+            .expect("empty result + no activity is the suspect shape");
+        assert_eq!(
+            stamp["reason"],
+            "done_with_no_result_and_no_activity_history"
+        );
+        assert!(suspect_completion_stamp(&json!(null), 0).is_some());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 0).is_none());
+        assert!(suspect_completion_stamp(&json!({}), 1).is_none());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 3).is_none());
+        // A non-object result is content, never the empty shape.
+        assert!(suspect_completion_stamp(&json!("done"), 0).is_none());
+    }
+
+    #[test]
+    fn verb_complete_surfaces_suspect_completions_14268() {
+        // #14268 ask 2, source oracle: verb_complete counts the
+        // task's activity, stamps the stored result with the
+        // verdict, flags the completed event and writes the
+        // dedicated suspect_completion event. The activity count
+        // excludes the claim ceremony's own writes, so a bare
+        // claim can never clear the shape by itself.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_complete(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("activity_event_count(t, task_id)"),
+            "verb_complete counts prior activity before mutating"
+        );
+        assert!(
+            seg.contains("suspect_completion_stamp(&result, n)"),
+            "verb_complete stamps the suspect shape on the result"
+        );
+        assert!(
+            seg.contains("\"suspect_completion\""),
+            "verb_complete writes the suspect_completion event"
+        );
+        let counter = src
+            .split("fn activity_event_count(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        for kind in [
+            "'claimed'",
+            "'session_bound'",
+            "'lane_session_bound'",
+            "'model_stamp'",
+        ] {
+            assert!(
+                counter.contains(kind),
+                "activity count excludes claim-ceremony kind {kind}"
+            );
+        }
+    }
+
+    #[test]
     fn completion_gate_rejects_disposition_for_another_issue() {
         // #10611: the readback must describe the packet's issue — a
         // stale readback for a sibling issue is not closure evidence.
@@ -4739,7 +5078,12 @@ mod tests {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
         // session binding cleared and a `released` audit event;
-        // attempts are NOT handed back.
+        // attempts are NOT handed back. #12901 exception: a
+        // release whose claim consumed the last attempt fails the
+        // row at the cap instead (the #6463 expiry_disposition
+        // oracle, sink rows exempt), with the reason in last_error
+        // and a `failed` audit event — a queued return there is
+        // the unclaimable churn zombie.
         let src = &test_source();
         let seg = seg8217(
             src,
@@ -4753,12 +5097,59 @@ mod tests {
             "DELETE FROM leases",
             "attempt change",
             "SET status = 'queued'",
+            "expiry_disposition(attempts, max_attempts)",
+            "expired_claim_returns_to_sink(&progress)",
+            "SET status = 'failed'",
+            "released at attempt cap",
+            "\"released_at_cap\": true",
         ] {
             assert!(seg.contains(needle), "verb_release misses {needle}");
         }
         assert!(
             src.contains("\"/release\" => verb_release(t, req),"),
             "release is dispatched"
+        );
+    }
+
+    #[test]
+    fn release_platform_limit_contract_14993() {
+        // Oracle (#14993): a release can record a platform
+        // limitation -- the route-mismatch hand-back -- so the
+        // claim pick stops offering the task to seats of the wrong
+        // family (the five redraws of laptop-routed task 23528).
+        // verb_release validates the pair with the lane verb's own
+        // validator before anything mutates, writes it to the lane
+        // ledger the pick clause reads (upserting a minimal row
+        // when the claim never created one), records it on the
+        // `released` event, and the client passes both flags
+        // through under the lane verb's field names.
+        let src = &test_source();
+        let seg = seg8217(
+            src,
+            "pub(crate) fn verb_release(",
+            "\npub(crate) fn verb_wake(",
+        );
+        for needle in [
+            "platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())",
+            "UPDATE repo_task_lane_ledger SET platform_limit = ?",
+            "INSERT INTO repo_task_lane_ledger",
+            "\"platform_limit\": limit_family",
+            "\"platform_limit_reason\": limit_reason",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        let client_src = [
+            include_str!("client/support.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+        ]
+        .concat();
+        assert!(
+            client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"),
+            "the release client passes --limit-platform through"
+        );
+        assert!(
+            client_src.contains("\"platform_limit_reason\": args.get(\"limit-reason\")"),
+            "the release client passes --limit-reason through"
         );
     }
 

@@ -159,6 +159,187 @@ pub fn validate_name(name: &str) -> Result<(), SecretError> {
     Ok(())
 }
 
+/// A namespace view over secret names (#10358 design record,
+/// `doc/2026-11-26T07-45-48Z_design_fleet_secrets_scoping/`, D1 to D5).
+///
+/// A prefix is a namespace view, not a security layer: what a device
+/// can read is bounded by the keys it holds, never by the prefix.
+/// [`Scope::none`] is the identity, so an unconfigured instance
+/// behaves exactly as it did before scoping existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scope {
+    prefix: Option<String>,
+}
+
+impl Scope {
+    /// The one separator between a prefix and the rest of a name.
+    pub const SEPARATOR: char = '.';
+    /// The environment variable that names the prefix; it beats
+    /// `[secrets] prefix` in `fleet.toml` (D9).
+    pub const PREFIX_ENV: &'static str = "FLEET_SECRETS_PREFIX";
+
+    /// No prefix: every name maps and displays as itself (D1).
+    pub fn none() -> Scope {
+        Scope { prefix: None }
+    }
+
+    /// A prefix scope. The prefix must itself be a valid name and may
+    /// not end with the separator; a dotted prefix such as `team.42`
+    /// is legal and matched as a whole (D9).
+    pub fn prefixed(prefix: &str) -> Result<Scope, SecretError> {
+        validate_name(prefix)?;
+        if prefix.ends_with(Self::SEPARATOR) {
+            return Err(SecretError::InvalidName(prefix.to_string()));
+        }
+        Ok(Scope {
+            prefix: Some(prefix.to_string()),
+        })
+    }
+
+    /// The scope from an environment value and a config value: the
+    /// environment wins, and an empty or blank value in either counts
+    /// as unset (D9).
+    pub fn from_sources(
+        env_value: Option<&str>,
+        config_value: Option<&str>,
+    ) -> Result<Scope, SecretError> {
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.filter(|s| !s.trim().is_empty())
+        }
+        match set(env_value).or_else(|| set(config_value)) {
+            Some(prefix) => Scope::prefixed(prefix),
+            None => Ok(Scope::none()),
+        }
+    }
+
+    /// The scope a resolved config runs with: `$FLEET_SECRETS_PREFIX`,
+    /// else `[secrets] prefix`, else none.
+    pub fn from_config(config: &fleet_config::Config) -> Result<Scope, SecretError> {
+        Scope::from_sources(
+            std::env::var(Self::PREFIX_ENV).ok().as_deref(),
+            config.secrets.prefix.as_deref(),
+        )
+    }
+
+    /// The configured prefix, if any.
+    pub fn prefix(&self) -> Option<&str> {
+        self.prefix.as_deref()
+    }
+
+    /// `P.`, the start every stored name in this scope shares.
+    fn lead(prefix: &str) -> String {
+        format!("{prefix}{}", Self::SEPARATOR)
+    }
+
+    /// The stored name a caller's name means (D2 to D4). A name that
+    /// already starts with `P.` is full and used as is; any other name
+    /// gains `P.` once. The full name is validated, and a full name
+    /// with nothing after `P.` is refused.
+    pub fn to_full(&self, name: &str) -> Result<String, SecretError> {
+        validate_name(name)?;
+        let Some(prefix) = self.prefix.as_deref() else {
+            return Ok(name.to_string());
+        };
+        let lead = Scope::lead(prefix);
+        let full = if name.starts_with(&lead) {
+            name.to_string()
+        } else {
+            format!("{lead}{name}")
+        };
+        if full.len() == lead.len() {
+            return Err(SecretError::InvalidName(name.to_string()));
+        }
+        validate_name(&full)?;
+        Ok(full)
+    }
+
+    /// How a stored name is shown in this scope (D5), or `None` when it
+    /// lies outside the scope. `P.` is stripped, except where the rest
+    /// itself starts with `P.`: that name is shown in full, so every
+    /// displayed name maps back through [`Scope::to_full`] to the
+    /// stored name it came from.
+    pub fn display(&self, stored: &str) -> Option<String> {
+        let Some(prefix) = self.prefix.as_deref() else {
+            return Some(stored.to_string());
+        };
+        let lead = Scope::lead(prefix);
+        let rest = stored.strip_prefix(&lead)?;
+        if rest.is_empty() {
+            return None;
+        }
+        if rest.starts_with(&lead) {
+            Some(stored.to_string())
+        } else {
+            Some(rest.to_string())
+        }
+    }
+}
+
+/// The pseudo-name a listing's errors carry: a listing has no single
+/// secret to name.
+const LIST_PSEUDO_NAME: &str = "names";
+
+/// The broker route a listing in `scope` asks for (#10358 D6). An
+/// unscoped listing never sends the parameter, so it works against old
+/// and new brokers alike.
+pub fn list_path(scope: &Scope) -> String {
+    match scope.prefix() {
+        None => "/secrets".to_string(),
+        Some(prefix) => format!("/secrets?prefix={}", query_encode(prefix)),
+    }
+}
+
+/// Percent-encode everything outside RFC 3986's unreserved set, so a
+/// prefix holding `&`, `=` or `+` stays one query value.
+fn query_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The names a broker listing answered. A scoped listing that the
+/// broker does not know (404) is unresolved and never retried
+/// unscoped (#10358 D6).
+fn names_from_listing(
+    status: u16,
+    body: &serde_json::Value,
+    scope: &Scope,
+) -> Result<Vec<String>, SecretError> {
+    let unavailable = |detail: String| SecretError::Unavailable {
+        source: "secrets-broker",
+        name: LIST_PSEUDO_NAME.to_string(),
+        detail,
+    };
+    match status {
+        200 => {
+            let names = body
+                .get("names")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| unavailable("200 response without a \"names\" array".to_string()))?;
+            names
+                .iter()
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        unavailable("\"names\" array holds a non-string entry".to_string())
+                    })
+                })
+                .collect()
+        }
+        404 if scope.prefix().is_some() => Err(unavailable(
+            "broker does not support scoped list".to_string(),
+        )),
+        status => Err(unavailable(format!(
+            "secrets-broker answered HTTP {status}"
+        ))),
+    }
+}
+
 /// One way to resolve a name. Sources are tried in chain order.
 pub trait SecretSource {
     /// Stable source name for error messages ("secrets-broker", "bws").
@@ -347,6 +528,13 @@ impl Resolver {
         Resolver::new(sources)
     }
 
+    /// Resolve a caller's name inside a scope: the name is mapped to
+    /// its full stored name once, before any source sees it, so every
+    /// source in the chain receives the same full name (D2, D12).
+    pub fn resolve_scoped(&self, scope: &Scope, name: &str) -> Result<SecretValue, SecretError> {
+        self.resolve(&scope.to_full(name)?)
+    }
+
     pub fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
         validate_name(name)?;
         let mut errors = Vec::new();
@@ -430,6 +618,8 @@ impl BrokerSource {
             trip: None,
             transport: None,
             cf_ok: None,
+            // #14188: the caller's FLEET_CTX_* record rides the frame.
+            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         let mut stream = self.connect(name)?;
         // Bound the exchange: a session broker (or the path behind
@@ -449,38 +639,16 @@ impl BrokerSource {
     /// Errors are [`SecretError::Unavailable`] under the pseudo-name
     /// `"names"` — a listing has no single secret to name.
     pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
-        let name = "names";
-        let response = self.request("/secrets", name)?;
-        match response.status {
-            200 => {
-                let names = response
-                    .body
-                    .get("names")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| SecretError::Unavailable {
-                        source: "secrets-broker",
-                        name: name.to_string(),
-                        detail: "200 response without a \"names\" array".to_string(),
-                    })?;
-                names
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| SecretError::Unavailable {
-                                source: "secrets-broker",
-                                name: name.to_string(),
-                                detail: "\"names\" array holds a non-string entry".to_string(),
-                            })
-                    })
-                    .collect()
-            }
-            status => Err(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
-            }),
-        }
+        self.list_names_in(&Scope::none())
+    }
+
+    /// The names listing for a scope (#10358 D6): a prefixed scope
+    /// asks the broker for `GET /secrets?prefix=P`; [`Scope::none`]
+    /// sends exactly today's `GET /secrets`. The names come back as
+    /// the broker stored them; the caller applies [`Scope::display`].
+    pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
+        let response = self.request(&list_path(scope), LIST_PSEUDO_NAME)?;
+        names_from_listing(response.status, &response.body, scope)
     }
 
     fn connect(&self, name: &str) -> Result<UnixStream, SecretError> {
@@ -652,8 +820,11 @@ impl DirectBrokerSource {
             let _ = stream.set_read_timeout(Some(self.retry_policy.attempt_timeout));
             let _ = stream.set_write_timeout(Some(self.retry_policy.attempt_timeout));
         }
+        // #14188: the caller's FLEET_CTX_* record as X-Fleet-Ctx-*
+        // headers (empty when there is no context).
+        let ctx_headers = fleet_config::ctx::Ctx::from_env().header_lines();
         let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\nConnection: close\r\n\r\n",
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
             token.trim()
         );
         stream
@@ -680,37 +851,14 @@ impl DirectBrokerSource {
     /// same `GET /secrets` route [`BrokerSource::list_names`]
     /// reads through the session broker. Names only.
     pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
-        let name = "names";
-        let (status, body) = self.get("/secrets", name)?;
-        match status {
-            200 => {
-                let names = body
-                    .get("names")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| SecretError::Unavailable {
-                        source: "secrets-broker",
-                        name: name.to_string(),
-                        detail: "200 response without a \"names\" array".to_string(),
-                    })?;
-                names
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| SecretError::Unavailable {
-                                source: "secrets-broker",
-                                name: name.to_string(),
-                                detail: "\"names\" array holds a non-string entry".to_string(),
-                            })
-                    })
-                    .collect()
-            }
-            status => Err(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
-            }),
-        }
+        self.list_names_in(&Scope::none())
+    }
+
+    /// The scoped names listing over the direct socket, as
+    /// [`BrokerSource::list_names_in`].
+    pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
+        let (status, body) = self.get(&list_path(scope), LIST_PSEUDO_NAME)?;
+        names_from_listing(status, &body, scope)
     }
 }
 
@@ -1183,15 +1331,17 @@ fn bws_listed_id(list_raw: &str, name: &str) -> Result<Option<String>, SecretErr
         name: name.to_string(),
         detail: detail.to_string(),
     };
-    let list: serde_json::Value =
-        serde_json::from_str(list_raw).map_err(|_| unavailable("bws secret list: output is not JSON"))?;
+    let list: serde_json::Value = serde_json::from_str(list_raw)
+        .map_err(|_| unavailable("bws secret list: output is not JSON"))?;
     let items = list
         .as_array()
         .ok_or_else(|| unavailable("bws secret list: output is not a JSON array"))?;
     for item in items {
         if item.get("key").and_then(|k| k.as_str()) == Some(name) {
             let raw_id = item.get("id").and_then(|i| i.as_str()).ok_or_else(|| {
-                unavailable("bws secret list: entry for the requested key has a missing or non-string id")
+                unavailable(
+                    "bws secret list: entry for the requested key has a missing or non-string id",
+                )
             })?;
             return Ok(Some(raw_id.to_string()));
         }
@@ -1284,7 +1434,16 @@ impl BwsStore {
         self.runner
             .run(
                 "bws",
-                &["secret", "create", "-o", "json", "--", name, value, &self.project_id],
+                &[
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    &self.project_id,
+                ],
             )
             .map_err(|d| unavailable(format!("bws secret create: {d}")))?;
         // Verify by reading the name back; the comparison happens in
@@ -1294,7 +1453,9 @@ impl BwsStore {
             .run("bws", &["secret", "list", "-o", "json"])
             .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
         let id = bws_listed_id(&list_raw, name)?.ok_or_else(|| {
-            unavailable("bws secret create: the name is absent from the listing afterwards".to_string())
+            unavailable(
+                "bws secret create: the name is absent from the listing afterwards".to_string(),
+            )
         })?;
         let got_raw = self
             .runner
@@ -1302,9 +1463,10 @@ impl BwsStore {
             .map_err(|d| unavailable(format!("bws secret get: {d}")))?;
         let got: serde_json::Value = serde_json::from_str(&got_raw)
             .map_err(|_| unavailable("bws secret get: output is not JSON".to_string()))?;
-        let stored = got.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
-            unavailable("bws secret get: no string \"value\" field".to_string())
-        })?;
+        let stored = got
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| unavailable("bws secret get: no string \"value\" field".to_string()))?;
         if stored != value {
             return Err(unavailable(
                 "bws secret create: the value read back does not match what was stored".to_string(),
@@ -1411,6 +1573,197 @@ impl SecretSource for OpSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Scope (#10358 S1, design record §6) ----
+
+    /// The record's nine-row matrix: (caller name, prefix, stored name
+    /// or None when refused).
+    const SCOPE_MATRIX: [(&str, Option<&str>, Option<&str>); 9] = [
+        ("alpha", None, Some("alpha")),
+        ("42.alpha", None, Some("42.alpha")),
+        ("alpha", Some("42"), Some("42.alpha")),
+        ("42.alpha", Some("42"), Some("42.alpha")),
+        ("42.x", Some("42"), Some("42.x")),
+        ("42.42.x", Some("42"), Some("42.42.x")),
+        ("42", Some("42"), Some("42.42")),
+        ("42.", Some("42"), None),
+        ("420.x", Some("42"), Some("42.420.x")),
+    ];
+
+    fn scope_for(prefix: Option<&str>) -> Scope {
+        match prefix {
+            Some(p) => Scope::prefixed(p).unwrap(),
+            None => Scope::none(),
+        }
+    }
+
+    #[test]
+    fn scope_maps_the_nine_row_matrix() {
+        for (row, (name, prefix, stored)) in SCOPE_MATRIX.iter().enumerate() {
+            let got = scope_for(*prefix).to_full(name);
+            match stored {
+                Some(want) => assert_eq!(
+                    got.as_deref().ok(),
+                    Some(*want),
+                    "row {}: {name:?} under {prefix:?}",
+                    row + 1
+                ),
+                None => assert!(
+                    matches!(got, Err(SecretError::InvalidName(_))),
+                    "row {}: {name:?} under {prefix:?} must be refused, got {got:?}",
+                    row + 1
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn scope_none_is_identity_on_every_matrix_row() {
+        let none = Scope::none();
+        assert_eq!(none.prefix(), None);
+        for (name, _, _) in SCOPE_MATRIX {
+            assert_eq!(none.to_full(name).unwrap(), name);
+            assert_eq!(none.display(name).as_deref(), Some(name));
+        }
+        assert_eq!(Scope::default(), Scope::none());
+    }
+
+    #[test]
+    fn scope_refuses_names_validate_name_refuses() {
+        let scope = Scope::prefixed("42").unwrap();
+        for bad in ["", ".", "..", "a/b", "a b", "a%2f", "a?b", "a#b", "a\nb"] {
+            assert!(
+                matches!(scope.to_full(bad), Err(SecretError::InvalidName(_))),
+                "{bad:?} must stay refused under a prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_prefix_must_be_a_name_without_a_trailing_separator() {
+        for bad in ["", ".", "..", "42.", "a/b", "a b"] {
+            assert!(Scope::prefixed(bad).is_err(), "prefix {bad:?}");
+        }
+        let dotted = Scope::prefixed("team.42").unwrap();
+        assert_eq!(dotted.to_full("x").unwrap(), "team.42.x");
+        assert_eq!(dotted.to_full("team.42.x").unwrap(), "team.42.x");
+        assert_eq!(dotted.to_full("team.x").unwrap(), "team.42.team.x");
+    }
+
+    #[test]
+    fn scope_sources_prefer_env_and_treat_empty_as_unset() {
+        let scope = |e, c| Scope::from_sources(e, c).unwrap();
+        assert_eq!(scope(None, None), Scope::none());
+        assert_eq!(scope(Some(""), Some("")), Scope::none());
+        assert_eq!(scope(Some("  "), None), Scope::none());
+        assert_eq!(scope(Some("env"), Some("cfg")).prefix(), Some("env"));
+        assert_eq!(scope(Some(""), Some("cfg")).prefix(), Some("cfg"));
+        assert_eq!(scope(None, Some("cfg")).prefix(), Some("cfg"));
+        assert!(Scope::from_sources(Some("42."), None).is_err());
+    }
+
+    #[test]
+    fn scope_display_filters_and_strips_for_list() {
+        let scope = Scope::prefixed("42").unwrap();
+        let stored = ["alpha", "42.alpha", "42.42.x", "420.y", "43.z", "42."];
+        let shown: Vec<String> = stored.iter().filter_map(|s| scope.display(s)).collect();
+        assert_eq!(shown, ["alpha", "42.42.x"]);
+    }
+
+    #[test]
+    fn scope_display_round_trips_through_to_full() {
+        // Property over a deterministic spread of stored names under
+        // the prefix: every displayed name maps back to its stored name.
+        let parts = [
+            "a", "42", "4", "420", "x.y", "42.", ".", "-", "42.42", "b.42",
+        ];
+        for prefix in ["42", "team.42", "x"] {
+            let scope = Scope::prefixed(prefix).unwrap();
+            for first in parts {
+                for second in parts {
+                    let stored = format!("{prefix}.{first}{second}");
+                    if validate_name(&stored).is_err() {
+                        continue;
+                    }
+                    let shown = scope
+                        .display(&stored)
+                        .unwrap_or_else(|| panic!("{stored:?} lies under {prefix:?}"));
+                    assert_eq!(
+                        scope.to_full(&shown).unwrap(),
+                        stored,
+                        "{stored:?} shown as {shown:?} under {prefix:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn list_path_sends_a_query_only_when_scoped() {
+        assert_eq!(list_path(&Scope::none()), "/secrets");
+        assert_eq!(
+            list_path(&Scope::prefixed("42").unwrap()),
+            "/secrets?prefix=42"
+        );
+        assert_eq!(
+            list_path(&Scope::prefixed("team.4&2=+").unwrap()),
+            "/secrets?prefix=team.4%262%3D%2B"
+        );
+    }
+
+    #[test]
+    fn a_scoped_listing_the_broker_does_not_know_is_unresolved() {
+        let scoped = Scope::prefixed("42").unwrap();
+        let err = names_from_listing(404, &serde_json::Value::Null, &scoped).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("broker does not support scoped list"),
+            "{err}"
+        );
+        // Unscoped, a 404 keeps the generic status detail.
+        let err = names_from_listing(404, &serde_json::Value::Null, &Scope::none()).unwrap_err();
+        assert!(err.to_string().contains("HTTP 404"), "{err}");
+        let names =
+            names_from_listing(200, &serde_json::json!({"names": ["42.a"]}), &scoped).unwrap();
+        assert_eq!(names, ["42.a"]);
+    }
+
+    /// A chain source that records the name it was asked for.
+    struct RecordingSource(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl SecretSource for RecordingSource {
+        fn source_name(&self) -> &'static str {
+            "recording"
+        }
+        fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+            self.0.lock().unwrap().push(name.to_string());
+            Ok(SecretValue("fixture-value-not-a-secret".to_string()))
+        }
+    }
+
+    #[test]
+    fn resolve_scoped_sends_the_full_name_to_the_chain() {
+        for (row, (name, prefix, stored)) in SCOPE_MATRIX.iter().enumerate() {
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let resolver = Resolver::new(vec![Box::new(RecordingSource(asked.clone()))]);
+            let got = resolver.resolve_scoped(&scope_for(*prefix), name);
+            let asked = asked.lock().unwrap().clone();
+            match stored {
+                Some(want) => {
+                    assert!(got.is_ok(), "row {}", row + 1);
+                    assert_eq!(asked, [*want], "row {}", row + 1);
+                }
+                None => {
+                    assert!(
+                        matches!(got, Err(SecretError::InvalidName(_))),
+                        "row {}",
+                        row + 1
+                    );
+                    assert!(asked.is_empty(), "row {}: no source may be asked", row + 1);
+                }
+            }
+        }
+    }
 
     struct FakeSource {
         name: &'static str,
@@ -1631,14 +1984,25 @@ mod tests {
                     self.entries.borrow_mut().retain(|(i, _, _)| i != id);
                     Ok("{}".to_string())
                 }
-                ["secret", "create", "-o", "json", "--", name, value, _project] => {
+                [
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    _project,
+                ] => {
                     if self.fail_create {
                         return Err("exit status 1".to_string());
                     }
                     let id = format!("id-{}", self.entries.borrow().len() + 1);
-                    self.entries
-                        .borrow_mut()
-                        .push((id.clone(), name.to_string(), value.to_string()));
+                    self.entries.borrow_mut().push((
+                        id.clone(),
+                        name.to_string(),
+                        value.to_string(),
+                    ));
                     Ok(serde_json::json!({"id": id}).to_string())
                 }
                 other => Err(format!("unexpected args: {other:?}")),
@@ -1656,10 +2020,7 @@ mod tests {
                 self.0.run(program, args)
             }
         }
-        let store = BwsStore::with_runner(
-            Box::new(Shared(fake.clone())),
-            "proj-1".to_string(),
-        );
+        let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
         store
             .store("bridge.new-1-token", "fixture-value-not-a-secret")
             .unwrap();
@@ -1690,7 +2051,11 @@ mod tests {
 
     #[test]
     fn bws_store_replaces_an_existing_name() {
-        let fake = std::rc::Rc::new(FakeBws::new(vec![("id-old", "bridge.new-1-token", "old-value")]));
+        let fake = std::rc::Rc::new(FakeBws::new(vec![(
+            "id-old",
+            "bridge.new-1-token",
+            "old-value",
+        )]));
         struct Shared(std::rc::Rc<FakeBws>);
         impl CommandRunner for Shared {
             fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
@@ -1699,12 +2064,24 @@ mod tests {
         }
         let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
         store.store("bridge.new-1-token", "new-value").unwrap();
-        assert_eq!(fake.value_of("bridge.new-1-token").as_deref(), Some("new-value"));
+        assert_eq!(
+            fake.value_of("bridge.new-1-token").as_deref(),
+            Some("new-value")
+        );
         let calls = fake.calls.borrow();
         let verbs: Vec<&str> = calls.iter().map(|c| c[1].as_str()).collect();
-        let delete_at = verbs.iter().position(|v| *v == "delete").expect("old entry deleted");
-        let create_at = verbs.iter().position(|v| *v == "create").expect("new entry created");
-        assert!(delete_at < create_at, "rotation deletes before it creates: {verbs:?}");
+        let delete_at = verbs
+            .iter()
+            .position(|v| *v == "delete")
+            .expect("old entry deleted");
+        let create_at = verbs
+            .iter()
+            .position(|v| *v == "create")
+            .expect("new entry created");
+        assert!(
+            delete_at < create_at,
+            "rotation deletes before it creates: {verbs:?}"
+        );
         assert_eq!(calls[delete_at][2], "id-old");
     }
 
@@ -1717,7 +2094,10 @@ mod tests {
             .store("bridge.new-1-token", "fixture-value-not-a-secret")
             .unwrap_err();
         let text = format!("{err}");
-        assert!(text.contains("bridge.new-1-token"), "error names the secret: {text}");
+        assert!(
+            text.contains("bridge.new-1-token"),
+            "error names the secret: {text}"
+        );
         assert!(
             !text.contains("fixture-value-not-a-secret"),
             "error must not carry the value: {text}"
@@ -1886,6 +2266,46 @@ mod tests {
     }
 
     #[test]
+    fn broker_scoped_list_sends_the_prefix_and_never_retries_unscoped() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-secrets-scoped-list-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("broker.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            // Two exchanges: a broker that answers the scoped form,
+            // then an older broker that does not know it (404).
+            for status in [200u16, 404] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
+                assert_eq!(req.path, "/secrets?prefix=42");
+                let resp = Response {
+                    status,
+                    body: serde_json::json!({"names": ["42.a"]}),
+                    transport: None,
+                };
+                fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
+            }
+        });
+        let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"));
+        let scope = Scope::prefixed("42").unwrap();
+        assert_eq!(source.list_names_in(&scope).unwrap(), ["42.a"]);
+        let err = source.list_names_in(&scope).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("broker does not support scoped list"),
+            "{err}"
+        );
+        // Exactly two requests reached the broker: no unscoped retry.
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn broker_list_names_roundtrip_over_a_temp_socket() {
         use std::os::unix::net::UnixListener;
 
@@ -2009,6 +2429,7 @@ mod tests {
             trip: None,
             transport: None,
             cf_ok: None,
+            ctx: None,
         };
         let resp = source
             .exchange(&mut client, &request, "wanted.name")
