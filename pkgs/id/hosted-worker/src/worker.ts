@@ -14,6 +14,7 @@
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
 import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import { HDR_MIGRATION } from "./migration-fence.ts";
 
 export { UserDO } from "./user-do.ts";
 // The tenancy control plane's per-tenant operations object (E2 of
@@ -117,6 +118,9 @@ export default {
       headers.delete("x-client-side-encryption");
       headers.delete(HDR_CSE);
       if (cse !== null) headers.set(HDR_CSE, cse);
+      // The migration principal (#3404) is set only by the migration
+      // coordinator on its own stub calls, never through this door.
+      headers.delete(HDR_MIGRATION);
       headers.set(HDR_BINDING, bindingId);
       headers.set(HDR_JURISDICTION, jurisdiction);
       headers.set(HDR_ROUTED, "restricted");

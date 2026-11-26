@@ -245,3 +245,19 @@ for (const scenario of [
     } finally { db.close(); }
   });
 }
+
+test("a client cannot reach migration control: the front door strips the principal header (#3404)", async () => {
+  const { env } = makeEnv();
+  const r = await worker.fetch(
+    front("/v1/migration/freeze", {
+      method: "POST",
+      headers: { "x-hosted-migration-principal": "1", "content-type": "application/json" },
+      body: JSON.stringify({ migration_id: "m-1", routing_epoch: 1 }),
+    }),
+    env,
+  );
+  assert.equal(r.status, 403);
+  assert.equal(((await r.json()) as { error: string }).error, "migration_principal_required");
+  const write = await worker.fetch(front("/v1/kv/note", { method: "PUT", body: "still open" }), env);
+  assert.equal(write.status, 200, "nothing was frozen");
+});
