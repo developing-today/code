@@ -50,6 +50,12 @@ cargo test -p id-tui-shell   # capability-statement tests
   the stream drops it redials and resumes from its last applied
   sequence; a host refusal ends the session. `tests/app.rs`
   drives `App` with the recorded sessions.
+- **Form answers — landed** (`src/form.rs`): while a form is in
+  force, a chat line that is `/cancel` or a JSON object
+  `{"action": "<id>", "values": {...}}` answers it, as in the
+  SSH terminal presenter. The answer is checked against the
+  form's field model before it is sent, and a rejection with a
+  fresh token re-presents the form.
 
 Run it against a world host:
 

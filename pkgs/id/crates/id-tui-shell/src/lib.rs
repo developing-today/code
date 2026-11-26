@@ -22,6 +22,7 @@
 //! hardware shell (#10929) and the native shell (#10928) followed.
 
 pub mod app;
+pub mod form;
 pub mod frames;
 pub mod keys;
 pub mod present;

@@ -8,6 +8,10 @@
 //! means the join, read, act and reconnect workflow is tested by
 //! feeding it the recorded sessions, and the binary is only plumbing.
 //!
+//! While a form is in force, Enter on a chat line that is `/cancel` or
+//! a JSON answer sends the form's `form_result` (see [`crate::form`]);
+//! any other line is chat.
+//!
 //! Reconnect follows the v1 history-identity rule through the session:
 //! when the host closes the stream the app marks the session as
 //! reconnecting, and the next [`App::join_frame`] presents the last
@@ -17,10 +21,11 @@
 use ratatui::Frame;
 use serde_json::Value;
 
+use crate::form;
 use crate::frames::{self, FrameError};
 use crate::keys::{Action, Key, Keys, ROOM_PREFIX};
 use crate::present::{self, Panels};
-use crate::render;
+use crate::render::{self, Focus};
 use crate::session::{Session, SessionError};
 
 /// Shown in the input line's title while the shell redials.
@@ -141,6 +146,23 @@ impl App {
                 self.keys.prompt.status = Some(RECONNECTING.to_owned());
                 Some(Step::Reconnect)
             }
+            Input::Key(Key::Enter) if self.answering() => {
+                let line = self.keys.prompt.text.clone();
+                let answer = form::active(&self.session)
+                    .ok_or_else(|| "no form is presented".to_owned())
+                    .and_then(|active| form::answer(&active, &line));
+                match answer {
+                    Ok(frame) => {
+                        self.keys.prompt.text.clear();
+                        self.keys.prompt.status = None;
+                        Some(Step::Send(frame))
+                    }
+                    Err(why) => {
+                        self.keys.prompt.status = Some(why);
+                        None
+                    }
+                }
+            }
             Input::Key(key) => match self.keys.handle(key) {
                 Ok(Action::Redraw) => None,
                 Ok(Action::Send(frame)) => Some(Step::Send(frame)),
@@ -151,6 +173,14 @@ impl App {
                 }
             },
         }
+    }
+
+    /// Whether Enter answers the form in force: the chat line has
+    /// focus, a form is in force, and the typed line is an answer.
+    fn answering(&self) -> bool {
+        self.keys.prompt.focus == Focus::Chat
+            && form::is_answer(&self.keys.prompt.text)
+            && form::active(&self.session).is_some()
     }
 
     /// Show a status line in the input line's title, such as a failed

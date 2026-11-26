@@ -91,8 +91,20 @@ fn the_recorded_session_folds_and_keys_send_its_client_frames() {
         Some(Step::Send(client[3].clone()))
     );
     host(&mut app, &server[4]);
-    host(&mut app, &server[5]);
     assert_eq!(app.session().last_sequence(), 6);
+
+    let answer = r#"{"action":"submit","values":{"when":"now"}}"#;
+    assert_eq!(key(&mut app, Key::Paste(answer.to_owned())), None);
+    assert_eq!(
+        key(&mut app, Key::Enter),
+        Some(Step::Send(client[4].clone()))
+    );
+    assert!(app.keys().prompt.text.is_empty());
+    host(&mut app, &server[5]);
+    assert!(
+        id_tui_shell::form::active(app.session()).is_none(),
+        "an accepted form is no longer in force"
+    );
 
     let chat = app.panels().chat.join("\n");
     assert!(chat.contains("ann: hello"), "{chat}");
