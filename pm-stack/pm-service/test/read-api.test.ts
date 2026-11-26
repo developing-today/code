@@ -262,7 +262,12 @@ describe("/api/item/<id>.json — the #9060 §8 worked example", () => {
       milestone: { title: "ID platform — release 2027-01-15", dueOn: "2027-01-15", closedAt: null },
     });
     const item = poolItem({ number: 2002, title: "leaf task", parentRef: ref(2001) });
-    const roadmap = poolItem({ number: 2001, title: "ID roadmap item", labels: ["kind/roadmap-item"], parentRef: ref(2000) });
+    const roadmap = poolItem({
+      number: 2001,
+      title: "ID roadmap item",
+      labels: ["kind/roadmap-item"],
+      parentRef: ref(2000),
+    });
     const genealogy = deriveGenealogy(item, [item, roadmap, priority]);
     expect(genealogy.ancestors).toContainEqual({
       ref: ref(2000),
@@ -270,7 +275,11 @@ describe("/api/item/<id>.json — the #9060 §8 worked example", () => {
       kind: null,
       relation: "priority",
     });
-    expect(genealogy.release).toEqual({ title: "ID platform — release 2027-01-15", dueOn: "2027-01-15", ref: ref(2000) });
+    expect(genealogy.release).toEqual({
+      title: "ID platform — release 2027-01-15",
+      dueOn: "2027-01-15",
+      ref: ref(2000),
+    });
     expect(genealogy.sentence).toContain(`overall priority ${priority.title} (${ref(2000)})`);
   });
 });

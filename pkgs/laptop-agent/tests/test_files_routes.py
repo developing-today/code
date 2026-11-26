@@ -326,7 +326,82 @@ class FilesRoutesTest(unittest.TestCase):
         self.ok("/files/commit", {"path": str(dest), "sha256": sha})
         self.assertEqual(dest.read_bytes(), data)
 
-    # -- refusals the protocol requires ---------------------------------
+    def test_interior_identical_replay_reports_durable_size(self):
+        """An identical replay fully interior to the temp is a no-op
+        success reporting the durable length, not the replay's end
+        (#14601): the tail past the replay must stay intact."""
+        data = os.urandom(4096)
+        dest = self.work / "interior.bin"
+        sha = sha_hex(data)
+        self.ok("/files/begin", {"path": str(dest), "sha256": sha, "size": len(data)})
+        first = self.ok(
+            "/files/write",
+            {
+                "path": str(dest),
+                "sha256": sha,
+                "offset": 0,
+                "data_b64": base64.b64encode(data).decode(),
+            },
+        )
+        self.assertEqual(first["size"], len(data))
+        # Replay 10 identical bytes at offset 0 of a 4096-byte temp.
+        replay = self.ok(
+            "/files/write",
+            {
+                "path": str(dest),
+                "sha256": sha,
+                "offset": 0,
+                "data_b64": base64.b64encode(data[:10]).decode(),
+            },
+        )
+        self.assertEqual(replay["size"], len(data))
+        # Mid-temp interior replay likewise reports the durable length.
+        mid = self.ok(
+            "/files/write",
+            {
+                "path": str(dest),
+                "sha256": sha,
+                "offset": 1000,
+                "data_b64": base64.b64encode(data[1000:1010]).decode(),
+            },
+        )
+        self.assertEqual(mid["size"], len(data))
+        # The tail survived both replays: commit verifies the full hash.
+        self.ok("/files/commit", {"path": str(dest), "sha256": sha})
+        self.assertEqual(dest.read_bytes(), data)
+
+    def test_interior_conflicting_rewrite_refused_and_preserves_temp(self):
+        """A conflicting interior rewrite is refused and leaves every
+        durable byte in place (#14601)."""
+        data = os.urandom(4096)
+        dest = self.work / "interior-conflict.bin"
+        sha = sha_hex(data)
+        self.ok("/files/begin", {"path": str(dest), "sha256": sha, "size": len(data)})
+        self.ok(
+            "/files/write",
+            {
+                "path": str(dest),
+                "sha256": sha,
+                "offset": 0,
+                "data_b64": base64.b64encode(data).decode(),
+            },
+        )
+        bad = bytearray(data[500:510])
+        bad[0] ^= 0xFF
+        reply = self.err(
+            "/files/write",
+            {
+                "path": str(dest),
+                "sha256": sha,
+                "offset": 500,
+                "data_b64": base64.b64encode(bytes(bad)).decode(),
+            },
+        )
+        self.assertIn("conflicting rewrite", reply["error"])
+        st = self.ok("/files/stat", {"path": temp_for(str(dest), sha), "sha256": False})
+        self.assertEqual(st["size"], len(data))
+        self.ok("/files/commit", {"path": str(dest), "sha256": sha})
+        self.assertEqual(dest.read_bytes(), data)
 
     def test_conflicting_rewrite_refused(self):
         data = os.urandom(4096)

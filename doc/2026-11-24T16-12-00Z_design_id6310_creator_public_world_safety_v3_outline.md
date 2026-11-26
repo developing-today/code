@@ -11,7 +11,7 @@
 
 V3 adds **per-operator public-world safety tooling**: reports against registry-listed and hosted public worlds land in a local review queue, a moderator works the queue through the existing world role model, every action appends to a transparency log, and every affected party can appeal through the same queue. All of it is computed from data the operator's own node already holds. Nothing requires a central moderation authority, a network-wide takedown switch, or a server we run. Our hosted instance moderates only its own hosting — it is one operator among many, and its decisions never travel as protocol truth.
 
-"Safety" here means *operator tooling for the operator's own worlds and listings*, not a network safety guarantee. A peer with no hosted instance gets the same review queue, the same log shape, and the same appeals path over the worlds it operates.
+"Safety" here means _operator tooling for the operator's own worlds and listings_, not a network safety guarantee. A peer with no hosted instance gets the same review queue, the same log shape, and the same appeals path over the worlds it operates.
 
 ## 1. Scope and non-goals
 
@@ -33,18 +33,18 @@ V3 adds **per-operator public-world safety tooling**: reports against registry-l
 
 ## 2. Answers to the scope questions the issue raises
 
-- **Reporting and review queues for registry-listed and hosted public worlds.** Answered: reports are local signed facts against targets the operator lists or hosts; the queue is a local projection over those facts, rebuilt from the journal rather than stored as a second source of truth (same projection discipline as the v2 index). Registry listing (#6277) determines *eligibility* for reporting, not the outcome.
+- **Reporting and review queues for registry-listed and hosted public worlds.** Answered: reports are local signed facts against targets the operator lists or hosts; the queue is a local projection over those facts, rebuilt from the journal rather than stored as a second source of truth (same projection discipline as the v2 index). Registry listing (#6277) determines _eligibility_ for reporting, not the outcome.
 - **Transparency log of moderation actions.** Answered: the v1 durable moderation record (§5 of the v1 design) is the log's foundation — actor, target, action, timestamp/order, result, replayable. V3 adds the read-only view and the policy that every safety action, including appeal decisions, lands in it. No separate audit database (v1 non-goal, kept).
 - **Appeals.** Answered in shape: an appeal is a queue item linked to the logged action it contests, decided through the same authorized action path, with the decision appended to the same log. Open: the exact link representation between appeal and action (reference by log order vs. content hash). Recommendation: content hash of the logged action, so the link survives log compaction if a compaction scheme is ever adopted; recorded as an open question for the appeals slice, not assumed.
 - **Safety boundaries for published creator content.** Answered: a "published" program (v2 draft/published facts) that is reported does not change state while under review — the report is metadata on the listing/queue, never a mutation of the program. Only a moderator action through the role model changes anything, and only within the operator's own scope (their worlds, their listings).
 
 ## 3. Principles check
 
-| Principle (#1240) | How V3 satisfies it |
-|---|---|
-| Local-first always | Reports, queue order, log, and appeals are journal facts or rebuildable local projections. |
-| Hostable by anyone, any scale | Same code runs on a laptop and on a hosted node; only queue/log size differs. |
-| P2P identical to hosted | A peer with no hosted instance gets the same queue, log shape, and appeals path over the worlds it operates. |
+| Principle (#1240)                    | How V3 satisfies it                                                                                                           |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Local-first always                   | Reports, queue order, log, and appeals are journal facts or rebuildable local projections.                                    |
+| Hostable by anyone, any scale        | Same code runs on a laptop and on a hosted node; only queue/log size differs.                                                 |
+| P2P identical to hosted              | A peer with no hosted instance gets the same queue, log shape, and appeals path over the worlds it operates.                  |
 | Hosted is a backstop, never required | No feature reads from our instance. Our hosted moderation covers only our own hosting and never propagates as protocol truth. |
 
 ## 4. Open questions and recommendations

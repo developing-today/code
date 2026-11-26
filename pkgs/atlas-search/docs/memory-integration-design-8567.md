@@ -156,7 +156,10 @@ composes with that track as follows:
    one embedding pipeline (port-18791 endpoint / atlas-embed — see
    the §5 reconciliation note: not built in this shape);
    record embedding-model identity per corpus; re-embed job for
-   existing staged content.
+   existing staged content. Built 2026-11-24 (#8623 slice 2) as
+   per-corpus identity in the stage registry plus `atlas-stage
+reembed`, against the mandated Snowflake model via atlas-embed
+   (the port-18791 unification remains unbuilt).
 3. **MCP query surface:** the mcpx namespace in front of
    `run_search` — identity, sensitivity ceiling, corpus scoping,
    audit — per §4.

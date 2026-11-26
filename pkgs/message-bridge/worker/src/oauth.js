@@ -17,14 +17,26 @@
 // family. The last sign-in events (never a secret) are kept for the
 // owner at /api/<token>/oauth-events.
 //
-// Approving needs the owner: a browser that has opened the history page
-// (/p/<token>) carries a signed owner cookie and gets a one-tap Allow;
-// any other browser pastes the page link or the token. The ChatGPT
-// token approves for the ChatGPT channel only. The path-token routes
-// (/mcp/<token> and the rest) are unchanged and never answer 401.
+// Approving needs the owner: a browser that has opened the owner link
+// (/p/<token> — since #14378 a cookie-setting redirect to the PM
+// console, not a page) carries a signed owner cookie and gets a
+// one-tap Allow; any other browser pastes the owner link or the token,
+// and a successful paste sets the cookie too. Approval itself stays
+// here, on this minimal approval-only route: an approval screen is
+// not a messaging website, and the console (a different host) cannot
+// set this host's __Host- cookie. The ChatGPT token approves for the
+// ChatGPT channel only. The path-token routes (/mcp/<token> and the
+// rest) are unchanged and never answer 401.
 
 import { chatgptConfigured, safeEqual, tokenConfigured } from "./auth.js";
-import { escapeHtml } from "./page.js";
+
+/** Escapes a string for HTML text and attribute contexts. */
+export function escapeHtml(s) {
+  return String(s ?? "").replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+  );
+}
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

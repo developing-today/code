@@ -37,6 +37,11 @@ export async function platformRead(
         return ops.releases();
       case "platform":
         return ops.platform();
+      // The Cloudflare configuration's last successful apply (#13495):
+      // the apply workflow's runs are GitHub's record, so this is
+      // answered wherever the app is served from, like the rest here.
+      case "cloudflare-apply":
+        return ops.cloudflareApply();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":
@@ -61,6 +66,22 @@ export async function platformRead(
         return ops.pipelineFeed(query);
       case "directory":
         return ops.directory();
+      // Every offer with its claims (#14375), for the composer's
+      // offer rows on the Messages surface. Same bridge story as the
+      // pipeline: the PM credential's read scope opens it at the
+      // edge, a machine reads it with the owner token.
+      case "offers":
+        return ops.offers();
+      // The minted enroll tokens' state (#14376): the provisioning
+      // half of the Agents screen. Same story again — state only,
+      // never a hash or a value.
+      case "enroll-tokens":
+        return ops.enrollTokens();
+      // The wake hooks (#14544), for the Agents screen's hook card.
+      // Same bridge story again — the list is a read; setting and
+      // removing are actions (actions.ts), never reads.
+      case "wake-hooks":
+        return ops.wakeHooks();
       case "trends":
         return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }

@@ -22,10 +22,12 @@
 //!   [`ThemeAdjustment`]s surfaces can display.
 //!
 //! The schema splits from #5858 (split 1: `Post::theme_ref`,
-//! `Board::foreign_theme_mode`) have not landed: the cascade accepts an
-//! optional post-theme input and a local [`ForeignThemeMode`] (default
-//! [`ForeignThemeMode::Honor`]) so precedence is implemented and tested
-//! before the schema arrives. Suppression of a board theme by the host
+//! `Board::foreign_theme_mode`) have landed on the records: the cascade
+//! takes the post theme already resolved from its `theme_ref` through
+//! the graph (see [`resolve_post_theme`]) and the foreign-theme mode
+//! from the board's stored field (see [`CascadeInputs::for_records`]),
+//! defaulting to [`ForeignThemeMode::Honor`] for older bodies.
+//! Suppression of a board theme by the host
 //! and personal view layers stays in [`BoardGraph::compose_view`]; this
 //! module renders the theme that projection returned.
 //!
@@ -38,9 +40,10 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{ArtifactHash, Theme, ThemeLayout};
+use super::{ArtifactHash, Board, ForeignThemeMode, Post, Theme, ThemeLayout};
 
 /// A theme-settable reserved role and the grammar its values must parse
 /// as at render (#5858 Decisions 2–3). Roles outside this list are
@@ -312,23 +315,6 @@ fn accessibility_tokens(overrides: &AccessibilityOverrides) -> BTreeMap<String, 
     tokens
 }
 
-/// How a receiving board treats post themes (#5858 Decision 4). Local
-/// to this module until the schema split lands `foreign_theme_mode`
-/// on the board root; the default is `Honor`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ForeignThemeMode {
-    /// Post themes enter the cascade at layer 3 in full (tokens;
-    /// layout still follows the scoping rule).
-    #[default]
-    Honor,
-    /// Post themes contribute only non-colour roles (type, spacing,
-    /// density); colour roles resolve from the board layer down.
-    TokensOnly,
-    /// Post themes do not enter the cascade; every post renders in
-    /// the board theme.
-    Flatten,
-}
-
 /// Inputs to the per-token cascade for one board render.
 #[derive(Clone, Debug, Default)]
 pub struct CascadeInputs<'a> {
@@ -344,6 +330,44 @@ pub struct CascadeInputs<'a> {
     pub viewer_preferences: BTreeMap<String, String>,
     /// The viewer's accessibility overrides (top layer).
     pub accessibility: AccessibilityOverrides,
+}
+
+impl<'a> CascadeInputs<'a> {
+    /// Cascade inputs for a board render from stored records: the
+    /// board's theme and the post's theme (each already resolved from
+    /// its `*_ref` through the graph), with the foreign-theme mode
+    /// taken from the board's stored [`Board::foreign_theme_mode`]
+    /// instead of the local default — older board bodies without the
+    /// field render as `Honor`, the pre-split behaviour.
+    #[must_use]
+    pub fn for_records(
+        board: &Board,
+        board_theme: Option<&'a Theme>,
+        post_theme: Option<&'a Theme>,
+        viewer_preferences: BTreeMap<String, String>,
+        accessibility: AccessibilityOverrides,
+    ) -> Self {
+        Self {
+            board_theme,
+            post_theme,
+            foreign_mode: board.foreign_mode(),
+            viewer_preferences,
+            accessibility,
+        }
+    }
+}
+
+/// Resolve a post's stored [`Post::theme_ref`] through a
+/// caller-supplied theme store: `None` when the post names no theme
+/// or the store does not hold it, so the cascade skips layer 3 with
+/// one labelled step — the render never fails for an unresolvable
+/// post theme.
+#[must_use]
+pub fn resolve_post_theme(
+    post: &Post,
+    fetch: &dyn Fn(&ArtifactHash) -> Option<Theme>,
+) -> Option<Theme> {
+    post.theme_ref.as_ref().and_then(fetch)
 }
 
 /// One labelled degradation step (#5858 Decision 4): a missing theme
@@ -878,6 +902,205 @@ pub fn render_terminal(resolved: &ResolvedTheme, card: &BoardCard<'_>) -> String
     out
 }
 
+/// One contrast pair the floor adjusts for a default viewer (#5858
+/// Decision 3, ring 3 static part).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ContrastFinding {
+    /// Foreground role.
+    pub foreground: String,
+    /// Background role.
+    pub background: String,
+    /// The pair's contrast before the clamp, as `1.23:1`.
+    pub ratio: String,
+    /// Whether the theme sets both roles itself, so the pair is fully
+    /// determined by the theme alone; otherwise one side is the
+    /// platform default a default viewer sees.
+    pub theme_only: bool,
+}
+
+/// The publish-time validation report for a theme (#5858 Decision 3,
+/// "Validation tooling"; #13816 item 3).
+///
+/// Theme publish runs ring 1 (the insertion checks), ring 2 (each
+/// reserved role's value grammar) and the static part of ring 3 (the
+/// contrast floor for a viewer who sets no preferences) and shows the
+/// result at publish and on the theme's page. The report is derived
+/// metadata, not signed content: only ring 1 refuses a theme, and
+/// renderers clamp everything else (invariant 9), so nothing here
+/// gates replication.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ThemeValidationReport {
+    /// Ring 1: why insertion refuses the theme, or `None` when it
+    /// passes. A refused theme cannot be published.
+    pub refusal: Option<String>,
+    /// Ring 2: reserved roles whose value fails the role's grammar.
+    /// Renderers drop these to the next cascade layer.
+    pub dropped_values: Vec<String>,
+    /// Token names outside the reserved role list. Renderers ignore
+    /// them; they are custom data, never an error.
+    pub ignored_tokens: Vec<String>,
+    /// Static ring 3: contrast pairs the floor adjusts for a default
+    /// viewer rendering this theme as a board theme.
+    pub contrast: Vec<ContrastFinding>,
+    /// Asset references that are missing, hash differently, or are not
+    /// an image or a font. Empty when no content store was supplied.
+    pub unavailable_assets: Vec<String>,
+}
+
+impl ThemeValidationReport {
+    /// Whether ring 1 accepts the theme, so it can be published.
+    #[must_use]
+    pub const fn publishable(&self) -> bool {
+        self.refusal.is_none()
+    }
+
+    /// The report as short lines a publish surface or theme page shows,
+    /// such as "2 pairs adjusted by the contrast floor for default
+    /// viewers".
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        fn count(n: usize, one: &str, many: &str) -> String {
+            if n == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{n} {many}")
+            }
+        }
+        let mut lines = Vec::new();
+        if let Some(refusal) = &self.refusal {
+            lines.push(format!("theme refused: {refusal}"));
+        }
+        if !self.dropped_values.is_empty() {
+            let (counted, grammar) = if self.dropped_values.len() == 1 {
+                ("1 value".to_owned(), "its role grammar")
+            } else {
+                (
+                    format!("{} values", self.dropped_values.len()),
+                    "their role grammars",
+                )
+            };
+            lines.push(format!(
+                "{counted} dropped by {grammar}: {}",
+                self.dropped_values.join(", ")
+            ));
+        }
+        if !self.contrast.is_empty() {
+            let pairs = self
+                .contrast
+                .iter()
+                .map(|finding| {
+                    format!(
+                        "{} on {} ({})",
+                        finding.foreground, finding.background, finding.ratio
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!(
+                "{} by the contrast floor for default viewers: {pairs}",
+                count(self.contrast.len(), "pair adjusted", "pairs adjusted"),
+            ));
+        }
+        if !self.unavailable_assets.is_empty() {
+            lines.push(count(
+                self.unavailable_assets.len(),
+                "asset unavailable",
+                "assets unavailable",
+            ));
+        }
+        if !self.ignored_tokens.is_empty() {
+            lines.push(format!(
+                "{} ignored by renderers: {}",
+                count(self.ignored_tokens.len(), "custom token", "custom tokens"),
+                self.ignored_tokens.join(", ")
+            ));
+        }
+        if lines.is_empty() {
+            lines.push("no adjustments for default viewers".to_owned());
+        }
+        lines
+    }
+}
+
+/// Reads an asset blob from the content-addressed store by hash, or
+/// `None` when the store does not hold it.
+pub type AssetFetch<'a> = &'a dyn Fn(&ArtifactHash) -> Option<Vec<u8>>;
+
+/// Build the publish-time validation report for `theme` (#5858
+/// Decision 3, "Validation tooling").
+///
+/// `fetch` reads asset blobs from the content-addressed store; pass
+/// `None` where the publishing surface has no store at hand, and the
+/// asset check is skipped. The contrast check takes the theme as a
+/// board theme for a viewer with no preferences, over the platform
+/// default, and lists each pair below the floor as authored, which
+/// [`resolve_board_theme`] clamps at render.
+#[must_use]
+pub fn theme_validation_report(
+    theme: &Theme,
+    fetch: Option<AssetFetch<'_>>,
+) -> ThemeValidationReport {
+    let refusal = super::BoardObject::Theme(theme.clone())
+        .validate_shape()
+        .err()
+        .map(|error| error.to_string());
+
+    let mut dropped_values = Vec::new();
+    let mut ignored_tokens = Vec::new();
+    for (name, value) in &theme.tokens {
+        match reserved_role(name) {
+            Some(role) if !value_parses(role, value) => dropped_values.push(name.clone()),
+            Some(_) => {}
+            None => ignored_tokens.push(name.clone()),
+        }
+    }
+
+    // A default viewer sets no preferences and no accessibility
+    // overrides, so before the floor the board render is this theme's
+    // parseable tokens over the platform default.
+    let mut ignored_drops = Vec::new();
+    let own = layer_tokens(theme, "board", &mut ignored_drops);
+    let mut layered = platform_default_tokens();
+    layered.extend(own.clone());
+    let contrast = CONTRAST_PAIRS
+        .iter()
+        .filter_map(|(foreground, background)| {
+            let fg = layered
+                .get(*foreground)
+                .and_then(|value| parse_colour(value))?;
+            let bg = layered
+                .get(*background)
+                .and_then(|value| parse_colour(value))?;
+            let ratio = contrast_ratio(fg, bg);
+            (ratio < MIN_CONTRAST).then(|| ContrastFinding {
+                foreground: (*foreground).to_owned(),
+                background: (*background).to_owned(),
+                ratio: format!("{ratio:.2}:1"),
+                theme_only: own.contains_key(*foreground) && own.contains_key(*background),
+            })
+        })
+        .collect();
+
+    let unavailable_assets = fetch.map_or_else(Vec::new, |fetch| {
+        resolve_assets(&theme.assets, fetch)
+            .1
+            .into_iter()
+            .filter_map(|adjustment| match adjustment {
+                ThemeAdjustment::UnavailableAsset { hash } => Some(hash),
+                _ => None,
+            })
+            .collect()
+    });
+
+    ThemeValidationReport {
+        refusal,
+        dropped_values,
+        ignored_tokens,
+        contrast,
+        unavailable_assets,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod render_tests {
@@ -1026,6 +1249,75 @@ mod render_tests {
             ForeignThemeMode::Flatten,
         ));
         assert_eq!(resolved.tokens["accent"], "#111111");
+    }
+
+    fn record_board(foreign_theme_mode: Option<ForeignThemeMode>) -> Board {
+        Board {
+            board_id: "club".to_owned(),
+            forked_from: None,
+            theme_ref: None,
+            foreign_theme_mode,
+        }
+    }
+
+    fn record_post(theme_ref: Option<ArtifactHash>) -> Post {
+        Post {
+            board: ArtifactHash::new("a".repeat(64)).unwrap(),
+            thread: ArtifactHash::new("b".repeat(64)).unwrap(),
+            parent_post: None,
+            body: "post".to_owned(),
+            attachments: Vec::new(),
+            embed_ref: None,
+            note_ref: None,
+            note_anchor: None,
+            note_view: None,
+            theme_ref,
+        }
+    }
+
+    #[test]
+    fn cascade_inputs_take_the_mode_from_the_stored_board_record() {
+        let board_theme = theme(&[("accent", "#111111")], ThemeLayout::List);
+        let post_theme = theme(&[("accent", "#222222")], ThemeLayout::Grid);
+
+        // Stored Flatten flattens the post theme through the constructor.
+        let flat_board = record_board(Some(ForeignThemeMode::Flatten));
+        let resolved = resolve_board_theme(&CascadeInputs::for_records(
+            &flat_board,
+            Some(&board_theme),
+            Some(&post_theme),
+            BTreeMap::new(),
+            AccessibilityOverrides::default(),
+        ));
+        assert_eq!(resolved.tokens["accent"], "#111111");
+
+        // A legacy board body without the field renders as Honor.
+        let legacy_board = record_board(None);
+        let resolved = resolve_board_theme(&CascadeInputs::for_records(
+            &legacy_board,
+            Some(&board_theme),
+            Some(&post_theme),
+            BTreeMap::new(),
+            AccessibilityOverrides::default(),
+        ));
+        assert_eq!(resolved.tokens["accent"], "#222222");
+    }
+
+    #[test]
+    fn resolve_post_theme_uses_the_store_or_skips_layer_three() {
+        let post_theme = theme(&[("accent", "#222222")], ThemeLayout::Grid);
+        let stored = post_theme.clone();
+        let post = record_post(Some(ArtifactHash::new("c".repeat(64)).unwrap()));
+
+        let fetched = resolve_post_theme(&post, &|_| Some(stored.clone())).unwrap();
+        assert_eq!(fetched, post_theme);
+
+        // A ref the store does not hold skips layer 3 instead of failing.
+        assert!(resolve_post_theme(&post, &|_| None).is_none());
+
+        // A post with no ref names no theme.
+        let ref_free = record_post(None);
+        assert!(resolve_post_theme(&ref_free, &|_| Some(stored.clone())).is_none());
     }
 
     #[test]
@@ -1298,5 +1590,166 @@ mod render_tests {
             let sgr_count = text.matches("\x1b[").count();
             prop_assert_eq!(esc_count, sgr_count);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod report_tests {
+    use super::*;
+
+    fn theme(tokens: &[(&str, &str)]) -> Theme {
+        Theme {
+            name: "report theme".to_owned(),
+            tokens: tokens
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            layout: ThemeLayout::List,
+            assets: Vec::new(),
+            forked_from: None,
+        }
+    }
+
+    #[test]
+    fn a_clean_theme_reports_no_adjustments() {
+        let report = theme_validation_report(
+            &theme(&[("accent", "#2f5b9e"), ("type-body-size", "1rem")]),
+            None,
+        );
+        assert!(report.publishable());
+        assert_eq!(report, ThemeValidationReport::default());
+        assert_eq!(report.lines(), vec!["no adjustments for default viewers"]);
+    }
+
+    #[test]
+    fn ring_one_refusal_is_reported_and_blocks_publish() {
+        let mut refused = theme(&[]);
+        refused.name = String::new();
+        let report = theme_validation_report(&refused, None);
+        assert!(!report.publishable());
+        assert!(report.lines()[0].starts_with("theme refused: "));
+
+        let mut too_many = theme(&[]);
+        for i in 0..=crate::boards::MAX_THEME_TOKENS {
+            too_many
+                .tokens
+                .insert(format!("custom-{i}"), "x".to_owned());
+        }
+        assert!(!theme_validation_report(&too_many, None).publishable());
+    }
+
+    #[test]
+    fn ring_two_drops_bad_values_and_ignores_custom_tokens() {
+        let report = theme_validation_report(
+            &theme(&[
+                ("accent", "url(https://example.invalid/x)"),
+                ("font-body", "../../etc/passwd"),
+                ("type-body-size", "16px"),
+                ("brand-mood", "cheerful"),
+            ]),
+            None,
+        );
+        assert!(report.publishable(), "ring 2 never refuses a theme");
+        assert_eq!(report.dropped_values, vec!["accent", "font-body"]);
+        assert_eq!(report.ignored_tokens, vec!["brand-mood"]);
+        let lines = report.lines();
+        assert!(
+            lines
+                .contains(&"2 values dropped by their role grammars: accent, font-body".to_owned())
+        );
+        assert!(lines.contains(&"1 custom token ignored by renderers: brand-mood".to_owned()));
+    }
+
+    /// A light theme whose body text and links are too pale for its own
+    /// white surface; the other text roles are dark enough.
+    fn pale_theme() -> Theme {
+        theme(&[
+            ("surface-base", "#ffffff"),
+            ("content-primary", "#eeeeee"),
+            ("content-secondary", "#444444"),
+            ("content-muted", "#555555"),
+            ("content-link", "#fafafa"),
+        ])
+    }
+
+    #[test]
+    fn static_contrast_counts_pairs_for_default_viewers() {
+        let report = theme_validation_report(&pale_theme(), None);
+        let pairs: Vec<_> = report
+            .contrast
+            .iter()
+            .map(|f| (f.foreground.as_str(), f.background.as_str(), f.theme_only))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("content-primary", "surface-base", true),
+                ("content-link", "surface-base", true),
+            ]
+        );
+        let primary = &report.contrast[0];
+        assert!(primary.ratio.ends_with(":1"));
+        assert!(report.lines().iter().any(|line| {
+            line.starts_with("2 pairs adjusted by the contrast floor for default viewers")
+        }));
+        // The render clamps the same pairs: every finding is a pair the
+        // cascade marks as adjusted for readability.
+        let resolved = resolve_board_theme(&CascadeInputs {
+            board_theme: Some(&pale_theme()),
+            post_theme: None,
+            foreign_mode: ForeignThemeMode::Honor,
+            viewer_preferences: BTreeMap::new(),
+            accessibility: AccessibilityOverrides::default(),
+        });
+        assert!(resolved.adjustments.iter().any(|a| matches!(
+            a,
+            ThemeAdjustment::ClampedContrast { foreground, .. } if foreground == "content-primary"
+        )));
+    }
+
+    #[test]
+    fn a_pair_against_the_platform_default_is_not_theme_only() {
+        let defaults = platform_default_tokens();
+        // Text set to the default surface colour itself: invisible.
+        let report = theme_validation_report(
+            &theme(&[("content-primary", defaults["surface-base"].as_str())]),
+            None,
+        );
+        let finding = report
+            .contrast
+            .iter()
+            .find(|f| f.foreground == "content-primary")
+            .expect("invisible text is below the floor");
+        assert!(!finding.theme_only);
+        assert_eq!(finding.ratio, "1.00:1");
+    }
+
+    #[test]
+    fn assets_are_checked_only_with_a_store() {
+        let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+        let good = ArtifactHash::new(sha256_hex(&png)).unwrap();
+        let missing = ArtifactHash::new(sha256_hex(b"absent")).unwrap();
+        let mut with_assets = theme(&[]);
+        with_assets.assets = vec![good.clone(), missing.clone()];
+
+        assert!(
+            theme_validation_report(&with_assets, None)
+                .unavailable_assets
+                .is_empty()
+        );
+
+        let fetch = |hash: &ArtifactHash| (hash == &good).then(|| png.clone());
+        let report = theme_validation_report(&with_assets, Some(&fetch));
+        assert_eq!(report.unavailable_assets, vec![missing.as_str().to_owned()]);
+        assert!(report.lines().contains(&"1 asset unavailable".to_owned()));
+    }
+
+    #[test]
+    fn the_report_serializes_as_derived_metadata() {
+        let report = theme_validation_report(&theme(&[("accent", "red")]), None);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["dropped_values"][0], "accent");
+        assert!(json["refusal"].is_null());
     }
 }

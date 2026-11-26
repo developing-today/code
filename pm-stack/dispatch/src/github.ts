@@ -16,14 +16,17 @@
 // as GitHubError with both routes' errors summarized — issue creation
 // is never silently skipped.
 import { createSign } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { OUTBOUND_FETCH_TIMEOUT_MS, isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
+import { requireHome } from "./home.ts";
 
 /** The packaged fleet binary the fallback's sync verbs run through:
  * PM_DISPATCH_FLEET_BIN overrides; the default is the packaged
- * location the opencode claimant also uses (~/.local/bin/fleet). */
-const FLEET_BIN = process.env.PM_DISPATCH_FLEET_BIN ?? join(homedir(), ".local", "bin", "fleet");
+ * location the opencode claimant also uses (~/.local/bin/fleet). Resolved
+ * at spawn time, so a missing HOME fails only the fallback that needs it
+ * (#8220). */
+const fleetBin = (): string =>
+  process.env.PM_DISPATCH_FLEET_BIN ?? join(requireHome("PM_DISPATCH_FLEET_BIN"), ".local", "bin", "fleet");
 
 const GH_API = "https://api.github.com";
 
@@ -224,7 +227,7 @@ export class GitHubClient {
   private async fleetGh(args: string[], timeoutMs = GH_SUBPROCESS_TIMEOUT_MS): Promise<string> {
     let proc;
     try {
-      proc = Bun.spawn([FLEET_BIN, "gh", ...args], {
+      proc = Bun.spawn([fleetBin(), "gh", ...args], {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
