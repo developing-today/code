@@ -32,9 +32,7 @@ describe("world pane viewport measurement", () => {
   });
 
   it("matches the unpadded measurement when the pane has no padding", () => {
-    const cells = viewportCellsForPane(
-      pane({ paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0 }),
-    );
+    const cells = viewportCellsForPane(pane({ paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0 }));
     expect(cells).toEqual({ width: 36, height: 7 });
   });
 

@@ -18,10 +18,10 @@
 //! - **Live reads (§5.2).** One request per page. Every [`LiveResult`]
 //!   states [`Consistency::PerRequest`] and the observation time of the
 //!   last page, and says whether the result is complete. A page is
-//!   complete when `Content-Range` says so or when it holds fewer rows
-//!   than the limit; otherwise the result is marked `truncated`. A failed
-//!   page is an error, never a short success, and nothing falls back to a
-//!   snapshot.
+//!   complete when `Content-Range` says so, or when it holds fewer rows
+//!   than the limit and the range does not explicitly say rows remain;
+//!   otherwise the result is marked `truncated`. A failed page is an
+//!   error, never a short success, and nothing falls back to a snapshot.
 //! - **Materialized snapshots (§5.3).** [`SnapshotStore::rebuild`] keyset
 //!   pages over the whole allowed set under [`SnapshotCaps`]. The caps are
 //!   checked before a page's rows are copied; exceeding one is
@@ -471,8 +471,10 @@ fn fetch_page<T: Transport, D: PageDecoder>(
     if row_count > u64::from(limit) {
         return Err(ReadError::MalformedPage);
     }
-    let complete = range.and_then(ContentRange::says_complete).unwrap_or(false)
-        || row_count < u64::from(limit);
+    let complete = match range.and_then(ContentRange::says_complete) {
+        Some(explicit) => explicit,
+        None => row_count < u64::from(limit),
+    };
     Ok(Page {
         rows,
         complete,

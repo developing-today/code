@@ -99,7 +99,7 @@ export async function afterNeedsDrewAnswered(item: NeedsDrewQuestion, answered: 
 
 export async function handleDecisionRoutes(req: Request, url: URL, path: string): Promise<Response | null> {
   // --- Needs-Drew answers (#8568) --------------------------------------
-  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  const needsDrewAnswerMatch = /^\/api\/needs-(?:drew|user)\/([^/]+)\/answer$/.exec(path);
   if (req.method === "POST" && needsDrewAnswerMatch) {
     const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
     if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);

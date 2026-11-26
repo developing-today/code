@@ -1414,7 +1414,10 @@ tree = "T"
         fn an_omitted_table_leaves_the_live_policy_alone() {
             let mut state = WorldState::default();
             state.presentation.assets.max_rung = Rung::Glyph;
-            assert!(plan(&WorldManifest::default(), &state).is_empty());
+            assert_eq!(
+                plan(&WorldManifest::default(), &state),
+                [] as [ApplyStep; 0]
+            );
         }
 
         #[test]
@@ -1430,7 +1433,7 @@ tree = "T"
 
             assert_eq!(apply(&steps, &mut state).unwrap(), 1);
             assert_eq!(Some(&state.presentation), manifest.presentation.as_ref());
-            assert!(plan(&manifest, &state).is_empty());
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
             assert_eq!(diff(&manifest, &state), "no drift");
         }
 

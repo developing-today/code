@@ -141,7 +141,7 @@ function makeEnv(vars: Record<string, string> = {}, tenancyDb = registryDb()) {
       storage: { sql: fakeSql() },
       blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
     } as never,
-    { BLOBS: fakeBucket(), ...vars } as never,
+    { BLOBS_US: fakeBucket(), ...vars } as never,
   );
   const ns = {
     jurisdiction(j: string) {

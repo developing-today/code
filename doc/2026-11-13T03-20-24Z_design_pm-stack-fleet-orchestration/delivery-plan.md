@@ -55,6 +55,24 @@ Parallel independent workstreams; all consume shared architecture and use test-o
 
 **Hard gate:** QTI research #9241 has a completed bounded disposition; #3424/#8575/#8579 and actual migration owner crosswalk agree on one-home-per-fact, current transaction/clock semantics and rollback. This gate blocks only overlapping persisted changes, not Wave 1/2 offline/read-only work.
 
+**Dated CEN-04 integration (2026-11-25):** PR #13341's merged
+[fact-level record](../2026-11-23T13-51-45Z_design_cen04_schema_owner_migration_compatibility/2026-11-23T13-51-45Z_design_cen04_schema_owner_migration_compatibility.md)
+is normative; the [census component](components/9198-requirement-crosswalk-current-state-census.md#cen-04-fact-level-normative-mirror-2026-11-25-integration)
+mirrors its facts and binds complete source sections with an offline oracle
+(`census/test_schema_compatibility_matrix.py`). #9241 is closed with a bounded
+not-located disposition, not a blanket QTI block or global absence finding.
+Per-row gates remain: cursor storage #9458 + #9513 + field admission;
+operation/receipt persistence #9513 + #9514 + field admission; journal/notes
+#9208 + field admission; PM target-home conflict #13245 or successor decision;
+REL-02 #9512 shared-file sequencing. Unknown legacy provenance stays
+unknown/quarantined; preserve old readers, pending intents/receipts and unique
+human-authored links. Rollback disables only the new capability.
+The mirror/oracle is documentation-artifact validation under #9434, not a
+persisted migration, runtime completeness, task-packet amendment, or a reason
+to wait for parent #9198 to close. No separate runtime implementation issue
+is needed for this offline slice; persisted implementation still requires
+the source record's §5/§9 gates and separately scoped evidence.
+
 | Local keys                                                                 | Deliverable                                                                                         | Hard dependencies                                            | Rollback/compatibility gate                                                                                                            |
 | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `COMPAT-01`, `MIG-01`                                                      | Schema/source-owner matrix, additive expand/read/backfill/rollback plan; no duplicate stores        | QTI-01, #3424/#8575/#8579 review, store owner approval       | retain original fields and pending receipts; unknown legacy provenance/cursor stays unknown; actual migration command comes from owner |

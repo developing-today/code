@@ -4055,7 +4055,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, NoteSnapshotError::Grants(_)), "{err}");
-        assert!(restarted.note_events().await.is_empty());
+        assert_eq!(restarted.note_events().await, [] as [AppliedNote; 0]);
     }
 
     #[tokio::test]
@@ -4204,7 +4204,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(state.note_changelog(note).await.is_empty());
+        assert_eq!(state.note_changelog(note).await, [] as [ChangelogEntry; 0]);
 
         // A session that published three checkpoints ends with exactly
         // one `session` entry, naming the first and last of them.
@@ -4355,7 +4355,7 @@ mod tests {
             Err(TalkPageError::Invalid("refused"))
         };
         assert!(state.end_note_session(&key, 1, refuse).await.is_err());
-        assert!(state.note_changelog(note).await.is_empty());
+        assert_eq!(state.note_changelog(note).await, [] as [ChangelogEntry; 0]);
 
         // The next session end records the range the failed one held.
         let server = ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]);

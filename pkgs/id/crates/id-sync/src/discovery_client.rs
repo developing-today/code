@@ -6,9 +6,10 @@
 //! sections 5-7; implementation breakdown item 5/5, #10709).
 //!
 //! This is the settings layer only. It owns no network and does not
-//! resolve anything: the resolver (breakdown item 4/5, #10708) reads
-//! these settings when it lands. What this module guarantees today,
-//! with tests:
+//! resolve anything: [`crate::discovery_join`] applies these settings
+//! to the resolver ([`crate::discovery_resolver`], #10708) and to the
+//! connection, with join-path tests for each property below (#15646).
+//! What this module guarantees, with tests:
 //!
 //! - A fresh self-host follows no registry until its operator chooses
 //!   one ([`ClientDiscoveryConfig::default`]); our hosted instance
