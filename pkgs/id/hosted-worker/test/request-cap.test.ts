@@ -156,10 +156,11 @@ test("a malformed cap fails every request closed", async () => {
   }
 });
 
-test("a zero cap refuses everything except the usage read", async () => {
+test("a zero cap refuses everything except the usage and export reads", async () => {
   const d = makeDO({ USER_REQUEST_CEILING: "0" });
   assert.equal((await d.fetch(routed("/v1/state"))).status, 429);
-  assert.equal((await d.fetch(routed("/v1/export"))).status, 429);
+  // Export stays reachable at any cap, zero included (#3811, #15591).
+  assert.equal((await d.fetch(routed("/v1/export"))).status, 200);
   assert.equal((await usage(d)).at_request_cap, true);
 });
 
