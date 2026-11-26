@@ -350,8 +350,18 @@ describe("cost x score overlays (#1400 remainder)", () => {
 
   test("OLS declines a fit it cannot estimate (single point, flat cost, or unpriced rows)", () => {
     expect(costScoreOls([{ cost: 1, score: 10 }])).toBeNull();
-    expect(costScoreOls([{ cost: null, score: 10 }, { cost: 2, score: 20 }])).toBeNull();
-    expect(costScoreOls([{ cost: 2, score: 10 }, { cost: 2, score: 20 }])).toBeNull();
+    expect(
+      costScoreOls([
+        { cost: null, score: 10 },
+        { cost: 2, score: 20 },
+      ]),
+    ).toBeNull();
+    expect(
+      costScoreOls([
+        { cost: 2, score: 10 },
+        { cost: 2, score: 20 },
+      ]),
+    ).toBeNull();
     expect(costScoreOls([])).toBeNull();
   });
 
@@ -384,18 +394,32 @@ describe("cost x score overlays (#1400 remainder)", () => {
 
   test("envelope keeps one point per cost (deepest score wins) and refuses <2 usable rows", () => {
     const env = costScoreEnvelope([
-      { cost: 1, score: 40 }, { cost: 1, score: 60 }, { cost: 2, score: 55 }, { cost: 3, score: 50 },
+      { cost: 1, score: 40 },
+      { cost: 1, score: 60 },
+      { cost: 2, score: 55 },
+      { cost: 3, score: 50 },
     ]);
     expect(new Set(env.map((p) => p.cost)).size).toBe(env.length);
     expect(costScoreEnvelope([{ cost: 1, score: 40 }])).toEqual([]);
-    expect(costScoreEnvelope([{ cost: null, score: 40 }, { cost: 2, score: null }])).toEqual([]);
+    expect(
+      costScoreEnvelope([
+        { cost: null, score: 40 },
+        { cost: 2, score: null },
+      ]),
+    ).toEqual([]);
   });
 
   test("tail is the per-bin expectation of the upper half, never the bin max", () => {
     // One bin over 1..10 (single bin count 1 would collapse), use 2 bins.
     const rows = [
-      { cost: 1, score: 10 }, { cost: 1.2, score: 20 }, { cost: 1.5, score: 30 }, { cost: 2, score: 40 },
-      { cost: 5, score: 50 }, { cost: 7, score: 60 }, { cost: 9, score: 70 }, { cost: 10, score: 80 },
+      { cost: 1, score: 10 },
+      { cost: 1.2, score: 20 },
+      { cost: 1.5, score: 30 },
+      { cost: 2, score: 40 },
+      { cost: 5, score: 50 },
+      { cost: 7, score: 60 },
+      { cost: 9, score: 70 },
+      { cost: 10, score: 80 },
     ];
     const tail = costScoreTail(rows, 2);
     expect(tail.length).toBe(2);
@@ -409,10 +433,15 @@ describe("cost x score overlays (#1400 remainder)", () => {
   test("tail skips bins without two scored points and refuses too little data", () => {
     expect(costScoreTail([{ cost: 1, score: 10 }])).toEqual([]);
     // two bins, the upper one holds a single point, so only the lower bin reports
-    const tail = costScoreTail([
-      { cost: 1, score: 10 }, { cost: 1.1, score: 20 }, { cost: 1.2, score: 30 },
-      { cost: 100, score: 95 },
-    ], 2);
+    const tail = costScoreTail(
+      [
+        { cost: 1, score: 10 },
+        { cost: 1.1, score: 20 },
+        { cost: 1.2, score: 30 },
+        { cost: 100, score: 95 },
+      ],
+      2,
+    );
     expect(tail.length).toBe(1);
   });
 });

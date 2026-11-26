@@ -275,7 +275,16 @@ describe("dashboard assembly deadline (#5664)", () => {
       const dir = mkdtempSync(join(tmpdir(), "last-good-"));
       const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
       await before(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "old" }));
-      const after = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      // The seeding call below must return via its assembly, not via its
+      // deadline: seeding finishes with the disk persist (mkdir + write +
+      // rename), which under CI load can outlive a 10 ms deadline. If it
+      // does, the shared run is still in flight when the stalled call
+      // arrives, and that call joins the run (#7065) and receives the
+      // fresh response unmarked — correct behaviour, but the premise of
+      // this test (a stale serve) never happens and staleReason is
+      // absent. A 250 ms deadline gives the persist tail ample headroom;
+      // the stalled call still outlives it and takes the fallback.
+      const after = createDashboardResponseDeadline({ timeoutMs: 250, persistDir: dir });
       await after(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "new" }));
       const stale = await after(new Request("http://localhost/api/program.json"), stalled);
       const body = JSON.parse(await stale.text());

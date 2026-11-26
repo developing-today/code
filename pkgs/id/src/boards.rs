@@ -112,6 +112,8 @@ mod subscription;
 pub use subscription::*;
 mod discovery;
 pub use discovery::*;
+mod feed;
+pub use feed::*;
 mod projection;
 pub use projection::*;
 mod render;
@@ -2611,7 +2613,7 @@ fn is_public_key(value: &str) -> bool {
         return false;
     }
     let mut bytes = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = (pair[0] as char).to_digit(16);
         let low = (pair[1] as char).to_digit(16);
         let (Some(high), Some(low)) = (high, low) else {
@@ -2632,7 +2634,25 @@ mod tests {
     use crate::world::hex_encode;
 
     fn key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32])
+        // Derived once per seed per process. `SigningKey::from_bytes`
+        // pays a scalar multiplication to derive the verifying key, and
+        // the generated game-post properties ask for the same seeds
+        // thousands of times across their cases (`participant` derives
+        // one key per generated participant — up to 32 per case); at
+        // the test profile's opt-level 0 that repeated derivation is a
+        // large share of the boards family's time (#15142). The cached
+        // key is byte-identical to a fresh derivation, so every object
+        // the tests sign or verify is unchanged.
+        static CACHE: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<u8, SigningKey>>,
+        > = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        cache
+            .lock()
+            .unwrap()
+            .entry(seed)
+            .or_insert_with(|| SigningKey::from_bytes(&[seed; 32]))
+            .clone()
     }
 
     fn board(key: &SigningKey) -> SignedBoardObject {
@@ -2644,6 +2664,7 @@ mod tests {
                 board_id: "retro-games".to_owned(),
                 forked_from: None,
                 theme_ref: None,
+                foreign_theme_mode: None,
             }),
         )
         .unwrap()
@@ -2669,6 +2690,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2695,6 +2717,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2721,6 +2744,7 @@ mod tests {
                 note_ref: Some(note_ref),
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2762,6 +2786,7 @@ mod tests {
                 note_ref,
                 note_anchor,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2864,6 +2889,7 @@ mod tests {
                 board_id: "themed-board".to_owned(),
                 forked_from: None,
                 theme_ref: Some(theme_ref),
+                foreign_theme_mode: None,
             }),
         )
         .unwrap()
@@ -3069,10 +3095,14 @@ mod tests {
             additional in prop::collection::vec((1_u64..=3, "[a-z0-9]{0,8}"), 0..6)
         ) {
             let owner = key(41);
+            // One signed board object for both graphs: signing it twice
+            // produced identical bytes and paid the sign + verify bundle
+            // twice per case for no extra coverage (#15142).
+            let board_object = board(&owner);
             let mut first_graph = BoardGraph::default();
-            let board_hash = first_graph.insert(board(&owner)).unwrap();
+            let board_hash = first_graph.insert(board_object.clone()).unwrap();
             let mut reverse_graph = BoardGraph::default();
-            prop_assert_eq!(reverse_graph.insert(board(&owner)).unwrap(), board_hash.clone());
+            prop_assert_eq!(reverse_graph.insert(board_object).unwrap(), board_hash.clone());
 
             // Always include two different revision-1 rules so the regression
             // property covers the adopted legal-duplicate case.
@@ -3314,6 +3344,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap();
@@ -3333,6 +3364,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap();
@@ -4334,6 +4366,7 @@ mod tests {
                 board_id: "forked-board".to_owned(),
                 forked_from: Some(ancestor.clone()),
                 theme_ref: None,
+                foreign_theme_mode: None,
             }),
         )
         .unwrap();
@@ -4374,6 +4407,7 @@ mod tests {
                         board_id: "forked-board".to_owned(),
                         forked_from: Some(ancestor.clone()),
                         theme_ref: None,
+                        foreign_theme_mode: None,
                     }),
                 )
                 .unwrap(),
@@ -4429,6 +4463,7 @@ mod tests {
                 board_id: "forked-board".to_owned(),
                 forked_from: Some(ancestor.clone()),
                 theme_ref: None,
+                foreign_theme_mode: None,
             }),
         )
         .unwrap();
@@ -4559,6 +4594,7 @@ mod tests {
                         board_id: "forked-board".to_owned(),
                         forked_from: Some(root.clone()),
                         theme_ref: None,
+                        foreign_theme_mode: None,
                     }),
                 )
                 .unwrap(),
@@ -6692,6 +6728,7 @@ mod tests {
                         board_id: "fork-of-game".to_owned(),
                         forked_from: Some(root_hash.clone()),
                         theme_ref: None,
+                        foreign_theme_mode: None,
                     }),
                 )
                 .unwrap(),
@@ -7287,8 +7324,7 @@ mod tests {
             .unwrap();
         // Anchored reply: an anchors edge to the note, plus a
         // discusses edge through the thread — one backlink, not two.
-        let anchor =
-            sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
+        let anchor = sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
         let anchored_hash = graph
             .insert(reply_with_note(
                 &creator,
@@ -7491,10 +7527,7 @@ mod tests {
         )
         .unwrap();
         graph.insert(supersede).unwrap();
-        assert_eq!(
-            graph.note_backlinks(&note_object),
-            vec![share_hash.clone()]
-        );
+        assert_eq!(graph.note_backlinks(&note_object), vec![share_hash.clone()]);
         assert_eq!(
             graph.note_edges_from(&share_hash),
             vec![NoteEdge::Embeds(note_ref)]
@@ -7564,6 +7597,7 @@ mod tests {
                     note_ref: Some(bad_sharer),
                     note_anchor: None,
                     note_view: None,
+                    theme_ref: None,
                 }),
             )
             .is_err()
@@ -7586,6 +7620,7 @@ mod tests {
                     note_ref: Some(no_home),
                     note_anchor: None,
                     note_view: None,
+                    theme_ref: None,
                 }),
             )
             .is_err()
@@ -7615,6 +7650,7 @@ mod tests {
                     }),
                 }),
                 note_view: None,
+                theme_ref: None,
             })
         };
 
@@ -7638,6 +7674,7 @@ mod tests {
             note_ref: None,
             note_anchor: None,
             note_view: None,
+            theme_ref: None,
         });
         let value = serde_json::to_value(&object).unwrap();
         assert!(value["data"].get("note_ref").is_none());

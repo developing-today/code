@@ -24,7 +24,12 @@ def fixture():
     return {
         "binding_history_complete": True,
         "tasks": [
-            {"id": 1, "queue": "code", "status": "done", "progress": {"session_id": "s1"}},
+            {
+                "id": 1,
+                "queue": "code",
+                "status": "done",
+                "progress": {"session_id": "s1"},
+            },
             {"id": 2, "queue": "code", "status": "done", "progress": "{}"},
             {"id": 3, "queue": "other", "status": "queued"},
         ],
@@ -52,11 +57,17 @@ class CompletionUsageTest(unittest.TestCase):
         return usage.report(data, START, END)["queues"][0]
 
     def test_exact_sum_unique_completions_and_retry_sessions(self):
-        self.assertEqual(self.result(fixture()), {
-            "queue": "code", "completed_tasks": 2, "measured_tasks": 2,
-            "missing_task_ids": [], "known_input_tokens": 40,
-            "input_tokens_per_completed_task": 20,
-        })
+        self.assertEqual(
+            self.result(fixture()),
+            {
+                "queue": "code",
+                "completed_tasks": 2,
+                "measured_tasks": 2,
+                "missing_task_ids": [],
+                "known_input_tokens": 40,
+                "input_tokens_per_completed_task": 20,
+            },
+        )
 
     def test_incomplete_usage_is_not_zero_or_partial_ratio(self):
         data = fixture()
@@ -123,17 +134,27 @@ class CompletionUsageTest(unittest.TestCase):
     def test_strict_cli_before_file_io(self):
         base = ["--snapshot", "missing.json", "--start", START, "--end", END]
         for extra in [["--unknown"], ["stray"], ["--snapshot"], ["--sta", START]]:
-            with self.subTest(extra=extra), mock.patch.object(usage.Path, "read_text") as read:
+            with (
+                self.subTest(extra=extra),
+                mock.patch.object(usage.Path, "read_text") as read,
+            ):
                 with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as error:
                     usage.main(base + extra)
                 self.assertEqual(error.exception.code, 2)
                 read.assert_not_called()
 
     def test_cli_emits_report(self):
-        with mock.patch.object(usage.Path, "read_text", return_value=usage.json.dumps(fixture())):
+        with mock.patch.object(
+            usage.Path, "read_text", return_value=usage.json.dumps(fixture())
+        ):
             with mock.patch("builtins.print") as output:
                 usage.main(["--snapshot=x.json", "--start=" + START, "--end=" + END])
-            self.assertEqual(usage.json.loads(output.call_args.args[0])["queues"][0]["known_input_tokens"], 40)
+            self.assertEqual(
+                usage.json.loads(output.call_args.args[0])["queues"][0][
+                    "known_input_tokens"
+                ],
+                40,
+            )
 
     def test_shared_session_rejects_double_attribution(self):
         data = fixture()

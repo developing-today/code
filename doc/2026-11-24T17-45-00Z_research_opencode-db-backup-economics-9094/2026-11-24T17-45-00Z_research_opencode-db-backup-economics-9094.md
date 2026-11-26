@@ -15,13 +15,13 @@ Six consecutive daily snapshots exist in the local repo; `restic diff` between e
 (`bin/opencode-db-churn.mjs diff <older> <newer> --append`, records in
 `~/backups/measure-9094/churn-ledger.jsonl`):
 
-| window (CST) | older → newer | Added (compressed new blobs) | Removed (superseded) |
-|---|---|---|---|
-| Nov 17 00:36 → Nov 21 00:11 (~4.0 d) | 652d1547 → 03ea7196 | 15.90 GiB | 11.84 GiB |
-| Nov 21 00:11 → Nov 21 06:09 (~6 h) | 03ea7196 → 1f6a9d02 | 16.45 GiB | 16.23 GiB |
-| Nov 21 06:09 → Nov 22 06:13 (~24 h) | 1f6a9d02 → 4fe100d7 | 17.25 GiB | 15.94 GiB |
-| Nov 22 06:13 → Nov 23 06:41 (~24 h) | 4fe100d7 → f4a9c52d | 18.35 GiB | 17.25 GiB |
-| Nov 23 06:41 → Nov 24 06:27 (~24 h) | f4a9c52d → 93937176 | 20.09 GiB | 18.43 GiB |
+| window (CST)                         | older → newer       | Added (compressed new blobs) | Removed (superseded) |
+| ------------------------------------ | ------------------- | ---------------------------- | -------------------- |
+| Nov 17 00:36 → Nov 21 00:11 (~4.0 d) | 652d1547 → 03ea7196 | 15.90 GiB                    | 11.84 GiB            |
+| Nov 21 00:11 → Nov 21 06:09 (~6 h)   | 03ea7196 → 1f6a9d02 | 16.45 GiB                    | 16.23 GiB            |
+| Nov 21 06:09 → Nov 22 06:13 (~24 h)  | 1f6a9d02 → 4fe100d7 | 17.25 GiB                    | 15.94 GiB            |
+| Nov 22 06:13 → Nov 23 06:41 (~24 h)  | 4fe100d7 → f4a9c52d | 18.35 GiB                    | 17.25 GiB            |
+| Nov 23 06:41 → Nov 24 06:27 (~24 h)  | f4a9c52d → 93937176 | 20.09 GiB                    | 18.43 GiB            |
 
 Headline daily-delta cost: **≈16–20 GiB/day of compressed new blobs** — and it is NOT
 time-proportional: two snapshots 6 hours apart differ by 16.45 GiB, nearly as much as two
@@ -54,14 +54,14 @@ uniformity — not bandwidth savings.
 Nov 24 snapshot (33.32 GiB file, 8,134,483 × 4 KiB pages, freelist 0 pages).
 Full table in supplement; top drivers:
 
-| table | GiB | share | pages |
-|---|---|---|---|
-| session_message | 11.246 | 36.3% | 2,948,089 |
-| route_decision | 9.828 | 31.7% | 2,576,468 |
-| message | 7.842 | 25.3% | 2,055,664 |
-| part | 0.932 | 3.0% | 244,337 |
-| route_attempt | 0.258 | 0.8% | 67,556 |
-| all other tables + indexes | ~1.9 | ~6% | — |
+| table                      | GiB    | share | pages     |
+| -------------------------- | ------ | ----- | --------- |
+| session_message            | 11.246 | 36.3% | 2,948,089 |
+| route_decision             | 9.828  | 31.7% | 2,576,468 |
+| message                    | 7.842  | 25.3% | 2,055,664 |
+| part                       | 0.932  | 3.0%  | 244,337   |
+| route_attempt              | 0.258  | 0.8%  | 67,556    |
+| all other tables + indexes | ~1.9   | ~6%   | —         |
 
 dbstat total 31.015 GiB vs 31.038 GiB file: consistent (residue = file header/meta).
 Three tables — session_message, route_decision, message — hold **≈93%** of the DB.
@@ -71,16 +71,16 @@ per-decision/attempt records. The messaging_* FTS and route_* index tails are ea
 
 ## 3. Growth model (all figures are dated measurements, laptop production)
 
-| date | source | bytes | GiB |
-|---|---|---|---|
-| 2026-11-02 | dated copy beside DB | 21,368,037,376 | 19.90 |
-| 2026-11-11 | dated copy beside DB | 21,368,037,376 | 19.90 |
-| 2026-11-12 | issue measurement | 21,368,037,376 | 19.90 |
-| 2026-11-16 22:50 | triage note 6938746831 | 24,738,811,904 | 23.04 |
-| 2026-11-17 00:36 | restic snapshot 652d1547 | 24,353,632,256 | 22.68 |
+| date             | source                                              | bytes          | GiB   |
+| ---------------- | --------------------------------------------------- | -------------- | ----- |
+| 2026-11-02       | dated copy beside DB                                | 21,368,037,376 | 19.90 |
+| 2026-11-11       | dated copy beside DB                                | 21,368,037,376 | 19.90 |
+| 2026-11-12       | issue measurement                                   | 21,368,037,376 | 19.90 |
+| 2026-11-16 22:50 | triage note 6938746831                              | 24,738,811,904 | 23.04 |
+| 2026-11-17 00:36 | restic snapshot 652d1547                            | 24,353,632,256 | 22.68 |
 | 2026-11-23 06:41 | restic snapshot f4a9c52d (run record staging bytes) | 31,536,394,240 | 29.37 |
-| 2026-11-24 06:27 | restic snapshot 93937176 | 33,318,842,368 | 31.03 |
-| 2026-11-24 11:11 | live DB file (+128 MiB WAL) | 34,393,714,688 | 32.03 |
+| 2026-11-24 06:27 | restic snapshot 93937176                            | 33,318,842,368 | 31.03 |
+| 2026-11-24 11:11 | live DB file (+128 MiB WAL)                         | 34,393,714,688 | 32.03 |
 
 Regimes: **flat Nov 2 → Nov 12** (net 0 bytes; the ~448 MiB freelist noted in the issue
 absorbed all growth — freelist is now 0–3 pages, i.e. absorption is exhausted);
@@ -98,11 +98,11 @@ changes move this proportionally. Freelist can no longer mask anything (0 pages 
 Restore-time oracle: each figure below is a timed run on the laptop, not an estimate.
 zstd level 3 throughout (the fleet default).
 
-| scheme | artifact/day | make time | restore (laptop archive target) | restore (Google Drive target) |
-|---|---|---|---|---|
-| (a) periodic full copy | 31.03 GiB raw | snapshot-bound (daily VACUUM already runs) | `cp` 33.3 GiB: **105 s** | download 31 GiB from Drive (not measured this pass; upload throughput §5 bounds it) |
-| (b) periodic zstd full copy | **5.22 GiB** (16.82%) | `zstd -3`: **44 s** | `zstd -d`: **56 s** | upload 5.22 GiB: **in flight** (§5); restore = download + 56 s decomp |
-| (c) restic zstd-stream deltas | **16–20 GiB/day** new blobs (§1) | snapshot-bound (already runs) | `restic restore` 31 GiB image: **108 s** (local repo, timed) | restore via rclone backend (not measured this pass; repo present on Drive, §6) |
+| scheme                        | artifact/day                     | make time                                  | restore (laptop archive target)                              | restore (Google Drive target)                                                       |
+| ----------------------------- | -------------------------------- | ------------------------------------------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| (a) periodic full copy        | 31.03 GiB raw                    | snapshot-bound (daily VACUUM already runs) | `cp` 33.3 GiB: **105 s**                                     | download 31 GiB from Drive (not measured this pass; upload throughput §5 bounds it) |
+| (b) periodic zstd full copy   | **5.22 GiB** (16.82%)            | `zstd -3`: **44 s**                        | `zstd -d`: **56 s**                                          | upload 5.22 GiB: **in flight** (§5); restore = download + 56 s decomp               |
+| (c) restic zstd-stream deltas | **16–20 GiB/day** new blobs (§1) | snapshot-bound (already runs)              | `restic restore` 31 GiB image: **108 s** (local repo, timed) | restore via rclone backend (not measured this pass; repo present on Drive, §6)      |
 
 Storage $/mo: both of Drew's named targets are sunk-cost storage, so there is no
 per-GB billing to optimise and the $/mo column is ~$0 marginal on both sides —

@@ -10,6 +10,8 @@
 //! shell over the public API in this crate —
 //!
 //! - [`algorithm`] — the algorithm registry (§§3.1, 6.3, 24.1);
+//! - [`algorithm_lab`] — per-algorithm benchmarks and environment
+//!   probes behind `algorithms benchmark | doctor` (§6.1, #13729);
 //! - [`timeparse`] — the §5.4 time grammar (RFC3339 + Gregorian
 //!   calendar durations);
 //! - [`naming`] — generation/partition coordinates and slugs (§5.2);
@@ -26,6 +28,10 @@
 //!   index, checksum verification.
 //! - [`inventory`] — read-only cross-bundle inventory: `inventory
 //!   list|show|search|audit` over bundle directories (spec §6.1).
+//! - [`trust`] — §3.5 trust-bundle export and the broker-client
+//!   trust store: two-phase rollover (stage → acknowledge →
+//!   activate → retire) with last-known-good retention (BT-2,
+//!   #14400; spec §27.3 item 9 in its minimal broker form).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -37,6 +43,7 @@
 //!   chain validator (§3.2).
 
 pub mod algorithm;
+pub mod algorithm_lab;
 pub mod bundle;
 pub mod chain;
 pub mod cli;
@@ -50,6 +57,7 @@ pub mod ocsp;
 pub mod profile;
 pub mod publish;
 pub mod timeparse;
+pub mod trust;
 
 pub use error::{CertError, Result};
 

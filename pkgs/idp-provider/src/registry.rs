@@ -1,6 +1,8 @@
-//! Provider registry config: the static client registry, the single
-//! account row, its linked identities, the deny-by-default allowlist,
-//! and the local-door credential hash.
+//! Provider registry config: the static client registry, the
+//! owner's account row, its declared linked identities, the
+//! deny-by-default allowlist, and the local-door credential hash.
+//! Accounts beyond the owner's (enrolled at first door login,
+//! #15249) live in the runtime identity store, not in this file.
 //!
 //! This is the provider's *config*, loaded from a JSON file whose
 //! path is configured at launch. The real file lives on-host with
@@ -95,11 +97,13 @@ mod saml_registration_tests {
         assert!(!registered.accepts_acs("https://SP.example/acs"));
         assert!(config.saml_sp("URN:test:sp").is_none());
         assert!(config.saml_sp("unknown").is_none());
-        assert!(config
-            .saml_sp("other")
-            .unwrap()
-            .released_attributes
-            .is_empty());
+        assert!(
+            config
+                .saml_sp("other")
+                .unwrap()
+                .released_attributes
+                .is_empty()
+        );
     }
 
     #[test]
@@ -397,7 +401,11 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub saml_sps: Vec<SamlSp>,
     /// Deny-by-default allowlist of identity keys (`provider:subject`)
-    /// holding only the owner's account IDs.
+    /// permitted to sign in. An entry is permission to ENROLL, not a
+    /// link to the owner's account: the owner's own identities are
+    /// the ones declared in the account row below; any other
+    /// allowlisted identity enrolls at first login into its own
+    /// read-only account (#15249, design #9086 §4.4).
     #[serde(default)]
     pub allowlist: Vec<String>,
     #[serde(default)]

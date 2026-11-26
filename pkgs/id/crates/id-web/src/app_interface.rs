@@ -150,6 +150,7 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/ws/collab/{doc_id}",
     "/ws/tags",
     "/assets/{*path}",
+    "/sw.js",
     "/explore",
     "/explore/login",
     "/explore/act",

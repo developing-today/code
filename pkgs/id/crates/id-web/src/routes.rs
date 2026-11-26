@@ -146,7 +146,9 @@ fn decode_utf16_text(data: &[u8]) -> Option<String> {
         return None;
     };
     let units: Vec<u16> = body
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             if little_endian {
                 u16::from_le_bytes([c[0], c[1]])
@@ -556,6 +558,7 @@ pub fn create_program_router(
     };
     let router = Router::new()
         .route("/", get(program_page_handler))
+        .route("/sw.js", get(service_worker_handler))
         .route("/assets/{*path}", get(assets_handler))
         .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
     let router = router
@@ -641,6 +644,8 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/ws/collab/{doc_id}", get(super::collab::ws_collab_handler))
         // WebSocket for live tag updates
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
+        // Offline-shell service worker (#13918), root scope
+        .route("/sw.js", get(service_worker_handler))
         // Static assets
         .route("/assets/{*path}", get(assets_handler));
     // Optional authoritative in-memory world session bridge, bound
@@ -661,6 +666,16 @@ fn create_router_inner(state: AppState) -> Router {
     // The program gallery's read surface (#10003): 404 on every route
     // unless the serving process wired a gallery in.
     let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
+    // #10392 §6.1 (#14224): `POST /v1/runs` runs one subcommand of this
+    // binary with argv parity, for loopback clients only, checking app
+    // runs against the state's app manifests (#14226; see `super::runs`).
+    // Absent when the running executable cannot be found.
+    let router = match super::runs::RunsConfig::current_exe() {
+        Some(config) => router.merge(super::runs::runs_routes(
+            config.with_apps(state.run_apps.clone()),
+        )),
+        None => router,
+    };
     let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state.clone());
@@ -1432,6 +1447,11 @@ async fn blocks_partial_handler(State(state): State<AppState>) -> Response {
 /// Static assets handler.
 async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
     super::assets::static_handler(&path)
+}
+
+/// Offline-shell service worker at the site root (#13918).
+async fn service_worker_handler() -> impl IntoResponse {
+    super::assets::service_worker_handler()
 }
 
 /// System tag keys that are excluded from user-visible tags display.

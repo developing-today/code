@@ -20,6 +20,9 @@ import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
 import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
 import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
+import { openD1QueueStore } from "./d1-queue-store.ts";
+import { r2KvBlobBucket } from "./kv-blobs.ts";
+import { HttpKvPrimary, type KvPrimary } from "./kv-door.ts";
 import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
@@ -52,7 +55,9 @@ const backfillRuns = new FixtureBackfillRunStore();
 // the native broker serves — reached through LibSQLQueueStore (the
 // same interface, no second queue, no schema fork); until it lands,
 // one fixture store at module scope, with the isolate-lifetime
-// semantics of the other seams.
+// semantics of the other seams. The #14866 move adds the D1 home:
+// when the QUEUE_D1 binding is present, buildDeps resolves
+// D1QueueStore over the same schema instead (see below).
 const queueStore = new FixtureQueueStore();
 
 /** The file → connection opener the libSQL queue door needs: it
@@ -100,7 +105,11 @@ const queueRecords = new StoreQueueRecordSource(queueStore, sessions);
  * tests); without it the fixture store stands in. */
 export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   const config = configFromEnv(env);
-  const resolvedQueueStore = queueStoreFor(config, opener);
+  // Queue backend selection (#14866): a bound D1 database wins over
+  // the Turso/libSQL backends \u2014 the binding's presence is the
+  // operator's explicit Cloudflare-first choice, and no deployment
+  // binds it yet, so existing shapes are unchanged until one does.
+  const resolvedQueueStore = env.QUEUE_D1 ? openD1QueueStore(env.QUEUE_D1) : queueStoreFor(config, opener);
   const resolvedQueueRecords =
     resolvedQueueStore === queueStore ? queueRecords : new StoreQueueRecordSource(resolvedQueueStore, sessions);
   // The hosted rotation point (#12585): with fleet App material
@@ -121,6 +130,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // API and the console share one send path. Absent the binding or
   // the credential, the door fails closed (503) per request.
   const bridge = config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
+  const kvPrimary = kvPrimaryFor(config);
   return {
     config,
     sessions,
@@ -134,7 +144,28 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     githubProjects: githubWriter,
     backfillRunStore: backfillRuns,
     ...(bridge ? { bridge } : {}),
+    ...(kvPrimary ? { kvPrimary } : {}),
+    ...(env.KV_BLOBS ? { kvBlobs: r2KvBlobBucket(env.KV_BLOBS) } : {}),
+    ...(env.KV_BLOB_CAPABILITY_KEY ? { kvBlobCapabilityKey: env.KV_BLOB_CAPABILITY_KEY } : {}),
   };
+}
+
+// The fleet-kv central primary (#13316): one client per configured
+// URL for the isolate's lifetime, so the door's once-per-isolate
+// schema migration (src/kv-door.ts) is not repeated per request.
+const kvPrimaries = new Map<string, KvPrimary>();
+
+/** The kv door's primary for one configuration, or undefined when no
+ *  KV_LIBSQL_URL is set (the door then fails closed with 503). */
+export function kvPrimaryFor(config: Pick<HostedConfig, "kvLibsqlUrl" | "kvLibsqlAuthToken">): KvPrimary | undefined {
+  if (!config.kvLibsqlUrl) return undefined;
+  const key = JSON.stringify([config.kvLibsqlUrl, config.kvLibsqlAuthToken]);
+  let primary = kvPrimaries.get(key);
+  if (!primary) {
+    primary = new HttpKvPrimary(config.kvLibsqlUrl, config.kvLibsqlAuthToken);
+    kvPrimaries.set(key, primary);
+  }
+  return primary;
 }
 
 /** The scheduled invocation's context slice this module uses. */

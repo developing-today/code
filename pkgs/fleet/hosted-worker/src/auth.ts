@@ -44,6 +44,8 @@ import type {
   GitHubWriter,
 } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
+import type { KvBlobBucket } from "./kv-blobs.ts";
+import type { KvPrimary } from "./kv-door.ts";
 import type { QueueDepProbe, QueueStore } from "./queue-store.ts";
 import type { SessionRegistry } from "./sessions.ts";
 import type { MetadataStore, QueueRecordSource } from "./stamping.ts";
@@ -124,6 +126,17 @@ export interface AuthDeps {
    * closed with 503, like unconfigured auth; the sweep and the
    * divergence report do not need it. */
   backfillRunStore?: BackfillRunStore;
+  /** The fleet-kv central primary (#13316, src/kv-door.ts): the
+   * shared Turso DB the kv door forwards catalogued statements to.
+   * Absent → the kv door fails closed with 503, like unconfigured
+   * auth. */
+  kvPrimary?: KvPrimary;
+  /** The kv blob bucket (#13318, src/kv-blobs.ts). Absent → the blob
+   * upload door fails closed with 503. */
+  kvBlobs?: KvBlobBucket;
+  /** The key read capabilities are MACed with (#13318; a secret).
+   * Absent → the blob read routes fail closed with 503. */
+  kvBlobCapabilityKey?: string;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
