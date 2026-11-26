@@ -404,6 +404,10 @@ impl End {
             End::Stdio { .. } => {}
         }
     }
+
+    fn can_cancel_read(&self) -> bool {
+        !matches!(self, End::Stdio { .. })
+    }
 }
 
 impl Read for End {
@@ -421,7 +425,14 @@ impl Write for End {
         match self {
             End::Tcp(s) => s.write(buf),
             End::Unix(s) => s.write(buf),
-            End::Stdio { output, .. } => output.write(buf),
+            // `Stdout` is line-buffered when attached to a terminal.
+            // A proxy stream must deliver short binary frames even
+            // when they contain no newline and neither side closes.
+            End::Stdio { output, .. } => {
+                let n = output.write(buf)?;
+                output.flush()?;
+                Ok(n)
+            }
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -434,10 +445,11 @@ impl Write for End {
 }
 
 /// Splice two ends together, byte for byte, in both directions
-/// at once (mode 1). Returns `(left→right, right→left)` byte
-/// counts. A direction that reaches EOF half-closes the other
-/// end's write side; the splice ends when both directions do.
-pub fn splice_duplex(mut left: End, mut right: End) -> std::io::Result<(u64, u64)> {
+/// at once (mode 1). A direction that reaches EOF half-closes the
+/// other end's write side. If the peer closes first, socket input
+/// is cancelled; process stdin cannot be cancelled and its reader
+/// is detached so the proxy can return.
+pub fn splice_duplex(mut left: End, mut right: End) -> std::io::Result<()> {
     let mut left_clone = left.try_clone()?;
     let mut right_clone = right.try_clone()?;
     let forward = std::thread::spawn(move || {
@@ -460,10 +472,20 @@ pub fn splice_duplex(mut left: End, mut right: End) -> std::io::Result<(u64, u64
         // the CLI returns this error and exits, ending that reader.
         return Err(error);
     }
-    let forward_n = forward
-        .join()
-        .unwrap_or(Err(std::io::Error::other("splice thread panicked")));
-    Ok((forward_n?, backward_n?))
+    // Peer EOF means the proxy is done even when a caller keeps stdin
+    // open. Shutdown interrupts socket readers; process stdin has no
+    // equivalent cancellation, so detach that reader and let the CLI
+    // return (and then exit) rather than hanging on `join`.
+    left.shutdown_both();
+    right.shutdown_write();
+    if left.can_cancel_read() {
+        forward
+            .join()
+            .unwrap_or(Err(std::io::Error::other("splice thread panicked")))?;
+    } else {
+        drop(forward);
+    }
+    Ok(())
 }
 
 /// Connect a mode-1 target. Failure is exit 73
@@ -997,7 +1019,7 @@ mod tests {
     /// Mode 1's acceptance shape: an echo peer (a "stock peer"
     /// that needs no special code) behind the duplex splice;
     /// bytes the caller sends come back identical, in both
-    /// directions, and the splice reports the moved counts. The
+    /// directions. The
     /// caller side is a loopback TCP pair standing in for stdio
     /// so the test does not touch the process's real stdin/out.
     #[test]
@@ -1035,11 +1057,9 @@ mod tests {
         let mut echoed = Vec::new();
         driver.read_to_end(&mut echoed).expect("read echo");
         writer.join().expect("writer");
-        let (fwd, back) = splice_thread.join().expect("splice").expect("splice ok");
+        splice_thread.join().expect("splice").expect("splice ok");
         echo.join().expect("echo");
 
         assert_eq!(echoed, payload, "bytes must survive the splice identical");
-        assert_eq!(fwd, payload.len() as u64);
-        assert_eq!(back, payload.len() as u64);
     }
 }
