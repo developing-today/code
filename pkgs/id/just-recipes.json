@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/oc-code-02-14665-20261124T234002Z-9e2a2dcb/root.just",
+      "source": "/home/user/git/agent-next-27-23692/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1468,6 +1468,7 @@
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
+        { "arguments": [], "recipe": "test-android-remote", "star": null },
         { "arguments": [], "recipe": "test-tui-shell", "star": null },
         { "arguments": [], "recipe": "test-hw-shell", "star": null },
         { "arguments": [], "recipe": "test-rust-examples", "star": null },
@@ -1481,7 +1482,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 17,
+      "priors": 18,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -2495,6 +2496,19 @@
       "namepath": "test",
       "shebang": false
     },
+    "test-android-remote": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo test -p id-android-remote"]],
+      "dependencies": [],
+      "doc": "Run the Android remote-drive session bridge's contract and loopback tests (#1831).",
+      "name": "test-android-remote",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-android-remote",
+      "shebang": false
+    },
     "test-crate-integration": {
       "attributes": [{ "group": "test" }],
       "body": [
@@ -3420,7 +3434,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/oc-code-02-14665-20261124T234002Z-9e2a2dcb/pkgs/id/justfile",
+  "source": "/home/user/git/agent-next-27-23692/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }
