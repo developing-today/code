@@ -1026,8 +1026,8 @@ async fn door_state_handle_is_single_use() {
 /// Oracle: design §4.4 — the gate is deny-by-default, relaxation
 /// is a data change (allowlist entries), and a newly enrolled
 /// account with only `read-only` on no tenant can do nothing
-/// until granted. The middle assertion records where the current
-/// provider departs from that oracle (see the runbook in
+/// until granted. The middle assertion checks the enrolled
+/// identity against that oracle directly (see the runbook in
 /// `doc/2026-11-25T20-55-00Z_runbook_h7-gate-relaxation-drill/`).
 #[tokio::test]
 async fn h7_gate_relaxation_drill_add_verify_remove() {
@@ -1059,21 +1059,32 @@ async fn h7_gate_relaxation_drill_add_verify_remove() {
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), 302, "drill: enrolled test identity logs in");
     let claims = exchange_and_verify(&h, &location(&resp)).await;
-    // Observed gate behaviour: the provider holds ONE account, so
-    // the newly enrolled identity links to that account and
-    // carries the account's full role set. There is no fresh
-    // read-only-on-no-tenant account for it to land on, so an
-    // allowlist entry is only safe for the owner's own door
-    // identities until multi-account enrollment exists. This is
-    // the drill's finding, filed as its own issue from #14265.
-    assert_eq!(
+    // §4.4 oracle (fixed by #15249 / PR #15313): a never-seen
+    // allowlisted identity that is not one of the owner account's
+    // declared identities enrolls into its OWN account holding
+    // only `read-only` — it does not link to the owner account
+    // and does not carry the owner's roles. An allowlist entry is
+    // therefore safe for any identity: enrollment alone grants
+    // nothing beyond read-only on no tenant. (The drill's first
+    // run observed the pre-fix single-account behaviour; that
+    // finding was filed as #15249 and is fixed on main.)
+    assert_ne!(
         claims["sub"], "drew",
-        "enrolled identity lands on the single account"
+        "enrolled identity must not land on the owner account"
+    );
+    let enrolled_account = h
+        .identities
+        .account_id_for("google", TEST_SUB)
+        .unwrap()
+        .expect("enrollment wrote an identity row");
+    assert_eq!(
+        claims["sub"], enrolled_account,
+        "enrolled identity lands on its own enrolled account"
     );
     assert_eq!(
         claims["roles"],
-        serde_json::json!(ROLES),
-        "enrolled identity carries the account role set"
+        serde_json::json!(["read-only"]),
+        "newly enrolled account holds only read-only (§4.4)"
     );
     assert!(h.identities.is_active("google", TEST_SUB));
     drop(h);
