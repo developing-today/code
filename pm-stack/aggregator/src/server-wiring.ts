@@ -18,13 +18,28 @@ import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore } from "./roadmap-annotations.ts";
 import { IdentityRegistryStore } from "./identity-registry.ts";
 import { BreakGlassTokenStore } from "./break-glass.ts";
-import { OutageQueueStore, confirmOutageWrite, isStackLocalAddress, outageQueueEligible, queueOutageWrite, rejectOutageWrite, type OutageQueuedWrite } from "./outage-queue.ts";
+import {
+  OutageQueueStore,
+  confirmOutageWrite,
+  isStackLocalAddress,
+  outageQueueEligible,
+  queueOutageWrite,
+  rejectOutageWrite,
+  type OutageQueuedWrite,
+} from "./outage-queue.ts";
 import { PromptAttachmentsStore } from "./prompt-attachments.ts";
-import { computeCoverage, CoverageSnapshotStore, nextCoverageSnapshot, type CoverageSnapshotFile, type RepoCensus } from "./coverage.ts";
+import {
+  computeCoverage,
+  CoverageSnapshotStore,
+  nextCoverageSnapshot,
+  type CoverageSnapshotFile,
+  type RepoCensus,
+} from "./coverage.ts";
 import { loadConfig } from "./config.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
 import { createTursoRemotes } from "./remote-stores.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
+import { ConflictRulingsStore } from "./conflict-rulings.ts";
 import { watchdogTierItems } from "./watchdog.ts";
 import { buildAttention } from "./derive.ts";
 import type { Comment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
@@ -158,6 +173,7 @@ export const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRe
 // canonical in public.shared_comments under the turso backend.
 export const commentsStore = new CommentsStore(cfg.commentsFile, undefined, storeRemotes?.comments);
 export const viewsStore = new ViewsStore(cfg.viewsFile);
+export const conflictRulingsStore = new ConflictRulingsStore(cfg.conflictRulingsFile);
 export const eventsStore = new EventsStore(cfg.eventsFile);
 export const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 export const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
@@ -346,12 +362,13 @@ export const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
  * facets already report, and no render changes because of it.
  */
 export async function assembleConflicts(): Promise<ConflictInbox> {
-  const [pool, orchestration, usage] = await Promise.all([
+  const [pool, orchestration, usage, rulings] = await Promise.all([
     source.projects().catch(() => []),
     source.orchestration().catch(() => null),
     source.usage().catch(() => emptyUsageView()),
+    conflictRulingsStore.all().catch(() => []),
   ]);
-  return conflictInbox({ pool, orchestration, services: usage.services });
+  return conflictInbox({ pool, orchestration, services: usage.services, rulings });
 }
 
 /** The identities half of the comment form options, behind a
@@ -435,4 +452,3 @@ export function emptyUsageView(): UsageView {
     history: {},
   };
 }
-

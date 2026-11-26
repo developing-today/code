@@ -37,8 +37,12 @@ use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde::{Deserialize, Serialize};
 
+use std::collections::{BTreeMap, HashMap};
+
+use id_store::event_types::{Ingest, Refusal};
+
 use crate::bridge::{
-    BridgeLimits, Head, auth_transcript, body_hash_hex, decode_batch, encode_batch,
+    BridgeLimits, BridgeStore, Head, auth_transcript, body_hash_hex, decode_batch, encode_batch,
 };
 use crate::hex::hex_encode;
 
@@ -501,6 +505,217 @@ impl BridgeHttpClient {
     }
 }
 
+// ----- whole-store push and pull (#15486) ----------------------------
+
+/// The most pull calls one [`pull_all`] makes before it stops: a
+/// guard against a hosted store that keeps answering `more`.
+pub const MAX_PULLS: usize = 100_000;
+
+/// What a whole-store transfer did, tallied across its batches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransferReport {
+    /// Events sent (push) or received (pull).
+    pub events: usize,
+    /// Calls made to the push or pull leg.
+    pub calls: usize,
+    /// Stored and applied (including stored but voided).
+    pub accepted: usize,
+    /// Already held.
+    pub duplicate: usize,
+    /// Held for a dependency, not stored.
+    pub waiting: usize,
+    /// Fork proofs: an author signed two events at one sequence.
+    pub forks: usize,
+    /// Refusals, each as `reason: message`.
+    pub refused: Vec<String>,
+    /// The hosted store's heads after the last call.
+    pub heads: Vec<Head>,
+}
+
+impl TransferReport {
+    fn tally_push(&mut self, outcome: &PushOutcome) {
+        match outcome {
+            PushOutcome::Accepted { .. } => self.accepted += 1,
+            PushOutcome::Duplicate { .. } => self.duplicate += 1,
+            PushOutcome::Waiting { .. } => self.waiting += 1,
+            PushOutcome::Fork { .. } => self.forks += 1,
+            PushOutcome::Refused { reason, message } => {
+                self.refused.push(format!("{reason}: {message}"));
+            }
+        }
+    }
+
+    fn tally_ingest(&mut self, outcome: &Ingest) {
+        match outcome {
+            Ingest::Accepted { .. } | Ingest::Voided { .. } => self.accepted += 1,
+            Ingest::Duplicate { .. } => self.duplicate += 1,
+            Ingest::Waiting { .. } => self.waiting += 1,
+            Ingest::Fork { .. } => self.forks += 1,
+            Ingest::Refused(refusal) => self.refused.push(match refusal {
+                Refusal::Malformed(message) => format!("malformed: {message}"),
+                Refusal::Frozen => "frozen: the event is above its author's fork point".to_owned(),
+                Refusal::WaitingFull => {
+                    "waiting_full: the author holds as many waiting events as the caps allow"
+                        .to_owned()
+                }
+            }),
+        }
+    }
+}
+
+/// Splits events into batches under the push bounds: a batch
+/// closes when the next event would cross the count or the encoded
+/// byte bound. An event that cannot fit any batch is an error by
+/// name, before anything is sent.
+fn push_batches(events: Vec<Vec<u8>>, limits: &BridgeLimits) -> Result<Vec<Vec<Vec<u8>>>> {
+    let mut batches = Vec::new();
+    let mut batch: Vec<Vec<u8>> = Vec::new();
+    // The encoded size: the 4-byte count prefix, then each event's
+    // 4-byte length prefix and payload (#14644).
+    let mut batch_bytes = 4usize;
+    for event in events {
+        ensure!(
+            event.len() <= limits.max_event_bytes && 4 + 4 + event.len() <= limits.max_batch_bytes,
+            "a local event of {} bytes cannot fit the bridge's bounds ({} bytes per event, {} per batch)",
+            event.len(),
+            limits.max_event_bytes,
+            limits.max_batch_bytes
+        );
+        if !batch.is_empty()
+            && (batch.len() >= limits.max_batch_events
+                || batch_bytes + 4 + event.len() > limits.max_batch_bytes)
+        {
+            batches.push(std::mem::take(&mut batch));
+            batch_bytes = 4;
+        }
+        batch_bytes += 4 + event.len();
+        batch.push(event);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
+/// The author (hex) and sequence number a sync-set key names: the
+/// key is the author's 32-byte key, then the big-endian sequence.
+fn key_author_seq(key: &[u8]) -> Option<(String, u64)> {
+    let author = key.get(0..32)?;
+    let seq: [u8; 8] = key.get(32..40)?.try_into().ok()?;
+    Some((hex_encode(author), u64::from_be_bytes(seq)))
+}
+
+/// Pushes every local event the hosted store has not applied.
+///
+/// It reads the hosted heads, sends each author's events from the
+/// hosted next sequence on, in bounded batches, and tallies the
+/// outcomes. A re-sent event is a duplicate, never a second copy,
+/// so a push that stopped part way is safe to run again.
+pub async fn push_all<S: BridgeStore, H: BridgeHttp>(
+    client: &BridgeHttpClient,
+    http: &mut H,
+    store: &S,
+) -> Result<TransferReport> {
+    let hosted = client.heads(http).await.context("read the hosted heads")?;
+    let hosted_next: HashMap<&str, u64> = hosted
+        .iter()
+        .map(|head| (head.author.as_str(), head.next_seq))
+        .collect();
+    let mut events = Vec::new();
+    for (key, id) in store.bridge_sync_entries()? {
+        let Some((author, seq)) = key_author_seq(&key) else {
+            continue;
+        };
+        if seq < hosted_next.get(author.as_str()).copied().unwrap_or(0) {
+            continue;
+        }
+        if let Some(bytes) = store.bridge_event_bytes(&id)? {
+            events.push(bytes);
+        }
+    }
+    let mut report = TransferReport {
+        heads: hosted.clone(),
+        ..TransferReport::default()
+    };
+    for batch in push_batches(events, &client.limits)? {
+        let pushed = client.push(http, &batch).await.context("push a batch")?;
+        report.calls += 1;
+        report.events += batch.len();
+        for outcome in &pushed.outcomes {
+            report.tally_push(outcome);
+        }
+        report.heads = pushed.heads;
+    }
+    Ok(report)
+}
+
+/// Pulls everything the hosted store holds beyond the local heads
+/// into `store`.
+///
+/// It reads one bounded batch per call until the hosted side reports
+/// nothing more. Positions advance past every event
+/// received, applied or not, so an event that waits locally is not
+/// pulled again; a call that reports more but advances nothing is
+/// an error rather than a loop.
+pub async fn pull_all<S: BridgeStore, H: BridgeHttp>(
+    client: &BridgeHttpClient,
+    http: &mut H,
+    store: &mut S,
+    now_ms: u64,
+) -> Result<TransferReport> {
+    let mut positions: BTreeMap<String, u64> = store
+        .bridge_heads()?
+        .into_iter()
+        .map(|head| (head.author, head.next_seq))
+        .collect();
+    let mut report = TransferReport::default();
+    loop {
+        ensure!(
+            report.calls < MAX_PULLS,
+            "the hosted store still reports more after {MAX_PULLS} pulls"
+        );
+        let list: Vec<PullPosition> = positions
+            .iter()
+            .map(|(author, next_seq)| PullPosition {
+                author: author.clone(),
+                next_seq: *next_seq,
+            })
+            .collect();
+        let pulled = client
+            .pull(http, &list, None)
+            .await
+            .context("pull a batch")?;
+        report.calls += 1;
+        report.events += pulled.events.len();
+        report.heads = pulled.heads;
+        for outcome in store.bridge_ingest(&pulled.events, now_ms)? {
+            report.tally_ingest(&outcome);
+        }
+        let mut advanced = false;
+        for bytes in &pulled.events {
+            // A malformed event was refused above; it names no
+            // position to advance.
+            let Ok(event) = id_store::chain::decode(bytes) else {
+                continue;
+            };
+            let author = hex_encode(event.header.verifying_key.as_bytes());
+            let next = u64::from(event.header.seq_num).saturating_add(1);
+            let position = positions.entry(author).or_insert(0);
+            if next > *position {
+                *position = next;
+                advanced = true;
+            }
+        }
+        if !pulled.more {
+            return Ok(report);
+        }
+        ensure!(
+            advanced,
+            "the hosted pull reported more events but sent none past the local positions"
+        );
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -514,7 +729,6 @@ mod tests {
     use id_store::chain::{ChainExt, sign};
     use id_store::event_types::{Ingest, Refusal};
 
-    use crate::bridge::BridgeStore as _;
     use crate::hex::hex_to_array;
 
     const BINDING: &str = "binding-1";
@@ -542,6 +756,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
@@ -866,7 +1081,7 @@ mod tests {
     async fn heads_on_an_empty_store() {
         let mut mirror = MirrorDo::new(1);
         let heads = client(1).heads(&mut mirror).await.unwrap();
-        assert!(heads.is_empty());
+        assert_eq!(heads, [] as [Head; 0]);
         assert_eq!(
             mirror.seen,
             ["GET /v1/bridge/challenge", "GET /v1/bridge/heads"]
@@ -952,7 +1167,7 @@ mod tests {
         // A caller already at the head pulls nothing.
         let positions: Vec<PullPosition> = heads.iter().map(PullPosition::from).collect();
         let caught_up = client.pull(&mut mirror, &positions, None).await.unwrap();
-        assert!(caught_up.events.is_empty());
+        assert_eq!(caught_up.events, [] as [Vec<u8>; 0]);
         assert!(!caught_up.more);
     }
 
@@ -1066,6 +1281,124 @@ mod tests {
         let err = client(1).push(&mut mirror, &[oversize]).await.unwrap_err();
         assert!(format!("{err}").contains("over the"));
         // Not even the challenge was fetched: the bound is local.
-        assert!(mirror.seen.is_empty());
+        assert_eq!(mirror.seen, [] as [String; 0]);
+    }
+
+    // ----- whole-store push and pull (#15486) -----------------------
+
+    fn local_store(events: &[Vec<u8>]) -> (EventStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = EventStore::open(dir.path(), WaitingLimits::default(), NOW_MS).unwrap();
+        if !events.is_empty() {
+            store.bridge_ingest(events, NOW_MS).unwrap();
+        }
+        (store, dir)
+    }
+
+    #[tokio::test]
+    async fn push_all_then_pull_all_round_trips_into_a_fresh_store() {
+        let mut mirror = MirrorDo::new(1);
+        let client = client(1);
+        let mut events = make_events(7, 3);
+        events.extend(make_events(8, 2));
+        let (local, _dir) = local_store(&events);
+
+        let pushed = push_all(&client, &mut mirror, &local).await.unwrap();
+        assert_eq!((pushed.events, pushed.accepted, pushed.calls), (5, 5, 1));
+        assert!(pushed.refused.is_empty());
+        assert_eq!(pushed.heads, local.bridge_heads().unwrap());
+
+        // Nothing left to send: the hosted heads match the local ones.
+        let again = push_all(&client, &mut mirror, &local).await.unwrap();
+        assert_eq!((again.events, again.calls), (0, 0));
+
+        let (mut fresh, _fresh_dir) = local_store(&[]);
+        let pulled = pull_all(&client, &mut mirror, &mut fresh, NOW_MS)
+            .await
+            .unwrap();
+        assert_eq!((pulled.events, pulled.accepted), (5, 5));
+        assert_eq!(fresh.bridge_heads().unwrap(), local.bridge_heads().unwrap());
+        for (_, id) in local.bridge_sync_entries().unwrap() {
+            assert_eq!(
+                fresh.bridge_event_bytes(&id).unwrap(),
+                local.bridge_event_bytes(&id).unwrap()
+            );
+        }
+
+        // A store already at the hosted heads pulls nothing.
+        let caught_up = pull_all(&client, &mut mirror, &mut fresh, NOW_MS)
+            .await
+            .unwrap();
+        assert_eq!((caught_up.events, caught_up.calls), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn push_all_sends_only_what_the_hosted_store_lacks() {
+        let mut mirror = MirrorDo::new(1);
+        let client = client(1);
+        let events = make_events(7, 5);
+        client.push(&mut mirror, &events[..2]).await.unwrap();
+        let (local, _dir) = local_store(&events);
+        let pushed = push_all(&client, &mut mirror, &local).await.unwrap();
+        assert_eq!(
+            (pushed.events, pushed.accepted, pushed.duplicate),
+            (3, 3, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn push_all_and_pull_all_page_through_the_bounds() {
+        let mut mirror = MirrorDo::new(1);
+        mirror.limits.max_batch_events = 2;
+        let client = client(1).with_limits(BridgeLimits {
+            max_batch_events: 2,
+            ..BridgeLimits::default()
+        });
+        let events = make_events(7, 5);
+        let (local, _dir) = local_store(&events);
+        let pushed = push_all(&client, &mut mirror, &local).await.unwrap();
+        assert_eq!((pushed.events, pushed.calls, pushed.accepted), (5, 3, 5));
+
+        let (mut fresh, _fresh_dir) = local_store(&[]);
+        let pulled = pull_all(&client, &mut mirror, &mut fresh, NOW_MS)
+            .await
+            .unwrap();
+        assert_eq!((pulled.events, pulled.calls), (5, 3));
+        assert_eq!(fresh.bridge_heads().unwrap(), local.bridge_heads().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_wrong_key_fails_push_all_and_pull_all_by_name() {
+        let mut mirror = MirrorDo::new(1);
+        let wrong = client(2);
+        let (mut local, _dir) = local_store(&make_events(7, 1));
+        let err = push_all(&wrong, &mut mirror, &local).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("bridge_proof_invalid"),
+            "{err:#}"
+        );
+        let err = pull_all(&wrong, &mut mirror, &mut local, NOW_MS)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("bridge_proof_invalid"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn push_batches_refuses_an_event_no_batch_can_carry() {
+        let limits = BridgeLimits::default();
+        let err = push_batches(vec![vec![0u8; limits.max_event_bytes + 1]], &limits).unwrap_err();
+        assert!(format!("{err}").contains("cannot fit"), "{err}");
+        let batches = push_batches(
+            vec![vec![1u8; 10]; 5],
+            &BridgeLimits {
+                max_batch_events: 2,
+                ..limits
+            },
+        )
+        .unwrap();
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2, 1]);
     }
 }

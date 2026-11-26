@@ -7,8 +7,9 @@
 //! operational/policy/validation failure.
 
 use crate::algorithm::{self, AlgorithmId};
+use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
-use crate::chain::{CertInfo, TrustSelection, parse_cert};
+use crate::chain::{parse_cert, CertInfo, TrustSelection};
 use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
@@ -18,12 +19,11 @@ use crate::model::{
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Full usage for the cert domain (also what `fleet cert --help`
 /// prints through the bin crate's help carve-out).
@@ -41,9 +41,11 @@ Groups and verbs (spec §6.1 tree; status as built):
   inventory list | show | search | audit
   key      generate | inspect
   publish  plan | verify (apply | status deferred, production-gated)
+  dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
+  batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status
-  profile  list | show
-  algorithms list | describe
+  profile  list | show | validate | scaffold
+  algorithms list | describe | benchmark | doctor
   explain  [topic]
   doctor
 
@@ -237,6 +239,8 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "inventory" => inventory_cmd(rest, json_out),
         "key" => key_cmd(rest, json_out),
         "publish" => publish_cmd(rest, json_out),
+        "dns" => dns_cmd(rest, json_out),
+        "batch" => batch_cmd(rest, json_out),
         "trust" => trust_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
@@ -377,25 +381,7 @@ fn key_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let der = key.serialize_der();
             // Key generation is an explicit ceremony: create a new
             // owner-readable file, and never replace an existing key.
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&out).map_err(|e| {
-                CertError::policy(format!(
-                    "cannot create private key {} without replacing an existing file: {e}",
-                    out.display()
-                ))
-            })?;
-            file.write_all(&der)
-                .and_then(|_| file.sync_all())
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&out);
-                    CertError::engine(format!("writing private key {} failed: {e}", out.display()))
-                })?;
+            write_new_file(&out, &der, true, "private key")?;
             let value = json!({"algorithm": algorithm.info().name, "private_key": out.display().to_string(), "encoding": "PKCS#8 DER"});
             Ok(emit(
                 json_out,
@@ -434,8 +420,205 @@ fn key_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 value,
             ))
         }
+        "import" => {
+            let p = parse_args(rest, &["algorithm", "in", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key import")?);
+            let out = PathBuf::from(p.require("out", "key import")?);
+            let raw = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!(
+                    "cannot read key to import {}: {e}",
+                    input.display()
+                ))
+            })?;
+            let pkcs8 = pkcs8_from_der_or_pem(&raw, &input)?;
+            // The key must load under the explicitly named algorithm
+            // before anything is written: a wrong algorithm or a
+            // non-PKCS#8 file is refused, and nothing is created.
+            let public = engine::inspect_key(algorithm, &pkcs8)?;
+            let fingerprint = crate::bundle::sha256_hex(&public);
+            write_new_file(&out, &pkcs8, true, "private key")?;
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "source": input.display().to_string(),
+                "private_key": out.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": fingerprint,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Imported {} private key into {} (PKCS#8 DER)\n  public-key SHA-256: {fingerprint}\n",
+                    algorithm.info().name,
+                    out.display()
+                ),
+                value,
+            ))
+        }
+        "export" => {
+            let p = parse_args(rest, &["algorithm", "in", "out", "format"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key export")?);
+            let out = PathBuf::from(p.require("out", "key export")?);
+            let pem = match p.get("format").unwrap_or("pem") {
+                "pem" => true,
+                "der" => false,
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown key export format '{other}' (pem | der)"
+                    )));
+                }
+            };
+            let pkcs8 = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!("cannot read private key {}: {e}", input.display()))
+            })?;
+            // Export is the public half only (SubjectPublicKeyInfo).
+            // Private-key export and escrow stay behind the custody
+            // gates of #9155; nothing here writes private material.
+            let public = engine::inspect_key(algorithm, &pkcs8)?;
+            let spki = engine::public_key_spki_der(algorithm, &public);
+            let fingerprint = crate::bundle::sha256_hex(&public);
+            let bytes = if pem {
+                crate::bundle::pem_encode("PUBLIC KEY", &spki).into_bytes()
+            } else {
+                spki
+            };
+            write_new_file(&out, &bytes, false, "public key")?;
+            let encoding = if pem {
+                "SubjectPublicKeyInfo PEM"
+            } else {
+                "SubjectPublicKeyInfo DER"
+            };
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "private_key": input.display().to_string(),
+                "public_key": out.display().to_string(),
+                "encoding": encoding,
+                "public_key_fingerprint_sha256": fingerprint,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Exported {} public key to {} ({encoding})\n  public-key SHA-256: {fingerprint}\n  private material: not exported\n",
+                    algorithm.info().name,
+                    out.display()
+                ),
+                value,
+            ))
+        }
+        "rotate" => {
+            let p = parse_args(rest, &["algorithm", "in", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key rotate")?);
+            let out = PathBuf::from(p.require("out", "key rotate")?);
+            let old_pkcs8 = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!(
+                    "cannot read private key to rotate {}: {e}",
+                    input.display()
+                ))
+            })?;
+            // Rotation (§6.1, V3-S19) is a new key generation, never a
+            // reuse: the old key must load under the named algorithm,
+            // the successor is a fresh key of that algorithm in a new
+            // owner-only file, and the old file is left untouched.
+            // Retiring the old key is a separate, explicit step.
+            let old_public = engine::inspect_key(algorithm, &old_pkcs8)?;
+            let key = engine::generate_key(algorithm)?;
+            let der = key.serialize_der();
+            let new_public = engine::inspect_key(algorithm, &der)?;
+            if new_public == old_public {
+                return Err(CertError::engine(
+                    "rotation produced the same public key as the old one; nothing written",
+                ));
+            }
+            write_new_file(&out, &der, true, "private key")?;
+            let old_fingerprint = crate::bundle::sha256_hex(&old_public);
+            let new_fingerprint = crate::bundle::sha256_hex(&new_public);
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "previous_private_key": input.display().to_string(),
+                "previous_public_key_fingerprint_sha256": old_fingerprint,
+                "private_key": out.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": new_fingerprint,
+                "previous_key_retained": true,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Rotated {} key: new private key at {} (PKCS#8 DER)\n  previous public-key SHA-256: {old_fingerprint}\n  new public-key SHA-256: {new_fingerprint}\n  previous key: kept at {} (retire it separately)\n",
+                    algorithm.info().name,
+                    out.display(),
+                    input.display()
+                ),
+                value,
+            ))
+        }
         other => Err(CertError::usage(format!(
-            "unknown key verb '{other}' (generate | inspect)"
+            "unknown key verb '{other}' (generate | inspect | import | export | rotate)"
+        ))),
+    }
+}
+
+/// Write `bytes` to a new file at `path`, refusing to replace anything
+/// already there. A private file is created owner-only (0600 on Unix).
+/// A failed write removes the partial file.
+fn write_new_file(path: &Path, bytes: &[u8], private: bool, what: &str) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if private {
+            options.mode(0o600);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut file = options.open(path).map_err(|e| {
+        CertError::policy(format!(
+            "cannot create {what} {} without replacing an existing file: {e}",
+            path.display()
+        ))
+    })?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| {
+            let _ = std::fs::remove_file(path);
+            CertError::engine(format!("writing {what} {} failed: {e}", path.display()))
+        })
+}
+
+/// The PKCS#8 DER inside a key file: the bytes as they are, or the one
+/// `PRIVATE KEY` block of a PEM file. Encrypted PKCS#8 and legacy
+/// (`RSA PRIVATE KEY`, `EC PRIVATE KEY`) blocks are refused by name.
+fn pkcs8_from_der_or_pem(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return Ok(raw.to_vec());
+    };
+    if !text.contains("-----BEGIN ") {
+        return Ok(raw.to_vec());
+    }
+    let blocks = pem_decode_all(text)?;
+    let mut keys = blocks
+        .into_iter()
+        .filter(|(label, _)| label.ends_with("PRIVATE KEY"));
+    match (keys.next(), keys.next()) {
+        (Some((label, der)), None) if label == "PRIVATE KEY" => Ok(der),
+        (Some((label, _)), None) => Err(CertError::policy(format!(
+            "{} holds a '{label}' block; key import takes an unencrypted PKCS#8 'PRIVATE KEY'",
+            path.display()
+        ))),
+        (None, _) => Err(CertError::policy(format!(
+            "{} holds no PEM 'PRIVATE KEY' block",
+            path.display()
+        ))),
+        (Some(_), Some(_)) => Err(CertError::policy(format!(
+            "{} holds more than one private key; import one key per file",
+            path.display()
         ))),
     }
 }
@@ -656,7 +839,7 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 .collect::<Result<Vec<_>>>()?;
             let signer = signer_source(&p, "issuer-key-dir", "leaf issue")?;
             let profile_name = p.require("profile", "leaf issue")?;
-            let prof = profile::leaf_profile(&profile_name)?;
+            let prof = profile::resolve_profile(&profile_name)?;
             let name = p
                 .get("name")
                 .map(|s| s.to_string())
@@ -1033,6 +1216,288 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- dns (offline plan | render | verify, #13724)
+
+/// Usage for `fleet cert dns`. The verbs take no provider, endpoint
+/// or credential argument: they are offline by construction (contract
+/// §2), and a test pins that against this text.
+pub const DNS_USAGE: &str = "\
+Usage: fleet cert dns plan   --zone <apex> [--bundle <dir>]... [--policy <file>]
+                             [--current <snapshot-file>] [--ttl <seconds>]
+                             [--out <dir>] [--report json|yaml|text]
+       fleet cert dns render --change-set <file> [--format zone|json|yaml]
+                             [--out <dir>] [--report json|yaml|text]
+       fleet cert dns verify --change-set <file> [--bundle <dir>]...
+                             [--report json|yaml|text]
+
+All three verbs are offline: they read local files and write only
+under --out. Nothing queries a resolver or a DNS provider. A
+change-set that verifies is PROPOSED; publishing and proving it are
+production-gated (#9155) and not part of this command. --dry-run is
+accepted and changes nothing (every verb is already a dry run).
+
+Policy file (--policy, JSON, schema fleet.pki.dns-policy/v1):
+  {\"caa\":  [{\"name\": \"pki\", \"issue\": [\"letsencrypt.org\"]}],
+   \"tlsa\": [{\"host\": \"pki\", \"port\": 443, \"bundle\": \"<id|name|slug>\"}]}
+  TLSA defaults: usage 3 (DANE-EE), selector 1 (SPKI), matching 1
+  (SHA-256); usage 2 pins an issuer (DANE-TA). CAA never names the
+  private Fleet CA (spec §24.8).
+";
+
+const DNS_PLAN_FLAGS: &[&str] = &[
+    "zone", "bundle", "policy", "current", "ttl", "out", "report",
+];
+const DNS_RENDER_FLAGS: &[&str] = &["change-set", "format", "out", "report"];
+const DNS_VERIFY_FLAGS: &[&str] = &["change-set", "bundle", "report"];
+const DNS_BOOL_FLAGS: &[&str] = &["json", "dry-run"];
+
+fn dns_report_format(p: &Parsed, json_out: bool) -> Result<String> {
+    if json_out {
+        return Ok("json".into());
+    }
+    let f = p.get("report").unwrap_or("text").to_ascii_lowercase();
+    match f.as_str() {
+        "json" | "text" => Ok(f),
+        "yaml" | "yml" => Ok("yaml".into()),
+        other => Err(CertError::usage(format!(
+            "unknown --report '{other}' (json | yaml | text)"
+        ))),
+    }
+}
+
+fn write_out(dir: &str, file: &str, body: &str) -> Result<PathBuf> {
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(file);
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+fn dns_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "" | "--help" | "-h" | "help" => {
+            print!("{DNS_USAGE}");
+            Ok(if verb.is_empty() { 2 } else { 0 })
+        }
+        "plan" => {
+            let p = parse_args(rest, DNS_PLAN_FLAGS, DNS_BOOL_FLAGS)?;
+            let ttl = p
+                .get("ttl")
+                .map(|t| {
+                    t.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!("--ttl '{t}' is not a whole number of seconds"))
+                    })
+                })
+                .transpose()?;
+            let req = crate::dns::DnsPlanRequest {
+                zone: p.require("zone", "dns plan")?,
+                bundles: p.all("bundle").into_iter().map(PathBuf::from).collect(),
+                policy: p.get("policy").map(PathBuf::from),
+                current: p.get("current").map(PathBuf::from),
+                ttl,
+            };
+            let cs = crate::dns::plan(&req)?;
+            let canonical = crate::dns::render_json(&cs)?;
+            if let Some(out) = p.get("out") {
+                write_out(out, "dns-change-set.json", &format!("{canonical}\n"))?;
+            }
+            let body = match dns_report_format(&p, json_out)?.as_str() {
+                "json" => format!("{canonical}\n"),
+                "yaml" => crate::dns::render_yaml(&cs),
+                _ => crate::dns::render_text(&cs),
+            };
+            print!("{body}");
+            Ok(0)
+        }
+        "render" => {
+            let p = parse_args(rest, DNS_RENDER_FLAGS, DNS_BOOL_FLAGS)?;
+            let path = p.require("change-set", "dns render")?;
+            let cs = crate::dns::read_change_set(Path::new(&path))?;
+            let format = p.get("format").unwrap_or("zone").to_ascii_lowercase();
+            let (file, body) = match format.as_str() {
+                "zone" => ("dns.zone", crate::dns::render_zone(&cs)),
+                "json" => (
+                    "dns-change-set.json",
+                    format!("{}\n", crate::dns::render_json(&cs)?),
+                ),
+                "yaml" | "yml" => ("dns-change-set.yaml", crate::dns::render_yaml(&cs)),
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown --format '{other}' (zone | json | yaml)"
+                    )));
+                }
+            };
+            if let Some(out) = p.get("out") {
+                let written = write_out(out, file, &body)?;
+                let report = dns_report_format(&p, json_out)?;
+                let value = json!({"change_set": path, "format": format, "written": written.display().to_string()});
+                let text = format!("rendered {format} to {}\n", written.display());
+                return Ok(emit(report == "json", text, value));
+            }
+            print!("{body}");
+            Ok(0)
+        }
+        "verify" => {
+            let p = parse_args(rest, DNS_VERIFY_FLAGS, DNS_BOOL_FLAGS)?;
+            let path = p.require("change-set", "dns verify")?;
+            let cs = crate::dns::read_change_set(Path::new(&path))?;
+            let bundles: Vec<PathBuf> = p.all("bundle").into_iter().map(PathBuf::from).collect();
+            let report = crate::dns::verify(&cs, &path, &bundles)?;
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            let mut text = format!("DNS verify: {} ({})\n", report.change_set, report.zone);
+            for c in &report.checks {
+                text.push_str(&format!(
+                    "  [{}] {} — {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            text.push_str(&format!(
+                "  result: {}\n",
+                if report.valid {
+                    "PROPOSED (valid offline; not published or proven)"
+                } else {
+                    "INVALID"
+                }
+            ));
+            let format = dns_report_format(&p, json_out)?;
+            let code = if format == "yaml" {
+                // The verify report is small; YAML falls back to JSON,
+                // which YAML 1.2 parsers read unchanged.
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into())
+                );
+                0
+            } else {
+                emit(format == "json", text, value)
+            };
+            Ok(if report.valid { code } else { 1 })
+        }
+        "apply" | "status" | "publish" | "check" | "prove" => Err(CertError::policy(format!(
+            "dns {verb} is not part of this verb group: live DNS writes and live proof are \
+             production-gated (#9155) and undesigned on purpose; plan | render | verify are offline"
+        ))),
+        other => Err(CertError::usage(format!(
+            "unknown dns verb '{other}' (plan | render | verify)"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------- batch (§6.5)
+
+pub const BATCH_USAGE: &str = "\
+Usage: fleet cert batch <verb> --file <batch.json|-> --base <dir> [options]
+
+Verbs:
+  validate   Check the batch and the base directory; writes nothing.
+  plan       Show the resolved DAG and the batch digest; writes nothing.
+  apply      Run every step in a staging area under <base>/.fleet-batch/,
+             then move the finished bundles into place, all or nothing.
+             Needs --approve <sha256> from the reviewed plan.
+             --dry-run runs every step, then removes the staging area.
+  status     Compare the batch's receipt with the bundles on disk.
+
+A batch is fleet.batch/v1 JSON: operations with id, after, command
+(cert.issuer.create | cert.leaf.issue), out (relative to --base),
+with (typed arguments) and expect. Steps reference each other only as
+@<id>.bundle and @<id>.keys; signer key directories are always named
+explicitly (spec §24.3). There is no interpolation or shell expansion.
+Root creation stays `fleet cert root create`. A completed apply writes
+a receipt, so applying the same batch again reissues nothing.
+
+Options:
+  --file <path|->     The batch document (- reads stdin).
+  --base <dir>        Directory that out paths and relative inputs resolve against.
+  --approve <sha256>  apply: the digest printed by plan.
+  --dry-run           apply: rehearse in staging, then discard.
+  --json              Emit the typed report as JSON.
+";
+
+fn batch_input(p: &Parsed, verb: &str) -> Result<(crate::batch::Batch, PathBuf, String, String)> {
+    let file = p.require("file", &format!("batch {verb}"))?;
+    let base_label = p.require("base", &format!("batch {verb}"))?;
+    let base = PathBuf::from(&base_label);
+    if !base.is_dir() {
+        return Err(CertError::usage(format!(
+            "--base {} is not a directory",
+            base.display()
+        )));
+    }
+    let bytes = if file == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
+        buf
+    } else {
+        std::fs::read(&file)
+            .map_err(|e| CertError::usage(format!("cannot read --file {file}: {e}")))?
+    };
+    let batch = crate::batch::load(&bytes, &base)?;
+    Ok((batch, base, file, base_label))
+}
+
+fn batch_emit(json_out: bool, rep: &crate::batch::Report, file: &str, base: &str) -> Result<i32> {
+    let value = serde_json::to_value(rep)?;
+    Ok(emit(
+        json_out,
+        crate::batch::render_text(rep, file, base),
+        value,
+    ))
+}
+
+fn batch_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "" | "--help" | "-h" | "help" => {
+            print!("{BATCH_USAGE}");
+            Ok(if verb.is_empty() { 2 } else { 0 })
+        }
+        "validate" | "plan" | "status" => {
+            let p = parse_args(rest, &["file", "base"], &["json"])?;
+            let (batch, base, file, base_label) = batch_input(&p, verb)?;
+            let rep = match verb {
+                "validate" => crate::batch::validate(&batch, &base)?,
+                "plan" => crate::batch::plan(&batch),
+                _ => crate::batch::status(&batch, &base)?,
+            };
+            let code = batch_emit(json_out, &rep, &file, &base_label)?;
+            Ok(
+                if verb == "status" && rep.status != "applied" && rep.status != "pending" {
+                    1
+                } else {
+                    code
+                },
+            )
+        }
+        "apply" => {
+            let p = parse_args(rest, &["file", "base", "approve"], &["json", "dry-run"])?;
+            let (batch, base, file, base_label) = batch_input(&p, verb)?;
+            let rep = crate::batch::apply(
+                &batch,
+                &base,
+                &crate::batch::ApplyOptions {
+                    dry_run: p.has("dry-run"),
+                    approve: p.get("approve").map(|s| s.to_string()),
+                },
+            )?;
+            batch_emit(json_out, &rep, &file, &base_label)
+        }
+        "resume" => Err(CertError::policy(
+            "batch apply is all-or-nothing: a failed apply leaves nothing to resume, and applying \
+             a completed batch again returns its receipt without reissuing. Run `fleet cert batch \
+             status` to see where a batch stands.",
+        )),
+        other => Err(CertError::usage(format!(
+            "unknown batch verb '{other}' (validate | plan | apply | status)"
+        ))),
+    }
+}
+
 fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     let p = parse_args(args, &["dir"], &["json"])?;
     let dir = p.get("dir").unwrap_or(".").to_string();
@@ -1137,8 +1602,53 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
             });
             Ok(emit(json_out, text, value))
         }
+        "scaffold" => {
+            let p = parse_args(rest, &["name", "out"], &["json"])?;
+            let name = p
+                .get("name")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile scaffold needs --name <name>"))?;
+            let out = p.require("out", "profile scaffold")?;
+            let scaffold = profile::CustomProfile::scaffold(name);
+            scaffold.validate()?;
+            let bytes = serde_json::to_vec_pretty(&scaffold)
+                .map_err(|e| CertError::engine(e.to_string()))?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&out)
+                .map_err(|e| CertError::engine(format!("cannot create profile {out}: {e}")))?;
+            file.write_all(&bytes)
+                .map_err(|e| CertError::engine(format!("cannot write profile {out}: {e}")))?;
+            Ok(emit(
+                json_out,
+                format!("Scaffolded custom profile {name} at {out}\n"),
+                json!({"name": name, "path": out, "profile": scaffold}),
+            ))
+        }
+        "validate" => {
+            let p = parse_args(rest, &["file"], &["json"])?;
+            let path = p
+                .get("file")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile validate needs <file>"))?;
+            let (custom, resolved) = profile::load_custom_profile(&PathBuf::from(path))?;
+            let text = format!(
+                "Valid custom profile {} (key={}, validity={}d, ceiling={}d)\n",
+                custom.name,
+                resolved.key_algorithm.name(),
+                custom.default_validity_days,
+                custom.max_validity_days
+            );
+            Ok(emit(
+                json_out,
+                text,
+                json!({"valid": true, "profile": custom}),
+            ))
+        }
         other => Err(CertError::usage(format!(
-            "unknown profile verb '{other}' (list | show)"
+            "unknown profile verb '{other}' (list | show | validate | scaffold)"
         ))),
     }
 }
@@ -1204,8 +1714,135 @@ fn algorithms_cmd(args: &[String], json_out: bool) -> Result<i32> {
             });
             Ok(emit(json_out, text, value))
         }
+        "benchmark" => {
+            let p = parse_args(&args[1..], &["iterations"], &["json"])?;
+            if p.positionals.len() > 1 {
+                return Err(CertError::usage(
+                    "algorithms benchmark takes one comma-separated algorithm list",
+                ));
+            }
+            let iterations = match p.get("iterations") {
+                Some(v) => v.parse::<usize>().map_err(|_| {
+                    CertError::usage(format!("--iterations must be a whole number, got '{v}'"))
+                })?,
+                None => algorithm_lab::DEFAULT_ITERATIONS,
+            };
+            let iterations = algorithm_lab::check_iterations(iterations)?;
+            let (infos, warnings) = algorithm_lab::select_algorithms(p.positional(0))?;
+            let host = algorithm_lab::host_info();
+            let mut results = Vec::new();
+            for info in &infos {
+                results.push(algorithm_lab::benchmark_algorithm(info.id, iterations)?);
+            }
+            let mut text = format!(
+                "fleet cert algorithms benchmark ({iterations} samples per operation, microseconds)\n  host: {} {} · {} cpus · {}{}\n",
+                host.os,
+                host.arch,
+                host.cpus,
+                host.backend,
+                if host.debug_build {
+                    " · DEBUG build (numbers not representative)"
+                } else {
+                    ""
+                }
+            );
+            text.push_str(&format!(
+                "  {:10} {:7} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
+                "algorithm", "op", "min", "p50", "p95", "p99", "max"
+            ));
+            for r in &results {
+                for (op, t) in [
+                    ("keygen", &r.keygen),
+                    ("sign", &r.sign),
+                    ("verify", &r.verify),
+                ] {
+                    text.push_str(&format!(
+                        "  {:10} {:7} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
+                        r.algorithm, op, t.min_us, t.p50_us, t.p95_us, t.p99_us, t.max_us
+                    ));
+                }
+                text.push_str(&format!(
+                    "  {:10} sizes: key {} B · cert {} B · signature {} B\n",
+                    r.algorithm,
+                    r.private_key_pkcs8_bytes,
+                    r.certificate_der_bytes,
+                    r.signature_bytes
+                ));
+            }
+            text.push_str(
+                "  Evidence for this host and build only, never a CI baseline (spec §26.2).\n",
+            );
+            for w in &warnings {
+                text.push_str(&format!("  warning: {w}\n"));
+            }
+            let value = json!({
+                "iterations": iterations,
+                "unit": "microseconds",
+                "host": host,
+                "results": results,
+                "warnings": warnings,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "doctor" => {
+            let p = parse_args(&args[1..], &[], &["json"])?;
+            if p.positionals.len() > 1 {
+                return Err(CertError::usage(
+                    "algorithms doctor takes one comma-separated algorithm list",
+                ));
+            }
+            let (infos, warnings) = algorithm_lab::select_algorithms(p.positional(0))?;
+            let env = algorithm_lab::OpensslEnv::detect();
+            let reports: Vec<_> = infos
+                .iter()
+                .map(|i| algorithm_lab::doctor_algorithm(i.id, &env))
+                .collect();
+            let all_ok = reports.iter().all(|r| r.ok());
+            let mut text = format!(
+                "fleet cert algorithms doctor\n  openssl: {}{}\n",
+                env.version.as_deref().unwrap_or("not found"),
+                if env.version.is_some() {
+                    if env.ml_dsa {
+                        " (ML-DSA available)"
+                    } else {
+                        " (no ML-DSA)"
+                    }
+                } else {
+                    ""
+                }
+            );
+            for r in &reports {
+                text.push_str(&format!(
+                    "  {} {}\n",
+                    r.algorithm,
+                    if r.ok() { "ok" } else { "FAIL" }
+                ));
+                for probe in &r.probes {
+                    let status = match probe.status {
+                        algorithm_lab::ProbeStatus::Ok => "ok",
+                        algorithm_lab::ProbeStatus::Fail => "FAIL",
+                        algorithm_lab::ProbeStatus::Skipped => "skipped",
+                    };
+                    text.push_str(&format!(
+                        "    {:17} {:7} {}\n",
+                        probe.probe, status, probe.detail
+                    ));
+                }
+            }
+            for w in &warnings {
+                text.push_str(&format!("  warning: {w}\n"));
+            }
+            let value = json!({
+                "ok": all_ok,
+                "openssl": env,
+                "algorithms": reports,
+                "warnings": warnings,
+            });
+            let code = emit(json_out, text, value);
+            Ok(if all_ok { code } else { 1 })
+        }
         other => Err(CertError::usage(format!(
-            "unknown algorithms verb '{other}' (list | describe)"
+            "unknown algorithms verb '{other}' (list | describe | benchmark | doctor)"
         ))),
     }
 }
@@ -1382,21 +2019,11 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "publish apply/status",
         "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
     ),
-    ("dns", "DNS plan/render/verify (spec §24.7)"),
     (
         "key import/export/escrow/restore/rotate",
         "remaining standalone key ceremonies (spec §6.1)",
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
-    (
-        "profile validate/scaffold",
-        "profile validation + scaffolding (spec §6.1)",
-    ),
-    (
-        "algorithms benchmark/doctor",
-        "algorithm benchmarks (spec §6.1)",
-    ),
-    ("batch", "batch plan/validate/apply (spec §6.5)"),
     (
         "root/issuer renew/rotate/replace",
         "lifecycle verbs (spec §5.2)",
@@ -1487,7 +2114,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let mut algo_results = Vec::new();
     let mut all_ok = true;
     for info in algorithm::registry() {
-        let ok = engine_self_test(info.id);
+        let ok = algorithm_lab::engine_self_test(info.id);
         if !ok {
             all_ok = false;
         }
@@ -1512,7 +2139,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -1520,38 +2147,306 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
     Ok(if all_ok { code } else { 1 })
 }
 
-fn engine_self_test(algo: AlgorithmId) -> bool {
-    let Ok(key) = engine::generate_key(algo) else {
-        return false;
-    };
-    let mut params = CertificateParams::new(Vec::<String>::new()).expect("empty SAN list");
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "fleet cert doctor self-test");
-    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let now = Rfc3339::now();
-    params.not_before = now.0;
-    params.not_after = (now.0 + time::Duration::days(1));
-    let Ok(cert) = params.self_signed(&key) else {
-        return false;
-    };
-    match crate::chain::parse_cert(cert.der()) {
-        Ok(info) => crate::chain::verify_signature(&info, &info),
-        Err(_) => false,
-    }
-}
-
 #[cfg(test)]
 mod key_ceremony_tests {
     use super::*;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("fleet-cert-{tag}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).expect("create isolated test directory");
+        dir
+    }
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn exported_spki_matches_the_certificate_engine_for_every_algorithm() {
+        // Oracle: rcgen writes the SubjectPublicKeyInfo of every
+        // certificate it signs; `public_key_spki_der` must produce the
+        // same bytes from the public key `inspect_key` returns.
+        for algo in [
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::Rsa2048,
+            AlgorithmId::MlDsa44,
+        ] {
+            let key = engine::generate_key(algo).expect("generate");
+            let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+                .expect("params")
+                .self_signed(&key)
+                .expect("self-signed certificate");
+            let (_, parsed) =
+                x509_parser::parse_x509_certificate(cert.der()).expect("parse certificate");
+            let public = engine::inspect_key(algo, &key.serialize_der()).expect("inspect");
+            assert_eq!(
+                engine::public_key_spki_der(algo, &public),
+                parsed.tbs_certificate.subject_pki.raw,
+                "SPKI mismatch for {}",
+                algo.info().name
+            );
+        }
+    }
+
+    #[test]
+    fn import_takes_pem_or_der_pkcs8_and_refuses_the_wrong_algorithm() {
+        let dir = scratch_dir("key-import");
+        let key = engine::generate_key(AlgorithmId::Ed25519).expect("generate");
+        let der = key.serialize_der();
+        let pem_path = dir.join("external.pem");
+        std::fs::write(&pem_path, crate::bundle::pem_encode("PRIVATE KEY", &der)).unwrap();
+        let pem_text = pem_path.to_string_lossy().into_owned();
+
+        // A wrong algorithm is refused and nothing is written.
+        let wrong = dir.join("wrong.pk8");
+        let wrong_text = wrong.to_string_lossy().into_owned();
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "p256",
+                "--in",
+                &pem_text,
+                "--out",
+                &wrong_text
+            ]),
+            true,
+        )
+        .is_err());
+        assert!(!wrong.exists());
+
+        // The PEM block imports as the same PKCS#8 DER, owner-only.
+        let out = dir.join("imported.pk8");
+        let out_text = out.to_string_lossy().into_owned();
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &pem_text,
+                "--out",
+                &out_text
+            ]),
+            true,
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(&out).unwrap(), der);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // An existing destination is never replaced.
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &pem_text,
+                "--out",
+                &out_text
+            ]),
+            true,
+        )
+        .is_err());
+
+        // Raw DER imports too; a legacy PEM label is refused by name.
+        let der_path = dir.join("external.der");
+        std::fs::write(&der_path, &der).unwrap();
+        let der_out = dir.join("from-der.pk8");
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &der_path.to_string_lossy(),
+                "--out",
+                &der_out.to_string_lossy(),
+            ]),
+            true,
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(&der_out).unwrap(), der);
+        let legacy = dir.join("legacy.pem");
+        std::fs::write(&legacy, crate::bundle::pem_encode("EC PRIVATE KEY", &der)).unwrap();
+        let err = pkcs8_from_der_or_pem(&std::fs::read(&legacy).unwrap(), &legacy)
+            .expect_err("legacy label refused");
+        assert!(err.to_string().contains("EC PRIVATE KEY"));
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn rotate_writes_a_fresh_key_and_keeps_the_old_one() {
+        let dir = scratch_dir("key-rotate");
+        for (name, algorithm) in [
+            ("ed25519", AlgorithmId::Ed25519),
+            ("p256", AlgorithmId::P256),
+        ] {
+            let old = engine::generate_key(algorithm).expect("generate");
+            let old_der = old.serialize_der();
+            let old_path = dir.join(format!("{name}-g1.pk8"));
+            std::fs::write(&old_path, &old_der).unwrap();
+            let old_text = old_path.to_string_lossy().into_owned();
+            let new_path = dir.join(format!("{name}-g2.pk8"));
+            let new_text = new_path.to_string_lossy().into_owned();
+            let rotate = |out: &str| {
+                key_cmd(
+                    &args(&[
+                        "rotate",
+                        "--algorithm",
+                        name,
+                        "--in",
+                        &old_text,
+                        "--out",
+                        out,
+                    ]),
+                    true,
+                )
+            };
+            assert!(rotate(&new_text).is_ok());
+            // The old key file is untouched.
+            assert_eq!(std::fs::read(&old_path).unwrap(), old_der);
+            // The successor loads under the same algorithm and is a
+            // different key.
+            let new_der = std::fs::read(&new_path).unwrap();
+            let old_public = engine::inspect_key(algorithm, &old_der).unwrap();
+            let new_public = engine::inspect_key(algorithm, &new_der).unwrap();
+            assert_ne!(old_public, new_public);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&new_path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            // An existing destination is never replaced, the old path
+            // included.
+            assert!(rotate(&new_text).is_err());
+            assert_eq!(std::fs::read(&new_path).unwrap(), new_der);
+            assert!(rotate(&old_text).is_err());
+            assert_eq!(std::fs::read(&old_path).unwrap(), old_der);
+        }
+        // A key that does not load under the named algorithm is refused
+        // and nothing is written.
+        let ed = engine::generate_key(AlgorithmId::Ed25519).expect("generate");
+        let ed_path = dir.join("ed-as-p256.pk8");
+        std::fs::write(&ed_path, ed.serialize_der()).unwrap();
+        let refused = dir.join("never-written.pk8");
+        assert!(key_cmd(
+            &args(&[
+                "rotate",
+                "--algorithm",
+                "p256",
+                "--in",
+                &ed_path.to_string_lossy(),
+                "--out",
+                &refused.to_string_lossy(),
+            ]),
+            true,
+        )
+        .is_err());
+        assert!(!refused.exists());
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn export_writes_only_the_public_key_and_never_replaces_a_file() {
+        let dir = scratch_dir("key-export");
+        let key = engine::generate_key(AlgorithmId::P256).expect("generate");
+        let der = key.serialize_der();
+        let key_path = dir.join("p256.pk8");
+        std::fs::write(&key_path, &der).unwrap();
+        let key_text = key_path.to_string_lossy().into_owned();
+        let public = engine::inspect_key(AlgorithmId::P256, &der).unwrap();
+        let spki = engine::public_key_spki_der(AlgorithmId::P256, &public);
+
+        let pem_out = dir.join("p256.pub.pem");
+        let pem_text = pem_out.to_string_lossy().into_owned();
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &pem_text
+            ]),
+            true,
+        )
+        .is_ok());
+        let written = std::fs::read_to_string(&pem_out).unwrap();
+        let blocks = pem_decode_all(&written).unwrap();
+        assert_eq!(blocks, vec![("PUBLIC KEY".to_string(), spki.clone())]);
+        assert!(!written.contains("PRIVATE"));
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &pem_text
+            ]),
+            true,
+        )
+        .is_err());
+
+        let der_out = dir.join("p256.pub.der");
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &der_out.to_string_lossy(),
+                "--format",
+                "der",
+            ]),
+            true,
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(&der_out).unwrap(), spki);
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &dir.join("x").to_string_lossy(),
+                "--format",
+                "jwk",
+            ]),
+            true,
+        )
+        .is_err());
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
 
     #[test]
     fn generate_creates_private_file_once_and_inspect_redacts_material() {
@@ -1578,32 +2473,28 @@ mod key_ceremony_tests {
         let bytes = std::fs::read(&path).expect("generated PKCS#8 key");
         assert!(!bytes.is_empty());
         assert!(engine::inspect_key(AlgorithmId::P256, &bytes).is_ok());
-        assert!(
-            key_cmd(
-                &[
-                    "inspect".into(),
-                    "--algorithm".into(),
-                    "p256".into(),
-                    "--in".into(),
-                    path_text.clone(),
-                ],
-                true,
-            )
-            .is_ok()
-        );
-        assert!(
-            key_cmd(
-                &[
-                    "generate".into(),
-                    "--algorithm".into(),
-                    "p256".into(),
-                    "--out".into(),
-                    path_text,
-                ],
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &[
+                "inspect".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--in".into(),
+                path_text.clone(),
+            ],
+            true,
+        )
+        .is_ok());
+        assert!(key_cmd(
+            &[
+                "generate".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--out".into(),
+                path_text,
+            ],
+            true,
+        )
+        .is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

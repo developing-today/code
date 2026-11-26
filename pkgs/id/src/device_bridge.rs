@@ -538,7 +538,7 @@ mod tests {
         let wants = r#"{"v": 1, "requests": []}"#;
         let error = broker.publish_wants("device-1", wants, true).unwrap_err();
         assert_eq!(error, BrokerError::RetainedWants);
-        assert!(broker.received_wants.is_empty());
+        assert_eq!(broker.received_wants, [] as [String; 0]);
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         );
         // Nothing was delivered: no retained manifest, no received wants.
         assert!(broker.retained_manifest("worlds/abc").is_none());
-        assert!(broker.received_wants.is_empty());
+        assert_eq!(broker.received_wants, [] as [String; 0]);
         // And an unauthenticated device cannot publish.
         let manifest = example_manifest();
         assert_eq!(

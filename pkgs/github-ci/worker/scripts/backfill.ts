@@ -67,7 +67,7 @@ import { Turso } from "../src/turso";
 
 type Obj = Record<string, unknown>;
 
-const TURSO_QUEUE_URL = process.env.TURSO_QUEUE_URL ?? "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
+const TURSO_QUEUE_URL = process.env.TURSO_QUEUE_URL ?? "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
 
 const env: SinkEnv = {
   TURSO_QUEUE_URL,

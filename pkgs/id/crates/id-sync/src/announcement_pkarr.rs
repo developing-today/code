@@ -131,6 +131,60 @@ pub fn dns_packet(world_key: &[u8; 32], signed: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Build a pkarr DNS packet of `TXT`/`IN` records, one per entry of
+/// `records`, each named `<label>.<z32 key>` and split into 255-byte
+/// character-strings. [`dns_packet`] is this with [`RECORD_LABEL`] and
+/// one record; other record families (the program gallery's pointers,
+/// #8281) use their own label under the same key.
+///
+/// # Errors
+///
+/// Fails when `label` is not one lower-case DNS label (1..=63 bytes of
+/// `a-z`, `0-9`, `-` or `_`), a record is empty or too long for one
+/// `TXT` record, or the packet would exceed [`MAX_DNS_PACKET_BYTES`].
+pub fn txt_packet(key: &[u8; 32], label: &str, records: &[&[u8]]) -> Result<Vec<u8>> {
+    ensure!(
+        (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'),
+        "pkarr record label {label:?} is not one lower-case DNS label"
+    );
+    let count = u16::try_from(records.len()).context("too many records for one DNS packet")?;
+    let origin = z32_encode(key);
+    let mut out = Vec::new();
+    out.extend_from_slice(&0_u16.to_be_bytes());
+    out.extend_from_slice(&FLAGS.to_be_bytes());
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&count.to_be_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    for record in records {
+        ensure!(!record.is_empty(), "a pkarr TXT record cannot be empty");
+        let mut rdata = Vec::with_capacity(record.len() + record.len().div_ceil(255));
+        for chunk in record.chunks(255) {
+            // `chunks(255)` yields at most 255 bytes, so the length fits.
+            #[allow(clippy::cast_possible_truncation)]
+            rdata.push(chunk.len() as u8);
+            rdata.extend_from_slice(chunk);
+        }
+        push_name(&mut out, &[label, &origin]);
+        out.extend_from_slice(&TYPE_TXT.to_be_bytes());
+        out.extend_from_slice(&CLASS_IN.to_be_bytes());
+        out.extend_from_slice(&RECORD_TTL_SECONDS.to_be_bytes());
+        out.extend_from_slice(
+            &u16::try_from(rdata.len())
+                .context("a pkarr TXT record is too long")?
+                .to_be_bytes(),
+        );
+        out.extend_from_slice(&rdata);
+        ensure!(
+            out.len() <= MAX_DNS_PACKET_BYTES,
+            "pkarr DNS packet would be over the {MAX_DNS_PACKET_BYTES}-byte limit"
+        );
+    }
+    Ok(out)
+}
+
 /// The BEP44 bytes the pkarr signature covers.
 #[must_use]
 pub fn bep44_signable(timestamp_us: u64, dns: &[u8]) -> Vec<u8> {
@@ -165,8 +219,24 @@ impl PkarrItem {
             "a world announcement is published only under its own world key"
         );
         let bytes = signed.to_bytes()?;
-        let dns_packet = dns_packet(&world_key, &bytes)?;
-        let timestamp_us = signed.announcement.seq;
+        Self::sign_packet(
+            key,
+            signed.announcement.seq,
+            dns_packet(&world_key, &bytes)?,
+        )
+    }
+
+    /// Sign any DNS packet under `key` at `timestamp_us`, the BEP44
+    /// `seq`. [`PkarrItem::sign`] is this for an announcement packet.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the packet is empty or over [`MAX_DNS_PACKET_BYTES`].
+    pub fn sign_packet(key: &SigningKey, timestamp_us: u64, dns_packet: Vec<u8>) -> Result<Self> {
+        ensure!(
+            dns_packet.len() > HEADER_BYTES && dns_packet.len() <= MAX_DNS_PACKET_BYTES,
+            "pkarr DNS packet size is out of range"
+        );
         let signature = key
             .sign(&bep44_signable(timestamp_us, &dns_packet))
             .to_bytes();
@@ -274,6 +344,17 @@ impl<'a> Reader<'a> {
 ///
 /// Fails when the packet is malformed.
 pub fn announcement_records(dns: &[u8], world_key: &[u8; 32]) -> Result<Vec<Vec<u8>>> {
+    txt_records(dns, world_key, RECORD_LABEL)
+}
+
+/// Every `TXT`/`IN` record in `dns` named `<label>` or
+/// `<label>.<z32 key>`, as its joined character-strings; other records
+/// are ignored. Names compare case-insensitively.
+///
+/// # Errors
+///
+/// Fails when the packet is malformed.
+pub fn txt_records(dns: &[u8], key: &[u8; 32], label: &str) -> Result<Vec<Vec<u8>>> {
     ensure!(
         dns.len() >= HEADER_BYTES && dns.len() <= MAX_DNS_PACKET_BYTES,
         "DNS packet size is out of range"
@@ -288,7 +369,8 @@ pub fn announcement_records(dns: &[u8], world_key: &[u8; 32]) -> Result<Vec<Vec<
         reader.name()?;
         reader.take(4)?;
     }
-    let origin = z32_encode(world_key);
+    let origin = z32_encode(key);
+    let wanted = label.to_ascii_lowercase();
     let mut found = Vec::new();
     for _ in 0..records {
         let labels = reader.name()?;
@@ -298,8 +380,8 @@ pub fn announcement_records(dns: &[u8], world_key: &[u8; 32]) -> Result<Vec<Vec<
         let rdlen = usize::from(reader.u16()?);
         let rdata = reader.take(rdlen)?;
         let named = match labels.as_slice() {
-            [label] => label == RECORD_LABEL,
-            [label, key] => label == RECORD_LABEL && *key == origin,
+            [only] => *only == wanted,
+            [first, second] => *first == wanted && *second == origin,
             _ => false,
         };
         if !(named && rtype == TYPE_TXT && rclass == CLASS_IN) {
@@ -632,5 +714,62 @@ mod tests {
             relay: None,
         };
         assert!(publisher.publish(&fields, 1_000_000).is_err());
+    }
+
+    #[test]
+    fn the_generic_txt_packet_reproduces_the_announcement_packet() {
+        let (key, item) = published();
+        let world = world_key(&key);
+        let record = announcement_records(&item.dns_packet, &world)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            txt_packet(&world, RECORD_LABEL, &[record.as_slice()]).unwrap(),
+            item.dns_packet
+        );
+        assert_eq!(
+            PkarrItem::sign_packet(&key, item.timestamp_us, item.dns_packet.clone()).unwrap(),
+            item
+        );
+    }
+
+    #[test]
+    fn txt_packets_carry_several_records_under_their_own_label() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let world = world_key(&key);
+        let long = vec![b'x'; 300];
+        let dns = txt_packet(&world, "_idg", &[b"one".as_slice(), long.as_slice()]).unwrap();
+        assert_eq!(
+            txt_records(&dns, &world, "_idg").unwrap(),
+            vec![b"one".to_vec(), long]
+        );
+        assert_eq!(
+            txt_records(&dns, &world, RECORD_LABEL).unwrap(),
+            [] as [Vec<u8>; 0]
+        );
+        assert_eq!(
+            announcement_records(&dns, &world).unwrap(),
+            [] as [Vec<u8>; 0]
+        );
+        let other = world_key(&SigningKey::from_bytes(&[10; 32]));
+        assert_eq!(
+            txt_records(&dns, &other, "_idg").unwrap(),
+            [] as [Vec<u8>; 0]
+        );
+    }
+
+    #[test]
+    fn txt_packets_refuse_bad_labels_empty_records_and_the_budget() {
+        let world = world_key(&SigningKey::from_bytes(&[9; 32]));
+        for label in ["", "_IDG", "a.b", "a b"] {
+            assert!(
+                txt_packet(&world, label, &[b"x".as_slice()]).is_err(),
+                "{label:?}"
+            );
+        }
+        assert!(txt_packet(&world, "_idg", &[b"".as_slice()]).is_err());
+        let big = vec![b'x'; MAX_DNS_PACKET_BYTES];
+        assert!(txt_packet(&world, "_idg", &[big.as_slice()]).is_err());
+        assert!(PkarrItem::sign_packet(&SigningKey::from_bytes(&[9; 32]), 1, vec![0; 4]).is_err());
     }
 }

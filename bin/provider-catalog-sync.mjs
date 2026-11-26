@@ -562,10 +562,32 @@ async function enumerateProxy(port, sourceDir) {
   return modelIdsFromProxyResponse(data);
 }
 
+// models.dev's catalog is an object keyed by provider id, each provider an
+// object whose optional `models` is an object keyed by model id (#7983 item
+// 8). Callers read it as `modelsDev?.[pid]?.models`, so a drifted shape (an
+// array, a string, a provider whose models is a list) would read as "no
+// models" and every crosscheck would quietly go empty. Reject it here so
+// the run reports models.dev as unavailable, with the reason, instead.
+export function parseModelsDev(data) {
+  const kind = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+  if (kind(data) !== 'object') {
+    throw new Error(`models.dev catalog must be a JSON object keyed by provider, got ${kind(data)}`);
+  }
+  for (const [pid, entry] of Object.entries(data)) {
+    if (kind(entry) !== 'object') {
+      throw new Error(`models.dev provider "${pid}" must be an object, got ${kind(entry)}`);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'models') && kind(entry.models) !== 'object') {
+      throw new Error(`models.dev provider "${pid}".models must be an object keyed by model id, got ${kind(entry.models)}`);
+    }
+  }
+  return data;
+}
+
 async function loadModelsDev(spec) {
   if (!spec) return null;
-  if (fs.existsSync(spec)) return JSON.parse(fs.readFileSync(spec, 'utf8'));
-  return fetchJson(spec, 30000);
+  if (fs.existsSync(spec)) return parseModelsDev(JSON.parse(fs.readFileSync(spec, 'utf8')));
+  return parseModelsDev(await fetchJson(spec, 30000));
 }
 
 // ---------------------------------------------------------------------------

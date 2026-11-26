@@ -72,6 +72,19 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     if let Some(obj) = task.as_object_mut() {
         obj.insert("platform".to_string(), json!(platform));
     }
+    // #15070: the payload's optional structured route declaration.
+    // validate_packet has already refused a malformed declaration;
+    // this is the broker-side recheck (the broker is the trust
+    // boundary) in the platform limitation's own terms, so a routed
+    // packet can never land without its limitation.
+    let route = packet
+        .get("payload")
+        .and_then(route_declaration);
+    if let Some((route_platform, route_reason)) = &route {
+        if let Some(e) = platform_limit_error(Some(route_platform), Some(route_reason)) {
+            return fail(2, format!("enqueue: route: {e}"));
+        }
+    }
     if req
         .get("dry_run")
         .and_then(|d| d.as_bool())
@@ -90,7 +103,11 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         &json!({"queue": queue, "payload": task.get("payload").cloned().unwrap_or(json!({}))}),
     );
     let override_reason = dedupe_override(&packet);
-    let work = (|| -> Result<(Value, Option<Value>, Option<Value>), TErr> {
+    // The tuple is (row, predecessor, work-identity collision,
+    // dedupe-key match report). The two reports are the envelope
+    // fields a filer reads to learn its filing was absorbed rather
+    // than created (#10627).
+    let work = (|| -> Result<(Value, Option<Value>, Option<Value>, Option<Value>), TErr> {
         let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
             let existing = t.query_objs(
@@ -106,7 +123,8 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 if let Some(id) = row.get("id").and_then(Value::as_i64) {
                     seed_task_links(t, id, &row, "enqueue_repo_task")?;
                 }
-                return Ok((row, None, None));
+                let report = dedupe_match_detail(&row, false);
+                return Ok((row, None, None, Some(report)));
             }
             // #13091: a COMPLETED predecessor is terminal for the
             // key. The work was done and dispositioned; a re-filing
@@ -122,7 +140,14 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
-                    return Ok((row.clone(), None, None));
+                    // #10627: the absorption itself is #13091's
+                    // standing rule; what was missing is the report.
+                    // Name the terminal match in the envelope so a
+                    // caller can suffix the key and re-file in the
+                    // same pass instead of mistaking the completed
+                    // row for the task it asked for.
+                    let report = dedupe_match_detail(row, true);
+                    return Ok((row.clone(), None, None, Some(report)));
                 }
             }
             predecessor = terminal;
@@ -139,7 +164,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("");
             if let Some(holder) = live_identity_holder(t, ident, kind)? {
                 let detail = collision_detail(&holder, ident);
-                return Ok((holder, None, Some(detail)));
+                return Ok((holder, None, Some(detail), None));
             }
             // #13091: a COMPLETED holder of the identity absorbs
             // the filing the same way. #10627 left terminal rows
@@ -159,7 +184,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                      task is never re-served (#13091) — file with \
                      payload.dedupe_override=\"<reason>\" for a deliberate parallel"
                 );
-                return Ok((holder, None, Some(detail)));
+                return Ok((holder, None, Some(detail), None));
             }
         }
         let ins = t.exec(
@@ -207,6 +232,44 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
+        // #15070: translate the packet's structured route declaration
+        // into the task's lane-ledger platform limitation at creation,
+        // so the claim pick (PLATFORM_LIMIT_PICK_CLAUSE) and the by-id /
+        // transfer paths refuse every other family from the moment the
+        // task lands — not only after a wrong-family lane draws it and
+        // records the limitation at release (#14993). The ledger row
+        // carries only the limitation: assigned_lane stays NULL until
+        // a real lane assignment (verb_lane / record_execution update
+        // the existing row). A packet without a route creates no
+        // ledger row and behaves exactly as before.
+        if let Some((route_platform, route_reason)) = &route {
+            let route_now = now_iso();
+            t.exec(
+                "INSERT INTO repo_task_lane_ledger \
+                 (queue, task_id, platform_limit, platform_limit_reason, assigned_by, assigned_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Arg::Text(queue.clone()),
+                    Arg::Int(id),
+                    Arg::Text(route_platform.clone()),
+                    Arg::Text(route_reason.clone()),
+                    Arg::Text("enqueue_route_declaration".to_string()),
+                    Arg::Text(route_now.clone()),
+                    Arg::Text(route_now),
+                ],
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(id),
+                "route_declared",
+                &json!({
+                    "platform_limit": route_platform,
+                    "platform_limit_reason": route_reason,
+                    "via": "enqueue_repo_task_turso",
+                }),
+            )?;
+        }
         let mut link_row = task.clone();
         link_row["created_at"] = json!(now_iso());
         event(
@@ -281,17 +344,20 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 "enqueue_staleness_check",
             )?;
             let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
-            return Ok((row, predecessor, None));
+            return Ok((row, predecessor, None, None));
         }
-        Ok((row, predecessor, None))
+        Ok((row, predecessor, None, None))
     })();
     match work {
-        Ok((row, predecessor, collision)) if !row.is_null() => {
+        Ok((row, predecessor, collision, dedupe_match)) if !row.is_null() => {
             let mut envelope = json!({
                 "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
             });
             if let Some(c) = collision {
                 envelope["work_identity_collision"] = c;
+            }
+            if let Some(m) = dedupe_match {
+                envelope["dedupe_match"] = m;
             }
             if let Some(pred) = &predecessor {
                 envelope["revived_from"] = json!({

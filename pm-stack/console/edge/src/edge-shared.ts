@@ -206,15 +206,27 @@ export interface EdgeOptions {
     kinds?: readonly string[];
   };
   /** The hosted M4 ledger surfaces (#14968, CF-5b): the fleet-platform
-   * ledger's address and credential, present only when the Worker's
-   * LEDGER_PAGES flag reads `on`. With it, this side serves /alerts,
-   * /notifications and /comments (and their /api twins) itself from
-   * the ledger; without it, those pages stay the host's. */
-  ledgerPages?: { url: string; token?: string };
+   * ledger store, present only when the Worker's LEDGER_PAGES flag
+   * reads `on`. With it, this side serves /alerts, /notifications and
+   * /comments (and their /api twins) itself from the ledger; without
+   * it, those pages stay the host's. The store is the D1 database
+   * named fleet-platform since the owner ruling of 2026-11-26 on
+   * #14866, or the Turso ledger (address + credential) when the
+   * Worker's LEDGER_STORE var does not read `d1` — the rollback. */
+  ledgerPages?:
+    | { store: "turso"; url: string; token?: string }
+    | { store: "d1"; db?: import("./ledger-pages.ts").LedgerD1Database };
   /** C6 quota page (#15018): opt-in. Envelope + existing question sets
    * are supplied by the host; dispatchReset is the existing pool-steward
    * machinery. Absent/off: /console/api/quota answers 503. */
-  quota?: { enabled: boolean; envelope?: unknown; questions?: import("../../src/quota-page.ts").ExistingQuestionSet[]; dispatchReset?: (p: import("../../src/quota-page.ts").ResetProposal) => Promise<{ queueTaskId: string; result: string }> };
+  quota?: {
+    enabled: boolean;
+    envelope?: unknown;
+    questions?: import("../../src/quota-page.ts").ExistingQuestionSet[];
+    dispatchReset?: (
+      p: import("../../src/quota-page.ts").ResetProposal,
+    ) => Promise<{ queueTaskId: string; result: string }>;
+  };
   /** The live connections to the app, which the platform holds (they
    * stay open while this object is put away): take a request to be
    * one and give the answer for it, say something to all of them, and

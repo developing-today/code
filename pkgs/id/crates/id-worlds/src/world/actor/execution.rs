@@ -819,9 +819,8 @@ impl WorldActor {
     /// is anchored to it at construction), so this bound holds on
     /// either clock.
     fn note_fuel_refusal(&mut self) {
-        self.fuel_retry_not_before = Some(
-            self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW,
-        );
+        self.fuel_retry_not_before =
+            Some(self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW);
     }
 
     /// Deliver a capability result, or queue it when the account's fuel
@@ -2382,6 +2381,30 @@ impl WorldActor {
         } else {
             Err(crate::directory::Refusal::Forbidden(format!(
                 "only an admin or a moderator {what}"
+            ))
+            .into())
+        }
+    }
+
+    /// The world's owner (an account holding an admin seat in one of its
+    /// groups) or the operator (the process admin) may change its
+    /// lifecycle; everyone else gets the same forbidden refusal any other
+    /// owner-only act gives (#10694).
+    pub(super) fn require_ownership(&self, authority: &Authority, what: &str) -> Result<()> {
+        let directory = self.core.directory();
+        let allowed = match authority {
+            Authority::Admin => true,
+            Authority::Signed(key) => directory.account_for_key(key).is_some_and(|account| {
+                directory.groups().any(|group| {
+                    directory.level_in(&account, group.id) == Some(crate::directory::Level::Admin)
+                })
+            }),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(crate::directory::Refusal::Forbidden(format!(
+                "only the world's owner or the operator {what}"
             ))
             .into())
         }

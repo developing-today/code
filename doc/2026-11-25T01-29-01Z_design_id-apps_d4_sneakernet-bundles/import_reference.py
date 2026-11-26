@@ -307,7 +307,9 @@ class Outcome:
 HOLD = {"unknown_identity", "binding_kind_unavailable", "binding_records_missing"}
 
 
-def import_bundle(blob: bytes, rx: Receiver, now: int) -> Outcome:
+def import_bundle(blob: bytes, rx: Receiver, now: int, grants: bool = False) -> Outcome:
+    """`grants=True` is a slice-2 importer: a grants record passes stage 1
+    here and is checked by grants_reference.py after stage 5."""
     stage = 1
     try:
         # 1. Header and manifest structure (slice 1 codes), no object bytes read.
@@ -321,7 +323,7 @@ def import_bundle(blob: bytes, rx: Receiver, now: int) -> Outcome:
             raise Refused("manifest_too_large")
         body, pos = br._take(blob, pos, mlen, "truncated_manifest")
         sig, pos = br._take(blob, pos, 65, "truncated_signature")
-        m = br.parse_manifest(body)
+        m = br.parse_manifest(body, grants)
         # 2. The bundle signature over the manifest.
         stage = 2
         if sig[0] != 0x01:
@@ -371,7 +373,7 @@ def import_bundle(blob: bytes, rx: Receiver, now: int) -> Outcome:
             raise Refused("signing_key_not_enrolled")
         # 4. Object bytes: length and every digest (slice 1's full reader).
         stage = 4
-        rep = br.read_a(blob, now)
+        rep = br.read_a(blob, now, grants)
     except (Refused, br.BundleError) as exc:
         code = str(exc)
         if code in HOLD:

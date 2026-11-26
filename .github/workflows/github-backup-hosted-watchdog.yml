@@ -1,0 +1,84 @@
+name: github-backup hosted watchdog
+
+# Missed-run watchdog for the hosted freshness probe (#15001).
+#
+# The probe (github-backup-hosted-freshness.yml) alerts on stale
+# copies, but a probe that silently stops running files nothing.
+# This watchdog runs infra/github-backup/bin/hosted_watchdog.py on
+# its own schedule: it reads the probe's heartbeat object from R2 —
+# Cloudflare's failure domain, published by the probe workflow
+# after every run — and judges its age against the probe's 26h
+# cadence SLO. It never reads the probe workflow's job status, so
+# a dropped schedule, a disabled workflow, or runs that die before
+# reporting are all caught from the same missing evidence.
+#
+# On a miss it opens or updates exactly one probe-missed alert
+# issue (marker-deduplicated, leg "probe"), distinct from the
+# leg-stale alerts the probe files; a fresh heartbeat closes it.
+# The job fails whenever the watchdog verdict is not ok, so a
+# scheduled run is an honest signal in the run list as well.
+#
+# Trigger policy: cron every 6 hours (minute 23, clear of the
+# probe's 05:17 UTC run) plus workflow_dispatch. The schedule is
+# registered in doc/fleet-schedule-registry.md in the same change
+# that introduces it. CI tier policy: see .github/ci-policy.md.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  watchdog:
+    name: "github-backup: hosted freshness missed-run watchdog"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install rclone (R2 heartbeat read)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+
+      - name: Judge the probe heartbeat
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # rclone's r2bak remote, configured purely from the
+          # environment (no config file is written).
+          RCLONE_CONFIG_R2BAK_TYPE: s3
+          RCLONE_CONFIG_R2BAK_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          # The r2-backups token cannot HeadBucket (403); rclone
+          # must skip its bucket check, as in the laptop's proven
+          # r2bak config and the freshness workflow (#15515).
+          RCLONE_CONFIG_R2BAK_REGION: auto
+          RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET: "true"
+        run: |
+          set +e
+          python3 infra/github-backup/bin/hosted_watchdog.py \
+            --run-id "${{ github.run_id }}" --apply \
+            | tee hosted-watchdog-readout.json
+          exit_code=${PIPESTATUS[0]}
+          cat hosted-watchdog-readout.json >> "$GITHUB_STEP_SUMMARY"
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::hosted watchdog verdict is not ok (exit $exit_code); see the readout above and the probe-missed alert issue."
+            exit 1
+          fi
+          echo "hosted watchdog: probe heartbeat within cadence."
