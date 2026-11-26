@@ -373,7 +373,7 @@ mod tests {
             credentials: Vec::new(),
             per_user_data: Vec::new(),
             grants: Vec::new(),
-            state: Default::default(),
+            state: std::collections::BTreeMap::default(),
         };
         let files = tempfile::tempdir().unwrap();
         let template = files.path().join("counter.template.json");
