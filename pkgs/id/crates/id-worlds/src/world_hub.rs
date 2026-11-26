@@ -937,9 +937,9 @@ impl WorldHub {
             let Ok(mut slots) = self.inner.slots.lock() else {
                 return Ok(false);
             };
-            if !slots
+            if slots
                 .get(name)
-                .is_some_and(|slot| slot.service.get().is_some())
+                .is_none_or(|slot| slot.service.get().is_none())
             {
                 return Ok(false);
             }

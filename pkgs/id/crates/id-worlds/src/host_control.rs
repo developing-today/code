@@ -128,7 +128,7 @@ pub struct ControlResponse {
 }
 
 impl ControlResponse {
-    pub(crate) fn done(body: serde_json::Value) -> Self {
+    pub(crate) const fn done(body: serde_json::Value) -> Self {
         Self {
             ok: true,
             error: None,
@@ -136,7 +136,7 @@ impl ControlResponse {
         }
     }
 
-    pub(crate) fn refused(error: String) -> Self {
+    pub(crate) const fn refused(error: String) -> Self {
         Self {
             ok: false,
             error: Some(error),

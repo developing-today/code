@@ -1765,7 +1765,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         // data root is refused before this node opens any world (#10697).
         #[cfg(unix)]
         let control_listener = if world_host {
-            std::fs::create_dir_all(WORLDS_DIR)?;
+            fs::create_dir_all(WORLDS_DIR)?;
             Some(id_worlds::host_control::bind(Path::new(WORLDS_DIR))?)
         } else {
             None
