@@ -43,6 +43,21 @@ def test_every_wrapper_has_units_and_install():
             )
 
 
+def test_every_timer_is_enabled_by_install():
+    install = open(os.path.join(SYSTEMD, "install-units.sh")).read()
+    enable_lines = [
+        line
+        for line in install.splitlines()
+        if "systemctl --user enable --now" in line
+    ]
+    assert enable_lines, "install-units.sh does not enable any backup timer"
+    for leg in _legs():
+        timer = f"laptop-db-backup-{leg}.timer"
+        assert any(timer in line for line in enable_lines), (
+            f"leg {leg}: install-units.sh installs but never enables {timer}"
+        )
+
+
 def test_every_wrapper_names_its_home_and_source():
     for leg in _legs():
         text = open(os.path.join(SYSTEMD, f"run-{leg}-import.sh")).read()
