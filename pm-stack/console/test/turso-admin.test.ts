@@ -32,13 +32,13 @@ test("a request: what each operation must name, and what is refused", () => {
     secretName: null,
   });
   expect(
-    tursoAdminRequest({ operation: "mint-token", database: "fleet-new", secret_name: "turso.fleet-new-rw-token" }),
+    tursoAdminRequest({ operation: "mint-token", database: "fleet-new", secret_name: "turso_fleet_new_rw_token" }),
   ).toEqual({
     operation: "mint-token",
     database: "fleet-new",
     group: null,
     expiry: "4w",
-    secretName: "turso.fleet-new-rw-token",
+    secretName: "turso_fleet_new_rw_token",
   });
   for (const bad of [
     { operation: "drop-db", database: "fleet-new" },
@@ -47,6 +47,12 @@ test("a request: what each operation must name, and what is refused", () => {
     { operation: "create-db", database: "fleet-new", group: "other-group" },
     { operation: "mint-token", database: "fleet-new" }, // no secret name to hold the token
     { operation: "mint-token", database: "fleet-new", secret_name: "has space" },
+    { operation: "mint-token", database: "fleet-new", secret_name: "bad-name" },
+    { operation: "mint-token", database: "fleet-new", secret_name: "GITHUB_TOKEN" },
+    { operation: "mint-token", database: "fleet-new", secret_name: "github_token" },
+    { operation: "mint-token", database: "fleet-new", secret_name: "TURSO_PLATFORM_API_TOKEN" },
+    { operation: "mint-token", database: "fleet-new", secret_name: "turso_platform_api_token" },
+    { operation: "mint-token", database: "fleet-new", secret_name: "REPO_AUTOMATION_TOKEN" },
     { operation: "mint-token", database: "fleet-new", secret_name: "ok_name", expiry: "a while" },
   ]) {
     expect(() => tursoAdminRequest(bad)).toThrow();
@@ -60,13 +66,13 @@ test("dispatch inputs carry names and choices only, never a token value", () => 
     group: TURSO_GROUP,
   });
   const mint = tursoAdminInputs(
-    tursoAdminRequest({ operation: "mint-token", database: "fleet-new", secret_name: "turso.fleet-new-rw-token", expiry: "30d" }),
+    tursoAdminRequest({ operation: "mint-token", database: "fleet-new", secret_name: "turso_fleet_new_rw_token", expiry: "30d" }),
   );
   expect(mint).toEqual({
     operation: "mint-token",
     database: "fleet-new",
     expiry: "30d",
-    secret_name: "turso.fleet-new-rw-token",
+    secret_name: "turso_fleet_new_rw_token",
   });
   expect(JSON.stringify(mint)).not.toContain("Bearer");
 });
@@ -97,6 +103,23 @@ test("the workflow: born --tursodb in the named group, minted token straight int
   // The minted token is never printed: no step echoes the token file.
   expect(WORKFLOW).not.toMatch(/echo[^|\n]*token_file/);
   expect(WORKFLOW).not.toMatch(/cat[^|\n]*token_file/);
+  // GitHub expressions never enter shell program text; inputs arrive through env.
+  const runScripts: string[] = [];
+  let inRun = false;
+  for (const line of WORKFLOW.split("\n")) {
+    if (/^        run: \|$/.test(line)) {
+      inRun = true;
+    } else if (inRun && line.trim() && !line.startsWith("          ")) {
+      inRun = false;
+    } else if (inRun) {
+      runScripts.push(line.slice(10));
+    }
+  }
+  expect(runScripts.join("\n")).not.toContain("${{");
+  expect(WORKFLOW).toContain("INPUT_DATABASE: ${{ inputs.database }}");
+  expect(WORKFLOW).toContain("INPUT_SECRET_NAME: ${{ inputs.secret_name }}");
+  expect(WORKFLOW).toContain('== GITHUB_* || "$secret_name_upper" == TURSO_PLATFORM_API_TOKEN');
+  expect(WORKFLOW).toContain("REPO_AUTOMATION_TOKEN");
 });
 
 test("the organisation token is referenced by name only, in that one workflow", () => {

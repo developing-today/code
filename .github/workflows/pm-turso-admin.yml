@@ -58,35 +58,46 @@ jobs:
       GH_TOKEN: ${{ secrets.REPO_AUTOMATION_TOKEN }}
     steps:
       - name: Refuse a malformed request or a missing organisation token
+        env:
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_DATABASE: ${{ inputs.database }}
+          INPUT_GROUP: ${{ inputs.group }}
+          INPUT_EXPIRY: ${{ inputs.expiry }}
+          INPUT_SECRET_NAME: ${{ inputs.secret_name }}
         run: |
           set -euo pipefail
           if [ -z "${TURSO_API_TOKEN:-}" ]; then
             echo "::error::TURSO_PLATFORM_API_TOKEN is not provisioned in the repository secret store; the operation was not attempted."
             exit 1
           fi
-          if ! printf '%s' "${{ inputs.database }}" | grep -Eq '^[a-z0-9][a-z0-9-]{0,62}$'; then
+          if ! printf '%s' "$INPUT_DATABASE" | grep -Eq '^[a-z0-9][a-z0-9-]{0,62}$'; then
             echo "::error::database is not a Turso database name."
             exit 1
           fi
-          case "${{ inputs.operation }}" in
+          case "$INPUT_OPERATION" in
             create-db)
-              if [ "${{ inputs.group }}" != "great-star-lord" ]; then
+              if [ "$INPUT_GROUP" != "great-star-lord" ]; then
                 echo "::error::group must be great-star-lord, the fleet's one Turso group."
                 exit 1
               fi
               ;;
             mint-token)
-              if ! printf '%s' "${{ inputs.expiry }}" | grep -Eq '^([0-9]+[dwmy]|never)$'; then
+              if ! printf '%s' "$INPUT_EXPIRY" | grep -Eq '^([0-9]+[dwmy]|never)$'; then
                 echo "::error::expiry must be a span like 4w, 30d or never."
                 exit 1
               fi
-              if ! printf '%s' "${{ inputs.secret_name }}" | grep -Eq '^[A-Za-z][A-Za-z0-9_.-]{0,119}$'; then
+              if ! printf '%s' "$INPUT_SECRET_NAME" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]{0,254}$'; then
                 echo "::error::secret_name is required for mint-token and must be a secret name."
+                exit 1
+              fi
+              secret_name_upper="$(printf '%s' "$INPUT_SECRET_NAME" | tr '[:lower:]' '[:upper:]')"
+              if [[ "$secret_name_upper" == GITHUB_* || "$secret_name_upper" == TURSO_PLATFORM_API_TOKEN || "$secret_name_upper" == REPO_AUTOMATION_TOKEN ]]; then
+                echo "::error::secret_name cannot replace a protected workflow credential."
                 exit 1
               fi
               ;;
             *)
-              echo "::error::unknown operation ${{ inputs.operation }}"
+              echo "::error::unknown operation $INPUT_OPERATION"
               exit 1
               ;;
           esac
@@ -98,26 +109,33 @@ jobs:
 
       - name: Create the database (born --tursodb, in the named group)
         if: inputs.operation == 'create-db'
+        env:
+          INPUT_DATABASE: ${{ inputs.database }}
+          INPUT_GROUP: ${{ inputs.group }}
         run: |
           set -euo pipefail
           # The creation rule in doc/fleet/turso-databases.md: every new
           # fleet database is born --tursodb, in the named group.
-          turso db create "${{ inputs.database }}" --group "${{ inputs.group }}" --tursodb --wait
-          echo "Created database ${{ inputs.database }} in group ${{ inputs.group }}." >> "$GITHUB_STEP_SUMMARY"
+          turso db create "$INPUT_DATABASE" --group "$INPUT_GROUP" --tursodb --wait
+          echo "Created database $INPUT_DATABASE in group $INPUT_GROUP." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mint a token and store it under its secret name
         if: inputs.operation == 'mint-token'
+        env:
+          INPUT_DATABASE: ${{ inputs.database }}
+          INPUT_EXPIRY: ${{ inputs.expiry }}
+          INPUT_SECRET_NAME: ${{ inputs.secret_name }}
         run: |
           set -euo pipefail
           umask 077
           token_file="$RUNNER_TEMP/minted-token"
           # The token value travels CLI -> file -> secret store. It is
           # never echoed, summarised or passed as an argument.
-          turso db tokens create "${{ inputs.database }}" --expiration "${{ inputs.expiry }}" > "$token_file"
+          turso db tokens create "$INPUT_DATABASE" --expiration "$INPUT_EXPIRY" > "$token_file"
           if [ ! -s "$token_file" ]; then
-            echo "::error::the Turso CLI minted no token for ${{ inputs.database }}."
+            echo "::error::the Turso CLI minted no token for $INPUT_DATABASE."
             exit 1
           fi
-          gh secret set "${{ inputs.secret_name }}" --repo "${{ github.repository }}" < "$token_file"
+          gh secret set "$INPUT_SECRET_NAME" --repo "$GITHUB_REPOSITORY" < "$token_file"
           rm -f "$token_file"
-          echo "Minted a token for ${{ inputs.database }} (expiry ${{ inputs.expiry }}) into the repository secret named ${{ inputs.secret_name }}." >> "$GITHUB_STEP_SUMMARY"
+          echo "Minted a token for $INPUT_DATABASE (expiry $INPUT_EXPIRY) into the repository secret named $INPUT_SECRET_NAME." >> "$GITHUB_STEP_SUMMARY"

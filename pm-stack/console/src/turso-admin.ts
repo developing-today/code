@@ -24,8 +24,17 @@ export const TURSO_OPERATIONS = ["create-db", "mint-token"] as const;
 export type TursoOperation = (typeof TURSO_OPERATIONS)[number];
 
 const DATABASE = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const SECRET_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/;
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
 const EXPIRY = /^([0-9]+[dwmy]|never)$/;
+const FORBIDDEN_SECRET_NAMES = new Set([TURSO_ORG_TOKEN_SECRET, "REPO_AUTOMATION_TOKEN"]);
+
+function validSecretName(value: string): boolean {
+  return (
+    SECRET_NAME.test(value) &&
+    !value.toUpperCase().startsWith("GITHUB_") &&
+    !FORBIDDEN_SECRET_NAMES.has(value.toUpperCase())
+  );
+}
 
 export interface TursoAdminRequest {
   operation: TursoOperation;
@@ -60,7 +69,7 @@ export function tursoAdminRequest(args: Record<string, unknown>): TursoAdminRequ
     throw new OpError(400, "expiry: a span like 4w, 30d or never");
   }
   const secretName = args.secret_name;
-  if (typeof secretName !== "string" || !SECRET_NAME.test(secretName)) {
+  if (typeof secretName !== "string" || !validSecretName(secretName)) {
     throw new OpError(400, "secret_name: the name of the repository secret to hold the minted token");
   }
   return { operation, database, group: null, expiry, secretName };
