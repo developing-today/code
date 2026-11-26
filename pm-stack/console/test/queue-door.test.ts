@@ -142,7 +142,7 @@ describe("the edge queue door", () => {
       expect((await direct.queueEnqueue(packet())).code).toBe(0);
       expect((await direct.queueEnqueue(packet())).code).toBe(0);
       expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
-      expect(db.query("SELECT COUNT(*) AS n FROM events").get()).toEqual({ n: 0 });
+      expect(db.query("SELECT COUNT(*) AS n FROM events").get()).toEqual({ n: 1 });
       const oracle = new FixtureQueueStore();
       await executeQueueVerb(
         oracle,
@@ -152,9 +152,10 @@ describe("the edge queue door", () => {
       );
       const expected = (await oracle.allTasks())[0];
       const row = db.query("SELECT * FROM tasks").get() as Record<string, unknown>;
-      for (const key of ["payload", "progress", "result", "ready_condition", "blocked_deps"]) {
+      for (const key of ["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]) {
         if (typeof row[key] === "string") row[key] = JSON.parse(row[key] as string);
       }
+      if (typeof row.manual_only === "number") row.manual_only = row.manual_only === 1;
       expect(row).toEqual(expected);
       expect(db.query("SELECT blocked_deps, ready_condition FROM tasks").get()).toEqual({
         blocked_deps: null,
@@ -206,10 +207,12 @@ describe("the edge queue door", () => {
         detail: string;
       }[];
       expect(events.map(({ task_id, kind }) => ({ task_id, kind }))).toEqual([
+        { task_id: 1, kind: "enqueued" },
         { task_id: 2, kind: "task_revived" },
         { task_id: 1, kind: "revived_by" },
+        { task_id: 2, kind: "enqueued" },
       ]);
-      expect(JSON.parse(events[1].detail).successor_task_id).toBe(2);
+      expect(JSON.parse(events[2].detail).successor_task_id).toBe(2);
       const progress = db.query("SELECT progress FROM tasks WHERE id = 2").get() as { progress: string };
       expect(JSON.parse(progress.progress).revived_from.task_id).toBe(1);
     } finally {
@@ -226,7 +229,7 @@ describe("the edge queue door", () => {
       db.exec("UPDATE tasks SET status = 'failed'");
       expect((await direct.queueEnqueue(packet())).code).not.toBe(0);
       expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
-      expect(db.query("SELECT COUNT(*) AS n FROM events").get()).toEqual({ n: 0 });
+      expect(db.query("SELECT COUNT(*) AS n FROM events").get()).toEqual({ n: 1 });
     } finally {
       db.close();
     }

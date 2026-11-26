@@ -1208,9 +1208,11 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
     // dedupe, identity, revival and label bands still belong to that verb.
     const fields = [
       "queue",
+      "manual_only",
       "title",
       "body",
       "payload",
+      "metadata",
       "dedupe_key",
       "priority",
       "status",
@@ -1243,10 +1245,15 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
       "dep_blocked_until",
       "dep_recheck_seconds",
     ];
-    const jsonFields = new Set(["payload", "progress", "result", "ready_condition", "blocked_deps"]);
+    const jsonFields = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
     // SQL NULL is not JSON text "null" (notably for dependency columns).
-    const encode = (name: string, value: unknown): unknown =>
-      value == null ? null : jsonFields.has(name) ? JSON.stringify(value) : value;
+    // manual_only is an INTEGER 0/1 on the wire but a boolean in TaskRow.
+    const encode = (name: string, value: unknown): unknown => {
+      if (value == null) return null;
+      if (name === "manual_only") return value === true || value === 1 ? 1 : 0;
+      if (jsonFields.has(name)) return JSON.stringify(value);
+      return value;
+    };
     const arg = (value: unknown) =>
       typeof value === "number"
         ? {
@@ -1381,10 +1388,11 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
         const snapshot = raw.map(
           (row) =>
             Object.fromEntries(
-              Object.entries(row).map(([name, value]) => [
-                name,
-                jsonFields.has(name) && typeof value === "string" ? JSON.parse(value) : value,
-              ]),
+              Object.entries(row).map(([name, value]) => {
+                if (name === "manual_only") return [name, value === 1 || value === true];
+                if (jsonFields.has(name) && typeof value === "string") return [name, JSON.parse(value)];
+                return [name, value];
+              }),
             ) as unknown as TaskRow,
         );
         const store = new EnqueueStore(snapshot);

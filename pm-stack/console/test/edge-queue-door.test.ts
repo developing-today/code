@@ -315,7 +315,16 @@ async function setup() {
       }),
       io,
     );
-  const held = () => (stored.get("held") ?? []) as { kind: string; args: Row }[];
+  const held = () => {
+    const index = stored.get("held:index") as string[] | undefined;
+    if (Array.isArray(index)) {
+      return index.flatMap((id) => {
+        const record = stored.get(`held:${id}`) as { kind: string; args: Row } | undefined;
+        return record ? [record] : [];
+      });
+    }
+    return (stored.get("held") ?? []) as { kind: string; args: Row }[];
+  };
   return { cfg, queue, github, stored, held, send, later };
 }
 
@@ -342,13 +351,14 @@ describe("Edge prompt queue door (#13490)", () => {
       nativeQueueEnv(() => NOW / 1000),
     );
     expect(enqueued.ok).toBe(true);
-    const jsonFields = new Set(["payload", "progress", "result", "ready_condition", "blocked_deps"]);
+    const jsonFields = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
     const rows = w.queue.tasks.map((row) =>
       Object.fromEntries(
-        Object.entries(row).map(([name, value]) => [
-          name,
-          jsonFields.has(name) && typeof value === "string" ? JSON.parse(value) : value,
-        ]),
+        Object.entries(row).map(([name, value]) => {
+          if (name === "manual_only") return [name, value === 1 || value === true];
+          if (jsonFields.has(name) && typeof value === "string") return [name, JSON.parse(value)];
+          return [name, value];
+        }),
       ),
     );
     expect(rows).toEqual(await oracle.allTasks());
@@ -382,7 +392,14 @@ describe("Edge prompt queue door (#13490)", () => {
       expect(w.queue.tasks).toEqual([]);
       expect(w.queue.events).toEqual([]);
       if (failure === "step") expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "ROLLBACK"]);
-      expect(w.stored.get("acts")).toMatchObject([{ kind: "ask.send", status: "done" }]);
+      const actsIndex = w.stored.get("acts:index") as string[] | undefined;
+      const acts = Array.isArray(actsIndex)
+        ? actsIndex.flatMap((id) => {
+            const record = w.stored.get(`act:${id}`) as { kind: string; status: string } | undefined;
+            return record ? [record] : [];
+          })
+        : ((w.stored.get("acts") ?? []) as { kind: string; status: string }[]);
+      expect(acts).toMatchObject([{ kind: "ask.send", status: "done" }]);
       await Promise.all(w.later);
     });
   }
