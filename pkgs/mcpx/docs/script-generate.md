@@ -20,7 +20,7 @@ drafts in #14459 and #14472, not the existing model layer.
   are refused at validation. Hooks observe runs; this surface lets a script
   ask for text in the middle of its own work.
 - **Not `sampling.answerLocally`.** That setting (slice 3 of #1925,
-  `internal/daemon/sampling_local.go`) answers *upstream servers'*
+  `internal/daemon/sampling_local.go`) answers _upstream servers'_
   sampling requests with the configured provider. This surface is the other
   direction: the script is the asker.
 - **Not `internal/scripting`.** That package is mcpx's own script
@@ -104,7 +104,7 @@ single-provider resolver already enforces it.
   `unavailable` (section 6), never sent under an invented id.
 - `model.profiles`: named ordered fallback chains —
   `{"summaries": {"models": ["openai/gpt-5", "anthropic/claude-sonnet"],
-  "budget": 2048, "timeout": "30s"}}`. A call's `model` field may name a
+"budget": 2048, "timeout": "30s"}}`. A call's `model` field may name a
   profile or a `provider/model` id; models are tried in order, an
   unconfigured or failed provider is skipped, a profile budget caps the
   per-call token ask, and the profile timeout bounds each provider
@@ -156,22 +156,20 @@ type GenerateOptions = {
 Unknown fields return `rejected`, rather than silently ignoring typos.
 The options map to the model request and call context as follows:
 
-| script field | `model.Request` | notes |
-| --- | --- | --- |
-| `prompt` (required) | `Messages: [{Role: "user", Content}]` | Non-empty; empty is `rejected`. |
-| `system` | `Messages: [{Role: "system", Content}, …]` first | Placeholder substitution is the caller's job; the layer sends text as given. |
-| `model` | `Model` | Profile name or `provider/model` id; empty means `model.default`. |
-| `maxTokens` | `MaxTokens` | Nonpositive means unset; section 5 caps it. |
-| `stop` | `Stop` | Honoured where the backend supports it, ignored elsewhere. |
-| `timeout` | call context deadline | Section 5 precedence. |
-| `schema` (optional) | `Schema` | JSON Schema hint passed to backends that support structured output; ignored elsewhere. No cross-provider conformance guarantee; validate output in the caller. |
+| script field        | `model.Request`                                  | notes                                                                                                                                                          |
+| ------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt` (required) | `Messages: [{Role: "user", Content}]`            | Non-empty; empty is `rejected`.                                                                                                                                |
+| `system`            | `Messages: [{Role: "system", Content}, …]` first | Placeholder substitution is the caller's job; the layer sends text as given.                                                                                   |
+| `model`             | `Model`                                          | Profile name or `provider/model` id; empty means `model.default`.                                                                                              |
+| `maxTokens`         | `MaxTokens`                                      | Nonpositive means unset; section 5 caps it.                                                                                                                    |
+| `stop`              | `Stop`                                           | Honoured where the backend supports it, ignored elsewhere.                                                                                                     |
+| `timeout`           | call context deadline                            | Section 5 precedence.                                                                                                                                          |
+| `schema` (optional) | `Schema`                                         | JSON Schema hint passed to backends that support structured output; ignored elsewhere. No cross-provider conformance guarantee; validate output in the caller. |
 
 The response is the discriminated union:
 
 ```ts
-type GenerateResult =
-  | { ok: true; text: string; model: string; provider: string }
-  | { ok: false; error: string; errorKind: "unavailable" | "timeout" | "rejected" | "provider" };
+type GenerateResult = { ok: true; text: string; model: string; provider: string } | { ok: false; error: string; errorKind: "unavailable" | "timeout" | "rejected" | "provider" };
 ```
 
 `model`/`provider` name what actually answered, as the backend reports
@@ -186,7 +184,7 @@ One rule, already implemented for prompt hooks (`ModelTokenCap` in
 `internal/execsvc/prompt_hooks.go`, resolved identically by the daemon
 and the CLI): the per-call ask, capped by every applicable ceiling.
 
-- The per-call ask is the call's `maxTokens`; nonpositive is *unset*,
+- The per-call ask is the call's `maxTokens`; nonpositive is _unset_,
   never a value — an unset ask with no ceiling in force leaves the
   provider's own limit in place, which must never be how a configured
   budget ends up.
@@ -206,7 +204,7 @@ How the existing knobs map:
 - `prompt.maxTokens` (default 1500) supplies the ask for existing
   consumer/script synthesis and prompt hooks. Explicit script calls
   bring their own ask, so it does not bound them; the `ModelTokenCap`
-  *rule* is shared, the *knob* is not.
+  _rule_ is shared, the _knob_ is not.
 - `prompt.sampleTimeout` (default 90s) is the broker sampling timeout
   fallback when `model.timeout` is nonpositive. It has no effect on this
   direct-provider slice; sampling is refused as described above.
@@ -232,12 +230,12 @@ schema, return `ok:false, errorKind:"rejected"` before contacting a provider.
   (`model.provider=none`, the default), the named backend has no path
   installed (sampling/plugin with no answerer), a named provider is not
   configured, a profile is empty, or no default exists and the call named
-   no model. Also the disabled sampling/plugin paths in section 3. The `error`
+  no model. Also the disabled sampling/plugin paths in section 3. The `error`
   text names the reason, so a misconfigured provider is
   distinguishable from none configured.
 - `timeout` — the call, profile, or layer deadline expired; the provider
   is treated as unavailable for that call and the caller falls back to
-   its own fallback if it chooses. No fallback script code is run implicitly.
+  its own fallback if it chooses. No fallback script code is run implicitly.
 - `rejected` — the request itself is invalid: empty `prompt`, malformed
   model id, invalid timeout, or malformed optional fields. Nothing was
   sent anywhere.

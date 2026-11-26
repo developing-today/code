@@ -141,7 +141,7 @@ fn retired_suite_fails_closed_even_when_known() {
         Err(SuiteError::DisallowedSuite(SUITE_ED25519_DET_CBOR_V1))
     );
     assert!(known_suite(SUITE_ED25519_DET_CBOR_V1).is_some());
-    assert!(retired.allowed().is_empty());
+    assert_eq!(retired.allowed(), [] as [u16; 0]);
 }
 
 #[test]

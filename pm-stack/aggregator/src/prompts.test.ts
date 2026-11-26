@@ -31,7 +31,7 @@ describe("validateNewPrompt", () => {
 
   test("rejects unknown scope, target and mode", () => {
     expect(validateNewPrompt({ ...valid, scope: "global" }).ok).toBe(false);
-    expect(validateNewPrompt({ ...valid, target: "pool:low" }).ok).toBe(false);
+    expect(validateNewPrompt({ ...valid, target: "pool:max" }).ok).toBe(false);
     expect(validateNewPrompt({ ...valid, mode: "sync" }).ok).toBe(false);
   });
 

@@ -99,7 +99,13 @@ export function defaultDecisionOutboxFile(
   const v = env.PM_AGG_DECISION_OUTBOX_FILE?.trim();
   if (v) return v;
   if (decisionsFile) return join(dirname(decisionsFile), "decision-events-outbox.jsonl");
-  return join(requireHome("PM_AGG_DECISION_OUTBOX_FILE"), ".local", "state", "pm-aggregator", "decision-events-outbox.jsonl");
+  return join(
+    requireHome("PM_AGG_DECISION_OUTBOX_FILE"),
+    ".local",
+    "state",
+    "pm-aggregator",
+    "decision-events-outbox.jsonl",
+  );
 }
 
 const PAYLOAD_MAX_BYTES = 16384;
@@ -260,9 +266,7 @@ export async function readDecisionEvents(
 }
 
 /** Validate one client-reported event (POST /api/decisions/<id>/events). */
-export function validateDecisionEventInput(
-  value: unknown,
-):
+export function validateDecisionEventInput(value: unknown):
   | {
       ok: true;
       value: { type: DecisionEventType; questionRef?: DecisionEventQuestionRef; payload: Record<string, unknown> };

@@ -4,6 +4,7 @@
 Deterministic generated-age property tests supplement driver mutation cases.
 No live services; all archive verification observations are fixtures.
 """
+
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -13,7 +14,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-check = runpy.run_path(str(Path(__file__).with_name("kaneo-recovery-point-check.py")))["check_recovery"]
+check = runpy.run_path(str(Path(__file__).with_name("kaneo-recovery-point-check.py")))[
+    "check_recovery"
+]
 
 
 class RecoveryPointTest(unittest.TestCase):
@@ -21,13 +24,19 @@ class RecoveryPointTest(unittest.TestCase):
         # Oracle: every required field must belong to ONE parsed generation.
         now = datetime(2026, 11, 25, tzinfo=timezone.utc)
         first = {
-            "date": "2026-11-25", "finishedAt": now.isoformat(),
-            "result": "complete", "archiveSha256": "a" * 64,
+            "date": "2026-11-25",
+            "finishedAt": now.isoformat(),
+            "result": "complete",
+            "archiveSha256": "a" * 64,
             "destinations": {name: "ok" for name in ("local", "r2", "drive")},
             "source": {"host": "unrelated-db", "port": 5432, "database": "kaneo"},
             "recoveryPointAt": now.isoformat(),
         }
-        second = dict(first, result="failed", source={"host": "source-db", "port": 5432, "database": "kaneo"})
+        second = dict(
+            first,
+            result="failed",
+            source={"host": "source-db", "port": 5432, "database": "kaneo"},
+        )
         reads = []
 
         def replacement(path, *args, **kwargs):
@@ -48,10 +57,14 @@ class RecoveryPointTest(unittest.TestCase):
             path = Path(directory) / "record.json"
             dsn = Path(directory) / "source.dsn"
             dsn.write_text("postgresql://u:pw@SOURCE-db:5432/kan%65o")
-            for seconds in [-1, 0, 1, 3599, 3600, 3601] + [rng.randrange(-7200, 7201) for _ in range(200)]:
+            for seconds in [-1, 0, 1, 3599, 3600, 3601] + [
+                rng.randrange(-7200, 7201) for _ in range(200)
+            ]:
                 record = {
-                    "date": "2026-11-25", "finishedAt": now.isoformat(),
-                    "result": "complete", "archiveSha256": "a" * 64,
+                    "date": "2026-11-25",
+                    "finishedAt": now.isoformat(),
+                    "result": "complete",
+                    "archiveSha256": "a" * 64,
                     "destinations": {name: "ok" for name in ("local", "r2", "drive")},
                     "source": {"host": "source-db", "port": 5432, "database": "kaneo"},
                     "recoveryPointAt": (now - timedelta(seconds=seconds)).isoformat(),

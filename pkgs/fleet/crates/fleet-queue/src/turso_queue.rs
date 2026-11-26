@@ -51,6 +51,7 @@ mod core;
 pub mod ctx_scope;
 mod label_enrich;
 mod lifecycle;
+mod links;
 mod notes;
 mod placement_coord;
 mod placement_sessions;
@@ -66,6 +67,7 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use links::*;
 pub use notes::*;
 pub use placement_coord::*;
 pub use placement_sessions::*;
@@ -856,6 +858,111 @@ mod tests {
             bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
             "a failed predecessor must still revive: {bodies:?}"
         );
+    }
+
+    #[test]
+    fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
+        // The fleet monitor's 2026-11-25 finding on #10627: a fresh
+        // filing under a standard key whose task already completed
+        // got the DONE row back with no signal it was a terminal
+        // return rather than a creation, so `queue/queued` issues
+        // silently held no live task. The absorption stands
+        // (#13091); the envelope must now name it.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![done]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "done", "{out}");
+        assert_eq!(
+            out["dedupe_match"]["dedupe_key"],
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_live_key_match_reports_dedupe_match_10627() {
+        // The live half of the same report: a filing absorbed by a
+        // live holder of the key names the match as live, so a
+        // caller can tell "attach to the holder" apart from both a
+        // creation and a terminal return.
+        let live = task_row_13091(
+            4242,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![live]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_live", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "queued", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_fresh_filing_carries_no_dedupe_match_10627() {
+        // Negative space: a filing that creates its row (here the
+        // revive-on-enqueue path over a failed predecessor) must
+        // NOT carry the absorption report — the field means
+        // "absorbed", never "filed".
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, _captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
     }
 
     #[test]
@@ -2066,7 +2173,10 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
-        assert!(pred.starts_with("manual_only = 0 AND"), "automatic pick excludes manual-only: {pred}");
+        assert!(
+            pred.starts_with("manual_only = 0 AND"),
+            "automatic pick excludes manual-only: {pred}"
+        );
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),
@@ -3621,6 +3731,71 @@ mod tests {
     }
 
     #[test]
+    fn suspect_completion_stamp_14268() {
+        // #14268 ask 2 oracle: the stamp fires exactly on the
+        // false-completion signature — the completion carries no
+        // result and no worker activity was recorded since the
+        // claim. Any result content, or any recorded activity,
+        // clears it.
+        let stamp = suspect_completion_stamp(&json!({}), 0)
+            .expect("empty result + no activity is the suspect shape");
+        assert_eq!(
+            stamp["reason"],
+            "done_with_no_result_and_no_activity_history"
+        );
+        assert!(suspect_completion_stamp(&json!(null), 0).is_some());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 0).is_none());
+        assert!(suspect_completion_stamp(&json!({}), 1).is_none());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 3).is_none());
+        // A non-object result is content, never the empty shape.
+        assert!(suspect_completion_stamp(&json!("done"), 0).is_none());
+    }
+
+    #[test]
+    fn verb_complete_surfaces_suspect_completions_14268() {
+        // #14268 ask 2, source oracle: verb_complete counts the
+        // task's activity, stamps the stored result with the
+        // verdict, flags the completed event and writes the
+        // dedicated suspect_completion event. The activity count
+        // excludes the claim ceremony's own writes, so a bare
+        // claim can never clear the shape by itself.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_complete(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("activity_event_count(t, task_id)"),
+            "verb_complete counts prior activity before mutating"
+        );
+        assert!(
+            seg.contains("suspect_completion_stamp(&result, n)"),
+            "verb_complete stamps the suspect shape on the result"
+        );
+        assert!(
+            seg.contains("\"suspect_completion\""),
+            "verb_complete writes the suspect_completion event"
+        );
+        let counter = src
+            .split("fn activity_event_count(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        for kind in [
+            "'claimed'",
+            "'session_bound'",
+            "'lane_session_bound'",
+            "'model_stamp'",
+        ] {
+            assert!(
+                counter.contains(kind),
+                "activity count excludes claim-ceremony kind {kind}"
+            );
+        }
+    }
+
+    #[test]
     fn completion_gate_rejects_disposition_for_another_issue() {
         // #10611: the readback must describe the packet's issue — a
         // stale readback for a sibling issue is not closure evidence.
@@ -4903,7 +5078,12 @@ mod tests {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
         // session binding cleared and a `released` audit event;
-        // attempts are NOT handed back.
+        // attempts are NOT handed back. #12901 exception: a
+        // release whose claim consumed the last attempt fails the
+        // row at the cap instead (the #6463 expiry_disposition
+        // oracle, sink rows exempt), with the reason in last_error
+        // and a `failed` audit event — a queued return there is
+        // the unclaimable churn zombie.
         let src = &test_source();
         let seg = seg8217(
             src,
@@ -4917,12 +5097,59 @@ mod tests {
             "DELETE FROM leases",
             "attempt change",
             "SET status = 'queued'",
+            "expiry_disposition(attempts, max_attempts)",
+            "expired_claim_returns_to_sink(&progress)",
+            "SET status = 'failed'",
+            "released at attempt cap",
+            "\"released_at_cap\": true",
         ] {
             assert!(seg.contains(needle), "verb_release misses {needle}");
         }
         assert!(
             src.contains("\"/release\" => verb_release(t, req),"),
             "release is dispatched"
+        );
+    }
+
+    #[test]
+    fn release_platform_limit_contract_14993() {
+        // Oracle (#14993): a release can record a platform
+        // limitation -- the route-mismatch hand-back -- so the
+        // claim pick stops offering the task to seats of the wrong
+        // family (the five redraws of laptop-routed task 23528).
+        // verb_release validates the pair with the lane verb's own
+        // validator before anything mutates, writes it to the lane
+        // ledger the pick clause reads (upserting a minimal row
+        // when the claim never created one), records it on the
+        // `released` event, and the client passes both flags
+        // through under the lane verb's field names.
+        let src = &test_source();
+        let seg = seg8217(
+            src,
+            "pub(crate) fn verb_release(",
+            "\npub(crate) fn verb_wake(",
+        );
+        for needle in [
+            "platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())",
+            "UPDATE repo_task_lane_ledger SET platform_limit = ?",
+            "INSERT INTO repo_task_lane_ledger",
+            "\"platform_limit\": limit_family",
+            "\"platform_limit_reason\": limit_reason",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        let client_src = [
+            include_str!("client/support.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+        ]
+        .concat();
+        assert!(
+            client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"),
+            "the release client passes --limit-platform through"
+        );
+        assert!(
+            client_src.contains("\"platform_limit_reason\": args.get(\"limit-reason\")"),
+            "the release client passes --limit-reason through"
         );
     }
 

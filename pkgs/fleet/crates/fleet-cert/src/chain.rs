@@ -53,6 +53,13 @@ pub struct CertInfo {
     spki_oid: String,
 }
 
+impl CertInfo {
+    /// The raw signature bytes over this certificate's TBS.
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+}
+
 pub fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

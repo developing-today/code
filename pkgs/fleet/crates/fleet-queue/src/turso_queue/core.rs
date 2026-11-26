@@ -1034,6 +1034,7 @@ impl TursoBackend {
                 )?;
             }
         }
+        super::links::ensure_q6_backfill(self)?;
         Ok(())
     }
 }
@@ -1051,7 +1052,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 36] = [
+pub(crate) const SCHEMA: [&str; 45] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT, \
@@ -1125,6 +1126,31 @@ pub(crate) const SCHEMA: [&str; 36] = [
         body TEXT NOT NULL, created_at TEXT NOT NULL, \
         edited_at TEXT, deleted_at TEXT)",
     "CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task_id, id)",
+    // #14170 Q6: normalized task relationships and blocking edges.
+    // link_key/dep_key make the nullable reference columns idempotent
+    // on SQLite, whose UNIQUE indexes treat NULL values as distinct.
+    "CREATE TABLE IF NOT EXISTS queue_links (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        other_kind TEXT NOT NULL, other_repo TEXT, other_number INTEGER, \
+        other_task_id INTEGER, link_kind TEXT NOT NULL, link_key TEXT NOT NULL, \
+        created_by TEXT NOT NULL, created_at TEXT NOT NULL, \
+        removed_at TEXT, removed_by TEXT)",
+    "CREATE INDEX IF NOT EXISTS queue_links_task ON queue_links(task_id, id)",
+    "CREATE INDEX IF NOT EXISTS queue_links_target ON queue_links(other_kind, other_repo, other_number, other_task_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS queue_links_active_key \
+        ON queue_links(task_id, link_kind, link_key) WHERE removed_at IS NULL",
+    "CREATE TABLE IF NOT EXISTS task_deps (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        block_id TEXT NOT NULL, dep_kind TEXT NOT NULL, dep_key TEXT NOT NULL, ref_repo TEXT, \
+        ref_number INTEGER, ref_task_id INTEGER, \
+        state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','cleared','malformed')), \
+        created_at TEXT NOT NULL, cleared_at TEXT, cleared_by TEXT, \
+        detail TEXT NOT NULL DEFAULT '{}', UNIQUE(task_id, block_id, dep_key))",
+    "CREATE INDEX IF NOT EXISTS task_deps_task ON task_deps(task_id, state)",
+    "CREATE INDEX IF NOT EXISTS task_deps_block ON task_deps(task_id, block_id, state)",
+    "CREATE INDEX IF NOT EXISTS task_deps_ref ON task_deps(ref_repo, ref_number, state)",
+    "CREATE TABLE IF NOT EXISTS queue_schema_migrations (\
+        name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}')",
     "CREATE TABLE IF NOT EXISTS creation_outbox (\
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, \
         payload TEXT NOT NULL DEFAULT '{}', dedup_key TEXT NOT NULL, \
@@ -1300,6 +1326,7 @@ pub(crate) fn history_transition(
         "failed" => (None, Some("failed")),
         "reprioritized" => (None, None),
         "meta_updated" => (None, None),
+        "linked" | "unlinked" => (None, None),
         _ => return None,
     })
 }
@@ -1323,7 +1350,7 @@ pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history 
     FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
 
 /// Every event kind that history_transition maps: the backfill census.
-pub(crate) const HISTORY_KINDS: [&str; 14] = [
+pub(crate) const HISTORY_KINDS: [&str; 16] = [
     "enqueued",
     "task_revived",
     "revived",
@@ -1338,6 +1365,8 @@ pub(crate) const HISTORY_KINDS: [&str; 14] = [
     "cancelled",
     "failed",
     "meta_updated",
+    "linked",
+    "unlinked",
 ];
 
 /// Backfill: one history row per mapped events row that has none
@@ -1441,6 +1470,105 @@ pub(crate) fn verb_history_since(t: &TursoBackend, req: &Value) -> Value {
     sql += &format!(" ORDER BY id ASC LIMIT {limit}");
     match t.query_objs(&sql, &args, &["detail"]) {
         Ok(rows) => ok(json!({"rows": rows, "task_id": task_id})),
+        Err(e) => fail(2, e),
+    }
+}
+
+/// /staleness: the stewardship cycle's canned read (design §9, #14170 Q8).
+/// The first query returns every actionable task whose last task_history
+/// transition is older than `older_than_seconds`, oldest first; a task
+/// with no history row falls back to its `updated_at` and reports a null
+/// `last_history_id`, so pre-history rows stay visible instead of
+/// silently dropping out of the staleness read. The second query returns
+/// claimed tasks whose lease expires within `lease_cap_seconds`
+/// (already-expired leases sort first). The cycle reads staleness and
+/// lease pressure from this one route instead of assembling either
+/// client-side from /list pages.
+pub(crate) fn verb_staleness(t: &TursoBackend, req: &Value) -> Value {
+    let older_than = req_i64(req, "older_than_seconds").unwrap_or(86_400).max(0);
+    let lease_cap = req_i64(req, "lease_cap_seconds").unwrap_or(900).max(0);
+    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 50_000);
+    let queue = req_str(req, "queue");
+    let now = now_unix();
+    let cutoff = iso(now - older_than);
+    let lease_cutoff = iso(now + lease_cap);
+    let mut stale_sql = "SELECT t.id, t.queue, t.status, t.title, t.worker_id, t.priority, \
+                   h.id AS last_history_id, h.kind AS last_kind, h.to_status AS last_to_status, \
+                   h.actor AS last_actor, COALESCE(h.created_at, t.updated_at) AS last_transition_at \
+                   FROM tasks t \
+                   LEFT JOIN task_history h ON h.id = \
+                     (SELECT MAX(h2.id) FROM task_history h2 WHERE h2.task_id = t.id) \
+                   WHERE t.status IN ('queued', 'claimed', 'parked', 'blocked', 'handed_off') \
+                   AND COALESCE(h.created_at, t.updated_at) < ?"
+        .to_string();
+    let mut stale_args: Vec<Arg> = vec![Arg::Text(cutoff)];
+    if let Some(q) = queue {
+        stale_sql += " AND t.queue = ?";
+        stale_args.push(Arg::Text(q.to_string()));
+    }
+    stale_sql += &format!(" ORDER BY last_transition_at ASC LIMIT {limit}");
+    let rows = match t.query_objs(&stale_sql, &stale_args, &[]) {
+        Ok(rows) => rows,
+        Err(e) => return fail(2, e),
+    };
+    let mut lease_sql =
+        "SELECT id, queue, status, title, worker_id, priority, claimed_at, lease_until \
+                   FROM tasks \
+                   WHERE status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= ?"
+            .to_string();
+    let mut lease_args: Vec<Arg> = vec![Arg::Text(lease_cutoff)];
+    if let Some(q) = queue {
+        lease_sql += " AND queue = ?";
+        lease_args.push(Arg::Text(q.to_string()));
+    }
+    lease_sql += &format!(" ORDER BY lease_until ASC LIMIT {limit}");
+    let claims = match t.query_objs(&lease_sql, &lease_args, &[]) {
+        Ok(rows) => rows,
+        Err(e) => return fail(2, e),
+    };
+    ok(json!({
+        "rows": rows,
+        "claims_near_lease_cap": claims,
+        "older_than_seconds": older_than,
+        "lease_cap_seconds": lease_cap,
+        "queue": queue,
+        "now": iso(now),
+    }))
+}
+
+/// /needs-user: the stewardship cycle's open-questions read (design §9,
+/// #14170 Q8): blocked/parked tasks carrying a `question` metadata entry
+/// (Q3 registry shape {ledger_id, state}), oldest last transition first,
+/// with the question object lifted out of the metadata. The
+/// `blocked_by_count_cache` column counts the task's `blocked_deps`
+/// cache entries; it is the honest pre-Q6 source and is superseded by
+/// task_deps counts when Q6 lands.
+pub(crate) fn verb_needs_user(t: &TursoBackend, req: &Value) -> Value {
+    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 50_000);
+    let queue = req_str(req, "queue");
+    let state = req_str(req, "state");
+    let mut sql = "SELECT t.id, t.queue, t.status, t.title, t.worker_id, t.priority, \
+                   json_extract(t.metadata, '$.question') AS question, \
+                   (SELECT MAX(h.created_at) FROM task_history h WHERE h.task_id = t.id) \
+                     AS last_transition_at, \
+                   CASE WHEN t.blocked_deps LIKE '[%' THEN json_array_length(t.blocked_deps) \
+                        ELSE 0 END AS blocked_by_count_cache \
+                   FROM tasks t \
+                   WHERE t.status IN ('blocked', 'parked') \
+                   AND json_extract(t.metadata, '$.question') IS NOT NULL"
+        .to_string();
+    let mut args: Vec<Arg> = vec![];
+    if let Some(q) = queue {
+        sql += " AND t.queue = ?";
+        args.push(Arg::Text(q.to_string()));
+    }
+    if let Some(s) = state {
+        sql += " AND json_extract(t.metadata, '$.question.state') = ?";
+        args.push(Arg::Text(s.to_string()));
+    }
+    sql += &format!(" ORDER BY COALESCE(last_transition_at, t.updated_at) ASC LIMIT {limit}");
+    match t.query_objs(&sql, &args, &["question"]) {
+        Ok(rows) => ok(json!({"rows": rows, "queue": queue})),
         Err(e) => fail(2, e),
     }
 }

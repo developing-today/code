@@ -66,7 +66,7 @@ Usage: fleet session bind [--session-id ID] [--force]
 | Flag           | Argument   | Default                  | Meaning                                                                                                                                                                                                   |
 | -------------- | ---------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--session-id` | session id | resolved (see Behaviour) | The explicit session identity to validate and persist. Both `--session-id ID` and `--session-id=ID` spellings are accepted; at most one value — a second value is the usage error shown in the help dump. |
-| `--force`      | —          | off                      | Remove the worktree marker without validating it before resolving, so a dead binding can be replaced in place (#14454). May precede or follow `--session-id`; a second `--force` is a usage error.         |
+| `--force`      | —          | off                      | Remove the worktree marker without validating it before resolving, so a dead binding can be replaced in place (#14454). May precede or follow `--session-id`; a second `--force` is a usage error.        |
 
 **Behaviour.** `fleet session bind` validates and persists this worktree's session identity. The identity is an OpenCode session id of the form `ses_` followed by ASCII letters and digits — anything else fails closed.
 

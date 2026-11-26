@@ -1253,7 +1253,7 @@ route = "/tic-tac-toe"
         let discovery = discover_apps(root.path());
 
         assert_eq!(discovery.apps.len(), 2);
-        assert!(discovery.errors.is_empty());
+        assert_eq!(discovery.errors, [] as [String; 0]);
     }
 
     #[test]
@@ -1451,7 +1451,7 @@ commands = ["play"]
 
         let discovery = discover_apps(&missing_root);
 
-        assert!(discovery.apps.is_empty());
+        assert_eq!(discovery.apps, [] as [DiscoveredApp; 0]);
         assert_eq!(discovery.errors.len(), 1);
         assert!(discovery.errors[0].contains(&missing_root.display().to_string()));
     }

@@ -270,6 +270,35 @@ impl WorldService {
         self.world.set_execution_profile(profile).await
     }
 
+    /// Replace this world's presentation policy, admin only, journaled
+    /// before the reply (#14731 slice 2b).
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for a policy past its bounds or a storage failure.
+    pub async fn set_presentation_policy(
+        &self,
+        supplied_admin: Option<&str>,
+        policy: id_core::presentation_policy::PresentationPolicy,
+    ) -> anyhow::Result<id_core::presentation_policy::PresentationPolicy> {
+        self.authorize_admin(supplied_admin)
+            .map_err(|_| anyhow::anyhow!("admin denied"))?;
+        self.world.set_presentation_policy(policy).await
+    }
+
+    /// Read this world's presentation policy. No token: the policy is
+    /// public pre-join metadata (#5970 §5).
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the world actor is closed.
+    pub async fn presentation_policy(
+        &self,
+    ) -> anyhow::Result<id_core::presentation_policy::PresentationPolicy> {
+        self.world.presentation_policy().await
+    }
+
     /// Let admins compile Roc sources into this world on the fly.
     #[must_use]
     pub fn with_compiler(mut self, compiler: Compiler) -> Self {

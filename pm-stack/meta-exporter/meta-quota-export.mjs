@@ -268,6 +268,19 @@ async function httpJson(url) {
   return res.json();
 }
 
+/** CDP's /json/list answers an array of targets (#7983 item 9). Anything
+ * else is a broken endpoint, not "no tabs": checked here so callers get
+ * a named error (cdp-unavailable) instead of a TypeError from .find. */
+async function listTargets(cdpBase) {
+  const url = `${cdpBase}/json/list`;
+  const body = await httpJson(url);
+  if (!Array.isArray(body)) {
+    const kind = body === null ? "null" : typeof body;
+    throw new Error(`${url} answered ${kind}, expected a JSON array of targets`);
+  }
+  return body;
+}
+
 function connectWs(wsUrl) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
@@ -363,7 +376,7 @@ async function fetchQuotaPayloads(client, teamId) {
  * Absence is reported as null, never invented. */
 async function fetchPaygBalance(cdpBase) {
   try {
-    const targets = await httpJson(`${cdpBase}/json/list`);
+    const targets = await listTargets(cdpBase);
     const frame = targets.find(
       (t) => t.type === "iframe" && typeof t.url === "string" && t.url.includes("billing.dev.meta.ai"),
     );
@@ -559,7 +572,7 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
   const cdpBase = `http://127.0.0.1:${cdpPort}`;
   let targets;
   try {
-    targets = await httpJson(`${cdpBase}/json/list`);
+    targets = await listTargets(cdpBase);
   } catch (e) {
     throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable: ${e.message}`);
   }
@@ -587,7 +600,7 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
       // PR #6333): its dev.meta.ai entry carries the old debugger URL.
       // Re-fetch before selecting or creating the console page.
       try {
-        targets = await httpJson(`${cdpBase}/json/list`);
+        targets = await listTargets(cdpBase);
       } catch (e) {
         throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable after restart: ${e.message}`, recovery);
       }

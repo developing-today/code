@@ -474,6 +474,20 @@ struct BrokerCoordGh {
     secrets_token: String,
     agent: ureq::Agent,
     token: Mutex<Option<(String, std::time::Instant)>>,
+    /// One sweep pass's responses by path: the run counts and the
+    /// live run ids come from the same per_page=100 list read, so a
+    /// pass costs 2 reads per repo instead of 4.
+    pass: Mutex<std::collections::HashMap<String, Value>>,
+}
+
+/// ETag cache for the coordinator's GitHub reads, kept across sweep
+/// passes: a repeat read sends If-None-Match, and GitHub's 304 answer
+/// does not count against the token's hourly REST limit. Without it
+/// the 20-second sweep spent ~2,900 of the shared 5,000 calls an hour.
+fn coord_etag_cache() -> &'static Mutex<std::collections::HashMap<String, (String, Value)>> {
+    static CACHE: std::sync::OnceLock<Mutex<std::collections::HashMap<String, (String, Value)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 impl BrokerCoordGh {
@@ -498,9 +512,31 @@ impl BrokerCoordGh {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, String> {
+        if let Some(v) = self
+            .pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+        {
+            return Ok(v.clone());
+        }
+        let v = self.fetch_json(path)?;
+        self.pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(path.to_string(), v.clone());
+        Ok(v)
+    }
+
+    fn fetch_json(&self, path: &str) -> Result<Value, String> {
         use std::time::Duration as D;
         let tok = self.token()?;
         let url = format!("https://api.github.com{path}");
+        let cached = coord_etag_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+            .cloned();
         let req = self
             .agent
             .get(&url)
@@ -509,29 +545,57 @@ impl BrokerCoordGh {
                 crate::turso_queue::STALENESS_LOOKUP_TIMEOUT.max(D::from_secs(2)),
             ))
             .build();
-        let mut resp = req
+        let mut req = req
             .header("Authorization", &format!("Bearer {tok}"))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "fleet-queue-broker")
+            .header("User-Agent", "fleet-queue-broker");
+        if let Some((etag, _)) = &cached {
+            req = req.header("If-None-Match", etag);
+        }
+        let mut resp = req
             .call()
             .map_err(|e| format!("github request failed for {path}: {e}"))?;
         let status = resp.status().as_u16();
+        if status == 304 {
+            if let Some((_, body)) = cached {
+                return Ok(body);
+            }
+            return Err(format!("github 304 without a cached body for {path}"));
+        }
         if status == 404 {
             return Err(format!("github 404 for {path}"));
         }
         if !(200..300).contains(&status) {
             return Err(format!("github http {status} for {path}"));
         }
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
         let text = resp
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("github response unreadable: {e}"))?;
-        serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))?;
+        if let Some(etag) = etag {
+            let mut cache = coord_etag_cache().lock().unwrap_or_else(|p| p.into_inner());
+            // Bounded: run-detail paths come and go; the list reads
+            // are a fixed handful per runner repo.
+            if cache.len() > 512 {
+                cache.clear();
+            }
+            cache.insert(path.to_string(), (etag, v.clone()));
+        }
+        Ok(v)
     }
 
     fn total_for(&self, repo: &str, status: &str) -> Result<i64, String> {
+        // Same path as ids_for: total_count rides on the per_page=100
+        // list, so this is answered from the pass cache.
         let v = self.get_json(&format!(
-            "/repos/{repo}/actions/runs?status={status}&per_page=1"
+            "/repos/{repo}/actions/runs?status={status}&per_page=100"
         ))?;
         v.get("total_count")
             .and_then(|t| t.as_i64())
@@ -640,7 +704,7 @@ pub(crate) fn landing_from_json(
 /// half posting for the same block is safe. This half goes live
 /// only when the broker binary is replaced (the coordinated
 /// switch); until then the CLI half is the live path.
-fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+fn maybe_raise_needs_user(st: &State, req: &Value, resp: &Value) {
     if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return;
     }
@@ -648,7 +712,7 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
         return;
     }
     let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
-    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+    let Some(nd) = crate::needs_user::from_block_request(req, blocker) else {
         return;
     };
     let secrets_url = st.secrets_url.clone();
@@ -661,9 +725,9 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
-            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+            .and_then(|token| crate::needs_user::post_needs_user(token.expose(), &nd));
         match raised {
             Ok(_) => crate::log::info(
                 "queue-broker",
@@ -736,7 +800,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             .to_string()
     };
     let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
-    let info = crate::needs_drew::ExtensionAlert {
+    let info = crate::needs_user::ExtensionAlert {
         key: s("alert_key"),
         handle: handle.to_string(),
         context: resp
@@ -764,7 +828,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
         grace_until: s("grace_until"),
         reason: s("reason"),
     };
-    let body = crate::needs_drew::build_extension_alert_body(&info);
+    let body = crate::needs_user::build_extension_alert_body(&info);
     let secrets_url = st.secrets_url.clone();
     let secrets_token = st.secrets_token.clone();
     let agent = st.agent.clone();
@@ -775,11 +839,11 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
             .and_then(|token| {
-                crate::needs_drew::post_plain_alert_to(
-                    &crate::needs_drew::alerts_url(),
+                crate::needs_user::post_plain_alert_to(
+                    &crate::needs_user::alerts_url(),
                     token.expose(),
                     &body,
                 )
@@ -1093,7 +1157,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
-                maybe_raise_needs_drew(st, req, &resp);
+                maybe_raise_needs_user(st, req, &resp);
             }
             // #13774: the emergency-extension needs-drew raise.
             if path == "/actions-exec-extend-request" {
@@ -1354,6 +1418,7 @@ pub fn run() -> i32 {
                     secrets_token: st.secrets_token.clone(),
                     agent: st.agent.clone(),
                     token: Mutex::new(None),
+                    pass: Mutex::new(std::collections::HashMap::new()),
                 };
                 let now = crate::turso_queue::now_iso();
                 let sum = crate::turso_queue::coordinator_sweep(turso, &gh, &now);
@@ -1434,42 +1499,63 @@ pub fn run() -> i32 {
         ),
     }
 
+    // BT-3 (#14401): Phase 1 TLS on the TCP leg, additive and
+    // default-off (design rules M1/M2). A half-configured or
+    // unusable leaf is a startup config error, never a silent
+    // plaintext fallback.
+    let broker_tls = match crate::broker_tls::BrokerTlsServer::from_env() {
+        Ok(tls) => tls,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
+    if broker_tls.is_some() {
+        crate::log::info(
+            "queue-broker",
+            "TLS server authentication on the TCP leg (BT-3 Phase 1): presenting the \
+             broker-server leaf; token auth unchanged; plaintext Phase 0 connections \
+             still accepted on the same port and logged",
+        );
+    }
+
     let pre_token = token.clone();
-    crate::tcp_http::serve(
-        server,
-        move |head| {
-            pre_body_refusal(
-                &head.method,
-                &head.target,
-                head.header("X-Agent-Token"),
-                &pre_token,
-                head.header("Content-Length")
-                    .and_then(|v| v.parse::<u64>().ok()),
-            )
-            .map(|(status, value)| {
-                (
-                    status,
-                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                )
-            })
-        },
-        move |req| {
-            let _ctx = request_ctx_scope(req);
-            let (status, value) = handle_request(
-                &state,
-                &token,
-                &req.method,
-                &req.target,
-                req.header("X-Agent-Token"),
-                &req.body,
-            );
-            crate::uds_http::log_ctx_trip("queue-broker", req, status);
+    let precheck = move |head: &crate::uds_http::HttpRequest| {
+        pre_body_refusal(
+            &head.method,
+            &head.target,
+            head.header("X-Agent-Token"),
+            &pre_token,
+            head.header("Content-Length")
+                .and_then(|v| v.parse::<u64>().ok()),
+        )
+        .map(|(status, value)| {
             (
                 status,
                 serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
             )
-        },
-    );
+        })
+    };
+    let handler = move |req: &crate::uds_http::HttpRequest| {
+        let _ctx = request_ctx_scope(req);
+        let (status, value) = handle_request(
+            &state,
+            &token,
+            &req.method,
+            &req.target,
+            req.header("X-Agent-Token"),
+            &req.body,
+        );
+        crate::uds_http::log_ctx_trip("queue-broker", req, status);
+        (
+            status,
+            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+        )
+    };
+    match broker_tls {
+        Some(tls) => crate::tcp_http::serve_tls(server, tls, precheck, handler),
+        None => crate::tcp_http::serve(server, precheck, handler),
+    }
     0
 }
 

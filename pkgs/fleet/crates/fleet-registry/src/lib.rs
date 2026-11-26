@@ -89,6 +89,14 @@ pub enum Capability {
     Actions,
     /// `fleet orgs …` — the Turso-backed GitHub org/App registry.
     Orgs,
+    /// `fleet kv …` — identity-scoped key/value bytes in the host-local
+    /// store (code#13314). A working-seat client surface, so full only.
+    Kv,
+    /// `fleet id …` — the iroh-native ID transport surface (design
+    /// #10391 pass 2): session key lifecycle + stamping first
+    /// (code#15430, §4.1); proxy, initiator and serve-ws verbs land
+    /// as later slices of the same design. Full only.
+    Id,
 }
 
 impl Capability {
@@ -118,6 +126,8 @@ impl Capability {
             Capability::Cert => "cert",
             Capability::Actions => "actions",
             Capability::Orgs => "orgs",
+            Capability::Kv => "kv",
+            Capability::Id => "id",
         }
     }
 
@@ -146,6 +156,8 @@ impl Capability {
         Capability::Cert,
         Capability::Actions,
         Capability::Orgs,
+        Capability::Kv,
+        Capability::Id,
     ];
 }
 
@@ -294,6 +306,8 @@ pub const DOMAINS: &[Domain] = &[
             "verify-disposition",
             "timeline",
             "history",
+            "staleness",
+            "needs-user",
             "show",
             "models",
             "health",
@@ -393,6 +407,31 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Orgs,
         aliases: &[],
         subcommands: &["list", "sync"],
+    },
+    Domain {
+        name: "kv",
+        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override and revert, per --namespace; snapshot and restore back up the whole host store. --global is not built yet.",
+        capabilities: &[Capability::Kv],
+        primary: Capability::Kv,
+        aliases: &[],
+        subcommands: &[
+            "get",
+            "set",
+            "list",
+            "delete",
+            "clear-override",
+            "revert",
+            "snapshot",
+            "restore",
+        ],
+    },
+    Domain {
+        name: "id",
+        summary: "Iroh-native ID transport (design #10391 pass 2): session-key mints this session's NodeId stamp (FLEET_ID_NODE_ID / FLEET_ID_SECRET, §4.1); proxy, postcard, stream and serve-ws verbs land as later slices.",
+        capabilities: &[Capability::Id],
+        primary: Capability::Id,
+        aliases: &[],
+        subcommands: &["session-key"],
     },
     Domain {
         name: "agent",

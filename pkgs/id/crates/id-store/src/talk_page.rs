@@ -30,6 +30,10 @@
 //! [`Checkpoint`] and reports the first gap, broken link, foreign entry or
 //! bad signature it meets; [`verify_chain_bytes`] does the same for stored
 //! canonical bytes.
+//!
+//! A multiplayer session ends with one `session` entry (slice 4, #14272)
+//! naming the run of merge-layer operations it covered as an
+//! [`OpLogRange`]; the operations themselves never enter the changelog.
 
 use std::fmt;
 
@@ -39,6 +43,10 @@ use id_core::id_shape::{ContentId, DIGEST_BYTES, HashProfile, IdShapeError};
 
 /// Versioned signing domain for talk-page posts.
 pub const TALK_POST_DOMAIN: &str = "id.talk-post/v1";
+/// Event kind that carries one post, as its canonical bytes, in the event
+/// store (slice 2, #14270). The event is content: its signer is the post's
+/// author, and a group-scoped object's posts carry the object's group.
+pub const TALK_POST_KIND: &str = "talk.post.v1";
 /// Versioned signing domain for changelog entries.
 pub const CHANGELOG_ENTRY_DOMAIN: &str = "id.changelog-entry/v1";
 /// Record version written by this module.
@@ -413,6 +421,62 @@ pub enum EntryRef {
     /// What a `redact` entry removes and why. A `redact` entry carries
     /// exactly one; no other kind carries any.
     Redacts(Redaction),
+    /// The span of the merge layer's own log a multiplayer session
+    /// covered (slice 4, #14272). Only a `session` entry carries one,
+    /// and at most one: the changelog records that a session happened
+    /// and which operations it spans, never the operations themselves.
+    OpLog(OpLogRange),
+}
+
+/// The run of merge-layer operations one multiplayer session covers
+/// (slice 4, #14272): the first and last operation it produced, by
+/// their IDs in the merge layer's own log, and how many it produced.
+/// The IDs live in that log's namespace, not in the changelog's
+/// content-hash namespace, so they travel as raw 32-byte IDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OpLogRange {
+    /// The ID of the session's first operation.
+    pub first: [u8; 32],
+    /// The ID of the session's last operation.
+    pub last: [u8; 32],
+    /// How many operations the session produced, at least one.
+    pub count: u64,
+}
+
+impl OpLogRange {
+    /// The range a session that produced one operation covers.
+    #[must_use]
+    pub const fn single(op: [u8; 32]) -> Self {
+        Self {
+            first: op,
+            last: op,
+            count: 1,
+        }
+    }
+
+    /// The range extended by the session's next operation.
+    #[must_use]
+    pub const fn extended(self, op: [u8; 32]) -> Self {
+        Self {
+            first: self.first,
+            last: op,
+            count: self.count.saturating_add(1),
+        }
+    }
+
+    fn validate(&self) -> Result<(), TalkPageError> {
+        if self.count == 0 {
+            return Err(TalkPageError::Invalid(
+                "an op-log range covers at least one operation",
+            ));
+        }
+        if self.count == 1 && self.first != self.last {
+            return Err(TalkPageError::Invalid(
+                "a one-operation op-log range starts and ends at that operation",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl EntryRef {
@@ -436,6 +500,14 @@ impl EntryRef {
                     ]),
                 )])
             }
+            Self::OpLog(range) => Value::Map(vec![(
+                text("op_log"),
+                Value::Map(vec![
+                    (text("count"), Value::UInt(range.count)),
+                    (text("first"), Value::Bytes(range.first.to_vec())),
+                    (text("last"), Value::Bytes(range.last.to_vec())),
+                ]),
+            )]),
         }
     }
 
@@ -459,6 +531,14 @@ impl EntryRef {
                 let reason = RedactionReason::from_token(fields.text("reason")?)
                     .ok_or(TalkPageError::Invalid("unknown redaction reason"))?;
                 Ok(Self::Redacts(Redaction { target, reason }))
+            }
+            [(Value::Text(key), range)] if key == "op_log" => {
+                let fields = Fields::of(range, &["count", "first", "last"])?;
+                Ok(Self::OpLog(OpLogRange {
+                    first: fields.array("first")?,
+                    last: fields.array("last")?,
+                    count: fields.uint("count")?,
+                }))
             }
             _ => Err(TalkPageError::Invalid("unknown reference shape")),
         }
@@ -531,6 +611,13 @@ impl EntryDraft {
     #[must_use]
     pub fn with_redaction(mut self, redaction: Redaction) -> Self {
         self.refs.push(EntryRef::Redacts(redaction));
+        self
+    }
+
+    /// Add the op-log range a `session` entry covers (slice 4, #14272).
+    #[must_use]
+    pub fn with_op_log(mut self, range: OpLogRange) -> Self {
+        self.refs.push(EntryRef::OpLog(range));
         self
     }
 
@@ -651,7 +738,7 @@ impl SignedEntry {
     pub fn on_behalf_of(&self) -> Option<&[u8; 32]> {
         self.refs.iter().find_map(|reference| match reference {
             EntryRef::OnBehalfOf(user) => Some(user),
-            EntryRef::Content(_) | EntryRef::Redacts(_) => None,
+            EntryRef::Content(_) | EntryRef::Redacts(_) | EntryRef::OpLog(_) => None,
         })
     }
 
@@ -659,7 +746,15 @@ impl SignedEntry {
     pub fn redaction(&self) -> Option<Redaction> {
         self.refs.iter().find_map(|reference| match reference {
             EntryRef::Redacts(redaction) => Some(*redaction),
-            EntryRef::Content(_) | EntryRef::OnBehalfOf(_) => None,
+            EntryRef::Content(_) | EntryRef::OnBehalfOf(_) | EntryRef::OpLog(_) => None,
+        })
+    }
+
+    /// The op-log range a `session` entry covers, if it names one.
+    pub fn op_log(&self) -> Option<OpLogRange> {
+        self.refs.iter().find_map(|reference| match reference {
+            EntryRef::OpLog(range) => Some(*range),
+            EntryRef::Content(_) | EntryRef::OnBehalfOf(_) | EntryRef::Redacts(_) => None,
         })
     }
 
@@ -701,6 +796,18 @@ impl SignedEntry {
         if redactions != usize::from(self.kind == ChangeKind::Redact) {
             return Err(TalkPageError::Invalid(
                 "a redact entry names exactly one redaction and no other entry names any",
+            ));
+        }
+        let mut op_logs = 0_usize;
+        for reference in &self.refs {
+            if let EntryRef::OpLog(range) = reference {
+                range.validate()?;
+                op_logs += 1;
+            }
+        }
+        if op_logs > usize::from(self.kind == ChangeKind::Session) {
+            return Err(TalkPageError::Invalid(
+                "only a session entry names an op-log range, and at most one",
             ));
         }
         if self.on_behalf_of() == Some(&self.actor) {

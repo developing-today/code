@@ -147,6 +147,59 @@ fn write_and_execute_privileges_are_refused() {
 }
 
 #[test]
+fn select_on_unlisted_relation_is_refused() {
+    // Oracle: #15044 — §4 layer 2: the credential role may SELECT only
+    // the configured collections, so a defect in the adapter allowlist
+    // (or separate use of the credential) cannot reach an unlisted
+    // relation. The probe reports effective grants, so this grant stands
+    // for a direct, inherited, or PUBLIC SELECT alike.
+    let mut probe = read_only_probe();
+    probe
+        .role_grants
+        .push(grant(ObjectKind::Relation, "secrets", Privilege::Select));
+    assert_eq!(
+        err(config(), &probe),
+        RegistrationError::UnlistedRelationSelect {
+            relation: "secrets".to_string(),
+        }
+    );
+}
+
+#[test]
+fn select_on_a_subset_of_configured_collections_registers() {
+    // Oracle: #15044 acceptance — an authorized read-only configuration
+    // continues to register; the role need not hold SELECT on every
+    // configured collection, only never on an unlisted one.
+    let probe = EndpointProbe {
+        db_schemas: vec!["api".to_string()],
+        role_grants: vec![
+            grant(ObjectKind::Schema, "api", Privilege::Usage),
+            grant(ObjectKind::Relation, "items", Privilege::Select),
+        ],
+    };
+    let endpoint = register(config(), &probe).unwrap();
+    assert_eq!(endpoint.collections().len(), 2);
+}
+
+#[test]
+fn write_privilege_on_unlisted_relation_is_still_forbidden_privilege() {
+    // Oracle: #15044 — the unlisted-relation check is SELECT-specific;
+    // existing forbidden-privilege checks remain intact and keep their
+    // error for write privileges, listed or not.
+    let mut probe = read_only_probe();
+    probe
+        .role_grants
+        .push(grant(ObjectKind::Relation, "secrets", Privilege::Insert));
+    assert_eq!(
+        err(config(), &probe),
+        RegistrationError::ForbiddenPrivilege {
+            object: "secrets".to_string(),
+            privilege: Privilege::Insert,
+        }
+    );
+}
+
+#[test]
 fn insecure_and_unsafe_base_urls_are_refused() {
     for (url, expected) in [
         ("http://pg.example.org", RegistrationError::InsecureBaseUrl),

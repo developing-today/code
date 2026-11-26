@@ -172,7 +172,9 @@ describe("attempt-aggregates boot prime (#5082, read through the route API since
     await settled;
 
     const quota = emptyQuota();
-    quota.pools = [{ id: "mistral", provider: "mistral", plan: "test", state: "ok", windows: [] } as unknown as QuotaPool];
+    quota.pools = [
+      { id: "mistral", provider: "mistral", plan: "test", state: "ok", windows: [] } as unknown as QuotaPool,
+    ];
     const analytics = buildQuotaAnalytics({ quota, usage: emptyUsage(), quotaCurrentPath, routeApi: target, now });
     expect(analytics.dbAvailable).toBe(true);
     expect(analytics.attemptsFrom).toBe(new Date(rowOld).toISOString());
