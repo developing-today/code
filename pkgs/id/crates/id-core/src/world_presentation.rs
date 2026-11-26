@@ -1596,6 +1596,491 @@ impl ScreenPatch {
     }
 }
 
+/// Screen format version that carries semantic tags on its cells
+/// (#14731 slice 5, decision on #14731 2026-11-26): Screen v1 stays
+/// byte-for-byte and semantically unchanged, and semantic tags exist
+/// only in this versioned v2 representation.
+pub const SCREEN_VERSION_TAGGED: u8 = 2;
+/// Maximum semantic tags carried by one tagged cell.
+pub const MAX_CELL_TAGS: usize = 16;
+/// Maximum length of one semantic tag, in bytes.
+pub const MAX_TAG_BYTES: usize = 64;
+
+/// Validate one semantic tag for a Screen v2 cell (#6010).
+///
+/// A tag is a dotted, namespaced name: the root segment is `sys` (core
+/// vocabulary) or `world` (world-declared vocabulary), followed by at
+/// least one more segment. Every segment starts with a lowercase ASCII
+/// letter and continues with lowercase ASCII letters, digits, or
+/// underscores — for example `sys.color.blue`,
+/// `world.appearance.cape`, or `sys.effect.sparkle`. The rule is
+/// deliberately closed: an unnamespaced, malformed, or over-long tag
+/// is rejected instead of being carried opaquely, so every renderer
+/// can rely on the namespace split.
+///
+/// # Errors
+///
+/// Returns an error naming the rule the tag breaks.
+pub fn validate_semantic_tag(tag: &str) -> Result<()> {
+    ensure!(
+        !tag.is_empty() && tag.len() <= MAX_TAG_BYTES,
+        "semantic tag must be 1..={MAX_TAG_BYTES} bytes"
+    );
+    let segments: Vec<&str> = tag.split('.').collect();
+    ensure!(
+        segments.len() >= 2,
+        "semantic tag {tag:?} must be namespaced (root.name)"
+    );
+    ensure!(
+        matches!(segments[0], "sys" | "world"),
+        "semantic tag {tag:?} root must be sys or world"
+    );
+    for segment in &segments {
+        let mut chars = segment.chars();
+        let first = chars.next().unwrap_or_default();
+        ensure!(
+            first.is_ascii_lowercase()
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "semantic tag {tag:?} segment {segment:?} must start with a lowercase letter and use only lowercase letters, digits, or underscores"
+        );
+    }
+    Ok(())
+}
+
+/// Validate a cell's whole tag set: bounded, every tag valid, and in
+/// strictly ascending order with no duplicates, so the set has exactly
+/// one wire representation and diagnostics derived from it are
+/// deterministic.
+fn validate_tag_set(tags: &[String]) -> Result<()> {
+    ensure!(
+        tags.len() <= MAX_CELL_TAGS,
+        "a tagged cell carries at most {MAX_CELL_TAGS} semantic tags"
+    );
+    for tag in tags {
+        validate_semantic_tag(tag)?;
+    }
+    for pair in tags.windows(2) {
+        ensure!(
+            pair[0] < pair[1],
+            "semantic tags must be sorted and unique ({} before {})",
+            pair[0],
+            pair[1]
+        );
+    }
+    Ok(())
+}
+
+/// One Screen v2 cell: exactly the Screen v1 cell fields, plus the
+/// cell's semantic tags. This is an explicit, separate representation
+/// — `ScreenCell` itself gains no field, so strict Screen v1 decoding
+/// (which denies unknown fields) and v1 behaviour are untouched, and a
+/// v1 decoder rejects a tagged cell instead of silently dropping its
+/// tags.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaggedScreenCell {
+    /// One safe Unicode grapheme, or empty for a wide glyph's continuation cell.
+    pub symbol: String,
+    /// Xterm-256 foreground index; zero selects the presenter default.
+    pub fg: u8,
+    /// Xterm-256 background index; zero selects the presenter default.
+    pub bg: u8,
+    /// Whether the cell is bold.
+    pub bold: bool,
+    /// Terminal columns occupied by this grapheme (zero for continuation cells).
+    pub columns: u8,
+    /// Semantic intent, if supplied by the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<StyleToken>,
+    /// The cell's semantic tags, sorted and unique (see
+    /// [`validate_semantic_tag`]). Present (possibly empty) on every
+    /// v2 cell: the field is what makes the representation v2.
+    pub tags: Vec<String>,
+}
+
+impl TaggedScreenCell {
+    /// Build a tagged cell from a v1 cell and a tag set, validating the tags.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tag set is oversized, malformed,
+    /// unsorted, or duplicated.
+    pub fn new(cell: ScreenCell, tags: Vec<String>) -> Result<Self> {
+        validate_tag_set(&tags)?;
+        Ok(Self {
+            symbol: cell.symbol,
+            fg: cell.fg,
+            bg: cell.bg,
+            bold: cell.bold,
+            columns: cell.columns,
+            token: cell.token,
+            tags,
+        })
+    }
+
+    /// The Screen v1 cell this tagged cell projects to (tags dropped).
+    /// Only used after validation, for geometry/glyph checks and for
+    /// presenters that render the v1 projection.
+    #[must_use]
+    pub fn base_cell(&self) -> ScreenCell {
+        ScreenCell {
+            symbol: self.symbol.clone(),
+            fg: self.fg,
+            bg: self.bg,
+            bold: self.bold,
+            columns: self.columns,
+            token: self.token,
+        }
+    }
+
+    /// Validate this cell's tag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tag set is invalid (see [`Self::new`]).
+    pub fn validate(&self) -> Result<()> {
+        validate_tag_set(&self.tags)
+    }
+}
+
+/// A Screen v2 surface: a validated screen whose cells carry semantic
+/// tags. Construction goes through the same glyph/geometry validation
+/// as Screen v1 (via [`ScreenSurface::from_cells`] on the base cells),
+/// plus tag validation on every cell.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenSurfaceV2 {
+    /// Screen format version; always [`SCREEN_VERSION_TAGGED`] (2).
+    pub version: u8,
+    /// Number of terminal columns.
+    pub width: u16,
+    /// Number of terminal rows.
+    pub height: u16,
+    /// Normalized row-major tagged cells.
+    pub cells: Vec<TaggedScreenCell>,
+}
+
+impl ScreenSurfaceV2 {
+    /// Build a validated Screen v2 surface from tagged cells.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mismatched cell count, invalid glyphs/geometry (the
+    /// Screen v1 rules), and any invalid tag set.
+    pub fn from_tagged_cells(
+        width: usize,
+        height: usize,
+        cells: Vec<TaggedScreenCell>,
+    ) -> Result<Self> {
+        for cell in &cells {
+            cell.validate()?;
+        }
+        let base = ScreenSurface::from_cells(
+            width,
+            height,
+            cells.iter().map(TaggedScreenCell::base_cell).collect(),
+        )?;
+        Ok(Self {
+            version: SCREEN_VERSION_TAGGED,
+            width: base.width,
+            height: base.height,
+            cells,
+        })
+    }
+
+    /// Re-validate a decoded surface: version, dimensions, glyph and
+    /// geometry rules, and every cell's tag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on the first rule the surface breaks.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == SCREEN_VERSION_TAGGED,
+            "unsupported tagged screen version {}",
+            self.version
+        );
+        let rebuilt = Self::from_tagged_cells(
+            usize::from(self.width),
+            usize::from(self.height),
+            self.cells.clone(),
+        )?;
+        ensure!(
+            rebuilt.width == self.width && rebuilt.height == self.height,
+            "tagged screen dimensions do not match its cells"
+        );
+        Ok(())
+    }
+
+    /// The Screen v1 projection: same cells and geometry, version 1,
+    /// tags dropped. This is the only sanctioned way tags leave a
+    /// surface, and it is explicit at the call site.
+    #[must_use]
+    pub fn to_v1(&self) -> ScreenSurface {
+        ScreenSurface {
+            version: 1,
+            width: self.width,
+            height: self.height,
+            cells: self.cells.iter().map(TaggedScreenCell::base_cell).collect(),
+        }
+    }
+
+    /// Connect the four-rung fallback resolver
+    /// ([`crate::presentation_fallback`]) to one tagged cell: the
+    /// cell's tags are the resolver's source tags, and the result
+    /// carries the cell's own symbol alongside the selected rung and
+    /// art, so a renderer always has the cell's non-blank glyph
+    /// available at every rung (the resolver separately guarantees a
+    /// glyph-rung result is never blank or `?`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveCellError`] when `index` is out of bounds, the
+    /// cell's tags are invalid, or the plan's candidates claim tags or
+    /// filters the cell does not carry.
+    pub fn resolve_cell(
+        &self,
+        index: usize,
+        plan: &crate::presentation_fallback::FallbackPlan,
+        start_at: crate::presentation_policy::Rung,
+        source_filters: &[crate::presentation_asset::FilterRef],
+    ) -> Result<ResolvedTaggedCell, ResolveCellError> {
+        let cell = self
+            .cells
+            .get(index)
+            .ok_or(ResolveCellError::NoSuchCell(index))?;
+        cell.validate().map_err(ResolveCellError::InvalidTags)?;
+        let source_tags: std::collections::BTreeSet<String> = cell.tags.iter().cloned().collect();
+        let resolved = plan
+            .resolve(start_at, &source_tags, source_filters)
+            .map_err(ResolveCellError::Fallback)?;
+        Ok(ResolvedTaggedCell {
+            index,
+            symbol: cell.symbol.clone(),
+            tags: cell.tags.clone(),
+            rung: resolved.rung,
+            art: resolved.art,
+            dropped_tags: resolved.dropped_tags,
+            dropped_filters: resolved.dropped_filters,
+        })
+    }
+}
+
+/// Why connecting the resolver to a tagged cell failed.
+#[derive(Debug)]
+pub enum ResolveCellError {
+    /// The requested cell index is outside the surface.
+    NoSuchCell(usize),
+    /// The cell's tag set is invalid, so it cannot be resolved honestly.
+    InvalidTags(anyhow::Error),
+    /// The fallback plan did not validate against the cell's tags/filters.
+    Fallback(crate::presentation_fallback::FallbackError),
+}
+
+/// One tagged cell after fallback resolution: the rendering-path
+/// record a presenter consumes. `dropped_tags` / `dropped_filters` are
+/// the deterministic diagnostic (source order for filters, sorted
+/// order for tags); `symbol` is the cell's own glyph, carried at every
+/// rung so no rung renders blank for this cell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedTaggedCell {
+    /// Row-major index of the cell in its surface.
+    pub index: usize,
+    /// The cell's own glyph (non-empty for a headed cell).
+    pub symbol: String,
+    /// The cell's semantic tags, as authored.
+    pub tags: Vec<String>,
+    /// The rung the resolver selected.
+    pub rung: crate::presentation_policy::Rung,
+    /// The authored output for that rung.
+    pub art: crate::presentation_fallback::RenderedArt,
+    /// Tags no longer represented at the selected rung, sorted.
+    pub dropped_tags: Vec<String>,
+    /// Filter occurrences no longer applied at the selected rung, in source order.
+    pub dropped_filters: Vec<crate::presentation_asset::FilterRef>,
+}
+
+/// One maximal run of consecutive row-major tagged cells that changed
+/// (the Screen v2 counterpart of [`CellRun`]).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaggedCellRun {
+    /// Row-major index of the run's first cell.
+    pub start: u32,
+    /// The replacement tagged cells, in row-major order.
+    pub cells: Vec<TaggedScreenCell>,
+}
+
+/// A cell-run delta between two consecutive Screen v2 surfaces. Patch
+/// application validates every incoming cell's tags, so a patch can
+/// never smuggle an unvalidated tag set into a surface.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenPatchV2 {
+    /// Screen format version; always [`SCREEN_VERSION_TAGGED`] (2).
+    pub version: u8,
+    /// Number of terminal columns; matches the surfaces it patches.
+    pub width: u16,
+    /// Number of terminal rows; matches the surfaces it patches.
+    pub height: u16,
+    /// The changed tagged-cell runs, in row-major order, non-overlapping.
+    pub runs: Vec<TaggedCellRun>,
+}
+
+impl ScreenPatchV2 {
+    /// Validate the patch shape: v2 version and every cell's tag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a wrong version or an invalid tag set.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == SCREEN_VERSION_TAGGED,
+            "unsupported tagged screen patch version {}",
+            self.version
+        );
+        for run in &self.runs {
+            for cell in &run.cells {
+                cell.validate()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The patch that turns `prev` into `next`, or `None` when the
+    /// surfaces do not share version and dimensions (the caller sends
+    /// a full frame instead), mirroring [`ScreenPatch::diff`].
+    #[must_use]
+    pub fn diff(prev: &ScreenSurfaceV2, next: &ScreenSurfaceV2) -> Option<Self> {
+        if prev.version != next.version || prev.width != next.width || prev.height != next.height {
+            return None;
+        }
+        let mut runs = Vec::new();
+        let mut current: Option<(usize, Vec<TaggedScreenCell>)> = None;
+        for (index, (before, after)) in prev.cells.iter().zip(&next.cells).enumerate() {
+            if before == after {
+                if let Some((start, cells)) = current.take() {
+                    runs.push(TaggedCellRun {
+                        start: u32::try_from(start).unwrap_or(u32::MAX),
+                        cells,
+                    });
+                }
+                continue;
+            }
+            match &mut current {
+                Some((_, cells)) => cells.push(after.clone()),
+                None => current = Some((index, vec![after.clone()])),
+            }
+        }
+        if let Some((start, cells)) = current.take() {
+            runs.push(TaggedCellRun {
+                start: u32::try_from(start).unwrap_or(u32::MAX),
+                cells,
+            });
+        }
+        Some(Self {
+            version: next.version,
+            width: next.width,
+            height: next.height,
+            runs,
+        })
+    }
+
+    /// The Screen v2 surface this patch produces from `prev`. Returns
+    /// `None` when the patch does not belong to `prev`, a run is out
+    /// of order/overlapping/out of bounds, or any incoming cell's tag
+    /// set is invalid — the caller falls back to a full frame.
+    #[must_use]
+    pub fn apply(&self, prev: &ScreenSurfaceV2) -> Option<ScreenSurfaceV2> {
+        if self.validate().is_err()
+            || self.version != prev.version
+            || self.width != prev.width
+            || self.height != prev.height
+        {
+            return None;
+        }
+        let mut cells = prev.cells.clone();
+        let mut covered_until = 0usize;
+        for run in &self.runs {
+            let start = usize::try_from(run.start).ok()?;
+            let end = start.checked_add(run.cells.len())?;
+            if start < covered_until || end > cells.len() {
+                return None;
+            }
+            cells[start..end].clone_from_slice(&run.cells);
+            covered_until = end;
+        }
+        ScreenSurfaceV2::from_tagged_cells(
+            usize::from(prev.width),
+            usize::from(prev.height),
+            cells,
+        )
+        .ok()
+    }
+
+    /// Whether the patch changes nothing.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaggedScreenPayload {
+    kind: String,
+    version: u8,
+    width: usize,
+    height: usize,
+    cells: Vec<TaggedScreenCell>,
+}
+
+/// Parse the Screen v2 tagged-cell document
+/// (`{"kind":"screen","version":2,"width":…,"height":…,"cells":[…]}`),
+/// the explicit JSON form of [`ScreenSurfaceV2`].
+///
+/// Returns `Ok(None)` for a document that is not a screen document at
+/// all (the legacy plain-text path, exactly as [`parse_surface`]).
+/// A screen document that is not a valid v2 tagged surface — wrong
+/// version (including a v1 document), unknown fields, invalid tags —
+/// is an error, never a silent downgrade: Screen v1 documents keep
+/// going through [`parse_surface`], which conversely rejects v2.
+///
+/// # Errors
+///
+/// Returns an error on a malformed or invalid screen document.
+pub fn parse_tagged_surface(data: &str) -> Result<Option<ScreenSurfaceV2>> {
+    let value: Value = match crate::json_unique::parse_json_without_duplicate_keys(data) {
+        Ok(value) => value,
+        Err(err) => {
+            if err.to_string().contains("duplicate JSON object key") {
+                let lenient: Option<Value> = serde_json::from_str(data).ok();
+                let kind = lenient
+                    .as_ref()
+                    .and_then(|value| value.get("kind"))
+                    .and_then(Value::as_str);
+                if kind == Some("screen") || top_level_kind_is_duplicated(data) {
+                    return Err(err).context("duplicate JSON object key in tagged screen");
+                }
+            }
+            return Ok(None);
+        }
+    };
+    if value.get("kind").and_then(Value::as_str) != Some("screen") {
+        return Ok(None);
+    }
+    let payload: TaggedScreenPayload =
+        serde_json::from_value(value).context("decode world tagged screen presentation")?;
+    ensure!(payload.kind == "screen", "invalid world screen kind");
+    ensure!(
+        payload.version == SCREEN_VERSION_TAGGED,
+        "unsupported world tagged screen version {}",
+        payload.version
+    );
+    let surface = ScreenSurfaceV2::from_tagged_cells(payload.width, payload.height, payload.cells)?;
+    Ok(Some(surface))
+}
+
 /// Semantic intent retained for adapters, not guest-supplied markup.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -4180,5 +4665,232 @@ mod tests {
         let once = serde_json::to_string(&first).unwrap();
         assert_eq!(serde_json::to_string(&second).unwrap(), once);
         assert_eq!(serde_json::to_string(&first).unwrap(), once);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tagged_screen_tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::presentation_fallback::{FallbackCandidate, FallbackPlan, RenderedArt};
+    use crate::presentation_policy::Rung;
+
+    fn plain(symbol: &str) -> ScreenCell {
+        ScreenCell {
+            symbol: symbol.to_owned(),
+            fg: 0,
+            bg: 0,
+            bold: false,
+            columns: 1,
+            token: None,
+        }
+    }
+
+    fn blue_cape_tags() -> Vec<String> {
+        vec![
+            "sys.color.blue".to_owned(),
+            "sys.effect.sparkle".to_owned(),
+            "world.appearance.cape".to_owned(),
+        ]
+    }
+
+    fn blue_cape_surface() -> ScreenSurfaceV2 {
+        ScreenSurfaceV2::from_tagged_cells(
+            2,
+            1,
+            vec![
+                TaggedScreenCell::new(plain("C"), blue_cape_tags()).unwrap(),
+                TaggedScreenCell::new(plain(" "), Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn blue_cape_plan() -> FallbackPlan {
+        let asset = |id: &str, tags: &[&str], filters: &[&str]| {
+            FallbackCandidate::asset(
+                id.parse().unwrap(),
+                tags.iter().map(|t| (*t).to_owned()).collect(),
+                filters
+                    .iter()
+                    .map(|f| f.parse().unwrap())
+                    .collect::<Vec<crate::presentation_asset::FilterRef>>(),
+            )
+        };
+        FallbackPlan {
+            rich: Some(asset(
+                "hero@1",
+                &["sys.color.blue", "sys.effect.sparkle", "world.appearance.cape"],
+                &["fx/sparkle@1"],
+            )),
+            static_substitute: Some(asset(
+                "hero-static@1",
+                &["sys.color.blue", "sys.effect.sparkle", "world.appearance.cape"],
+                &[],
+            )),
+            tileset: Some(asset(
+                "tiles.blue-cape@1",
+                &["sys.color.blue", "world.appearance.cape"],
+                &[],
+            )),
+            glyph: FallbackCandidate::glyph("C", BTreeSet::new(), vec![]).unwrap(),
+        }
+    }
+
+    #[test]
+    fn semantic_tag_validation_accepts_namespaced_and_rejects_the_rest() {
+        for good in ["sys.color.blue", "world.appearance.cape", "sys.effect.sparkle", "world.a1.b_2"] {
+            assert!(validate_semantic_tag(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "blue",
+            "sys",
+            "other.color.blue",
+            "sys.Color.blue",
+            "sys..blue",
+            "sys.1blue",
+            "sys.color.blue ",
+            "sys.color.blue-cape",
+        ] {
+            assert!(validate_semantic_tag(bad).is_err(), "{bad:?} must be rejected");
+        }
+        // Unsorted or duplicated tag sets have no single wire form.
+        assert!(TaggedScreenCell::new(
+            plain("C"),
+            vec!["world.appearance.cape".to_owned(), "sys.color.blue".to_owned()],
+        )
+        .is_err());
+        assert!(TaggedScreenCell::new(
+            plain("C"),
+            vec!["sys.color.blue".to_owned(), "sys.color.blue".to_owned()],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn screen_v2_round_trips_and_v1_paths_stay_strict() {
+        let surface = blue_cape_surface();
+        assert_eq!(surface.version, SCREEN_VERSION_TAGGED);
+        let json = serde_json::to_string(&surface).unwrap();
+        let decoded: ScreenSurfaceV2 = serde_json::from_str(&json).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(decoded, surface);
+        assert_eq!(decoded.cells[0].tags, blue_cape_tags());
+
+        // The explicit JSON document form parses as v2...
+        let doc = format!(
+            r#"{{"kind":"screen","version":2,"width":2,"height":1,"cells":{}}}"#,
+            serde_json::to_string(&surface.cells).unwrap()
+        );
+        assert_eq!(parse_tagged_surface(&doc).unwrap(), Some(surface.clone()));
+        // ...a v1 document is not a tagged surface...
+        assert!(parse_tagged_surface(
+            r#"{"kind":"screen","version":1,"width":1,"height":1,"rows":["x"]}"#
+        )
+        .is_err());
+        // ...and the v1 parser still rejects a v2 document outright
+        // instead of dropping its tags.
+        assert!(parse_surface(&doc).is_err());
+        // A non-screen document stays on the legacy path.
+        assert_eq!(parse_tagged_surface("hello").unwrap(), None);
+        // The v1 projection is explicit and tag-free.
+        let v1 = surface.to_v1();
+        assert_eq!(v1.version, 1);
+        assert_eq!(v1.cells[0].symbol, "C");
+    }
+
+    #[test]
+    fn screen_v2_patch_diff_apply_preserves_tags_and_rejects_bad_tags() {
+        let before = blue_cape_surface();
+        let mut changed_cells = before.cells.clone();
+        changed_cells[1] = TaggedScreenCell::new(plain("x"), vec!["sys.color.blue".to_owned()]).unwrap();
+        let after = ScreenSurfaceV2::from_tagged_cells(2, 1, changed_cells).unwrap();
+        let patch = ScreenPatchV2::diff(&before, &after).unwrap();
+        assert!(!patch.is_empty());
+        assert_eq!(patch.apply(&before), Some(after.clone()));
+        assert_eq!(patch.apply(&after), Some(after));
+
+        // A hand-built patch carrying an invalid tag set is refused,
+        // not applied.
+        let bad = ScreenPatchV2 {
+            version: SCREEN_VERSION_TAGGED,
+            width: 2,
+            height: 1,
+            runs: vec![TaggedCellRun {
+                start: 1,
+                cells: vec![TaggedScreenCell {
+                    symbol: "x".to_owned(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                    token: None,
+                    tags: vec!["not-namespaced".to_owned()],
+                }],
+            }],
+        };
+        assert_eq!(bad.apply(&before), None);
+    }
+
+    #[test]
+    fn resolver_connects_to_tagged_cells_blue_cape_at_every_rung() {
+        let surface = blue_cape_surface();
+        let plan = blue_cape_plan();
+        let filters: Vec<crate::presentation_asset::FilterRef> = vec!["fx/sparkle@1".parse().unwrap()];
+        let expected: [(Rung, Vec<&str>, usize); 4] = [
+            (Rung::Rich, Vec::new(), 0),
+            (Rung::Static, Vec::new(), 1),
+            (Rung::Tileset, vec!["sys.effect.sparkle"], 1),
+            (
+                Rung::Glyph,
+                vec!["sys.color.blue", "sys.effect.sparkle", "world.appearance.cape"],
+                1,
+            ),
+        ];
+        for (start, dropped, dropped_filter_count) in expected {
+            let resolved = surface.resolve_cell(0, &plan, start, &filters).unwrap();
+            assert_eq!(resolved.rung, start);
+            assert_eq!(resolved.symbol, "C", "non-blank glyph at rung {start:?}");
+            assert!(!resolved.symbol.trim().is_empty() && resolved.symbol != "?");
+            assert_eq!(
+                resolved.dropped_tags,
+                dropped.iter().map(|t| (*t).to_owned()).collect::<Vec<_>>()
+            );
+            assert_eq!(resolved.dropped_filters.len(), dropped_filter_count);
+            if start == Rung::Glyph {
+                assert!(matches!(resolved.art, RenderedArt::Glyph(_)));
+            }
+        }
+        // Deterministic: resolving twice yields identical records.
+        let a = surface.resolve_cell(0, &plan, Rung::Tileset, &filters).unwrap();
+        let b = surface.resolve_cell(0, &plan, Rung::Tileset, &filters).unwrap();
+        assert_eq!(a, b);
+        // Out-of-bounds is an explicit error, never a blank cell.
+        assert!(matches!(
+            surface.resolve_cell(99, &plan, Rung::Rich, &filters),
+            Err(ResolveCellError::NoSuchCell(99))
+        ));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn tagged_patch_apply_matches_diff_for_arbitrary_tag_sets(
+            tag_pick in proptest::collection::vec(0u8..4, 2..=2),
+        ) {
+            let vocab = ["sys.color.blue", "sys.color.red", "sys.effect.sparkle", "world.appearance.cape"];
+            let mk = |pick: &[u8], symbol: &str| {
+                let mut tags: Vec<String> = pick.iter().map(|i| vocab[usize::from(*i)].to_owned()).collect();
+                tags.sort();
+                tags.dedup();
+                TaggedScreenCell::new(plain(symbol), tags).unwrap()
+            };
+            let before = ScreenSurfaceV2::from_tagged_cells(2, 1, vec![mk(&tag_pick[..1], "C"), mk(&tag_pick[1..], " ")]).unwrap();
+            let after = ScreenSurfaceV2::from_tagged_cells(2, 1, vec![mk(&tag_pick[1..], "C"), mk(&tag_pick[..1], "x")]).unwrap();
+            let patch = ScreenPatchV2::diff(&before, &after).unwrap();
+            proptest::prop_assert_eq!(patch.apply(&before), Some(after));
+        }
     }
 }
