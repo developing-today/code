@@ -83,6 +83,8 @@ mod invocation_ledger;
 mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
+#[cfg(feature = "host")]
+mod host;
 mod session_state;
 #[cfg(feature = "ssh")]
 mod ssh;
@@ -1076,6 +1078,12 @@ fn run_domain_with_initializer(
             #[cfg(feature = "laptop")]
             if d.name == "laptop" {
                 return laptop::run(&surface.config, args);
+            }
+            // developing-today/code#14716: host resolution and
+            // selection over the #13717 forms, through fleet-pool.
+            #[cfg(feature = "host")]
+            if d.name == "host" {
+                return host::run(args);
             }
             // #13774: the actions domain runs for real — live exec
             // sessions inside Actions runners (seat + agent + put).
