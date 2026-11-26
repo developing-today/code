@@ -25,13 +25,61 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-tenant
   store; the key must match `[A-Za-z0-9._-]{1,128}`); `PUT /v1/blobs`,
   `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
-  deduplicated across users; DELETE drops only this user's
-  reference); and the signed-object bridge routes (`GET
+  deduplicated across users — except client-encrypted blobs
+  (§7 of the #2258 spec), whose R2 keys are scoped to the owning
+  binding so they dedupe only per user; DELETE drops only this
+  user's reference); and the signed-object bridge routes (`GET
 /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
 /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
   `GET /v1/bridge/ws`), covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
-  implemented, not later steps.
+  implemented, not later steps. So is the per-binding request cap
+  (#15485): with `USER_REQUEST_CEILING` set, requests past that many
+  in a `USER_REQUEST_WINDOW_SECONDS` window (default one day) get a
+  retryable 429 with `Retry-After`; `GET /v1/usage` stays available
+  and reports the window. A malformed value fails requests closed.
+- The durable source fence for jurisdiction migration (#3404,
+  `src/migration-fence.ts`): the migration principal (an internal
+  header the front door strips) can `POST /v1/migration/freeze`,
+  `/seal` and `/unfreeze` with `{migration_id, routing_epoch}`, and
+  `GET /v1/migration/fence`. While frozen or sealed, every mutation
+  (bridge push and WebSocket batches, blob and KV writes and deletes,
+  new bridge sessions) gets a retryable 503 `source_frozen` or
+  `source_sealed`, checked at its commit point; reads and export stay
+  open. A freeze closes live bridge sessions and acknowledges the
+  mutation watermark. Unfreeze (abort) needs a newer epoch, a sealed
+  source never unfreezes, and a replayed freeze at an old epoch is
+  refused.
+- Directory migration epochs (#3404, `planDirectoryTransition` and
+  `PersistentHostedAccountDirectory.transition`): an account record
+  moves stable, pending, frozen, verified, switched and back to stable
+  by compare-and-set on the whole record it was read as. Begin and
+  switch advance the routing epoch, abort advances it again, a retried
+  step returns the applied row, and a stale or competing step gets 409
+  `directory_cas_conflict`. Migrating records still route to the
+  source; a switched record gets a retryable 503 `migration_switching`
+  at the front door until the migration completes.
+- Migration snapshot and staged target (#3404, `src/migration-snapshot.ts`):
+  the source answers `POST /v1/migration/snapshot` only while its
+  fence stands for that migration and epoch, with every data table
+  (KV, blob references, the bridge chain store), the freeze watermark
+  and a SHA-256 digest. The target takes it at `POST /v1/migration/import`
+  only when fresh, checks the digest before and after writing, and
+  stays staged: every client route gets a retryable 503
+  `target_not_serving`. `POST /v1/migration/activate` at the switch
+  epoch serves it once every referenced blob is in the target's
+  bucket; `/discard` empties a staged target for a retry.
+- The migration coordinator (#3404, `src/migration-coordinator.ts`):
+  `driveMigration` takes the account's migration lease
+  (`migrations/0003_migration_leases.sql`, a token that rises whenever
+  the lease changes hands) and drives begin, freeze, snapshot, blob
+  copy, import, check, switch, activate, seal and complete, every
+  directory step a compare-and-set that also checks the lease. It keeps
+  no state of its own and resumes from the directory's phase after a
+  crash or a lost response. `abortMigration` discards the staged copy,
+  moves the directory back to the source at a fresh epoch and reopens
+  the source, which then refuses a stale freeze. Nothing exposes the
+  coordinator to callers yet.
 
 ## Tenancy control plane (component E, #9083)
 
@@ -114,6 +162,14 @@ serves no authoritative snapshot.
   ceiling. Design record:
   `doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation/`.
   Cross-language fixtures: `pkgs/id/tests/bridge_fixtures.rs`.
+- The `/v1/bridge/ws` socket hibernates (#15484): the DO accepts it
+  with `state.acceptWebSocket`, never `server.accept()`, so an idle
+  session does not keep the object resident. The socket's
+  attachment names its session, and the session's state is written
+  to `bridge_ws_sessions` after every frame, so a fresh instance
+  after an eviction continues the same session. A socket whose
+  state is gone gets a `session_lost` error and is closed; the
+  client reconnects and resumes with its token.
 - `src/export.ts` — §6 export production (slice 4b of #2852,
   #13157): enumerates the DO's applied events and the R2 blobs
   they cite into the object/blob sets `build_export`
