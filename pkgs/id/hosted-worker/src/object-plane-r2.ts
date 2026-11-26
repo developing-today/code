@@ -260,7 +260,12 @@ export class R2ObjectPlaneAdapter implements ObjectPlaneAdapter {
     if (Number.isNaN(reverifiedMs)) {
       throw new FailClosed(400, "delete_fence_invalid", "fence reverifiedAt is not a parseable timestamp");
     }
-    if (reverifiedMs > Date.parse(opts?.now ?? new Date().toISOString())) {
+    const now = opts?.now ?? new Date().toISOString();
+    const nowMs = Date.parse(now);
+    if (Number.isNaN(nowMs)) {
+      throw new FailClosed(400, "delete_fence_invalid", "current time is not a parseable timestamp");
+    }
+    if (reverifiedMs > nowMs) {
       throw new FailClosed(400, "delete_fence_invalid", "fence reverifiedAt is in the future");
     }
     const key = publishedKey(this.partition, id);
@@ -277,7 +282,7 @@ export class R2ObjectPlaneAdapter implements ObjectPlaneAdapter {
       partition: this.partition,
       epoch: fence.epoch,
       reverifiedAt: fence.reverifiedAt,
-      deletedAt: opts?.now ?? new Date().toISOString(),
+      deletedAt: now,
       existed,
     });
     return { deleted: existed };
