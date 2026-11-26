@@ -27,21 +27,31 @@
 //! another's session. Without a target the window opens on an
 //! empty view and the announce line says so, rather than
 //! pretending to be connected. Outbound frames travel the
-//! session's channel (held in [`SessionBridge`]); wiring Bevy keyboard
-//! / clipboard capture to it is presentation work on top of the
-//! already-tested [`id_native_shell::events`] mapping.
+//! session's channel (held in [`SessionBridge`]): key presses in the
+//! window reach the foreground world as the terminal's own `input`
+//! frames, mapped by [`id_native_shell::events::key_input_bytes`]
+//! (in directory mode Esc stays the way back to the list).
+//! Clipboard paste and window resize are later slices on the same
+//! tested [`id_native_shell::events`] mapping.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-use bevy::prelude::{App, DefaultPlugins, Res, ResMut, Resource, Startup, Update};
+use bevy::input::ButtonInput;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::KeyboardInput;
+use bevy::prelude::{
+    App, DefaultPlugins, IntoScheduleConfigs, KeyCode, MessageReader, Res, ResMut, Resource,
+    Startup, Update,
+};
 use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::directory::{
-    DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus, DirectoryMarks,
-    DirectoryPlugin,
+    DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus,
+    DirectoryInputSystems, DirectoryMarks, DirectoryPlugin,
 };
+use id_native_shell::events::{KeyModifiers, NativeEvent, key_input_bytes, native_event_frame};
 use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
 use id_native_shell::scene::SceneRenderPlugin;
 use id_native_shell::widget::WidgetRenderPlugin;
@@ -107,7 +117,78 @@ fn parse_args() -> Result<SessionArgs> {
 #[derive(Resource)]
 struct SessionBridge {
     views: Mutex<mpsc::UnboundedReceiver<SessionView>>,
-    _outbound: mpsc::Sender<Value>,
+    outbound: mpsc::Sender<Value>,
+}
+
+/// The modifier keys held right now, for the terminal key mapping.
+fn held_modifiers(held: Option<&ButtonInput<KeyCode>>) -> KeyModifiers {
+    held.map_or_else(KeyModifiers::default, |held| KeyModifiers {
+        ctrl: held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
+        alt: held.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
+    })
+}
+
+/// Send one key press to a session as the contract `input` frame,
+/// if the terminal mapping encodes it. Never blocks the frame: a
+/// session whose outbound queue is full drops the key and says so
+/// on stderr, and a session that has ended drops it silently.
+fn send_key(bridge: &SessionBridge, press: &KeyboardInput, modifiers: KeyModifiers) {
+    let Some(bytes) = key_input_bytes(&press.logical_key, press.text.as_deref(), modifiers) else {
+        return;
+    };
+    let frame = match native_event_frame(&NativeEvent::KeyInput(bytes)) {
+        Ok(frame) => frame,
+        Err(error) => {
+            eprintln!("id-native-shell: key not sent: {error}");
+            return;
+        }
+    };
+    if let Err(mpsc::error::TrySendError::Full(_)) = bridge.outbound.try_send(frame) {
+        eprintln!("id-native-shell: key dropped: the session is not keeping up");
+    }
+}
+
+/// Direct-join mode: every key press in the window goes to the one
+/// session as terminal input.
+#[allow(clippy::needless_pass_by_value)]
+fn forward_session_keys(
+    mut keys: MessageReader<'_, '_, KeyboardInput>,
+    held: Option<Res<'_, ButtonInput<KeyCode>>>,
+    bridge: Res<'_, SessionBridge>,
+) {
+    let modifiers = held_modifiers(held.as_deref());
+    for press in keys.read() {
+        if press.state == ButtonState::Pressed {
+            send_key(&bridge, press, modifiers);
+        }
+    }
+}
+
+/// Directory mode: key presses go to the foreground world's session
+/// while a session has focus, except Esc, which returns to the
+/// list. Runs before the directory's own key handling, so a key is
+/// judged by the focus it was pressed in: the Enter that opens a
+/// world is not sent to it, and the Esc that leaves one is not
+/// either.
+#[allow(clippy::needless_pass_by_value)]
+fn forward_directory_session_keys(
+    mut keys: MessageReader<'_, '_, KeyboardInput>,
+    held: Option<Res<'_, ButtonInput<KeyCode>>>,
+    directory: Res<'_, DirectoryApp>,
+    sessions: Res<'_, WorldSessions>,
+) {
+    let modifiers = held_modifiers(held.as_deref());
+    for press in keys.read() {
+        if press.state != ButtonState::Pressed {
+            continue;
+        }
+        let Some(world) = directory.session_input_target(press.key_code == KeyCode::Escape) else {
+            continue;
+        };
+        if let Some(session) = sessions.0.get(world) {
+            send_key(&session.bridge, press, modifiers);
+        }
+    }
 }
 
 /// Drain every view the session has published into the presented view.
@@ -452,7 +533,7 @@ fn spawn_session(args: &SessionArgs, world: Option<String>) -> Result<SessionBri
         .context("spawn session thread")?;
     Ok(SessionBridge {
         views: Mutex::new(views_rx),
-        _outbound: outbound_tx,
+        outbound: outbound_tx,
     })
 }
 
@@ -511,7 +592,7 @@ fn main() {
         match spawn_session(&args, args.world.clone()) {
             Ok(bridge) => {
                 app.insert_resource(bridge)
-                    .add_systems(Update, drain_session_views);
+                    .add_systems(Update, (drain_session_views, forward_session_keys));
             }
             Err(error) => {
                 eprintln!("id-native-shell: cannot start session: {error:#}");
@@ -530,7 +611,13 @@ fn main() {
                     .insert_resource(WorldSessions::default())
                     .insert_resource(args)
                     .add_plugins(DirectoryPlugin)
-                    .add_systems(Update, drive_directory);
+                    .add_systems(
+                        Update,
+                        (
+                            forward_directory_session_keys.before(DirectoryInputSystems),
+                            drive_directory,
+                        ),
+                    );
             }
             Err(error) => {
                 eprintln!("id-native-shell: cannot start directory: {error:#}");
