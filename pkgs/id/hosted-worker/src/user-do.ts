@@ -505,11 +505,19 @@ export class UserDO {
       const requestCeiling = this.requestCeiling();
       // Cap-exempt routes also do not consume quota: they are
       // the observability/recovery paths, and counting them
-      // would drift the count past the ceiling it reports.
+      // would drift the count past the ceiling it reports. The
+      // bridge challenge is exempt for the same reason bridge
+      // export is: it mints the single-use, 5-minute nonce the
+      // export proof requires, so refusing it at the cap would
+      // make the exempt export unreachable to a caller holding
+      // no live nonce. The export's proof checks are unchanged.
       const capExempt =
         requestCeiling !== null &&
         req.method === "GET" &&
-        (url.pathname === "/v1/usage" || url.pathname === "/v1/export" || url.pathname === "/v1/bridge/export");
+        (url.pathname === "/v1/usage" ||
+          url.pathname === "/v1/export" ||
+          url.pathname === "/v1/bridge/export" ||
+          url.pathname === "/v1/bridge/challenge");
       if (requestCeiling !== null) {
         const nowMs = Date.now();
         const win = this.requestWindow(nowMs);
