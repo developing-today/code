@@ -49,6 +49,7 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../migrations/0003_blobs.sql")),
     (4, include_str!("../migrations/0004_placement.sql")),
     (5, include_str!("../migrations/0005_envelope.sql")),
+    (6, include_str!("../migrations/0006_gc.sql")),
 ];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
