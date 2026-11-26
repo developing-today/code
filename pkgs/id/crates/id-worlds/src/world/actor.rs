@@ -1889,6 +1889,20 @@ impl WorldActor {
                 );
                 let _ = reply.send(result);
             }
+            WorldCommand::AuthorizeLifecycle {
+                authority,
+                act,
+                reply,
+            } => {
+                let result = self.require_ownership(&authority, act);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "AuthorizeLifecycle",
+                    serde_json::json!({"act": act}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
             WorldCommand::IsolationInfo { reply } => {
                 let isolation = self.core.isolation();
                 // No audit record, for the same reason as Metrics below:
@@ -2732,7 +2746,7 @@ mod replication_feed_tests {
         let snapshot = snapshot_source.read().unwrap();
         assert_eq!(reset.bytes, snapshot.bytes);
         let chunks = split_entry_payload(&snapshot.bytes).unwrap();
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [Vec<u8>; 0]);
         assert!(
             chunks
                 .iter()

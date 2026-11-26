@@ -563,6 +563,84 @@ $ id talk list toy-document-event-id --json
 
 Failures: an object this node cannot see is refused, exit `1`.
 
+### Thread steps
+
+A thread in a conversation group can end in a resolution, and a change to an object can be proposed out of it (#7849). Each step is a signed event in the group, written only by a member of it: `propose` (`chat.proposal.v1`), `resolve` (`chat.resolution.v1`), `reject` (`chat.proposal-rejection.v1`) and `withdraw` (`chat.proposal-withdrawal.v1`). `accept` is not an event of its own: it is the note revision that cites the proposal. Whether a step counts is decided on read: a member may resolve a thread, an object's writer may reject a proposal on it, and only the proposer may withdraw one. A key writes a note when it created it or this store holds a revision of it by that key.
+
+Each step is one terminal line, and the command writes its arguments as that line, checks it with the same field rules the fold applies, and prints it back as `line=`. An object is `<object-id>/<author-key>`, a blob is `<hash>/<author-key>`, optionally followed by `@<hint>`, and every other ID is 64 hex characters.
+
+#### `talk propose`
+
+```
+id talk propose <GROUP> <OBJECT> --base <REVISION> --content <BLOB> --thread <THREAD> [--supersedes <PROPOSAL>]
+```
+
+| Flag           | Argument | Default             | Meaning                                                        |
+| -------------- | -------- | ------------------- | -------------------------------------------------------------- |
+| `<GROUP>`      | event ID | required positional | The conversation group's ID.                                   |
+| `<OBJECT>`     | object   | required positional | The object to change.                                          |
+| `--base`       | event ID | required            | The exact revision the proposal is against.                    |
+| `--content`    | blob     | required            | The full proposed content.                                     |
+| `--thread`     | event ID | required            | The root of the thread the proposal came out of.               |
+| `--supersedes` | event ID | — (none)            | This node's earlier proposal against the same object and base. |
+| `--json`       | switch   | off                 | Parent flag: print one JSON object instead of a line.          |
+
+Behaviour: prints `propose group= kind= event= line=`. The proposal's ID is `event=`.
+
+#### `talk resolve`
+
+```
+id talk resolve <GROUP> <THREAD> (--edit <EDIT> --object <OBJECT> | --decision <BLOB> | --no-action)
+```
+
+| Flag          | Argument | Default             | Meaning                                               |
+| ------------- | -------- | ------------------- | ----------------------------------------------------- |
+| `<GROUP>`     | event ID | required positional | The conversation group's ID.                          |
+| `<THREAD>`    | event ID | required positional | The thread's root event ID.                           |
+| `--edit`      | event ID | — (none)            | The revision the thread produced. Needs `--object`.   |
+| `--object`    | object   | — (none)            | The object the edit is on.                            |
+| `--decision`  | blob     | — (none)            | The decision text.                                    |
+| `--no-action` | switch   | off                 | The thread was considered and nothing changes.        |
+| `--json`      | switch   | off                 | Parent flag: print one JSON object instead of a line. |
+
+Behaviour: prints `resolve group= kind= event= line=`. Concurrent resolutions of one thread are all kept; `talk threads` shows them side by side and chooses none.
+
+#### `talk reject` and `talk withdraw`
+
+```
+id talk reject <GROUP> <PROPOSAL> --because <BLOB>
+id talk withdraw <GROUP> <PROPOSAL>
+```
+
+Behaviour: each prints `<step> group= kind= event= line=`. A rejection counts when its signer writes the proposal's object, and a withdrawal when its signer made the proposal.
+
+#### `talk accept`
+
+```
+id talk accept <GROUP> <PROPOSAL> <FILE> --media-type <TYPE> [--parent <REVISION>]...
+```
+
+| Flag           | Argument   | Default             | Meaning                                               |
+| -------------- | ---------- | ------------------- | ----------------------------------------------------- |
+| `<GROUP>`      | event ID   | required positional | The conversation group's ID.                          |
+| `<PROPOSAL>`   | event ID   | required positional | The proposal to accept, on a note.                    |
+| `<FILE>`       | path       | required positional | The revision's content, normally the proposal's.      |
+| `--media-type` | media type | required            | The media type of the file.                           |
+| `--parent`     | event ID   | the proposal's base | A revision the edit builds on. Repeat for a merge.    |
+| `--json`       | switch     | off                 | Parent flag: print one JSON object instead of a line. |
+
+Behaviour: adds a revision to the proposal's note that cites the proposal, and prints `accept group= proposal= note= revision= matches_proposal= line=`, where `matches_proposal` says whether the file's bytes are the proposal's content. The proposal is accepted when this node writes the note.
+
+#### `talk threads`
+
+```
+id talk threads <GROUP>
+```
+
+Behaviour: prints the group's threads as this node may see them: one line per resolved thread, or a heading and one indented line per head for concurrent resolutions, then one line per proposal with its state (`open`, `accepted by edit`, `rejected by`, `withdrawn by`, `superseded by`). An open proposal on a note whose base is no longer one of the note's heads ends `(stale: its base is no longer a head of the object)`; it can still be accepted. With `--json` it prints one JSON array of those lines.
+
+Failures: a node that is not a member of the group is refused by every thread step, exit `1`.
+
 ## `writer-sets`
 
 Writer sets stored in the event store (the global `--event-store`). A writer set is a signed `idset.writer` event whose body the store retains at ingest. `show` prints the stored object, `expand` runs the view projection over the store's resolved group state at the set's own publishing frontier, and `discover` lists every stored set for a scope with the writers each expands to. `--resolution` names the resolution snapshot the projection is pinned under; without one, the zero hash names the store's current resolved state.
@@ -632,6 +710,45 @@ $ id writer-sets discover --scope toy-metrics
 ```
 
 Failures: none specific to this subcommand beyond the common exit behaviour.
+
+## `hosted`
+
+Moves events between the local event store (the global `--event-store`) and your store on a hosted ID instance, over the signed-object bridge. Every request carries a fresh proof signed by the ID key your binding names, so the key file must be the one you bound. Each action takes the same target flags:
+
+| Flag         | Argument | Default                            | Meaning                                                                                       |
+| ------------ | -------- | ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| `--url`      | URL      | `ID_HOSTED_URL`, else required     | The instance's front-door origin. `http://` is accepted only for localhost or `127.0.0.1`.    |
+| `--binding`  | hex      | `ID_HOSTED_BINDING`, else required | Your binding id: 32 lowercase hex characters.                                                 |
+| `--key-file` | path     | this node's key file               | The key file holding the ID key the binding names. A missing file fails; no key is generated. |
+| `--json`     | switch   | off                                | Parent flag: print one JSON object instead of lines.                                          |
+
+### `hosted heads`
+
+Prints the hosted store's chain heads, one `head author=<HEX> next_seq=<N> head=<ID|->` line per author.
+
+```
+id hosted heads --url https://id.example --binding <HEX>
+```
+
+### `hosted push`
+
+Sends every local event the hosted store has not applied, each author's chain from the hosted next sequence on, in batches within the bridge's bounds. Running it again is safe: a re-sent event counts as a duplicate.
+
+```
+id hosted push --url https://id.example --binding <HEX>
+```
+
+### `hosted pull`
+
+Reads everything the hosted store holds past the local heads, page by page, and ingests it into the local event store.
+
+```
+id hosted pull --url https://id.example --binding <HEX>
+```
+
+`push` and `pull` print one line, `<push|pull> events=<N> calls=<N> accepted=<N> duplicate=<N> waiting=<N> forks=<N> refused=<N>`, then one `refused <reason>: <message>` line per refused event.
+
+Failures: a wrong key or binding fails with the instance's error; any refused event fails the command, exit `1`, after the summary prints, so a script never mistakes a partial transfer for a complete one.
 
 ## `id`
 

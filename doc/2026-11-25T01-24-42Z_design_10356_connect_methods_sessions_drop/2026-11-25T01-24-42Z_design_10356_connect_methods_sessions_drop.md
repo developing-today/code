@@ -36,17 +36,17 @@ All figures were recorded in #10356 on 2026-11-14 and 2026-11-15,
 under normal fleet load. Each row gives its source date. Nothing
 here was re-measured for this record.
 
-| Path | Leg | Warm round trip | Cold | Throughput (down / up) | Notes |
-| ---- | --- | --------------- | ---- | ---------------------- | ----- |
-| Agent exec (T2) | Tailscale CONNECT via DERP NYC | 0.39–0.45 s | ~1.8 s (CONNECT) | n/m | 11-14; every byte hairpins DERP |
-| Agent exec/health (T2) | Cloudflare tunnel | 0.26–0.43 s health | n/m | 0.80 / 0.65 MB/s (16 MiB via real exec calls, sha256 ok) | 11-15; per-call exec overhead bounds this |
-| Agent health (T2) | Tailscale, same day | 0.43–1.21 s | n/m | n/m | 11-15; auto mode lands on `cf` every trip |
-| Raw tunnel | Cloudflare `sandbox-link` | n/a | n/a | 2.50 and 2.27 / 1.22 (96 MiB) and 1.06 (2×64 MiB) MB/s | 11-15; one request over 100 MB gets 413 at the edge |
-| Real SSH (T3) | Tailscale DERP (SSH has not moved to CF) | ControlMaster warm | n/m | 0.66 (pull) / 0.37 (push) MB/s | 11-14; 128 MiB, content verified |
-| Laptop hairpin via quick tunnel | Cloudflare, laptop link crossed twice | n/a | n/a | 1.55 MB/s | 11-15; shows the tunnel side is not the cap |
-| R2 meeting point | sandbox → R2 | n/a | n/a | 2.50 MB/s loaded; 10–14 MB/s low load | 11-14 and 11-15; sandbox load dominates |
-| Commander (T1) | `commander.security.cab` MCP | n/m | n/m | n/m | never measured |
-| Batch behaviour (many short calls) | any | n/m | n/m | n/m | never measured |
+| Path                               | Leg                                      | Warm round trip    | Cold             | Throughput (down / up)                                   | Notes                                               |
+| ---------------------------------- | ---------------------------------------- | ------------------ | ---------------- | -------------------------------------------------------- | --------------------------------------------------- |
+| Agent exec (T2)                    | Tailscale CONNECT via DERP NYC           | 0.39–0.45 s        | ~1.8 s (CONNECT) | n/m                                                      | 11-14; every byte hairpins DERP                     |
+| Agent exec/health (T2)             | Cloudflare tunnel                        | 0.26–0.43 s health | n/m              | 0.80 / 0.65 MB/s (16 MiB via real exec calls, sha256 ok) | 11-15; per-call exec overhead bounds this           |
+| Agent health (T2)                  | Tailscale, same day                      | 0.43–1.21 s        | n/m              | n/m                                                      | 11-15; auto mode lands on `cf` every trip           |
+| Raw tunnel                         | Cloudflare `sandbox-link`                | n/a                | n/a              | 2.50 and 2.27 / 1.22 (96 MiB) and 1.06 (2×64 MiB) MB/s   | 11-15; one request over 100 MB gets 413 at the edge |
+| Real SSH (T3)                      | Tailscale DERP (SSH has not moved to CF) | ControlMaster warm | n/m              | 0.66 (pull) / 0.37 (push) MB/s                           | 11-14; 128 MiB, content verified                    |
+| Laptop hairpin via quick tunnel    | Cloudflare, laptop link crossed twice    | n/a                | n/a              | 1.55 MB/s                                                | 11-15; shows the tunnel side is not the cap         |
+| R2 meeting point                   | sandbox → R2                             | n/a                | n/a              | 2.50 MB/s loaded; 10–14 MB/s low load                    | 11-14 and 11-15; sandbox load dominates             |
+| Commander (T1)                     | `commander.security.cab` MCP             | n/m                | n/m              | n/m                                                      | never measured                                      |
+| Batch behaviour (many short calls) | any                                      | n/m                | n/m              | n/m                                                      | never measured                                      |
 
 `n/m` means not measured. The two unmeasured rows are the first
 acceptance step of the build issues (§6). They must not be filled in
@@ -80,12 +80,12 @@ different meaning would collide with it.
 
 The issue's `--method` values map onto existing forms:
 
-| Asked for | Answer |
-| --------- | ------ |
-| `exec` | `fleet http exec` (T2), or `fleet commander exec` (T1) |
-| `ssh` | `fleet ssh exec` (T3); interactive use is §4 |
-| `job` | `fleet http run` then `poll`; the session surface is §3 |
-| `auto` | `fleet laptop exec` (T0) |
+| Asked for | Answer                                                  |
+| --------- | ------------------------------------------------------- |
+| `exec`    | `fleet http exec` (T2), or `fleet commander exec` (T1)  |
+| `ssh`     | `fleet ssh exec` (T3); interactive use is §4            |
+| `job`     | `fleet http run` then `poll`; the session surface is §3 |
+| `auto`    | `fleet laptop exec` (T0)                                |
 
 **One residual fix.** The `laptop-agent` domain (#10796) ladders into
 an **SSH leg** that imitates the daemon's job API over
@@ -141,13 +141,13 @@ client has drained.
 
 ### 3.3 Buffering limits
 
-| Path | Buffer | At the cap |
-| ---- | ------ | ---------- |
+| Path                         | Buffer                                                                                       | At the cap                                                                                                                                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Daemon job and exec-in-grace | Spool on the laptop's disk. Proposed default cap is 256 MiB per stream, set by daemon config | The process keeps running. The spool stops appending and records `bytes_dropped`. `attach` prints an explicit `[spool cap reached: N bytes dropped]` marker. It never silently truncates, and it never kills a working job because its log grew |
-| `sshfb-` job | Same rule, same cap | Same |
-| Synchronous exec (T2) | Daemon capture of 1 MiB per stream (`FILE_CHUNK_MAX`) | Unchanged. Use `run` and `attach` for large output |
-| Commander (T1) | None | The process is polled to completion or killed at the deadline (#13717). No session |
-| SSH (T3) | None. sshd owns the process; output printed during a drop is lost | Use tmux (§5) when a session must survive a drop |
+| `sshfb-` job                 | Same rule, same cap                                                                          | Same                                                                                                                                                                                                                                            |
+| Synchronous exec (T2)        | Daemon capture of 1 MiB per stream (`FILE_CHUNK_MAX`)                                        | Unchanged. Use `run` and `attach` for large output                                                                                                                                                                                              |
+| Commander (T1)               | None                                                                                         | The process is polled to completion or killed at the deadline (#13717). No session                                                                                                                                                              |
+| SSH (T3)                     | None. sshd owns the process; output printed during a drop is lost                            | Use tmux (§5) when a session must survive a drop                                                                                                                                                                                                |
 
 ### 3.4 Drop semantics for exec
 
@@ -188,9 +188,9 @@ behaviour:
   not been shown to carry. SSH already gives real PTY, stdin and
   forwards.
 - **Finite input data ⇒ stage, then run.** Upload with `fleet proxy
-  put <local|-> <laptop-path>`, which is hashed, resumable and
+put <local|-> <laptop-path>`, which is hashed, resumable and
   atomic, and accepts `-` for a pipe. Then run `fleet http exec --
-  sh -c 'cmd < path'`. This is faster than SSH stdin push (Cloudflare
+sh -c 'cmd < path'`. This is faster than SSH stdin push (Cloudflare
   up 0.65–1.22 MB/s versus SSH push 0.37 MB/s). It survives a drop
   through put's resume. It needs no daemon protocol change.
 - **No automatic composition.** T0 does not stage and run for the

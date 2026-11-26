@@ -42,7 +42,9 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
 //!   talk         Talk pages: post on and list an object's discussion
+//!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -113,7 +115,9 @@ pub mod doc;
 pub mod gallery;
 pub mod groups;
 pub mod host;
+pub mod hosted;
 pub mod match_audit;
+pub mod nav;
 pub mod petname;
 pub mod tag;
 pub mod talk;
@@ -126,7 +130,9 @@ pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 pub use host::HostCommand;
+pub use hosted::{HostedCommand, HostedTarget};
 pub use match_audit::MatchAuditCommand;
+pub use nav::{NavArgs, NavOp};
 pub use petname::PetnameCommand;
 pub use tag::TagCommand;
 pub use talk::TalkCommand;
@@ -347,6 +353,21 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
     }
 }
 
+/// A `--world-partition` label: lowercase `[a-z0-9-]`, 1 to 63 bytes, the
+/// same syntax the journal partition fence accepts.
+fn parse_world_partition(raw: &str) -> Result<String, String> {
+    if !raw.is_empty()
+        && raw.len() <= 63
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Ok(raw.to_owned())
+    } else {
+        Err("a partition label is 1 to 63 bytes of lowercase a-z, 0-9 and -".to_owned())
+    }
+}
+
 /// The arguments of `id serve`, extracted from the `Command`
 /// variant into their own `Args` struct (#4751): clap's derive inlines
 /// a struct-style variant's argument construction into the parent
@@ -557,9 +578,11 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 1024, requires = "world")]
     pub world_max_sessions: usize,
     /// Close durable worlds that no session used for this many seconds
-    /// (they reopen from their journal on demand). `0` keeps them open.
-    #[arg(long, default_value_t = 600, requires = "world")]
-    pub world_idle_secs: u64,
+    /// (they reopen from their journal on demand). Defaults to 600, or to
+    /// 900 under `--world-host`. `0` keeps them open, and is refused under
+    /// `--world-host`, where `id host pin` keeps a world awake instead.
+    #[arg(long, requires = "world")]
+    pub world_idle_secs: Option<u64>,
     /// Serve the worlds directory as a host-mode data root (#10693): keep
     /// its `host.json`, wake asleep worlds when clients name them (unless
     /// `id host wake-mode` set `operator`), never close `id host pin`
@@ -568,6 +591,19 @@ pub struct ServeArgs {
     /// `id host list` shows the states.
     #[arg(long, requires = "world", conflicts_with = "ephemeral")]
     pub world_host: bool,
+    /// Serve worlds inside one jurisdiction partition (#3898). Every world
+    /// this server creates is bound to the label before its first journal
+    /// byte; a world bound to another partition, or never bound, is treated
+    /// as absent: it is not listed, cannot be opened or created, and reads
+    /// exactly like a name that does not exist. The label is lowercase
+    /// `[a-z0-9-]`, at most 63 bytes, and comes only from the operator.
+    #[arg(
+        long,
+        requires = "world",
+        conflicts_with_all = ["ephemeral", "world_host"],
+        value_parser = parse_world_partition
+    )]
+    pub world_partition: Option<String>,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.
@@ -1504,11 +1540,29 @@ pub enum Command {
         #[command(subcommand)]
         command: ClaimCommand,
     },
+    /// Walk a typed graph snapshot: neighbors, backlinks, threads,
+    /// history, or a bounded path (native graph navigation, #7612).
+    ///
+    /// The CLI runs the same executor as the script/API and agent
+    /// surfaces, so answers match them item for item; only the printing
+    /// differs. Pages end with a `next:` cursor to pass back with
+    /// `--cursor`, and a bound that cut a result is named, never silent.
+    ///
+    /// ```bash
+    /// id nav neighbors NOTE --graph graph.json
+    /// id nav backlinks NOTE --graph graph.json --edge references
+    /// id nav path NOTE --to REPLY --max-depth 4 --graph graph.json --json
+    /// ```
+    Nav(NavArgs),
     /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
     ///
     /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
     /// the object may post; a correction is a new post that supersedes the old one, which stays
     /// listed and is marked superseded.
+    ///
+    /// The thread steps of a conversation group (#7849) are signed events in that group:
+    /// propose a change, resolve a thread, reject or withdraw a proposal, accept one by the
+    /// note revision that cites it, and read the group's threads back.
     ///
     /// # Examples
     ///
@@ -1516,14 +1570,40 @@ pub enum Command {
     /// id talk post DOCUMENT "this section needs a source"
     /// id talk post DOCUMENT "fixed wording" --supersedes POST
     /// id talk list DOCUMENT --json
+    /// id talk propose GROUP NOTE/KEY --base REVISION --content BLOB/KEY --thread THREAD
+    /// id talk accept GROUP PROPOSAL edited.md --media-type text/markdown
+    /// id talk resolve GROUP THREAD --no-action
+    /// id talk threads GROUP
     /// ```
     Talk {
-        /// Print JSON instead of lines (one array for `list`).
+        /// Print JSON instead of lines (one array for `list` and `threads`).
         #[arg(long, global = true)]
         json: bool,
         /// The talk action to run.
         #[command(subcommand)]
         command: TalkCommand,
+    },
+    /// Push to and pull from your hosted ID store over the bridge.
+    ///
+    /// Every call proves possession of the ID key the binding names, so
+    /// run it with this node's key or pass `--key-file`. Refused calls
+    /// (a wrong key, an unknown binding, a full store) fail with the
+    /// hosted store's own error code.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id hosted heads --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// id hosted push --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// ID_HOSTED_URL=https://id.example ID_HOSTED_BINDING=0123456789abcdef0123456789abcdef id hosted pull
+    /// ```
+    Hosted {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The hosted action to run.
+        #[command(subcommand)]
+        command: HostedCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).

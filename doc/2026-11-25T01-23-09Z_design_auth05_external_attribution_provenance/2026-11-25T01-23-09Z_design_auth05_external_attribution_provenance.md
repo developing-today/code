@@ -17,7 +17,7 @@ migration, deployment or live acceptance.
 Governing decisions consumed, not re-opened:
 
 - **Component #9208 AUTH-05.** `src/work/authority.rs` owns the
-  provenance *schema and fixture only*. #9207 HYD-07 is the single
+  provenance _schema and fixture only_. #9207 HYD-07 is the single
   owner of activity classification. AUTH-05 adds no second
   classifier and no writer. The cross-component acceptance
   `pmo_hyd_external_only_includes_uncertain_shared_actor` stays in
@@ -29,7 +29,7 @@ Governing decisions consumed, not re-opened:
     external, then uncertain.
   - A username never assigns a session.
   - Coincidence is not evidence.
-  - Its rule 3, *external*, needs "the event's provenance (AUTH-05
+  - Its rule 3, _external_, needs "the event's provenance (AUTH-05
     record) positively names a principal that is not a shared Fleet
     identity". This record defines that test.
 - **Charter C-R121/C-R122.** Session attribution needs Fleet
@@ -52,11 +52,11 @@ Governing decisions consumed, not re-opened:
   no I/O, and has its own tests. It contains nothing about
   provenance.
 - `src/work/contracts.rs` has `AuthenticatedPrincipal
-  { principal_ref, capabilities }`. That is the **caller** of a Fleet
+{ principal_ref, capabilities }`. That is the **caller** of a Fleet
   command, supplied by the auth layer. AUTH-05 is about a different
   party: the **remote actor** of an event Fleet observed on GitHub.
   The two must not be merged. A command caller is authenticated by
-  Fleet. A remote actor is only *claimed* by the provider's payload.
+  Fleet. A remote actor is only _claimed_ by the provider's payload.
 - No code anywhere reads GitHub's `performed_via_github_app`. Actor
   identity in the aggregator and projector is the login string
   (`model.ts` `Comment.author`).
@@ -73,7 +73,7 @@ A provenance record answers two questions and never lets one answer
 the other:
 
 1. **Actor:** which provider principal the source says performed the
-   event. This is evidence *about the source's account*. It can only
+   event. This is evidence _about the source's account_. It can only
    ever show that an event is "positively not Fleet's" (HYD-07
    rule 3).
 2. **Cause:** which Fleet operation and session wrote it. This is
@@ -174,7 +174,7 @@ Rules, applied in order, first match wins:
    if it is a user-to-server token showing a human login.
 2. If `principal_id` is in `registry.principal_ids`, the result is
    `SharedFleet`. This includes the owner's own account, which
-   agents share. The owner's real human edits are therefore *never*
+   agents share. The owner's real human edits are therefore _never_
    `DistinctHuman`. With no operation map they classify `uncertain`
    and are still shown, which is the safe direction (HYD-07 §3).
 3. If the registry is unloaded (`version` empty), or `principal_id`
@@ -196,12 +196,12 @@ owner by hand".
 The provenance fields have three visibility classes. This record
 fixes the classes and leaves rendering to its consumers:
 
-| Field | Class | Who may see it |
-| ----- | ----- | -------------- |
-| `source_ref`, `remote_id`, `remote_revision`, `observed_at` | `authority_reader` | any authenticated reader of the work's authority |
-| `actor.login_display`, `actor.principal_type`, derived `ActorTrust` | `authority_reader` | same; the source already shows these publicly |
-| `cause.operation_id`, `cause.outbox_id` | `authority_reader` | same; operation ids are already in result envelopes |
-| `cause.session_id` | `session_scoped` | the session itself, and principals with an explicit capability to read other sessions (#9206 names it); everyone else sees `other_session` |
+| Field                                                               | Class              | Who may see it                                                                                                                             |
+| ------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `source_ref`, `remote_id`, `remote_revision`, `observed_at`         | `authority_reader` | any authenticated reader of the work's authority                                                                                           |
+| `actor.login_display`, `actor.principal_type`, derived `ActorTrust` | `authority_reader` | same; the source already shows these publicly                                                                                              |
+| `cause.operation_id`, `cause.outbox_id`                             | `authority_reader` | same; operation ids are already in result envelopes                                                                                        |
+| `cause.session_id`                                                  | `session_scoped`   | the session itself, and principals with an explicit capability to read other sessions (#9206 names it); everyone else sees `other_session` |
 
 - No provenance field is ever written to a public GitHub surface by
   this slice.
@@ -213,13 +213,13 @@ fixes the classes and leaves rendering to its consumers:
 
 ### D6. Negative cases map to type and rule, not to heuristics
 
-| Negative case (issue) | Where it is stopped |
-| --------------------- | ------------------- |
-| Username-only attribution | `OperationRef` has no login constructor (D3); `login_display` is never read (D2) |
-| Shared App token | D4 rule 1, giving `SharedFleet`. With no op map, HYD-07 classifies it `uncertain`, not external and not own_session |
-| Coincident same body | `ProvenanceRecord` has no body field (D1) |
-| Changed remote ID | The key is `(source_ref, remote_id)`. A re-keyed object has `cause: None` until a write path records the new id, so it classifies uncertain (HYD-07 §4) |
-| Missing op map | `cause: None`. A legacy record is the same case. HYD-07 classifies it `uncertain` unless rule 3 shows it positively distinct |
+| Negative case (issue)     | Where it is stopped                                                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Username-only attribution | `OperationRef` has no login constructor (D3); `login_display` is never read (D2)                                                                        |
+| Shared App token          | D4 rule 1, giving `SharedFleet`. With no op map, HYD-07 classifies it `uncertain`, not external and not own_session                                     |
+| Coincident same body      | `ProvenanceRecord` has no body field (D1)                                                                                                               |
+| Changed remote ID         | The key is `(source_ref, remote_id)`. A re-keyed object has `cause: None` until a write path records the new id, so it classifies uncertain (HYD-07 §4) |
+| Missing op map            | `cause: None`. A legacy record is the same case. HYD-07 classifies it `uncertain` unless rule 3 shows it positively distinct                            |
 
 ### D7. Migration: old attribution is uncertain
 

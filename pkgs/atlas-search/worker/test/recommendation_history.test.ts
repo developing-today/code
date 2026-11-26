@@ -14,7 +14,11 @@ import {
 } from "../src/recommendation_history";
 import { createSnapshot, type ParentEnvelope } from "../src/recommendation_state";
 import { DEFAULT_CLASSES, RetainedObjectStore } from "../src/retained_object";
-import schemaSql from "../migrations/0003_retained_objects.sql?raw";
+import baseSql from "../migrations/0003_retained_objects.sql?raw";
+import retirementSql from "../migrations/0004_retained_objects_retirement.sql?raw";
+import modesSql from "../migrations/0005_retention_modes_and_reports.sql?raw";
+
+const schemaSql = [baseSql, retirementSql, modesSql].join(";\n");
 
 const db = (env as unknown as { HOT_CACHE: D1Database }).HOT_CACHE;
 const store = new RetainedObjectStore(db);

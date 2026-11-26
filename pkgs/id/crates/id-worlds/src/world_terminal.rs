@@ -4,8 +4,10 @@
 //! stay on the client side; they are not part of shell-contract frames or the
 //! event journal.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
+use crate::kitty_graphics::{Action, GraphicsGate, KittyGraphicsError, PayloadClass, StillPayload};
 use crate::world_presentation::ScreenSurface;
 
 /// Total startup window for the batched capability queries.
@@ -16,9 +18,12 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// XTGETTCAP's special `Co` color-count capability is queried alongside an
 /// ANSI cursor-position report. The remaining
 /// sequences are Kitty's keyboard and graphics queries, DEC mode 2026 via
-/// DECRQM, and primary device attributes for Sixel detection.
-pub(crate) const PROBE_QUERIES: &[u8] =
-    b"\x1bP+q436F\x1b\\\x1b[6n\x1b[?u\x1b[?2026$p\x1b[c\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
+/// DECRQM, and primary device attributes for Sixel detection. The burst
+/// ends with the kitty graphics payload-class queries of
+/// [`crate::kitty_graphics`] (IDs 41 to 43: PNG, raw RGBA, zlib RGBA), so
+/// the same round trip learns which stills formats this terminal accepts
+/// (#13623): detection alone is not support.
+pub(crate) const PROBE_QUERIES: &[u8] = b"\x1bP+q436F\x1b\\\x1b[6n\x1b[?u\x1b[?2026$p\x1b[c\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Ga=q,t=d,f=100,i=41;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\x1b\\\x1b_Ga=q,t=d,f=32,s=1,v=1,i=42;AAAAAA==\x1b\\\x1b_Ga=q,t=d,f=32,s=1,v=1,o=z,i=43;eJxjYGBgAAAABAAB\x1b\\";
 
 /// Injectable byte I/O used by the SSH PTY and interactive iroh TTY adapters.
 ///
@@ -50,6 +55,12 @@ pub struct TerminalProfile {
     pub synchronized_output: bool,
     /// The Kitty keyboard flags query returned a syntactically valid report.
     pub kitty_keyboard: bool,
+    /// The kitty graphics PNG (`f=100`) payload query answered OK.
+    pub kitty_png: bool,
+    /// The kitty graphics raw RGBA (`f=32`) payload query answered OK.
+    pub kitty_rgba: bool,
+    /// The kitty graphics zlib RGBA (`f=32,o=z`) payload query answered OK.
+    pub kitty_rgba_zlib: bool,
 }
 
 impl TerminalProfile {
@@ -755,6 +766,55 @@ impl TierPresenter {
         Some(output)
     }
 
+    /// The kitty graphics stills gate for this session (#13623): open for a
+    /// payload class only when the probe saw kitty graphics AND that
+    /// class's own query in the probe burst answered OK.
+    #[must_use]
+    pub fn kitty_gate(&self) -> GraphicsGate {
+        let mut gate = GraphicsGate::new(self.profile.kitty_graphics);
+        for (class, accepted) in [
+            (PayloadClass::Png, self.profile.kitty_png),
+            (PayloadClass::Rgba, self.profile.kitty_rgba),
+            (PayloadClass::RgbaZlib, self.profile.kitty_rgba_zlib),
+        ] {
+            gate.record_answer(class, accepted);
+        }
+        gate
+    }
+
+    /// Encode a presenter-owned still for this terminal through the kitty
+    /// graphics stills encoder, or `Ok(None)` when nothing may be written:
+    /// the presenter is not Tier 1, or this terminal did not accept the
+    /// payload's class. As with [`TierPresenter::present_image`], guest
+    /// payloads never reach this; the frame is bracketed in synchronized
+    /// output when the terminal confirmed it.
+    ///
+    /// # Errors
+    ///
+    /// [`KittyGraphicsError`] for a malformed or over-cap payload, checked
+    /// only once the gate is open. Nothing is emitted on error.
+    pub fn present_still(
+        &mut self,
+        image_id: NonZeroU32,
+        payload: StillPayload<'_>,
+        action: Action,
+    ) -> Result<Option<String>, KittyGraphicsError> {
+        if self.tier != PresentationTier::Tier1 {
+            return Ok(None);
+        }
+        let Some(encoded) = self.kitty_gate().encode_still(image_id, payload, action)? else {
+            return Ok(None);
+        };
+        let output = if self.profile.synchronized_output {
+            self.sync_used = true;
+            format!("{SYNC_OUTPUT_BEGIN}{encoded}{SYNC_OUTPUT_END}")
+        } else {
+            encoded
+        };
+        self.counters.record(output.len(), false);
+        Ok(Some(output))
+    }
+
     /// End the presentation: returns the mode-restore bytes the adapter
     /// must write on every exit path (success, error, disconnect) and
     /// resets the diff state. Synchronized output, once used, is always
@@ -904,6 +964,9 @@ struct Evidence {
     sixel_graphics: Option<bool>,
     synchronized_output: Option<bool>,
     kitty_keyboard: Option<bool>,
+    kitty_png: Option<bool>,
+    kitty_rgba: Option<bool>,
+    kitty_rgba_zlib: Option<bool>,
     conflicted: bool,
 }
 
@@ -926,6 +989,9 @@ impl Evidence {
             sixel_graphics: self.sixel_graphics.unwrap_or(false),
             synchronized_output: self.synchronized_output.unwrap_or(false),
             kitty_keyboard: self.kitty_keyboard.unwrap_or(false),
+            kitty_png: self.kitty_png.unwrap_or(false),
+            kitty_rgba: self.kitty_rgba.unwrap_or(false),
+            kitty_rgba_zlib: self.kitty_rgba_zlib.unwrap_or(false),
         }
     }
 }
@@ -1069,15 +1135,22 @@ fn parse_xtgettcap(body: &[u8], evidence: &mut Evidence) -> bool {
 fn parse_kitty_graphics(body: &[u8], evidence: &mut Evidence) -> bool {
     // Kitty graphics protocol query responses echo the request id and report OK
     // on success; an error response is still a complete, matching negative.
-    let Some(status) = body.strip_prefix(b"Gi=31;") else {
+    // ID 31 is the detection query; 41 to 43 are the payload-class queries.
+    let Some((id, status)) = body.strip_prefix(b"Gi=").and_then(|rest| {
+        rest.iter()
+            .position(|&b| b == b';')
+            .map(|at| rest.split_at(at))
+    }) else {
         return false;
     };
-    let supported = status == b"OK";
-    Evidence::record(
-        &mut evidence.kitty_graphics,
-        supported,
-        &mut evidence.conflicted,
-    );
+    let slot = match id {
+        b"31" => &mut evidence.kitty_graphics,
+        b"41" => &mut evidence.kitty_png,
+        b"42" => &mut evidence.kitty_rgba,
+        b"43" => &mut evidence.kitty_rgba_zlib,
+        _ => return false,
+    };
+    Evidence::record(slot, &status[1..] == b"OK", &mut evidence.conflicted);
     true
 }
 
@@ -1246,6 +1319,8 @@ mod tests {
                 KITTY_KEYBOARD_REPLY,
                 SYNC_OUTPUT_REPLY,
                 KITTY_GRAPHICS_REPLY,
+                b"\x1b_Gi=41;OK\x1b\\".as_slice(),
+                b"\x1b_Gi=43;ENOTSUPPORTED:no zlib\x1b\\".as_slice(),
             ],
         );
 
@@ -1262,6 +1337,9 @@ mod tests {
                 sixel_graphics: false,
                 synchronized_output: true,
                 kitty_keyboard: true,
+                kitty_png: true,
+                kitty_rgba: false,
+                kitty_rgba_zlib: false,
             }
         );
         assert_eq!(outcome.replay, b"jk");
@@ -1294,6 +1372,115 @@ mod tests {
     }
 
     #[test]
+    fn the_probe_burst_ends_with_the_payload_class_queries() {
+        let tail = [
+            crate::kitty_graphics::PNG_QUERY,
+            crate::kitty_graphics::RGBA_QUERY,
+            crate::kitty_graphics::RGBA_ZLIB_QUERY,
+        ]
+        .concat();
+        assert!(PROBE_QUERIES.ends_with(tail.as_bytes()));
+    }
+
+    #[test]
+    fn payload_class_replies_are_consumed_and_recorded_per_class() {
+        let outcome = parse_transcript(
+            &[
+                KITTY_GRAPHICS_REPLY,
+                b"\x1b_Gi=42;OK\x1b\\".as_slice(),
+                b"\x1b_Gi=43;OK\x1b\\".as_slice(),
+                b"x".as_slice(),
+                // Not one of our query IDs: user input, not evidence.
+                b"\x1b_Gi=44;OK\x1b\\".as_slice(),
+            ]
+            .concat(),
+        );
+        assert!(outcome.profile.kitty_graphics);
+        assert!(!outcome.profile.kitty_png);
+        assert!(outcome.profile.kitty_rgba);
+        assert!(outcome.profile.kitty_rgba_zlib);
+        assert_eq!(outcome.replay, b"x\x1b_Gi=44;OK\x1b\\");
+
+        // Contradictory answers to one class are a conflict: Tier 3 defaults.
+        let conflicted = parse_transcript(
+            &[
+                KITTY_GRAPHICS_REPLY,
+                b"\x1b_Gi=41;OK\x1b\\".as_slice(),
+                b"\x1b_Gi=41;EINVAL\x1b\\".as_slice(),
+            ]
+            .concat(),
+        );
+        assert_eq!(conflicted.profile, TerminalProfile::default());
+    }
+
+    #[test]
+    fn present_still_needs_tier_one_and_an_accepted_class() {
+        use crate::kitty_graphics::{Action, StillPayload};
+        let png: Vec<u8> = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+                )
+                .expect("fixture decodes")
+        };
+        let id = NonZeroU32::new(7).expect("non-zero");
+        let rich = TerminalProfile {
+            kitty_graphics: true,
+            synchronized_output: true,
+            ..TerminalProfile::default()
+        };
+
+        // Detection without the class answer: nothing.
+        let mut detected = TierPresenter::new(rich);
+        assert_eq!(detected.tier(), PresentationTier::Tier1);
+        assert_eq!(
+            detected.present_still(id, StillPayload::Png(&png), Action::Store),
+            Ok(None)
+        );
+
+        // The class answered OK but the presenter is not Tier 1: nothing.
+        let mut not_tier_one = TierPresenter::new(TerminalProfile {
+            kitty_graphics: true,
+            kitty_png: true,
+            ..TerminalProfile::default()
+        });
+        assert_eq!(
+            not_tier_one.present_still(id, StillPayload::Png(&png), Action::Store),
+            Ok(None)
+        );
+
+        // Tier 1 and PNG accepted: one quiet transmission in sync brackets.
+        let mut accepted = TierPresenter::new(TerminalProfile {
+            kitty_png: true,
+            ..rich
+        });
+        let frame = accepted
+            .present_still(id, StillPayload::Png(&png), Action::Store)
+            .expect("valid payload")
+            .expect("gate open");
+        assert!(frame.starts_with("\x1b[?2026h\x1b_Ga=t,f=100,t=d,i=7,q=2,m=0;iVBOR"));
+        assert!(frame.ends_with("\x1b\\\x1b[?2026l"));
+        assert_eq!(accepted.finish(), SYNC_OUTPUT_END);
+
+        // An accepted class does not open another one.
+        let rgba = [0_u8; 4];
+        assert_eq!(
+            accepted.present_still(
+                id,
+                StillPayload::Rgba {
+                    data: &rgba,
+                    width: 1,
+                    height: 1,
+                    compress: false,
+                },
+                Action::Store,
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
     fn no_reply_and_malformed_reply_fall_back_to_tier_three() {
         let no_reply = parse_transcript(&[]);
         let malformed = parse_transcript(b"\x1b[?x u\x1b[?2026;9$y\x1b_Gi=other;OK\x1b\\");
@@ -1318,7 +1505,7 @@ mod tests {
         assert_eq!(interleaved.tier(), PresentationTier::Tier3);
         assert_eq!(interleaved.replay, b"x\x1b[A");
         assert_eq!(late.tier(), PresentationTier::Tier3);
-        assert!(late.replay.is_empty());
+        assert_eq!(late.replay, [] as [u8; 0]);
     }
 
     #[test]

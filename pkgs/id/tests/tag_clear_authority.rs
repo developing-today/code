@@ -214,7 +214,10 @@ fn test_an_admin_scoped_device_of_an_admin_may_clear_another_authors_tag() {
     // The device's effective role is the authorizing account's Admin role capped by the
     // grant's Admin scope: Admin, so its clear hides B's claim (issue #5656).
     let (_dir, store) = device_clear_scenario(GroupRole::Admin, false);
-    assert!(store.tag_claims().unwrap().is_empty());
+    assert_eq!(
+        store.tag_claims().unwrap(),
+        [] as [id::tag_claims::Claim; 0]
+    );
 }
 
 #[test]
@@ -238,14 +241,20 @@ fn test_a_revoked_device_may_not_clear_another_authors_tag() {
 #[test]
 fn test_a_claim_author_may_clear_its_tag_in_the_default_view() {
     let (_dir, store, _claim, _clear) = grouped_subject_scenario('B');
-    assert!(store.tag_claims().unwrap().is_empty());
+    assert_eq!(
+        store.tag_claims().unwrap(),
+        [] as [id::tag_claims::Claim; 0]
+    );
 }
 
 #[test]
 fn test_a_settled_group_admin_may_clear_another_authors_tag() {
     // A is the group's creator and is Admin in its settled projection; B authored the claim.
     let (_dir, store, _claim, _clear) = grouped_subject_scenario('A');
-    assert!(store.tag_claims().unwrap().is_empty());
+    assert_eq!(
+        store.tag_claims().unwrap(),
+        [] as [id::tag_claims::Claim; 0]
+    );
 }
 
 #[test]

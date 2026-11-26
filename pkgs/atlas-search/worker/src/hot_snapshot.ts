@@ -51,7 +51,8 @@ export function hotSnapshotDraft(
 }
 
 export type HotSnapshotOutcome =
-  { recorded: true; version: number; retired: number[] } | { recorded: false; reason: "off" };
+  | { recorded: true; version: number; retired: number[] }
+  | { recorded: false; reason: "off" };
 
 /**
  * Capture one hot snapshot and retire what the class lets go. Returns what
