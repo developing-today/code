@@ -12,6 +12,7 @@ import {
   type StoredWorldSnapshot,
 } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
+import { viewportCellsForPane } from "./world-viewport";
 
 type WorldFrame = {
   type:
@@ -666,6 +667,11 @@ function initWorld(): void {
   };
 
   view.addEventListener("keydown", (event: KeyboardEvent) => {
+    // The paste shortcut belongs to the browser, not the terminal encoder:
+    // encoding Ctrl+V as the C0 byte 0x16 and preventing default would
+    // cancel the paste event the listener below forwards as a paste frame,
+    // so keyboard paste could never reach the program (#15170).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") return;
     const bytes = encodeKey(event);
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
@@ -701,9 +707,16 @@ function initWorld(): void {
   };
   const sendViewport = (force = false) => {
     if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
-    const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
-    const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
-    const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
+    const style = getComputedStyle(view);
+    const { width, height } = viewportCellsForPane({
+      clientWidth: view.clientWidth,
+      clientHeight: view.clientHeight,
+      fontSize: Number.parseFloat(style.fontSize) || 16,
+      paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
+      paddingRight: Number.parseFloat(style.paddingRight) || 0,
+      paddingTop: Number.parseFloat(style.paddingTop) || 0,
+      paddingBottom: Number.parseFloat(style.paddingBottom) || 0,
+    });
     const sameAsLast = sentViewport?.width === width && sentViewport.height === height;
     // A same-size resize resets the host's retained screen baseline.
     // Keep it out of an unchanged reconnect so the resume token can

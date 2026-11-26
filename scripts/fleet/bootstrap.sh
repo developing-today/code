@@ -40,8 +40,8 @@
 # Exit: 0 ok (including `fleet agent next` exit 5), 1 runtime/verification failure, 2 usage error.
 set -euo pipefail
 
-DEFAULT_FLEET_URL="https://github.com/developing-today/code/releases/download/fleet-static-ad0707b/fleet-x86_64-linux-musl"
-DEFAULT_FLEET_SHA256="762bac6318329f202e47f8aeb7727cf6351e22ca93c278fd4d95377febcfa5f2"
+DEFAULT_FLEET_URL="https://github.com/developing-today/code/releases/download/fleet-static-74eee89/fleet-x86_64-linux-musl"
+DEFAULT_FLEET_SHA256="27eedcf9e0d6a1c251d6bc9ddf41212747f47cbce6d0cfe2cf96ea820708085d"
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

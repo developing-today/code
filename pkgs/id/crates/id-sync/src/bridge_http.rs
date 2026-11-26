@@ -47,7 +47,8 @@ use crate::hex::hex_encode;
 /// streams.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpRequest {
-    /// The HTTP method (`GET` or `POST` for the bridge legs).
+    /// The HTTP method (`GET` or `POST` for the bridge legs, `PUT`
+    /// for a pkarr relay publish).
     pub method: String,
     /// The full URL the request goes to.
     pub url: String,
@@ -111,6 +112,8 @@ impl BridgeHttp for ReqwestHttp {
         let mut builder = match request.method.as_str() {
             "GET" => self.client.get(&request.url),
             "POST" => self.client.post(&request.url),
+            // The pkarr relay sinks publish with PUT (#10706).
+            "PUT" => self.client.put(&request.url),
             other => bail!("bridge http method {other} is not one the legs use"),
         };
         for (name, value) in &request.headers {
@@ -539,6 +542,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
@@ -863,7 +867,7 @@ mod tests {
     async fn heads_on_an_empty_store() {
         let mut mirror = MirrorDo::new(1);
         let heads = client(1).heads(&mut mirror).await.unwrap();
-        assert!(heads.is_empty());
+        assert_eq!(heads, [] as [Head; 0]);
         assert_eq!(
             mirror.seen,
             ["GET /v1/bridge/challenge", "GET /v1/bridge/heads"]
@@ -949,7 +953,7 @@ mod tests {
         // A caller already at the head pulls nothing.
         let positions: Vec<PullPosition> = heads.iter().map(PullPosition::from).collect();
         let caught_up = client.pull(&mut mirror, &positions, None).await.unwrap();
-        assert!(caught_up.events.is_empty());
+        assert_eq!(caught_up.events, [] as [Vec<u8>; 0]);
         assert!(!caught_up.more);
     }
 
@@ -1063,6 +1067,6 @@ mod tests {
         let err = client(1).push(&mut mirror, &[oversize]).await.unwrap_err();
         assert!(format!("{err}").contains("over the"));
         // Not even the challenge was fetched: the bound is local.
-        assert!(mirror.seen.is_empty());
+        assert_eq!(mirror.seen, [] as [String; 0]);
     }
 }

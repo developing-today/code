@@ -1,0 +1,19 @@
+# Feature-coverage platform exemptions for darwin (#1978, #14072).
+#
+# Same line format as feature_coverage_exemptions.txt (kind, name, and
+# a one-line reason), but scoped: the guard merges this overlay only
+# when runtime.GOOS is darwin, so linux coverage of these features
+# stays blocking. Each entry names why the feature is ineligible on
+# macOS rather than merely uncovered.
+#
+# explore is exercised on linux by TestExploreBrowsesUnderATerminal
+# (cli_inspection_explore_linux_test.go), which allocates its terminal
+# through /dev/ptmx ioctls with no darwin equivalent; the file is
+# linux-tagged, so a darwin ledger never has the row. supervise is
+# exercised by TestSuperviseKeepsTheChildAcrossADaemonStop, which
+# skips without /proc to read the supervisor's cmdline — absent on
+# macOS. A darwin-native exercise for either is future work under the
+# same burn-down issues as the base coverage.
+
+cli	explore	darwin-only: exercised on linux by TestExploreBrowsesUnderATerminal via /dev/ptmx pty ioctls with no darwin equivalent (file is linux-tagged); burn-down #8463 (inspection group)
+cli	supervise	darwin-only: exercised by TestSuperviseKeepsTheChildAcrossADaemonStop, which skips without /proc to verify the supervisor process, absent on macOS; burn-down #8461

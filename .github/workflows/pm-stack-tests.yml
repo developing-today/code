@@ -182,6 +182,7 @@ jobs:
       # exist first, so a green run cannot be a silently skipped suite.
       - name: Test fence-check, kaneo-cutover and grist-pad-sync script suites
         run: |
+          python3 -I pm-stack/scripts/kaneo-recovery-point-check.test.py
           fail=0
           for t in pm-stack/scripts/fence-check.test.sh pm-stack/scripts/kaneo-cutover.test.sh pm-stack/scripts/grist-pad-sync.test.sh; do
             if [ ! -f "$t" ]; then

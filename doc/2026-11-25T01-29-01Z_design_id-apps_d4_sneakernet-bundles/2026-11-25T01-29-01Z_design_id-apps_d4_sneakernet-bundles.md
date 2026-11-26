@@ -20,13 +20,13 @@ Leaves to later slices, with the manifest slot already reserved:
 
 | Slice | Topic                                                                     | Slot or hook in slice 1                                                                                                                           |
 | ----- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it                                                                                    |
+| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it. Done: `slice-2-bundle-grants.md`                                                  |
 | 3     | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked`. Done: `slice-3-import-and-binding.md`   |
 | 4     | Merge on contact                                                          | none foreseen; slice 4 adds manifest kind 4 (the envelope), which a slice-1 reader rejects as `unknown_kind`. Done: `slice-4-merge-on-contact.md` |
 | 5     | Carrier profiles (media, email, QR)                                       | §5 format ceilings; carriers only tighten them. Done: `slice-5-carrier-profiles.md`                                                               |
 
-Bearer versus recipient-bound grants is Drew's decision (#13889 open question
-1). This record does not settle it. §7 puts the options in plain words.
+Bearer versus recipient-bound grants was #13889 open question 1. It was
+decided on 2026-11-25 (§7), and slice 2 builds on that decision.
 
 ## 2. Shape in one paragraph
 
@@ -158,7 +158,11 @@ has one: a `mention` whose target is absent. Reasons:
 Slice 3's import report will list such targets as "dangling, resolve later",
 not as rejections. Slice 4 says how they resolve on contact.
 
-## 7. Bearer versus recipient-bound grants (Drew decides; slice 2)
+## 7. Bearer versus recipient-bound grants (decided; slice 2)
+
+Decided on #13889 on 2026-11-25: recipient-bound by default, bearer only as
+an explicit opt-in with a short, stated lifetime. `slice-2-bundle-grants.md`
+builds it. The options as they were put:
 
 In plain words:
 

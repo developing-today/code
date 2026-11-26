@@ -1089,6 +1089,13 @@
       "note": "docs-history change fragment for #1864 (ask-path cancel); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
+      "path": "docs/changes/public-client-generated-table.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #14072 (generated public-client table); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
       "path": "docs/index.md",
       "chapter": null,
       "role": "not-compendium",

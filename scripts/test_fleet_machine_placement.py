@@ -35,9 +35,9 @@ NOW = datetime(2026, 11, 22, 19, 30, 0, tzinfo=timezone.utc)
 FRESH = "2026-11-22T19:20:00Z"  # 10 minutes before NOW: inside 2 cadences
 # One second past the watchdog's own staleness window (two cadences), so
 # the fixture follows the cadence instead of pinning an old one.
-STALE = (
-    NOW - timedelta(seconds=placement.watchdog.STALE_AFTER_SECONDS + 1)
-).strftime("%Y-%m-%dT%H:%M:%SZ")
+STALE = (NOW - timedelta(seconds=placement.watchdog.STALE_AFTER_SECONDS + 1)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
 
 
 def health(status, last_seen=FRESH, failed=()):

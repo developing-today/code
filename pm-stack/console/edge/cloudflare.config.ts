@@ -28,6 +28,9 @@ export default defineConfig({
       // The health check verifies the commit currently serving on workers.dev.
       VERSION: bindings.text(processEnv.GITHUB_SHA?.slice(0, 12) ?? "local"),
       PM: bindings.durableObject({ worker: "pm-console-edge", exportName: "PmEdge" }),
+      // The fleet-platform ledger's D1 home (#14968): keep in sync
+      // with the d1_databases binding in wrangler.jsonc.
+      LEDGER_DB: bindings.d1({ name: "fleet-platform", id: "57d15925-b0b8-4466-a92c-c200a6af4c45" }),
       ASSETS: bindings.assets(),
     },
   },

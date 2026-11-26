@@ -5,7 +5,7 @@
 //! non-actor work, then partition where appropriate, then consider
 //! temporary native execution for indivisible load. This module is the
 //! gate that decides whether a spill may happen at all. Scoped spill is
-//! enabled only when **both** gates pass:
+//! enabled only when **all three** gates pass:
 //!
 //! 1. **Residency**: the step-1 evaluator ([`id_core::residency::evaluate`])
 //!    allows the spill path — the execution host (Processing), the
@@ -17,11 +17,13 @@
 //!    current holder at the presented epoch, unexpired on the
 //!    authority's clock ([`WriteLease::check_writer`]). A missing,
 //!    expired, or foreign-held lease is denied here.
+//! 3. **Successor replay**: the host's verified replay cursor reaches the
+//!    current grant/handoff boundary before execution is admitted.
 //!
-//! Until both pass, work stays local, is shed, or reports overload —
+//! Until all pass, work stays local, is shed, or reports overload —
 //! the gate has no third outcome, and callers move journal/event copies
 //! only through [`dispatch_spill`], which sends nothing on a denial:
-//! no journal or event copy crosses the boundary when either gate
+//! no journal or event copy crosses the boundary when any gate
 //! refuses. Because the lease names exactly one holder at any epoch,
 //! the original and the spill host cannot both pass the writer check
 //! at once — dual-writer spill is impossible by construction, and the
@@ -39,7 +41,7 @@
 
 use id_core::residency::{Decision, DenyReason, EvidenceVerifier, Hop, Scope, evaluate};
 
-use super::{LeaseRejectionReason, WriteLease};
+use super::{LeaseRejectionReason, LeaseTransitionKind, WriteLease};
 
 /// Why a spill was denied. [`SpillDeny::Residency`] carries the step-1
 /// evaluator's own reason codes; [`SpillDeny::Lease`] carries the
@@ -54,15 +56,22 @@ pub enum SpillDeny {
     /// host: it is not the holder, presented a stale epoch, or its
     /// term has expired.
     Lease(LeaseRejectionReason),
+    /// The successor has not replayed its current grant/handoff boundary.
+    ReplayPending {
+        /// Verified successor cursor, supplied by the host's replay path.
+        replayed_position: u64,
+        /// Ownership boundary derived from the authority's lease history.
+        required_position: u64,
+    },
 }
 
 /// The gate's verdict on one spill attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpillDecision {
-    /// Residency evidence and the single-writer lease both pass: the
+    /// Residency evidence, the single-writer lease, and replay all pass: the
     /// spill copy may cross to the spill host.
     Allow,
-    /// One or both gates refused. Nothing may cross; the work stays
+    /// At least one gate refused. Nothing may cross; the work stays
     /// local, is shed, or reports overload.
     Deny(Vec<SpillDeny>),
 }
@@ -82,7 +91,12 @@ impl SpillDecision {
 ///
 /// `now_s` is the evidence clock (unix seconds, the evaluator's
 /// clock); `now_ms` is the authority's lease clock (unix
-/// milliseconds). Denial lists every reason found across both gates.
+/// milliseconds). Denial lists every reason found across all three gates.
+/// `replayed_position` must be a contiguous cursor from the successor's verified
+/// replay path, never its unauthenticated assertion or the authority's watermark.
+/// A current grant or handoff must
+/// be replayed before admission; later renewals and rejection audits do not
+/// move this ownership boundary. Bootstrap/unstamped legacy boundaries are 0.
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_spill(
     scope: &Scope,
@@ -90,6 +104,7 @@ pub fn evaluate_spill(
     lease: &WriteLease,
     spill_host: &str,
     presented_epoch: u64,
+    replayed_position: u64,
     now_s: u64,
     now_ms: u64,
     verifier: &dyn EvidenceVerifier,
@@ -98,14 +113,53 @@ pub fn evaluate_spill(
     if let Decision::Deny(residency) = evaluate(scope, hops, now_s, verifier) {
         reasons.push(SpillDeny::Residency(residency));
     }
-    if let Err(lease_reason) = lease.check_writer(spill_host, presented_epoch, now_ms) {
-        reasons.push(SpillDeny::Lease(lease_reason));
+    if let Err(reason) = check_spill_admission(
+        lease,
+        spill_host,
+        presented_epoch,
+        replayed_position,
+        now_ms,
+    ) {
+        reasons.push(reason);
     }
     if reasons.is_empty() {
         SpillDecision::Allow
     } else {
         SpillDecision::Deny(reasons)
     }
+}
+
+/// Check the authoritative lease and current holder's replay boundary.
+/// The world actor repeats this immediately before releasing journal bytes,
+/// so a host cannot reuse an old snapshot after a later fence or grant.
+pub(crate) fn check_spill_admission(
+    lease: &WriteLease,
+    spill_host: &str,
+    presented_epoch: u64,
+    replayed_position: u64,
+    now_ms: u64,
+) -> Result<(), SpillDeny> {
+    lease
+        .check_writer(spill_host, presented_epoch, now_ms)
+        .map_err(SpillDeny::Lease)?;
+    let required_position = lease
+        .transitions()
+        .filter(|transition| {
+            transition.epoch == lease.epoch
+                && matches!(
+                    transition.kind,
+                    LeaseTransitionKind::Granted | LeaseTransitionKind::HandedOff
+                )
+        })
+        .last()
+        .map_or(0, |transition| transition.position);
+    if replayed_position < required_position {
+        return Err(SpillDeny::ReplayPending {
+            replayed_position,
+            required_position,
+        });
+    }
+    Ok(())
 }
 
 /// Move the spill's journal/event copy across the boundary — the only
@@ -138,7 +192,9 @@ mod tests {
     use std::cell::RefCell;
 
     use id_core::residency::{Evidence, Jurisdiction, Plane, Policy, ResourceId};
+    use proptest::prelude::*;
 
+    use super::super::LeaseWriteRejection;
     use super::*;
 
     /// Evidence clock, unix seconds; lease clock is `NOW_S * 1000` ms.
@@ -252,10 +308,88 @@ mod tests {
             lease,
             spill_host,
             epoch,
+            lease.last_position(),
             NOW_S,
             NOW_MS,
             &verifier(),
         )
+    }
+
+    #[test]
+    fn test_successor_dispatch_waits_for_ownership_replay() {
+        // Oracle: #5787 §1 step 4. A matching grant is not enough:
+        // no dispatch may occur before the successor replays its boundary.
+        let mut lease = WriteLease::bootstrap();
+        lease.apply_revoke("do", 1, "handoff", 4).unwrap();
+        lease
+            .apply_grant("spill-eu", 2, Some(NOW_MS + 600_000), 5)
+            .unwrap();
+        for replayed_position in [0, 4, 5, 6] {
+            let decision = evaluate_spill(
+                &Scope::Unscoped,
+                &[],
+                &lease,
+                "spill-eu",
+                2,
+                replayed_position,
+                NOW_S,
+                NOW_MS,
+                &verifier(),
+            );
+            let sent = RefCell::new(0);
+            let result = dispatch_spill(&decision, b"journal-copy", |_| {
+                *sent.borrow_mut() += 1;
+            });
+            let ready = replayed_position >= 5;
+            assert_eq!(decision.is_allow(), ready);
+            if !ready {
+                assert_eq!(
+                    decision,
+                    SpillDecision::Deny(vec![SpillDeny::ReplayPending {
+                        replayed_position,
+                        required_position: 5,
+                    }])
+                );
+            }
+            assert_eq!(result.is_ok(), ready);
+            assert_eq!(*sent.borrow(), usize::from(ready));
+        }
+    }
+
+    proptest! {
+        /// Oracle: #5787 §1 step 4; renewals extend a term, not ownership.
+        #[test]
+        fn test_ownership_replay_boundary_survives_renewals(
+            boundary in 1_u64..1_000_000,
+            cursor in 0_u64..1_000_002,
+            handoff in any::<bool>(),
+        ) {
+            let mut lease = WriteLease::bootstrap();
+            let epoch = if handoff {
+                lease.apply_handoff("do", "spill-eu", 1, Some(NOW_MS + 100), boundary).unwrap();
+                1
+            } else {
+                lease.apply_revoke("do", 1, "expired", boundary).unwrap();
+                lease.apply_grant("spill-eu", 2, Some(NOW_MS + 100), boundary + 1).unwrap();
+                2
+            };
+            let required = if handoff { boundary } else { boundary + 1 };
+            lease.apply_renew("spill-eu", epoch, NOW_MS + 200, required + 1).unwrap();
+            lease.apply_rejection(LeaseWriteRejection {
+                writer: "spill-eu".into(),
+                presented_epoch: epoch - 1,
+                operation_id: "stale-append".into(),
+                observed_epoch: epoch,
+                reason: LeaseRejectionReason::StaleEpoch,
+                received_at_ms: NOW_MS,
+                position: required + 2,
+            }).unwrap();
+            let decision = evaluate_spill(
+                &Scope::Unscoped, &[], &lease, "spill-eu", epoch,
+                cursor, NOW_S, NOW_MS, &verifier(),
+            );
+            prop_assert_eq!(decision.is_allow(), cursor >= required);
+        }
     }
 
     #[test]

@@ -29,6 +29,11 @@ def check_record(path: Path, max_age_hours: int, now: datetime) -> str:
         record = json.loads(path.read_text())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("record is unreadable or invalid JSON") from exc
+    return check_record_data(record, max_age_hours, now)
+
+
+def check_record_data(record, max_age_hours: int, now: datetime) -> str:
+    """Validate one parsed snapshot; consumers must not combine generations."""
     if not isinstance(record, dict):
         raise ValueError("record is not an object")
     if record.get("result") != "complete":

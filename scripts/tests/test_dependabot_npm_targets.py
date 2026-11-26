@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Keep Dependabot npm targets manifest-backed and exclude tarball builds."""
 
+import json
 import re
 import subprocess
 import unittest
@@ -94,16 +95,28 @@ class DependabotNpmTargetTests(unittest.TestCase):
             ".", targets, "root npm discovery can select lock-only package directories"
         )
 
+    def test_command_code_security_manifest_matches_its_lock_root(self):
+        directory = ROOT / "pkgs" / "command-code"
+        manifest = json.loads((directory / "package.json").read_text())
+        lock = json.loads((directory / "package-lock.json").read_text())
+        self.assertEqual(
+            manifest,
+            lock["packages"][""],
+            "command-code's Dependabot manifest mirror must match the lock root",
+        )
+
     def test_bun_targets_are_lockfile_backed_and_not_npm_targets(self):
         text = CONFIG.read_text()
         bun_targets = {
-            path.lstrip("/")
-            for path in list_values(bun_block(text), "directories")
+            path.lstrip("/") for path in list_values(bun_block(text), "directories")
         }
         self.assertEqual(bun_targets, BUN_TARGETS)
         self.assertTrue(
             bun_targets.isdisjoint(
-                {path.lstrip("/") for path in list_values(npm_block(text), "directories")}
+                {
+                    path.lstrip("/")
+                    for path in list_values(npm_block(text), "directories")
+                }
             ),
             "Bun targets must not also be configured for npm",
         )
