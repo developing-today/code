@@ -31,6 +31,10 @@
 //!   raw-CSS declarations that overrode an assertion-derived
 //!   property (#5854 §6b reported overrides), carried from the
 //!   composition report through the web lowering report.
+//! * `duplicate-source` (error, multi-source): the same semantic
+//!   document appears in more than one target folder. Source spans
+//!   and attribute order are ignored; child order and raw content
+//!   remain significant.
 //!
 //! The remaining #5855 §4 error rule — essential content inside
 //! a conditional block — does not ship here, by §4's own gate: a
@@ -39,9 +43,7 @@
 //! element kind, so a conditional block has no source
 //! representation to lint (the same stated boundary as stage 3;
 //! see [`crate::compose`]). The rule lands with that vocabulary
-//! addition, not before it. The §4 duplication rule likewise
-//! needs per-target source folders, which this single-source
-//! surface does not take.
+//! addition, not before it.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
