@@ -44,6 +44,8 @@ pub mod c8_fingerprint;
 pub mod c8_profile;
 pub mod classification;
 pub mod classify;
+pub mod cold;
+pub mod consumer_preset;
 pub mod detect;
 pub mod disclosure;
 pub mod embed;
@@ -56,12 +58,16 @@ pub mod filters;
 pub mod fusion;
 pub mod gate;
 pub mod github_comments;
+pub mod id_projection;
 pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod memory;
+pub mod notes;
 pub mod occurrences;
 pub mod owner_inventory;
+pub mod repo_docs;
+pub mod reports;
 pub mod search;
 pub mod shards;
 pub mod shingles;
@@ -73,6 +79,8 @@ pub mod trace_ingest;
 pub mod trace_stats;
 pub mod turso;
 pub mod types;
+pub mod version;
+pub mod version_projection;
 
 /// Maximum neighbor chunks search expansion may attach to each result.
 /// Keep this aligned with the service's get-chunk neighbors ceiling.

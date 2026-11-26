@@ -45,14 +45,14 @@ Queue-side, labels exist only as an **enqueue-time snapshot**: `label_enrich.rs`
 There is no resolution column. The traces a cleanup has to mine today:
 
 - `result` JSON free text and triage exits (e.g. `already_solved`);
-- the verify-disposition readback (#10611, `disposition.rs`): verdicts `closed_verified / merged_verified / open_draft_with_followup / open_draft_superseded / invalid_no_work` — a *verification* vocabulary, computed at completion, stored inside the result;
+- the verify-disposition readback (#10611, `disposition.rs`): verdicts `closed_verified / merged_verified / open_draft_with_followup / open_draft_superseded / invalid_no_work` — a _verification_ vocabulary, computed at completion, stored inside the result;
 - PM-side needs-user state (the block path's needs-drew payload, `needs_drew.rs`) — a question's lifecycle, not the task's resolution.
 
 Measured consequence (census, #14158): 18,556 tasks; terminal 18,191 of which **cancelled 1,476 — with no structured reason recorded for any of them**; 165 blocked tasks with no open dep whose block reasons had to be read one by one out of prose.
 
 ### 1.5 The packet is already the de-facto metadata
 
-Producers stuff everything else into `payload`: `kind` (small_fix / triage / feature_slice / second_pass / ci_investigation), `repo`, `issue.number`, the `slice` block (feature_slice packets, `validate.rs::slice_errors`), `labels`, producer-specific keys (e.g. `verification_class` on the darwin-nix packet from tonight's PR-diff review). Payload is the *work order* — set at enqueue, size-capped, claim-guarded. It is the wrong home for mutable, post-enqueue annotation, which is exactly the pressure Drew's ask relieves.
+Producers stuff everything else into `payload`: `kind` (small_fix / triage / feature_slice / second_pass / ci_investigation), `repo`, `issue.number`, the `slice` block (feature_slice packets, `validate.rs::slice_errors`), `labels`, producer-specific keys (e.g. `verification_class` on the darwin-nix packet from tonight's PR-diff review). Payload is the _work order_ — set at enqueue, size-capped, claim-guarded. It is the wrong home for mutable, post-enqueue annotation, which is exactly the pressure Drew's ask relieves.
 
 ## 2. The split rule — columns vs metadata
 
@@ -81,25 +81,25 @@ ALTER TABLE tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
 
 ### 3.2 The well-known key registry
 
-Arbitrary keys are legal; these keys are *registered* — when present, the broker type-checks them and consumers may rely on their shape. The registry lives in `validate.rs` beside `PRIORITY_SCALE` and `KINDS`, and this table is its initial content — every key below is drawn from a real write in tonight's programmes or the standing machinery:
+Arbitrary keys are legal; these keys are _registered_ — when present, the broker type-checks them and consumers may rely on their shape. The registry lives in `validate.rs` beside `PRIORITY_SCALE` and `KINDS`, and this table is its initial content — every key below is drawn from a real write in tonight's programmes or the standing machinery:
 
-| Key | Type | Meaning / tonight's source |
-|---|---|---|
-| `programme` | string | Owning programme, e.g. `queue-reprioritize-2026-11-24`, `pr-sweep-2026-11-24`, `audit-7`, `stewardship`. Programmes today identify their tasks only by dedupe-key archaeology. |
-| `tracking_issue` | `owner/repo#n` string | The programme's tracking issue (#14158, #14170…). |
-| `source_issue` | `owner/repo#n` string | The issue that spawned this task when it differs from the task's own work issue (design → slice spawning). |
-| `held` | object `{by, reason, since}` | A human/programme hold mark with its reason — tonight's hard-skip list lives only in prose on #14158. Advisory only; the hard rails stay enforced by their existing routes (§2: a hold that must gate claiming graduates — see §3.3). |
-| `verification_class` | string | e.g. `runtime-gap/high-risk` — written verbatim by tonight's pr-diff-review lane into a packet with nowhere proper to go. |
-| `external_ids` | object | Foreign identifiers: `pr` (number), `pr_url`, `actions_run_id`, `workflow_id`, `session_handle` (actions-exec), `ledger_id` (PM needs-user item). |
-| `coverage_exception` | string | For the estate-coverage floor (#14158): why this issue deliberately has no work task, or why this task is an issue's designated tracker. |
-| `question` | object `{ledger_id, state}` | Link to the needs-user question this task waits on, when the wait is a question rather than a dep (the 165 no-dep blocked pile). |
-| `lane_hint` | object `{host?, lane?, session?}` | Producer's routing hint — a hint, never a binding (bindings are the `bind` verb's job). |
-| `estimate` | object `{minutes?, points?}` | Producer estimate, for programme planning readouts. |
-| `x-*` | any | Experimental keys: the `x-` prefix marks unregistered experiments so the registry can adopt or retire them by census, not by guesswork. |
+| Key                  | Type                              | Meaning / tonight's source                                                                                                                                                                                                            |
+| -------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `programme`          | string                            | Owning programme, e.g. `queue-reprioritize-2026-11-24`, `pr-sweep-2026-11-24`, `audit-7`, `stewardship`. Programmes today identify their tasks only by dedupe-key archaeology.                                                        |
+| `tracking_issue`     | `owner/repo#n` string             | The programme's tracking issue (#14158, #14170…).                                                                                                                                                                                     |
+| `source_issue`       | `owner/repo#n` string             | The issue that spawned this task when it differs from the task's own work issue (design → slice spawning).                                                                                                                            |
+| `held`               | object `{by, reason, since}`      | A human/programme hold mark with its reason — tonight's hard-skip list lives only in prose on #14158. Advisory only; the hard rails stay enforced by their existing routes (§2: a hold that must gate claiming graduates — see §3.3). |
+| `verification_class` | string                            | e.g. `runtime-gap/high-risk` — written verbatim by tonight's pr-diff-review lane into a packet with nowhere proper to go.                                                                                                             |
+| `external_ids`       | object                            | Foreign identifiers: `pr` (number), `pr_url`, `actions_run_id`, `workflow_id`, `session_handle` (actions-exec), `ledger_id` (PM needs-user item).                                                                                     |
+| `coverage_exception` | string                            | For the estate-coverage floor (#14158): why this issue deliberately has no work task, or why this task is an issue's designated tracker.                                                                                              |
+| `question`           | object `{ledger_id, state}`       | Link to the needs-user question this task waits on, when the wait is a question rather than a dep (the 165 no-dep blocked pile).                                                                                                      |
+| `lane_hint`          | object `{host?, lane?, session?}` | Producer's routing hint — a hint, never a binding (bindings are the `bind` verb's job).                                                                                                                                               |
+| `estimate`           | object `{minutes?, points?}`      | Producer estimate, for programme planning readouts.                                                                                                                                                                                   |
+| `x-*`                | any                               | Experimental keys: the `x-` prefix marks unregistered experiments so the registry can adopt or retire them by census, not by guesswork.                                                                                               |
 
 ### 3.3 Graduation candidates (named in advance)
 
-- `held` → if a future programme needs the claim scan to *skip* held tasks mechanically, `held` graduates to a `hold_kind` column + claim-scan predicate. Until then it is annotation; tonight's held items are protected by their recorded rails, not by this key.
+- `held` → if a future programme needs the claim scan to _skip_ held tasks mechanically, `held` graduates to a `hold_kind` column + claim-scan predicate. Until then it is annotation; tonight's held items are protected by their recorded rails, not by this key.
 - `programme` → if programme-scoped list filtering becomes a hot path (the audit skill in §9 is the likely driver), it graduates; the `--meta` filter (§3.4) is the bridge.
 
 ### 3.4 Access — `fleet queue meta`
@@ -118,7 +118,7 @@ New verb family on the client, broker routes beside `/park`'s pattern:
 
 ## 4. Notes — a table, not a metadata key
 
-**Recommendation: a separate append-only `task_notes` table.** Notes are a *stream* (many, ordered, authored, timestamped); metadata is *current state* (one value per key). Stuffing a stream into a state column guarantees lost updates under concurrent writers and destroys authorship. The estate already learned this shape once: GitHub-side agent notes are comments, and the mirror tracks their latest pointer — notes are append-only everywhere else in the system.
+**Recommendation: a separate append-only `task_notes` table.** Notes are a _stream_ (many, ordered, authored, timestamped); metadata is _current state_ (one value per key). Stuffing a stream into a state column guarantees lost updates under concurrent writers and destroys authorship. The estate already learned this shape once: GitHub-side agent notes are comments, and the mirror tracks their latest pointer — notes are append-only everywhere else in the system.
 
 ```sql
 CREATE TABLE IF NOT EXISTS task_notes (
@@ -184,7 +184,7 @@ State-neutral rows (from = to) are first-class: a reprioritize or a meta write i
 
 - Every lifecycle verb in `turso_queue/` writes its history row **inside the same transaction** as the task-row update — the pattern the Postgres era had (W1 in the cutover doc: events inserted inside the RPC body) and the Turso port kept for `events`. The history insert joins the existing `event()` call sites; a transition that cannot write its history row does not commit (fail-closed — history is the audit, not a side effect).
 - The sweeper/staleness/repair paths (lease expiry, dep recheck) are broker paths too and write with `actor = 'broker:<path>'`, so machine transitions are distinguishable from agent-invoked ones.
-- **Retention:** `task_history` is **exempt from the events prune**. Volume is bounded by transitions (~33k events/day at PG-era rates were dominated by checkpoints/heartbeats, which are *not* transitions and stay in `events`); transition volume is an order of magnitude lower. Review at 1M rows: the archive route is the existing R2 backup of the store, and a future `task_history` archive verb is a named non-goal for v1.
+- **Retention:** `task_history` is **exempt from the events prune**. Volume is bounded by transitions (~33k events/day at PG-era rates were dominated by checkpoints/heartbeats, which are _not_ transitions and stay in `events`); transition volume is an order of magnitude lower. Review at 1M rows: the archive route is the existing R2 backup of the store, and a future `task_history` archive verb is a named non-goal for v1.
 - `events` keeps its prune and its generic writers; during migration the broker dual-writes (event + history row) so existing readers (health's terminal-event folds, the timeline's kind list) never break mid-rollout.
 
 ### 5.4 Reading
@@ -197,7 +197,7 @@ State-neutral rows (from = to) are first-class: a reprioritize or a meta write i
 
 ### 6.1 Why columns
 
-Resolution is the single most aggregated field the programmes produce: every census, sweep report, and stewardship readout groups terminal tasks by *why they ended*. It is filtered, counted, and constrained (a terminal transition without one is tonight's 1,476-row hole) — §2's rule puts it in columns without argument. It does **not** go in metadata (advisory, unenforced) or in `result` (free text, where it hides today).
+Resolution is the single most aggregated field the programmes produce: every census, sweep report, and stewardship readout groups terminal tasks by _why they ended_. It is filtered, counted, and constrained (a terminal transition without one is tonight's 1,476-row hole) — §2's rule puts it in columns without argument. It does **not** go in metadata (advisory, unenforced) or in `result` (free text, where it hides today).
 
 ### 6.2 The fields
 
@@ -213,31 +213,31 @@ ALTER TABLE tasks ADD COLUMN resolved_at TEXT;
 
 ### 6.3 The taxonomy (grounded in tonight's cleanup)
 
-| resolution | category | substatuses | tonight's ground |
-|---|---|---|---|
-| `done` | success | `verified` (disposition closed/merged-verified), `unverified`, `partial_with_followup` | The normal completion; disposition verdicts map onto the substatus instead of dying inside `result`. |
-| `already_solved` | success | `solved_elsewhere`, `premise_already_met` | Exists today as a triage exit with no home; AUDIT-7's L2 census re-derived it for 8,161 closed issues by hand. |
-| `answered` | success | `answered_from_record`, `answered_by_decision` | Question tasks — the 165 no-dep blocked pile was largely questions waiting for an answer that already existed somewhere. |
-| `duplicate` | redirection | — (ref required) | Broker dedupe is enqueue-time only; human/programme dedupe (pass 2's set (c)) had nowhere to write the verdict. |
-| `superseded` | redirection | `by_task`, `by_issue`, `by_pr` (ref required) | PR sweep: 3 duplicates marked superseded in AUDIT-7 by label only; re-sliced designs supersede their slice tasks. |
-| `split_out` | redirection | — (refs = the children, in `queue_links`) | Drew's split rule from tonight's PR order: the blocked part splits out, the parent closes as split_out, children carry the work, the split-out part's question priority rises. |
-| `wontfix` | rejection | `decided_by_drew`, `decided_by_agent`, `out_of_scope` | A decision, recorded as one — distinct from drift. Reason required. |
-| `obsolete` | rejection | `issue_closed_elsewhere`, `premise_gone`, `expired` | Stale-state cleanup: tasks whose world ended without them (issue closed by other work, programme dissolved). Reason required. |
-| `invalid` | rejection | `malformed_packet`, `wrong_queue`, `not_a_task` | The census's error class: `task:None` deps, off-scale priorities, packets that never described work. Reason required. |
+| resolution       | category    | substatuses                                                                            | tonight's ground                                                                                                                                                               |
+| ---------------- | ----------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `done`           | success     | `verified` (disposition closed/merged-verified), `unverified`, `partial_with_followup` | The normal completion; disposition verdicts map onto the substatus instead of dying inside `result`.                                                                           |
+| `already_solved` | success     | `solved_elsewhere`, `premise_already_met`                                              | Exists today as a triage exit with no home; AUDIT-7's L2 census re-derived it for 8,161 closed issues by hand.                                                                 |
+| `answered`       | success     | `answered_from_record`, `answered_by_decision`                                         | Question tasks — the 165 no-dep blocked pile was largely questions waiting for an answer that already existed somewhere.                                                       |
+| `duplicate`      | redirection | — (ref required)                                                                       | Broker dedupe is enqueue-time only; human/programme dedupe (pass 2's set (c)) had nowhere to write the verdict.                                                                |
+| `superseded`     | redirection | `by_task`, `by_issue`, `by_pr` (ref required)                                          | PR sweep: 3 duplicates marked superseded in AUDIT-7 by label only; re-sliced designs supersede their slice tasks.                                                              |
+| `split_out`      | redirection | — (refs = the children, in `queue_links`)                                              | Drew's split rule from tonight's PR order: the blocked part splits out, the parent closes as split_out, children carry the work, the split-out part's question priority rises. |
+| `wontfix`        | rejection   | `decided_by_drew`, `decided_by_agent`, `out_of_scope`                                  | A decision, recorded as one — distinct from drift. Reason required.                                                                                                            |
+| `obsolete`       | rejection   | `issue_closed_elsewhere`, `premise_gone`, `expired`                                    | Stale-state cleanup: tasks whose world ended without them (issue closed by other work, programme dissolved). Reason required.                                                  |
+| `invalid`        | rejection   | `malformed_packet`, `wrong_queue`, `not_a_task`                                        | The census's error class: `task:None` deps, off-scale priorities, packets that never described work. Reason required.                                                          |
 
 ### 6.4 Interaction with terminal states
 
-- `status` stays the lifecycle state; resolution is its *verdict*. Constraints, enforced broker-side at the transition:
+- `status` stays the lifecycle state; resolution is its _verdict_. Constraints, enforced broker-side at the transition:
   - `done` ⇒ resolution ∈ {`done`, `already_solved`, `answered`} (success category).
   - `cancelled` ⇒ resolution **required**, ∈ redirection ∪ rejection. (This is the 1,476-row fix: after Q2, an unexplained cancellation is unrepresentable through the verbs.)
-  - `failed` ⇒ resolution **optional**: failure is machinery state (retry, lease expiry at cap) and most failed tasks are revived; resolution is set when a failed task is *finally* abandoned, at which point the verb moves it to cancelled with its rejection resolution — failed stays resolution-free while genuinely in play.
+  - `failed` ⇒ resolution **optional**: failure is machinery state (retry, lease expiry at cap) and most failed tasks are revived; resolution is set when a failed task is _finally_ abandoned, at which point the verb moves it to cancelled with its rejection resolution — failed stays resolution-free while genuinely in play.
   - `revive` clears the resolution fields and writes the clearing into history (`resolution_cleared` rides the `revived` row's detail: prior resolution, prior reason) — a revived task's earlier verdict stays auditable, never silently erased.
 - Verb surface: `complete --resolution done --substatus verified`, `cancel --resolution wontfix --reason '...' [--ref task:21660]`, `fail` unchanged. Defaults: `complete` with no flag writes `done/unverified` (never blocks tonight's flows); disposition-verified completions auto-stamp `verified` from the #10611 readback the gate already computes.
-- The needs-user flow composes: a task blocked on a question that Drew answers resolves its *children* normally; a pure question task completes as `answered`.
+- The needs-user flow composes: a task blocked on a question that Drew answers resolves its _children_ normally; a pure question task completes as `answered`.
 
 ### 6.5 Backfill honesty
 
-Resolutions are backfilled **only where the record already proves them**: triage exits in `result` (`already_solved`), disposition verdicts (`done/verified`), dedupe-cancelled pairs whose surviving twin is identifiable. Everything else terminal stays `resolution = NULL`, which after Q2 reads precisely: *ended before verdicts were recorded*. The census number (how many of 18,191) is reported once, on #14170, as the baseline — not laundered into guesses.
+Resolutions are backfilled **only where the record already proves them**: triage exits in `result` (`already_solved`), disposition verdicts (`done/verified`), dedupe-cancelled pairs whose surviving twin is identifiable. Everything else terminal stays `resolution = NULL`, which after Q2 reads precisely: _ended before verdicts were recorded_. The census number (how many of 18,191) is reported once, on #14170, as the baseline — not laundered into guesses.
 
 ## 7. Labels — current set on the item, history at the source
 
@@ -269,7 +269,7 @@ CREATE INDEX IF NOT EXISTS github_label_history_issue ON github_label_history(re
 ```
 
 - For `labeled`/`unlabeled` the diff is exact (payload-named). For any other upsert, the projector diffs the stored set against the incoming set — it already reads-before-write for its ordering guards. Backfill runs write one `action='backfill'` row per issue with the full set (added = set, removed = []), so history has a defined start per issue rather than a silent void.
-- This is deliberately **mirror-side, not queue-side**: labels belong to the issue, and one issue can back many tasks over its life. Queue items read their label history by joining on the issue ref; a task_history row is *not* written per label change (that would fan one GitHub event into N task rows and drown the transition log). `fleet queue timeline --with-github` is the reader that interleaves them (§8.5).
+- This is deliberately **mirror-side, not queue-side**: labels belong to the issue, and one issue can back many tasks over its life. Queue items read their label history by joining on the issue ref; a task_history row is _not_ written per label change (that would fan one GitHub event into N task rows and drown the transition log). `fleet queue timeline --with-github` is the reader that interleaves them (§8.5).
 - The projector is a read model: a missed delivery is repaired by the existing backfill sweep, which writes its own diff row when it lands — history degrades to "as observed", never to fiction. `github_mirror_meta.last_webhook_at` remains the freshness readout.
 
 ## 8. GitHub-side change tracking — decided per item
@@ -294,7 +294,7 @@ The mirror already stores `body_hash`; an edit that changes the hash is exactly 
 
 ### 8.2 Comments added/removed — COUNTS ONLY
 
-The mirror already tracks `comments` (count) + `comments_gh_updated_at`, and agent notes get first-class treatment (`latest_agent_note_id/url`, deleted-note tombstones). Full comment capture (bodies, per-comment rows) is rejected: volume (the PG-era stream ran ~33k rows/day with comments-class traffic a large share), duplication of GitHub's own record, and no programme query needs comment bodies from the queue store — they read the issue. What *is* worth a row: the count delta, because "a question was answered / a human replied" is a ready-condition signal lanes already poll for. Projector: on upsert, if the count moved, write `comment_count_changed {from, to}` (with `comment_added`/`comment_removed` used only when the delivery itself is an `issue_comment` action naming the direction). The agent-note pointer changes ride the same row kind with the note id in detail.
+The mirror already tracks `comments` (count) + `comments_gh_updated_at`, and agent notes get first-class treatment (`latest_agent_note_id/url`, deleted-note tombstones). Full comment capture (bodies, per-comment rows) is rejected: volume (the PG-era stream ran ~33k rows/day with comments-class traffic a large share), duplication of GitHub's own record, and no programme query needs comment bodies from the queue store — they read the issue. What _is_ worth a row: the count delta, because "a question was answered / a human replied" is a ready-condition signal lanes already poll for. Projector: on upsert, if the count moved, write `comment_count_changed {from, to}` (with `comment_added`/`comment_removed` used only when the delivery itself is an `issue_comment` action naming the direction). The agent-note pointer changes ride the same row kind with the note id in detail.
 
 ### 8.3 Emoji reactions — NO (considered, rejected)
 
@@ -302,7 +302,7 @@ Reactions have no webhook-fed consumer anywhere in the estate: no ready-conditio
 
 ### 8.4 Issue↔PR linking and parent changes — YES, as first-class queue structure
 
-This is the ask with real machinery behind it, because tonight's programmes *are* link-manipulation programmes (the PR sweep links every PR to issues + tasks; the reprioritization pass splits parents into children). Today links live in prose (`Refs #n`, dedupe keys, pm-metadata `links`/`direct_parent` on the issue) and in the disposition module's three-signal inference. The design gives the queue a link table:
+This is the ask with real machinery behind it, because tonight's programmes _are_ link-manipulation programmes (the PR sweep links every PR to issues + tasks; the reprioritization pass splits parents into children). Today links live in prose (`Refs #n`, dedupe keys, pm-metadata `links`/`direct_parent` on the issue) and in the disposition module's three-signal inference. The design gives the queue a link table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS queue_links (
@@ -321,12 +321,12 @@ CREATE INDEX IF NOT EXISTS queue_links_task ON queue_links(task_id);
 CREATE INDEX IF NOT EXISTS queue_links_other ON queue_links(other_repo, other_number);
 ```
 
-- **Seeding:** at enqueue, the broker writes the packet's own links (`implements` → its issue; `pr_for` when a packet names its PR). Programmes add the rest with `fleet queue link add/remove <task-id> --kind parent --issue owner/repo#n` (and `--task`, `--pr` forms). Every add/remove writes a task_history state-neutral row (`linked`/`unlinked` kinds join §5.2's set) — parent changes are therefore *in the task's own history*, answering Drew's "marking parent changing parent" on the queue side directly.
-- **GitHub-side parents (sub-issues):** GitHub's sub-issue relationships are the issue's truth, the queue's `parent` links are the task's. The projector gains a `parent_number` column on `github_mirror_issues` (from the sub-issues projection in the backfill/API path — webhook payloads for sub-issue changes carry the parent) and writes `parent_changed {from, to}` into `github_issue_history` when it moves. Where the two disagree (queue parent ≠ GitHub parent), that is a *finding for the audit programme*, not an auto-fix — each side keeps its own record and §9's queries surface the divergence.
+- **Seeding:** at enqueue, the broker writes the packet's own links (`implements` → its issue; `pr_for` when a packet names its PR). Programmes add the rest with `fleet queue link add/remove <task-id> --kind parent --issue owner/repo#n` (and `--task`, `--pr` forms). Every add/remove writes a task_history state-neutral row (`linked`/`unlinked` kinds join §5.2's set) — parent changes are therefore _in the task's own history_, answering Drew's "marking parent changing parent" on the queue side directly.
+- **GitHub-side parents (sub-issues):** GitHub's sub-issue relationships are the issue's truth, the queue's `parent` links are the task's. The projector gains a `parent_number` column on `github_mirror_issues` (from the sub-issues projection in the backfill/API path — webhook payloads for sub-issue changes carry the parent) and writes `parent_changed {from, to}` into `github_issue_history` when it moves. Where the two disagree (queue parent ≠ GitHub parent), that is a _finding for the audit programme_, not an auto-fix — each side keeps its own record and §9's queries surface the divergence.
 
 ### 8.5 Deps normalise alongside (the blocker graph becomes SQL)
 
-`queue_links` covers *relationships*; *blocking* gets its own normalisation, because the dep machinery (recheck timers, blocked-until) is stateful in a way links aren't:
+`queue_links` covers _relationships_; _blocking_ gets its own normalisation, because the dep machinery (recheck timers, blocked-until) is stateful in a way links aren't:
 
 ```sql
 CREATE TABLE IF NOT EXISTS task_deps (
@@ -347,20 +347,20 @@ CREATE INDEX IF NOT EXISTS task_deps_ref ON task_deps(ref_repo, ref_number, stat
 
 ## 9. Consumers — the queries this schema must make cheap
 
-| Consumer | Query | Served by |
-|---|---|---|
-| Reprioritization audit (pass 1 census) | Band histogram per queue × status; actionable counts | `tasks` (exists) + `resolution IS NULL` terminal audit (Q2) |
-| Reprioritization audit (unlock graph) | Direct + transitive unlock counts per issue/task | `task_deps` recursive CTE (Q6) |
-| Reprioritization audit (cleanup) | Blocked with no open dep and no question — one query, not 165 prose reads | `tasks` ⋉ `task_deps` + `metadata.question` (Q3/Q6) |
-| Reprioritization audit (held check) | All items whose issue carries `user/*` | `tasks.labels` cache (Q5) |
-| PR sweep | Every open PR → its tasks; every task → its PRs; PRs with no task | `queue_links` both directions (Q6) + mirror PR table |
-| PR sweep (splits) | Parent → children after a split; split-out parts awaiting answers | `queue_links` (split_from) + `resolution='split_out'` (Q2) |
-| Stewardship (staleness) | Tasks whose last transition is older than X, by queue; claims near lease cap | `task_history` max(id) per task (Q1) |
-| Stewardship (needs-user) | Open questions: blocked/parked with question metadata, age, blocked-by counts per question | metadata `question` + `task_deps` counts (Q3/Q6) |
-| PM stack (aggregator/projector) | Everything that changed since cursor C, estate-wide, in order | `GET /history-since` over `task_history.id` (Q1/Q8) |
-| PM stack (needs-user board) | Resolution + question state for board items | Q2 columns + Q3 metadata |
-| Programmes generally | "Everything programme P created/touched, and what became of it" | `metadata.programme` filter (Q3) + history actor/programme joins |
-| Fleet book / audits | Label-change timeline for an issue; body-edit flags on spec issues | `github_label_history`, `github_issue_history` (Q5/Q7) |
+| Consumer                               | Query                                                                                      | Served by                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| Reprioritization audit (pass 1 census) | Band histogram per queue × status; actionable counts                                       | `tasks` (exists) + `resolution IS NULL` terminal audit (Q2)      |
+| Reprioritization audit (unlock graph)  | Direct + transitive unlock counts per issue/task                                           | `task_deps` recursive CTE (Q6)                                   |
+| Reprioritization audit (cleanup)       | Blocked with no open dep and no question — one query, not 165 prose reads                  | `tasks` ⋉ `task_deps` + `metadata.question` (Q3/Q6)              |
+| Reprioritization audit (held check)    | All items whose issue carries `user/*`                                                     | `tasks.labels` cache (Q5)                                        |
+| PR sweep                               | Every open PR → its tasks; every task → its PRs; PRs with no task                          | `queue_links` both directions (Q6) + mirror PR table             |
+| PR sweep (splits)                      | Parent → children after a split; split-out parts awaiting answers                          | `queue_links` (split_from) + `resolution='split_out'` (Q2)       |
+| Stewardship (staleness)                | Tasks whose last transition is older than X, by queue; claims near lease cap               | `task_history` max(id) per task (Q1)                             |
+| Stewardship (needs-user)               | Open questions: blocked/parked with question metadata, age, blocked-by counts per question | metadata `question` + `task_deps` counts (Q3/Q6)                 |
+| PM stack (aggregator/projector)        | Everything that changed since cursor C, estate-wide, in order                              | `GET /history-since` over `task_history.id` (Q1/Q8)              |
+| PM stack (needs-user board)            | Resolution + question state for board items                                                | Q2 columns + Q3 metadata                                         |
+| Programmes generally                   | "Everything programme P created/touched, and what became of it"                            | `metadata.programme` filter (Q3) + history actor/programme joins |
+| Fleet book / audits                    | Label-change timeline for an issue; body-edit flags on spec issues                         | `github_label_history`, `github_issue_history` (Q5/Q7)           |
 
 The audit skill being written under #14158 should name these queries as its census pack once Q1–Q6 land; until then it keeps the client-side assembly it used tonight, and this table is its migration checklist.
 
@@ -374,7 +374,7 @@ All changes follow the crate's established pattern: new tables join the `SCHEMA`
 
 - `tasks.metadata`: starts `{}`. One optional pass extracts what payloads already state (programme attribution from dedupe-key families; `verification_class` where a packet carries it) — extraction is lossless copying, never inference.
 - `tasks.labels`: one join pass from the mirror by payload issue ref (the `label_enrich::payload_issue_ref` logic, reused); items with no mirror row keep `[]` + a null sync stamp, which reads honestly as "never synced".
-- `task_history`: backfilled from `events` where kind maps to §5.2 (claimed/completed/parked/released/failed/cancelled/…), marks lifted from detail JSON into the columns where present, `source='backfill'`. Events whose kind doesn't map stay events-only. The backfill count vs the live count is reported on #14170 — history before the cutover is *reconstructed*, and the record says so.
+- `task_history`: backfilled from `events` where kind maps to §5.2 (claimed/completed/parked/released/failed/cancelled/…), marks lifted from detail JSON into the columns where present, `source='backfill'`. Events whose kind doesn't map stay events-only. The backfill count vs the live count is reported on #14170 — history before the cutover is _reconstructed_, and the record says so.
 - `resolution`: §6.5's provable-only rule.
 - `task_deps`: parsed from `blocked_deps`; unparseable entries land as `state='malformed'` rows (tonight's two known cases become the first citizens, not silent drops).
 - `queue_links`: seeded from packets (issue refs) and dedupe keys; PR links seeded from mirror + disposition records where they exist.
@@ -393,14 +393,14 @@ Risks, named:
 
 ## 11. Slice map (packet-ready; dependencies in order)
 
-- **Q1 — task_history foundation.** Table + indexes (§5.1); broker dual-write (history row + existing event) inside every lifecycle verb's transaction, marks copied from transition context; backfill from `events` (`source='backfill'`, counts reported); `timeline` reads history + notes-interleave-ready; `/history-since` broker route. *Oracle:* for a scripted lifecycle (enqueue→claim→park→wake→block→unblock→reprioritize→complete), the history rows match the transitions 1:1 with correct from/to, actor, session, model; claim-harness latency within noise; backfill count reconciles against events census. *Depends on:* nothing. (Reprioritize rows arrive with #14100's verb; the kind is reserved now.)
-- **Q2 — resolution columns + taxonomy.** Columns (§6.2), registry + validation in `validate.rs`, verb parameters on complete/cancel, disposition→substatus mapping, revive clearing, provable-only backfill + baseline census on #14170. *Oracle:* a cancel without resolution is rejected by the verb; a disposition-verified completion stamps `done/verified` unaided; revive preserves the prior verdict in history. *Depends on:* Q1.
-- **Q3 — metadata column + registry + `fleet queue meta`.** Column, limits, registry (§3.2) with type checks, verb family + enqueue `--meta` + list `--meta` filter, `meta_updated` history rows. *Oracle:* merge-patch semantics (untouched keys stand, null deletes); an over-limit write is rejected naming the limit; list filter returns exactly the programme's tasks. *Depends on:* Q1.
-- **Q4 — task_notes.** Table, note verbs (add/list/edit/remove-soft), author/session/model marks, show/timeline interleave. *Oracle:* two concurrent note adds both survive in order; an edit preserves the original in history; timeline renders one chronological story. *Depends on:* Q1.
-- **Q5 — labels current + history.** `tasks.labels` cache + `labels_synced_at`, broker refresh at enqueue/claim/transitions + actionable-only sweep, list `--label`; projector label-diff into `github_label_history` incl. backfill rows. *Oracle:* label an issue on GitHub → the cache and a history row with exact added/removed appear without any queue write; a `user/*` filter lists exactly the held set. *Depends on:* Q1 (cache stamps ride transitions); projector half is independent and may land first.
-- **Q6 — links + deps normalised.** `queue_links` + `task_deps` (§8.4/§8.5), broker maintenance at enqueue/block/unblock/dep-recheck, `fleet queue link` verbs, blocked_deps cache transition, malformed-dep capture, backfill from rows/packets. *Oracle:* tonight's census blocker graph reproduces from SQL alone, counts matching #14158's record (241 open edges, top blockers #3399→7 …); a parent change appears in the child's history. *Depends on:* Q1.
-- **Q7 — GitHub-side history in the projector.** `github_issue_history` + `parent_number` projection: body-edit rows (hash-only), comment-count deltas, parent-change rows; fail-open throughout. *Oracle:* editing a watched issue's body, commenting, and re-parenting a sub-issue each produce exactly one correct row; a killed history write still lands the mirror upsert. *Depends on:* nothing (parallel with Q5's projector half; shared review).
-- **Q8 — consumers.** Aggregator since-cursor feed consumption (PM projector), stewardship staleness/needs-user queries onto history, the #14158 audit skill's census pack rewritten onto §9's queries, fleet book chapter update (book-live-update). *Oracle:* stewardship's cycle reads staleness from one query; the audit census reproduces tonight's numbers from the canned pack. *Depends on:* Q1–Q6 as applicable per consumer.
+- **Q1 — task_history foundation.** Table + indexes (§5.1); broker dual-write (history row + existing event) inside every lifecycle verb's transaction, marks copied from transition context; backfill from `events` (`source='backfill'`, counts reported); `timeline` reads history + notes-interleave-ready; `/history-since` broker route. _Oracle:_ for a scripted lifecycle (enqueue→claim→park→wake→block→unblock→reprioritize→complete), the history rows match the transitions 1:1 with correct from/to, actor, session, model; claim-harness latency within noise; backfill count reconciles against events census. _Depends on:_ nothing. (Reprioritize rows arrive with #14100's verb; the kind is reserved now.)
+- **Q2 — resolution columns + taxonomy.** Columns (§6.2), registry + validation in `validate.rs`, verb parameters on complete/cancel, disposition→substatus mapping, revive clearing, provable-only backfill + baseline census on #14170. _Oracle:_ a cancel without resolution is rejected by the verb; a disposition-verified completion stamps `done/verified` unaided; revive preserves the prior verdict in history. _Depends on:_ Q1.
+- **Q3 — metadata column + registry + `fleet queue meta`.** Column, limits, registry (§3.2) with type checks, verb family + enqueue `--meta` + list `--meta` filter, `meta_updated` history rows. _Oracle:_ merge-patch semantics (untouched keys stand, null deletes); an over-limit write is rejected naming the limit; list filter returns exactly the programme's tasks. _Depends on:_ Q1.
+- **Q4 — task_notes.** Table, note verbs (add/list/edit/remove-soft), author/session/model marks, show/timeline interleave. _Oracle:_ two concurrent note adds both survive in order; an edit preserves the original in history; timeline renders one chronological story. _Depends on:_ Q1.
+- **Q5 — labels current + history.** `tasks.labels` cache + `labels_synced_at`, broker refresh at enqueue/claim/transitions + actionable-only sweep, list `--label`; projector label-diff into `github_label_history` incl. backfill rows. _Oracle:_ label an issue on GitHub → the cache and a history row with exact added/removed appear without any queue write; a `user/*` filter lists exactly the held set. _Depends on:_ Q1 (cache stamps ride transitions); projector half is independent and may land first.
+- **Q6 — links + deps normalised.** `queue_links` + `task_deps` (§8.4/§8.5), broker maintenance at enqueue/block/unblock/dep-recheck, `fleet queue link` verbs, blocked_deps cache transition, malformed-dep capture, backfill from rows/packets. _Oracle:_ tonight's census blocker graph reproduces from SQL alone, counts matching #14158's record (241 open edges, top blockers #3399→7 …); a parent change appears in the child's history. _Depends on:_ Q1.
+- **Q7 — GitHub-side history in the projector.** `github_issue_history` + `parent_number` projection: body-edit rows (hash-only), comment-count deltas, parent-change rows; fail-open throughout. _Oracle:_ editing a watched issue's body, commenting, and re-parenting a sub-issue each produce exactly one correct row; a killed history write still lands the mirror upsert. _Depends on:_ nothing (parallel with Q5's projector half; shared review).
+- **Q8 — consumers.** Aggregator since-cursor feed consumption (PM projector), stewardship staleness/needs-user queries onto history, the #14158 audit skill's census pack rewritten onto §9's queries, fleet book chapter update (book-live-update). _Oracle:_ stewardship's cycle reads staleness from one query; the audit census reproduces tonight's numbers from the canned pack. _Depends on:_ Q1–Q6 as applicable per consumer.
 
 ## 12. Decisions taken in this design (named deciders)
 
@@ -411,4 +411,4 @@ Risks, named:
 - **D5 — metadata write trust = broker caller trust** (no per-key ACL in v1). Decided here, matching every existing verb.
 - **D6 — label history lives mirror-side**, queue reads by join. Decided here (§7.2); the alternative (fan-out into task_history) was rejected on volume and ownership grounds.
 
-*End of design.*
+_End of design._

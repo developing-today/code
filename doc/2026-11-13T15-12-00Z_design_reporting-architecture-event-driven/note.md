@@ -81,7 +81,9 @@ PR under `sources/`.
   notify. Custom incident report pages (graphs; story; progress; fix
   attempts; findings; related prior incidents; root cause; short/medium/
   long remediation) and period/predicted-wall pages; a searchable reports
-  index (the question-sets list is the shape precedent).
+  index (the question-sets list is the shape precedent). Component design:
+  [`c6-report-pages-design.md`](c6-report-pages-design.md) specifies freshness,
+  mobile rendering, actions, version-pinned annotations, incidents and index.
 - **C7 — Rollups, design pages, timeline.** Daily (midnight–midnight CT) /
   weekly (Mon–Mon CT) / monthly / quarterly activity pages answering "what
   did we do today?" per project, with pivots and permanent remediations.

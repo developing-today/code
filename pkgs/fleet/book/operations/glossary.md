@@ -4,7 +4,7 @@ One-to-three sentence definitions, alphabetised. Chapters use these terms in the
 
 **broker** — A resident fleet service that other components ask over a socket or HTTP: the queue-broker owns queue state, the secrets-broker owns the secrets cache, and the session broker (the session proxy's server half) owns laptop-channel connections. Brokers are the stateful centre; clients are replaceable.
 
-**capability** — One of the 15 compile-time atoms in `fleet-registry` (`queue`, `proxy-connect`, `search-serve`, and so on) that decide what a build can do. A domain's availability is derived from its capabilities, the invocation's profile, and config, as one of four `CapState` values.
+**capability** — One of the 22 compile-time atoms in `fleet-registry` (`queue`, `proxy-connect`, `search-serve`, and so on) that decide what a build can do. A domain's availability is derived from its capabilities, the invocation's profile, and config, as one of four `CapState` values.
 
 **disposition** — The verified account of what actually happened to a task's issue and its linked pull requests, read back live from GitHub by `verify-disposition`. A completion that requires one must carry the record, and the broker's gate checks it before the task may close.
 

@@ -28,13 +28,14 @@ hex = { version = "0.4", features = ["serde"] }
 serde_bytes = "0.11"
 futures-lite = "2"
 id-core = { path = "../id-core", default-features = false }
+id-grants = { path = "../id-grants" }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 iroh-docs = "0.101"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 # Store traits only. The default features would pull in SQLite.
-p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
+p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
 redb = "=5.0.0"
 serde = { version = "1", features = ["derive"] }
@@ -50,7 +51,7 @@ unicode-normalization = "0.1"
 # on it; production code in this crate never names the facade.
 dcbor = "=0.25.2"
 id = { path = "../.." }
-iroh-gossip = { version = "0.103", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 # Property tests for the chat-anchor fold (#5872): permutation invariance and
 # duplicate-delivery idempotence over generated event logs.
 proptest = "1.12"
@@ -145,8 +146,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

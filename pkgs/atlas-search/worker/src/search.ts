@@ -39,6 +39,30 @@ export interface SearchEnv {
   };
 }
 
+/**
+ * A Durable Object answer as a JSON object, or null when it is not one
+ * (#7983 item 5). The DO is first-party, but its answers are spread into
+ * the route's own envelope and their fields read, so a body that is not
+ * an object (or not JSON) has to become this route's error envelope
+ * rather than a thrown TypeError or a payload built from garbage.
+ */
+export async function doJsonObject(resp: Response): Promise<Record<string, unknown> | null> {
+  let value: unknown;
+  try {
+    value = await resp.json();
+  } catch {
+    return null;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** The error payload for a Durable Object answer that failed its shape check. */
+export function malformedDoPayload(route: string): Record<string, unknown> {
+  return { error: { code: "upstream_malformed", message: `query cache returned a malformed ${route} response` } };
+}
+
 export interface SearchOutcome {
   status: number;
   payload: Record<string, unknown>;
@@ -76,8 +100,10 @@ export async function executeSearch(env: SearchEnv, query: string, k: number): P
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, k }),
   });
-  const payload = (await resp.json()) as Record<string, unknown>;
+  const payload = await doJsonObject(resp);
+  if (payload === null) return { status: 502, payload: malformedDoPayload("query") };
   if (!resp.ok) return { status: resp.status, payload };
-  const { outcome, ...rest } = payload as { outcome: string };
+  const { outcome, ...rest } = payload;
+  if (outcome !== "hit" && outcome !== "miss") return { status: 502, payload: malformedDoPayload("query") };
   return { status: 200, payload: { cache: outcome, key, query, ...rest } };
 }

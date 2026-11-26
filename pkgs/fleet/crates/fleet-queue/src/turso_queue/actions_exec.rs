@@ -244,8 +244,7 @@ fn check_signed_envelope(req: &Value, key: &[u8], now: i64) -> Result<(), Value>
             "answered_at must be an ISO stamp (YYYY-MM-DDTHH:MM:SSZ)".to_string(),
         ));
     };
-    if stamp_unix < now - SIGNED_DECIDE_WINDOW_S || stamp_unix > now + SIGNED_DECIDE_FUTURE_SKEW_S
-    {
+    if stamp_unix < now - SIGNED_DECIDE_WINDOW_S || stamp_unix > now + SIGNED_DECIDE_FUTURE_SKEW_S {
         return Err(fail(
             4,
             "signed decide envelope is outside the acceptance window (replay limit)".to_string(),
@@ -260,8 +259,12 @@ fn check_signed_envelope(req: &Value, key: &[u8], now: i64) -> Result<(), Value>
         return Err(fail(4, "sig is not hex HMAC-SHA256".to_string()));
     };
     let vkey = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
-    ring::hmac::verify(&vkey, msg.as_bytes(), &sig)
-        .map_err(|_| fail(4, "signed decide envelope signature does not verify".to_string()))
+    ring::hmac::verify(&vkey, msg.as_bytes(), &sig).map_err(|_| {
+        fail(
+            4,
+            "signed decide envelope signature does not verify".to_string(),
+        )
+    })
 }
 
 static RAND_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2319,10 +2322,7 @@ mod tests {
             &k,
             signed_decide_message(handle, approve, answer_id, answered_at).as_bytes(),
         );
-        tag.as_ref()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        tag.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 
     fn pending_manual(t: &TursoBackend, h: &str) {
