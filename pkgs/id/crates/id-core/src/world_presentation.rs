@@ -29,6 +29,15 @@
 //! player uses the audio text projection; a host that does not know the
 //! kind at all drops the document to the legacy text path.
 //!
+//! A program may instead return a versioned `kind: media` JSON document
+//! (`media/1`, #13679): a bounded list of descriptive media items —
+//! typed artifact-id references with a closed sort set, dimensions and
+//! durations. Items carry no embedded bytes, URLs, scripts or mime
+//! strings: a presenter resolves each artifact id against the world's
+//! own media artifacts. A shell without a media presenter uses the
+//! media text projection; a host that does not know the kind at all
+//! drops the document to the legacy text path.
+//!
 //! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
 //! | token | terminal | 1-bit | text |
 //! |---|---|---|---|
@@ -84,6 +93,19 @@ pub const MAX_AUDIO_BYTES: usize = 64 * 1024;
 /// a cue's stated length in a range every presenter can schedule
 /// without overflow.
 pub const MAX_AUDIO_DURATION_MS: u32 = 3_600_000;
+/// Maximum controls accepted in one world widget document.
+pub const MAX_WIDGET_CONTROLS: usize = 64;
+/// Maximum serialized widget document size in bytes.
+pub const MAX_WIDGET_BYTES: usize = 64 * 1024;
+/// Maximum items accepted in one world media document.
+pub const MAX_MEDIA_ITEMS: usize = 64;
+/// Maximum serialized media document size in bytes.
+pub const MAX_MEDIA_SURFACE_BYTES: usize = 64 * 1024;
+/// Maximum width or height of one media item, in pixels. Keeps item
+/// geometry in a range every presenter can scale without overflow.
+pub const MAX_MEDIA_DIMENSION: u32 = 16384;
+/// Maximum duration of one media item, in milliseconds (24 hours).
+pub const MAX_MEDIA_DURATION_MS: u32 = 86_400_000;
 
 /// A validated view understood by more than one transport presenter.
 ///
@@ -106,6 +128,16 @@ pub enum WorldSurface {
     /// formats, durations and repeat flags, played by shells with an
     /// audio player; other shells use its text projection.
     Audio(AudioSurface),
+    /// A widget control list (`widget/1`): named controls from a
+    /// closed kind set (button, toggle, link), rendered natively by
+    /// shells with a widget presenter; other shells use its text
+    /// projection.
+    Widget(WidgetSurface),
+    /// A media item list (`media/1`): typed artifact-id references
+    /// with a closed sort set (image, audio, video), rendered natively
+    /// by shells with a media presenter; other shells use its text
+    /// projection.
+    Media(MediaSurface),
 }
 
 impl WorldSurface {
@@ -121,6 +153,8 @@ impl WorldSurface {
             Self::Form(form) => form.text_projection(),
             Self::Scene(scene) => scene.text_projection(),
             Self::Audio(audio) => audio.text_projection(),
+            Self::Widget(widget) => widget.text_projection(),
+            Self::Media(media) => media.text_projection(),
         }
     }
 }
@@ -937,8 +971,7 @@ impl SceneSurface {
                 node.position
                     .iter()
                     .chain(node.size.iter())
-                    .all(|component| component.is_finite()
-                        && component.abs() <= MAX_SCENE_EXTENT),
+                    .all(|component| component.is_finite() && component.abs() <= MAX_SCENE_EXTENT),
                 "scene geometry out of bounds"
             );
             ensure!(
@@ -1108,13 +1141,368 @@ impl AudioSurface {
     }
 }
 
+/// A versioned `widget/1` document: a bounded list of descriptive
+/// controls. Guest input is data only: a control names a kind from a
+/// closed set and, where it acts, the id of a world action — there are
+/// no URLs, scripts or embedded payloads, so a presenter resolves each
+/// action id against the world's own actions and derives everything
+/// interactive from the description. The document shape is the struct
+/// shape, so a parsed widget document round-trips through
+/// [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WidgetSurface {
+    /// Widget format version. `widget/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the control list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's controls, in document order. Ids are unique.
+    pub controls: Vec<WidgetControl>,
+}
+
+/// One named control in a [`WidgetSurface`]. The kind set is closed:
+/// guest documents reject unknown kinds.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WidgetControl {
+    /// An action control: presents its label; invoking it delivers
+    /// the named action to the world.
+    Button {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action invoking the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions. Absent names a display-only control.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+    },
+    /// A stateful control: presents its label and current state;
+    /// invoking it delivers the named action to the world.
+    Toggle {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action invoking the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions. Absent names a display-only control.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        /// The control's state as presented.
+        on: bool,
+    },
+    /// A navigation control: following it delivers the named action
+    /// to the world (for example, presenting another view).
+    Link {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action following the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions.
+        action: String,
+    },
+}
+
+impl WidgetControl {
+    /// The control's stable identifier.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Button { id, .. } | Self::Toggle { id, .. } | Self::Link { id, .. } => id,
+        }
+    }
+
+    /// The control's human-readable name.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Button { label, .. } | Self::Toggle { label, .. } | Self::Link { label, .. } => {
+                label
+            }
+        }
+    }
+
+    /// The world action the control delivers, when it acts.
+    #[must_use]
+    pub fn action(&self) -> Option<&str> {
+        match self {
+            Self::Button { action, .. } | Self::Toggle { action, .. } => action.as_deref(),
+            Self::Link { action, .. } => Some(action),
+        }
+    }
+
+    /// The document spelling of the control's kind, used by the text
+    /// projection.
+    #[must_use]
+    pub const fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Button { .. } => "button",
+            Self::Toggle { .. } => "toggle",
+            Self::Link { .. } => "link",
+        }
+    }
+}
+
+impl WidgetSurface {
+    /// Validate the version, control set, identifiers, safe text,
+    /// action references and total size. Hosts run this before any
+    /// presenter sees the document (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// control sets, duplicate ids, unsafe labels, unsafe action ids,
+    /// and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world widget version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid widget title"
+        );
+        ensure!(
+            !self.controls.is_empty() && self.controls.len() <= MAX_WIDGET_CONTROLS,
+            "invalid widget control count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for control in &self.controls {
+            ensure!(
+                safe_form_id(control.id()) && safe_form_text(control.label()),
+                "invalid widget control id or label"
+            );
+            ensure!(ids.insert(control.id()), "duplicate widget control id");
+            ensure!(
+                control.action().is_none_or(safe_form_id),
+                "invalid widget control action"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_WIDGET_BYTES,
+            "widget exceeds {MAX_WIDGET_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Widgets`),
+    /// then one numbered line per control naming its label, kind,
+    /// state (for a toggle) and action (when it acts). This is what a
+    /// shell without a widget presenter shows, so it is designed here,
+    /// with the kind, not discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Widgets".to_owned())];
+        for (index, control) in self.controls.iter().enumerate() {
+            let mut parts = vec![control.kind_str().to_owned()];
+            if let WidgetControl::Toggle { on, .. } = control {
+                parts.push(if *on {
+                    "on".to_owned()
+                } else {
+                    "off".to_owned()
+                });
+            }
+            if let Some(action) = control.action() {
+                parts.push(format!("action {action}"));
+            }
+            lines.push(format!(
+                "{}. {} ({})",
+                index + 1,
+                control.label(),
+                parts.join("; ")
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
+/// A versioned `media/1` document: a bounded list of descriptive media
+/// items. Guest input is data only: an item names a sort from a closed
+/// set and the id of a world media artifact — there are no embedded
+/// bytes, URLs, scripts or mime strings, so a presenter resolves each
+/// artifact id against the world's own media artifacts and derives
+/// everything renderable from the referenced artifact. The document
+/// shape is the struct shape, so a parsed media document round-trips
+/// through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSurface {
+    /// Media format version. `media/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the item list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's items, in document order. Ids are unique.
+    pub items: Vec<MediaItem>,
+}
+
+/// One named media reference in a [`MediaSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaItem {
+    /// Stable identifier, unique within the document.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// presenters that label items.
+    pub label: String,
+    /// The referenced artifact's sort, from the closed sort set.
+    pub sort: MediaSort,
+    /// The world media artifact this item names, by id; a presenter
+    /// resolves it against the world's own media artifacts. An
+    /// unresolvable artifact is a presenter-side miss: the item still
+    /// appears in the text projection.
+    pub artifact: String,
+    /// The item's width in pixels, for image and video sorts. Width
+    /// and height are both given or both absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// The item's height in pixels, for image and video sorts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// The item's length in milliseconds, for audio and video sorts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+/// The closed set of media sorts a `media/1` item may name, mirroring
+/// the `id-store` media plane (`MediaSort`, #2342). Guest documents
+/// reject unknown sorts.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaSort {
+    /// Still pictures.
+    Image,
+    /// Sound.
+    Audio,
+    /// Moving pictures.
+    Video,
+}
+
+impl MediaSort {
+    /// The document spelling of the sort, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Audio => "audio",
+            Self::Video => "video",
+        }
+    }
+}
+
+impl MediaSurface {
+    /// Validate the version, item set, identifiers, safe text,
+    /// artifact references, dimension/duration consistency and total
+    /// size. Hosts run this before any presenter sees the document
+    /// (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// item sets, duplicate ids, unsafe labels, unsafe artifact ids,
+    /// half-given or out-of-bound dimensions, dimensions on audio
+    /// items, durations on image items, and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world media version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid media title"
+        );
+        ensure!(
+            !self.items.is_empty() && self.items.len() <= MAX_MEDIA_ITEMS,
+            "invalid media item count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for item in &self.items {
+            ensure!(
+                safe_form_id(&item.id) && safe_form_text(&item.label),
+                "invalid media item id or label"
+            );
+            ensure!(ids.insert(item.id.as_str()), "duplicate media item id");
+            ensure!(safe_form_id(&item.artifact), "invalid media item artifact");
+            match (item.width, item.height) {
+                (None, None) => {}
+                (Some(width), Some(height)) => {
+                    ensure!(
+                        (1..=MAX_MEDIA_DIMENSION).contains(&width)
+                            && (1..=MAX_MEDIA_DIMENSION).contains(&height),
+                        "media item dimensions out of bounds"
+                    );
+                    ensure!(
+                        item.sort != MediaSort::Audio,
+                        "audio media items carry no dimensions"
+                    );
+                }
+                _ => return Err(anyhow::anyhow!("media item width and height come together")),
+            }
+            if let Some(duration_ms) = item.duration_ms {
+                ensure!(
+                    (1..=MAX_MEDIA_DURATION_MS).contains(&duration_ms),
+                    "media item duration out of bounds"
+                );
+                ensure!(
+                    item.sort != MediaSort::Image,
+                    "image media items carry no duration"
+                );
+            }
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_MEDIA_SURFACE_BYTES,
+            "media exceeds {MAX_MEDIA_SURFACE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Media`),
+    /// then one numbered line per item naming its label, sort,
+    /// dimensions and duration. This is what a shell without a media
+    /// presenter shows, so it is designed here, with the kind, not
+    /// discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Media".to_owned())];
+        for (index, item) in self.items.iter().enumerate() {
+            let mut parts = vec![item.sort.as_str().to_owned()];
+            if let (Some(width), Some(height)) = (item.width, item.height) {
+                parts.push(format!("{width}x{height}"));
+            }
+            if let Some(duration_ms) = item.duration_ms {
+                parts.push(format!("{duration_ms} ms"));
+            }
+            lines.push(format!(
+                "{}. {} ({})",
+                index + 1,
+                item.label,
+                parts.join("; ")
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A cell-run delta between two consecutive screens (F12.11, first slice).
 ///
 /// A patch carries only the cells that changed, grouped into maximal runs of
 /// consecutive row-major indices. It is transport-neutral: the same patch can
 /// ride any shell transport, and a client that applies it to the previous
-/// screen holds exactly the next full frame. Binary encoding and compression
-/// are later F12.11 slices; this type is the delta they will encode.
+/// screen holds exactly the next full frame. Binary encoding is the F12.11
+/// phase-3 slice and optional compression the phase-4 slice, both in
+/// `screen_codec`; this type is the delta they encode.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenPatch {
@@ -1206,6 +1594,487 @@ impl ScreenPatch {
     pub const fn is_empty(&self) -> bool {
         self.runs.is_empty()
     }
+}
+
+/// Screen format version that carries semantic tags on its cells
+/// (#14731 slice 5, decision on #14731 2026-11-26): Screen v1 stays
+/// byte-for-byte and semantically unchanged, and semantic tags exist
+/// only in this versioned v2 representation.
+pub const SCREEN_VERSION_TAGGED: u8 = 2;
+/// Maximum semantic tags carried by one tagged cell.
+pub const MAX_CELL_TAGS: usize = 16;
+/// Maximum length of one semantic tag, in bytes.
+pub const MAX_TAG_BYTES: usize = 64;
+
+/// Validate one semantic tag for a Screen v2 cell (#6010).
+///
+/// A tag is a dotted, namespaced name: the root segment is `sys` (core
+/// vocabulary) or `world` (world-declared vocabulary), followed by at
+/// least one more segment. Every segment starts with a lowercase ASCII
+/// letter and continues with lowercase ASCII letters, digits, or
+/// underscores — for example `sys.color.blue`,
+/// `world.appearance.cape`, or `sys.effect.sparkle`. The rule is
+/// deliberately closed: an unnamespaced, malformed, or over-long tag
+/// is rejected instead of being carried opaquely, so every renderer
+/// can rely on the namespace split.
+///
+/// # Errors
+///
+/// Returns an error naming the rule the tag breaks.
+pub fn validate_semantic_tag(tag: &str) -> Result<()> {
+    ensure!(
+        !tag.is_empty() && tag.len() <= MAX_TAG_BYTES,
+        "semantic tag must be 1..={MAX_TAG_BYTES} bytes"
+    );
+    let segments: Vec<&str> = tag.split('.').collect();
+    ensure!(
+        segments.len() >= 2,
+        "semantic tag {tag:?} must be namespaced (root.name)"
+    );
+    ensure!(
+        matches!(segments[0], "sys" | "world"),
+        "semantic tag {tag:?} root must be sys or world"
+    );
+    for segment in &segments {
+        let mut chars = segment.chars();
+        let first = chars.next().unwrap_or_default();
+        ensure!(
+            first.is_ascii_lowercase()
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "semantic tag {tag:?} segment {segment:?} must start with a lowercase letter and use only lowercase letters, digits, or underscores"
+        );
+    }
+    Ok(())
+}
+
+/// Validate a cell's whole tag set: bounded, every tag valid, and in
+/// strictly ascending order with no duplicates, so the set has exactly
+/// one wire representation and diagnostics derived from it are
+/// deterministic.
+fn validate_tag_set(tags: &[String]) -> Result<()> {
+    ensure!(
+        tags.len() <= MAX_CELL_TAGS,
+        "a tagged cell carries at most {MAX_CELL_TAGS} semantic tags"
+    );
+    for tag in tags {
+        validate_semantic_tag(tag)?;
+    }
+    for pair in tags.windows(2) {
+        ensure!(
+            pair[0] < pair[1],
+            "semantic tags must be sorted and unique ({} before {})",
+            pair[0],
+            pair[1]
+        );
+    }
+    Ok(())
+}
+
+/// One Screen v2 cell: exactly the Screen v1 cell fields, plus the
+/// cell's semantic tags. This is an explicit, separate representation
+/// — `ScreenCell` itself gains no field, so strict Screen v1 decoding
+/// (which denies unknown fields) and v1 behaviour are untouched, and a
+/// v1 decoder rejects a tagged cell instead of silently dropping its
+/// tags.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaggedScreenCell {
+    /// One safe Unicode grapheme, or empty for a wide glyph's continuation cell.
+    pub symbol: String,
+    /// Xterm-256 foreground index; zero selects the presenter default.
+    pub fg: u8,
+    /// Xterm-256 background index; zero selects the presenter default.
+    pub bg: u8,
+    /// Whether the cell is bold.
+    pub bold: bool,
+    /// Terminal columns occupied by this grapheme (zero for continuation cells).
+    pub columns: u8,
+    /// Semantic intent, if supplied by the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<StyleToken>,
+    /// The cell's semantic tags, sorted and unique (see
+    /// [`validate_semantic_tag`]). Present (possibly empty) on every
+    /// v2 cell: the field is what makes the representation v2.
+    pub tags: Vec<String>,
+}
+
+impl TaggedScreenCell {
+    /// Build a tagged cell from a v1 cell and a tag set, validating the tags.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tag set is oversized, malformed,
+    /// unsorted, or duplicated.
+    pub fn new(cell: ScreenCell, tags: Vec<String>) -> Result<Self> {
+        validate_tag_set(&tags)?;
+        Ok(Self {
+            symbol: cell.symbol,
+            fg: cell.fg,
+            bg: cell.bg,
+            bold: cell.bold,
+            columns: cell.columns,
+            token: cell.token,
+            tags,
+        })
+    }
+
+    /// The Screen v1 cell this tagged cell projects to (tags dropped).
+    /// Only used after validation, for geometry/glyph checks and for
+    /// presenters that render the v1 projection.
+    #[must_use]
+    pub fn base_cell(&self) -> ScreenCell {
+        ScreenCell {
+            symbol: self.symbol.clone(),
+            fg: self.fg,
+            bg: self.bg,
+            bold: self.bold,
+            columns: self.columns,
+            token: self.token,
+        }
+    }
+
+    /// Validate this cell's tag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tag set is invalid (see [`Self::new`]).
+    pub fn validate(&self) -> Result<()> {
+        validate_tag_set(&self.tags)
+    }
+}
+
+/// A Screen v2 surface: a validated screen whose cells carry semantic
+/// tags. Construction goes through the same glyph/geometry validation
+/// as Screen v1 (via [`ScreenSurface::from_cells`] on the base cells),
+/// plus tag validation on every cell.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenSurfaceV2 {
+    /// Screen format version; always [`SCREEN_VERSION_TAGGED`] (2).
+    pub version: u8,
+    /// Number of terminal columns.
+    pub width: u16,
+    /// Number of terminal rows.
+    pub height: u16,
+    /// Normalized row-major tagged cells.
+    pub cells: Vec<TaggedScreenCell>,
+}
+
+impl ScreenSurfaceV2 {
+    /// Build a validated Screen v2 surface from tagged cells.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mismatched cell count, invalid glyphs/geometry (the
+    /// Screen v1 rules), and any invalid tag set.
+    pub fn from_tagged_cells(
+        width: usize,
+        height: usize,
+        cells: Vec<TaggedScreenCell>,
+    ) -> Result<Self> {
+        for cell in &cells {
+            cell.validate()?;
+        }
+        let base = ScreenSurface::from_cells(
+            width,
+            height,
+            cells.iter().map(TaggedScreenCell::base_cell).collect(),
+        )?;
+        Ok(Self {
+            version: SCREEN_VERSION_TAGGED,
+            width: base.width,
+            height: base.height,
+            cells,
+        })
+    }
+
+    /// Re-validate a decoded surface: version, dimensions, glyph and
+    /// geometry rules, and every cell's tag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on the first rule the surface breaks.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == SCREEN_VERSION_TAGGED,
+            "unsupported tagged screen version {}",
+            self.version
+        );
+        let rebuilt = Self::from_tagged_cells(
+            usize::from(self.width),
+            usize::from(self.height),
+            self.cells.clone(),
+        )?;
+        ensure!(
+            rebuilt.width == self.width && rebuilt.height == self.height,
+            "tagged screen dimensions do not match its cells"
+        );
+        Ok(())
+    }
+
+    /// The Screen v1 projection: same cells and geometry, version 1,
+    /// tags dropped. This is the only sanctioned way tags leave a
+    /// surface, and it is explicit at the call site.
+    #[must_use]
+    pub fn to_v1(&self) -> ScreenSurface {
+        ScreenSurface {
+            version: 1,
+            width: self.width,
+            height: self.height,
+            cells: self.cells.iter().map(TaggedScreenCell::base_cell).collect(),
+        }
+    }
+
+    /// Connect the four-rung fallback resolver
+    /// ([`crate::presentation_fallback`]) to one tagged cell: the
+    /// cell's tags are the resolver's source tags, and the result
+    /// carries the cell's own symbol alongside the selected rung and
+    /// art, so a renderer always has the cell's non-blank glyph
+    /// available at every rung (the resolver separately guarantees a
+    /// glyph-rung result is never blank or `?`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveCellError`] when `index` is out of bounds, the
+    /// cell's tags are invalid, or the plan's candidates claim tags or
+    /// filters the cell does not carry.
+    pub fn resolve_cell(
+        &self,
+        index: usize,
+        plan: &crate::presentation_fallback::FallbackPlan,
+        start_at: crate::presentation_policy::Rung,
+        source_filters: &[crate::presentation_asset::FilterRef],
+    ) -> Result<ResolvedTaggedCell, ResolveCellError> {
+        let cell = self
+            .cells
+            .get(index)
+            .ok_or(ResolveCellError::NoSuchCell(index))?;
+        cell.validate().map_err(ResolveCellError::InvalidTags)?;
+        let source_tags: std::collections::BTreeSet<String> = cell.tags.iter().cloned().collect();
+        let resolved = plan
+            .resolve(start_at, &source_tags, source_filters)
+            .map_err(ResolveCellError::Fallback)?;
+        Ok(ResolvedTaggedCell {
+            index,
+            symbol: cell.symbol.clone(),
+            tags: cell.tags.clone(),
+            rung: resolved.rung,
+            art: resolved.art,
+            dropped_tags: resolved.dropped_tags,
+            dropped_filters: resolved.dropped_filters,
+        })
+    }
+}
+
+/// Why connecting the resolver to a tagged cell failed.
+#[derive(Debug)]
+pub enum ResolveCellError {
+    /// The requested cell index is outside the surface.
+    NoSuchCell(usize),
+    /// The cell's tag set is invalid, so it cannot be resolved honestly.
+    InvalidTags(anyhow::Error),
+    /// The fallback plan did not validate against the cell's tags/filters.
+    Fallback(crate::presentation_fallback::FallbackError),
+}
+
+/// One tagged cell after fallback resolution: the rendering-path
+/// record a presenter consumes. `dropped_tags` / `dropped_filters` are
+/// the deterministic diagnostic (source order for filters, sorted
+/// order for tags); `symbol` is the cell's own glyph, carried at every
+/// rung so no rung renders blank for this cell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedTaggedCell {
+    /// Row-major index of the cell in its surface.
+    pub index: usize,
+    /// The cell's own glyph (non-empty for a headed cell).
+    pub symbol: String,
+    /// The cell's semantic tags, as authored.
+    pub tags: Vec<String>,
+    /// The rung the resolver selected.
+    pub rung: crate::presentation_policy::Rung,
+    /// The authored output for that rung.
+    pub art: crate::presentation_fallback::RenderedArt,
+    /// Tags no longer represented at the selected rung, sorted.
+    pub dropped_tags: Vec<String>,
+    /// Filter occurrences no longer applied at the selected rung, in source order.
+    pub dropped_filters: Vec<crate::presentation_asset::FilterRef>,
+}
+
+/// One maximal run of consecutive row-major tagged cells that changed
+/// (the Screen v2 counterpart of [`CellRun`]).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaggedCellRun {
+    /// Row-major index of the run's first cell.
+    pub start: u32,
+    /// The replacement tagged cells, in row-major order.
+    pub cells: Vec<TaggedScreenCell>,
+}
+
+/// A cell-run delta between two consecutive Screen v2 surfaces. Patch
+/// application validates every incoming cell's tags, so a patch can
+/// never smuggle an unvalidated tag set into a surface.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenPatchV2 {
+    /// Screen format version; always [`SCREEN_VERSION_TAGGED`] (2).
+    pub version: u8,
+    /// Number of terminal columns; matches the surfaces it patches.
+    pub width: u16,
+    /// Number of terminal rows; matches the surfaces it patches.
+    pub height: u16,
+    /// The changed tagged-cell runs, in row-major order, non-overlapping.
+    pub runs: Vec<TaggedCellRun>,
+}
+
+impl ScreenPatchV2 {
+    /// Validate the patch shape: v2 version and every cell's tag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a wrong version or an invalid tag set.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == SCREEN_VERSION_TAGGED,
+            "unsupported tagged screen patch version {}",
+            self.version
+        );
+        for run in &self.runs {
+            for cell in &run.cells {
+                cell.validate()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The patch that turns `prev` into `next`, or `None` when the
+    /// surfaces do not share version and dimensions (the caller sends
+    /// a full frame instead), mirroring [`ScreenPatch::diff`].
+    #[must_use]
+    pub fn diff(prev: &ScreenSurfaceV2, next: &ScreenSurfaceV2) -> Option<Self> {
+        if prev.version != next.version || prev.width != next.width || prev.height != next.height {
+            return None;
+        }
+        let mut runs = Vec::new();
+        let mut current: Option<(usize, Vec<TaggedScreenCell>)> = None;
+        for (index, (before, after)) in prev.cells.iter().zip(&next.cells).enumerate() {
+            if before == after {
+                if let Some((start, cells)) = current.take() {
+                    runs.push(TaggedCellRun {
+                        start: u32::try_from(start).unwrap_or(u32::MAX),
+                        cells,
+                    });
+                }
+                continue;
+            }
+            match &mut current {
+                Some((_, cells)) => cells.push(after.clone()),
+                None => current = Some((index, vec![after.clone()])),
+            }
+        }
+        if let Some((start, cells)) = current.take() {
+            runs.push(TaggedCellRun {
+                start: u32::try_from(start).unwrap_or(u32::MAX),
+                cells,
+            });
+        }
+        Some(Self {
+            version: next.version,
+            width: next.width,
+            height: next.height,
+            runs,
+        })
+    }
+
+    /// The Screen v2 surface this patch produces from `prev`. Returns
+    /// `None` when the patch does not belong to `prev`, a run is out
+    /// of order/overlapping/out of bounds, or any incoming cell's tag
+    /// set is invalid — the caller falls back to a full frame.
+    #[must_use]
+    pub fn apply(&self, prev: &ScreenSurfaceV2) -> Option<ScreenSurfaceV2> {
+        if self.validate().is_err()
+            || self.version != prev.version
+            || self.width != prev.width
+            || self.height != prev.height
+        {
+            return None;
+        }
+        let mut cells = prev.cells.clone();
+        let mut covered_until = 0usize;
+        for run in &self.runs {
+            let start = usize::try_from(run.start).ok()?;
+            let end = start.checked_add(run.cells.len())?;
+            if start < covered_until || end > cells.len() {
+                return None;
+            }
+            cells[start..end].clone_from_slice(&run.cells);
+            covered_until = end;
+        }
+        ScreenSurfaceV2::from_tagged_cells(usize::from(prev.width), usize::from(prev.height), cells)
+            .ok()
+    }
+
+    /// Whether the patch changes nothing.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaggedScreenPayload {
+    kind: String,
+    version: u8,
+    width: usize,
+    height: usize,
+    cells: Vec<TaggedScreenCell>,
+}
+
+/// Parse the Screen v2 tagged-cell document
+/// (`{"kind":"screen","version":2,"width":…,"height":…,"cells":[…]}`),
+/// the explicit JSON form of [`ScreenSurfaceV2`].
+///
+/// Returns `Ok(None)` for a document that is not a screen document at
+/// all (the legacy plain-text path, exactly as [`parse_surface`]).
+/// A screen document that is not a valid v2 tagged surface — wrong
+/// version (including a v1 document), unknown fields, invalid tags —
+/// is an error, never a silent downgrade: Screen v1 documents keep
+/// going through [`parse_surface`], which conversely rejects v2.
+///
+/// # Errors
+///
+/// Returns an error on a malformed or invalid screen document.
+pub fn parse_tagged_surface(data: &str) -> Result<Option<ScreenSurfaceV2>> {
+    let value: Value = match crate::json_unique::parse_json_without_duplicate_keys(data) {
+        Ok(value) => value,
+        Err(err) => {
+            if err.to_string().contains("duplicate JSON object key") {
+                let lenient: Option<Value> = serde_json::from_str(data).ok();
+                let kind = lenient
+                    .as_ref()
+                    .and_then(|value| value.get("kind"))
+                    .and_then(Value::as_str);
+                if kind == Some("screen") || top_level_kind_is_duplicated(data) {
+                    return Err(err).context("duplicate JSON object key in tagged screen");
+                }
+            }
+            return Ok(None);
+        }
+    };
+    if value.get("kind").and_then(Value::as_str) != Some("screen") {
+        return Ok(None);
+    }
+    let payload: TaggedScreenPayload =
+        serde_json::from_value(value).context("decode world tagged screen presentation")?;
+    ensure!(payload.kind == "screen", "invalid world screen kind");
+    ensure!(
+        payload.version == SCREEN_VERSION_TAGGED,
+        "unsupported world tagged screen version {}",
+        payload.version
+    );
+    let surface = ScreenSurfaceV2::from_tagged_cells(payload.width, payload.height, payload.cells)?;
+    Ok(Some(surface))
 }
 
 /// Semantic intent retained for adapters, not guest-supplied markup.
@@ -1374,8 +2243,10 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text" | "form" | "scene" | "audio"))
-                    || top_level_kind_is_duplicated(data)
+                if matches!(
+                    kind,
+                    Some("screen" | "text" | "form" | "scene" | "audio" | "widget" | "media")
+                ) || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
                 }
@@ -1414,6 +2285,26 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world audio presentation")?;
             audio.validate()?;
             return Ok(Some(WorldSurface::Audio(audio)));
+        }
+        Some("widget") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let widget: WidgetSurface =
+                serde_json::from_value(value).context("decode world widget presentation")?;
+            widget.validate()?;
+            return Ok(Some(WorldSurface::Widget(widget)));
+        }
+        Some("media") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let media: MediaSurface =
+                serde_json::from_value(value).context("decode world media presentation")?;
+            media.validate()?;
+            return Ok(Some(WorldSurface::Media(media)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -1626,6 +2517,113 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
     })))
 }
 
+/// One grapheme-addressed cell of a screen's logical grid: the unit the
+/// primary-mode painter contract (`Term.paint_primary`, #14861) diffs and
+/// paints. A wide glyph appears once, at its head cell; the stored
+/// continuation cell is presentation detail, not a logical cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogicalCell {
+    symbol: String,
+    fg: u8,
+    bg: u8,
+    bold: bool,
+}
+
+impl Default for LogicalCell {
+    fn default() -> Self {
+        Self {
+            symbol: " ".to_owned(),
+            fg: 0,
+            bg: 0,
+            bold: false,
+        }
+    }
+}
+
+/// The byte string that paints `next` over `previous` in primary mode,
+/// mirroring `Term.paint_primary` in
+/// `pkgs/id/examples/roc-world/Term.roc` exactly: the union grid is
+/// blank-padded, changed cells fold into maximal same-style runs per
+/// row, each run is cursor-addressed and either erase-in-line (a run of
+/// default-styled spaces reaching the frame's last column) or a reset
+/// plus per-attribute SGR sequences plus the run text, and a non-empty
+/// paint ends with one reset. Identical frames paint as the empty
+/// string. Both implementations are pinned to the shared fixtures in
+/// `pkgs/id/test-data/paint-primary-fixtures.json`.
+fn paint_primary_logical(previous: &[Vec<LogicalCell>], next: &[Vec<LogicalCell>]) -> String {
+    fn logical_width(grid: &[Vec<LogicalCell>]) -> usize {
+        grid.iter().map(Vec::len).max().unwrap_or(0)
+    }
+    let blank = LogicalCell::default();
+    let height = previous.len().max(next.len());
+    let union_width = logical_width(previous).max(logical_width(next));
+    let next_width = logical_width(next);
+    let mut output = String::new();
+    let mut run: Vec<&LogicalCell> = Vec::new();
+    let mut run_start = (0usize, 0usize);
+    for y in 0..height {
+        for x in 0..union_width {
+            let before = previous.get(y).and_then(|row| row.get(x)).unwrap_or(&blank);
+            let after = next.get(y).and_then(|row| row.get(x)).unwrap_or(&blank);
+            if before == after {
+                continue;
+            }
+            let extends = run.first().is_some_and(|first| {
+                run_start.0 == y
+                    && run_start.1 + run.len() == x
+                    && first.fg == after.fg
+                    && first.bg == after.bg
+                    && first.bold == after.bold
+            });
+            if !extends {
+                emit_primary_run(&mut output, &run, run_start, next_width);
+                run.clear();
+                run_start = (y, x);
+            }
+            run.push(after);
+        }
+    }
+    emit_primary_run(&mut output, &run, run_start, next_width);
+    if !output.is_empty() {
+        output.push_str("\x1b[0m");
+    }
+    output
+}
+
+/// Append one run of a primary-mode paint: its cursor address, then
+/// either erase-in-line or the reset/SGR/text form. Mirrors
+/// `Term.emit_run`.
+fn emit_primary_run(
+    output: &mut String,
+    run: &[&LogicalCell],
+    (y, x): (usize, usize),
+    next_width: usize,
+) {
+    let Some(first) = run.first() else {
+        return;
+    };
+    output.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+    let default_style = first.fg == 0 && first.bg == 0 && !first.bold;
+    let all_spaces = run.iter().all(|cell| cell.symbol == " ");
+    if all_spaces && default_style && x + run.len() == next_width {
+        output.push_str("\x1b[K");
+        return;
+    }
+    output.push_str("\x1b[0m");
+    if first.bold {
+        output.push_str("\x1b[1m");
+    }
+    if first.fg != 0 {
+        output.push_str(&format!("\x1b[38;5;{}m", first.fg));
+    }
+    if first.bg != 0 {
+        output.push_str(&format!("\x1b[48;5;{}m", first.bg));
+    }
+    for cell in run {
+        output.push_str(&cell.symbol);
+    }
+}
+
 impl ScreenSurface {
     /// The screen's text projection: one line per row, cell symbols in
     /// order (wide-glyph continuation cells contribute nothing), trailing
@@ -1729,6 +2727,75 @@ impl ScreenSurface {
             write!(&mut output, "\x1b[{};{}H", height, width).ok()?;
         }
         Some(output)
+    }
+
+    /// Paint this frame over `previous` in primary mode: no alternate
+    /// screen, the previous frame stays in the terminal's scrollback,
+    /// and each transition is a sequence of cursor-addressed
+    /// erase/rewrite runs. This is the host-side implementation of the
+    /// slice-1 harness contract `Term.paint_primary`
+    /// (`pkgs/id/examples/roc-world/Term.roc`, #14861 D2); the two
+    /// implementations are pinned to the same shared frame fixtures
+    /// (`pkgs/id/test-data/paint-primary-fixtures.json`) by the tests in
+    /// this file and by `scripts/term-parity-test.sh`, so they cannot
+    /// drift.
+    ///
+    /// Frames are compared as logical grids — one cell per grapheme, a
+    /// wide glyph occupying its head cell only — because the contract's
+    /// screens are grapheme-addressed; a stored continuation cell never
+    /// paints on its own. Differing dimensions are blank-padded to the
+    /// union grid, as in `Screen.diff_cells`; hosts answer a size
+    /// change with [`ScreenSurface::paint_primary_full`] instead.
+    /// Returns `None` when either screen is invalid.
+    pub fn paint_primary(&self, previous: &Self) -> Option<String> {
+        if !self.is_valid() || !previous.is_valid() {
+            return None;
+        }
+        Some(paint_primary_logical(
+            &previous.logical_grid(),
+            &self.logical_grid(),
+        ))
+    }
+
+    /// Erase the visible page and paint this frame in primary mode from
+    /// a blank screen: the host-side `Term.paint_primary_full`. Returns
+    /// `None` when the screen is invalid.
+    pub fn paint_primary_full(&self) -> Option<String> {
+        if !self.is_valid() {
+            return None;
+        }
+        let grid = self.logical_grid();
+        // The blank screen shares the frame's logical shape row for
+        // row, so the union grid is exactly the frame's own grid.
+        let blank: Vec<Vec<LogicalCell>> = grid
+            .iter()
+            .map(|row| vec![LogicalCell::default(); row.len()])
+            .collect();
+        Some(format!("\x1b[2J{}", paint_primary_logical(&blank, &grid)))
+    }
+
+    /// This screen as a logical grid: one [`LogicalCell`] per grapheme,
+    /// wide glyphs represented by their head cell alone.
+    fn logical_grid(&self) -> Vec<Vec<LogicalCell>> {
+        let width = usize::from(self.width);
+        let mut rows = Vec::with_capacity(usize::from(self.height));
+        for y in 0..usize::from(self.height) {
+            let mut row = Vec::new();
+            for x in 0..width {
+                let cell = &self.cells[y * width + x];
+                if cell.columns == 0 {
+                    continue;
+                }
+                row.push(LogicalCell {
+                    symbol: cell.symbol.clone(),
+                    fg: cell.fg,
+                    bg: cell.bg,
+                    bold: cell.bold,
+                });
+            }
+            rows.push(row);
+        }
+        rows
     }
 
     fn is_valid(&self) -> bool {
@@ -1870,6 +2937,160 @@ mod tests {
 
     fn grid(width: usize, height: usize, fill: &str) -> ScreenSurface {
         ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
+    }
+
+    #[derive(Deserialize)]
+    struct PaintFixtures {
+        cases: Vec<PaintFixtureCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct PaintFixtureCase {
+        name: String,
+        width: usize,
+        height: usize,
+        #[serde(default)]
+        next_width: Option<usize>,
+        #[serde(default)]
+        next_height: Option<usize>,
+        prev: Vec<PaintFixtureWrite>,
+        next: Vec<PaintFixtureWrite>,
+        paint: String,
+        full: String,
+    }
+
+    #[derive(Deserialize)]
+    struct PaintFixtureWrite {
+        x: usize,
+        y: usize,
+        text: String,
+        #[serde(default)]
+        fg: u8,
+        #[serde(default)]
+        bg: u8,
+        #[serde(default)]
+        bold: bool,
+    }
+
+    /// Build a stored screen from a fixture case: apply the put-text
+    /// writes grapheme-wise to a blank logical grid, then expand wide
+    /// graphemes into head + continuation stored cells, exactly as a
+    /// parsed guest frame stores them.
+    fn paint_fixture_screen(
+        width: usize,
+        height: usize,
+        writes: &[PaintFixtureWrite],
+    ) -> ScreenSurface {
+        let mut logical = vec![vec![LogicalCell::default(); width]; height];
+        for write in writes {
+            for (offset, grapheme) in
+                UnicodeSegmentation::graphemes(write.text.as_str(), true).enumerate()
+            {
+                let (x, y) = (write.x + offset, write.y);
+                if x < width && y < height {
+                    logical[y][x] = LogicalCell {
+                        symbol: grapheme.to_owned(),
+                        fg: write.fg,
+                        bg: write.bg,
+                        bold: write.bold,
+                    };
+                }
+            }
+        }
+        let mut stored_width = 0usize;
+        let mut rows = Vec::with_capacity(height);
+        for row in &logical {
+            let mut stored = Vec::new();
+            for logical_cell in row {
+                let columns = u8::try_from(UnicodeWidthStr::width(logical_cell.symbol.as_str()))
+                    .unwrap_or(1)
+                    .max(1);
+                stored.push(ScreenCell {
+                    symbol: logical_cell.symbol.clone(),
+                    fg: logical_cell.fg,
+                    bg: logical_cell.bg,
+                    bold: logical_cell.bold,
+                    columns,
+                    token: None,
+                });
+                for _ in 1..columns {
+                    stored.push(ScreenCell {
+                        symbol: String::new(),
+                        fg: logical_cell.fg,
+                        bg: logical_cell.bg,
+                        bold: logical_cell.bold,
+                        columns: 0,
+                        token: None,
+                    });
+                }
+            }
+            stored_width = stored_width.max(stored.len());
+            rows.push(stored);
+        }
+        let mut cells = Vec::with_capacity(stored_width * height);
+        for mut row in rows {
+            row.resize(stored_width, cell(" "));
+            cells.extend(row);
+        }
+        ScreenSurface {
+            version: 1,
+            width: u16::try_from(stored_width).unwrap(),
+            height: u16::try_from(height).unwrap(),
+            cells,
+        }
+    }
+
+    /// The primary-mode painter is the host half of the `Term.roc`
+    /// harness contract (#14861 slice 2): both implementations must
+    /// produce the exact bytes pinned in the shared fixtures, which
+    /// `scripts/term-parity-test.sh` also generates Roc expects from.
+    #[test]
+    fn paint_primary_matches_the_shared_term_fixtures() {
+        let fixtures: PaintFixtures = serde_json::from_str(include_str!(
+            "../../../test-data/paint-primary-fixtures.json"
+        ))
+        .unwrap();
+        assert!(
+            fixtures.cases.len() >= 10,
+            "paint fixture corpus shrank to {} cases",
+            fixtures.cases.len()
+        );
+        for case in &fixtures.cases {
+            let previous = paint_fixture_screen(case.width, case.height, &case.prev);
+            let next = paint_fixture_screen(
+                case.next_width.unwrap_or(case.width),
+                case.next_height.unwrap_or(case.height),
+                &case.next,
+            );
+            assert_eq!(
+                next.paint_primary(&previous).as_deref(),
+                Some(case.paint.as_str()),
+                "case {}: transition bytes",
+                case.name
+            );
+            assert_eq!(
+                next.paint_primary_full().as_deref(),
+                Some(case.full.as_str()),
+                "case {}: full repaint bytes",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn paint_primary_refuses_invalid_screens() {
+        let valid = grid(2, 1, " ");
+        // A stored cell count that disagrees with the declared
+        // dimensions is not a valid screen.
+        let invalid = ScreenSurface {
+            version: 1,
+            width: 2,
+            height: 1,
+            cells: vec![cell(" ")],
+        };
+        assert_eq!(valid.paint_primary(&invalid), None);
+        assert_eq!(invalid.paint_primary(&valid), None);
+        assert_eq!(invalid.paint_primary_full(), None);
     }
 
     fn codec_patch() -> ScreenPatch {
@@ -2424,39 +3645,45 @@ mod tests {
             serde_json::json!({"kind": "scene", "version": 1, "nodes": nodes}).to_string()
         };
         // Bad versions.
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
-                .to_string()
-        )
-        .is_err());
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
         // Unknown fields, top level and per node (deny_unknown_fields).
         assert!(parse_surface(
             &serde_json::json!({"kind": "scene", "version": 1, "html": "<b>x</b>", "nodes": [node("a")]})
                 .to_string()
         )
         .is_err());
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
-             "size": [1, 1, 1], "onclick": "run()"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
+                 "size": [1, 1, 1], "onclick": "run()"}
+            ])))
+            .is_err()
+        );
         // Unknown shape: the shape set is closed.
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
+            ])))
+            .is_err()
+        );
         // Empty and duplicate-id node sets.
         assert!(parse_surface(&scene(serde_json::json!([]))).is_err());
         assert!(parse_surface(&scene(serde_json::json!([node("a"), node("a")]))).is_err());
         // Too many nodes: the bound is 256 (MAX_SCENE_NODES).
-        let many: Vec<Value> = (0..257)
-            .map(|index| node(&format!("n{index}")))
-            .collect();
+        let many: Vec<Value> = (0..257).map(|index| node(&format!("n{index}"))).collect();
         assert!(parse_surface(&scene(Value::Array(many))).is_err());
         // Unsafe label text (a JSON-escaped ESC).
         assert!(parse_surface(&scene(serde_json::json!([
@@ -2465,14 +3692,18 @@ mod tests {
         .is_err());
         // Geometry bounds: size must be positive, position and size
         // components stay within 1_000_000 (MAX_SCENE_EXTENT).
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
-        ])))
-        .is_err());
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
+            ])))
+            .is_err()
+        );
         assert!(parse_surface(&scene(serde_json::json!([
             {"id": "a", "label": "A", "shape": "box", "position": [1000001, 0, 0], "size": [1, 1, 1]}
         ])))
@@ -2573,16 +3804,18 @@ mod tests {
             serde_json::json!({"kind": "audio", "version": 1, "cues": cues}).to_string()
         };
         // Bad versions.
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]})
-                .to_string()
-        )
-        .is_err());
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]})
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]}).to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]}).to_string()
+            )
+            .is_err()
+        );
         // Unknown fields, top level and per cue (deny_unknown_fields) —
         // in particular a cue carries no embedded bytes or URL.
         assert!(parse_surface(
@@ -2590,16 +3823,20 @@ mod tests {
                 .to_string()
         )
         .is_err());
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
-             "repeat": false, "data": "AAAB"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
+                 "repeat": false, "data": "AAAB"}
+            ])))
+            .is_err()
+        );
         // Unknown format: the format set is closed.
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
+            ])))
+            .is_err()
+        );
         // Empty and duplicate-id cue sets.
         assert!(parse_surface(&audio(serde_json::json!([]))).is_err());
         assert!(parse_surface(&audio(serde_json::json!([cue("a"), cue("a")]))).is_err());
@@ -2613,14 +3850,18 @@ mod tests {
         .is_err());
         // Duration bounds: a cue lasts 1..=3_600_000 ms
         // (MAX_AUDIO_DURATION_MS, one hour).
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
-        ])))
-        .is_err());
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
+            ])))
+            .is_err()
+        );
         // Oversize document: the serialized cap is 65536 bytes
         // (MAX_AUDIO_BYTES); a single huge label trips it.
         assert!(parse_surface(&audio(serde_json::json!([
@@ -2630,16 +3871,313 @@ mod tests {
     }
 
     #[test]
+    fn media_surface_parses_projects_and_round_trips() {
+        // Oracle: #13679 — a versioned media document is accepted by
+        // host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "media", "version": 1, "title": "Harbor Media",
+            "items": [
+                {"id": "sunset", "label": "Sunset", "sort": "image",
+                 "artifact": "artifact_sunset", "width": 800, "height": 600},
+                {"id": "theme", "label": "Theme", "sort": "audio",
+                 "artifact": "artifact_theme", "duration_ms": 12000},
+                {"id": "clip", "label": "Clip", "sort": "video",
+                 "artifact": "artifact_clip", "width": 640, "height": 360,
+                 "duration_ms": 5000}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Media\n1. Sunset (image; 800x600)\n2. Theme (audio; 12000 ms)\n3. Clip (video; 640x360; 5000 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"media","version":1,"items":[{"id":"a","label":"A","sort":"video","artifact":"artifact_a"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Media\n1. A (video)");
+    }
+
+    #[test]
+    fn media_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #13679 criterion — malformed or oversized media
+        // surfaces are refused by host validation (an Err from
+        // parse_surface, which the host turns into an error frame),
+        // never silently dropped to the legacy text path and never
+        // accepted.
+        let item = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "sort": "video",
+                "artifact": "artifact_a"})
+        };
+        let media = |items: Value| {
+            serde_json::json!({"kind": "media", "version": 1, "items": items}).to_string()
+        };
+        // Bad versions.
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "media", "version": 2, "items": [item("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "media", "version": 0, "items": [item("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        // Unknown fields, top level and per item (deny_unknown_fields) —
+        // in particular an item carries no embedded bytes, URL or mime
+        // string.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "media", "version": 1, "src": "x.mp4", "items": [item("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact_a",
+                 "data": "AAAB"}
+            ])))
+            .is_err()
+        );
+        // Unknown sort: the sort set is closed.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "gif", "artifact": "artifact_a"}
+            ])))
+            .is_err()
+        );
+        // Empty and duplicate-id item sets.
+        assert!(parse_surface(&media(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([item("a"), item("a")]))).is_err());
+        // Too many items: the bound is 64 (MAX_MEDIA_ITEMS).
+        let many: Vec<Value> = (0..65).map(|index| item(&format!("i{index}"))).collect();
+        assert!(parse_surface(&media(Value::Array(many))).is_err());
+        // Unsafe artifact id.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact a!"}
+            ])))
+            .is_err()
+        );
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A\u{001b}[2J", "sort": "video", "artifact": "artifact_a"}
+            ])))
+            .is_err()
+        );
+        // Half-given dimensions: width and height come together.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "width": 800}
+            ])))
+            .is_err()
+        );
+        // Dimensions out of bounds: 1..=16384 (MAX_MEDIA_DIMENSION).
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "width": 0, "height": 600}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "width": 16385, "height": 600}
+            ])))
+            .is_err()
+        );
+        // Dimensions on audio items are refused.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "audio", "artifact": "artifact_a",
+                 "width": 800, "height": 600}
+            ])))
+            .is_err()
+        );
+        // Duration bounds: an item lasts 1..=86_400_000 ms
+        // (MAX_MEDIA_DURATION_MS, 24 hours).
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact_a",
+                 "duration_ms": 0}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact_a",
+                 "duration_ms": 86400001}
+            ])))
+            .is_err()
+        );
+        // Duration on image items is refused.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "duration_ms": 1000}
+            ])))
+            .is_err()
+        );
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_MEDIA_SURFACE_BYTES); a single huge label trips it.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "x".repeat(70_000), "sort": "video", "artifact": "artifact_a"}
+            ])))
+            .is_err()
+        );
+        // Duplicate JSON key: a media document with a duplicate key
+        // is rejected, never last-wins collapsed.
+        assert!(
+            parse_surface(
+                r#"{"kind":"media","version":1,"version":99,"items":[{"id":"a","label":"A","sort":"video","artifact":"artifact_a"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn widget_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1c — a versioned widget document is
+        // accepted by host validation, projects deterministically to
+        // text (the old-shell fallback), and round-trips through
+        // serialization.
+        let document = serde_json::json!({
+            "kind": "widget", "version": 1, "title": "Harbor Controls",
+            "controls": [
+                {"kind": "button", "id": "start", "label": "Start",
+                 "action": "start"},
+                {"kind": "toggle", "id": "lights", "label": "Lights",
+                 "action": "lights", "on": true},
+                {"kind": "link", "id": "enter", "label": "Enter the harbor",
+                 "action": "enter_harbor"}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Controls\n1. Start (button; action start)\n2. Lights (toggle; on; action lights)\n3. Enter the harbor (link; action enter_harbor)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is,
+        // and a display-only button names no action.
+        let untitled = parse_surface(
+            r#"{"kind":"widget","version":1,"controls":[{"kind":"button","id":"a","label":"A"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Widgets\n1. A (button)");
+    }
+
+    #[test]
+    fn widget_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich
+        // surfaces are refused by host validation (an Err from
+        // parse_surface, which the host turns into an error frame),
+        // never silently dropped to the legacy text path and never
+        // accepted.
+        let button = |id: &str| serde_json::json!({"kind": "button", "id": id, "label": "A", "action": "go"});
+        let widget = |controls: Value| {
+            serde_json::json!({"kind": "widget", "version": 1, "controls": controls}).to_string()
+        };
+        // Bad versions.
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "widget", "version": 2, "controls": [button("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "widget", "version": 0, "controls": [button("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        // Unknown fields, top level and per control
+        // (deny_unknown_fields) — in particular a control carries no
+        // URL or script.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "widget", "version": 1, "href": "https://example.invalid", "controls": [button("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A", "action": "go",
+                 "script": "run()"}
+            ])))
+            .is_err()
+        );
+        // Unknown control kind: the kind set is closed.
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "slider", "id": "a", "label": "A", "action": "go"}
+            ])))
+            .is_err()
+        );
+        // A link names no action: following it must deliver one.
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "link", "id": "a", "label": "A"}
+            ])))
+            .is_err()
+        );
+        // Empty and duplicate-id control sets.
+        assert!(parse_surface(&widget(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&widget(serde_json::json!([button("a"), button("a")]))).is_err());
+        // Too many controls: the bound is 64 (MAX_WIDGET_CONTROLS).
+        let many: Vec<Value> = (0..65).map(|index| button(&format!("c{index}"))).collect();
+        assert!(parse_surface(&widget(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC) and an unsafe action
+        // id (a URL is not an action id).
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A\u{001b}[2J", "action": "go"}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A",
+                 "action": "https://example.invalid"}
+            ])))
+            .is_err()
+        );
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_WIDGET_BYTES); a single huge label trips it.
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "x".repeat(70_000), "action": "go"}
+            ])))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
         // Forward-compat seam (#12657 triage): a rich kind this host does
         // not know is not an error — the document drops to the legacy
         // plain-text path, so a new-kind document is safe on an old host.
-        // (The widget kind lands in slice 1c; today it is unknown here,
-        // as is any kind no slice has named.)
-        assert_eq!(
-            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
-            None
-        );
+        // (The widget kind landed in slice 1c: a document that names
+        // the kind but fails validation — this one names no
+        // controls — is refused, not dropped to the legacy path.)
+        assert!(parse_surface(r#"{"kind":"widget","version":1}"#).is_err());
         assert_eq!(
             parse_surface(r#"{"kind":"hologram","version":1}"#).unwrap(),
             None
@@ -3123,5 +4661,267 @@ mod tests {
         let once = serde_json::to_string(&first).unwrap();
         assert_eq!(serde_json::to_string(&second).unwrap(), once);
         assert_eq!(serde_json::to_string(&first).unwrap(), once);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tagged_screen_tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::presentation_fallback::{FallbackCandidate, FallbackPlan, RenderedArt};
+    use crate::presentation_policy::Rung;
+
+    fn plain(symbol: &str) -> ScreenCell {
+        ScreenCell {
+            symbol: symbol.to_owned(),
+            fg: 0,
+            bg: 0,
+            bold: false,
+            columns: 1,
+            token: None,
+        }
+    }
+
+    fn blue_cape_tags() -> Vec<String> {
+        vec![
+            "sys.color.blue".to_owned(),
+            "sys.effect.sparkle".to_owned(),
+            "world.appearance.cape".to_owned(),
+        ]
+    }
+
+    fn blue_cape_surface() -> ScreenSurfaceV2 {
+        ScreenSurfaceV2::from_tagged_cells(
+            2,
+            1,
+            vec![
+                TaggedScreenCell::new(plain("C"), blue_cape_tags()).unwrap(),
+                TaggedScreenCell::new(plain(" "), Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn blue_cape_plan() -> FallbackPlan {
+        let asset = |id: &str, tags: &[&str], filters: &[&str]| {
+            FallbackCandidate::asset(
+                id.parse().unwrap(),
+                tags.iter().map(|t| (*t).to_owned()).collect(),
+                filters
+                    .iter()
+                    .map(|f| f.parse().unwrap())
+                    .collect::<Vec<crate::presentation_asset::FilterRef>>(),
+            )
+        };
+        FallbackPlan {
+            rich: Some(asset(
+                "hero@1",
+                &[
+                    "sys.color.blue",
+                    "sys.effect.sparkle",
+                    "world.appearance.cape",
+                ],
+                &["fx/sparkle@1"],
+            )),
+            static_substitute: Some(asset(
+                "hero-static@1",
+                &[
+                    "sys.color.blue",
+                    "sys.effect.sparkle",
+                    "world.appearance.cape",
+                ],
+                &[],
+            )),
+            tileset: Some(asset(
+                "tiles.blue-cape@1",
+                &["sys.color.blue", "world.appearance.cape"],
+                &[],
+            )),
+            glyph: FallbackCandidate::glyph("C", BTreeSet::new(), vec![]).unwrap(),
+        }
+    }
+
+    #[test]
+    fn semantic_tag_validation_accepts_namespaced_and_rejects_the_rest() {
+        for good in [
+            "sys.color.blue",
+            "world.appearance.cape",
+            "sys.effect.sparkle",
+            "world.a1.b_2",
+        ] {
+            assert!(validate_semantic_tag(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "blue",
+            "sys",
+            "other.color.blue",
+            "sys.Color.blue",
+            "sys..blue",
+            "sys.1blue",
+            "sys.color.blue ",
+            "sys.color.blue-cape",
+        ] {
+            assert!(
+                validate_semantic_tag(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        // Unsorted or duplicated tag sets have no single wire form.
+        assert!(
+            TaggedScreenCell::new(
+                plain("C"),
+                vec![
+                    "world.appearance.cape".to_owned(),
+                    "sys.color.blue".to_owned()
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            TaggedScreenCell::new(
+                plain("C"),
+                vec!["sys.color.blue".to_owned(), "sys.color.blue".to_owned()],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn screen_v2_round_trips_and_v1_paths_stay_strict() {
+        let surface = blue_cape_surface();
+        assert_eq!(surface.version, SCREEN_VERSION_TAGGED);
+        let json = serde_json::to_string(&surface).unwrap();
+        let decoded: ScreenSurfaceV2 = serde_json::from_str(&json).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(decoded, surface);
+        assert_eq!(decoded.cells[0].tags, blue_cape_tags());
+
+        // The explicit JSON document form parses as v2...
+        let doc = format!(
+            r#"{{"kind":"screen","version":2,"width":2,"height":1,"cells":{}}}"#,
+            serde_json::to_string(&surface.cells).unwrap()
+        );
+        assert_eq!(parse_tagged_surface(&doc).unwrap(), Some(surface.clone()));
+        // ...a v1 document is not a tagged surface...
+        assert!(
+            parse_tagged_surface(
+                r#"{"kind":"screen","version":1,"width":1,"height":1,"rows":["x"]}"#
+            )
+            .is_err()
+        );
+        // ...and the v1 parser still rejects a v2 document outright
+        // instead of dropping its tags.
+        assert!(parse_surface(&doc).is_err());
+        // A non-screen document stays on the legacy path.
+        assert_eq!(parse_tagged_surface("hello").unwrap(), None);
+        // The v1 projection is explicit and tag-free.
+        let v1 = surface.to_v1();
+        assert_eq!(v1.version, 1);
+        assert_eq!(v1.cells[0].symbol, "C");
+    }
+
+    #[test]
+    fn screen_v2_patch_diff_apply_preserves_tags_and_rejects_bad_tags() {
+        let before = blue_cape_surface();
+        let mut changed_cells = before.cells.clone();
+        changed_cells[1] =
+            TaggedScreenCell::new(plain("x"), vec!["sys.color.blue".to_owned()]).unwrap();
+        let after = ScreenSurfaceV2::from_tagged_cells(2, 1, changed_cells).unwrap();
+        let patch = ScreenPatchV2::diff(&before, &after).unwrap();
+        assert!(!patch.is_empty());
+        assert_eq!(patch.apply(&before), Some(after.clone()));
+        assert_eq!(patch.apply(&after), Some(after));
+
+        // A hand-built patch carrying an invalid tag set is refused,
+        // not applied.
+        let bad = ScreenPatchV2 {
+            version: SCREEN_VERSION_TAGGED,
+            width: 2,
+            height: 1,
+            runs: vec![TaggedCellRun {
+                start: 1,
+                cells: vec![TaggedScreenCell {
+                    symbol: "x".to_owned(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                    token: None,
+                    tags: vec!["not-namespaced".to_owned()],
+                }],
+            }],
+        };
+        assert_eq!(bad.apply(&before), None);
+    }
+
+    #[test]
+    fn resolver_connects_to_tagged_cells_blue_cape_at_every_rung() {
+        let surface = blue_cape_surface();
+        let plan = blue_cape_plan();
+        let filters: Vec<crate::presentation_asset::FilterRef> =
+            vec!["fx/sparkle@1".parse().unwrap()];
+        let expected: [(Rung, Vec<&str>, usize); 4] = [
+            (Rung::Rich, Vec::new(), 0),
+            (Rung::Static, Vec::new(), 1),
+            (Rung::Tileset, vec!["sys.effect.sparkle"], 1),
+            (
+                Rung::Glyph,
+                vec![
+                    "sys.color.blue",
+                    "sys.effect.sparkle",
+                    "world.appearance.cape",
+                ],
+                1,
+            ),
+        ];
+        for (start, dropped, dropped_filter_count) in expected {
+            let resolved = surface.resolve_cell(0, &plan, start, &filters).unwrap();
+            assert_eq!(resolved.rung, start);
+            assert_eq!(resolved.symbol, "C", "non-blank glyph at rung {start:?}");
+            assert!(!resolved.symbol.trim().is_empty() && resolved.symbol != "?");
+            assert_eq!(
+                resolved.dropped_tags,
+                dropped.iter().map(|t| (*t).to_owned()).collect::<Vec<_>>()
+            );
+            assert_eq!(resolved.dropped_filters.len(), dropped_filter_count);
+            if start == Rung::Glyph {
+                assert!(matches!(resolved.art, RenderedArt::Glyph(_)));
+            }
+        }
+        // Deterministic: resolving twice yields identical records.
+        let a = surface
+            .resolve_cell(0, &plan, Rung::Tileset, &filters)
+            .unwrap();
+        let b = surface
+            .resolve_cell(0, &plan, Rung::Tileset, &filters)
+            .unwrap();
+        assert_eq!(a, b);
+        // Out-of-bounds is an explicit error, never a blank cell.
+        assert!(matches!(
+            surface.resolve_cell(99, &plan, Rung::Rich, &filters),
+            Err(ResolveCellError::NoSuchCell(99))
+        ));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn tagged_patch_apply_matches_diff_for_arbitrary_tag_sets(
+            tag_pick in proptest::collection::vec(0u8..4, 2..=2),
+        ) {
+            let vocab = ["sys.color.blue", "sys.color.red", "sys.effect.sparkle", "world.appearance.cape"];
+            let mk = |pick: &[u8], symbol: &str| {
+                let mut tags: Vec<String> = pick.iter().map(|i| vocab[usize::from(*i)].to_owned()).collect();
+                tags.sort();
+                tags.dedup();
+                TaggedScreenCell::new(plain(symbol), tags).unwrap()
+            };
+            let before = ScreenSurfaceV2::from_tagged_cells(2, 1, vec![mk(&tag_pick[..1], "C"), mk(&tag_pick[1..], " ")]).unwrap();
+            let after = ScreenSurfaceV2::from_tagged_cells(2, 1, vec![mk(&tag_pick[1..], "C"), mk(&tag_pick[..1], "x")]).unwrap();
+            let patch = ScreenPatchV2::diff(&before, &after).unwrap();
+            proptest::prop_assert_eq!(patch.apply(&before), Some(after));
+        }
     }
 }

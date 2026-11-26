@@ -122,7 +122,8 @@
   // Provider type: "openai-chat" | "openai-responses" | "anthropic" | "minimax" | "orcarouter"
   // Note: "openai-chat" is a generic OpenAI API-compatible mode.
   // Any service that follows the OpenAI Chat Completions API can use it via custom "memoryApiUrl".
-  "memoryProvider": "openai-chat",
+  // "memoryProvider" is NOT set here: project config cannot set remote provider fields.
+  // It lives in the global config (~/.config/opencode/opencode-mem.jsonc).
 
   // Manual fallback. Uncomment all 3 lines and replace memoryApiKey before use:
   // "memoryModel": "gpt-4o-mini",

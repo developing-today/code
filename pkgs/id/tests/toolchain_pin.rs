@@ -10,15 +10,19 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-const ROC_EXAMPLE_BUILDS: [&str; 8] = [
+const ROC_EXAMPLE_BUILDS: [&str; 12] = [
     "examples/lounge/build.sh",
     "examples/roc-chat/build.sh",
     "examples/roc-counter/build.sh",
     "examples/roc-grid/build.sh",
+    "examples/roc-mind-map/build.sh",
+    "examples/roc-burrow/build.sh",
     "examples/roc-screen/build.sh",
     "examples/roc-text-counter/build.sh",
     "examples/territory/build.sh",
     "apps/tic-tac-toe/program/build.sh",
+    "apps/space-invaders/program/build.sh",
+    "apps/checkers/program/build.sh",
 ];
 
 /// The Nix side of the pin: a literal version, or a value read from the file.

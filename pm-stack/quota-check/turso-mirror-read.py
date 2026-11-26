@@ -27,6 +27,7 @@ Test hook: --token-name <bws-name> overrides which token is fetched
 for the chosen DB — used by the #6828 scope check (one DB's token
 must not read the other DB).
 """
+
 import json
 import os
 import subprocess
@@ -36,7 +37,7 @@ import urllib.request
 
 DBS = {
     "fleet-platform": (
-        "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
+        "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
         "turso.fleet-platform-rw-token",
     ),
     "fleet-mirror": (
@@ -57,8 +58,9 @@ def _last_line(text):
 
 
 def token_from_fleet(name):
-    out = subprocess.run([FLEET, "secrets", "get", name],
-                         capture_output=True, text=True, timeout=60)
+    out = subprocess.run(
+        [FLEET, "secrets", "get", name], capture_output=True, text=True, timeout=60
+    )
     if out.returncode != 0:
         raise RuntimeError(f"fleet secrets get failed rc={out.returncode}")
     value = _last_line(out.stdout)
@@ -73,10 +75,11 @@ def token_from_bws(name):
         f"source {helper} >/dev/null 2>&1; "
         "SID=$(bws secret list 2>/dev/null | jq -r "
         f"'.[] | select(.key==\"{name}\") | .id'); "
-        "bws secret get \"$SID\" | jq -r .value"
+        'bws secret get "$SID" | jq -r .value'
     )
-    out = subprocess.run(["bash", "-c", script], capture_output=True,
-                         text=True, timeout=60)
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60
+    )
     if out.returncode != 0:
         raise RuntimeError(f"bws fallback failed rc={out.returncode}")
     value = _last_line(out.stdout)
@@ -98,14 +101,24 @@ def _plain(v):
 
 
 def pipeline(base_url, token, sql):
-    body = json.dumps({"requests": [
-        {"type": "execute", "stmt": {"sql": sql, "args": []}},
-        {"type": "close"},
-    ]}).encode()
+    body = json.dumps(
+        {
+            "requests": [
+                {"type": "execute", "stmt": {"sql": sql, "args": []}},
+                {"type": "close"},
+            ]
+        }
+    ).encode()
     req = urllib.request.Request(
-        f"{base_url}/v2/pipeline", data=body,
-        headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"})
+        f"{base_url}/v2/pipeline",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+            "User-Agent": "fleet-d1-client/1",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.load(resp)

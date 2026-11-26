@@ -277,6 +277,47 @@ pub(super) fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     })
 }
 
+/// #14188: the caller's FLEET_CTX_* record as raw `X-Fleet-Ctx-*`
+/// header lines for the hand-written direct legs (empty when there
+/// is no context — absence is representable, never an error).
+fn ctx_header_lines() -> String {
+    fleet_config::ctx::Ctx::from_env().header_lines()
+}
+
+/// #14188: the same record on a session-proxy frame (`ctx`), which
+/// the proxy forwards as `X-Fleet-Ctx-*` headers. Omitted when empty.
+fn with_ctx_frame(mut frame: Value) -> Value {
+    if let (Some(obj), Some(ctx)) = (
+        frame.as_object_mut(),
+        fleet_config::ctx::Ctx::from_env().to_frame(),
+    ) {
+        obj.insert("ctx".to_string(), json!(ctx));
+    }
+    frame
+}
+
+/// The host part of a `host:port` broker address — the name
+/// the broker's BT-1 leaf must carry as a SAN (its tailnet IP
+/// or its `.internal` DNS name) for TLS validation (BT-3).
+fn broker_host(hostport: &str) -> &str {
+    let host = hostport
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(hostport);
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// The version of the active, verified trust bundle presented to the
+/// broker on direct TCP requests. Routes without validated TLS must
+/// leave this header out.
+fn trust_bundle_version_header(version: Option<u32>) -> String {
+    version
+        .map(|version| format!("X-Fleet-Trust-Bundle-Version: {version}\r\n"))
+        .unwrap_or_default()
+}
+
 pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
     let rest = url
         .strip_prefix("http://")
@@ -287,12 +328,19 @@ pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Resul
     }
     let token = direct_token()?;
     let payload = serde_json::to_vec(body).unwrap();
-    let mut s = TcpStream::connect(hostport)
+    let s = TcpStream::connect(hostport)
         .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(300))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    // BT-3 (#14401): with a trust store configured the leg is
+    // TLS and the broker leaf is validated, fail closed; with
+    // neither knob set this is the Phase 0 plaintext stream.
+    let mode = crate::broker_tls::BrokerTlsClient::from_env()?;
+    let trust_bundle_version = trust_bundle_version_header(mode.bundle_version());
+    let mut s = mode.wrap(s, broker_host(hostport))?;
+    let ctx = ctx_header_lines();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\n{trust_bundle_version}{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     );
     s.write_all(head.as_bytes())
@@ -323,8 +371,9 @@ pub(super) fn direct_uds_roundtrip(
     })?;
     s.set_read_timeout(Some(Duration::from_secs(300))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let ctx = ctx_header_lines();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     );
     s.write_all(head.as_bytes())
@@ -355,6 +404,7 @@ pub(super) fn broker_roundtrip(path: &str, body: &Value) -> Result<Value, String
         "port": QUEUE_BROKER_PORT,
         "token_file": format!("{}/tools/queue-broker-token", home()),
     });
+    let payload = with_ctx_frame(payload);
     let data = serde_json::to_vec(&payload).unwrap();
     for attempt in 0..2 {
         match unix_roundtrip(&data) {
@@ -402,6 +452,176 @@ pub(super) fn unix_roundtrip(data: &[u8]) -> Result<Value, String> {
     s.read_exact(&mut buf)
         .map_err(|e| format!("session proxy read failed: {e}"))?;
     serde_json::from_slice(&buf).map_err(|e| format!("session proxy bad reply: {e}"))
+}
+
+/// #13146: the bounded, never-dying sibling of [`broker_roundtrip`]
+/// for best-effort callers (the placement session mirror). Same
+/// route selection, but: every timeout is the caller's budget, HTTP
+/// error statuses come back as Err instead of dying with exit 3,
+/// a malformed configured broker URL degrades to Err instead of
+/// dying, and the session broker is never auto-spawned — a caller
+/// that can proceed without the broker must never be able to fail
+/// or stall on it.
+pub(crate) fn broker_roundtrip_bounded(
+    path: &str,
+    body: &Value,
+    budget: Duration,
+) -> Result<Value, String> {
+    if let Some(url) = direct_broker_url() {
+        return match route_from_configured_url(&url)? {
+            DirectRoute::Tcp(u) => bounded_tcp_roundtrip(&u, path, body, budget),
+            DirectRoute::Unix(s) => bounded_uds_roundtrip(&s, path, body, budget),
+        };
+    }
+    let cfg = fleet_config::Config::load().unwrap_or_default();
+    if let Some(fleet_config::RoleTransport::Socket(socket)) =
+        cfg.role_transport_choice("queue-broker")
+    {
+        // Mirror broker_roundtrip: a failed socket attempt falls
+        // back to the session-proxy route within the same call.
+        if let Ok(v) = bounded_uds_roundtrip(&socket, path, body, budget) {
+            return Ok(v);
+        }
+    }
+    bounded_proxy_roundtrip(path, body, budget)
+}
+
+/// The direct HTTP exchange with caller-bounded timeouts, shared
+/// by the bounded TCP and UDS legs.
+fn bounded_direct_exchange<S: Read + Write>(
+    mut s: S,
+    host: &str,
+    path: &str,
+    body: &Value,
+    token: &str,
+    trust_bundle_version: Option<u32>,
+) -> Result<Value, String> {
+    let payload = serde_json::to_vec(body).unwrap();
+    let ctx = ctx_header_lines();
+    let trust_bundle_version = trust_bundle_version_header(trust_bundle_version);
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n{trust_bundle_version}{ctx}\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        payload.len()
+    );
+    s.write_all(head.as_bytes())
+        .and_then(|_| s.write_all(&payload))
+        .map_err(|e| format!("queue-broker write failed: {e}"))?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw)
+        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    finish_bounded_response(&raw)
+}
+
+/// Status handling for the bounded legs: an HTTP error status is
+/// an Err here, never a die — [`finish_direct_response`] (which
+/// dies on >= 400) only ever sees success statuses.
+fn finish_bounded_response(raw: &[u8]) -> Result<Value, String> {
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("queue-broker bad reply")?;
+    let head_txt = String::from_utf8_lossy(&raw[..split]).to_string();
+    let status: u64 = head_txt
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .ok_or_else(|| "queue-broker answered with a malformed status line".to_string())?;
+    if status >= 400 {
+        return Err(format!("queue-broker answered HTTP {status}"));
+    }
+    finish_direct_response(raw)
+}
+
+fn bounded_tcp_roundtrip(
+    url: &str,
+    path: &str,
+    body: &Value,
+    budget: Duration,
+) -> Result<Value, String> {
+    use std::net::ToSocketAddrs as _;
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("broker URL must be http://host:port")?;
+    let hostport = rest.trim_end_matches('/');
+    if hostport.is_empty() || hostport.contains('/') {
+        return Err(format!("bad broker URL {url:?}"));
+    }
+    let token = direct_token()?;
+    let addr = hostport
+        .to_socket_addrs()
+        .map_err(|e| format!("cannot resolve queue-broker at {hostport}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("cannot resolve queue-broker at {hostport}"))?;
+    let s = TcpStream::connect_timeout(&addr, budget)
+        .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
+    s.set_read_timeout(Some(budget)).ok();
+    s.set_write_timeout(Some(budget)).ok();
+    // BT-3 (#14401): same TLS posture as the unbounded leg.
+    let mode = crate::broker_tls::BrokerTlsClient::from_env()?;
+    let trust_bundle_version = mode.bundle_version();
+    let s = mode.wrap(s, broker_host(hostport))?;
+    bounded_direct_exchange(s, hostport, path, body, &token, trust_bundle_version)
+}
+
+fn bounded_uds_roundtrip(
+    socket: &std::path::Path,
+    path: &str,
+    body: &Value,
+    budget: Duration,
+) -> Result<Value, String> {
+    let token = direct_token()?;
+    let mut s = UnixStream::connect(socket).map_err(|e| {
+        format!(
+            "cannot connect to queue-broker at unix://{}: {e}",
+            socket.display()
+        )
+    })?;
+    s.set_read_timeout(Some(budget)).ok();
+    s.set_write_timeout(Some(budget)).ok();
+    bounded_direct_exchange(&mut s, "localhost", path, body, &token, None)
+}
+
+/// The session-proxy leg, bounded: one attempt, no broker spawn,
+/// and a proxy HTTP error is an Err (the unbounded leg dies on it).
+fn bounded_proxy_roundtrip(path: &str, body: &Value, budget: Duration) -> Result<Value, String> {
+    let payload = json!({
+        "method": "POST",
+        "path": path,
+        "body": body,
+        "port": QUEUE_BROKER_PORT,
+        "token_file": format!("{}/tools/queue-broker-token", home()),
+    });
+    let payload = with_ctx_frame(payload);
+    let data = serde_json::to_vec(&payload).unwrap();
+    let mut s = UnixStream::connect(broker_sock())
+        .map_err(|e| format!("cannot connect to session proxy: {e}"))?;
+    s.set_read_timeout(Some(budget)).ok();
+    s.set_write_timeout(Some(budget)).ok();
+    s.write_all(&(data.len() as u64).to_be_bytes())
+        .and_then(|_| s.write_all(&data))
+        .map_err(|e| format!("session proxy write failed: {e}"))?;
+    let mut hdr = [0u8; 8];
+    s.read_exact(&mut hdr)
+        .map_err(|e| format!("session proxy read failed: {e}"))?;
+    let n = u64::from_be_bytes(hdr) as usize;
+    let mut buf = vec![0u8; n];
+    s.read_exact(&mut buf)
+        .map_err(|e| format!("session proxy read failed: {e}"))?;
+    let resp: Value =
+        serde_json::from_slice(&buf).map_err(|e| format!("session proxy bad reply: {e}"))?;
+    let status = resp.get("status").and_then(|s| s.as_u64()).unwrap_or(0);
+    let resp_body = resp.get("body").cloned().unwrap_or(Value::Null);
+    if status >= 400 {
+        let msg = resp_body
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("session proxy error")
+            .to_string();
+        return Err(msg);
+    }
+    Ok(resp_body)
 }
 
 /// Which broker program to auto-start: a sibling `fleet` binary
@@ -622,8 +842,8 @@ pub(super) fn require_row(resp: &Value, fn_name: &str) -> Value {
     row
 }
 
-pub(super) fn row_or_ledger(resp: &Value, fn_name: &str) {
-    let row = require_row(resp, fn_name);
+pub(super) fn row_or_ledger(resp: &Value, fn_name: &str, verb: &str) {
+    let row = served_row(require_row(resp, fn_name), verb);
     // Broker envelope extras a caller must not lose: the triage
     // completion follow-on (#7016) rides alongside the row.
     let follow_on = resp.get("follow_on_task_id");
@@ -642,5 +862,68 @@ pub(super) fn row_or_ledger(resp: &Value, fn_name: &str) {
         (None, None) => {
             print_json(&row);
         }
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_exchange_times_out_on_a_silent_peer() {
+        // Oracle (#13146): the bounded leg gives up within its
+        // budget when the peer accepts but never answers — the
+        // unbounded legs would wait out their 300s read timeout,
+        // and the session-proxy leg would die(3) on an error.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (_sock, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_millis(300))).ok();
+        s.set_write_timeout(Some(Duration::from_millis(300))).ok();
+        let started = std::time::Instant::now();
+        let out = bounded_direct_exchange(
+            &mut s,
+            "127.0.0.1",
+            "/placement-get",
+            &json!({"handle": "fp_x"}),
+            "test-token",
+            None,
+        );
+        assert!(out.is_err(), "{out:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "bounded leg took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn bounded_response_maps_http_error_to_err_not_death() {
+        // Oracle: an HTTP error status is data (Err) for the
+        // bounded caller; a success status parses as usual.
+        let raw = b"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\
+                    Content-Length: 24\r\n\r\n{\"error\": \"unauthorized\"}";
+        let out = finish_bounded_response(raw);
+        assert!(matches!(out, Err(ref e) if e.contains("401")), "{out:?}");
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                    Content-Length: 7\r\n\r\n{\"a\":1}";
+        let out = finish_bounded_response(raw).unwrap();
+        assert_eq!(out, json!({"a": 1}));
+    }
+
+    #[test]
+    fn trust_bundle_version_header_only_claims_a_validated_bundle() {
+        // Oracle: direct TCP can report only the version returned by
+        // BrokerTlsClient::bundle_version; plaintext, UDS, and
+        // break-glass modes produce None and emit no claim.
+        assert_eq!(
+            trust_bundle_version_header(Some(17)),
+            "X-Fleet-Trust-Bundle-Version: 17\r\n"
+        );
+        assert!(trust_bundle_version_header(None).is_empty());
     }
 }

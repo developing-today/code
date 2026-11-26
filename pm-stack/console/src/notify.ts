@@ -8,6 +8,7 @@
 import type { Docs } from "./docs.ts";
 import type { Class, Push } from "./push.ts";
 import type { Store } from "./store.ts";
+import type { TokenExpiry } from "./tokens.ts";
 
 export interface Seen {
   primed: boolean;
@@ -20,6 +21,10 @@ export interface Seen {
    * and whether the owner has been told. Absent in a state written
    * before units that run on a timer were told apart. */
   failing?: Record<string, { since: number; told: boolean; last?: number }>;
+  /** Store tokens the owner has been told are running out, by name, and
+   * what he was told: that it soon will, or that it has. Absent in a
+   * state written before tokens were watched. */
+  tokens?: Record<string, "soon" | "expired">;
 }
 export const NOTHING_SEEN: Seen = { primed: false, asks: {}, hands: [], questions: 0, failed: [] };
 
@@ -30,23 +35,55 @@ export const NOTHING_SEEN: Seen = { primed: false, asks: {}, hands: [], question
  * between, and the count starts again. */
 export const SUSTAINED_MS = 5 * 60_000;
 
+/** A button on a notification. Pressing it does one thing the owner
+ * could do in the app (`kind` with its `args`, sent the way the app
+ * sends it: kept on the device and sent again if there is no
+ * connection), or goes somewhere (`url`). One that takes a line of text
+ * (`reply`) puts it in `args.text`; where the device cannot take text
+ * on a notification, pressing it goes to `url` instead. */
+export interface PushAction {
+  action: string;
+  title: string;
+  kind?: string;
+  args?: Record<string, unknown>;
+  reply?: boolean;
+  url?: string;
+}
+
 export interface Message {
   cls: Class;
   title: string;
   body: string;
   url: string;
   tag: string;
+  /** What can be done about it from the notification itself, most
+   * useful first (a phone shows two). */
+  actions?: PushAction[];
 }
 
+/** An item of the census is named `owner/repo#number`; anything else
+ * that needs the owner's hands (a session waiting on him) is not
+ * something "done" can be said of from here. */
+const CENSUS_REF = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]*$/;
+
 interface State {
-  asks?: { issue: number; replies: { you: boolean; at: string; text: string }[] }[] | null;
+  asks?: { issue: number; intent?: string; replies: { you: boolean; at: string; text: string }[] }[] | null;
   census?: { hands: { ref: string; title: string; action?: string }[] } | null;
   sessions?: { waiting: { id: string; title: string }[] } | null;
   questionCount?: { total: number } | null;
   services?: { unit: string; active: string; description?: string }[] | null;
+  tokens?: TokenExpiry[] | null;
 }
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** What can be done about a unit that failed, from its notification:
+ * start it again (a machine's to do, kept and sent like anything else
+ * while it is fresh), or look at it. */
+const unitActions = (unit: string): PushAction[] => [
+  { action: "restart", title: "Restart it", kind: "unit.act", args: { unit, action: "restart" } },
+  { action: "open", title: "Look", url: "/console/#more/services" },
+];
 
 /** The messages owed for `now`, and what will have been seen once they
  * are sent. A section that could not be read (null) changes nothing.
@@ -61,6 +98,7 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     questions: seen.questions,
     failed: seen.failed,
     ...(seen.failing ? { failing: seen.failing } : {}),
+    ...(seen.tokens ? { tokens: seen.tokens } : {}),
   };
   const messages: Message[] = [];
   for (const ask of now.asks ?? []) {
@@ -69,10 +107,26 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     next.asks[ask.issue] = last.at;
     messages.push({
       cls: "replies",
-      title: `The fleet replied on #${ask.issue}`,
-      body: clip(last.text, 180),
+      // A question's reply is its answer.
+      title:
+        ask.intent === "question"
+          ? `The fleet answered your question (#${ask.issue})`
+          : `The fleet replied on #${ask.issue}`,
+      // Enough of the reply to answer it from the notification.
+      body: clip(last.text, 400),
       url: "/console/#ask",
       tag: `ask-${ask.issue}`,
+      actions: [
+        {
+          action: "reply",
+          title: "Reply",
+          kind: "ask.reply",
+          args: { issue: ask.issue },
+          reply: true,
+          url: "/console/#ask",
+        },
+        { action: "close", title: "Close it", kind: "ask.close", args: { issue: ask.issue } },
+      ],
     });
   }
   if (now.census || now.sessions) {
@@ -82,12 +136,18 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     ];
     for (const item of hands) {
       if (seen.hands.includes(item.key)) continue;
+      const ref = CENSUS_REF.test(item.key) ? item.key : null;
       messages.push({
         cls: "needs",
         title: "Something needs you",
-        body: clip(item.text, 180),
+        // What to do, and on what.
+        body: clip(ref ? `${item.text} (${ref})` : item.text, 300),
         url: "/console/#needs/hands",
         tag: `hands-${item.key}`,
+        actions: [
+          ...(ref ? [{ action: "done", title: "I did it", kind: "hands.done", args: { ref } }] : []),
+          { action: "open", title: "Open", url: "/console/#needs/hands" },
+        ],
       });
     }
     next.hands = hands.map((i) => i.key);
@@ -102,6 +162,7 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
         body: `${total} open in all.`,
         url: "/console/#needs/questions",
         tag: "questions",
+        actions: [{ action: "open", title: "Look at them", url: "/console/#needs/questions" }],
       });
     }
     next.questions = total;
@@ -141,13 +202,16 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
                   ),
                   url: "/console/#more/services",
                   tag: `unit-${u.unit}`,
+                  actions: unitActions(u.unit),
                 }
               : {
                   cls: "trouble",
                   title: "A unit failed",
-                  body: u.unit,
+                  // Which one, and what it is for.
+                  body: clip(u.description ? `${u.unit}. ${u.description}` : u.unit, 300),
                   url: "/console/#more/services",
                   tag: `unit-${u.unit}`,
+                  actions: unitActions(u.unit),
                 },
           );
         }
@@ -175,11 +239,47 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     next.failing = failing;
     next.failed = Object.keys(failing);
   }
+  if (now.tokens) {
+    // Once for each token as it comes within two weeks of running out,
+    // and once more when it has run out: not on every reading. A token
+    // seen fine again was rotated, and may be told of again later. One
+    // that could not be read says nothing either way.
+    const told: Record<string, "soon" | "expired"> = { ...(seen.tokens ?? {}) };
+    const listed = new Set<string>();
+    for (const t of now.tokens) {
+      listed.add(t.name);
+      if (t.state === "fine" || t.state === "none") {
+        delete told[t.name];
+        continue;
+      }
+      if (t.state !== "soon" && t.state !== "expired") continue;
+      if (told[t.name] === t.state || (told[t.name] === "expired" && t.state === "soon")) continue;
+      told[t.name] = t.state;
+      const stores = t.stores.join(", ");
+      const day = t.expiresAt ? t.expiresAt.slice(0, 10) : "";
+      messages.push({
+        cls: "trouble",
+        title: t.state === "expired" ? "A store token has run out" : "A store token runs out soon",
+        // Which token, what uses it and when: never the token.
+        body: clip(
+          t.state === "expired"
+            ? `${t.name} (${stores}) ran out on ${day}.`
+            : `${t.name} (${stores}) runs out on ${day}.`,
+          300,
+        ),
+        url: "/console/#more/platform",
+        tag: `token-${t.name}`,
+        actions: [{ action: "open", title: "Look", url: "/console/#more/platform" }],
+      });
+    }
+    for (const name of Object.keys(told)) if (!listed.has(name)) delete told[name];
+    next.tokens = told;
+  }
   return { messages: seen.primed ? messages : [], seen: next };
 }
 
 /** Sections the notifier reads, whether or not anyone is looking. */
-const WATCHED = ["asks", "census", "sessions", "questionCount", "services"];
+export const WATCHED = ["asks", "census", "sessions", "questionCount", "services"];
 
 export class Notifier {
   private seen: Seen | null = null;
@@ -191,6 +291,9 @@ export class Notifier {
     private push: Push,
     private store: Store,
     private now: () => number = Date.now,
+    /** When the store tokens run out, where this side can read every
+     * token (a machine); absent where it cannot. */
+    private tokens?: () => Promise<TokenExpiry[]>,
   ) {}
 
   private async load(): Promise<Seen> {
@@ -213,6 +316,8 @@ export class Notifier {
       if ((await this.push.status()).devices === 0) return 0;
       await this.docs.touch(WATCHED.filter((n) => !skip.includes(n)));
       const now = Object.fromEntries(WATCHED.map((n) => [n, this.docs.good(n)])) as State;
+      // Tokens that could not be read this pass change nothing.
+      if (this.tokens) now.tokens = await this.tokens().catch(() => null);
       // The services as of when they were last read, not as of now.
       const { messages, seen } = changes(await this.load(), now, this.docs.goodAt("services") || this.now());
       for (const m of messages) await this.push.send(m.cls, m);

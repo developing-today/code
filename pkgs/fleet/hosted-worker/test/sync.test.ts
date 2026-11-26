@@ -295,11 +295,7 @@ test("a retried flow posts nothing twice but still finishes its labels", async (
   assert.deepEqual(github.labelsFor(REPO, 7), ["review/accepted"], "labels finished by the retry");
 
   // A different marker is a different flow instance: it posts.
-  const next = await post(
-    "/v1/sync/queue-github",
-    { ...VERDICT, marker: "stewardship-cycle-567" },
-    deps,
-  );
+  const next = await post("/v1/sync/queue-github", { ...VERDICT, marker: "stewardship-cycle-567" }, deps);
   const nextDoc = (await next.json()) as { comment: { outcome: string } };
   assert.equal(nextDoc.comment.outcome, "posted");
   assert.equal(github.comments.length, 2);

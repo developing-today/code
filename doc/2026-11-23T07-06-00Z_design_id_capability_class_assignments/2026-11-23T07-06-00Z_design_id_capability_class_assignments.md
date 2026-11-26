@@ -1,7 +1,7 @@
 # Capability classes for the post-#5999 registrations — assignment design pass
 
 - **Date:** 2026-11-23
-- **Status:** PROPOSED design record, ready for ratification; no implementation is included here. Until this record is ratified and the implementation slice lands, the sixteen names below keep `CLASS_UNKNOWN` and always disclose — the fail-closed state #13004 records as correct behaviour, not a bug.
+- **Status:** IMPLEMENTED with the §14 recorded defaults (#13004, lane 8, 2026-11-25): the eight classes, the sixteen manifest assignments, the `device.microphone ≼ device.microphone.capture` edge, and `CAP_CLASS_TABLE_VERSION` 2 landed in `id-caps` (slices 2–3, plus the client sentences, which live in the same class table). Originally a PROPOSED record; the history below is kept as written.
 - **Issue:** [#13004](https://github.com/developing-today/code/issues/13004), extending the capability-class table of [#5999](https://github.com/developing-today/code/issues/5999) (§2.2–§2.4) as shipped by [#12982](https://github.com/developing-today/code/issues/12982); consumed by the comparison in [#12921](https://github.com/developing-today/code/issues/12921) and the notices of [#5959](https://github.com/developing-today/code/issues/5959); part of the worlds design program [#5955](https://github.com/developing-today/code/issues/5955).
 - **Inputs:** the #5999 record (`doc/2026-11-08T10-12-00Z_design_id_capability_diff_semantics/`), §2.1's rule (a class is one sentence of consequence a person can act on), §2.4 (assignment is registry data; unknown fails closed; the table is versioned), and §3 (subsumption is declared, never inferred from a shared prefix, scope, or kind); the shipped table and registry in `pkgs/id/crates/id-caps/src/cap_class.rs` and `pkgs/id/crates/id-caps/src/world_caps.rs` at `origin/main` `016078b81a2`; the provider designs for `kv` (`doc/2026-11-22_design_id1062-kv-provider.md`), `blob` (`doc/2026-11-22_design_id1062-blob-provider.md`), and `notify` (`doc/2026-11-22_design_id1062-notify-provider.md`); the speech contract (`doc/2026-11-20T07-30-11Z_feature_speech-capabilities.md`); the shells design for `client.notify` (`doc/2026-11-10T20-40-00Z_design_more_shells_v1`); the `client.file.read` design (`doc/2026-11-01_design_id789.md`, named in its manifest).
 - **Method:** every claim about what a provider does is tied to its manifest entry, its executor, or its provider design at this checkout. Where this record spends a concept another issue owns (final message wording — [#5960](https://github.com/developing-today/code/issues/5960); the comparison — #12921; the reserved filesystem vocabulary — [#5958](https://github.com/developing-today/code/issues/5958) S12), it names the seam and does not redefine that owner's part.
@@ -12,24 +12,24 @@
 
 ## Recommendation — the decision table
 
-| Name              | Proposed class              | New? | Client-side sentence (semantics; final copy is #5960's)      |
-| ----------------- | --------------------------- | ---- | ------------------------------------------------------------ |
-| `kv.get`          | `world.records`             | no   | "Read the records this world stores." (unchanged)            |
-| `blob.get`        | `world.records`             | no   | "Read the records this world stores." (unchanged)            |
-| `kv.set`          | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `kv.delete`       | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `blob.put`        | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `blob.delete`     | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `notify`          | `world.notify`              | yes  | "Send notifications to this world's users."                  |
-| `device.info`     | `cap.none`                  | no   | _(messageless)_ — under the boundary condition in §3         |
-| `form.present`    | `device.form`               | yes  | "Show you forms and collect what you enter in them."         |
-| `form.result`     | `device.form`               | yes  | "Show you forms and collect what you enter in them."         |
-| `form.cancel`     | `device.form`               | yes  | "Show you forms and collect what you enter in them."         |
-| `speech.transcribe` | `device.microphone`       | yes  | "Use this device's microphone to turn what you say into text for this world." |
-| `speech.capture`  | `device.microphone.capture` | yes  | "Send this device's microphone audio to this world."         |
-| `speech.synthesize` | `device.speaker`          | yes  | "Speak text aloud through this device."                      |
-| `client.file.read` | `fs.read.selected`         | yes  | "Read files you choose on this device."                      |
-| `client.notify`   | `device.notify`             | yes  | "Show notifications on this device."                         |
+| Name                | Proposed class              | New? | Client-side sentence (semantics; final copy is #5960's)                       |
+| ------------------- | --------------------------- | ---- | ----------------------------------------------------------------------------- |
+| `kv.get`            | `world.records`             | no   | "Read the records this world stores." (unchanged)                             |
+| `blob.get`          | `world.records`             | no   | "Read the records this world stores." (unchanged)                             |
+| `kv.set`            | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `kv.delete`         | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `blob.put`          | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `blob.delete`       | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `notify`            | `world.notify`              | yes  | "Send notifications to this world's users."                                   |
+| `device.info`       | `cap.none`                  | no   | _(messageless)_ — under the boundary condition in §3                          |
+| `form.present`      | `device.form`               | yes  | "Show you forms and collect what you enter in them."                          |
+| `form.result`       | `device.form`               | yes  | "Show you forms and collect what you enter in them."                          |
+| `form.cancel`       | `device.form`               | yes  | "Show you forms and collect what you enter in them."                          |
+| `speech.transcribe` | `device.microphone`         | yes  | "Use this device's microphone to turn what you say into text for this world." |
+| `speech.capture`    | `device.microphone.capture` | yes  | "Send this device's microphone audio to this world."                          |
+| `speech.synthesize` | `device.speaker`            | yes  | "Speak text aloud through this device."                                       |
+| `client.file.read`  | `fs.read.selected`          | yes  | "Read files you choose on this device."                                       |
+| `client.notify`     | `device.notify`             | yes  | "Show notifications on this device."                                          |
 
 Eight new classes; two existing classes gain members (`world.records` takes the two storage reads, `cap.none` takes `device.info`). The only subsumption edge added is `device.microphone ≼ device.microphone.capture`. Adding classes bumps `CAP_CLASS_TABLE_VERSION` from 1 to 2 in the implementation change (§8); no existing class's message or meaning changes, and no reserved class gains a member.
 
@@ -128,3 +128,43 @@ Until that change lands, nothing about current behaviour changes: the sixteen na
 - `pkgs/id/crates/id-caps/src/world_caps.rs` — the sixteen manifests (`kv.*` :718–775, `notify` :799, `device.info` :835, `form.*` :844–870, `speech.*` :894–920, `CLIENT_FILE_READ_MANIFEST`, `CLIENT_NOTIFY_MANIFEST`), `is_sensor_cap`, `DeviceManifest`.
 - `pkgs/id/crates/id-worlds/src/world/actor/execution.rs` — `execute_device_info` (the manifest is cached; the device is never enumerated), `execute_form_present`.
 - Provider designs: `doc/2026-11-22_design_id1062-kv-provider.md`, `doc/2026-11-22_design_id1062-blob-provider.md`, `doc/2026-11-22_design_id1062-notify-provider.md`, `doc/2026-11-20T07-30-11Z_feature_speech-capabilities.md`, `doc/2026-11-10T20-40-00Z_design_more_shells_v1`, `doc/2026-11-01_design_id789.md`.
+
+## 10. Problem, goals, and non-goals
+
+**Problem and evidence.** The sixteen registrations listed in §1–§6 have no designed class in the shipped class table, and the tripwire `names_without_a_designed_class_carry_unknown_until_assigned` pins them as `CLASS_UNKNOWN`. Unknown is intentionally fail-closed, but it produces an uninformative disclosure for every world declaring one of these capabilities. The issue's requested decision is a per-name/family class assignment and lattice analysis; the evidence and source locations are recorded in §1–§7 and the references above.
+
+**Goals.** Give every listed registration a defensible disclosure class; preserve the meaning of existing classes and baselines; declare only evidenced subsumption edges; retain fail-closed behaviour until implementation; and give the implementation and verification work an ordered, reviewable path.
+
+**Non-goals.** This pass does not implement or ratify the assignments, change provider behaviour, finalize user-facing copy (owned by #5960), implement the comparison or notices (#12921/#5959), redesign the capability lattice, or consume reserved filesystem vocabulary owned by #5958 S12.
+
+## 11. Alternatives, including doing nothing
+
+- **Do nothing:** retain `CLASS_UNKNOWN` for all sixteen names. This preserves fail-closed safety but leaves users with an unhelpful disclosure and does not answer #13004; acceptable only as the temporary state before this design is ratified and implemented.
+- **Assign one broad class to each provider family:** rejected because read/write, text/raw-audio, server/client, and chat/notification consequences differ. It would silently widen existing consent or obscure material changes; the family sections above give the concrete counterexamples.
+- **Keep the proposed per-consequence assignments:** recommended. Reuse an existing class only where its disclosure genuinely matches; otherwise add a class and declare the narrow lattice facts. The decision table and §1–§7 define this contract.
+
+## 12. Dependency-ordered build slices and acceptance
+
+Implementation remains gated on an explicit design disposition; no code is authorized by this record alone. Each slice is independently reviewable and must preserve the fail-closed state until its own complete change lands.
+
+1. **Disposition and contract freeze** (depends on this design). Record any changes to the proposed table, boundary conditions, and lattice in the #13004 thread and this document. **Acceptance:** all sixteen names have one approved assignment; contested alternatives are resolved in the record; no implementation begins against an unresolved table.
+2. **Class table and version** (depends on slice 1; `pkgs/id/crates/id-caps/src/cap_class.rs`). Add the approved class constants and entries, preserve reserved classes, and bump the table version for additions. **Acceptance:** the exact-table/version test passes; all new classes have stable IDs and correct sensor/default-ceiling/reserved properties; reserved filesystem classes remain memberless.
+3. **Manifest assignments and accounting tests** (depends on slice 2; `pkgs/id/crates/id-caps/src/world_caps.rs` and capability tests). Assign all sixteen manifests and update the unknown-class accounting test. **Acceptance:** every listed manifest maps to the approved class; no production manifest remains unknown; assignment and declared-edge tests pass; no unlisted provider is silently assigned.
+4. **Client disclosure messages and consumer compatibility** (depends on slice 1 and the approved class IDs; client message tables used by #12921, coordinated with #5960). Add the eight new semantic messages and verify consumers recognize the table version. **Acceptance:** every new class has a distinct semantic message consistent with §2.1; client/server tables stay separate; comparison consumers handle version 2 without changing existing-class meaning.
+5. **Integrated verification and release** (depends on slices 2–4). Run the targeted Rust capability tests and the client comparison/message tests, then the repository CI checks required for the touched packages. **Acceptance:** all targeted tests and required CI pass; a fixture with each of the sixteen names produces the approved class and expected disclosure; a prior version-1 baseline does not silently gain a new consequence.
+
+## 13. Rollout and rollback
+
+Roll out only after the disposition slice and all implementation slices pass review and CI. Ship the class-table version, manifest assignments, and corresponding client message support as one compatibility unit; do not deploy manifests using a class before clients that consume it can display that class. During any partial rollout, unknown remains fail-closed. Observe version-mismatch and unknown-class handling on the normal test/release telemetry before expanding deployment.
+
+If a new class is missing or a consumer cannot interpret the version, roll back the coordinated table/manifest/client change together. Do not revert only the version number while leaving new assignments in place. The safe fallback is the pre-change version-1 table and `CLASS_UNKNOWN` assignments for these names. Any rollback that would alter persisted baselines or user grants requires a follow-up migration design before execution; this record does not authorize such a migration.
+
+## 14. Verification plan and named decision owners
+
+Verification is by the exact-table/version test and unknown-class tripwire in `cap_class.rs`; manifest assignment coverage and lattice-edge tests in `id-caps`; client message-table tests; and an integration fixture covering all sixteen registrations, version negotiation, and a version-1 baseline. The build-slice acceptance checks in §12 are the release gate. A passing unit test alone is insufficient if the client cannot render the assigned disclosure.
+
+The following are the remaining design questions. To avoid an owner-approval gate, the design author for this pass, **oc-code-04**, is the named decider for this task and records the recommended default now; the defaults remain revisable by a later design change, but implementation must follow the recorded disposition rather than wait implicitly:
+
+1. **Can `device.info` remain `cap.none` only for affordances-only manifests?** Decider: **oc-code-04**. Default: yes, with the version-boundary condition in §3; any identity-bearing field requires a disclosing class before that manifest version ships.
+2. **Should `client.notify` disclose a device notification capability despite carrying no notification content?** Decider: **oc-code-04**. Default: yes, `device.notify`, because the interruptive device-side effect is grant-gated and actionable; shell-authored wording remains outside this class design.
+3. **Should storage writes get a separate class from `world.records`?** Decider: **oc-code-04**. Default: yes, `world.storage`; folding writes into the read class would silently widen existing baselines unless every affected baseline is re-prompted.

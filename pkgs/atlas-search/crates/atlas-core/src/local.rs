@@ -383,11 +383,7 @@ impl LocalBackend {
         let mut prepared = con
             .prepare(&stmt.sql)
             .map_err(|e| Error::backend(e.to_string()))?;
-        let col_names: Vec<String> = prepared
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let col_names: Vec<String> = prepared.column_names().map(str::to_string).collect();
         let params: Vec<RValue> = stmt.args.iter().map(to_rvalue).collect();
         let mut rows = prepared
             .query(rusqlite::params_from_iter(params.iter()))
@@ -611,6 +607,10 @@ impl LocalBackend {
 impl SearchBackend for LocalBackend {
     fn name(&self) -> &'static str {
         "local"
+    }
+
+    fn manifest(&self) -> crate::manifest::Manifest {
+        self.manifest.clone()
     }
 
     fn vec_table(&self) -> &str {

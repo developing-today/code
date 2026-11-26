@@ -18,12 +18,11 @@
 // shape before the registry is consulted, exactly as the native
 // resolver validates before it trusts any source.
 //
-// SKELETON SEAM: the record's production home is the fleet metadata
-// DB's session table (the same DB #9074 builds; design §4.2), which
-// does not exist yet, so the registry below is an interface plus a
-// fixture in-memory implementation — the TenancyDirectory idiom of
-// src/tenancy.ts. A DB-backed SessionRegistry replaces the fixture
-// behind this same interface; no caller changes.
+// STORAGE: the registry below is an interface plus a fixture
+// in-memory implementation — the TenancyDirectory idiom of
+// src/tenancy.ts. The DB-backed implementation is D1SessionRegistry
+// (src/d1-session-registry.ts), which the Worker resolves whenever
+// its D1 binding is present; no caller changes.
 
 import { FailClosed } from "./errors.ts";
 
@@ -115,11 +114,7 @@ export function sessionRecordJson(record: SessionRecord): Record<string, unknown
  * malformed id fails closed before the registry is consulted. */
 export function checkedSessionId(raw: unknown): string {
   if (typeof raw !== "string" || !isValidSessionId(raw)) {
-    throw new FailClosed(
-      400,
-      "invalid_session_id",
-      "session ID must be ses_ followed by ASCII letters or digits",
-    );
+    throw new FailClosed(400, "invalid_session_id", "session ID must be ses_ followed by ASCII letters or digits");
   }
   return raw;
 }
@@ -135,11 +130,7 @@ export async function getOwnedSession(
 ): Promise<SessionRecord> {
   const record = await registry.get(sessionId);
   if (!record || record.bindingId !== bindingId) {
-    throw new FailClosed(
-      404,
-      "session_unknown",
-      "session id was not minted by this service for this account",
-    );
+    throw new FailClosed(404, "session_unknown", "session id was not minted by this service for this account");
   }
   return record;
 }
@@ -154,11 +145,7 @@ export async function requireOpenSession(
 ): Promise<SessionRecord> {
   const record = await getOwnedSession(registry, bindingId, sessionId);
   if (record.closedAt !== null) {
-    throw new FailClosed(
-      409,
-      "session_closed",
-      `session ${sessionId} is closed and cannot be cited by new work`,
-    );
+    throw new FailClosed(409, "session_closed", `session ${sessionId} is closed and cannot be cited by new work`);
   }
   return record;
 }

@@ -121,16 +121,10 @@ impl EventStore {
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`] for a stored document
     /// event that carries no document, or a stored removal that names no document.
     pub fn documents(&self) -> Result<Vec<DocumentRecord>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let (stored, forks, headers) = {
-            let events = txn.open_table(EVENTS)?;
-            let actions = txn.open_table(ACTIONS)?;
-            let device_ops = txn.open_table(DEVICE_OPS)?;
-            let forks = txn.open_table(FORKS)?;
-            let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
-        };
-        let resolved = resolve::resolve(&stored, &forks, &headers)?;
+        let mut txn = self.db.begin_read()?;
+        let (stored, forks, headers) = resolve::load(&mut txn)?;
+        let residue = super::compaction::load_residue_read(&txn)?;
+        let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
         let marks = removal_marks(&stored, &resolved.applied, resolved.projection.as_ref())?;
 
         let mut records = Vec::new();

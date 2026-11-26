@@ -109,11 +109,7 @@ async function openSession(req: Request, ctx: CallerContext | null, deps: AuthDe
   let lane = optionalString(body, "lane");
   if (me.kind === "agent" && me.lane) {
     if (lane !== null && lane !== me.lane) {
-      throw new FailClosed(
-        403,
-        "lane_beyond_credential",
-        "declared lane differs from the agent credential's lane",
-      );
+      throw new FailClosed(403, "lane_beyond_credential", "declared lane differs from the agent credential's lane");
     }
     lane = me.lane;
   }

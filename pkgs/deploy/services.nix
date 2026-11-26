@@ -24,6 +24,9 @@
   cfContainerHelloDeploy,
   queueTransportAlertDeploy,
   messageBridgeDeploy,
+  agentInboxDeploy,
+  webhookGatewayDeploy,
+  webhookGatewaySinkDeploy,
   pmAggregator,
   pmProjector,
   pmTunnel,
@@ -52,6 +55,11 @@
     ports = [ 4801 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4801/healthz";
+    # Release attestation (release-workflow design §3 part 2,
+    # #13306): the fleet app's own test workflow sits outside the
+    # main-gate watched set, so the release verb requires it as
+    # per-app evidence.
+    evidenceWorkflow = "fleet-rust-tests";
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -71,6 +79,11 @@
     ports = [ 4800 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4800/health";
+    # Release attestation (release-workflow design §3 part 2,
+    # #13306): the fleet app's own test workflow sits outside the
+    # main-gate watched set, so the release verb requires it as
+    # per-app evidence.
+    evidenceWorkflow = "fleet-rust-tests";
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -96,7 +109,10 @@
     # daemon token (401 without it), which the deploy probe cannot
     # present, so healthCheck stays null (the session-proxy/mcpx
     # shape) and health is verified through the authenticated client
-    # (laptop-agent.py health) after activation - issue #5769.
+    # (pkgs/fleet/laptop-agent.py, `laptop-agent.py health`) after
+    # activation - issue #5769. That script is the client only; the
+    # daemon deployed here is the laptopAgent package above
+    # (pkgs/laptop-agent, the reconciled source of #10131).
     healthCheck = null;
     targets = [ "laptop" ];
     class = "systemd";
@@ -301,6 +317,71 @@
     entryPoint = "bin/developing-today-backup-deploy";
     args = [ ];
     environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # Issue #5767, external-Worker slice: agent-inbox, webhook-gateway,
+  # and webhook-gateway-sink live in dezren39/hatch-personal (source
+  # verdict comment 6974159268), not this repo. Each deploy app stages
+  # its worker dir from the pinned hatch-personal rev at deploy time
+  # (sparse checkout) and runs wrangler deploy there; both workers are
+  # dependency-free, so there is no build and no deploy-time npm
+  # install. Credentials are gathered impurely at deploy time, so the
+  # definitions name no secrets (the phase-1 shape). The pinned rev is
+  # repeated in `environment` so `deploy list` shows the source pin
+  # next to the target. Deploy the sink before the gateway on a fresh
+  # account (the gateway binds to the SINK service).
+  agent-inbox = {
+    package = agentInboxDeploy;
+    entryPoint = "bin/agent-inbox-deploy";
+    args = [ ];
+    environment = {
+      HATCH_PERSONAL_REPO = "dezren39/hatch-personal";
+      HATCH_PERSONAL_REV = "ae79c332a78a7ba39b6dacd0f30228384d58dfdc";
+      HATCH_WORKER_PATH = "workspace/agent-inbox/worker";
+    };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  webhook-gateway = {
+    package = webhookGatewayDeploy;
+    entryPoint = "bin/webhook-gateway-deploy";
+    args = [ ];
+    environment = {
+      HATCH_PERSONAL_REPO = "dezren39/hatch-personal";
+      HATCH_PERSONAL_REV = "ae79c332a78a7ba39b6dacd0f30228384d58dfdc";
+      HATCH_WORKER_PATH = "workspace/webhook-gateway";
+    };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  webhook-gateway-sink = {
+    package = webhookGatewaySinkDeploy;
+    entryPoint = "bin/webhook-gateway-sink-deploy";
+    args = [ ];
+    environment = {
+      HATCH_PERSONAL_REPO = "dezren39/hatch-personal";
+      HATCH_PERSONAL_REV = "ae79c332a78a7ba39b6dacd0f30228384d58dfdc";
+      HATCH_WORKER_PATH = "workspace/webhook-gateway/sink";
+    };
     secrets = [ ]; # resolved by the deploy app itself at deploy time
     user = "user";
     ports = [ ];

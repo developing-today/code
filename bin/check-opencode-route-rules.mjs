@@ -15,25 +15,29 @@ import { isMeteredModel } from './check-opencode-metered-providers.mjs';
 export const DEFAULT_CONFIG = '.opencode/opencode.jsonc';
 export const REQUIRED_TIERS = ['scout', 'workhorse', 'specialist', 'summit'];
 
-// Class-level fallback layout (Drew 2026-11-13; full table in
-// .opencode/route-fallbacks.md). Semantics: a class route's own regular
-// chain always runs first and completely; the fallback targets appended
-// after it are a second pass that engages only on exhaustion, walked
-// transitively under a per-call visited set (a class already tried in
-// the call is never re-entered), terminating at specialist, the sink.
-// The pairs workhorse->scout / scout->workhorse are therefore legal
-// fallback edges, NOT cycles: the runtime route expander prunes
-// re-entry into a route already on the expansion path. scout's and
-// background's edges are proposals Drew has not ruled on yet
-// (2026-11-13); the rest are his confirmed edges. Keep this table and
-// the config in lockstep - check (a) below fails on drift.
+// Purpose designations (code#13675, 2026-11-23): closed vocabularies
+// for the top-level model_designations registry and for pool-level
+// "purpose" fields on model_routes entries (absent purpose = chat).
+export const DESIGNATION_PURPOSES = [
+  'chat', 'decision', 'embed', 'rerank', 'recommend', 'transcribe', 'speak', 'guard',
+];
+export const DESIGNATION_CAPABILITIES = ['visual', 'pdf', 'audio-in', 'audio-bidir', 'tts', 'stt'];
+
+// Class-level fallback layout (Drew's route-pool suggestions on #14432,
+// applied 2026-11-26; full table in .opencode/route-fallbacks.md).
+// A class route's regular chain runs first and completely; its fallback
+// targets are a second pass, walked transitively under a per-call visited
+// set and terminating at specialist. The graph is intentionally acyclic:
+// workhorse no longer falls into scout, scout falls through background to
+// workhorse, and speed ends at the cheap last-resort pair before specialist.
+// Keep this table and config in lockstep - check (a) below fails on drift.
 export const CLASS_FALLBACKS = {
   small: ['speed'],
-  speed: ['workhorse', 'summit', 'specialist'],
-  workhorse: ['scout', 'specialist'],
+  speed: ['workhorse-last-resort', 'specialist'],
+  workhorse: ['specialist'],
   summit: ['specialist'],
   specialist: [],
-  scout: ['background', 'workhorse'],
+  scout: ['background'],
   background: ['workhorse'],
 };
 const CLASS_FALLBACK_PAIRS = new Set(
@@ -166,6 +170,10 @@ export function inspectFallbackLayout(modelRoutes, fallbacks = CLASS_FALLBACKS, 
 
   return issues;
 }
+// Time-of-day window classes (#9378 stage 2): the closed vocabulary
+// for a model-route window's optional `class` (absent means peak).
+export const WINDOW_CLASSES = ['peak', 'off-peak', 'preburn'];
+
 // Keep aligned with bin/opencode-route-proxy.mjs BUILTIN_PROVIDERS. These
 // concrete provider ids take precedence over a same-named provider route.
 const BUILTIN_PROVIDER_IDS = new Set(['opencode-go', 'openai', 'deepseek', 'groq', 'openrouter', 'meta']);
@@ -254,6 +262,248 @@ function formatCandidate(candidate) {
   return `${candidate.provider}/${candidate.model}${candidate.effort ? `#${candidate.effort}` : ''}`;
 }
 
+// Wall scoping (code#13693, 2026-11-23): the closed vocabulary for a
+// provider block's optional "wallScope" declaration -- the scope at
+// which the provider's quota cap actually binds. Absent = inferred
+// scope; a declared value is the override consumed when inference gets
+// a provider wrong.
+export const WALL_SCOPES = ['per-model', 'provider', 'account'];
+
+// The credential / endpoint declarations a provider block can carry, by
+// the labels the alias invariant compares. An alias must inherit these
+// from its base silently: re-declaring one with a DIFFERENT value would
+// quietly give the alias a different credential or endpoint than the
+// account it is an alias of.
+function providerConnectionDeclarations(block) {
+  const declarations = {};
+  if (!isObject(block)) return declarations;
+  const record = (label, value) => {
+    if (value !== undefined) declarations[label] = value;
+  };
+  record('apiKey', block.apiKey);
+  record('credential', block.credential);
+  record('baseURL', block.baseURL);
+  record('api', block.api);
+  if (isObject(block.options)) {
+    record('options.apiKey', block.options.apiKey);
+    record('options.credential', block.options.credential);
+    record('options.baseURL', block.options.baseURL);
+    record('options.api', block.options.api);
+  }
+  return declarations;
+}
+
+// Every concrete provider/model seat named anywhere in model_routes:
+// string targets, object targets, and weights keys (a weights key is a
+// seat the pool weighs, so it names the leaf exactly as a target does).
+function routeSeatReferences(config) {
+  const seats = [];
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return seats;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route)) continue;
+    if (Array.isArray(route.targets)) {
+      route.targets.forEach((target, index) => {
+        const reference = typeof target === 'string' ? target : isObject(target) ? target.model : null;
+        const parsed = typeof reference === 'string' ? splitModelReference(reference) : null;
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" targets[${index}]` });
+      });
+    }
+    if (isObject(route.weights)) {
+      for (const key of Object.keys(route.weights)) {
+        const parsed = splitModelReference(key);
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" weights` });
+      }
+    }
+  }
+  return seats;
+}
+
+// Explicit per-route seat weights, keyed "route|provider/model".
+// Weights keys name the leaf exactly as targets do (see
+// routeSeatReferences); the paid-tail exemption in rule (c) compares
+// the free alias seat's weight against the base seat's weight within
+// one route, so it needs the numbers, not just the references.
+function routeSeatWeights(config) {
+  const weights = new Map();
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return weights;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route) || !isObject(route.weights)) continue;
+    for (const [key, value] of Object.entries(route.weights)) {
+      const parsed = splitModelReference(key);
+      if (parsed && typeof value === 'number') {
+        weights.set(`${routeName}|${parsed.provider}/${parsed.model}`, value);
+      }
+    }
+  }
+  return weights;
+}
+
+// Wall-scope declarations and the free/paid alias split invariants:
+// (a) a wallScope value outside the closed vocabulary fails, naming
+//     the provider;
+// (b) an instanceOf alias whose id ends in -free must not declare an
+//     apiKey/credential or baseURL that differs from its base
+//     provider's -- inheriting silently is the correct shape;
+// (c) a model in a -free alias's catalog must not also be seated under
+//     the paid base id anywhere in the routes -- that seat would let a
+//     wall on the base bench the free model the split exists to free.
+//     Paid-tail exemption (code#13677, 2026-11-23): when free and paid
+//     are billing states of the SAME model on the SAME account (the
+//     OpenAI data-sharing shape -- complimentary tokens first, paid
+//     after), the base seat is the designed late fallback, not a
+//     split violation, provided the same route also seats the model
+//     via the -free alias at a STRICTLY GREATER explicit weight. The
+//     exemption is fail-closed: either seat missing a weight, or the
+//     base seat weighing as much as or more than the free seat, keeps
+//     the failure.
+export function inspectProviderWallRules(config) {
+  const issues = [];
+  const providers = isObject(config?.provider) ? config.provider : {};
+  const wallScopeSet = new Set(WALL_SCOPES);
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!isObject(block)) continue;
+    if (block.wallScope !== undefined && !wallScopeSet.has(block.wallScope)) {
+      issues.push(
+        `wallScope: provider "${providerID}" declares unknown wallScope ${JSON.stringify(block.wallScope)} (closed vocabulary: ${WALL_SCOPES.join(', ')})`,
+      );
+    }
+  }
+
+  const seats = routeSeatReferences(config);
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!providerID.endsWith('-free') || !isObject(block) || typeof block.instanceOf !== 'string') continue;
+    const baseID = block.instanceOf;
+    const base = providers[baseID];
+
+    const aliasDeclarations = providerConnectionDeclarations(block);
+    const baseDeclarations = providerConnectionDeclarations(base);
+    for (const [label, value] of Object.entries(aliasDeclarations)) {
+      if (JSON.stringify(value) !== JSON.stringify(baseDeclarations[label])) {
+        issues.push(
+          `wallScope: free alias "${providerID}" declares ${label} ${JSON.stringify(value)} differing from its base provider "${baseID}" (${JSON.stringify(baseDeclarations[label]) ?? 'undeclared'}); a -free alias must inherit its base's credential and endpoint silently`,
+        );
+      }
+    }
+
+    if (isObject(block.models) && isObject(base)) {
+      const weights = routeSeatWeights(config);
+      for (const model of Object.keys(block.models)) {
+        for (const seat of seats) {
+          if (seat.provider !== baseID || seat.model !== model) continue;
+          const freeWeight = weights.get(`${seat.route}|${providerID}/${model}`);
+          const baseWeight = weights.get(`${seat.route}|${baseID}/${model}`);
+          if (freeWeight !== undefined && baseWeight !== undefined && baseWeight < freeWeight) continue;
+          issues.push(
+            `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it -- or, for a same-model paid tail, seat it via the alias in the same route at a strictly greater weight (the free-first / paid-tail shape, code#13677)`,
+          );
+        }
+      }
+    }
+  }
+  return issues;
+}
+
+// The model ids in a provider's effective catalog: an explicit
+// models map wins; when absent, follow instanceOf to the base
+// provider (the same walk catalogInfo makes). Null when the chain
+// cannot be resolved from the tracked config.
+function effectiveCatalogModels(config, providerID) {
+  const seen = new Set();
+  let id = providerID;
+  while (typeof id === 'string' && id && !seen.has(id)) {
+    seen.add(id);
+    const block = config.provider?.[id];
+    if (!isObject(block)) return null;
+    if (isObject(block.models)) return Object.keys(block.models);
+    id = block.instanceOf;
+  }
+  return null;
+}
+
+// Complimentary-token metering declarations (code#13839): a
+// provider block's optional "tokenMetering" — named groups of
+// models, each with the daily token bucket the group draws on and
+// a safety margin — is what the route proxy's metering wall
+// consumes. The proxy tolerates a malformed declaration by never
+// engaging (and naming it at load); this guard is the fail-closed
+// half: a malformed declaration must not land in the tracked
+// config at all. Rules:
+// (a) the declaration is an object with a non-empty "groups"
+//     object; each group is an object whose dailyTokens is a
+//     positive integer and whose marginTokens (when present) is
+//     an integer >= 0 and < dailyTokens;
+// (b) each group's models is a non-empty array of model ids, and
+//     no model is mapped to more than one group;
+// (c) when the provider's effective catalog resolves from the
+//     tracked config, every mapped model is in the catalog and
+//     every catalog model is mapped — an unmapped catalog model
+//     could never wall and would bill silently past the bucket.
+export function inspectProviderMeteringRules(config) {
+  const issues = [];
+  const providers = isObject(config?.provider) ? config.provider : {};
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!isObject(block) || block.tokenMetering === undefined) continue;
+    const prefix = `tokenMetering: provider "${providerID}"`;
+    const metering = block.tokenMetering;
+    if (!isObject(metering) || !isObject(metering.groups) || !Object.keys(metering.groups).length) {
+      issues.push(`${prefix} declares tokenMetering without a non-empty "groups" object`);
+      continue;
+    }
+    const mapped = new Map();
+    for (const [groupName, group] of Object.entries(metering.groups)) {
+      if (!isObject(group)) {
+        issues.push(`${prefix} group "${groupName}" is not an object`);
+        continue;
+      }
+      if (!Number.isInteger(group.dailyTokens) || group.dailyTokens <= 0) {
+        issues.push(
+          `${prefix} group "${groupName}" declares dailyTokens ${JSON.stringify(group.dailyTokens)} (expected a positive integer)`,
+        );
+      }
+      const margin = group.marginTokens ?? 0;
+      if (!Number.isInteger(margin) || margin < 0 || (Number.isInteger(group.dailyTokens) && margin >= group.dailyTokens)) {
+        issues.push(
+          `${prefix} group "${groupName}" declares marginTokens ${JSON.stringify(group.marginTokens)} (expected an integer >= 0 and < dailyTokens)`,
+        );
+      }
+      if (!Array.isArray(group.models) || !group.models.length || !group.models.every((m) => typeof m === 'string' && m)) {
+        issues.push(`${prefix} group "${groupName}" declares models ${JSON.stringify(group.models)} (expected a non-empty array of model ids)`);
+        continue;
+      }
+      for (const model of group.models) {
+        if (mapped.has(model)) {
+          issues.push(
+            `${prefix} maps model "${model}" to both group "${mapped.get(model)}" and group "${groupName}"; a model belongs to exactly one complimentary group`,
+          );
+        } else {
+          mapped.set(model, groupName);
+        }
+      }
+    }
+    const catalog = effectiveCatalogModels(config, providerID);
+    if (catalog) {
+      const catalogSet = new Set(catalog);
+      for (const [model, groupName] of mapped) {
+        if (!catalogSet.has(model)) {
+          issues.push(
+            `${prefix} maps model "${model}" (group "${groupName}") which is not in the provider's catalog; the wall would watch a model the provider does not serve`,
+          );
+        }
+      }
+      for (const model of catalog) {
+        if (!mapped.has(model)) {
+          issues.push(
+            `${prefix} leaves catalog model "${model}" unmapped; every model in a metered provider's catalog must belong to exactly one group, or it can never wall and bills silently past the bucket`,
+          );
+        }
+      }
+    }
+  }
+  return issues;
+}
+
 export function inspectRouteRules(config) {
   const issues = [];
   const issueSet = new Set();
@@ -284,11 +534,11 @@ export function inspectRouteRules(config) {
         return [];
       }
       if (stack.includes(parsed.model)) {
-        // Re-entry through a declared class fallback edge (e.g.
-        // workhorse -> scout -> workhorse) is the designed per-call
-        // visited-set semantics, not a cycle: the runtime expander
-        // prunes the re-entry. The traversal itself is bounded by
-        // the seen set below either way.
+        // The runtime route expander prunes re-entry through a declared
+        // class-fallback edge. The canonical fallback graph is acyclic;
+        // this guard keeps future declared fallbacks from being reported
+        // as ordinary composition cycles. The traversal remains bounded
+        // by the seen set below either way.
         if (!CLASS_FALLBACK_PAIRS.has(`${stack.at(-1)}->${parsed.model}`)) {
           addIssue(`${tier}: model-route cycle ${[...stack, parsed.model].join(' -> ')}`);
         }
@@ -458,6 +708,37 @@ export function inspectRouteRules(config) {
 
   // Class fallback layout + whole-graph composition cycle pass.
   // Cycles the tier resolver already reported are not repeated.
+  // Time-of-day window metadata (#9378 stage 2): a window's `class`
+  // must be in the closed vocabulary, and a route's `windows`
+  // binding must be a list of known window names (the proxy ignores
+  // unknown binding names at record time).
+  if (isObject(modelRouteWindows)) {
+    for (const [name, window] of Object.entries(modelRouteWindows)) {
+      if (!isObject(window)) {
+        addIssue(`window: model-route window "${name}" must be an object with start/end`);
+        continue;
+      }
+      if (window.class !== undefined && !WINDOW_CLASSES.includes(window.class)) {
+        addIssue(
+          `window: model-route window "${name}" has unknown class ${JSON.stringify(window.class)} (expected one of ${WINDOW_CLASSES.join(', ')})`,
+        );
+      }
+    }
+  }
+  if (isObject(modelRoutes)) {
+    for (const [routeName, route] of Object.entries(modelRoutes)) {
+      if (!isObject(route) || route.windows === undefined) continue;
+      if (!Array.isArray(route.windows) || !route.windows.every((w) => typeof w === 'string' && w)) {
+        addIssue(`route "${routeName}": "windows" must be a list of model-route window names`);
+        continue;
+      }
+      for (const w of route.windows) {
+        if (!isObject(modelRouteWindows) || !Object.hasOwn(modelRouteWindows, w)) {
+          addIssue(`route "${routeName}": "windows" names unknown model-route window "${w}"`);
+        }
+      }
+    }
+  }
   const reportedCycleKeys = new Set();
   for (const issue of issues) {
     const match = /model-route cycle (.+)$/.exec(issue);
@@ -466,6 +747,102 @@ export function inspectRouteRules(config) {
   for (const issue of inspectFallbackLayout(modelRoutes, CLASS_FALLBACKS, reportedCycleKeys)) {
     addIssue(issue);
   }
+
+  // Purpose designations (code#13675, 2026-11-23): walk EVERY pool in
+  // model_routes (not only the four tiers), resolving targets with the
+  // same resolver as the tier pass (provider-route expansion and
+  // instanceOf catalog following included), and enforce:
+  // (a) a leaf whose model id has a designation must have the pool's
+  //     purpose in its purposes list;
+  // (b) purposes/capabilities values (designation entries and pool
+  //     purpose fields) must be in the closed vocabularies above;
+  // (c) a model designated without chat must never resolve into a
+  //     chat-purpose pool -- rule (a) applied to chat pools, which
+  //     mechanises the systemone decision-only convention.
+  const designations = activeMap(config, 'model_designations');
+  if (designations !== undefined && designations !== null) {
+    if (!isObject(designations)) {
+      addIssue('designation: "model_designations" must be an object keyed by bare model id');
+    } else {
+      const purposeSet = new Set(DESIGNATION_PURPOSES);
+      const capabilitySet = new Set(DESIGNATION_CAPABILITIES);
+      for (const [modelId, entry] of Object.entries(designations)) {
+        if (!isObject(entry)) {
+          addIssue(`designation: model "${modelId}" designation must be an object with purposes/capabilities lists`);
+          continue;
+        }
+        if (!Array.isArray(entry.purposes) || entry.purposes.length === 0) {
+          addIssue(`designation: model "${modelId}" must declare a non-empty purposes list`);
+        } else {
+          for (const purpose of entry.purposes) {
+            if (!purposeSet.has(purpose)) {
+              addIssue(
+                `designation: model "${modelId}" has unknown purpose ${JSON.stringify(purpose)} (closed vocabulary: ${DESIGNATION_PURPOSES.join(', ')})`,
+              );
+            }
+          }
+        }
+        if (entry.source !== undefined && (typeof entry.source !== 'string' || entry.source.trim().length === 0)) {
+          addIssue(`designation: model "${modelId}" source must be a non-empty string naming its asserting source`);
+        }
+        if (entry.capabilities !== undefined) {
+          if (!Array.isArray(entry.capabilities)) {
+            addIssue(`designation: model "${modelId}" capabilities must be a list`);
+          } else {
+            for (const capability of entry.capabilities) {
+              if (!capabilitySet.has(capability)) {
+                addIssue(
+                  `designation: model "${modelId}" has unknown capability ${JSON.stringify(capability)} (closed vocabulary: ${DESIGNATION_CAPABILITIES.join(', ')})`,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      if (isObject(modelRoutes)) {
+        // Resolving non-tier pools can surface ordinary resolver
+        // findings (missing tracked models, windows, cycles) that the
+        // tier pass deliberately does not judge for pools it never
+        // reaches. This pass judges designations only, so resolver
+        // findings first raised here are pruned below; designation
+        // findings keep the "designation:" prefix.
+        const issuesBeforeWalk = new Set(issues);
+        for (const [poolName, route] of Object.entries(modelRoutes)) {
+          if (!isObject(route)) continue;
+          const poolPurpose = route.purpose ?? 'chat';
+          if (!purposeSet.has(poolPurpose)) {
+            addIssue(
+              `designation: pool "${poolName}" declares unknown purpose ${JSON.stringify(route.purpose)} (closed vocabulary: ${DESIGNATION_PURPOSES.join(', ')})`,
+            );
+            continue;
+          }
+          const candidates = resolve(`opencode-route/${poolName}`, null, poolName, poolName, [], new Set());
+          for (const candidate of candidates) {
+            const entry = designations[candidate.model];
+            if (!isObject(entry) || !Array.isArray(entry.purposes)) continue;
+            if (!entry.purposes.includes(poolPurpose)) {
+              addIssue(
+                `designation: model "${candidate.model}" is designated for [${entry.purposes.join(', ')}] but resolves into pool "${poolName}" (purpose "${poolPurpose}") via ${candidate.trace}`,
+              );
+            }
+          }
+        }
+        for (let index = issues.length - 1; index >= 0; index -= 1) {
+          if (!issuesBeforeWalk.has(issues[index]) && !issues[index].startsWith('designation:')) {
+            issueSet.delete(issues[index]);
+            issues.splice(index, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // Wall-scope declarations + free/paid alias invariants (code#13693).
+  for (const issue of inspectProviderWallRules(config)) addIssue(issue);
+
+  // Complimentary-token metering declarations (code#13839).
+  for (const issue of inspectProviderMeteringRules(config)) addIssue(issue);
 
   return { tiers, issues };
 }

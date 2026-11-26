@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/refdoc"
 )
 
 var issueRe = regexp.MustCompile(`^#[0-9]+$`)
@@ -176,7 +178,13 @@ func Summary(reqs []Requirement, st map[Cell]Status) map[string]map[string]map[s
 	return out
 }
 
+// mdEscape makes a coverage detail safe for a matrix table cell:
+// angle-bracket placeholders become entities (via refdoc.EscapeAngles,
+// so the book renderer shows <id> instead of eating it as a tag),
+// newlines fold to spaces, and pipes are normalised to the escaped
+// form so a cell can never break the table's shape.
 func mdEscape(s string) string {
+	s = refdoc.EscapeAngles(s)
 	s = strings.ReplaceAll(s, "\n", " ")
 	return strings.ReplaceAll(strings.ReplaceAll(s, `\|`, "|"), "|", `\|`)
 }

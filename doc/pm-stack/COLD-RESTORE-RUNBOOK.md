@@ -12,7 +12,14 @@ no second Docker host exists on this seat; see the drill record).
 Design record:
 `doc/2026-11-01T21-12-00Z_pm-stack-durability-host-independence/` (#1258).
 A repeatable rehearsal driver lives at
-`pm-stack/scripts/restore-rehearsal.sh`.
+`pm-stack/scripts/restore-rehearsal.sh`. The cutover that precedes a
+post-cutover restore is gated by `pm-stack/scripts/kaneo-cutover.sh`
+(plan §4): promotion is refused unless `pm-stack/scripts/fence-check.sh`
+reports FENCED, the target's table/row counts equal the source's, and the
+latest backup record is a complete generation with verified local, R2, and
+Drive copies finished within 36 hours (override only for a documented window
+decision). Pass its path with `--backup-record-file`; the receipt records the
+restore-point timestamp without exposing a DSN.
 
 Failover posture (Drew's #1258 rulings, 2026-11-03): all PM-stack state to
 Supabase `muse-dev2`, nothing laptop-only; **tested cold restore, no warm

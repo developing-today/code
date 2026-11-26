@@ -21,6 +21,16 @@ cut the scan. The bge-small set remains in the publish as a dormant
 fallback (--model BAAI/bge-small-en-v1.5 --vec-table
 vec_bge_small_384_f32 --embedder fastembed).
 
+Recorded-row note (#13283): the #5733 gate's verdict record
+(eval/gate-5733-results.md) records a different golden-311 row —
+recall@10 183/311, MRR 0.3640 — under the same "production hybrid"
+label. That row belongs to the Python eval lineage's configuration
+(branch depth 30, RRF k=60, vectors truncated to 384 dimensions),
+not to this production shape (k=10, pool 100 per branch, full 768
+dimensions). The two rows are different configurations, not a
+measurement error; a golden-311 number cited without its
+configuration is incomplete.
+
 Privacy model (docs/atlas-provenance-and-scale-design-2026-10-31.md):
 sensitivity is a caller ceiling, not a display hint. The default ceiling
 is `personal` — local-only and secret-bearing chunks are excluded
@@ -109,6 +119,20 @@ QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 VEC_TABLE = "vec_snowflake_m_v2_768_f32"
 RRF_K = 10
 SENS_ORDER = ["shareable", "personal", "local-only", "secret-bearing"]
+# Canonical ladder names (#13506), accepted as caller ceilings only.
+# Stored labels, SQL parameters and emitted JSON keep SENS_ORDER.
+SENS_CANONICAL = {
+    "public": "shareable",
+    "internal": "personal",
+    "private": "local-only",
+    "sensitive": "secret-bearing",
+}
+
+
+def ceiling_name(value):
+    """Map a canonical ceiling name to its legacy spelling; pass others through."""
+    return SENS_CANONICAL.get(value, value)
+
 DISCLOSURE_CONTEXT_CEILINGS = {
     "fleet-internal": "local-only",
     "hosted-per-user": "personal",
@@ -128,6 +152,7 @@ def effective_sensitivity_ceiling(context, caller_ceiling):
     atlas-core's outbound default.
     """
     context_ceiling = DISCLOSURE_CONTEXT_CEILINGS.get(context, "shareable")
+    caller_ceiling = ceiling_name(caller_ceiling)
     if caller_ceiling not in SENS_ORDER:
         return "shareable"
     return min((context_ceiling, caller_ceiling), key=SENS_ORDER.index)
@@ -655,7 +680,7 @@ class Filters:
         self.projects = split_csv(getattr(args, "project", None))
         self.clients = split_csv(getattr(args, "client", None))
         self.context = getattr(args, "context", "local-owner")
-        caller_ceiling = getattr(args, "max_sensitivity", "secret-bearing")
+        caller_ceiling = ceiling_name(getattr(args, "max_sensitivity", "secret-bearing"))
         if caller_ceiling not in SENS_ORDER:
             die(f"--max-sensitivity must be one of {SENS_ORDER}")
         self.max_sensitivity = caller_ceiling
@@ -1520,6 +1545,7 @@ def add_disclosure_args(p, max_sensitivity_default):
     )
     p.add_argument(
         "--max-sensitivity",
+        type=ceiling_name,
         choices=SENS_ORDER,
         default=max_sensitivity_default,
         help=f"caller clearance ceiling in {'<'.join(SENS_ORDER)} (default {max_sensitivity_default})",

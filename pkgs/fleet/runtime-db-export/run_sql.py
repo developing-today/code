@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a SQL file against the Turso DB `fleet-mirror` (repointed
-2026-11-06 from muse-dev2 Supabase; PG version kept as run_sql_pg.py).
+2026-11-06 from muse-dev2 Supabase; the PG runner was removed 2026-11-23
+under code#13245 once the muse-dev2 project itself was gone).
 Usage: run_sql.py <sql-file>
 
 The job's SQL files are written in the old PG dialect; this runner
@@ -12,6 +13,7 @@ Statements run one by one over the libsql pipeline (see
 turso_client.py); SELECT results print as JSON lines so callers can
 read reconciliation counts from stdout.
 """
+
 import json
 import re
 import sys

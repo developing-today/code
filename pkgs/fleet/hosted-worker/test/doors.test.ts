@@ -17,7 +17,9 @@
 // #12591 landed it — the table is now EMPTY: every component-C
 // door is live. The 501 test below iterates zero routes and
 // stands as the invariant's guard for any future skeleton door;
-// the sync door's behaviour is covered by test/sync.test.ts.
+// the sync door's behaviour is covered by test/sync.test.ts. The
+// bridge door (#14373) joined DOOR_ROUTES live, never a stub; its
+// behaviour is covered by test/bridge.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -35,6 +37,9 @@ const DOOR_ROUTES: { method: string; path: string; fillingIssue: string }[] = [
   { method: "POST", path: "/v1/ingestion/github", fillingIssue: "#12590" },
   { method: "POST", path: "/v1/sync/project", fillingIssue: "#12591" },
   { method: "POST", path: "/v1/sync/queue-github", fillingIssue: "#12591" },
+  { method: "POST", path: "/v1/bridge/send", fillingIssue: "#14373" },
+  { method: "GET", path: "/v1/bridge/agents", fillingIssue: "#14373" },
+  { method: "GET", path: "/v1/bridge/messages", fillingIssue: "#14373" },
 ];
 
 const STUB_ROUTES = DOOR_ROUTES.filter(
@@ -44,15 +49,15 @@ const STUB_ROUTES = DOOR_ROUTES.filter(
     r.path !== "/v1/queue/health" &&
     r.path !== "/v1/ingestion/github" &&
     r.path !== "/v1/sync/project" &&
-    r.path !== "/v1/sync/queue-github",
+    r.path !== "/v1/sync/queue-github" &&
+    r.path !== "/v1/bridge/send" &&
+    r.path !== "/v1/bridge/agents" &&
+    r.path !== "/v1/bridge/messages",
 );
 
 test("every door route refuses an unauthenticated request", async () => {
   for (const r of DOOR_ROUTES) {
-    const res = await dispatch(
-      new Request(`https://fleet-hosted.test${r.path}`, { method: r.method }),
-      h.deps,
-    );
+    const res = await dispatch(new Request(`https://fleet-hosted.test${r.path}`, { method: r.method }), h.deps);
     assert.equal(res.status, 401, `${r.method} ${r.path} without a token`);
   }
 });
@@ -63,10 +68,7 @@ test("every unfilled door route stubs 501 naming its filling issue for an authen
     assert.equal(res.status, 501, `${r.method} ${r.path} with a valid token`);
     const body = (await res.json()) as { error: string; message: string };
     assert.equal(body.error, "not_implemented");
-    assert.ok(
-      body.message.includes(r.fillingIssue),
-      `${r.method} ${r.path} stub must name ${r.fillingIssue}`,
-    );
+    assert.ok(body.message.includes(r.fillingIssue), `${r.method} ${r.path} stub must name ${r.fillingIssue}`);
   }
 });
 

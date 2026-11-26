@@ -6,11 +6,7 @@ import { applyEvent, type ProjectorStore } from "./projector";
 import { validSignature, readBoundedBody, jsonResponse } from "./webhook";
 import * as store from "./store";
 import { reconcileRepos } from "./reconcile";
-import {
-  operationEnvelopeFor,
-  type FleetOperationSink,
-  type OperationReceipt,
-} from "./operation-forwarder";
+import { operationEnvelopeFor, type FleetOperationSink, type OperationReceipt } from "./operation-forwarder";
 
 export interface ServerEnv extends Record<string, string | undefined> {
   GITHUB_WEBHOOK_SECRET?: string;
@@ -341,6 +337,14 @@ async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: Serv
     } catch {
       await store.recordDelivery(db, { deliveryId, event, outcome: "error", detail: "invalid_json" });
       return jsonResponse(400, { error: "invalid_json" });
+    }
+    // A signed body that parses to null, an array or a scalar is not a
+    // webhook event (#7983 item 4): applyEvent and the operation
+    // forwarder read payload fields, so it is refused here, audited like
+    // invalid JSON, instead of surfacing later as a 500 apply_failed.
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      await store.recordDelivery(db, { deliveryId, event, outcome: "error", detail: "invalid_payload" });
+      return jsonResponse(400, { error: "invalid_payload" });
     }
     // DSP-01 (#9445): a signed event may also carry a Fleet command.
     // Projection delivery dedupe is not command acceptance, so the

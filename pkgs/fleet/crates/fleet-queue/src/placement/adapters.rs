@@ -63,13 +63,18 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
 /// The dispatch_id for a surface whose workflow declares a
 /// `dispatch_id` input (registry flag `dispatch_id_input`, set for
 /// org-run.yml and dezren39/fleet's fleet-run.yml, which surface it
-/// in the run display title via `run-name:` — issue #8371). A fresh
-/// fp_ handle per dispatch. Surfaces without the flag get None:
+/// in the run display title via `run-name:` — issue #8371). The job's
+/// placement session handle when it carries one (#13178), else a
+/// fresh fp_ handle. Surfaces without the flag get None:
 /// GitHub rejects dispatch inputs the workflow does not declare,
 /// so those keep the snapshot-exclusion fallback in correlate_run.
-fn dispatch_id_for(surface: &Value) -> Option<String> {
+pub(super) fn dispatch_id_for(surface: &Value, job: &Job) -> Option<String> {
     if surface.get("dispatch_id_input").and_then(|v| v.as_bool()) == Some(true) {
-        Some(new_handle(&rand_source::URandom))
+        Some(
+            job.session_handle
+                .clone()
+                .unwrap_or_else(|| new_handle(&rand_source::URandom)),
+        )
     } else {
         None
     }
@@ -182,6 +187,9 @@ impl GithubActionsAdapter {
                     inputs.insert("previous_run_repo".into(), json!(repo));
                 }
             }
+            if let Some(minutes) = job.timeout_minutes {
+                inputs.insert("timeout_minutes".into(), json!(minutes.to_string()));
+            }
             if let Some(id) = dispatch_id {
                 inputs.insert("dispatch_id".into(), json!(id));
             }
@@ -287,7 +295,7 @@ impl GithubActionsAdapter {
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();
         let token = surface_token(s, gh).ok_or_else(|| Die(no_token_reason(s)))?;
-        let dispatch_id = dispatch_id_for(s);
+        let dispatch_id = dispatch_id_for(s, job);
         let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
         // Correlate the created run with THIS dispatch (Codex P1
         // on PR #8325, exact-id fix in issue #8371): when the
@@ -502,13 +510,57 @@ impl Adapter for GithubActionsAdapter {
             ctx.owner_cap(owner)
         };
         let active = running + queued;
-        let free = (cap - active).max(0);
-        Capacity {
-            summary: format!(
-                "owner {owner}: {active} active job(s) on fleet runner hosts \
-                 (proxy for account load) vs cap {cap} -> {free} free slot(s)"
+        // A numeric free-slot estimate requires complete load
+        // knowledge: measured reads, an explicitly labeled
+        // simulation, or a known subtotal that already proves
+        // saturation. Anything else reports unknown capacity
+        // instead of dressing an unreadable owner up as idle
+        // (issue #13611).
+        let coverage = ctx.owner_load_coverage.get(owner);
+        let free_slots = coverage.and_then(|c| c.estimated_free(cap));
+        let summary = match coverage {
+            Some(c) => match c.status {
+                LoadCoverageStatus::Measured => format!(
+                    "owner {owner}: {active} active job(s) on fleet runner hosts \
+                     (proxy for account load) vs cap {cap} -> {} free slot(s)",
+                    free_slots.unwrap_or(0)
+                ),
+                LoadCoverageStatus::Simulated => format!(
+                    "owner {owner}: {active} active job(s) (simulated via \
+                     --assume-owner-load, not live counts) vs cap {cap} -> {} free slot(s)",
+                    free_slots.unwrap_or(0)
+                ),
+                LoadCoverageStatus::Partial => {
+                    if free_slots == Some(0) {
+                        format!(
+                            "owner {owner}: load only partially observed, but the known \
+                             subtotal of {active} active job(s) already reaches cap {cap} \
+                             — saturated on the evidence available (missing reads: {})",
+                            c.missing_reads.join("; ")
+                        )
+                    } else {
+                        format!(
+                            "owner {owner}: load partially observed — at least {active} \
+                             active job(s) known vs cap {cap}; free slots unknown \
+                             (missing reads: {})",
+                            c.missing_reads.join("; ")
+                        )
+                    }
+                }
+                LoadCoverageStatus::Unknown => format!(
+                    "owner {owner}: load unknown — no runner-host read succeeded \
+                     (missing reads: {}); free slots unknown, not zero load",
+                    c.missing_reads.join("; ")
+                ),
+            },
+            None => format!(
+                "owner {owner}: load unknown — no coverage recorded for this owner; \
+                 free slots unknown, not zero load"
             ),
-            free_slots: Some(free),
+        };
+        Capacity {
+            summary,
+            free_slots,
             remaining_total_minutes: None,
         }
     }

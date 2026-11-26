@@ -84,11 +84,7 @@ function assertAgentCeiling(me: CallerContext, body: JsonObject): void {
   if (me.kind !== "agent") return;
   const lane = body["lane"];
   if (typeof lane === "string" && me.lane && lane !== me.lane) {
-    throw new FailClosed(
-      403,
-      "lane_beyond_credential",
-      "request lane differs from the agent credential's lane",
-    );
+    throw new FailClosed(403, "lane_beyond_credential", "request lane differs from the agent credential's lane");
   }
   const sessionId = body["session_id"];
   if (typeof sessionId === "string" && me.sessionId && sessionId !== me.sessionId) {
@@ -111,13 +107,11 @@ function verbHandler(verb: string): RouteDef["handler"] {
       depProbe: deps.queueDepProbe ?? NO_DEP_PROBE,
       bindingId: me.bindingId,
     };
-    return json(executeQueueVerb(store, verb, body, env));
+    return json(await executeQueueVerb(store, verb, body, env));
   };
 }
 
-function fallbackHandler(
-  run: (ctx: FallbackCtx, req: JsonObject) => Promise<FallbackResult>,
-): RouteDef["handler"] {
+function fallbackHandler(run: (ctx: FallbackCtx, req: JsonObject) => Promise<FallbackResult>): RouteDef["handler"] {
   return async (req, ctx, deps) => {
     caller(ctx);
     if (!deps.githubComments) {

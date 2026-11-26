@@ -33,6 +33,20 @@ use crate::{
     DEFAULT_REPO, EXIT_NO_WORK, EXIT_OK, Out, R, World, argv, check_name, check_repo, parse, usage,
 };
 
+/// The task-it-or-queue-it rule handed to an agent woken by a pushed
+/// command (design §4.6, #14372). Verbatim copy of fleet-bridge's
+/// WORK_RULE; the same text stands in the fleet book
+/// (pkgs/fleet/book/reference/bridge.md). Edit all three together.
+pub const PUSH_WORK_RULE: &str = "\
+Task it or queue it. An instruction is a work item: do the work now, in \
+this session, and reply — or queue it as a repo-task/v1 packet whose \
+context_refs carry the bridge surface, the message id and the batch, and \
+reply with the task id. Record the outcome with fleet bridge work: \
+--state acted for work done in-session, --state queued --task <id> for \
+queued work, --state done when the work is finished. An instruction \
+that is neither acted on nor queued is a defect: it stays at received, \
+where the owner can see it stuck in the pipeline.";
+
 /// Labels that hold an issue (FDR-0012): a person set them on purpose.
 pub const HOLD_LABELS: [&str; 3] = ["held", "user/owned", "do-not-auto-edit"];
 /// Labels on an issue that indexes other work and is not itself a
@@ -448,6 +462,12 @@ pub(super) fn default_lane(agent: &str) -> String {
 /// the mailbox, but a known lane may belong to a shared queue worker
 /// (for example `code-i` belongs to `repo-worker-code`).
 fn registered_lane_worker(lane: &str) -> Option<&'static str> {
+    // The `oc-*` scheduled lanes carry a registered family under an
+    // `oc-` prefix (`oc-code-02`); the broker binds them to the same
+    // shared worker as the bare family (#13073).
+    if let Some(inner) = lane.strip_prefix("oc-") {
+        return oc_lane_worker(inner);
+    }
     if matches!(lane, "not-code-a" | "not-code-g") {
         return Some("repo-worker-nix");
     }
@@ -457,11 +477,25 @@ fn registered_lane_worker(lane: &str) -> Option<&'static str> {
     if lane == "not-code-d" {
         return Some("repo-worker-openchamber");
     }
+    // The constant OpenChamber lanes (`oc-code-01` .. `oc-code-08`)
+    // belong to the code worker; their suffix is a number, not the
+    // single letter the family split below expects (#6853).
+    if let Some(suffix) = lane.strip_prefix("oc-code-") {
+        if !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) {
+            return Some("repo-worker-code");
+        }
+    }
 
     let (family, suffix) = lane.rsplit_once('-')?;
     if suffix.len() != 1 || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
         return None;
     }
+    family_worker(family)
+}
+
+/// The shared worker a registered lane family binds to, by family
+/// name alone.
+fn family_worker(family: &str) -> Option<&'static str> {
     match family {
         "code" | "any" | "not-code" => Some("repo-worker-code"),
         "opencode" => Some("repo-worker-opencode"),
@@ -469,6 +503,22 @@ fn registered_lane_worker(lane: &str) -> Option<&'static str> {
         "nix" => Some("repo-worker-nix"),
         _ => None,
     }
+}
+
+/// An `oc-*` lane with the prefix stripped. A letter suffix resolves
+/// exactly like the bare lane (`oc-not-code-a` is `not-code-a` under
+/// the prefix); the scheduled lanes' numeric suffix (`oc-code-02`)
+/// resolves by family. An unknown family stays unregistered, so the
+/// caller still falls back to the agent name.
+fn oc_lane_worker(inner: &str) -> Option<&'static str> {
+    if let Some(worker) = registered_lane_worker(inner) {
+        return Some(worker);
+    }
+    let (family, suffix) = inner.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    family_worker(family)
 }
 
 /// How many listed entries in a row may turn out stale in one run
@@ -498,6 +548,9 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ],
     )?;
     a.no_positional("next")?;
@@ -564,6 +617,11 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     "command_id": id,
                     "instructions": message.get("body").and_then(Value::as_str).unwrap_or(""),
                     "message": message,
+                    // The task-it-or-queue-it rule (design §4.6, #14372):
+                    // the same text the work verb's help and the fleet
+                    // book carry (fleet-bridge's WORK_RULE) — keep all
+                    // three verbatim-consistent.
+                    "rule": PUSH_WORK_RULE,
                 });
                 let then = vec![
                     format!(
@@ -572,6 +630,11 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     format!(
                         "fleet bridge post --agent {agent} --reply-to {id} \"could not: <reason>\""
                     ),
+                    format!("fleet bridge work --agent {agent} --state acted {id}"),
+                    format!(
+                        "fleet bridge work --agent {agent} --state queued --task <queue task id> {id}"
+                    ),
+                    format!("fleet bridge work --agent {agent} --state done {id}"),
                 ];
                 return Ok(answer("push", task, then, log));
             }
@@ -608,6 +671,34 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                 claim.push(v);
             }
         }
+        // #4919: the claim's model stamp. Explicit --model-* flags
+        // are the caller's own stamp and win as given; with none,
+        // the stamp recorded in the agent's profile at enrolment
+        // supplies the whole stamp (provider/model/variant travel
+        // together, as the queue's claim requires). Before this, a
+        // lane that did not repeat the flags on every run claimed
+        // unstamped — claim_variant stayed NULL on its rows and the
+        // completion-telemetry derive had no effort to propagate.
+        let explicit_stamp = ["--model-provider", "--model-id", "--model-variant"]
+            .iter()
+            .any(|f| a.last(f).is_some());
+        if explicit_stamp {
+            for flag in ["--model-provider", "--model-id", "--model-variant"] {
+                if let Some(v) = a.last(flag) {
+                    claim.push(flag.to_string());
+                    claim.push(v);
+                }
+            }
+        } else if let Some(stamp) = profile.as_ref().and_then(|p| p.model.as_ref()) {
+            claim.push("--model-provider".to_string());
+            claim.push(stamp.provider.clone());
+            claim.push("--model-id".to_string());
+            claim.push(stamp.model.clone());
+            if let Some(variant) = &stamp.variant {
+                claim.push("--model-variant".to_string());
+                claim.push(variant.clone());
+            }
+        }
         // A claim changes the queue: it is given time to finish.
         let out = world.fleet_patient(&claim);
         let row = out
@@ -626,12 +717,15 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                          complete, or park with a resume condition that is not a person. \
                          Your claim lease is {} seconds (4 hours) from the claim: \
                          complete or park before it lapses, or the task returns to the \
-                         queue and your completion will be refused.",
+                         queue and your completion will be refused. On long work, \
+                         heartbeat to extend the lease; checkpointing saves progress \
+                         but does not renew it.",
                         AGENT_CLAIM_LEASE_SECONDS
                     ),
                 });
                 let then = vec![
                     format!("fleet queue checkpoint {id} --worker {worker} --lane {lane} ..."),
+                    format!("fleet queue heartbeat {id} --worker {worker} --lane {lane} ..."),
                     format!("fleet queue complete {id} --worker {worker} --lane {lane} ..."),
                 ];
                 return Ok(answer("queue", task, then, log));

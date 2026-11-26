@@ -138,9 +138,7 @@ class BranchConcurrencyTest(unittest.TestCase):
 
     def test_single_branch_envelopes_match_recorded(self):
         be = self.backend()
-        self.assertEqual(
-            A.run_search(be, mkargs(mode="fts")), EXPECTED["fts_default"]
-        )
+        self.assertEqual(A.run_search(be, mkargs(mode="fts")), EXPECTED["fts_default"])
         self.assertEqual(
             A.run_search(be, mkargs(mode="vector")), EXPECTED["vector_default"]
         )

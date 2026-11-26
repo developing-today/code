@@ -1,0 +1,50 @@
+name: pm-console nightly
+
+# CI tier policy: see .github/ci-policy.md. This is CI, not a deploy:
+# it runs on the nightly schedule and on demand, never on push or PR.
+#
+# Why (#14297): the console's type-check and tests otherwise run only
+# in its deploy (pm-console-edge-deploy.yml), on a push to main that
+# touches pm-stack/console/**. The tests read files outside the
+# console — the repository's list of Workers
+# (pm-stack/platform/workers.json), the roadmap files under
+# planning/roadmaps/, the queue's task schema (pkgs/fleet) — so a
+# change elsewhere on main can break them with no run to say so, and
+# the next console deploy is what finds it, stopped at its tests
+# (#14290 was found exactly that way). This runs the deploy's
+# type-check and test steps nightly on main instead, so a break made
+# elsewhere is found within a day and filed by the main-broken
+# watcher (this workflow is on its watch list), not by the next
+# console deploy.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test pm-console
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Install the console's type-check tools
+        working-directory: pm-stack/console/edge
+        run: npm ci --no-audit --no-fund
+      - name: Type-check the console
+        working-directory: pm-stack/console/edge
+        run: npx tsc --noEmit -p ../tsconfig.json
+      - name: Test the console and its edge
+        working-directory: pm-stack/console
+        run: bun test

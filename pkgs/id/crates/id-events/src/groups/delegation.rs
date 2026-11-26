@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use p2panda_auth::traits::AuthorizationActor;
 use p2panda_core::Hash;
 
 use super::fold::{Decision, Effect, Engine, FoldError, Judged, Refusal, access_role, causal_past};
@@ -52,6 +53,8 @@ pub struct Grant {
     pub retained: bool,
     /// The world the grant names, if it is a crossing.
     pub target: Option<String>,
+    /// The signed expiry bound, inherited by reissued and re-anchored links (D1).
+    pub expires_at: Option<u64>,
 }
 
 /// A removal that took effect and the disposition selected for the removed member's grants.
@@ -96,6 +99,20 @@ struct Link {
     reissued: bool,
     retained: bool,
     crossing: bool,
+    expires_at: Option<u64>,
+}
+
+/// A grant is expired at the action's asserted time `at` when the action is timestamped at or
+/// past the grant's bound. A bounded grant fails closed: an untimestamped action is outside
+/// its bound, since an action that asserts no time cannot show it falls before the bound
+/// (#14876). An unbounded grant never expires. The bound is judged from signed fields only
+/// (D1), so a backdated action is an attributable log fact but not a real-time cutoff.
+const fn expired(expires_at: Option<u64>, at: Option<u64>) -> bool {
+    match (expires_at, at) {
+        (Some(bound), Some(t)) => t >= bound,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// How a grant that remains in force is exposed to callers.
@@ -139,10 +156,19 @@ impl Engine {
         if !self.holds(group, author, delegate.scope, &event.after)? {
             return Ok(Err(Refusal::Attenuated));
         }
-        if !self.authorized(by_id, group, author, delegate.scope, &event.after, true)? {
+        if !self.authorized(
+            by_id,
+            group,
+            author,
+            delegate.scope,
+            &event.after,
+            true,
+            event.at,
+        )? {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Delegation {
@@ -152,8 +178,8 @@ impl Engine {
         }))
     }
 
-    /// Judges a veto. The author must hold Manage and a chain, and the grant must be one the veto
-    /// has seen.
+    /// Judges a veto. The author must hold Manage and a chain, or be the grant's grantor of
+    /// record, and the grant must be one the veto has seen (D2).
     pub(super) fn veto(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
@@ -177,16 +203,33 @@ impl Engine {
         if !known {
             return Ok(Err(Refusal::UnknownGrant));
         }
+        if self.is_grantor_of_record(by_id, grant, author, &seen) {
+            return Ok(Ok(Decision {
+                authorization_actor: None,
+                group,
+                action: None,
+                effect: Effect::Veto(grant),
+            }));
+        }
         if author_role < Role::Manage {
             return Ok(Err(Refusal::NotManager));
         }
         if !self.holds(group, author, Role::Manage, &event.after)? {
             return Ok(Err(Refusal::NotManager));
         }
-        if !self.authorized(by_id, group, author, Role::Manage, &event.after, false)? {
+        if !self.authorized(
+            by_id,
+            group,
+            author,
+            Role::Manage,
+            &event.after,
+            false,
+            event.at,
+        )? {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Veto(grant),
@@ -200,26 +243,30 @@ impl Engine {
         by_id: &BTreeMap<Hash, &Event>,
         event: &Event,
         op: MemberOp,
-        decision: Decision,
+        mut decision: Decision,
     ) -> Result<Judged, FoldError> {
-        let author = match self.effective_author(by_id, decision.group, event) {
-            Some((a, _)) => a,
-            None => event.author,
+        let (author, author_role) = match self.effective_author(by_id, decision.group, event) {
+            Some(found) => found,
+            None => (event.author, Role::Pull),
         };
         if let MemberOp::Remove { member, .. } = op
             && member == author
         {
             return Ok(Ok(decision));
         }
-        let manages = self.authorized(
+        let authorized = self.authorized(
             by_id,
             decision.group,
             author,
             Role::Manage,
             &event.after,
             false,
+            event.at,
         )?;
-        if manages {
+        if authorized {
+            if author_role < Role::Manage {
+                decision.authorization_actor = Some(AuthorizationActor::Verified);
+            }
             Ok(Ok(decision))
         } else {
             Ok(Err(Refusal::NoChain))
@@ -227,16 +274,19 @@ impl Engine {
     }
 
     /// The grants in force at the head of the events: every grant that its own link carries when
-    /// every event is in the past. Each is reported once, under its own event ID.
+    /// every event is in the past. Each is reported once, under its own event ID. Expiry is
+    /// judged against the latest asserted timestamp in the set; in a wholly untimestamped set
+    /// every bounded grant is out of force (#14876).
     pub(super) fn in_force(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
     ) -> Result<BTreeMap<Hash, GrantVisibility>, FoldError> {
         let head: Vec<Hash> = by_id.keys().copied().collect();
+        let head_at = by_id.values().filter_map(|event| event.at).max();
         let groups: Vec<Hash> = self.groups.keys().copied().collect();
         let mut in_force = BTreeMap::new();
         for group in groups {
-            for link in self.links(by_id, group, &head)? {
+            for link in self.links(by_id, group, &head, head_at)? {
                 if !link.reissued {
                     in_force.insert(
                         link.origin,
@@ -266,6 +316,7 @@ impl Engine {
         scope: Role,
         after: &[Hash],
         need_redelegate: bool,
+        at: Option<u64>,
     ) -> Result<bool, FoldError> {
         if !self.groups.contains_key(&group) {
             return Ok(false);
@@ -283,7 +334,7 @@ impl Engine {
         if roots.contains(&actor) {
             return Ok(true);
         }
-        let links = self.links(by_id, group, after)?;
+        let links = self.links(by_id, group, after, at)?;
         let mut reached: BTreeSet<Key> = roots.iter().copied().collect();
         let mut stack: Vec<Key> = reached.iter().copied().collect();
         // A re-anchored grant is a group root, not a synthetic member or account. It reaches its
@@ -327,12 +378,15 @@ impl Engine {
         Ok(access.is_some_and(|access| access_role(&access) >= scope))
     }
 
-    /// The links that carry authority at `after`, applying each settled removal's explicit mode.
+    /// The links that carry authority at `after` for an action asserting time `at`, applying
+    /// each settled removal's explicit mode. A grant expired at `at` carries no link; reissued
+    /// and re-anchored links inherit the grant's bound (D1).
     fn links(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
         group: Hash,
         after: &[Hash],
+        at: Option<u64>,
     ) -> Result<Vec<Link>, FoldError> {
         if !self.groups.contains_key(&group) {
             return Ok(Vec::new());
@@ -358,7 +412,10 @@ impl Engine {
             .collect();
         let mut links = Vec::new();
         for grant in grants {
-            if self.void(by_id, &grant) || self.vetoed(grant.id, &past) {
+            if self.void(by_id, &grant)
+                || self.vetoed(grant.id, &past)
+                || expired(grant.expires_at, at)
+            {
                 continue;
             }
             // The removals of the grantor that come after the grant. A grant made after a re-add is
@@ -400,6 +457,7 @@ impl Engine {
                     reissued: false,
                     retained: false,
                     crossing: grant.target.is_some(),
+                    expires_at: grant.expires_at,
                 });
                 continue;
             }
@@ -422,33 +480,11 @@ impl Engine {
                 .collect();
             if !transfers.is_empty() {
                 for (removal, successor) in transfers {
-                    let successors: Vec<Key> = match successor {
-                        RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => {
-                            vec![key]
-                        }
-                        RemoveSuccessor::Admin => self
-                            .admins_at_position(by_id, &group, &removal.after)
-                            .into_iter()
-                            .collect(),
-                        RemoveSuccessor::Actor => {
-                            // `removal.actor` is the removing event's author key, which
-                            // may be an authorized device key rather than the account
-                            // itself: membership and `holds` are account-level, so
-                            // resolve the device to its account at the removal's
-                            // position, or the reissue check fails and the grants are
-                            // silently revoked instead of transferred.
-                            let actor = self
-                                .authorized_device_account(
-                                    by_id,
-                                    group,
-                                    removal.actor,
-                                    &removal.after,
-                                )
-                                .map(|(account, _)| account)
-                                .unwrap_or(removal.actor);
-                            vec![actor]
-                        }
-                    };
+                    let successors = self.successors_of(by_id, group, removal, successor);
+                    // The nested chain into the successor is judged at the removal's own
+                    // asserted time, not the outer action's: the reissue stands or falls as
+                    // a fact about the removal's position (D1).
+                    let removal_at = by_id.get(&removal.id).and_then(|event| event.at);
                     for successor in successors {
                         let holds_now = self.holds(group, successor, grant.scope, after)?;
                         if holds_now
@@ -459,6 +495,7 @@ impl Engine {
                                 grant.scope,
                                 &removal.after,
                                 true,
+                                removal_at,
                             )?
                         {
                             links.push(Link {
@@ -470,6 +507,7 @@ impl Engine {
                                 reissued: true,
                                 retained: false,
                                 crossing: grant.target.is_some(),
+                                expires_at: grant.expires_at,
                             });
                         }
                     }
@@ -489,6 +527,7 @@ impl Engine {
                     reissued: false,
                     retained: false,
                     crossing: grant.target.is_some(),
+                    expires_at: grant.expires_at,
                 });
                 continue;
             }
@@ -505,6 +544,7 @@ impl Engine {
                 reissued: false,
                 retained: true,
                 crossing: grant.target.is_some(),
+                expires_at: grant.expires_at,
             });
         }
         Ok(links)
@@ -571,5 +611,71 @@ impl Engine {
         self.vetoes.iter().any(|(veto, target)| {
             *target == grant && past.contains(veto) && self.settled.contains(veto)
         })
+    }
+
+    /// Whether `author` is the grant's grantor of record as seen at a position: the grantor who
+    /// made it, or the successor a transfer removal in that position reissued it to (design
+    /// §4 D2). A grant re-anchored at the group has no grantor and matches no author.
+    fn is_grantor_of_record(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        grant: Hash,
+        author: Key,
+        seen: &BTreeSet<Hash>,
+    ) -> bool {
+        let Some(target) = self.grants.get(&grant) else {
+            return false;
+        };
+        if target.from == Some(author) {
+            return true;
+        }
+        let Some(original) = target.from else {
+            return false;
+        };
+        let grant_past = causal_past(by_id, &[grant]);
+        self.removals.values().any(|removal| {
+            removal.group == target.group
+                && removal.member == original
+                && seen.contains(&removal.id)
+                && self.settled.contains(&removal.id)
+                && !grant_past.contains(&removal.id)
+                && causal_past(by_id, &[removal.id]).contains(&grant)
+                && match removal.mode {
+                    RemoveMode::Transfer(opts) => self
+                        .successors_of(by_id, target.group, removal, opts.successor)
+                        .contains(&author),
+                    _ => false,
+                }
+        })
+    }
+
+    /// The accounts a transfer names as the successor that reissues the removed member's grants.
+    fn successors_of(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        removal: &Removal,
+        successor: RemoveSuccessor,
+    ) -> Vec<Key> {
+        match successor {
+            RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => vec![key],
+            RemoveSuccessor::Admin => self
+                .admins_at_position(by_id, &group, &removal.after)
+                .into_iter()
+                .collect(),
+            RemoveSuccessor::Actor => {
+                // `removal.actor` is the removing event's author key, which
+                // may be an authorized device key rather than the account
+                // itself: membership and `holds` are account-level, so
+                // resolve the device to its account at the removal's
+                // position, or the reissue check fails and the grants are
+                // silently revoked instead of transferred.
+                let actor = self
+                    .authorized_device_account(by_id, group, removal.actor, &removal.after)
+                    .map(|(account, _)| account)
+                    .unwrap_or(removal.actor);
+                vec![actor]
+            }
+        }
     }
 }

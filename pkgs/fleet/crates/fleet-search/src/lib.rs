@@ -6,7 +6,9 @@
 //!
 //!   * `client` — `fleet search` / `fleet search get-chunk`: the
 //!     atlas-search client surface over the live Atlas service's job
-//!     protocol (step 5, #5433). See [`cli`].
+//!     protocol (step 5, #5433). See [`cli`]. The client feature
+//!     also carries `fleet search backup`, the atlas-backup
+//!     routine (#14129) — see [`backup`].
 //!   * `serve` — `fleet serve search`: the Atlas service itself, the
 //!     atlas-search bin crate's serve half rehomed (#5604). See
 //!     [`serve`]. atlas-core / atlas-embed / atlas-proto are consumed
@@ -26,10 +28,17 @@ mod render;
 #[cfg(feature = "client")]
 pub use cli::{SEARCH_USAGE, run};
 
-// Verbatim copy of atlas-search's server.rs (parity-guarded): it keeps
-// that crate's whole surface (e.g. `init_service_config`, which this
-// role does not expose), so unused/visibility lints are allowed here
-// rather than editing the copy.
+#[cfg(feature = "client")]
+pub mod backup;
+
+// Copy of atlas-search's server.rs under the #5920 parity guard:
+// byte-identical outside the pinned parity header and the one
+// normalized binary-name diagnostic (#5640) — a maintained copy
+// under parity discipline, not a whole-file byte identity (the two
+// files differ in size). It keeps that crate's whole surface (e.g.
+// `init_service_config`, which this role does not expose), so
+// unused/visibility lints are allowed here rather than editing
+// the copy.
 #[cfg(feature = "serve")]
 pub mod serve;
 #[cfg(feature = "serve")]

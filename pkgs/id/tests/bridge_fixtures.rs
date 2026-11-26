@@ -15,14 +15,14 @@
 //! Oracle: p2panda-core's Hash (BLAKE3) and chain::decode /
 //! EventStore::ingest_batch — the native implementation itself.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::ingest::MemStorage;
 use id::chain::{ChainExt, sign};
 use id::event_store::{EventStore, Ingest};
-use id::session_checkpoint::{
-    MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
-};
+use id::session_checkpoint::{MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader};
 use id::waiting::WaitingLimits;
 use p2panda_core::{Hash, SigningKey};
 
@@ -46,21 +46,58 @@ fn unhex(text: &str) -> Vec<u8> {
 #[test]
 fn blake3_vectors_agree_with_the_hosted_bridge() {
     let cases: [(usize, &str); 11] = [
-        (0, "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"),
-        (1, "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213"),
-        (3, "e1be4d7a8ab5560aa4199eea339849ba8e293d55ca0a81006726d184519e647f"),
-        (64, "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98"),
-        (65, "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee"),
-        (100, "8e2eb1bba3040b8f611a1240a0e111c74b45cfc9caed10b95f6372db1c40b8b5"),
-        (1023, "10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11"),
-        (1024, "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7"),
-        (1025, "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444"),
-        (2048, "e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a"),
-        (102400, "bc3e3d41a1146b069abffad3c0d44860cf664390afce4d9661f7902e7943e085"),
+        (
+            0,
+            "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+        ),
+        (
+            1,
+            "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213",
+        ),
+        (
+            3,
+            "e1be4d7a8ab5560aa4199eea339849ba8e293d55ca0a81006726d184519e647f",
+        ),
+        (
+            64,
+            "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98",
+        ),
+        (
+            65,
+            "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee",
+        ),
+        (
+            100,
+            "8e2eb1bba3040b8f611a1240a0e111c74b45cfc9caed10b95f6372db1c40b8b5",
+        ),
+        (
+            1023,
+            "10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11",
+        ),
+        (
+            1024,
+            "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7",
+        ),
+        (
+            1025,
+            "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444",
+        ),
+        (
+            2048,
+            "e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a",
+        ),
+        (
+            102400,
+            "bc3e3d41a1146b069abffad3c0d44860cf664390afce4d9661f7902e7943e085",
+        ),
     ];
     for (len, expected) in cases {
         let input: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
-        assert_eq!(hex(Hash::digest(&input).as_bytes()), expected, "length {len}");
+        assert_eq!(
+            hex(Hash::digest(&input).as_bytes()),
+            expected,
+            "length {len}"
+        );
     }
 }
 
@@ -82,9 +119,8 @@ fn ts_signed_events_decode_and_ingest_natively() {
     let decoded_b = id::chain::decode(&b).expect("TS event B decodes natively");
     assert_eq!(hex(decoded_b.id.as_bytes()), TS_EVENT_B_ID);
 
-    let mut store =
-        EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), NOW_MS)
-            .expect("open store");
+    let mut store = EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), NOW_MS)
+        .expect("open store");
     let outcomes = store.ingest_batch(&[a, b], NOW_MS).expect("ingest");
     assert_eq!(outcomes.len(), 2);
     assert!(
@@ -113,6 +149,7 @@ fn ext(kind: &str) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 
@@ -154,14 +191,18 @@ fn rust_signed_events_for_the_hosted_bridge() {
     println!("R2 id={} bytes={}", hex(r2.id.as_bytes()), hex(&r2.bytes));
     println!("R3 id={} bytes={}", hex(r3.id.as_bytes()), hex(&r3.bytes));
 
-    let mut store =
-        EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), NOW_MS)
-            .expect("open store");
+    let mut store = EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), NOW_MS)
+        .expect("open store");
     let outcomes = store
-        .ingest_batch(&[r1.bytes.clone(), r2.bytes.clone(), r3.bytes.clone()], NOW_MS)
+        .ingest_batch(
+            &[r1.bytes.clone(), r2.bytes.clone(), r3.bytes.clone()],
+            NOW_MS,
+        )
         .expect("ingest");
     assert!(
-        outcomes.iter().all(|o| matches!(o, Ingest::Accepted { .. })),
+        outcomes
+            .iter()
+            .all(|o| matches!(o, Ingest::Accepted { .. })),
         "all three accepted: {outcomes:?}"
     );
 }

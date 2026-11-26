@@ -44,6 +44,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -117,7 +118,9 @@ def find_closing_pr(events, close_time):
     return best
 
 
-def decide_close(*, actor, human_close_before, open_sub_issues, closing_pr, issue_number):
+def decide_close(
+    *, actor, human_close_before, open_sub_issues, closing_pr, issue_number
+):
     """Verdict for one close event.
 
     Returns (rules_fired, reason). A non-empty rules_fired means the
@@ -166,9 +169,7 @@ class GhClient:
     """The gh boundary. Tests replace this with an in-memory fake."""
 
     def run(self, args, check=True):
-        out = subprocess.run(
-            ["gh"] + args, capture_output=True, text=True
-        )
+        out = subprocess.run(["gh"] + args, capture_output=True, text=True)
         if check and out.returncode != 0:
             raise RuntimeError(
                 f"gh {' '.join(args[:3])} failed: {out.stderr.strip()[:300]}"
@@ -180,10 +181,21 @@ class GhClient:
         return json.loads(out.stdout) if out.stdout.strip() else None
 
     def recently_closed_issues(self, repo, since_iso):
-        issues = self.api(
-            f"repos/{repo}/issues?state=closed&since={since_iso}"
-            "&sort=updated&direction=asc&per_page=100"
+        # Percent-encode the query: since_iso carries a "+00:00" UTC
+        # offset, and a raw "+" in a query string decodes as a space,
+        # which makes GitHub silently return an empty list (found
+        # live 2026-11-25 during the #10105 fixture verification --
+        # the watchdog saw no closes at all).
+        query = urllib.parse.urlencode(
+            {
+                "state": "closed",
+                "since": since_iso,
+                "sort": "updated",
+                "direction": "asc",
+                "per_page": 100,
+            }
         )
+        issues = self.api(f"repos/{repo}/issues?{query}")
         return [i for i in issues or [] if "pull_request" not in i]
 
     def timeline(self, repo, number):
@@ -195,21 +207,25 @@ class GhClient:
 
     def reopen(self, repo, number):
         self.run(
-            ["api", "-X", "PATCH", f"repos/{repo}/issues/{number}",
-             "-f", "state=open"]
+            ["api", "-X", "PATCH", f"repos/{repo}/issues/{number}", "-f", "state=open"]
         )
 
     def remove_label(self, repo, number, label):
         self.run(
-            ["api", "-X", "DELETE",
-             f"repos/{repo}/issues/{number}/labels/{label}"],
+            ["api", "-X", "DELETE", f"repos/{repo}/issues/{number}/labels/{label}"],
             check=False,
         )
 
     def comment(self, repo, number, body):
         self.run(
-            ["api", "-X", "POST", f"repos/{repo}/issues/{number}/comments",
-             "-f", f"body={body}"]
+            [
+                "api",
+                "-X",
+                "POST",
+                f"repos/{repo}/issues/{number}/comments",
+                "-f",
+                f"body={body}",
+            ]
         )
 
 
@@ -223,7 +239,8 @@ def latest_close(events):
     human_before = any(
         e is not last
         and (e.get("actor") or {}).get("login") not in AUTOMATION_ACTORS
-        and 0 <= (close_time - parse_iso(e["created_at"])).total_seconds()
+        and 0
+        <= (close_time - parse_iso(e["created_at"])).total_seconds()
         <= HUMAN_GUARD_SECONDS
         for e in closes
     )
@@ -305,12 +322,22 @@ def save_state(path, state):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--dry-run", action="store_true",
-                    help="report wrongful closes without reopening")
-    ap.add_argument("--state", default=str(Path(__file__).with_name("state.json")),
-                    help="watermark state file (default: state.json beside the script)")
-    ap.add_argument("--repo", action="append", dest="repos",
-                    help="repo to police (repeatable; default: the app-covered set)")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report wrongful closes without reopening",
+    )
+    ap.add_argument(
+        "--state",
+        default=str(Path(__file__).with_name("state.json")),
+        help="watermark state file (default: state.json beside the script)",
+    )
+    ap.add_argument(
+        "--repo",
+        action="append",
+        dest="repos",
+        help="repo to police (repeatable; default: the app-covered set)",
+    )
     args = ap.parse_args(argv)
 
     state = load_state(args.state)

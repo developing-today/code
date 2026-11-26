@@ -46,6 +46,39 @@
 //!   qrels must name known queries; violations are rejected at
 //!   parse/validation time.
 //!
+//! ## Ceiling/scope negatives and provenance (#8627)
+//!
+//! Three optional fields extend v1 compatibly (absent = today's
+//! behaviour, byte-identical reports) so the cross-corpus sets of
+//! the Atlas memory integration can state policy, not just
+//! relevance:
+//!
+//! - A query may carry `forbidden`: doc ids that must never appear
+//!   in any ranking for that query — the above-ceiling or
+//!   out-of-scope docs a correct system cannot return. A forbidden
+//!   doc may not also carry a positive grade for the same query
+//!   (the set would contradict itself); validation rejects that.
+//! - A query may carry `corpora`: the corpora it is scoped to. When
+//!   present, provenance is enforced for its rankings (below).
+//! - The document may carry `docs`: an attribution map of
+//!   `{"id": ..., "corpus": ...}` naming the corpus each doc
+//!   belongs to. It may cover docs no qrel or ranking mentions.
+//!
+//! Scoring still computes the metrics exactly as before — a
+//! forbidden doc is not merely grade 0. Instead, [`evaluate`]
+//! records a [`Violation`] in the signal's report for every
+//! forbidden doc a ranking surfaces (at any rank: retrieval itself
+//! is the leak) and, for a corpus-scoped query, for every surfaced
+//! doc whose attributed corpus is outside the query's scope —
+//! including docs with no attribution at all, since unattributable
+//! provenance is what the check exists to catch. A doc that is both
+//! forbidden and out of scope records the forbidden violation (its
+//! corpus is moot once it must not appear at all). A signal with
+//! any violation has failed the eval: the report says so
+//! ([`SignalReport::passed`]), [`select_best_signal`] refuses such
+//! a report, and the `atlas-eval` runner exits non-zero — a policy
+//! regression fails the eval, not just a code review.
+//!
 //! ## Metrics and reporting
 //!
 //! Per query: nDCG@10 (graded gains `2^grade − 1`, log2 discount),
@@ -81,6 +114,9 @@ pub const REPORT_FORMAT: &str = "atlas-eval-report/v1";
 /// wide headroom over real graded-relevance schemes (typically 0-4).
 pub const MAX_GRADE: u32 = 30;
 
+/// Maximum depth accepted by [`evaluate_precision`].
+pub const MAX_PRECISION_K: usize = 1000;
+
 /// Which split of the eval set a query belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -104,6 +140,31 @@ pub struct QueryRec {
     /// Optional query text; carried for humans, never scored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Doc ids that must never appear in a ranking for this query
+    /// (#8627): the ceiling/scope negative cases. A run surfacing
+    /// one records a hard-failure [`Violation`]; the doc still
+    /// scores grade 0 for the metrics, exactly as an unjudged doc
+    /// does — the failure is reported separately, not folded into
+    /// the metrics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbidden: Vec<String>,
+    /// The corpora this query is scoped to (#8627). When present,
+    /// every doc a ranking surfaces for this query must be
+    /// attributed (via the document's `docs` map) to one of these
+    /// corpora; an out-of-scope or unattributed doc records a
+    /// provenance [`Violation`]. When absent, no provenance check
+    /// runs for the query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpora: Option<Vec<String>>,
+}
+
+/// One doc's corpus attribution (the document-level `docs` map).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocRec {
+    /// The doc/chunk id.
+    pub id: String,
+    /// The corpus the doc belongs to (`agent-memory`, `notes`, …).
+    pub corpus: String,
 }
 
 /// One judged (query, doc) relevance grade.
@@ -252,6 +313,10 @@ pub struct EvalData {
     pub qrels: Vec<Qrel>,
     /// The saved rankings to score.
     pub runs: Vec<Run>,
+    /// Doc → corpus attribution for the provenance checks (#8627).
+    /// Optional; may cover docs no qrel or ranking mentions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub docs: Vec<DocRec>,
 }
 
 impl EvalData {
@@ -310,6 +375,61 @@ impl EvalData {
                     "duplicate qrel for query {:?} doc {:?}",
                     qrel.query, qrel.doc
                 )));
+            }
+        }
+        let mut doc_ids: HashSet<&str> = HashSet::new();
+        for doc in &self.docs {
+            if doc.corpus.is_empty() {
+                return Err(Error::fatal(format!(
+                    "docs entry for doc {:?} names an empty corpus",
+                    doc.id
+                )));
+            }
+            if !doc_ids.insert(doc.id.as_str()) {
+                return Err(Error::fatal(format!(
+                    "duplicate docs entry for doc {:?}",
+                    doc.id
+                )));
+            }
+        }
+        for q in &self.queries {
+            let mut forbidden: HashSet<&str> = HashSet::new();
+            for doc in &q.forbidden {
+                if !forbidden.insert(doc.as_str()) {
+                    return Err(Error::fatal(format!(
+                        "query {:?} lists forbidden doc {:?} twice",
+                        q.id, doc
+                    )));
+                }
+                let positive = self
+                    .qrels
+                    .iter()
+                    .any(|qrel| qrel.query == q.id && qrel.doc == *doc && qrel.grade >= 1);
+                if positive {
+                    return Err(Error::fatal(format!(
+                        "query {:?} forbids doc {:?} but also grades it relevant; \
+                         a doc cannot be both a positive judgment and a \
+                         ceiling/scope negative",
+                        q.id, doc
+                    )));
+                }
+            }
+            if let Some(corpora) = &q.corpora {
+                let mut seen: HashSet<&str> = HashSet::new();
+                for corpus in corpora {
+                    if corpus.is_empty() {
+                        return Err(Error::fatal(format!(
+                            "query {:?} lists an empty corpus in its scope",
+                            q.id
+                        )));
+                    }
+                    if !seen.insert(corpus.as_str()) {
+                        return Err(Error::fatal(format!(
+                            "query {:?} lists corpus {:?} twice in its scope",
+                            q.id, corpus
+                        )));
+                    }
+                }
             }
         }
         let mut signals: HashSet<&str> = HashSet::new();
@@ -416,6 +536,40 @@ pub struct PerQuery {
     pub grades: BTreeMap<String, u32>,
 }
 
+/// Which policy constraint a [`Violation`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViolationKind {
+    /// The ranking surfaced a doc the query forbids (above the
+    /// caller's ceiling or outside its scope by id).
+    Forbidden,
+    /// The ranking surfaced a doc outside the query's corpus
+    /// scope, or with no corpus attribution at all.
+    Provenance,
+}
+
+/// One hard-failure constraint violation in a signal's rankings
+/// (#8627). Metrics are computed exactly as if the doc were an
+/// ordinary unjudged result; the violation is the eval's verdict
+/// that the run broke policy, recorded separately so the numbers
+/// stay comparable while the run still fails.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Violation {
+    /// The query whose ranking broke the constraint.
+    pub query: String,
+    /// The doc the ranking surfaced.
+    pub doc: String,
+    /// 1-based rank of the doc in the ranking.
+    pub rank: usize,
+    /// Which constraint was broken.
+    pub kind: ViolationKind,
+    /// For a provenance violation, the doc's attributed corpus
+    /// (`None` when the doc has no attribution). Always `None`
+    /// for a forbidden-doc violation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus: Option<String>,
+}
+
 /// One signal's scores within a split.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SignalReport {
@@ -431,6 +585,20 @@ pub struct SignalReport {
     pub per_class: BTreeMap<String, MetricMeans>,
     /// Per-query detail, sorted by query id.
     pub per_query: Vec<PerQuery>,
+    /// Hard-failure constraint violations (#8627), in query-id
+    /// then rank order. Empty for sets that declare no constraints
+    /// — and omitted from the serialized report then, so reports
+    /// for pre-#8627 sets stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub violations: Vec<Violation>,
+}
+
+impl SignalReport {
+    /// Whether the signal passed the eval: no constraint
+    /// violations. Metrics alone never fail a signal.
+    pub fn passed(&self) -> bool {
+        self.violations.is_empty()
+    }
 }
 
 /// A complete evaluation report for one split.
@@ -442,6 +610,63 @@ pub struct EvalReport {
     pub split: Split,
     /// One entry per signal, sorted by signal name.
     pub signals: Vec<SignalReport>,
+}
+
+/// Precision@k for one query. The denominator is always `k`, including
+/// short or empty rankings, so unfilled result slots score zero.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrecisionQuery {
+    /// Query id.
+    pub query: String,
+    /// Query class.
+    #[serde(rename = "class")]
+    pub class: String,
+    /// Relevant documents found in the first `k` slots.
+    pub hits: usize,
+    /// Precision denominator, exactly `k`.
+    pub denominator: usize,
+    /// `hits / denominator`, rounded to six decimal places.
+    pub precision: f64,
+}
+
+/// Precision@k means for a signal, across every query in the split.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrecisionSignalReport {
+    /// Signal name.
+    pub signal: String,
+    /// Number of queries in this split and the precision mean's denominator.
+    pub queries_total: usize,
+    /// Macro mean of per-query precision values.
+    pub precision: f64,
+    /// Macro means by query class.
+    pub per_class: BTreeMap<String, f64>,
+    /// Per-query results, sorted by query id.
+    pub per_query: Vec<PrecisionQuery>,
+}
+
+/// A standalone Precision@k report; intentionally distinct from
+/// [`EvalReport`] so existing report output remains byte-identical.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrecisionReport {
+    /// Report format identifier.
+    pub format: String,
+    /// Split scored.
+    pub split: Split,
+    /// Requested precision depth.
+    pub k: usize,
+    /// One entry per signal, sorted by signal name.
+    pub signals: Vec<PrecisionSignalReport>,
+}
+
+/// Report format emitted by [`evaluate_precision`].
+pub const PRECISION_REPORT_FORMAT: &str = "atlas-eval-precision-report/v1";
+
+impl EvalReport {
+    /// Whether every signal in the report passed: no constraint
+    /// violations anywhere (#8627).
+    pub fn passed(&self) -> bool {
+        self.signals.iter().all(SignalReport::passed)
+    }
 }
 
 fn dcg(gains_in_rank_order: &[f64], k: usize) -> f64 {
@@ -571,6 +796,11 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
             "eval input has no queries in the {split:?} split"
         )));
     }
+    let corpus_of: BTreeMap<&str, &str> = data
+        .docs
+        .iter()
+        .map(|doc| (doc.id.as_str(), doc.corpus.as_str()))
+        .collect();
     let mut runs: Vec<&Run> = data.runs.iter().collect();
     runs.sort_by(|a, b| a.signal.cmp(&b.signal));
     let mut signals = Vec::with_capacity(runs.len());
@@ -578,10 +808,35 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
         let mut overall = Accum::default();
         let mut per_class: BTreeMap<String, Accum> = BTreeMap::new();
         let mut per_query = Vec::with_capacity(queries.len());
+        let mut violations: Vec<Violation> = Vec::new();
         for query in &queries {
             let grades = data.grades_for(&query.id);
             let empty: Vec<String> = Vec::new();
             let ranking = run.results.get(&query.id).unwrap_or(&empty);
+            for (i, doc) in ranking.iter().enumerate() {
+                if query.forbidden.contains(doc) {
+                    violations.push(Violation {
+                        query: query.id.clone(),
+                        doc: doc.clone(),
+                        rank: i + 1,
+                        kind: ViolationKind::Forbidden,
+                        corpus: None,
+                    });
+                    continue;
+                }
+                if let Some(scope) = &query.corpora {
+                    match corpus_of.get(doc.as_str()) {
+                        Some(corpus) if scope.iter().any(|c| c == *corpus) => {}
+                        attributed => violations.push(Violation {
+                            query: query.id.clone(),
+                            doc: doc.clone(),
+                            rank: i + 1,
+                            kind: ViolationKind::Provenance,
+                            corpus: attributed.map(|c| (*c).to_owned()),
+                        }),
+                    }
+                }
+            }
             let (relevant, raw) = query_metrics(ranking, &grades);
             if relevant > 0 {
                 overall.add(&raw);
@@ -609,11 +864,84 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
                 .map(|(class, acc)| (class.clone(), acc.means()))
                 .collect(),
             per_query,
+            violations,
         });
     }
     Ok(EvalReport {
         format: REPORT_FORMAT.to_owned(),
         split,
+        signals,
+    })
+}
+
+/// Score every run in `data` for Precision@k on one split.
+///
+/// Unlike the relevance-conditioned headline metrics, precision is
+/// defined for every query. Each query contributes `hits / k`; a ranking
+/// shorter than `k` (including a missing ranking) has zero-valued missing
+/// slots. `k` must be within `1..=MAX_PRECISION_K`.
+pub fn evaluate_precision(data: &EvalData, split: Split, k: usize) -> Result<PrecisionReport> {
+    data.validate()?;
+    if !(1..=MAX_PRECISION_K).contains(&k) {
+        return Err(Error::fatal(format!(
+            "Precision@k depth {k} is outside the supported range 1..={MAX_PRECISION_K}"
+        )));
+    }
+    let mut queries: Vec<&QueryRec> = data.queries.iter().filter(|q| q.split == split).collect();
+    queries.sort_by(|a, b| a.id.cmp(&b.id));
+    if queries.is_empty() {
+        return Err(Error::fatal(format!(
+            "eval input has no queries in the {split:?} split"
+        )));
+    }
+    let mut runs: Vec<&Run> = data.runs.iter().collect();
+    runs.sort_by(|a, b| a.signal.cmp(&b.signal));
+    let signals = runs
+        .into_iter()
+        .map(|run| {
+            let mut sum = 0.0;
+            let mut class_sums: BTreeMap<String, (usize, f64)> = BTreeMap::new();
+            let mut per_query = Vec::with_capacity(queries.len());
+            for query in &queries {
+                let grades = data.grades_for(&query.id);
+                let hits = run
+                    .results
+                    .get(&query.id)
+                    .into_iter()
+                    .flatten()
+                    .take(k)
+                    .filter(|doc| grades.get(*doc).copied().unwrap_or(0) >= 1)
+                    .count();
+                let raw_precision = hits as f64 / k as f64;
+                let precision = round6(raw_precision);
+                sum += raw_precision;
+                let class = class_sums.entry(query.class.clone()).or_default();
+                class.0 += 1;
+                class.1 += raw_precision;
+                per_query.push(PrecisionQuery {
+                    query: query.id.clone(),
+                    class: query.class.clone(),
+                    hits,
+                    denominator: k,
+                    precision,
+                });
+            }
+            PrecisionSignalReport {
+                signal: run.signal.clone(),
+                queries_total: queries.len(),
+                precision: round6(sum / queries.len() as f64),
+                per_class: class_sums
+                    .into_iter()
+                    .map(|(class, (count, sum))| (class, round6(sum / count as f64)))
+                    .collect(),
+                per_query,
+            }
+        })
+        .collect();
+    Ok(PrecisionReport {
+        format: PRECISION_REPORT_FORMAT.to_owned(),
+        split,
+        k,
         signals,
     })
 }
@@ -625,8 +953,11 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
 /// # Errors
 ///
 /// Fails for a held-out **test**-split report (#5741: the test split
-/// is for final scoring only; tuning on it would invalidate it), and
-/// for a report with no signals.
+/// is for final scoring only; tuning on it would invalidate it), for
+/// a report with no signals or a signal with no scored queries, and
+/// for a report containing constraint violations (#8627: a
+/// policy-breaking run is not a selection candidate, however good its
+/// metrics look).
 pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String> {
     if report.split == Split::Test {
         return Err(Error::fatal(
@@ -634,8 +965,27 @@ pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String>
              select on the dev split and score the test split once",
         ));
     }
+    let failing: Vec<&str> = report
+        .signals
+        .iter()
+        .filter(|signal| !signal.passed())
+        .map(|signal| signal.signal.as_str())
+        .collect();
+    if !failing.is_empty() {
+        return Err(Error::fatal(format!(
+            "report contains constraint violations (#8627) in signal(s) {}; \
+             a run that breaks ceiling/scope policy cannot be selected from",
+            failing.join(", ")
+        )));
+    }
     let mut best: Option<(&SignalReport, f64)> = None;
     for signal in &report.signals {
+        if signal.queries_scored == 0 {
+            return Err(Error::fatal(format!(
+                "cannot select a signal: {:?} has no scored development queries",
+                signal.signal
+            )));
+        }
         let value = metric.of(&signal.overall);
         if best.is_none_or(|(best_signal, best_value)| {
             value > best_value
@@ -747,6 +1097,86 @@ mod tests {
         assert_eq!(signal.per_query[0].top1000, ranking(&["d2", "d1"]));
     }
 
+    // Oracle: direct count from the fixture. At k=2, q1 has one hit,
+    // q2's empty ranking has zero hits, and q3 has one hit in slot 2.
+    // Missing slots remain in the denominator: per-query values are
+    // 1/2, 0/2, 1/2; macro mean is 1/3. All queries, including the
+    // empty/no-relevance case, contribute to precision means.
+    #[test]
+    fn precision_at_k_reports_fixed_denominator_and_macro_means() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [
+                {"id": "q1", "class": "code", "split": "dev"},
+                {"id": "q2", "class": "code", "split": "dev"},
+                {"id": "q3", "class": "documentation", "split": "dev"}
+            ],
+            "qrels": [
+                {"query": "q1", "doc": "a", "grade": 1},
+                {"query": "q2", "doc": "b", "grade": 0},
+                {"query": "q3", "doc": "b", "grade": 2},
+                {"query": "q3", "doc": "c", "grade": 1}
+            ],
+            "runs": [
+                {"signal": "zeta", "results": {"q1": ["a"], "q2": [], "q3": ["x", "b", "c"]}},
+                {"signal": "alpha", "results": {"q1": ["x"], "q2": ["b"], "q3": []}}
+            ]
+        }));
+        let report = evaluate_precision(&d, Split::Dev, 2).unwrap();
+        assert_eq!(report.format, PRECISION_REPORT_FORMAT);
+        assert_eq!(report.k, 2);
+        assert_eq!(report.signals[0].signal, "alpha");
+        assert_eq!(report.signals[1].signal, "zeta");
+        let zeta = &report.signals[1];
+        assert_eq!(zeta.queries_total, 3);
+        assert_eq!(zeta.precision, 0.333333);
+        assert_eq!(zeta.per_class["code"], 0.25);
+        assert_eq!(zeta.per_class["documentation"], 0.5);
+        assert_eq!(zeta.per_query[0].hits, 1);
+        assert_eq!(zeta.per_query[0].denominator, 2);
+        assert_eq!(zeta.per_query[0].precision, 0.5);
+        assert_eq!(zeta.per_query[1].precision, 0.0);
+        assert_eq!(zeta.per_query[2].precision, 0.5);
+    }
+
+    // Oracle: macro means are rounded only after averaging the exact
+    // per-query ratios. With k=3, scores 0 and 1/3 average to 1/6,
+    // which rounds to 0.166667 (not 0.166666 from averaging rounded rows).
+    #[test]
+    fn precision_macro_means_round_after_averaging() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [
+                {"id": "q1", "class": "code", "split": "dev"},
+                {"id": "q2", "class": "code", "split": "dev"}
+            ],
+            "qrels": [{"query": "q2", "doc": "relevant", "grade": 1}],
+            "runs": [{"signal": "s", "results": {"q1": [], "q2": ["relevant"]}}]
+        }));
+        let report = evaluate_precision(&d, Split::Dev, 3).unwrap();
+        let signal = &report.signals[0];
+        assert_eq!(signal.per_query[0].precision, 0.0);
+        assert_eq!(signal.per_query[1].precision, 0.333333);
+        assert_eq!(signal.precision, 0.166667);
+        assert_eq!(signal.per_class["code"], 0.166667);
+    }
+
+    // Oracle: public bound is inclusive at 1 and MAX_PRECISION_K and
+    // rejects zero and MAX_PRECISION_K+1 before scoring.
+    #[test]
+    fn precision_at_k_depth_is_bounded() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q", "class": "code", "split": "dev"}],
+            "qrels": [],
+            "runs": [{"signal": "s", "results": {}}]
+        }));
+        assert!(evaluate_precision(&d, Split::Dev, 0).is_err());
+        assert!(evaluate_precision(&d, Split::Dev, MAX_PRECISION_K + 1).is_err());
+        assert!(evaluate_precision(&d, Split::Dev, 1).is_ok());
+        assert!(evaluate_precision(&d, Split::Dev, MAX_PRECISION_K).is_ok());
+    }
+
     // Oracle: the split labels in the input. Dev evaluation must not
     // score (or even list) test queries, and vice versa.
     #[test]
@@ -798,6 +1228,34 @@ mod tests {
         );
     }
 
+    // Oracle: a query needs a positive judgment to enter the comparison.
+    // An explicitly judged miss still has a defined score of zero.
+    #[test]
+    fn selection_requires_scored_queries() {
+        let mut d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q", "class": "code", "split": "dev"}],
+            "qrels": [{"query": "q", "doc": "a", "grade": 0}],
+            "runs": [
+                {"signal": "b", "results": {"q": []}},
+                {"signal": "a", "results": {"q": []}}
+            ]
+        }));
+        let unscored = evaluate(&d, Split::Dev).unwrap();
+        assert_eq!(unscored.signals[0].queries_scored, 0);
+        assert!(
+            select_best_signal(&unscored, Metric::Ndcg10)
+                .unwrap_err()
+                .to_string()
+                .contains("no scored development queries")
+        );
+
+        d.qrels[0].grade = 1;
+        let judged = evaluate(&d, Split::Dev).unwrap();
+        assert_eq!(judged.signals[0].queries_scored, 1);
+        assert_eq!(select_best_signal(&judged, Metric::Ndcg10).unwrap(), "a");
+    }
+
     fn report_with_scores(scores: &[(&str, f64)]) -> EvalReport {
         EvalReport {
             format: REPORT_FORMAT.to_owned(),
@@ -806,8 +1264,8 @@ mod tests {
                 .iter()
                 .map(|(signal, ndcg10)| SignalReport {
                     signal: (*signal).to_owned(),
-                    queries_total: 0,
-                    queries_scored: 0,
+                    queries_total: 1,
+                    queries_scored: 1,
                     overall: MetricMeans {
                         ndcg10: *ndcg10,
                         recall100: 0.0,
@@ -816,6 +1274,7 @@ mod tests {
                     },
                     per_class: BTreeMap::new(),
                     per_query: Vec::new(),
+                    violations: Vec::new(),
                 })
                 .collect(),
         }
@@ -989,6 +1448,17 @@ mod tests {
         }
     }
 
+    /// One generated duplicate-key case: (raw runs text, signal
+    /// named in the error, query named, clean runs text, expected
+    /// surviving runs as (signal, [(query, doc ids)])).
+    type DupKeyCase<'a> = (
+        String,
+        String,
+        String,
+        String,
+        Vec<(&'a str, Vec<(&'a str, &'a [&'a str])>)>,
+    );
+
     // Oracle: the #6390 parser invariant, property-style over
     // generated documents (the repo testing doctrine for parsers):
     // for arbitrary query ids (including ids that need JSON
@@ -1058,66 +1528,60 @@ mod tests {
             let r2: &[&str] = &["d3"];
             let ro: &[&str] = &["d9"];
 
-            // (raw runs text, signal named in the error, query named)
-            let (dup_runs, dup_signal, dup_query, clean_runs, expected): (
-                String,
-                String,
-                String,
-                String,
-                Vec<(&str, Vec<(&str, &[&str])>)>,
-            ) = match case % 3 {
-                0 => (
-                    run_obj(
-                        &signal,
-                        &results_obj(&[(&q_dup, r1), (&q_dup, r2)]),
-                        results_first,
-                    ),
-                    signal.clone(),
-                    q_dup.clone(),
-                    run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
-                    vec![(signal.as_str(), vec![(q_dup.as_str(), r1)])],
-                ),
-                1 => (
-                    run_obj(
-                        &signal,
-                        &results_obj(&[(&q_dup, r1), (&q_other, ro), (&q_dup, r2)]),
-                        results_first,
-                    ),
-                    signal.clone(),
-                    q_dup.clone(),
-                    run_obj(
-                        &signal,
-                        &results_obj(&[(&q_dup, r1), (&q_other, ro)]),
-                        results_first,
-                    ),
-                    vec![(
-                        signal.as_str(),
-                        vec![(q_dup.as_str(), r1), (q_other.as_str(), ro)],
-                    )],
-                ),
-                _ => (
-                    format!(
-                        "{}, {}",
-                        run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+            let (dup_runs, dup_signal, dup_query, clean_runs, expected): DupKeyCase<'_> =
+                match case % 3 {
+                    0 => (
                         run_obj(
-                            &signal2,
-                            &results_obj(&[(&q_other, ro), (&q_other, r1)]),
-                            results_first
-                        )
-                    ),
-                    signal2.clone(),
-                    q_other.clone(),
-                    format!(
-                        "{}, {}",
+                            &signal,
+                            &results_obj(&[(&q_dup, r1), (&q_dup, r2)]),
+                            results_first,
+                        ),
+                        signal.clone(),
+                        q_dup.clone(),
                         run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
-                        run_obj(&signal2, &results_obj(&[(&q_other, ro)]), results_first)
+                        vec![(signal.as_str(), vec![(q_dup.as_str(), r1)])],
                     ),
-                    vec![
-                        (signal.as_str(), vec![(q_dup.as_str(), r1)]),
-                        (signal2.as_str(), vec![(q_other.as_str(), ro)]),
-                    ],
-                ),
-            };
+                    1 => (
+                        run_obj(
+                            &signal,
+                            &results_obj(&[(&q_dup, r1), (&q_other, ro), (&q_dup, r2)]),
+                            results_first,
+                        ),
+                        signal.clone(),
+                        q_dup.clone(),
+                        run_obj(
+                            &signal,
+                            &results_obj(&[(&q_dup, r1), (&q_other, ro)]),
+                            results_first,
+                        ),
+                        vec![(
+                            signal.as_str(),
+                            vec![(q_dup.as_str(), r1), (q_other.as_str(), ro)],
+                        )],
+                    ),
+                    _ => (
+                        format!(
+                            "{}, {}",
+                            run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                            run_obj(
+                                &signal2,
+                                &results_obj(&[(&q_other, ro), (&q_other, r1)]),
+                                results_first
+                            )
+                        ),
+                        signal2.clone(),
+                        q_other.clone(),
+                        format!(
+                            "{}, {}",
+                            run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                            run_obj(&signal2, &results_obj(&[(&q_other, ro)]), results_first)
+                        ),
+                        vec![
+                            (signal.as_str(), vec![(q_dup.as_str(), r1)]),
+                            (signal2.as_str(), vec![(q_other.as_str(), ro)]),
+                        ],
+                    ),
+                };
 
             let queries: Vec<&str> = vec![&q_dup, &q_other];
             let err = EvalData::from_json(&document(&queries, &dup_runs))
@@ -1243,5 +1707,250 @@ mod tests {
         let test = evaluate(&d, Split::Test).unwrap();
         assert_eq!(test.signals[0].queries_total, 2);
         assert!(select_best_signal(&test, Metric::Ndcg10).is_err());
+    }
+
+    // Oracle: hand-built #8627 set. The forbidden doc is unjudged,
+    // so it scores grade 0 and the metrics are exactly the metrics
+    // of the same set without the `forbidden` declaration — but the
+    // run that surfaces it at rank 2 records a forbidden violation
+    // and fails, while the clean run passes.
+    #[test]
+    fn forbidden_doc_fails_the_run_without_changing_metrics() {
+        let base = serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{
+                "id": "q1", "class": "memory", "split": "dev",
+                "corpora": ["agent-memory"]
+            }],
+            "docs": [
+                {"id": "mem-1", "corpus": "agent-memory"},
+                {"id": "secret-1", "corpus": "notes"}
+            ],
+            "qrels": [{"query": "q1", "doc": "mem-1", "grade": 2}],
+            "runs": [
+                {"signal": "clean", "results": {"q1": ["mem-1"]}},
+                {"signal": "leaky", "results": {"q1": ["mem-1", "secret-1"]}}
+            ]
+        });
+        let mut with_forbidden = base.clone();
+        with_forbidden["queries"][0]["forbidden"] = serde_json::json!(["secret-1"]);
+
+        let plain = evaluate(&data(base), Split::Dev).unwrap();
+        let guarded = evaluate(&data(with_forbidden), Split::Dev).unwrap();
+        for (plain_signal, guarded_signal) in plain.signals.iter().zip(&guarded.signals) {
+            assert_eq!(
+                plain_signal.overall, guarded_signal.overall,
+                "declaring a negative must not move the metrics"
+            );
+        }
+        let clean = &guarded.signals[0];
+        assert_eq!(clean.signal, "clean");
+        assert!(clean.passed());
+        let leaky = &guarded.signals[1];
+        assert_eq!(leaky.signal, "leaky");
+        assert!(!leaky.passed());
+        assert!(!guarded.passed());
+        assert_eq!(
+            leaky.violations,
+            vec![Violation {
+                query: "q1".to_owned(),
+                doc: "secret-1".to_owned(),
+                rank: 2,
+                kind: ViolationKind::Forbidden,
+                corpus: None,
+            }]
+        );
+    }
+
+    // Oracle: hand-built #8627 set. For a corpus-scoped query, a
+    // doc attributed to another corpus and a doc with no
+    // attribution at all are both provenance violations (in rank
+    // order, with the attributed corpus named); an unscoped query
+    // over the same docs map records nothing.
+    #[test]
+    fn provenance_violations_cover_wrong_corpus_and_unattributed() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [
+                {"id": "q1", "class": "memory", "split": "dev",
+                 "corpora": ["agent-memory"]},
+                {"id": "q2", "class": "memory", "split": "dev"}
+            ],
+            "docs": [
+                {"id": "mem-1", "corpus": "agent-memory"},
+                {"id": "notes-1", "corpus": "notes"}
+            ],
+            "qrels": [
+                {"query": "q1", "doc": "mem-1", "grade": 1},
+                {"query": "q2", "doc": "mem-1", "grade": 1}
+            ],
+            "runs": [{
+                "signal": "fused",
+                "results": {
+                    "q1": ["mem-1", "notes-1", "ghost-1"],
+                    "q2": ["notes-1", "ghost-1"]
+                }
+            }]
+        }));
+        let report = evaluate(&d, Split::Dev).unwrap();
+        let signal = &report.signals[0];
+        assert_eq!(
+            signal.violations,
+            vec![
+                Violation {
+                    query: "q1".to_owned(),
+                    doc: "notes-1".to_owned(),
+                    rank: 2,
+                    kind: ViolationKind::Provenance,
+                    corpus: Some("notes".to_owned()),
+                },
+                Violation {
+                    query: "q1".to_owned(),
+                    doc: "ghost-1".to_owned(),
+                    rank: 3,
+                    kind: ViolationKind::Provenance,
+                    corpus: None,
+                },
+            ]
+        );
+    }
+
+    // Oracle: the #8627 validation rules, one violation each. A
+    // grade-0 qrel on a forbidden doc is fine (it only restates
+    // non-relevance); a positive grade contradicts the negative.
+    #[test]
+    fn constraint_fields_validate() {
+        let base = serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{
+                "id": "q1", "class": "memory", "split": "dev",
+                "corpora": ["agent-memory"], "forbidden": ["secret-1"]
+            }],
+            "docs": [{"id": "mem-1", "corpus": "agent-memory"}],
+            "qrels": [{"query": "q1", "doc": "secret-1", "grade": 0}],
+            "runs": [{"signal": "dense", "results": {"q1": ["mem-1"]}}]
+        });
+        assert!(EvalData::from_json(&base.to_string()).is_ok());
+
+        let mut positive = base.clone();
+        positive["qrels"][0]["grade"] = serde_json::json!(1);
+        let err = EvalData::from_json(&positive.to_string())
+            .expect_err("forbidden + relevant is a contradiction");
+        assert!(err.to_string().contains("forbids"), "{err}");
+
+        let mut dup_forbidden = base.clone();
+        dup_forbidden["queries"][0]["forbidden"] = serde_json::json!(["secret-1", "secret-1"]);
+        assert!(EvalData::from_json(&dup_forbidden.to_string()).is_err());
+
+        let mut dup_corpus = base.clone();
+        dup_corpus["queries"][0]["corpora"] = serde_json::json!(["agent-memory", "agent-memory"]);
+        assert!(EvalData::from_json(&dup_corpus.to_string()).is_err());
+
+        let mut dup_doc = base.clone();
+        dup_doc["docs"] = serde_json::json!([
+            {"id": "mem-1", "corpus": "agent-memory"},
+            {"id": "mem-1", "corpus": "notes"}
+        ]);
+        assert!(EvalData::from_json(&dup_doc.to_string()).is_err());
+
+        let mut empty_corpus = base.clone();
+        empty_corpus["docs"][0]["corpus"] = serde_json::json!("");
+        assert!(EvalData::from_json(&empty_corpus.to_string()).is_err());
+    }
+
+    // Oracle: the #8627 selection rule — a report carrying a
+    // violation cannot be selected from, and the refusal names the
+    // offending signal; the same set without the violating run
+    // selects normally.
+    #[test]
+    fn selection_refuses_a_report_with_violations() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{
+                "id": "q1", "class": "memory", "split": "dev",
+                "forbidden": ["secret-1"]
+            }],
+            "qrels": [{"query": "q1", "doc": "mem-1", "grade": 2}],
+            "runs": [
+                {"signal": "clean", "results": {"q1": ["mem-1"]}},
+                {"signal": "leaky", "results": {"q1": ["secret-1", "mem-1"]}}
+            ]
+        }));
+        let report = evaluate(&d, Split::Dev).unwrap();
+        let err = select_best_signal(&report, Metric::Ndcg10)
+            .expect_err("a violating report must refuse selection");
+        assert!(err.to_string().contains("leaky"), "{err}");
+    }
+
+    // Oracle: backward compatibility. A pre-#8627 v1 document (no
+    // constraint fields anywhere) parses, round-trips without
+    // gaining the new keys, passes, and its report serializes
+    // without a `violations` key — byte-identical to the reports
+    // the harness emitted before the extension.
+    #[test]
+    fn pre_extension_sets_pass_and_serialize_unchanged() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q1", "class": "code", "split": "dev"}],
+            "qrels": [{"query": "q1", "doc": "d1", "grade": 1}],
+            "runs": [{"signal": "dense", "results": {"q1": ["d1"]}}]
+        }));
+        let reserialized = serde_json::to_string(&d).unwrap();
+        for key in ["\"forbidden\"", "\"corpora\"", "\"docs\""] {
+            assert!(
+                !reserialized.contains(key),
+                "round-trip must not gain {key}: {reserialized}"
+            );
+        }
+        let report = evaluate(&d, Split::Dev).unwrap();
+        assert!(report.passed());
+        let text = serde_json::to_string(&report).unwrap();
+        assert!(
+            !text.contains("violations"),
+            "report must not gain a violations key: {text}"
+        );
+    }
+
+    // Oracle: the checked-in negatives smoke fixture's designed
+    // outcome. `fused-clean` stays inside the query's corpus scope
+    // and passes; `fused-leaky` surfaces the forbidden doc at rank
+    // 2 (forbidden wins over provenance for the same doc) and an
+    // out-of-scope notes doc at rank 3. The fixture is synthetic —
+    // it exercises the harness, it is not a family baseline.
+    #[test]
+    fn fixture_negatives_smoke_records_the_designed_violations() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/eval-negatives-smoke.json"
+        );
+        let text = std::fs::read_to_string(path).expect("negatives fixture exists");
+        let d = EvalData::from_json(&text).unwrap();
+        let report = evaluate(&d, Split::Dev).unwrap();
+        assert!(!report.passed());
+        let clean = &report.signals[0];
+        assert_eq!(clean.signal, "fused-clean");
+        assert!(clean.passed());
+        let leaky = &report.signals[1];
+        assert_eq!(leaky.signal, "fused-leaky");
+        assert_eq!(
+            leaky.violations,
+            vec![
+                Violation {
+                    query: "q-mem-1".to_owned(),
+                    doc: "notes-secret-1".to_owned(),
+                    rank: 2,
+                    kind: ViolationKind::Forbidden,
+                    corpus: None,
+                },
+                Violation {
+                    query: "q-mem-1".to_owned(),
+                    doc: "notes-1".to_owned(),
+                    rank: 3,
+                    kind: ViolationKind::Provenance,
+                    corpus: Some("notes".to_owned()),
+                },
+            ]
+        );
+        assert!(select_best_signal(&report, Metric::Ndcg10).is_err());
     }
 }

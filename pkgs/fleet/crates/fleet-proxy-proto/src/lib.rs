@@ -43,6 +43,14 @@
 //! Versioning policy: the integer is the protocol *major*; a broker
 //! accepts majors N and N−1 (see [`broker_accepts`]); fields are
 //! additive within a major and unknown fields are ignored.
+//!
+//! The `proxy-mux` stream family ([`mux`]) layers multiplexed
+//! streams over one tunnel on this same framing (issue #5756, seam
+//! record `doc/2026-11-16T10-40-00Z_design_id5756_multiplexed_streams_seam.md`):
+//! dormant until both hello peers advertise the capability, with the
+//! request/response path above as the permanent fallback.
+
+pub mod mux;
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -152,6 +160,12 @@ pub struct ServiceInfo {
 /// may ride the Cloudflare leg (the broker computes the same verdict
 /// from the body when the field is absent). All three are optional
 /// and additive: pre-field frames parse exactly as before.
+///
+/// `ctx` (code#14188, fleet context propagation build 2/5) is the
+/// caller's `FLEET_CTX_*` record as an env-name -> value object; the
+/// broker forwards each grammar-valid entry to the service as its
+/// `X-Fleet-Ctx-*` header (fleet-config's `ctx` module owns the
+/// variable list and the grammar). Absent means no context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub method: String,
@@ -168,6 +182,8 @@ pub struct Request {
     pub transport: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cf_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// A response frame: `{status, body}` — the HTTP status and parsed
@@ -354,6 +370,7 @@ mod tests {
             trip: None,
             transport: None,
             cf_ok: None,
+            ctx: None,
         };
         let frame = serde_json::to_value(&req).unwrap();
         assert_eq!(frame["method"], "GET");
@@ -363,6 +380,7 @@ mod tests {
         assert!(frame.get("trip").is_none());
         assert!(frame.get("transport").is_none());
         assert!(frame.get("cf_ok").is_none());
+        assert!(frame.get("ctx").is_none());
         assert_eq!(roundtrip(&req), req);
     }
 

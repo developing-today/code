@@ -137,8 +137,8 @@ def machine_view(record, now, require=()):
         view["tier"] = 2
         view["eligible"] = True
         failed = failed_check_names(health)
-        view["reason"] = (
-            "degraded — failed checks: " + (", ".join(failed) if failed else "none named")
+        view["reason"] = "degraded — failed checks: " + (
+            ", ".join(failed) if failed else "none named"
         )
     else:
         view["reason"] = VIEW_REASONS.get(
@@ -223,9 +223,7 @@ def main(argv=None):
         declared_caps.update((record.get("capabilities") or {}).keys())
     unknown_caps = [name for name in args.require if name not in declared_caps]
     if unknown_caps:
-        parser.error(
-            "--require names no record declares: " + ", ".join(unknown_caps)
-        )
+        parser.error("--require names no record declares: " + ", ".join(unknown_caps))
 
     targets = [
         r for r in doc["machines"] if args.machine is None or r["id"] == args.machine

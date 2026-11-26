@@ -14,20 +14,22 @@ A row here records intent. It does not settle a product question and it is not a
 | Repo-wide CI and automation                                       | [repo-and-ci](planning/roadmaps/repo-and-ci.md)           | The dispatch workflows, the Go build cache, stale PR triage — and the queue fleet program: lanes for every queue, OpenChamber session dispatch (#1233, #1234), pool & routing intelligence (#1343, #1340) |
 | The basement home cluster (Talos, Cozystack)                      | [basement-cluster](planning/roadmaps/basement-cluster.md) | Nothing built yet; research and planning done, hardware inventory and power come first                                                                                                                    |
 | The PM stack (Kaneo, Pad, Grist, the aggregator, the queue fleet) | [pm-stack](planning/roadmaps/pm-stack.md)                 | Coherence epic #1184 in progress: one URL, fresh data, triage-able issues across the four repos                                                                                                           |
+| The fleet: the agents, their tool, queue and pools                | [fleet](planning/roadmaps/fleet.md)                       | The fleet tool as the one door for coordination, mirroring and backups (#8990): the verb contract v2, the local replica and backups are in review                                                         |
+| Atlas, the search and memory index                                | [atlas](planning/roadmaps/atlas.md)                       | One index over every corpus (#8983): the backup mesh (#9093), the shard consumer's serve mode and the evaluation sets                                                                                     |
 
 ## Now, across the repo
 
 The order, the evidence behind it and the progress log are in the [results-first plan](planning/plans/2026-11-21_results-first.md) (proposed 2026-11-21).
 
 1. Test `id` before it merges, and give the queue a way to build a slice of a feature instead of re-triaging it (#1233, #1187).
-2. `id`: close Phase 12 against its exit table and tag the first release — many worlds per node (#557), fair scheduling (#1067), delta frames (#805), first providers (#1062), verification debt (#796).
+2. `id`: close Phase 12 against its exit table and tag the first release — many worlds per node (#557), fair scheduling (#1067).
 3. `id`: one end-to-end slice of the signed-record substrate, two nodes and a CLI (#9106, #9112).
-4. `mcpx` robustness: a supervisor for stdio children (#1384), session resume after a cold restart (#1414), JSON Schema validation.
+4. `mcpx` robustness: a supervisor for stdio children (#1384), JSON Schema validation.
 
 ## Next
 
-1. `id` hosted worlds v1 and discovery (#6276, #10695), then the agents-in-worlds spike (#6300).
-2. `id` Phase 13 shells: presentation tiers (#786), kitty keyboard (#787), native shells (#788).
+1. `id` hosted worlds v1 and discovery (#6276), then the agents-in-worlds spike (#6300).
+2. `id` Phase 13 shells: presentation tiers (#786).
 
 ## Later
 

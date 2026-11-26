@@ -49,8 +49,6 @@ declare -A GRANDFATHERED=(
   # guard was extended to TypeScript; each split has its own issue
   # (re-pointed 2026-11-23 so every entry names the issue that
   # removes it, per this guard's convention).
-  ["pm-stack/aggregator/src/server.ts"]="#13052"
-  ["pm-stack/aggregator/src/sources/live.ts"]="#13053"
   # The id-worlds files below moved from pkgs/id/src/ to
   # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key
   # must name the file's CURRENT path or the entry silently stops

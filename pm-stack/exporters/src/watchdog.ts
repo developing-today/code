@@ -32,7 +32,6 @@
 
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import {
   coerceHealth,
   decide,
@@ -219,9 +218,7 @@ export async function cdpPageResponsive(
       done({ ok: false, detail: `page unresponsive: Runtime.evaluate not answered within ${timeoutMs} ms` });
     }, timeoutMs);
     ws.onopen = () => {
-      ws.send(
-        JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1", returnByValue: true } }),
-      );
+      ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1", returnByValue: true } }));
     };
     ws.onmessage = (ev) => {
       try {
@@ -233,7 +230,8 @@ export async function cdpPageResponsive(
         } catch {
           /* already closed */
         }
-        if (msg.error) done({ ok: false, detail: `page evaluate errored: ${msg.error.message ?? "unknown CDP error"}` });
+        if (msg.error)
+          done({ ok: false, detail: `page evaluate errored: ${msg.error.message ?? "unknown CDP error"}` });
         else done({ ok: true, detail: "page renderer answered Runtime.evaluate" });
       } catch {
         /* not our reply frame — keep waiting for the reply or the timeout */
@@ -365,7 +363,9 @@ export function productionEffects(env: Record<string, string | undefined> = proc
           };
         return { outcome: "failed", detail: `browser still wedged after unit restart: ${v.detail}` };
       }
-      return v.ok ? { outcome: "succeeded" as const, detail: v.detail } : { outcome: "failed" as const, detail: v.detail };
+      return v.ok
+        ? { outcome: "succeeded" as const, detail: v.detail }
+        : { outcome: "failed" as const, detail: v.detail };
     },
     async rung3(adapter) {
       if (!adapter.cdpPort || !adapter.loginUrl)
@@ -802,19 +802,39 @@ function argValue(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+/** HOME for a default path, per the #5762 home-resolution contract (#8220):
+ * an unset or empty HOME is an error naming what needed it, never
+ * os.homedir's silent passwd fallback; a set HOME is returned unchanged. */
+function requireHome(remedy: string, env: Record<string, string | undefined>): string {
+  const home = env.HOME;
+  if (home === undefined || home.trim() === "") {
+    throw new Error(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so a default watchdog path cannot be derived; ` +
+        `set HOME or ${remedy} (home-resolution contract #5762: no passwd fallback)`,
+    );
+  }
+  return home;
+}
+
 export async function main(
   args: string[] = process.argv.slice(2),
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
-  const home = homedir();
-  const stateDir = join(home, ".local", "state", "pm-aggregator");
+  // Defaults under HOME resolve lazily (#8220): flags and overrides never need it.
+  const stateDir = () =>
+    join(
+      requireHome("pass --state-file, --history-file and --heartbeat-file", env),
+      ".local",
+      "state",
+      "pm-aggregator",
+    );
   const adaptersDir =
     argValue(args, "--adapters-dir") ??
     env.QUOTA_WATCHDOG_ADAPTERS_DIR ??
-    join(home, ".config", "quota-watchdog", "adapters");
-  const stateFile = argValue(args, "--state-file") ?? join(stateDir, "quota-watchdog-state.json");
-  const historyFile = argValue(args, "--history-file") ?? join(stateDir, "quota-watchdog-history.jsonl");
-  const heartbeatFile = argValue(args, "--heartbeat-file") ?? join(stateDir, "quota-gatherer-heartbeat.json");
+    join(requireHome("set QUOTA_WATCHDOG_ADAPTERS_DIR", env), ".config", "quota-watchdog", "adapters");
+  const stateFile = argValue(args, "--state-file") ?? join(stateDir(), "quota-watchdog-state.json");
+  const historyFile = argValue(args, "--history-file") ?? join(stateDir(), "quota-watchdog-history.jsonl");
+  const heartbeatFile = argValue(args, "--heartbeat-file") ?? join(stateDir(), "quota-gatherer-heartbeat.json");
   const effects = productionEffects(env);
   const { errors } = await runTick({
     adaptersDir,

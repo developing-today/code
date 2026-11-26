@@ -223,9 +223,14 @@ struct NotePolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoteCheckpoints {
     events: Vec<AppliedNote>,
-    /// Per-note access policies, keyed by note ID. A note with no
-    /// entry is owner-created (by its create event's author) and
-    /// [`NoteAccess::Public`]: the Q3 default.
+    /// Per-note access policies, keyed by note ID. Only a note with
+    /// an explicitly set policy has an entry (see
+    /// [`Self::create_with_access`], [`Self::set_access`]). A note
+    /// with no entry is owner-created (by its create event's author)
+    /// and [`NoteAccess::Public`]: the Q3 default — that is what
+    /// [`Self::access`] reports. [`crate::read_authority`] instead
+    /// falls such a note through to the user default, then the server
+    /// default, before public, so "no policy set" stays observable.
     policies: HashMap<Hash, NotePolicy>,
 }
 
@@ -283,12 +288,16 @@ impl NoteCheckpoints {
         &self.events
     }
 
-    /// The effective access policy of every note in the log, in note
-    /// ID order: the durable form of the policies, to persist
+    /// The recorded access policy of every note that has one, in
+    /// note ID order: the durable form of the policies, to persist
     /// alongside [`Self::events`] and re-state with
-    /// [`Self::seed_policies`] after a rebuild. A note with no
-    /// recorded policy is reported with its create event's author as
-    /// owner and [`NoteAccess::Public`].
+    /// [`Self::seed_policies`] after a rebuild. Only recorded
+    /// policies appear — a note with none is absent, not reported
+    /// as [`NoteAccess::Public`]: reporting the effective policy
+    /// here would re-state a Public entry on rebuild and make "no
+    /// policy set" unobservable, closing the #5678 fall-through
+    /// (user default, then server default) after a restart. A note
+    /// with no record still reads as Public through [`Self::access`].
     ///
     /// # Errors
     ///
@@ -298,14 +307,13 @@ impl NoteCheckpoints {
     pub fn policies(&self) -> Result<Vec<NotePolicyRecord>, CheckpointError> {
         let mut records = Vec::new();
         for record in self.notes()? {
-            let (owner, access) = self
-                .access(record.id)
-                .ok_or(CheckpointError::UnknownNote(record.id))?;
-            records.push(NotePolicyRecord {
-                note: record.id,
-                owner,
-                access,
-            });
+            if let Some((owner, access)) = self.recorded_access(record.id) {
+                records.push(NotePolicyRecord {
+                    note: record.id,
+                    owner,
+                    access,
+                });
+            }
         }
         Ok(records)
     }
@@ -391,6 +399,14 @@ impl NoteCheckpoints {
     /// Establishes a note in the log: records the `note.create` event
     /// whose ID is the note's stable ID, carrying its first content.
     /// The create is also the note's first revision and its only head.
+    /// It records no access policy: the note reads as
+    /// [`NoteAccess::Public`] (the Q3 default) until a policy is set
+    /// with [`Self::create_with_access`] or [`Self::set_access`] — or
+    /// a default applies through [`crate::read_authority`], which
+    /// falls a note with no recorded policy through to the user
+    /// default, then the server default, before public. Recording
+    /// the default here would make "no policy set" unobservable and
+    /// the #5678 fall-through unreachable.
     ///
     /// # Errors
     ///
@@ -410,13 +426,6 @@ impl NoteCheckpoints {
             author,
             op,
         })?;
-        self.policies.insert(
-            event_id,
-            NotePolicy {
-                owner: author,
-                access: NoteAccess::Public,
-            },
-        );
         // A just-created note always folds; should it not, report the
         // note as unknown rather than panic.
         self.record(event_id)?
@@ -438,8 +447,8 @@ impl NoteCheckpoints {
     /// this note or the event ID is already in the log. On any error
     /// the log is unchanged.
     /// Establishes a note with an access policy (see
-    /// [`Self::create`], which is this with the Q3 default,
-    /// [`NoteAccess::Public`]). The creator is recorded as the
+    /// [`Self::create`], which records no policy: a note with none
+    /// reads as [`NoteAccess::Public`]). The creator is recorded as the
     /// note's owner.
     ///
     /// # Errors
@@ -481,13 +490,33 @@ impl NoteCheckpoints {
         Some((owner, NoteAccess::Public))
     }
 
+    /// A note's recorded access policy, if the log holds one for
+    /// it. `None` both for a note the log does not have and for a
+    /// known note with no recorded policy — unlike [`Self::access`],
+    /// which reports the latter as [`NoteAccess::Public`]. Callers
+    /// that must tell those apart (the #5678 resolution order in
+    /// [`crate::read_authority` falls a known note with no recorded
+    /// policy through to the user default, then the server default)
+    /// use this; callers that only need the effective policy use
+    /// `access`.
+    #[must_use]
+    pub fn recorded_access(&self, note: Hash) -> Option<(AuthorKey, NoteAccess)> {
+        self.policies
+            .get(&note)
+            .map(|policy| (policy.owner, policy.access.clone()))
+    }
+
     /// The role `author` effectively holds on `note`: the owner is
     /// always [`NoteRole::Admin`]; on a public note every author
     /// holds [`NoteRole::Write`] (read included); on a scoped note
     /// the best matching grant wins — a direct user grant, or a
     /// group grant the `groups` resolver answers for. `None` when
     /// the author holds nothing on a scoped note, or the note is
-    /// unknown.
+    /// unknown. The grant logic lives in
+    /// [`crate::read_authority::role_for`]; this applies it to the
+    /// note's recorded policy (a note with no recorded policy reads
+    /// as [`NoteAccess::Public`] — the full #5678 order, with the
+    /// user and server defaults, is [`crate::read_authority::may_read`]).
     #[must_use]
     pub fn effective_role(
         &self,
@@ -496,28 +525,7 @@ impl NoteCheckpoints {
         groups: &GroupRoles,
     ) -> Option<NoteRole> {
         let (owner, access) = self.access(note)?;
-        if author == owner {
-            return Some(NoteRole::Admin);
-        }
-        match access {
-            NoteAccess::Public => Some(NoteRole::Write),
-            NoteAccess::Scoped(grants) => {
-                let mut best: Option<NoteRole> = None;
-                for grant in &grants {
-                    let role = match grant.principal {
-                        NotePrincipal::User(user) if user == author => Some(grant.role),
-                        NotePrincipal::Group(group) => groups
-                            .role(group, author)
-                            .map(|resolved| resolved.min(grant.role)),
-                        _ => None,
-                    };
-                    if let Some(role) = role {
-                        best = Some(best.map_or(role, |b: NoteRole| b.max(role)));
-                    }
-                }
-                best
-            }
-        }
+        crate::read_authority::role_for(owner, &access, author, groups)
     }
 
     /// Whether `author` may read `note` (any role at all on a
@@ -667,6 +675,7 @@ impl NoteCheckpoints {
             note,
             content,
             parents,
+            proposal: None,
         };
         check_note_op(REVISE_KIND, &op)?;
         self.append(AppliedNote {
@@ -1119,10 +1128,17 @@ mod tests {
         let (log, note) = scoped_log();
         let events = log.events().to_vec();
         let mut rebuilt = NoteCheckpoints::from_events(events).unwrap();
-        // Before any seeding the rebuild treats the note as public.
+        // Before any seeding the rebuild holds no recorded policy
+        // for the note: it reads as public through access(), but
+        // the snapshot is empty — a note with no recorded policy
+        // contributes no record.
         let unseeded = rebuilt.policies().unwrap();
-        assert_eq!(unseeded.len(), 1);
-        assert_eq!(unseeded[0].access, NoteAccess::Public);
+        assert_eq!(unseeded, [] as [NotePolicyRecord; 0]);
+        assert_eq!(rebuilt.recorded_access(note), None);
+        assert_eq!(
+            rebuilt.access(note).unwrap(),
+            (author(1), NoteAccess::Public)
+        );
         // A policy for a note the rebuilt log does not have: the
         // host seeded policies before events, or the wrong log.
         let unknown = NotePolicyRecord {
@@ -1158,26 +1174,33 @@ mod tests {
         // by another author: the fold lists it first, but the owner is
         // still the create event's author.
         let mut log = NoteCheckpoints::new();
-        let note = log.create(hash(10), author(1), content(b"first")).unwrap().id;
-        log.checkpoint(note, hash(9), author(2), content(b"earlier id"), vec![note]).unwrap();
+        let note = log
+            .create(hash(10), author(1), content(b"first"))
+            .unwrap()
+            .id;
+        log.checkpoint(note, hash(9), author(2), content(b"earlier id"), vec![note])
+            .unwrap();
         assert_eq!(
             log.notes().unwrap()[0].revisions.first().unwrap().author,
             author(2),
             "the fixture really does put another author's revision first"
         );
         let groups = GroupRoles::none();
-        // The live log names the creator through its recorded policy.
+        // The live log names the creator through access(): a note
+        // with no recorded policy falls back to its create event's
+        // author, and the snapshot carries no record for it.
         assert_eq!(log.access(note).unwrap().0, author(1));
-        assert_eq!(log.policies().unwrap()[0].owner, author(1));
+        assert_eq!(log.policies().unwrap(), [] as [NotePolicyRecord; 0]);
 
         // Restart: the events rebuild the log with no policies, and
-        // the persisted snapshot must re-state. Deriving the owner
-        // from the first sorted revision refused this snapshot.
+        // the snapshot for a plain note is empty — the owner still
+        // comes from the create event, never from the first sorted
+        // revision.
         let events = log.events().to_vec();
         let policies = log.policies().unwrap();
         let rebuilt = NoteCheckpoints::from_events(events.clone()).unwrap();
         assert_eq!(rebuilt.access(note).unwrap().0, author(1));
-        assert_eq!(rebuilt.policies().unwrap()[0].owner, author(1));
+        assert_eq!(rebuilt.policies().unwrap(), [] as [NotePolicyRecord; 0]);
         let restored = NoteCheckpoints::from_events_with_policies(events, policies).unwrap();
         assert_eq!(restored.access(note).unwrap().0, author(1));
         assert!(restored.may_append(note, author(1), &groups));
@@ -1194,5 +1217,28 @@ mod tests {
         let json = serde_json::to_string(&policies).unwrap();
         let restored: Vec<NotePolicyRecord> = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, policies);
+    }
+
+    #[test]
+    fn test_policies_snapshots_only_recorded_policies() {
+        // A scoped note and a plain note: the snapshot carries one
+        // record — the scoped note's. The plain note reads as Public
+        // through access() but contributes no record, so a rebuild
+        // re-states nothing for it and its fall-through survives.
+        let (mut log, scoped) = scoped_log();
+        let plain = log
+            .create(hash(20), author(1), content(b"plain"))
+            .unwrap()
+            .id;
+        let policies = log.policies().unwrap();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].note, scoped);
+        assert_eq!(log.recorded_access(plain), None);
+
+        let rebuilt =
+            NoteCheckpoints::from_events_with_policies(log.events().to_vec(), policies).unwrap();
+        assert_eq!(rebuilt.recorded_access(scoped), log.recorded_access(scoped));
+        assert_eq!(rebuilt.recorded_access(plain), None);
+        assert_eq!(rebuilt.policies().unwrap(), log.policies().unwrap());
     }
 }

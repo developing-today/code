@@ -1916,8 +1916,8 @@ mod tests {
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].to, bo);
         assert_eq!(shown[0].status, "not yet delivered");
-        assert!(deliveries(&outbox, &bo).is_empty());
-        assert!(deliveries(&outbox, "anonymous").is_empty());
+        assert_eq!(deliveries(&outbox, &bo), [] as [DeliveryView; 0]);
+        assert_eq!(deliveries(&outbox, "anonymous"), [] as [DeliveryView; 0]);
 
         outbox
             .record(

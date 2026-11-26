@@ -72,7 +72,7 @@ jobs:
           fi
       - name: Download handoff from exact upload run
         if: inputs.action == 'promote'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           name: qta-version-${{ inputs.upload_run_id }}
           run-id: ${{ inputs.upload_run_id }}
@@ -116,13 +116,16 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@v21
+      - uses: DeterminateSystems/nix-installer-action@v23
+      # The deploy application is pkgs/queue-transport-alert/worker/deploy.nix: it runs that
+      # directory's deploy.sh, which uploads through the cf versions flow with wrangler as
+      # cf's build bridge (pm-stack/platform/workers.json lists this Worker by that path).
       - name: Build pinned deploy application from verified source
         run: nix build .#queue-transport-alert-deploy
       - name: Upload code-only Worker version
         if: inputs.action == 'upload'
         env:
-          QTA_GHA: '1'
+          QTA_GHA: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.QTA_WORKER_PRODUCTION_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.QTA_WORKER_PRODUCTION_CF_API_TOKEN }}
           QTA_SOURCE_SHA: ${{ github.sha }}
@@ -136,7 +139,7 @@ jobs:
         run: ./result/bin/queue-transport-alert-deploy
       - name: Save version handoff
         if: inputs.action == 'upload'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qta-version-${{ github.run_id }}
           path: ${{ runner.temp }}/qta-version.json
@@ -145,7 +148,7 @@ jobs:
       - name: Promote verified version only
         if: inputs.action == 'promote'
         env:
-          QTA_GHA: '1'
+          QTA_GHA: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.QTA_WORKER_PRODUCTION_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.QTA_WORKER_PRODUCTION_CF_API_TOKEN }}
           QTA_HANDOFF_FILE: ${{ runner.temp }}/qta-handoff/qta-version.json

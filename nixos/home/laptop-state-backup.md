@@ -1,7 +1,8 @@
 # Laptop state backup set — inventory (developing-today/code#10298)
 
 The set definition is `laptop-state-backup.sh` (restic, daily ~05:40,
-`laptop-backups.nix`). Verified 2026-11-17 by names, paths and sizes only.
+`laptop-backups.nix`). Verified 2026-11-17 by names, paths and sizes only;
+acceptance evidence re-verified 2026-11-23 (see gap 3, resolved).
 No secret contents were read, printed or archived to produce this note.
 
 ## Backed-up sources (in the set)
@@ -52,9 +53,13 @@ Docker data stores (Kaneo Postgres, Grist sqlite, Pad sqlite + attachments
    flow (key file piped directly to the vault, value never printed); left
    for the next slice.
 2. **Bare mirror rebuild** is an untested inference, per the 2026-11-14 audit.
-3. **Snapshot evidence** (acceptance 1): not yet produced. The installed unit
-   runs the nix-store copy of the script, so the new source appears only
-   after the flake is rebuilt and the next daily run completes.
+3. **Snapshot evidence** (acceptance 1): RESOLVED 2026-11-23. The deployed
+   unit's nix-store script includes the claimant source, the daily run's
+   last-success marker reads 2026-11-22 05:44:57 CST, and local restic
+   snapshot `bbbcb3d6` (2026-11-22 05:44:05 -0600, tag `laptop-state-daily`)
+   was listed back with `restic ls`: its paths include
+   `/home/user/.local/state/opencode-claimant/mode` and `fires.jsonl`
+   (names only; no contents read).
 
 ## Projector boundary (unchanged)
 

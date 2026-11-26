@@ -2,15 +2,18 @@
 // server code answers, only the sources are canned, and every action
 // succeeds. demo.ts serves it directly; edge-demo.ts puts the edge in
 // front of it.
+import { appendFileSync } from "node:fs";
 import { actions as realActions } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
+import { Named } from "../src/named.ts";
 import { type Fetch, Ops, type Run } from "../src/ops.ts";
 import { Plan } from "../src/plan.ts";
 import { Push } from "../src/push.ts";
 import type { Deps } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
 import { Work } from "../src/work.ts";
 
 const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString().slice(0, 19);
@@ -202,6 +205,7 @@ const state = {
     {
       issue: 12499,
       url: "https://github.com/developing-today/code/issues/12499",
+      intent: "question",
       text: "What is blocked and why? One paragraph.",
       created: iso(200),
       updated: iso(180),
@@ -214,6 +218,17 @@ const state = {
           text: "474 tasks are blocked. 212 wait on #9106, which is open although every PR for it is merged; closing it frees them.",
         },
       ],
+    },
+    {
+      issue: 12503,
+      url: "https://github.com/developing-today/code/issues/12503",
+      intent: "directive",
+      text: "From now on, nothing merges while its checks are red.",
+      created: iso(1),
+      updated: iso(1),
+      status: "queued",
+      worker: null,
+      replies: [],
     },
     {
       issue: 12502,
@@ -257,6 +272,7 @@ const state = {
       created: iso(60 * 20),
       author: "dezren39",
       branch: "task/suite-registry",
+      head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
     {
       number: 12241,
@@ -266,6 +282,7 @@ const state = {
       created: iso(60 * 19),
       author: "dezren39",
       branch: "task/f12-11-frames",
+      head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     },
     {
       number: 12390,
@@ -275,8 +292,121 @@ const state = {
       created: iso(60 * 3),
       author: "dezren39",
       branch: "wip/talos",
+      head: "cccccccccccccccccccccccccccccccccccccccc",
     },
   ],
+  done: {
+    tasks: {
+      day: 41,
+      kinds: [
+        { kind: "second_pass", n: 31 },
+        { kind: "small_fix", n: 6 },
+        { kind: "triage", n: 3 },
+        { kind: "feature", n: 1 },
+      ],
+      latest: [
+        {
+          id: 21640,
+          title: "Console: say why tasks are blocked, by the kind of reason",
+          at: iso(50),
+          lane: "code-a",
+          model: "sonnet",
+          kind: "small_fix",
+          issue: 14212,
+          pr: 14210,
+          verdict: "merged_verified",
+          url: "https://github.com/developing-today/code/issues/14212",
+          prUrl: "https://github.com/developing-today/code/pull/14210",
+        },
+        {
+          id: 21633,
+          title: "Triage: duplicate of the queue census report",
+          at: iso(60 * 5),
+          lane: "code-c",
+          model: null,
+          kind: "triage",
+          issue: 14101,
+          pr: null,
+          verdict: "closed_verified",
+          url: "https://github.com/developing-today/code/issues/14101",
+          prUrl: null,
+        },
+        {
+          id: 21611,
+          title: "id: relay fallback when both peers are behind symmetric NAT",
+          at: iso(60 * 9),
+          lane: "code-f",
+          model: "opus",
+          kind: "feature",
+          issue: 13990,
+          pr: 14150,
+          verdict: "open_draft_with_followup",
+          url: "https://github.com/developing-today/code/issues/13990",
+          prUrl: "https://github.com/developing-today/code/pull/14150",
+        },
+        {
+          id: 21570,
+          title: "Fleet: seat guard restarts cleanly after a failed probe",
+          at: iso(60 * 31),
+          lane: "code-b",
+          model: "sonnet",
+          kind: "small_fix",
+          issue: null,
+          pr: 14102,
+          verdict: "merged_verified",
+          url: null,
+          prUrl: "https://github.com/developing-today/code/pull/14102",
+        },
+      ],
+    },
+    merged: {
+      day: 2,
+      more: false,
+      latest: [
+        {
+          number: 14217,
+          title: "feat(pm-console): the app is told of changes as they happen",
+          url: "https://github.com/developing-today/code/pull/14217",
+          at: iso(35),
+          by: "dezren39",
+        },
+        {
+          number: 14210,
+          title: "fix(pm-console): what the live pages got wrong",
+          url: "https://github.com/developing-today/code/pull/14210",
+          at: iso(50),
+          by: "dezren39",
+        },
+        {
+          number: 14102,
+          title: "fix(fleet): seat guard restarts cleanly after a failed probe",
+          url: "https://github.com/developing-today/code/pull/14102",
+          at: iso(60 * 31),
+          by: "dezren39",
+        },
+      ],
+    },
+    closed: {
+      day: 1,
+      more: false,
+      latest: [
+        {
+          number: 14101,
+          title: "Queue census counts a parked task twice",
+          url: "https://github.com/developing-today/code/issues/14101",
+          at: iso(60 * 5),
+          reason: "not_planned",
+        },
+        {
+          number: 13820,
+          title: "Console: Needs me shows 394",
+          url: "https://github.com/developing-today/code/issues/13820",
+          at: iso(60 * 40),
+          reason: "completed",
+        },
+      ],
+    },
+  },
   priorities: {
     truncated: false,
     issues: [
@@ -396,7 +526,8 @@ const demoRun: Run = async (argv) => {
   // The plan's screens: the roadmap files are the repository's own, read
   // from this checkout; the issues under them are made up.
   const answer = (out: unknown) => ({ code: 0, stdout: JSON.stringify(out), stderr: "" });
-  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md)$/.exec(path);
+  // So is the list of Workers the Platform screen is drawn from.
+  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md|pm-stack\/platform\/workers\.json)$/.exec(path);
   if (contents) {
     const text = await Bun.file(`${import.meta.dir}/../../../${contents[1]}`).text();
     return answer({ content: Buffer.from(text, "utf8").toString("base64") });
@@ -624,7 +755,43 @@ const cfg = readConfig({ HOME: "/tmp", PM_CONSOLE_DASHBOARD_URL: "" });
 const docs = new Docs(
   Object.fromEntries(Object.entries(state).map(([name, data]) => [name, { ttlMs: 3_600_000, load: async () => data }])),
 );
-const done = (result: unknown) => ({ run: async () => result, touch: [] as string[], audit: () => ({}) });
+// The offline check's witness: when PM_CONSOLE_DEMO_ACT_LOG names a
+// file, every canned action the demo host runs is appended there as one
+// JSON line (kind, args, time), so a driver outside the browser can
+// count what arrived and when. Unset, the demo writes nothing. A log
+// that cannot be written is reported on stderr and the action still
+// runs: the check then fails at its own count, not inside the demo.
+const done = (kind: string, result: unknown) => ({
+  run: async (args: unknown) => {
+    const actLog = process.env.PM_CONSOLE_DEMO_ACT_LOG;
+    if (actLog) {
+      try {
+        appendFileSync(actLog, `${JSON.stringify({ at: new Date().toISOString(), kind, args })}\n`);
+      } catch (error) {
+        console.error(`demo act log ${actLog} not writable: ${error}`);
+      }
+    }
+    return result;
+  },
+  touch: [] as string[],
+  audit: () => ({}),
+});
+/** The one canned action that changes what the demo shows. On a real
+ * host an answer is written in the ledger the questions are read
+ * from, so the answered question leaves the list the app is shown;
+ * the offline check's last step is exactly that it is gone when the
+ * app is reopened. A demo that only said "ok" would keep showing it,
+ * and the check would fail on the demo, not on the app (run
+ * 45584721031, whose answer arrived once and was still listed). */
+const answerQuestion = (args: unknown) => {
+  const a = (args ?? {}) as { set?: string; ledger?: string; qid?: string };
+  const open = state.questions.open;
+  const at = open.findIndex((q) => q.set === a.set && q.ledger === a.ledger && q.qid === a.qid);
+  if (at < 0) return;
+  open.splice(at, 1);
+  state.questions.total = open.length;
+  state.questionCount.total = open.length;
+};
 // Linking a phone is the real thing, kept in a file under /tmp.
 const devices = new Devices(fileStore("/tmp/pm-console-demo-devices.json"));
 const phones = { devices, link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) };
@@ -635,18 +802,33 @@ const demoWork = new Work(demoOps);
 const demoPlan = new Plan(demoOps, demoWork);
 const real = realActions(demoOps, demoWork, undefined, devices, demoPlan);
 const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
-  get: (_t, kind) =>
-    typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send")
-      ? real[kind]
-      : done(
-          kind === "ask.send"
-            ? { issue: 12503, queued: true }
-            : kind === "questions.accept"
-              ? { applied: 2, refused: [] }
-              : { ok: true },
-        ),
+  get: (_t, kind) => {
+    if (typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send"))
+      return real[kind];
+    const name = typeof kind === "string" ? kind : String(kind);
+    const canned = done(
+      name,
+      name === "ask.send"
+        ? { issue: 12503, queued: true }
+        : name === "questions.accept"
+          ? { applied: 2, refused: [] }
+          : { ok: true },
+    );
+    if (name !== "question.answer") return canned;
+    return {
+      ...canned,
+      touch: ["questions", "questionCount"],
+      run: async (args: unknown) => {
+        const out = await canned.run(args);
+        answerQuestion(args);
+        return out;
+      },
+    };
+  },
   has: () => true,
-  getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done({}) }),
+  // The kinds a real machine has, for where what it can do is listed.
+  ownKeys: () => Object.keys(real),
+  getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done("?", {}) }),
 });
 
 /** The made-up host: canned state, and actions that all succeed. */
@@ -660,6 +842,11 @@ export const demoDeps: Deps = {
     status: 201,
   })),
   actions: table,
+  // What was done under each name, as the real host keeps it: an action
+  // a device sends twice is done once here too.
+  named: new Named(memoryStore()),
+  // What this machine is called where machines are listed.
+  self: { name: "framework", version: "0123abcd4567" },
   identify: async () => ({ via: "demo", email: "you@example.com" }),
   audit: async () => {},
 };

@@ -5,10 +5,12 @@
 //! and derivations the merged C8 design specifies in §4
 //! (error-investigation mode) and §5 steps 1–2 and 6 (the
 //! investigation recipe and its evidence bundle). It deliberately
-//! contains no telemetry search, no commit/PR/issue joins, and no
-//! unpushed-commit check: those consume live interfaces owned by
-//! later C8-E slices. What lives here is everything that can be
-//! computed from error strings and occurrence records alone:
+//! contains no telemetry search and performs no live
+//! commit/PR/issue joins or unpushed-commit lookups: gathering
+//! consumes live interfaces owned by later C8-E slices. What lives
+//! here is everything that can be computed from error strings,
+//! occurrence records, and already-gathered investigation findings
+//! alone:
 //!
 //! - [`normalize_error_string`]: the conservative normalization of
 //!   design §4 — Unicode normalization (NFC) and whitespace
@@ -32,6 +34,18 @@
 //!   a gap; it is never dropped and never fabricated. The bundle
 //!   carries no causation claim: an investigation is evidence,
 //!   not a verdict (design §5 preamble).
+//! - [`CandidateChange`] / [`RejectedCandidate`] /
+//!   [`UnpushedCommitCheck`] / [`InvestigationFindings`]:
+//!   assembly of already-gathered findings into the full step-6
+//!   record (design §5 steps 4–6) — candidate changes with
+//!   exact-vs-inferred association labels, rejected candidates
+//!   with their reasons, the step-5 unpushed-final-commit check
+//!   exactly as an authoritative source reported it, and the
+//!   next action. Gathering the findings is the live-interface
+//!   slices' work; assembling them is deterministic and lives
+//!   here. Absent findings stay absent: a check that was not
+//!   performed is recorded as not performed, never as a negative
+//!   result (design §6).
 //!
 //! Timestamps are RFC 3339 strings, compared lexicographically —
 //! the convention of the C8 profile in [`crate::c8_profile`].
@@ -186,7 +200,7 @@ pub fn group_occurrences(occurrences: &[ErrorOccurrence]) -> Vec<FingerprintGrou
             .occurrences
             .sort_by(|a, b| (&a.observed_at, &a.source_id).cmp(&(&b.observed_at, &b.source_id)));
     }
-    groups.sort_by(|a, b| a.fingerprint.id().cmp(&b.fingerprint.id()));
+    groups.sort_by_key(|a| a.fingerprint.id());
     groups
 }
 
@@ -383,14 +397,193 @@ impl InvestigationEdge {
     }
 }
 
-/// The compact investigation record of design §5 step 6,
-/// restricted to the fields this seam-independent core can fill:
-/// query/fingerprint, time range, first observation, evidence
-/// IDs, exact-vs-inferred edges, and missing-data gaps.
+/// A candidate change an investigation associated with the error
+/// (design §5 step 6): a commit reached through the evidenced
+/// commit → PR → issue joins of step 4. A candidate is an
+/// association, never a causation claim (design §5 preamble).
 ///
-/// Candidate changes, rejected candidates/reasons, and the next
-/// action come from the live-interface slices and are absent
-/// here rather than guessed. The record never claims causation.
+/// The association carries the same exact-vs-inferred discipline
+/// as [`InvestigationEdge`]: an inferred candidate always carries
+/// its confidence and provenance source; an exact one never does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateChange {
+    /// Canonical ID of the commit in its owning system.
+    pub commit_id: String,
+    /// Short summary of the change, as recorded by its source.
+    pub summary: String,
+    /// How the investigation associated this change with the
+    /// error: an explicit source link, or a derived association.
+    pub label: EdgeLabel,
+    /// Confidence of an inferred association; always present for
+    /// inferred candidates, never for exact ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    /// Provenance of an inferred association: where it was
+    /// derived from. Always present for inferred candidates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl CandidateChange {
+    /// An exact candidate: an explicit source link associates
+    /// the change with the error.
+    pub fn exact(commit_id: impl Into<String>, summary: impl Into<String>) -> CandidateChange {
+        CandidateChange {
+            commit_id: commit_id.into(),
+            summary: summary.into(),
+            label: EdgeLabel::Exact,
+            confidence: None,
+            source: None,
+        }
+    }
+
+    /// An inferred candidate: the investigation derived the
+    /// association. Always carries its confidence and provenance.
+    pub fn inferred(
+        commit_id: impl Into<String>,
+        summary: impl Into<String>,
+        confidence: f32,
+        source: impl Into<String>,
+    ) -> CandidateChange {
+        CandidateChange {
+            commit_id: commit_id.into(),
+            summary: summary.into(),
+            label: EdgeLabel::Inferred,
+            confidence: Some(confidence),
+            source: Some(source.into()),
+        }
+    }
+}
+
+/// A candidate the investigation considered and rejected, with
+/// the reason (design §5 step 6). Rejected candidates stay in
+/// the record so a later reader can see what was ruled out and
+/// why; they are not evidence the bundle rests on, so their IDs
+/// never appear in the bundle's evidence IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectedCandidate {
+    /// Canonical ID of the rejected candidate record.
+    pub candidate_id: String,
+    /// Why the investigation rejected it.
+    pub reason: String,
+}
+
+/// Outcome of the unpushed-final-commit check (design §5 step 5),
+/// exactly as reported — or not reported — by an authoritative
+/// state source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnpushedCommitStatus {
+    /// The authoritative source reports an unpushed final commit.
+    UnpushedFound,
+    /// The authoritative source reports no unpushed final commit.
+    NoneFound,
+    /// No authoritative source reported: the check was not
+    /// performed. This is a missing-data gap, never a negative
+    /// result — an unpushed commit is never inferred from an
+    /// absent PR (design §5 step 5, §6).
+    #[default]
+    NotChecked,
+}
+
+/// The unpushed-final-commit check of design §5 step 5, as one
+/// recorded input: the status an authoritative state source
+/// reported, when it reported it, and the check time. The core
+/// never performs the check itself; it records what it is given
+/// and names the gap when nothing was reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnpushedCommitCheck {
+    pub status: UnpushedCommitStatus,
+    /// When the authoritative source was checked (RFC 3339);
+    /// present whenever a check was performed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+    /// The authoritative state source that reported the status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The unpushed commit the source reported; present only
+    /// when the status is
+    /// [`UnpushedCommitStatus::UnpushedFound`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_id: Option<String>,
+}
+
+impl UnpushedCommitCheck {
+    /// The check was not performed: no authoritative state
+    /// source reported.
+    pub fn not_checked() -> UnpushedCommitCheck {
+        UnpushedCommitCheck {
+            status: UnpushedCommitStatus::NotChecked,
+            checked_at: None,
+            source: None,
+            commit_id: None,
+        }
+    }
+
+    /// A check an authoritative source reported, with its check
+    /// time and source; `commit_id` only for
+    /// [`UnpushedCommitStatus::UnpushedFound`].
+    pub fn reported(
+        status: UnpushedCommitStatus,
+        checked_at: impl Into<String>,
+        source: impl Into<String>,
+        commit_id: Option<String>,
+    ) -> UnpushedCommitCheck {
+        UnpushedCommitCheck {
+            status,
+            checked_at: Some(checked_at.into()),
+            source: Some(source.into()),
+            commit_id,
+        }
+    }
+
+    /// The gap-list line this check contributes, when the check
+    /// was not performed.
+    pub fn gap_description(&self) -> Option<String> {
+        (self.status == UnpushedCommitStatus::NotChecked).then(|| {
+            "unpushed-final-commit check not performed: no authoritative state source reported"
+                .to_string()
+        })
+    }
+}
+
+impl Default for UnpushedCommitCheck {
+    fn default() -> UnpushedCommitCheck {
+        UnpushedCommitCheck::not_checked()
+    }
+}
+
+/// The gathered findings an investigation assembles into the
+/// full step-6 record (design §5 steps 4–6): the output of the
+/// live-interface gathering slices, supplied as data. Assembly
+/// is deterministic; nothing here is fetched, searched, or
+/// inferred by the core.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InvestigationFindings {
+    /// Candidate changes from the commit → PR → issue joins,
+    /// in the order the investigation recorded them.
+    pub candidate_changes: Vec<CandidateChange>,
+    /// Candidates considered and rejected, with reasons.
+    pub rejected_candidates: Vec<RejectedCandidate>,
+    /// The step-5 unpushed-final-commit check, as reported.
+    pub unpushed_commit_check: UnpushedCommitCheck,
+    /// The investigation's stated next action. When absent, the
+    /// assembly derives one deterministically from the bundle's
+    /// own state (see [`build_bundle_with_findings`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+}
+
+/// The compact investigation record of design §5 step 6:
+/// query/fingerprint, time range, first observation, evidence
+/// IDs, exact-vs-inferred edges, and missing-data gaps — plus,
+/// when gathered findings are assembled in via
+/// [`build_bundle_with_findings`], candidate changes, rejected
+/// candidates/reasons, the unpushed-final-commit check, and the
+/// next action.
+///
+/// Without findings those fields are absent rather than guessed.
+/// The record never claims causation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceBundle {
     pub schema_version: u32,
@@ -407,14 +600,37 @@ pub struct EvidenceBundle {
     pub first_observation: Option<FirstObservation>,
     /// IDs of the records the bundle's evidence rests on: exact
     /// occurrences' source records first (in observation order),
-    /// then edge endpoints, deduplicated in first-seen order.
+    /// then edge endpoints, then candidate changes and a reported
+    /// unpushed commit, deduplicated in first-seen order.
+    /// Rejected candidates are not evidence and never appear.
     pub evidence_ids: Vec<String>,
     /// Every edge supplied, gaps included, in supplied order.
     pub edges: Vec<InvestigationEdge>,
+    /// Candidate changes assembled from gathered findings, in
+    /// supplied order; empty when no findings were assembled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_changes: Vec<CandidateChange>,
+    /// Rejected candidates with their reasons, in supplied
+    /// order; empty when no findings were assembled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_candidates: Vec<RejectedCandidate>,
+    /// The unpushed-final-commit check, when findings were
+    /// assembled. Absent in a core-only bundle: the check is a
+    /// gathered finding, not a core derivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpushed_commit_check: Option<UnpushedCommitCheck>,
+    /// The next action the record states: the investigation's
+    /// own when supplied, otherwise derived deterministically
+    /// from the bundle's gaps and candidates. Absent in a
+    /// core-only bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
     /// Missing-data warnings: every gap edge, plus the
     /// no-exact-occurrence and predates-retention warnings when
-    /// they apply. Partial investigation is a valid result if it
-    /// names its gaps (design §6).
+    /// they apply, plus — with findings assembled — the
+    /// not-performed unpushed check and the no-candidate-changes
+    /// warnings when they apply. Partial investigation is a
+    /// valid result if it names its gaps (design §6).
     pub gaps: Vec<String>,
 }
 
@@ -431,6 +647,38 @@ pub fn build_bundle(
     occurrences: &[ErrorOccurrence],
     edges: &[InvestigationEdge],
     retention_floor: Option<&str>,
+) -> EvidenceBundle {
+    assemble_bundle(query, occurrences, edges, retention_floor, None)
+}
+
+/// Build the full evidence bundle: the core bundle of
+/// [`build_bundle`] plus the gathered findings of design §5
+/// steps 4–6, assembled deterministically.
+///
+/// The findings' candidate changes join the evidence IDs (their
+/// rejected candidates do not); a not-performed
+/// unpushed-final-commit check and an empty candidate list are
+/// named as missing-data gaps, never converted into negative
+/// facts (design §6). The record's next action is the findings'
+/// own when stated; otherwise it is derived from the assembled
+/// bundle: with gaps named, resolve them and re-run; with a
+/// clean record, a human reviews the candidate changes.
+pub fn build_bundle_with_findings(
+    query: &str,
+    occurrences: &[ErrorOccurrence],
+    edges: &[InvestigationEdge],
+    retention_floor: Option<&str>,
+    findings: &InvestigationFindings,
+) -> EvidenceBundle {
+    assemble_bundle(query, occurrences, edges, retention_floor, Some(findings))
+}
+
+fn assemble_bundle(
+    query: &str,
+    occurrences: &[ErrorOccurrence],
+    edges: &[InvestigationEdge],
+    retention_floor: Option<&str>,
+    findings: Option<&InvestigationFindings>,
 ) -> EvidenceBundle {
     let fingerprint = ErrorFingerprint::of(query);
     let time_range = match (
@@ -462,6 +710,14 @@ pub fn build_bundle(
             push_id(to_id);
         }
     }
+    if let Some(findings) = findings {
+        for candidate in &findings.candidate_changes {
+            push_id(&candidate.commit_id);
+        }
+        if let Some(commit_id) = &findings.unpushed_commit_check.commit_id {
+            push_id(commit_id);
+        }
+    }
 
     let mut gaps: Vec<String> = edges.iter().filter_map(|e| e.gap_description()).collect();
     match &first {
@@ -477,6 +733,41 @@ pub fn build_bundle(
         _ => {}
     }
 
+    let (candidate_changes, rejected_candidates, unpushed_commit_check, next_action) =
+        match findings {
+            None => (Vec::new(), Vec::new(), None, None),
+            Some(findings) => {
+                if let Some(gap) = findings.unpushed_commit_check.gap_description() {
+                    gaps.push(gap);
+                }
+                if findings.candidate_changes.is_empty() {
+                    gaps.push(
+                        "no candidate changes recorded: the commit/PR/issue joins produced no evidenced candidates"
+                            .to_string(),
+                    );
+                }
+                let next_action = findings.next_action.clone().or_else(|| {
+                    if gaps.is_empty() {
+                        Some(
+                            "human review of the candidate changes; the bundle records evidence only"
+                                .to_string(),
+                        )
+                    } else {
+                        Some(
+                            "resolve the named missing-data gaps, then re-run the investigation"
+                                .to_string(),
+                        )
+                    }
+                });
+                (
+                    findings.candidate_changes.clone(),
+                    findings.rejected_candidates.clone(),
+                    Some(findings.unpushed_commit_check.clone()),
+                    next_action,
+                )
+            }
+        };
+
     EvidenceBundle {
         schema_version: C8_FINGERPRINT_SCHEMA_VERSION,
         query: query.to_string(),
@@ -485,6 +776,10 @@ pub fn build_bundle(
         first_observation: first,
         evidence_ids,
         edges: edges.to_vec(),
+        candidate_changes,
+        rejected_candidates,
+        unpushed_commit_check,
+        next_action,
         gaps,
     }
 }

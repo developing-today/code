@@ -237,8 +237,9 @@ describe("github-ci worker", () => {
     const seen: string[] = [];
     const queueMock = fetchMock.get(QUEUE);
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
-    // + mirror column probe (1) + mirror writes batch (1)
-    for (let i = 0; i < 5; i++) {
+    // + mirror column probe (1) + stored-row read for the Q7
+    // history diff (1) + mirror writes batch (1)
+    for (let i = 0; i < 6; i++) {
       queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
         seen.push(String(opts.body));
         return tursoOk();
@@ -273,8 +274,9 @@ describe("github-ci worker", () => {
     const seen: string[] = [];
     const queueMock = fetchMock.get(QUEUE);
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
-    // + mirror column probe (1) + mirror writes batch (1)
-    for (let i = 0; i < 5; i++) {
+    // + mirror column probe (1) + stored-row read for the Q7
+    // history diff (1) + mirror writes batch (1)
+    for (let i = 0; i < 6; i++) {
       queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
         seen.push(String(opts.body));
         return tursoOk();
@@ -295,5 +297,32 @@ describe("github-ci worker", () => {
     const all = seen.join("\n");
     expect(all).toContain("UPDATE github_mirror_issues SET");
     expect(all).toContain("31337");
+  });
+
+  it("sub_issues on a fleet repo moves the mirror parent projection (#14170 Q7)", async () => {
+    const seen: string[] = [];
+    const queueMock = fetchMock.get(QUEUE);
+    // sink event insert (1) + watermark (1) + mirror DDL batch (1)
+    // + mirror column probe (1) + stored-row read (1) + mirror
+    // writes batch (1)
+    for (let i = 0; i < 6; i++) {
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
+    }
+    const p = JSON.stringify({
+      action: "parent_issue_added",
+      sub_issue: { number: 8581, updated_at: "2026-11-11T03:00:00Z" },
+      parent_issue: { number: 8580 },
+      repository: { full_name: "developing-today/code" },
+    });
+    const res = await post(p, "sub_issues", await sign(p));
+    expect(res.status).toBe(200);
+    const all = seen.join("\n");
+    // The mock answers every read with no rows, so the child is a
+    // first sight: seeded minimal with its parent projection.
+    expect(all).toContain("parent_number");
+    expect(all).toContain("INSERT INTO github_mirror_meta");
   });
 });

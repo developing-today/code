@@ -42,6 +42,16 @@ type env struct {
 
 func newEnv(t *testing.T, cfgBody string) *env {
 	t.Helper()
+	// Remote mode (#13386): the suite runs against a shared daemon the
+	// test did not start. Selection fails closed — a test that is not in
+	// remote_safe_tests.txt never gets an env, so a full-suite remote run
+	// skips it instead of pointing host-local fixtures at the daemon.
+	if remoteMode() {
+		if !remoteSafeTest(t.Name()) {
+			t.Skipf("remote mode: %s is not declared remote-safe in remote_safe_tests.txt", t.Name())
+		}
+		return newRemoteEnv(t, cfgBody)
+	}
 	// Outside $HOME: the daemon finds scripts and recipes by walking up
 	// from here, and must not reach the user's own (testsupport.TempDir).
 	dir := testsupport.TempDir(t)
@@ -3334,6 +3344,23 @@ func TestMain(m *testing.M) {
 
 func guardedMain(m *testing.M) int {
 	before := callerDaemonSet()
+	// The suite must not publish into the caller's real state directory: a
+	// daemon record the suite writes there is indistinguishable from a
+	// daemon the caller owns, and the before/after snapshot below reports a
+	// successful run as a disturbance. Child daemons already get their own
+	// XDG_STATE_HOME; point this process at one too before any test resolves
+	// daemon.Paths().
+	state := os.Getenv("XDG_STATE_HOME")
+	stateDir, err := os.MkdirTemp("", "mcpx-e2e-state-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: making an isolated state dir: %v\n", err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(stateDir) }()
+	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: isolating XDG_STATE_HOME: %v\n", err)
+		return 1
+	}
 	for _, name := range []string{"MCPX_DAEMON_ENDPOINT", "MCPX_SOCKET"} {
 		if v := os.Getenv(name); v != "" && childWouldInherit(name) {
 			fmt.Fprintf(os.Stderr,
@@ -3344,6 +3371,12 @@ func guardedMain(m *testing.M) int {
 		}
 	}
 	code := m.Run()
+	if state == "" {
+		_ = os.Unsetenv("XDG_STATE_HOME")
+	} else if err := os.Setenv("XDG_STATE_HOME", state); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: restoring XDG_STATE_HOME: %v\n", err)
+		return 1
+	}
 	after := callerDaemonSet()
 	if !slices.Equal(before, after) {
 		fmt.Fprintf(os.Stderr,

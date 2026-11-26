@@ -215,6 +215,12 @@ sends as few as it can.
 The generated script is validated with the step-1 diagnostics before anything
 runs, and returned rather than run unless `autonomy: run` is asked for.
 
+When the configured provider answers HTTP 402, the answer is still HTTP 200 with
+`model: "none"` and `reason: "provider_payment_required"` beside a fixed
+`message`. That is distinct from a provider that is merely unavailable, which
+keeps the generic no-answer message. The provider's own response body is never
+returned to the caller (#13610).
+
 Whatever is asked for, the daemon's `autonomy.max` is the most it does: a
 request above it — in a body, the `X-Mcpx-Settings` header, the CLI's
 `--run`, an MCP tool call or the plugin — is lowered to it, not refused, and
@@ -259,8 +265,9 @@ mcpx sits under still owns the loop, the tools and the session.
 Provider credentials remain opt-in: `model.apiKeyEnv` names the variable for
 the singular provider, while `model.providers` can map provider names to their
 own `baseURL` and `apiKeyEnv`. mcpx never scans the environment for key names.
-`model.profiles` names ordered lists of `provider/model` ids, so a failure or
-unconfigured entry falls through to the next configured provider. A profile
+`model.profiles` names ordered lists of `provider/model` ids. An upstream
+HTTP 402 ends this generation immediately. Other provider failures or
+unconfigured entries fall through to the next configured provider. A profile
 can set its own token budget and per-attempt timeout. `model.default` and an
 operation's model override may each name either a profile or a provider/model
 id; when every profile entry is unavailable, generation stays on its

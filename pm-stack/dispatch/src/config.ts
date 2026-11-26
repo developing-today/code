@@ -3,10 +3,18 @@
 // this process at all (#9028): dispatch talks to the fleet queue broker
 // with the broker token, which stays in its token file
 // (~/.config/queue-broker/token) and is read at client construction.
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { requireHome } from "./home.ts";
 
-const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
+const s = (v: string | undefined, d: string | (() => string)): string =>
+  v && v.trim() !== "" ? v.trim() : typeof d === "function" ? d() : d;
+
+/** A lazy default under HOME (#8220): resolved only when the override is unset,
+ * so an explicit override never needs HOME. */
+const fromHome =
+  (setting: string, ...segments: string[]) =>
+  (): string =>
+    join(requireHome(setting, process.env), ...segments);
 
 /** The six fleet repos dispatch may target. */
 export const FLEET_REPOS = [
@@ -83,6 +91,14 @@ export interface Config {
    * SWEEP_SECONDS, default 900; "off" disables the timer — the
    * failure-path cleanup still runs). code#12217. */
   worktreeSweepSeconds: number | null;
+  /** Whether session launch checks the monthly placement guard (#2732). */
+  placementGuardEnabled: boolean;
+  /** The packaged placement-record executable. */
+  placementRecordExecutable: string;
+  /** Policy-of-record YAML passed to placement-record. */
+  placementPolicyFile: string;
+  /** Quota gatherer's latest quota-current.json snapshot. */
+  quotaCurrentFile: string;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -121,19 +137,25 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     oidcAudience: s(env.DISPATCH_OIDC_AUDIENCE, "pm-dispatch"),
     repoAllowlist: allowlist,
     queueBrokerUrl: s(env.QUEUE_BROKER_URL, "http://100.99.113.103:4801").replace(/\/$/, ""),
-    queueBrokerTokenFile: s(env.QUEUE_BROKER_TOKEN_FILE, join(homedir(), ".config", "queue-broker", "token")),
+    queueBrokerTokenFile: s(
+      env.QUEUE_BROKER_TOKEN_FILE,
+      fromHome("QUEUE_BROKER_TOKEN_FILE", ".config", "queue-broker", "token"),
+    ),
     queueBrokerToken: env.QUEUE_BROKER_TOKEN?.trim() ? env.QUEUE_BROKER_TOKEN.trim() : null,
     opencodeUrl: s(env.OPENCODE_URL, "http://127.0.0.1:13420").replace(/\/$/, ""),
-    opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
+    opencodeAuthFile: s(
+      env.OPENCODE_AUTH_FILE,
+      fromHome("OPENCODE_AUTH_FILE", ".local", "state", "opencode", "service-prod.json"),
+    ),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
     worktreeRoot:
       env.PM_DISPATCH_WORKTREE_ROOT?.trim().toLowerCase() === "off"
         ? null
-        : s(env.PM_DISPATCH_WORKTREE_ROOT, join(homedir(), "git", "fleet")),
+        : s(env.PM_DISPATCH_WORKTREE_ROOT, fromHome("PM_DISPATCH_WORKTREE_ROOT", "git", "fleet")),
     worktreeRegistryFile: s(
       env.PM_DISPATCH_WORKTREE_REGISTRY,
-      join(homedir(), ".local", "state", "pm-dispatch", "worktree-registry.json"),
+      fromHome("PM_DISPATCH_WORKTREE_REGISTRY", ".local", "state", "pm-dispatch", "worktree-registry.json"),
     ),
     worktreeSweepSeconds: (() => {
       const v = s(env.PM_DISPATCH_WORKTREE_SWEEP_SECONDS, "900");
@@ -145,5 +167,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       }
       return Number(v);
     })(),
+    placementGuardEnabled: /^(1|true|yes)$/i.test(env.PM_DISPATCH_PLACEMENT_GUARD?.trim() ?? ""),
+    placementRecordExecutable: s(env.PM_DISPATCH_PLACEMENT_RECORD, "placement-record"),
+    placementPolicyFile: s(env.PM_DISPATCH_PLACEMENT_POLICY, ""),
+    quotaCurrentFile: s(
+      env.QUOTA_CURRENT_PATH,
+      fromHome("QUOTA_CURRENT_PATH", ".local", "state", "pm-aggregator", "quota-current.json"),
+    ),
   };
 }

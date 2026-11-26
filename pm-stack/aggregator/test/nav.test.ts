@@ -18,9 +18,21 @@ import { navLinks } from "../src/render.ts";
 import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
-const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
-// The render layer is split across render.ts + render-*.ts (#13051); scan
-// the whole module set — the same code the single render.ts used to hold.
+// The #13052 split moved the route families into the server-*.ts seam
+// modules; reachability is a property of the whole server layer, so the
+// scan covers every module the split produced.
+const serverSource = [
+  "server.ts",
+  "server-alert-routes.ts",
+  "server-contexts.ts",
+  "server-decision-routes.ts",
+  "server-pages.ts",
+  "server-respond.ts",
+  "server-wiring.ts",
+  "server-write-routes.ts",
+]
+  .map((f) => readFileSync(join(SRC, f), "utf8"))
+  .join("\n");
 const renderSource =
   readFileSync(join(SRC, "ui.css"), "utf8") +
   "\n" +
@@ -46,10 +58,11 @@ function serverPaths(): { exact: string[]; prefixes: string[] } {
 }
 
 /** Routes that are not pages a person navigates to: JSON twins, POST
- * endpoints, datastar fragments, static assets, the /board alias, and
- * the /freshness/stream SSE endpoint (machine-consumed, never navigated to). */
+ * endpoints, datastar fragments, static assets, the /board alias, the
+ * /freshness/stream SSE endpoint (machine-consumed, never navigated to),
+ * and the /webhooks/* GitHub delivery endpoints (#9076, machine POST only). */
 const NON_PAGE =
-  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$/;
+  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$|^\/webhooks\//;
 
 describe("the manifest groups every page (#1135)", () => {
   test("every page names one of PAGE_GROUPS, and groups have no page-less id", () => {

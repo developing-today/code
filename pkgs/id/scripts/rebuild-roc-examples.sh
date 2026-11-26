@@ -21,10 +21,14 @@ examples=(
   examples/roc-chat
   examples/roc-counter
   examples/roc-grid
+  examples/roc-burrow
+  examples/roc-mind-map
   examples/roc-screen
   examples/roc-text-counter
   examples/territory
   apps/tic-tac-toe/program
+  apps/space-invaders/program
+  apps/checkers/program
 )
 
 for example in "${examples[@]}"; do

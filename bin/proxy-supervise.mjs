@@ -524,8 +524,14 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     for (const p of ports) health[p] = await checkHealth(proxy, p, 1500);
 
     // What is running, per our own record?
+    // A live PID with a failing health check is wedged (#14423): it is
+    // not live enough to serve or be kept, but it still holds its port,
+    // so it must be stopped before any replacement starts — otherwise
+    // the cold path picks the canonical port it still holds and every
+    // roll fails with roll-failed-old-kept, leaving it running forever.
     let current = state.current || null;
-    if (current && (!pidAlive(current.pid) || !health[current.port]?.ok)) current = { ...current, live: false };
+    if (current && pidAlive(current.pid) && !health[current.port]?.ok) current = { ...current, live: false, wedged: true };
+    else if (current && (!pidAlive(current.pid) || !health[current.port]?.ok)) current = { ...current, live: false };
     else if (current) current = { ...current, live: true };
 
     // A healthy instance we manage, already on the desired hash: the
@@ -612,7 +618,10 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     // Foreign instance discovery/adoption: healthy, on a known port,
     // not our recorded current.
     const foreignPort = ports.find((p) => health[p].ok && !(current?.live && current.port === p));
-    if (!current?.live && foreignPort) {
+    // A wedged recorded instance is not displaced by foreign discovery:
+    // adopting (or replacing) a foreign instance would leave the wedged
+    // process holding its port, still unreaped (#14423).
+    if (!current?.live && !current?.wedged && foreignPort) {
       const pid = endpoint && endpoint.port === foreignPort ? endpoint.pid : null;
       const started = pid ? pidStartedAt(pid) : null;
       const newestMtime = Math.max(0, ...proxy.hashFiles.map((f) => {
@@ -643,6 +652,19 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     }
 
     // ---- start a new instance ----
+    // Reap a wedged recorded instance first (#14423), through the same
+    // drain path as a live instance (SIGTERM, then SIGKILL after the
+    // drain). It must not survive the reconcile: it still holds its
+    // port, which is exactly the port a cold start would pick.
+    if (current?.wedged) {
+      const wedgedPort = current.port;
+      await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
+      // The health snapshot predates the stop; re-probe the wedged
+      // port so the occupied check below sees the freed port, not the
+      // ghost of the instance we just stopped.
+      if (health[wedgedPort]) health[wedgedPort] = await checkHealth(proxy, wedgedPort, 1500);
+      current = null;
+    }
     // Target: 'ab' rolls to the other port; 'swap' validates on the
     // alternate; 'inplace' restarts where it is.
     let targetPort;

@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { authenticate } from "../src/auth.ts";
+import { authenticate, sha256Hex } from "../src/auth.ts";
 import { configFromEnv } from "../src/config.ts";
 import { FailClosed } from "../src/errors.ts";
 import { dispatch } from "../src/router.ts";
@@ -115,26 +115,18 @@ test("a service token resolves on its scoped doors and is refused outside them",
   // door's 501 stub until #12587 landed it; since #12589 the queue
   // door is a route per broker verb, so the probe names a real
   // queue route — the scope check fires before any handler runs.)
-  const inScope = await dispatch(
-    bearerReq("/v1/stamps", SERVICE_TOKEN, { method: "POST" }),
-    h.deps,
-  );
+  const inScope = await dispatch(bearerReq("/v1/stamps", SERVICE_TOKEN, { method: "POST" }), h.deps);
   assert.equal(inScope.status, 503);
   assert.equal(((await inScope.json()) as { error: string }).error, "stamp_signing_not_configured");
 
-  const outOfScope = await dispatch(
-    bearerReq("/v1/queue/health", SERVICE_TOKEN, { method: "POST" }),
-    h.deps,
-  );
+  const outOfScope = await dispatch(bearerReq("/v1/queue/health", SERVICE_TOKEN, { method: "POST" }), h.deps);
   assert.equal(outOfScope.status, 403);
   const body = (await outOfScope.json()) as { error: string };
   assert.equal(body.error, "service_token_route_scope");
 });
 
 test("an unknown opaque token is refused", async () => {
-  const e = await refusal(
-    authenticate(bearerReq("/v1/stamps", "not-a-real-service-token-0123456789"), h.deps),
-  );
+  const e = await refusal(authenticate(bearerReq("/v1/stamps", "not-a-real-service-token-0123456789"), h.deps));
   assert.equal(e.status, 401);
   assert.equal(e.code, "invalid_token");
 });
@@ -190,6 +182,62 @@ test("a per-user Turso DB credential presented as service auth is refused", asyn
   const e = await refusal(authenticate(bearerReq("/v1/stamps", tursoShaped), h.deps));
   assert.equal(e.status, 401);
   assert.equal(e.code, "data_plane_credential_refused");
+});
+
+test("a service token authenticates with a tenancy directory but no RP issuer (#14978)", async () => {
+  // Oracle: design §4.1 service-token rule — an opaque service token
+  // is validated against the tenancy directory alone (SHA-256 lookup,
+  // route scope, active flag); the RP issuer validates JWT callers
+  // only. A deployment whose tenancy directory is configured must
+  // serve its service-token callers before the #9077 issuer exists.
+  const fixture = JSON.stringify({
+    service_tokens: [
+      {
+        sha256: await sha256Hex(SERVICE_TOKEN),
+        binding_id: BINDING_A,
+        routes: ["stamping", "query"],
+        active: true,
+        label: "pm-service-test",
+      },
+    ],
+  });
+  const config = configFromEnv({ TENANCY_FIXTURE_JSON: fixture });
+  assert.equal(config.rp, null);
+  assert.equal(config.serviceAuthConfigured, true);
+  assert.equal(config.authConfigured, false);
+  const deps = { config };
+
+  const ctx = await authenticate(bearerReq("/v1/stamps", SERVICE_TOKEN), deps);
+  assert.equal(ctx.kind, "service");
+  assert.equal(ctx.bindingId, BINDING_A);
+
+  // Route scope is still enforced for the service caller.
+  const outOfScope = await dispatch(bearerReq("/v1/queue/health", SERVICE_TOKEN, { method: "POST" }), deps);
+  assert.equal(outOfScope.status, 403);
+  assert.equal(((await outOfScope.json()) as { error: string }).error, "service_token_route_scope");
+
+  // An unknown opaque token is still refused.
+  const e = await refusal(authenticate(bearerReq("/v1/stamps", "not-a-real-service-token-0123456789"), deps));
+  assert.equal(e.status, 401);
+  assert.equal(e.code, "invalid_token");
+});
+
+test("a JWT caller still fails closed when no RP issuer is configured (#14978)", async () => {
+  const fixture = JSON.stringify({
+    service_tokens: [
+      {
+        sha256: await sha256Hex(SERVICE_TOKEN),
+        binding_id: BINDING_A,
+        routes: ["stamping"],
+        active: true,
+      },
+    ],
+  });
+  const deps = { config: configFromEnv({ TENANCY_FIXTURE_JSON: fixture }) };
+  const jwtShaped = await h.sign(h.rpPayload());
+  const e = await refusal(authenticate(bearerReq("/v1/stamps", jwtShaped), deps));
+  assert.equal(e.status, 503);
+  assert.equal(e.code, "auth_not_configured");
 });
 
 test("an unconfigured deployment fails closed on doors but still answers health", async () => {

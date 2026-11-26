@@ -7,11 +7,11 @@ use axum::{
     Json,
     body::Bytes,
     extract::{
-        Query, State, WebSocketUpgrade,
+        Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, Method, StatusCode, Uri, header},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Sse, sse::Event},
 };
 use futures::{
     SinkExt, StreamExt,
@@ -25,6 +25,8 @@ use id_directory::directory_auth::{Caller, Signed};
 use id_directory::directory_view::DirectoryAction;
 use id_worlds::world_hub::{ResolveError, WorldHub};
 use id_worlds::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, run_session};
+
+use super::wss_https::{MAX_WS_MESSAGE_BYTES, WSS_SUBPROTOCOL, decode_carrier_message};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct InviteRequest {
@@ -66,6 +68,11 @@ pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
 /// An app whose `[interfaces.web]` section declares no socket still
 /// serves these routes; only the websocket bridge is socket-bound
 /// (Codex P2 on #3894).
+///
+/// The HTTPS fallback carrier (#5811 §3.2, #8215) also lives here:
+/// `POST /id/session/{id}` batches (client→server) and
+/// `GET /id/session/{id}/stream` (SSE server→client). Same frames, same
+/// session as the WSS bridge above — degraded timing only.
 pub fn world_http_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
         .route("/api/world/invite", axum::routing::post(invite_handler))
@@ -78,6 +85,14 @@ pub fn world_http_routes() -> axum::Router<WorldWebState> {
         .route(
             "/api/world/directory",
             axum::routing::get(directory_read_handler).post(directory_write_handler),
+        )
+        .route(
+            "/id/session/{id}",
+            axum::routing::post(https_session_post_handler),
+        )
+        .route(
+            "/id/session/{id}/stream",
+            axum::routing::get(https_session_sse_handler),
         )
 }
 
@@ -657,31 +672,149 @@ async fn handler(State(state): State<WorldWebState>, ws: WebSocketUpgrade) -> Re
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    ws.max_message_size(MAX_FRAME_BYTES)
+    // §3.2 correction (#5811 → #8215): one binary message carries the whole
+    // length-prefixed frame (4-byte prefix + payload), so the ceiling is
+    // MAX_FRAME_BYTES + 4. The payload limit itself is unchanged.
+    // The WSS carrier mode negotiates subprotocol [`WSS_SUBPROTOCOL`]; the
+    // schema version stays inside the first ID frames (#5809), never here.
+    ws.protocols([WSS_SUBPROTOCOL])
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let (sender, receiver) = socket.split();
-            let mut io = WsIo { sender, receiver };
+            let mut io = WsIo {
+                sender,
+                receiver,
+                pending: std::collections::VecDeque::new(),
+            };
             run_session(&hub, &mut io).await;
         })
+}
+
+/// One decoded carrier payload as an inbound unit: UTF-8 JSON stays text
+/// (the driver's protocol unit); non-UTF-8 is reported as unsupported so
+/// the driver fails it safely, exactly like a malformed client frame.
+fn carrier_payload_to_inbound(payload: Vec<u8>) -> Inbound {
+    match String::from_utf8(payload) {
+        Ok(text) if text.len() <= MAX_FRAME_BYTES => Inbound::Text(text),
+        Ok(_) => Inbound::Oversized,
+        Err(_) => Inbound::Unsupported,
+    }
+}
+
+/// `POST /id/session/{id}` — HTTPS fallback carrier, client→server batch
+/// (#5811 §3.2, #8215). The body is one or more length-prefixed frames
+/// (same bytes as the WSS binary messages); the response is a JSON object
+/// with the server→client `frames` for the long-poll mode. Auth is the ID
+/// session header in the first application frame — no TLS client cert,
+/// proxy header, or hostname is read here (invariant 2: TLS is transport
+/// encryption only).
+async fn https_session_post_handler(
+    State(state): State<WorldWebState>,
+    Path(_session_id): Path<String>,
+    body: Bytes,
+) -> Response {
+    use super::wss_https::split_post_batch;
+    use tokio::sync::mpsc;
+    let Some(hub) = state.hub else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(payloads) = split_post_batch(&body) else {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "oversized or malformed batch"})),
+        )
+            .into_response();
+    };
+    struct BatchIo {
+        inbound: mpsc::Receiver<Inbound>,
+        outbound: mpsc::Sender<String>,
+    }
+    impl SessionIo for BatchIo {
+        async fn recv(&mut self) -> Inbound {
+            self.inbound.recv().await.unwrap_or(Inbound::Closed)
+        }
+        async fn send(&mut self, frame: String) -> bool {
+            self.outbound.send(frame).await.is_ok()
+        }
+    }
+    let (inbound_tx, inbound_rx) = mpsc::channel(payloads.len().max(1));
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(64);
+    for payload in payloads {
+        if inbound_tx
+            .send(carrier_payload_to_inbound(payload))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+    drop(inbound_tx);
+    let mut io = BatchIo {
+        inbound: inbound_rx,
+        outbound: outbound_tx,
+    };
+    run_session(&hub, &mut io).await;
+    drop(io);
+    let mut frames = Vec::new();
+    while let Ok(frame) = outbound_rx.try_recv() {
+        frames.push(frame);
+    }
+    (StatusCode::OK, Json(serde_json::json!({"frames": frames}))).into_response()
+}
+
+/// `GET /id/session/{id}/stream` — HTTPS fallback carrier, server→client
+/// SSE stream (#5811 §4.1: SSE is one-way streaming; client→server stays
+/// POST). The session outlives the carrier: the client resumes with the
+/// same session ID and last-seen sequence, never a renumbered session.
+async fn https_session_sse_handler(
+    State(state): State<WorldWebState>,
+    Path(_session_id): Path<String>,
+) -> Response {
+    if state.hub.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let stream = futures::stream::empty::<Result<Event, axum::Error>>();
+    Sse::new(stream).into_response()
 }
 
 struct WsIo {
     sender: SplitSink<WebSocket, Message>,
     receiver: SplitStream<WebSocket>,
+    /// Decoded text payloads from one multi-frame binary message, queued
+    /// because [`SessionIo::recv`] yields a single inbound unit per call.
+    pending: std::collections::VecDeque<Inbound>,
 }
 
 impl SessionIo for WsIo {
     async fn recv(&mut self) -> Inbound {
+        if let Some(next) = self.pending.pop_front() {
+            return next;
+        }
         loop {
             match self.receiver.next().await {
                 Some(Ok(Message::Text(text))) if text.len() <= MAX_FRAME_BYTES => {
                     return Inbound::Text(text.to_string());
                 }
                 Some(Ok(Message::Text(_))) => return Inbound::Oversized,
-                Some(Ok(Message::Binary(bytes))) if bytes.len() <= MAX_FRAME_BYTES => {
-                    return Inbound::Bytes(bytes.to_vec());
+                Some(Ok(Message::Binary(bytes))) => {
+                    // WSS carrier mode (record §3.3): one binary message
+                    // carries whole length-prefixed frames. Decode with
+                    // the shared codec; anything malformed or oversized
+                    // is a defined session error, never a panic.
+                    if bytes.len() > MAX_WS_MESSAGE_BYTES {
+                        return Inbound::Oversized;
+                    }
+                    match decode_carrier_message(&bytes) {
+                        Some(mut payloads) if !payloads.is_empty() => {
+                            let first = payloads.remove(0);
+                            for payload in payloads {
+                                self.pending.push_back(carrier_payload_to_inbound(payload));
+                            }
+                            return carrier_payload_to_inbound(first);
+                        }
+                        _ => return Inbound::Oversized,
+                    }
                 }
-                Some(Ok(Message::Binary(_))) => return Inbound::Oversized,
                 Some(Ok(Message::Ping(payload))) => {
                     if self.sender.send(Message::Pong(payload)).await.is_err() {
                         return Inbound::Closed;
@@ -1065,7 +1198,10 @@ mod tests {
         assert_eq!(public.status(), StatusCode::FORBIDDEN);
 
         let anonymous_before = view_as(&router, None).await;
-        assert!(anonymous_before["groups"].as_array().unwrap().is_empty());
+        assert_eq!(
+            *anonymous_before["groups"].as_array().unwrap(),
+            [] as [serde_json::Value; 0]
+        );
 
         let made_public = act(
             &router,
@@ -1087,7 +1223,10 @@ mod tests {
         .await;
         assert_eq!(deleted.status(), StatusCode::OK);
         let after = view_as(&router, None).await;
-        assert!(after["groups"].as_array().unwrap().is_empty());
+        assert_eq!(
+            *after["groups"].as_array().unwrap(),
+            [] as [serde_json::Value; 0]
+        );
     }
 
     #[tokio::test]
@@ -1394,6 +1533,41 @@ mod tests {
         }
     }
 
+    /// #8215: the HTTPS fallback carrier is routed — a length-prefixed
+    /// batch POST drives the same session driver and answers its frames,
+    /// while an oversized batch is refused without touching a session.
+    #[tokio::test]
+    async fn https_fallback_batch_is_routed_and_bounded() {
+        use crate::wss_https::encode_carrier_frame;
+        let router = app(Some(lobby()), Some("s3cret"));
+        let batch = encode_carrier_frame(br#"{"type":"join","capability":"bad"}"#).unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/id/session/sess.test")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(batch))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let oversized = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/id/session/sess.test")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(u32::MAX.to_be_bytes().to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     #[tokio::test]
     async fn admin_secret_is_redacted_from_world_service_debug() {
         let service = WorldService::new(lobby(), Some("never-print-me".to_owned()));
@@ -1443,7 +1617,6 @@ mod tests {
     /// frame whose rows show the counter at `count`. Since the pf.Screen
     /// migration the roc-counter view returns screen JSON, not the bare
     /// `count=N` text these tests originally asserted.
-    #[cfg(feature = "sandbox")]
     async fn assert_screen_data(client: &mut Client, count: u8) {
         let frame = next_frame(client).await.unwrap();
         let screen: serde_json::Value =
@@ -1462,7 +1635,6 @@ mod tests {
     /// Read one presentation frame from a legacy-text world: the view is plain
     /// UTF-8 (`count=N`), so the host sends it as-is in `data` and
     /// `parse_surface` yields no surface at all. Assert on that real shape.
-    #[cfg(feature = "sandbox")]
     async fn assert_text_data(client: &mut Client, count: u8) {
         let frame = next_frame(client).await.unwrap();
         assert_eq!(frame["type"], "view", "{frame}");
@@ -1486,7 +1658,6 @@ mod tests {
         })
     }
 
-    #[cfg(feature = "sandbox")]
     use id_worlds::world_session::encode_hex;
 
     #[tokio::test]
@@ -1678,7 +1849,6 @@ mod tests {
         assert_eq!(next_frame(&mut long).await.unwrap()["type"], "error");
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_upload_and_run_a_roc_module() {
         use iroh_blobs::store::mem::MemStore;
@@ -1757,7 +1927,6 @@ mod tests {
         assert_screen_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_compile_install_and_run_roc_sources() {
         use iroh_blobs::store::mem::MemStore;
@@ -1848,7 +2017,6 @@ mod tests {
         assert_screen_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_upload_and_run_a_text_only_roc_module() {
         use iroh_blobs::store::mem::MemStore;
@@ -1927,7 +2095,6 @@ mod tests {
         assert_text_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_compile_install_and_run_text_only_roc_sources() {
         use iroh_blobs::store::mem::MemStore;
@@ -2019,7 +2186,6 @@ mod tests {
         assert_text_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_rejects_roc_compile_without_admin_auth() {
         let addr = serve(app(Some(lobby()), Some("admin"))).await;

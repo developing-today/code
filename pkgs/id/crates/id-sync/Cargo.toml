@@ -15,7 +15,7 @@ license = "MIT OR Apache-2.0"
 # `connectivity` already live in id-core (landed drift from the design
 # map, which had them here). Composition stays in the facade: the
 # `MetaClient` enum (remote-or-local) and the `LocalNode`-backed tests
-# remain there until step 7.
+# are composed by id-cli (split step 7b); only the request/response plumbing lives here.
 
 [features]
 default = []
@@ -43,8 +43,8 @@ iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
 iroh-mainline-address-lookup = { version = "0.6", optional = true }
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
-p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
+p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
 p2panda-sync = { path = "../../vendor/p2panda-sync" }
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
@@ -55,9 +55,12 @@ tokio-tungstenite = "0.30"
 tracing = "0.1"
 
 [dev-dependencies]
+# Signing keys for the relay PoC harness (#2249): the chained-envelope
+# oracle signs with the same crate the production envelope path uses.
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+p2panda-auth = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", features = [
   "serde",
 ] }
 # The artifact and envelope network tests use id-core silent lookup helpers.
@@ -153,8 +156,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

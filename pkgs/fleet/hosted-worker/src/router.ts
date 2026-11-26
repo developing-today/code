@@ -14,17 +14,13 @@
 // auth, including unknown paths' absence: an unmatched path is a
 // plain 404 and advertises nothing about the doors.
 
-import {
-  assertCallerTenancy,
-  authenticate,
-  authorizeRoute,
-  type AuthDeps,
-  type CallerContext,
-} from "./auth.ts";
+import { assertCallerTenancy, authenticate, authorizeRoute, type AuthDeps, type CallerContext } from "./auth.ts";
 import { buildCapabilitiesDocument } from "./capabilities.ts";
 import { FailClosed } from "./errors.ts";
 import { buildHealthDocument } from "./health.ts";
+import { routes as bridgeRoutes } from "./routes/bridge.ts";
 import { routes as ingestionRoutes } from "./routes/ingestion.ts";
+import { routes as kvRoutes } from "./routes/kv.ts";
 import { routes as queryRoutes } from "./routes/query.ts";
 import { routes as queueRoutes } from "./routes/queue.ts";
 import { routes as sessionRoutes } from "./routes/sessions.ts";
@@ -37,11 +33,7 @@ export interface RouteDef {
   /** Door id for service-token scoping; null for the public meta routes. */
   door: string | null;
   public?: boolean;
-  handler: (
-    req: Request,
-    ctx: CallerContext | null,
-    deps: AuthDeps,
-  ) => Promise<Response> | Response;
+  handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => Promise<Response> | Response;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -76,6 +68,8 @@ export const ROUTES: RouteDef[] = [
   ...queueRoutes,
   ...ingestionRoutes,
   ...syncRoutes,
+  ...bridgeRoutes,
+  ...kvRoutes,
 ];
 
 export async function dispatch(req: Request, deps: AuthDeps): Promise<Response> {

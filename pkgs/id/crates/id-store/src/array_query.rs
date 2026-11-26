@@ -49,12 +49,12 @@
 //! file by path.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use id_core::array_address::ArrayAddress;
 use id_core::array_order::cmp_address;
-use id_core::canonical_cbor::{decode_canonical, encode_canonical, Value};
+use id_core::canonical_cbor::{Value, decode_canonical, encode_canonical};
 
 /// The one sort profile this slice issues cursors under:
 /// ascending A9118 typed lexicographic address order. The
@@ -594,7 +594,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     }
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let hi = hex_nibble(pair[0])?;
         let lo = hex_nibble(pair[1])?;
         out.push((hi << 4) | lo);

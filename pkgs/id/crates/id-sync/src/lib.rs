@@ -16,24 +16,30 @@
 //! [`artifact::ArtifactSink`], both implemented facade-side.
 //!
 //! The facade re-exports each module at its historical `id::` path, so
-//! no call site outside the moved modules changed. Composition stays
-//! in the facade until step 7: the `MetaClient` enum that chooses
-//! between a running server and the in-process local node is defined
-//! there, over this crate's [`meta_client`] plumbing.
+//! no call site outside the moved modules changed. The `MetaClient`
+//! enum composition is in `id-cli` (`meta_client`), over this crate's
+//! [`meta_client`] request/response plumbing.
 
+pub mod admission;
 pub mod announcement;
+pub mod announcement_pkarr;
+pub mod announcement_relay;
 pub mod artifact;
 pub mod bridge;
 pub mod bridge_http;
 pub mod chained_message;
 mod checked_json;
 pub mod dht;
+pub mod discovery_client;
+pub mod discovery_join;
+pub mod discovery_resolver;
 pub mod envelope;
 pub mod envelope_net;
 pub mod envelope_outbox;
 pub mod fanout_answer;
 pub mod federation;
 pub mod fileops;
+pub mod forwarding_sink;
 pub mod graph_frontier;
 pub(crate) mod hex;
 pub mod host;
@@ -43,4 +49,6 @@ pub mod protocol;
 pub mod registry;
 pub mod relay_gate;
 pub mod relay_ingest;
+pub mod serving_limits;
+pub mod snapshot_serving;
 pub mod transfer;

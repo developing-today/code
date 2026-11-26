@@ -22,18 +22,24 @@
  *   - issue_comment: append an agent event, stamp the watermark,
  *     and refresh the mirror row's comments count / latest
  *     agent-note pointer.
+ *   - sub_issues: append an agent event, stamp the watermark, and
+ *     move the child issue's parent projection in the mirror
+ *     (#14170 Q7; the projector also records the change in
+ *     github_issue_history, fail-open).
  * - ping: pong. Everything else: 202 ignored.
  */
 import { readBodyUpTo } from "./body";
-import { Turso, iArg, tArg } from "./turso";
+import { Turso, configureTursoGateway, iArg, tArg, type D1Gateway } from "./turso";
 import { FLEET_REPOS, buildRunRow, skipReason } from "./policy";
 import { advanceSnapshot, appendAgentEvent, queueNow, stampDirtyWatermark, type SinkEnv } from "./sink";
-import { mirrorCommentEvent, mirrorIssueEvent, mirrorPrEvent } from "./mirror";
+import { mirrorCommentEvent, mirrorIssueEvent, mirrorPrEvent, mirrorSubIssueEvent } from "./mirror";
 
 export interface Env extends SinkEnv {
   GITHUB_WEBHOOK_SECRET: string;
   TURSO_PLATFORM_URL: string;
   TURSO_PLATFORM_TOKEN: string;
+  /** d1-gateway Gateway entrypoint; d1gw:// URLs go through it. */
+  D1GW?: D1Gateway;
 }
 
 async function hmacHex(secret: string, body: string): Promise<string> {
@@ -64,6 +70,7 @@ function json(body: unknown, status = 200): Response {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    configureTursoGateway(env.D1GW);
     if (req.method === "GET") return new Response("github-ci worker ok", { status: 200 });
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
@@ -150,6 +157,22 @@ export default {
         await appendAgentEvent(env, "issue_comment", detail);
         await stampDirtyWatermark(env, repoName, "issue_comment", nowIso);
         await mirrorCommentEvent(env, payload, repoName);
+        return json({ ok: true, repo: repoName, event: eventType });
+      }
+
+      // --------------------------------------------------- sub_issues ---
+      if (eventType === "sub_issues" && isFleet) {
+        const child = (payload.sub_issue ?? {}) as Record<string, unknown>;
+        const parent = (payload.parent_issue ?? {}) as Record<string, unknown>;
+        const detail = {
+          repo: repoName,
+          action: String(payload.action ?? ""),
+          number: Number(child.number ?? 0) || null,
+          parent: Number(parent.number ?? 0) || null,
+        };
+        await appendAgentEvent(env, "sub_issues", detail);
+        await stampDirtyWatermark(env, repoName, "sub_issues", nowIso);
+        await mirrorSubIssueEvent(env, payload, repoName);
         return json({ ok: true, repo: repoName, event: eventType });
       }
 

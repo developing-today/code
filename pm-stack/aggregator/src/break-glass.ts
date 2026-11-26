@@ -49,11 +49,7 @@ export interface BreakGlassAuditSink {
   record: (event: NewAuditEvent) => Promise<unknown>;
 }
 
-export function breakGlassIssuanceAuditEvent(input: {
-  id: string;
-  expiresAt: string;
-  ttlMs: number;
-}): NewAuditEvent {
+export function breakGlassIssuanceAuditEvent(input: { id: string; expiresAt: string; ttlMs: number }): NewAuditEvent {
   return {
     actor: "owner:local-cli",
     kind: "break-glass-token-issued",
@@ -88,8 +84,7 @@ function validateRecord(row: unknown, file: string): BreakGlassTokenRecord {
     Number.isNaN(Date.parse(value.issuedAt)) ||
     typeof value.expiresAt !== "string" ||
     Number.isNaN(Date.parse(value.expiresAt)) ||
-    (value.consumedAt !== null &&
-      (typeof value.consumedAt !== "string" || Number.isNaN(Date.parse(value.consumedAt))))
+    (value.consumedAt !== null && (typeof value.consumedAt !== "string" || Number.isNaN(Date.parse(value.consumedAt))))
   ) {
     throw new Error(`invalid break-glass token record in ${file}`);
   }
@@ -239,10 +234,7 @@ export async function consumeBreakGlassToken(input: {
   }
 }
 
-export function breakGlassConsumptionAuditEvent(input: {
-  id: string;
-  consumedAt: string;
-}): NewAuditEvent {
+export function breakGlassConsumptionAuditEvent(input: { id: string; consumedAt: string }): NewAuditEvent {
   return {
     actor: `owner:break-glass:${input.id}`,
     kind: "break-glass-token-consumed",
@@ -264,9 +256,7 @@ export function presentedBreakGlassToken(req: Request): string {
   return header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
 }
 
-export type AuthorizeBreakGlassResult =
-  | { ok: true; id: string; auditActor: string }
-  | { ok: false; error: string };
+export type AuthorizeBreakGlassResult = { ok: true; id: string; auditActor: string } | { ok: false; error: string };
 
 /**
  * Consume a presented break-glass token and record the consumption
@@ -285,9 +275,7 @@ export async function authorizeWithBreakGlassToken(input: {
   const consumed = await consumeBreakGlassToken({ store: input.store, token: input.token, now });
   if (!consumed.ok) return { ok: false, error: consumed.error };
   try {
-    await input.events.record(
-      breakGlassConsumptionAuditEvent({ id: consumed.id, consumedAt: now.toISOString() }),
-    );
+    await input.events.record(breakGlassConsumptionAuditEvent({ id: consumed.id, consumedAt: now.toISOString() }));
   } catch {
     return { ok: false, error: "break-glass consumption audit write failed" };
   }

@@ -75,6 +75,15 @@ test("parseSubscriptionQuota: shape drift fails closed", () => {
   assert.throws(() => parseSubscriptionQuota(zeroLimit), /zero limit/);
 });
 
+test("parseSubscriptionQuota: a malformed short-window reset does not discard the healthy weekly window", () => {
+  const payload = structuredClone(QUOTA);
+  payload.subscription_quota.window_resets_at = "not-a-reset";
+
+  assert.deepEqual(parseSubscriptionQuota(payload).windows, [
+    { name: "weekly", usedPct: 8.83, resetAt: "2026-11-02T00:00:00.000Z" },
+  ]);
+});
+
 // The live payloads after the subscription ended (2026-11-21): an empty
 // subscription-quota body and the subscription upsell banner.
 const BANNER_UPSELL = {
@@ -350,6 +359,37 @@ test("entry-point guard: symlinked invocation runs main, matching direct (#6343)
   await symlink(EXPORTER_PATH, linkPath);
   await assertCdpUnavailableRun(linkPath, "symlink");
 });
+test("a /json/list answer that is not an array is cdp-unavailable, not a crash (#7983 item 9)", async () => {
+  for (const answer of ["{}", "null", '"x"']) {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(answer);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const base = await mkdtemp(join(tmpdir(), "meta-exporter-list-shape-"));
+      const outDir = join(base, "out");
+      let r;
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          process.execPath,
+          [EXPORTER_PATH, "--cdp-port", String(server.address().port), "--out-dir", outDir],
+          { timeout: 30000 },
+        );
+        r = { code: 0, stdout, stderr };
+      } catch (err) {
+        r = { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+      }
+      assert.equal(r.code, 4, `answer ${answer} must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+      const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+      assert.equal(latest.status, "cdp-unavailable");
+      assert.match(latest.detail, /expected a JSON array of targets/);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
 // #2789: num() used to be a bare Number() coercion, so drifted
 // spellings became real measurements ("" -> 0% window, "0x10" -> 16,
 // "1e2" -> 100). Only plain decimal spellings are accepted now.
@@ -369,15 +409,22 @@ test("parseSubscriptionQuota: non-decimal numeric spellings fail closed", () => 
   }
 });
 
-test("parseSubscriptionQuota: empty-string reset on a used window fails closed", () => {
+test("parseSubscriptionQuota: empty-string reset on a used window drops only that window", () => {
   for (const bad of ["", "   "]) {
     const shortUsed = structuredClone(QUOTA);
     shortUsed.subscription_quota.window_resets_at = bad;
-    assert.throws(() => parseSubscriptionQuota(shortUsed), /windowReset/);
+    assert.deepEqual(parseSubscriptionQuota(shortUsed).windows.map((window) => window.name), ["weekly"]);
     const weeklyUsed = structuredClone(QUOTA);
     weeklyUsed.subscription_quota.weekly_resets_at = bad;
-    assert.throws(() => parseSubscriptionQuota(weeklyUsed), /weeklyReset/);
+    assert.deepEqual(parseSubscriptionQuota(weeklyUsed).windows.map((window) => window.name), ["5h"]);
   }
+});
+
+test("parseSubscriptionQuota: invalid resets on both windows still fail closed", () => {
+  const payload = structuredClone(QUOTA);
+  payload.subscription_quota.window_resets_at = "not-a-reset";
+  payload.subscription_quota.weekly_resets_at = "also-not-a-reset";
+  assert.throws(() => parseSubscriptionQuota(payload), /windowReset/);
 });
 
 test("parseSubscriptionQuota: empty-string reset on a zero-usage window is tolerated like absent", () => {
@@ -406,29 +453,28 @@ test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails cl
   }
 });
 
-test("parseSubscriptionQuota: epoch fields reject values outside the pinned seconds window", () => {
+test("parseSubscriptionQuota: invalid reset epochs drop only their window; invalid as_of still fails", () => {
   const firstAllowed = 1_577_836_800; // 2020-01-01T00:00:00Z
   const lastAllowed = 4_102_444_800; // 2100-01-01T00:00:00Z
-  const cases = [
-    ["window_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
-    ["weekly_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
-    ["as_of", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]],
+  const resetCases = [
+    ["window_resets_at", "weekly"],
+    ["weekly_resets_at", "5h"],
   ];
-  for (const [field, values] of cases) {
-    for (const value of values) {
+  for (const [field, remainingWindow] of resetCases) {
+    for (const value of [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]) {
       const payload = structuredClone(QUOTA);
       payload.subscription_quota[field] = value;
-      assert.throws(
-        () => parseSubscriptionQuota(payload),
-        (error) => {
-          assert.ok(error instanceof ExportError);
-          assert.equal(error.status, "unparseable");
-          assert.equal(error.exitCode, 6);
-          return true;
-        },
-        `${field}=${value} should fail as unparseable`,
-      );
+      assert.deepEqual(parseSubscriptionQuota(payload).windows.map((window) => window.name), [remainingWindow]);
     }
+  }
+  for (const value of [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = value;
+    assert.throws(
+      () => parseSubscriptionQuota(payload),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6,
+      `as_of=${value} should fail as unparseable`,
+    );
   }
 });
 
@@ -578,4 +624,38 @@ test("parseArgs property: generated malformed streams are usage errors naming th
       expectUsage(["--cdp-port", badPorts[Math.floor(rand() * badPorts.length)]], "--cdp-port");
     }
   }
+});
+
+// #8220: the home-resolution contract (#5762). The default --out-dir needs
+// HOME; an unset or empty HOME is a usage error (nothing written), never the
+// passwd fallback, and an explicit --out-dir needs no HOME.
+function withHome(value, fn) {
+  const saved = process.env.HOME;
+  if (value === undefined) delete process.env.HOME;
+  else process.env.HOME = value;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.HOME;
+    else process.env.HOME = saved;
+  }
+}
+
+for (const value of [undefined, "", "  "]) {
+  test(`#8220: HOME ${value === undefined ? "unset" : JSON.stringify(value)} with no --out-dir is a usage error`, () => {
+    assert.throws(
+      () => withHome(value, () => parseArgs([])),
+      (error) =>
+        error instanceof ExportError &&
+        error.status === "usage" &&
+        error.exitCode === 2 &&
+        error.message.includes(value === undefined ? "HOME is unset" : "HOME is empty") &&
+        error.message.includes("set HOME or pass --out-dir"),
+    );
+  });
+}
+
+test("#8220: an explicit --out-dir needs no HOME, and a set HOME keeps the default path", () => {
+  assert.equal(withHome(undefined, () => parseArgs(["--out-dir", "out"])).outDir, "out");
+  assert.equal(withHome("/home/probe", () => parseArgs([])).outDir, join("/home/probe", "atlas", "meta-quota-export"));
 });

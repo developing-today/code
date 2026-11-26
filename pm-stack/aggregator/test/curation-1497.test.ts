@@ -72,6 +72,15 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // review page enters at dropdown tier — no curation ruling promotes
   // it, and new pages do not take primary slots without one.
   reports: "dropdown",
+  // Post-#1497 addition (#10035, 2026-11-23): the prompt chat/session
+  // surface enters at dropdown tier — no curation ruling promotes it,
+  // and new pages do not take primary slots without one. Its unread
+  // badge rides the nav bar itself (design #9539 §4), not a bar slot.
+  chat: "dropdown",
+  // Post-#1497 addition (#14084 S1, 2026-11-25): the needs-user list
+  // enters at dropdown tier — no curation ruling promotes it, and new
+  // pages do not take primary slots without one.
+  "needs-user": "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

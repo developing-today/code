@@ -13,9 +13,20 @@
 // isolation, and guard failures.
 //
 // Usage: node smoke/smoke.mjs
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const PKG = new URL("..", import.meta.url).pathname;
+
+// The schema version has one source: SCHEMA_VERSION in src/user-do.ts.
+// Reading it here rather than repeating a literal means a future bump
+// updates the DO, the bootstrap and this assertion together (#13673).
+const SCHEMA_VERSION = (() => {
+  const src = readFileSync(new URL("../src/user-do.ts", import.meta.url), "utf8");
+  const m = src.match(/export const SCHEMA_VERSION = (\d+);/);
+  if (!m) throw new Error("smoke: SCHEMA_VERSION not found in src/user-do.ts");
+  return Number(m[1]);
+})();
 const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 let failures = 0;
@@ -41,6 +52,26 @@ async function waitUp(port, tries) {
     await new Promise((r) => setTimeout(r, 2000));
   }
   return false;
+}
+
+// The front door reads the central tenancy registry (TENANCY_DB)
+// before it touches a namespace, and an unmigrated local D1 fails
+// closed there (503 tenancy_registry_unavailable). Migrate the local
+// registry and register binding A so the valid-context request
+// reaches the restricted-namespace step this part checks.
+function wranglerSync(args) {
+  const r = spawnSync("wrangler", args, { cwd: PKG, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { ...process.env, CI: "1" } });
+  return r.status === 0 ? null : (r.stderr || r.stdout || "").trim().slice(-400);
+}
+{
+  const migrated = wranglerSync(["d1", "migrations", "apply", "TENANCY_DB", "--local"]);
+  check("local tenancy registry migrates", migrated === null, migrated ?? undefined);
+  const seeded = wranglerSync([
+    "d1", "execute", "TENANCY_DB", "--local", "--command",
+    "INSERT OR IGNORE INTO account (account_id, sub, email_contact, created_at, state, tier) VALUES ('smoke-acct', 'smoke-subject', NULL, '2026-11-26T00:00:00Z', 'active', 'standard'); " +
+      "INSERT OR IGNORE INTO binding (binding_id, account_id, iroh_id, status, bound_at, superseded_by) VALUES ('" + A + "', 'smoke-acct', 'smoke-iroh', 'active', '2026-11-26T00:00:00Z', NULL);",
+  ]);
+  check("binding A registered in the local tenancy registry", seeded === null, seeded ?? undefined);
 }
 
 // ---------- Part 1: application worker fails closed locally ----------
@@ -79,7 +110,7 @@ async function waitUp(port, tries) {
     check("harness + DO start, lazy create", up);
     let r = await fetch(base + q(A, A, "us"));
     let body = await r.json();
-    check("state reports binding, jurisdiction, schema v2", body.binding_id === A && body.jurisdiction === "us" && body.schema_version === 2, JSON.stringify(body));
+    check("state reports binding, jurisdiction, current schema version (source: SCHEMA_VERSION)", body.binding_id === A && body.jurisdiction === "us" && body.schema_version === SCHEMA_VERSION, JSON.stringify(body));
 
     const many = await Promise.all(Array.from({ length: 8 }, () => fetch(base + q("cccccccccccccccccccccccccccccccc", "cccccccccccccccccccccccccccccccc", "eu"))));
     check("concurrent first requests all 200 (idempotent bootstrap)", many.every((x) => x.status === 200));

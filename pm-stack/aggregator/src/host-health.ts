@@ -13,8 +13,8 @@
 // aggregator, and nothing here invents a state: an absent or corrupt
 // snapshot reads as null and the watchdog says so, out loud.
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { requireHome } from "./home.ts";
 
 /** Collector cadence is 5 min; 3 missed cycles (15 min) = stale. */
 export const HOST_HEALTH_STALE_MS = 15 * 60_000;
@@ -47,15 +47,34 @@ export interface HostUnitHealth {
 
 export interface HostHealthSnapshot {
   generatedAt: string;
+  /** Active host that wrote the snapshot (#3989 criterion 6). Null on
+   *  pre-slice snapshots that carry no host fact. */
+  host: string | null;
   claimantMode: ClaimantModeHealth;
+  /** Newest verified backup generation — the restore point the
+   *  watchdog names. Null when the collector could not read the run
+   *  record or the snapshot predates the field (never invented). */
+  backup: HostBackupRecord | null;
   units: Record<string, HostUnitHealth>;
   timers: Record<string, { active: boolean | null; activeState?: string }>;
+}
+
+/** One pm-dashboard-backup generation, passed through from its JSON
+ *  run record (~/backups/dashboard/.last-run.json). */
+export interface HostBackupRecord {
+  date: string;
+  startedAt: string | null;
+  finishedAt: string;
+  result: "complete" | "failed";
+  failingStep: string | null;
+  archiveSha256: string | null;
+  destinations: Record<string, string>;
 }
 
 /** Default snapshot path (mirrors src/config.ts hostHealthFile). */
 export function defaultHostHealthFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.PM_AGG_HOST_HEALTH_FILE?.trim();
-  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "host-health.json");
+  return v ? v : join(requireHome("PM_AGG_HOST_HEALTH_FILE"), ".local", "state", "pm-aggregator", "host-health.json");
 }
 
 const CLAIMANT_STATES: readonly string[] = ["live", "shadow", "missing", "unreadable", "invalid", "unknown"];
@@ -106,12 +125,60 @@ export function normalizeHostHealthSnapshot(parsed: unknown): HostHealthSnapshot
   }
   return {
     generatedAt,
+    host: normalizeHostName(root.host),
+    backup: normalizeHostBackupRecord(root.backup),
     claimantMode: {
       state: cm.state as ClaimantModeState,
       ...(typeof cm.detail === "string" ? { detail: cm.detail } : {}),
     },
     units,
     timers,
+  };
+}
+
+/** The collector envelopes the host name like claimantMode (`{host}`
+ *  vs `{state: "unknown", ...}`); either non-string shape reads as
+ *  null, never as a host the watchdog would name. */
+function normalizeHostName(parsed: unknown): string | null {
+  const h = asRecord(parsed);
+  if (!h) return null;
+  return typeof h.host === "string" && h.host ? h.host : null;
+}
+
+/** Validate the backup restore-point section: a shapeless or
+ *  unknown-result generation reads as null, never as a restore point
+ *  the watchdog would trust. Absent (pre-slice snapshots) also reads
+ *  as null. */
+export function normalizeHostBackupRecord(parsed: unknown): HostBackupRecord | null {
+  const b = asRecord(parsed);
+  if (!b) return null;
+  if (b.state === "unknown") return null;
+  if (b.result !== "complete" && b.result !== "failed") return null;
+  if (typeof b.date !== "string" || !b.date) return null;
+  if (typeof b.finishedAt !== "string" || !b.finishedAt || Number.isNaN(Date.parse(b.finishedAt))) return null;
+  const destRaw = asRecord(b.destinations) ?? {};
+  // `complete` is meaningful only with an archive identity and verified
+  // copies at every declared destination. Empty/incomplete generations
+  // are unavailable restore points, never a green status.
+  if (
+    b.result === "complete" &&
+    (typeof b.archiveSha256 !== "string" ||
+      !b.archiveSha256 ||
+      ["local", "r2", "drive"].some((leg) => destRaw[leg] !== "ok"))
+  )
+    return null;
+  const destinations: Record<string, string> = {};
+  for (const [k, v] of Object.entries(destRaw)) {
+    if (typeof v === "string") destinations[k] = v;
+  }
+  return {
+    date: b.date,
+    startedAt: typeof b.startedAt === "string" ? b.startedAt : null,
+    finishedAt: b.finishedAt,
+    result: b.result,
+    failingStep: typeof b.failingStep === "string" ? b.failingStep : null,
+    archiveSha256: typeof b.archiveSha256 === "string" ? b.archiveSha256 : null,
+    destinations,
   };
 }
 

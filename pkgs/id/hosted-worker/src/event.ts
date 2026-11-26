@@ -40,11 +40,7 @@
 // treats the signed header as the event. This boundary is recorded
 // in doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation.
 
-import {
-  decodeCanonical,
-  encodeCanonical,
-  type CborValue,
-} from "./canonical-cbor.ts";
+import { decodeCanonical, encodeCanonical, type CborValue } from "./canonical-cbor.ts";
 import { blake3 } from "./blake3.ts";
 import { bytesToHex, verifyEd25519, type IdKey } from "./ed25519.ts";
 
@@ -76,6 +72,11 @@ export interface SignedEvent {
   bytes: Uint8Array;
   author: Uint8Array;
   authorHex: string;
+  /** The envelope's own Ed25519 signature (over the signing bytes),
+   * carried verbatim: the §6 export mapping (export.ts) names it as
+   * the object's signature — a stored event is never re-signed. */
+  signature: Uint8Array;
+  signatureHex: string;
   seq: number;
   backlink: Uint8Array | null;
   backlinkHex: string | null;
@@ -321,6 +322,8 @@ function parseEventParts(bytes: Uint8Array): EventParts {
     bytes,
     author,
     authorHex: bytesToHex(author),
+    signature,
+    signatureHex: bytesToHex(signature),
     seq,
     backlink,
     backlinkHex: backlink ? bytesToHex(backlink) : null,

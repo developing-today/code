@@ -1,6 +1,6 @@
 # github-backup
 
-Mirrors of Drew's GitHub estate, kept on the laptop, updatable forever,
+Mirrors of the user's GitHub estate, kept on the laptop, updatable forever,
 with a dedicated GitHub App for rate limits and webhook freshness.
 
 **This directory is the canonical home of the whole system** — scripts,
@@ -23,8 +23,12 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 
 ## Design
 
+- Proposed hosted recovery home and failure/recovery analysis (#14964):
+  [Backup plane hosted recovery design](../../doc/2026-11-25_design_backup-plane-hosted-recovery/main.md).
+  This is a design record, not a claim that hosted schedules are live.
+
 - **Scope (config.json):** all non-fork repos + forks under 500 MB across
-  17 owners, plus force-includes; 7 passive giants are excluded by Drew's
+  17 owners, plus force-includes; 7 passive giants are excluded by the user's
   ruling 2026-10-31 (upstream is their backup). Edsebooks (HTTP 451) and
   vertexinc (SAML) are recorded gaps, not silent misses.
 - **Pool/dedupe:** forks sharing an upstream are cloned with git
@@ -45,7 +49,7 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   coalescing), so even total webhook loss degrades to daily freshness.
 - **Rate limits:** the App's installation tokens have their own pool
   (5,000/hr base, scaling with installed repos toward 12,500/hr),
-  separate from Drew's personal token that the fleet uses.
+  separate from the user's personal token that the fleet uses.
 - **Secrets:** by name only, in Bitwarden Secrets Manager — see
   `config.json` → `app.bitwarden_secret_names`. Values never enter this
   repo, the backup tree, or chat.
@@ -65,6 +69,13 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   branches/tags and verifies destination refs against the source. The command
   does not create repositories or provision credentials; targets must exist
   before the first run.
+- **Hosted publisher inputs:** `bin/hosted_seed_fleet.py --root PATH` rebuilds
+  the four fleet source mirrors directly from GitHub under a fresh runner-local
+  root and writes `plan.json` only after all four bare mirrors validate. It
+  does not read the laptop backup tree or reuse local alternates; a hosted
+  publisher workflow can consume the resulting root with the existing
+  `plain_mirror_all.py`, `bundle_r2_all.py`, and `rehost_publish_all.py`
+  drivers.
 
 ## System contract — a mirror is what it can prove (design #3282)
 

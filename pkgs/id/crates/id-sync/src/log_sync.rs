@@ -889,6 +889,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1179,6 +1180,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             }
         }
         let create_body = encode_body(&GroupAction::Create {
@@ -1542,6 +1544,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1611,8 +1614,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_refused_event_does_not_abort_the_batch_after_it() {
-        // Two authors. The forked one sorts first, so its refused events come before the other
+    async fn test_a_voided_event_does_not_abort_the_batch_after_it() {
+        // Two authors. The forked one sorts first, so its voided event comes before the other
         // author's events in the batch.
         let topic = group(4);
         let (first, second) = (key(8), key(9));
@@ -1621,7 +1624,8 @@ mod tests {
         } else {
             (second, first)
         };
-        // A holds seq 0 and seq 1 of x, so seq 2 of x is past the fork point when it arrives.
+        // A holds seq 0 and seq 1 of x. Seq 2 links above the fork point, so it is kept as voided
+        // evidence rather than refused when it arrives.
         let (_da, store_a, honest_x, _rival) = forked_store(&x, topic, 2);
         let y_events = chain_of(&y, 5, topic);
         // B has x's honest chain, through seq 2, and y's five events. A has only the prefix up to
@@ -1645,9 +1649,14 @@ mod tests {
         let answered = results.recv().await.unwrap().unwrap();
 
         // The batch is seq 1 and seq 2 of x, then five events of y. Seq 1 is already held as a proof
-        // header, and seq 2 is above the fork point. Both are counted, and y's five still arrive.
+        // header, and seq 2 is above the fork point. It is counted as voided, and y's five still
+        // arrive.
         assert_eq!(answered.received.duplicates, 1, "seq 1 is a proof header");
-        assert_eq!(answered.received.refused, 1, "seq 2 is past the fork point");
+        assert_eq!(answered.received.voided, 1, "seq 2 is above the fork point");
+        assert_eq!(
+            answered.received.refused, 0,
+            "seq 2 is retained as evidence"
+        );
         assert_eq!(answered.received.accepted, 5, "every event of y arrives");
         assert_eq!(outcome.metrics.sent_operations, 7);
         let refs = [&y];

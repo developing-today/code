@@ -57,6 +57,8 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
+/// Session-layer admin audit (split from this module, #13057).
+mod audit;
 /// Document store API (split from this module, #8594).
 mod documents;
 
@@ -73,6 +75,7 @@ mod session_core;
 mod view;
 pub use hex::{decode_hex, encode_hex};
 
+use audit::{admin_frame_name, audit_admin_frame};
 pub(crate) use session_core::run_world_session;
 pub(crate) use view::{
     PresenceGuard, ScreenSubscriptionState, ViewRevisionState, Viewport, normalize_paste, send_view,
@@ -88,8 +91,9 @@ pub(crate) use documents::{
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
-    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
-    PointerEvent, SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES,
+    PRESENTATION_POLICY_CURRENT, PRESENTATION_POLICY_SAVED, PointerButton, PointerEvent,
+    SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -169,54 +173,9 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         ClientFrame::InstallBegin { admin_token, .. } => admin_token.as_deref(),
         ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
+        ClientFrame::SetPresentationPolicy { admin_token, .. } => Some(admin_token),
         _ => None,
     }
-}
-
-/// Wall-clock milliseconds for session-layer audit records (the actor
-/// stamps records with its world clock; hub and session frames are
-/// processed before any world clock is involved).
-fn audit_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// The bare audit action name of an admin frame, for dispatch sites
-/// that refuse several admin frame kinds at one point.
-fn admin_frame_name(frame: &ClientFrame) -> &'static str {
-    match frame {
-        ClientFrame::Invite { .. } => "Invite",
-        ClientFrame::Compile { .. } => "Compile",
-        ClientFrame::CreateWorld { .. } => "CreateWorld",
-        ClientFrame::ListWorlds { .. } => "ListWorlds",
-        ClientFrame::InstallBegin { .. } => "InstallBegin",
-        ClientFrame::EventHistoryAdmin { .. } => "EventHistoryAdmin",
-        ClientFrame::SetExecutionProfile { .. } => "SetExecutionProfile",
-        _ => "Unknown",
-    }
-}
-
-/// Emit the one audit line an admin frame produces (#1063): the
-/// session-layer half of the audit stream, in the actor's record shape
-/// on the same reserved target (`id::audit`). The actor is the literal
-/// `admin` — the token itself is a secret and is never recorded. Every
-/// dispatch path through this module calls this exactly once per admin
-/// frame (the [`frame_admin_token`] set), so every admin frame
-/// produces exactly one line, denials included.
-fn audit_admin_frame(world_id: &str, action: &str, outcome: &str, parameters: serde_json::Value) {
-    emit_audit_record(&AuditRecord {
-        schema_version: 2,
-        timestamp_ms: audit_now_ms(),
-        world_id: world_id.to_owned(),
-        actor: "admin".to_owned(),
-        action: format!("frame:{action}"),
-        parameters,
-        outcome: outcome.to_owned(),
-        target: world_id.to_owned(),
-        correlation_id: next_audit_correlation_id(),
-    });
 }
 
 /// Run one session to completion.
@@ -1131,6 +1090,7 @@ async fn joined<I: SessionIo>(
     after: Option<u64>,
     screen_patches: bool,
     screen_msgpack: bool,
+    screen_compress: bool,
     resume_token: Option<String>,
     agent_profile: bool,
     device_input: Option<serde_json::Value>,
@@ -1190,6 +1150,11 @@ async fn joined<I: SessionIo>(
     // no offer, or a text-only transport — keeps the JSON patch path,
     // and a client that never opted in is unaffected either way.
     view_state.msgpack_patches = screen_patches && screen_msgpack && io.supports_bytes();
+    // Compressed patches (F12.11 phase 4, contract revision 16) ride
+    // the same negotiation: only a session that also offered
+    // `screen_compress` receives version-2 compressed frames, and only
+    // when compression makes the complete frame smaller.
+    view_state.compress_patches = view_state.msgpack_patches && screen_compress;
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
@@ -2073,6 +2038,62 @@ async fn handle_client_frame<I: SessionIo>(
                                 applies_on_next_program_install_or_process_restart: false,
                             },
                             message: "current persisted execution profile",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::SetPresentationPolicy {
+            admin_token,
+            policy,
+        } => {
+            match service
+                .set_presentation_policy(Some(&admin_token), policy)
+                .await
+            {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_SAVED,
+                        },
+                    )
+                    .await;
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "accepted",
+                        serde_json::json!({}),
+                    );
+                }
+                Err(error) => {
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "refused",
+                        serde_json::json!({}),
+                    );
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::PresentationPolicyInfo {} => {
+            match service.presentation_policy().await {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_CURRENT,
                         },
                     )
                     .await;

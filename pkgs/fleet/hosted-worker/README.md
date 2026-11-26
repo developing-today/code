@@ -43,11 +43,11 @@ the service skeleton from #12583; each door is filled by its own issue.
   declared model, open/close times, and the lane-start issue set.
   Routes, all behind the shared plumbing: `POST /v1/sessions` (open),
   `POST /v1/sessions/resume` (CLI re-attach), `POST
-  /v1/sessions/resolve` (the stamp path's question — may this session
+/v1/sessions/resolve` (the stamp path's question — may this session
   be cited?), `POST /v1/sessions/close`. Unknown ids are refused
   `404 session_unknown` (a session owned by another tenancy answers
   identically — no cross-tenant existence oracle), closed ids `409
-  session_closed`, malformed ids `400 invalid_session_id`. An agent
+session_closed`, malformed ids `400 invalid_session_id`. An agent
   caller opens under its credential's lane; declaring a different one
   is refused (`lane_beyond_credential`).
 - **Session resolution** (`src/session-resolution.ts`, #12584; design
@@ -144,7 +144,7 @@ the service skeleton from #12583; each door is filled by its own issue.
   its `X-Hub-Signature-256` HMAC (503 unconfigured, 401
   unverified, both before any parsing); events/actions outside
   the §16 set are acknowledged as ignored. `POST
-  /v1/ingestion/sweep` runs the interval sweeper over a named or
+/v1/ingestion/sweep` runs the interval sweeper over a named or
   configured repo scope (the Worker's `scheduled` handler runs
   the same sweep on the wrangler cron trigger). One check code
   path serves both: the item is read fresh through the GitHub
@@ -162,7 +162,40 @@ the service skeleton from #12583; each door is filled by its own issue.
   one DB row and at most one triage task, and a create whose
   insert failed at the stamping door (#12585's
   `metadata_inserted: false`) is healed by the first check that
-  sees the item.
+  sees the item. The door's operator surface completes the
+  #9074 remainder (#14312, `src/backfill.ts`): `POST
+/v1/ingestion/backfill` runs the same sweep over a named or
+  configured scope and records the run — counts in/out and every
+  per-item failure named — in the backfill run store, read back
+  via `GET /v1/ingestion/backfill/runs`; re-running over an
+  unchanged store records 0 inserted / 0 refreshed. `POST
+/v1/ingestion/divergence` is the aggregate counterpart of the
+  query door's per-result divergence: over the scope it compares
+  every item's body block against the DB and names the
+  divergences by class — `missing_row`, `stale_field` (the
+  differing top-level fields, or `pm_meta_block` for a removed
+  or unparseable block), `orphan_row` — with counts. The report
+  is a read; the backfill is the heal.
+- **Thin TS CLI** (`src/cli.ts`, package-root `cli.ts`, #12588;
+  design §3.2): the hosted caller's command line — the entrypoint
+  the verb modules above name. Verbs: `session open|resume|close`
+  (carriage per §4.2: explicit > env > per-workspace stored state,
+  the stored id's liveness checked against the registry before it
+  is cited), `create issue|pr` (the caller's body text and
+  caller-owned Metadata fields, assembled by the CLI; the request
+  is a fixed allowlist of caller-owned fields and verifiable
+  claims — no timestamps, no queue fields, no provenance),
+  `query` (src/query-cli.ts's flags, rendered JSON first), `next`
+  (work intake as the client-side claim + lane + bind composite
+  the queue door leaves to the client) and `claim` (the single
+  verb), `backfill [--repo <owner/name>]...` and `backfill runs`
+  and `divergence [--repo <owner/name>]...` (src/backfill-cli.ts's
+  scope parser over the ingestion door's operator surface,
+  #14312), and `sync project|flow` (src/sync-cli.ts's flags). The
+  caller presents a #9077 relying-party token it already holds —
+  resolved explicit > `FLEET_HOSTED_TOKEN` > the CLI's token file,
+  storage local to the caller; acquisition flows (PKCE / device)
+  are component H's surface (#9086, design §8 deferral 4).
 - **Health + capabilities** (`src/health.ts`, `src/capabilities.ts`):
   public identity surface. `/capabilities` mirrors the native
   `fleet capabilities` JSON shape — same `build` / `capabilities` /
@@ -172,15 +205,24 @@ the service skeleton from #12583; each door is filled by its own issue.
   available only when its filling issue landed: so far the
   hosted-transformed `gh` domain, via the stamping and query doors,
   and the `queue` domain, via the queue door.
+- **Kv door** (#13316, `src/kv-door.ts`, `src/routes/kv.ts`):
+  `POST /v1/kv/v2/pipeline` is the `fleet kv` central plane. A host
+  posts the Hrana transaction its client crate builds; the door
+  forwards only statements in `src/kv-catalog.json` (generated from
+  `pkgs/fleet/crates/fleet-kv/src/catalog.rs`), binds owner, writer
+  and private scope to the caller, checks the scope against the
+  namespace, gates namespace and grant changes on `kv-admin`, and runs
+  the schema migrations itself. Primary: `KV_LIBSQL_URL` +
+  `KV_LIBSQL_AUTH_TOKEN`; unset → 503. Runbook:
+  `pkgs/fleet/book/operations/kv-central.md`.
 
 ## What is a stub
 
-The remaining door routes authenticate, then answer
-`501 not_implemented` naming the issue that fills them:
-
-| Door      | Routes                                  | Filled by |
-| --------- | --------------------------------------- | --------- |
-| sync      | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591 |
+No door routes remain stubs. The last one was the sync door —
+`POST /v1/sync/project` and `POST /v1/sync/queue-github`, filled
+by #12591 — whose routes previously authenticated, then answered
+`501 not_implemented`. They are implemented now; the smoke suite
+exercises both end to end.
 
 Stamp signing (#12586) is a separate slice, deliberately not
 absorbed here. The session registry (#12584) is real, above — it is

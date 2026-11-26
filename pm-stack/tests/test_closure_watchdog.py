@@ -19,6 +19,7 @@ Run:  python3 pm-stack/tests/test_closure_watchdog.py
 import importlib.util
 import sys
 import unittest
+import urllib.parse
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "closure-watchdog.py"
@@ -97,8 +98,12 @@ class DecideCloseTests(unittest.TestCase):
             actor=BOT,
             human_close_before=False,
             open_sub_issues=0,
-            closing_pr={"number": 9, "title": "x", "body": "Closes #5",
-                        "merged_at": "2026-11-13T03:03:53Z"},
+            closing_pr={
+                "number": 9,
+                "title": "x",
+                "body": "Closes #5",
+                "merged_at": "2026-11-13T03:03:53Z",
+            },
             issue_number=5,
         )
         self.assertEqual(rules, [])
@@ -130,17 +135,24 @@ class ProcessRepoTests(unittest.TestCase):
         # bot closed #9106 at 03:04:00Z with 6 open sub-issues.
         gh = FakeGh(
             issues={REPO: [9106]},
-            timelines={(REPO, 9106): [
-                xref_event(9184, "design note (#9106)", "Refs #9106",
-                           "2026-11-13T03:03:53Z"),
-                close_event(BOT, "2026-11-13T03:04:00Z"),
-            ]},
+            timelines={
+                (REPO, 9106): [
+                    xref_event(
+                        9184,
+                        "design note (#9106)",
+                        "Refs #9106",
+                        "2026-11-13T03:03:53Z",
+                    ),
+                    close_event(BOT, "2026-11-13T03:04:00Z"),
+                ]
+            },
             sub_issues={(REPO, 9106): 6},
         )
         actions, watermark = wd.process_repo(gh, REPO, None)
         self.assertEqual(len(actions), 1)
-        self.assertEqual(sorted(actions[0]["rules"]),
-                         ["open-sub-issues", "refs-only-merge"])
+        self.assertEqual(
+            sorted(actions[0]["rules"]), ["open-sub-issues", "refs-only-merge"]
+        )
         self.assertEqual(actions[0]["closing_pr"], 9184)
         kinds = [c[0] for c in gh.calls]
         self.assertEqual(kinds, ["reopen", "remove_label", "comment"])
@@ -150,10 +162,12 @@ class ProcessRepoTests(unittest.TestCase):
     def test_9078_fixture_open_sub_issues_rule_fires(self):
         gh = FakeGh(
             issues={REPO: [9078]},
-            timelines={(REPO, 9078): [
-                xref_event(9088, "slice", "Refs #9078", "2026-11-12T23:07:10Z"),
-                close_event(BOT, "2026-11-12T23:07:19Z"),
-            ]},
+            timelines={
+                (REPO, 9078): [
+                    xref_event(9088, "slice", "Refs #9078", "2026-11-12T23:07:10Z"),
+                    close_event(BOT, "2026-11-12T23:07:19Z"),
+                ]
+            },
             sub_issues={(REPO, 9078): 9},
         )
         actions, _ = wd.process_repo(gh, REPO, None)
@@ -163,11 +177,14 @@ class ProcessRepoTests(unittest.TestCase):
     def test_legit_closes_keyword_close_not_reopened(self):
         gh = FakeGh(
             issues={REPO: [10107]},
-            timelines={(REPO, 10107): [
-                xref_event(10190, "fixture", "Closes #10107",
-                           "2026-11-14T17:04:11Z"),
-                close_event(BOT, "2026-11-14T17:04:17Z"),
-            ]},
+            timelines={
+                (REPO, 10107): [
+                    xref_event(
+                        10190, "fixture", "Closes #10107", "2026-11-14T17:04:11Z"
+                    ),
+                    close_event(BOT, "2026-11-14T17:04:17Z"),
+                ]
+            },
             sub_issues={(REPO, 10107): 0},
         )
         actions, _ = wd.process_repo(gh, REPO, None)
@@ -177,10 +194,12 @@ class ProcessRepoTests(unittest.TestCase):
     def test_human_close_inside_guard_window_not_reopened(self):
         gh = FakeGh(
             issues={REPO: [42]},
-            timelines={(REPO, 42): [
-                close_event(HUMAN, "2026-11-14T10:00:00Z"),
-                close_event(BOT, "2026-11-14T10:01:00Z"),
-            ]},
+            timelines={
+                (REPO, 42): [
+                    close_event(HUMAN, "2026-11-14T10:00:00Z"),
+                    close_event(BOT, "2026-11-14T10:01:00Z"),
+                ]
+            },
             sub_issues={(REPO, 42): 2},
         )
         actions, _ = wd.process_repo(gh, REPO, None)
@@ -190,11 +209,17 @@ class ProcessRepoTests(unittest.TestCase):
     def test_watermark_processes_each_close_once(self):
         gh = FakeGh(
             issues={REPO: [9106]},
-            timelines={(REPO, 9106): [
-                xref_event(9184, "design note (#9106)", "Refs #9106",
-                           "2026-11-13T03:03:53Z"),
-                close_event(BOT, "2026-11-13T03:04:00Z"),
-            ]},
+            timelines={
+                (REPO, 9106): [
+                    xref_event(
+                        9184,
+                        "design note (#9106)",
+                        "Refs #9106",
+                        "2026-11-13T03:03:53Z",
+                    ),
+                    close_event(BOT, "2026-11-13T03:04:00Z"),
+                ]
+            },
             sub_issues={(REPO, 9106): 6},
         )
         _, watermark = wd.process_repo(gh, REPO, None)
@@ -207,15 +232,41 @@ class ProcessRepoTests(unittest.TestCase):
     def test_dry_run_reports_without_acting(self):
         gh = FakeGh(
             issues={REPO: [9106]},
-            timelines={(REPO, 9106): [
-                close_event(BOT, "2026-11-13T03:04:00Z"),
-            ]},
+            timelines={
+                (REPO, 9106): [
+                    close_event(BOT, "2026-11-13T03:04:00Z"),
+                ]
+            },
             sub_issues={(REPO, 9106): 1},
         )
         actions, _ = wd.process_repo(gh, REPO, None, dry_run=True)
         self.assertEqual(len(actions), 1)
         self.assertTrue(actions[0]["dry_run"])
         self.assertEqual(gh.calls, [])
+
+
+class RecentlyClosedIssuesUrlTests(unittest.TestCase):
+    def test_since_query_is_percent_encoded(self):
+        """Regression (2026-11-25, #10105): the since timestamp's
+        "+00:00" offset must reach GitHub percent-encoded. A raw "+"
+        in the query string decodes as a space, the issues list comes
+        back empty, and the watchdog silently processes nothing --
+        the fake-boundary tests cannot see this, so capture the real
+        GhClient path here."""
+        captured = {}
+
+        class CapturingGh(wd.GhClient):
+            def api(self, path):
+                captured["path"] = path
+                return []
+
+        CapturingGh().recently_closed_issues(
+            "developing-today/code", "2026-11-25T10:25:59+00:00"
+        )
+        query = captured["path"].split("?", 1)[1]
+        params = urllib.parse.parse_qs(query)
+        self.assertEqual(params["since"], ["2026-11-25T10:25:59+00:00"])
+        self.assertNotIn("+", query)
 
 
 if __name__ == "__main__":

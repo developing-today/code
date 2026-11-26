@@ -4,6 +4,8 @@
 //! Usage: `atlas-github-comments --state <watermarks.json>
 //! --out <records.jsonl> [--repo <owner/name>]... [--skip-reviews]
 //! [--observed-date <YYYY-MM-DD>]`
+//! (`--help` prints the usage line, `--version` the version;
+//! both exit 0.)
 //!
 //! With no `--repo`, the estate is enumerated from the GitHub API
 //! (the `developing-today` and `developing-today-forks` orgs and
@@ -49,6 +51,51 @@ struct Args {
     observed_date: Option<String>,
 }
 
+const ESTATE_OWNERS: [&str; 3] = ["developing-today", "developing-today-forks", "dezren39"];
+
+fn validate_repo(repo: &str) -> Result<(), String> {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return Err("--repo needs an owned owner/name pair".into());
+    };
+    let allowed = ESTATE_OWNERS.iter().any(|o| o.eq_ignore_ascii_case(owner));
+    if !allowed
+        || name.is_empty()
+        || matches!(name, "." | "..")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(
+            "repository outside the permitted GitHub comments estate or malformed repository name"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+// GitHub can redirect a renamed or transferred repository. Validate the
+// canonical source named by each response row before exporting any of it.
+fn check_row_repo(row: &Json, field: &str, repo: &str) -> Result<(), String> {
+    let source = row
+        .get(field)
+        .and_then(Json::as_str)
+        .and_then(|u| u.strip_prefix("https://api.github.com/repos/"))
+        .and_then(|r| r.split_once('/'));
+    let (owner, name) = repo.split_once('/').ok_or("invalid repository name")?;
+    if source.is_some_and(|(o, rest)| {
+        o.eq_ignore_ascii_case(owner)
+            && rest
+                .split('/')
+                .next()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    }) {
+        return Ok(());
+    }
+    Err(format!(
+        "missing or unexpected GitHub repository in {field}"
+    ))
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut state: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -60,7 +107,11 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--state" => state = Some(PathBuf::from(it.next().ok_or("--state needs a path")?)),
             "--out" => out = Some(PathBuf::from(it.next().ok_or("--out needs a path")?)),
-            "--repo" => repos.push(it.next().ok_or("--repo needs owner/name")?),
+            "--repo" => {
+                let repo = it.next().ok_or("--repo needs owner/name")?;
+                validate_repo(&repo)?;
+                repos.push(repo);
+            }
             "--skip-reviews" => skip_reviews = true,
             "--observed-date" => {
                 observed_date = Some(it.next().ok_or("--observed-date needs YYYY-MM-DD")?)
@@ -135,7 +186,11 @@ fn enumerate_estate() -> Result<Vec<String>, String> {
         let text = gh_api(path, ".[].full_name")?;
         for line in text.lines() {
             let name = line.trim();
-            if !name.is_empty() && !repos.iter().any(|r| r == name) {
+            if name.is_empty() {
+                continue;
+            }
+            validate_repo(name)?;
+            if !repos.iter().any(|r| r == name) {
                 repos.push(name.to_string());
             }
         }
@@ -173,12 +228,13 @@ struct RepoCounts {
 
 fn extract_repo(
     repo: &str,
-    state: &mut CommentWatermarks,
+    baseline: &CommentWatermarks,
+    pending: &mut CommentWatermarks,
     skip_reviews: bool,
     observed_date: &str,
     out: &mut fs::File,
 ) -> Result<RepoCounts, String> {
-    let since = state.since_for(repo).map(str::to_string);
+    let since = baseline.since_for(repo).map(str::to_string);
     let since_q = since
         .as_deref()
         .map(|s| format!("&since={s}"))
@@ -188,6 +244,7 @@ fn extract_repo(
     let issues = gh_api_objects(&format!("repos/{repo}/issues?state=all&per_page=100"))?;
     let mut threads: BTreeMap<u64, GhThread> = BTreeMap::new();
     for issue in &issues {
+        check_row_repo(issue, "repository_url", repo)?;
         let Some(number) = issue.get("number").and_then(Json::as_u64) else {
             continue;
         };
@@ -232,6 +289,9 @@ fn extract_repo(
     let raw = gh_api_objects(&format!(
         "repos/{repo}/issues/comments?per_page=100{since_q}"
     ))?;
+    for row in &raw {
+        check_row_repo(row, "issue_url", repo)?;
+    }
     let comments: Vec<GhComment> = raw
         .iter()
         .filter_map(|c| {
@@ -246,23 +306,25 @@ fn extract_repo(
             })
         })
         .collect();
-    for c in state.select_delta(repo, &comments) {
+    for c in baseline.select_delta(repo, &comments) {
         let thread = raw
             .iter()
             .find(|r| r.get("id").and_then(Json::as_u64) == Some(c.id))
             .and_then(|r| thread_number(r, "issue_url"))
             .and_then(|n| threads.get(&n));
-        if let Some(thread) = thread {
-            emit(thread, c, &mut counts)?;
-            counts.issue_comments += 1;
-        }
-        state.observe(repo, &c.updated_at);
+        let thread = thread.ok_or("missing thread context for issue comment")?;
+        emit(thread, c, &mut counts)?;
+        counts.issue_comments += 1;
+        pending.observe(repo, &c.updated_at);
     }
 
     // Review comments (repo-wide stream, watermark-bounded).
     let raw = gh_api_objects(&format!(
         "repos/{repo}/pulls/comments?per_page=100{since_q}"
     ))?;
+    for row in &raw {
+        check_row_repo(row, "pull_request_url", repo)?;
+    }
     let comments: Vec<GhComment> = raw
         .iter()
         .filter_map(|c| {
@@ -277,17 +339,16 @@ fn extract_repo(
             })
         })
         .collect();
-    for c in state.select_delta(repo, &comments) {
+    for c in baseline.select_delta(repo, &comments) {
         let thread = raw
             .iter()
             .find(|r| r.get("id").and_then(Json::as_u64) == Some(c.id))
             .and_then(|r| thread_number(r, "pull_request_url"))
             .and_then(|n| threads.get(&n));
-        if let Some(thread) = thread {
-            emit(thread, c, &mut counts)?;
-            counts.review_comments += 1;
-        }
-        state.observe(repo, &c.updated_at);
+        let thread = thread.ok_or("missing thread context for review comment")?;
+        emit(thread, c, &mut counts)?;
+        counts.review_comments += 1;
+        pending.observe(repo, &c.updated_at);
     }
 
     // Reviews: no repo-wide stream exists, so walk the PR
@@ -301,6 +362,9 @@ fn extract_repo(
             .collect();
         for number in pr_numbers {
             let raw = gh_api_objects(&format!("repos/{repo}/pulls/{number}/reviews?per_page=100"))?;
+            for row in &raw {
+                check_row_repo(row, "pull_request_url", repo)?;
+            }
             let reviews: Vec<GhComment> = raw
                 .iter()
                 .filter_map(|r| {
@@ -316,12 +380,18 @@ fn extract_repo(
                     })
                 })
                 .collect();
-            for c in state.select_delta(repo, &reviews) {
+            for c in &reviews {
+                if baseline
+                    .reviews_since_for(repo)
+                    .is_some_and(|since| c.updated_at.as_str() <= since)
+                {
+                    continue;
+                }
                 if let Some(thread) = threads.get(&number) {
                     emit(thread, c, &mut counts)?;
                     counts.reviews += 1;
                 }
-                state.observe(repo, &c.updated_at);
+                pending.observe_review(repo, &c.updated_at);
             }
         }
     }
@@ -346,6 +416,16 @@ fn run() -> Result<(), String> {
     } else {
         args.repos.clone()
     };
+    let mut lock_name = args.state.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_name)
+        .map_err(|e| format!("open watermark lock: {e}"))?;
+    lock.try_lock()
+        .map_err(|e| format!("lock watermarks: {e}"))?;
     let mut state = load_watermarks(&args.state);
     let mut out = fs::OpenOptions::new()
         .create(true)
@@ -353,19 +433,41 @@ fn run() -> Result<(), String> {
         .open(&args.out)
         .map_err(|e| format!("open {}: {e}", args.out.display()))?;
 
+    out.try_lock().map_err(|e| format!("lock records: {e}"))?;
     println!("estate: {} repos", repos.len());
     let mut totals = (0usize, 0usize, 0usize, 0usize);
     let mut skipped = 0usize;
     for repo in &repos {
-        match extract_repo(
+        // Filter all streams against completed checkpoints. Rows discovered
+        // in an earlier branch must never hide a later branch in this pass.
+        let start = out
+            .metadata()
+            .map_err(|e| format!("stat records: {e}"))?
+            .len();
+        let mut pending = state.clone();
+        let result = extract_repo(
             repo,
-            &mut state,
+            &state,
+            &mut pending,
             args.skip_reviews,
             &observed_date,
             &mut out,
-        ) {
+        )
+        .and_then(|counts| {
+            out.sync_data().map_err(|e| format!("sync records: {e}"))?;
+            save_watermarks(&args.state, &pending)?;
+            Ok(counts)
+        });
+        if result.is_err() {
+            // Roll back only our incomplete repository while holding the
+            // output lock. Other completed repositories remain committed.
+            out.set_len(start)
+                .and_then(|()| out.sync_data())
+                .map_err(|e| format!("restore records after failed extraction: {e}"))?;
+        }
+        match result {
             Ok(counts) => {
-                save_watermarks(&args.state, &state)?;
+                state = pending;
                 println!(
                     "{repo}: issue_comments={} review_comments={} reviews={} documents={}",
                     counts.issue_comments, counts.review_comments, counts.reviews, counts.documents
@@ -381,12 +483,10 @@ fn run() -> Result<(), String> {
                 // the skip and continue; the watermark is left
                 // unadvanced, so if the block is ever lifted a
                 // later run extracts the repo in full.
-                save_watermarks(&args.state, &state)?;
                 println!("{repo}: skipped — repository access blocked (HTTP 451)");
                 skipped += 1;
             }
             Err(e) => {
-                save_watermarks(&args.state, &state)?;
                 println!(
                     "totals: issue_comments={} review_comments={} reviews={} documents={}",
                     totals.0, totals.1, totals.2, totals.3
@@ -412,7 +512,23 @@ fn is_access_blocked(error: &str) -> bool {
     error.contains("Repository access blocked") || error.contains("HTTP 451")
 }
 
+const USAGE: &str = "usage: atlas-github-comments --state <watermarks.json> \
+    --out <records.jsonl> [--repo <owner/name>]... [--skip-reviews] \
+    [--observed-date <YYYY-MM-DD>]";
+
 fn main() -> ExitCode {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-github-comments {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

@@ -260,6 +260,16 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 			s.refused(w, http.StatusBadRequest, err, file)
 			return
 		}
+		if strings.HasPrefix(decl.Path, "embeddings.") {
+			if err := s.reg.SwapEmbedder(s.set); err != nil {
+				s.restoreRuntime(decl.Path, prev, had)
+				s.refused(w, http.StatusInternalServerError, reloadFailed(decl.Path, err), file)
+				return
+			}
+			out["applied"] = true
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
 		if err := s.applyPoolRuntime(decl.Path); err != nil {
 			s.restoreRuntime(decl.Path, prev, had)
 			s.refused(w, http.StatusInternalServerError, reloadFailed(decl.Path, err), file)
@@ -958,6 +968,16 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 				req.Name, want, name))
 			return
 		}
+	}
+	// The bare gate is checked BEFORE anything is persisted, for the
+	// same reason as the collision check above: the reload applies the
+	// gate at load, so writing a bare declaration while
+	// adapters.allowBare is off would fail this request at the reload
+	// while leaving a declaration that breaks every later reload and
+	// daemon start (Codex review, PR #13118).
+	if err := adapter.CheckBareAllowed([]adapter.Spec{req.Spec}, s.set.Bool("adapters.allowBare")); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	if err := config.AddAdapterEntry(path, entry, req.Replace); err != nil {
 		writeErr(w, http.StatusConflict, err)

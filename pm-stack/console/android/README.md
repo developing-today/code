@@ -8,14 +8,14 @@ console changes.
 
 Around the site, the app uses what only an installed app has:
 
-| What                 | How it is used                                                                                                            | Code                                  |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| Home-screen widget   | In progress, queued next, needs me, and the task being worked on. Each number opens its screen                            | `StatusWidget`, `Fleet`               |
-| Dictation            | Long-press the icon and choose Dictate, or tap the "Ask the fleet" quick-settings tile: the words land in the Ask box     | `DictateActivity`, `AskTileService`   |
-| Share and selection  | Share text from any app, or select text and choose "Ask the fleet": it lands in the Ask box                               | `ShareActivity`                       |
-| Long-press shortcuts | Dictate, Ask, Needs me, Now. They move the open app to that screen and do not reload it                                   | `OpenActivity`, `res/xml/shortcuts`   |
-| Notifications        | The site's notifications arrive as the app's own, with its mark in the status bar; the app asks for the permission itself | the helper library's activities       |
-| Links                | `https://pm.security.cab/...` links open in the app                                                                       | the launcher activity's intent filter |
+| What                 | How it is used                                                                                                                                                    | Code                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| Home-screen widget   | In progress, queued next, needs me, unread instructions, and the task being worked on. Each number opens its screen                                               | `StatusWidget`, `Fleet`               |
+| Dictation            | Long-press the icon and choose Dictate, or tap the "Ask the fleet" quick-settings tile: the words land in the Ask box                                             | `DictateActivity`, `AskTileService`   |
+| Share and selection  | Share text from any app, or select text and choose "Ask the fleet": it lands in the Ask box. An enroll command lands in provisioning on the Agents screen instead | `ShareActivity`, `Links`              |
+| Long-press shortcuts | Dictate, Ask, Needs me, Now, Messages. They move the open app to that screen and do not reload it                                                                 | `OpenActivity`, `res/xml/shortcuts`   |
+| Notifications        | The site's notifications arrive as the app's own, with its mark in the status bar; the app asks for the permission itself                                         | the helper library's activities       |
+| Links                | `https://pm.security.cab/...` links open in the app                                                                                                               | the launcher activity's intent filter |
 
 Words handed to the site (shared, selected or dictated) travel after the
 `#` of the address, which a browser never sends to a server; they sit in
@@ -141,5 +141,10 @@ The page says which it is. Later builds install over it.
 
 The native parts are checked by compiling the build and reading its
 merged manifest; the site's side of each (the Ask box taking handed-over
-words, linking a phone, the summary) is tested in `test/`. They have not
-been exercised by an automated run on a device.
+words, linking a phone, the summary) is tested in `test/`. The app
+with no connection is checked on a device in CI: the
+`pm-console-android-offline` workflow (nightly, and on demand) starts
+an emulator, installs the built APK, and drives it against the demo
+edge — open, aeroplane mode, open again from the icon, answer a
+question, swipe the app away, network back — and checks the demo edge
+saw that answer exactly once. See `offline-check.sh` for the steps.

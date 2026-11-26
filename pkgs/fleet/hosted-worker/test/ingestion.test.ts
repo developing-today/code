@@ -25,15 +25,7 @@ import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { importStampVerifyKeys, verifyStamp, type Provenance } from "../src/stamp-sig.ts";
 import { FixtureMetadataStore, FixtureQueueRecordSource } from "../src/stamping.ts";
-import {
-  AUDIENCE,
-  BINDING_A,
-  BINDING_B,
-  ISSUER,
-  WEBHOOK_SECRET,
-  bearerReq,
-  makeHarness,
-} from "./helpers.ts";
+import { AUDIENCE, BINDING_A, BINDING_B, ISSUER, WEBHOOK_SECRET, bearerReq, makeHarness } from "./helpers.ts";
 
 const h = await makeHarness();
 
@@ -57,8 +49,20 @@ const stampRawPub = new Uint8Array(await crypto.subtle.exportKey("raw", stampKey
 const tenancyFixture = JSON.stringify({
   subjects: [{ issuer: ISSUER, subject: "user-sub-1", binding_id: BINDING_A, active: true }],
   service_tokens: [
-    { sha256: await sha256Hex(INGEST_TOKEN), binding_id: BINDING_A, routes: ["ingestion"], active: true, label: "ingestion-test" },
-    { sha256: await sha256Hex(QUERY_ONLY_TOKEN), binding_id: BINDING_A, routes: ["query"], active: true, label: "query-only" },
+    {
+      sha256: await sha256Hex(INGEST_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["ingestion"],
+      active: true,
+      label: "ingestion-test",
+    },
+    {
+      sha256: await sha256Hex(QUERY_ONLY_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["query"],
+      active: true,
+      label: "query-only",
+    },
   ],
 });
 
@@ -287,7 +291,7 @@ test("duplicate delivery: one DB row, unchanged second result, one triage task",
   assert.equal(r1.sufficient, false);
   assert.equal(r1.queue?.action, "enqueued");
   const key = triageDedupeKey(REPO, 8);
-  const tasks = world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key);
+  const tasks = await world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key);
   assert.equal(tasks.length, 1);
   assert.equal((tasks[0].payload as { kind: string }).kind, "triage");
 
@@ -296,7 +300,7 @@ test("duplicate delivery: one DB row, unchanged second result, one triage task",
   const r2 = (await second.json()) as CheckResult;
   assert.equal(r2.outcome, "unchanged");
   assert.equal(r2.queue?.action, "already_enqueued");
-  assert.equal(world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key).length, 1);
+  assert.equal((await world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key)).length, 1);
   const rows = await world.store.list("unattributed", {});
   assert.equal(rows.filter((r) => r.number === 8).length, 1);
 });
@@ -466,7 +470,7 @@ test("an authored block already queue-tracked is sufficient without a parent", a
   const result = (await res.json()) as CheckResult;
   assert.equal(result.sufficient, true);
   assert.equal(result.queue?.action, "not_warranted");
-  assert.equal(world.queueStore.tasksByDedupe(TRIAGE_QUEUE, triageDedupeKey(REPO, 13)).length, 0);
+  assert.equal((await world.queueStore.tasksByDedupe(TRIAGE_QUEUE, triageDedupeKey(REPO, 13))).length, 0);
 });
 
 // --- Malformed input fails closed, per door idiom.
@@ -475,13 +479,24 @@ test("a malformed block refuses the webhook with 400 and becomes a per-item erro
   const world = makeWorld();
   const badBody = `Broken block.\n\n${METADATA_START}\n\`\`\`json\n{broken}\n\`\`\`\n${METADATA_END}\n`;
   world.writer.seedItem({
-    repo: REPO, kind: "issue", number: 14, title: "Broken", body: badBody,
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    repo: REPO,
+    kind: "issue",
+    number: 14,
+    title: "Broken",
+    body: badBody,
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
   world.writer.seedItem({
-    repo: REPO, kind: "issue", number: 15, title: "Fine",
+    repo: REPO,
+    kind: "issue",
+    number: 15,
+    title: "Fine",
     body: bodyWithBlock("Fine.", authoredBlock(REPO)),
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
 
   const res = await deliver(world, issuePayload(REPO, 14));
@@ -505,13 +520,25 @@ test("sweeper catches an item the listener missed, with the same check result as
   const world = makeWorld();
   const body = bodyWithBlock("Same item, two repos.", authoredBlock(REPO));
   world.writer.seedItem({
-    repo: REPO, kind: "issue", number: 7, title: "Via webhook", body,
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    repo: REPO,
+    kind: "issue",
+    number: 7,
+    title: "Via webhook",
+    body,
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
   const body2 = bodyWithBlock("Same item, two repos.", authoredBlock(REPO2));
   world.writer.seedItem({
-    repo: REPO2, kind: "issue", number: 7, title: "Via sweep", body: body2,
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    repo: REPO2,
+    kind: "issue",
+    number: 7,
+    title: "Via sweep",
+    body: body2,
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
 
   const hookRes = await deliver(world, issuePayload(REPO, 7));
@@ -534,9 +561,15 @@ test("sweeper catches an item the listener missed, with the same check result as
 test("sweeper completes a quickly-merged PR's Metadata retroactively", async () => {
   const world = makeWorld();
   world.writer.seedItem({
-    repo: REPO, kind: "pr", number: 9, title: "Merged before anyone watched",
+    repo: REPO,
+    kind: "pr",
+    number: 9,
+    title: "Merged before anyone watched",
     body: bodyWithBlock("A fast PR.", authoredBlock(REPO)),
-    state: "closed", labels: [], createdAt: "2026-11-21T08:00:00.000Z", merged: true,
+    state: "closed",
+    labels: [],
+    createdAt: "2026-11-21T08:00:00.000Z",
+    merged: true,
   });
   assert.equal(await world.store.get(REPO, "pr", 9), null);
   const res = await sweep(world, INGEST_TOKEN, { repos: [REPO] });
@@ -553,9 +586,14 @@ test("sweeper completes a quickly-merged PR's Metadata retroactively", async () 
 test("sweeper falls back to the configured scope and fails closed with none", async () => {
   const scoped = makeWorld({ INGESTION_REPOS: REPO });
   scoped.writer.seedItem({
-    repo: REPO, kind: "issue", number: 21, title: "Configured scope",
+    repo: REPO,
+    kind: "issue",
+    number: 21,
+    title: "Configured scope",
     body: bodyWithBlock("Scoped.", authoredBlock(REPO)),
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
   const okRes = await sweep(scoped, INGEST_TOKEN);
   assert.equal(okRes.status, 200, await okRes.clone().text());

@@ -7,8 +7,11 @@
 //!    rules. Anything that fails is refused as [`Refusal::Malformed`].
 //! 2. **Duplicate.** An event whose ID is stored, or is one of its author's fork proof
 //!    headers, changes nothing.
-//! 3. **Frozen.** An event above its author's fork point is refused as
-//!    [`Refusal::Frozen`].
+//! 3. **Fork point.** If the author has a fork proof at the event's own sequence number,
+//!    the proof keeps the two lowest IDs there: an event that joins them replaces the
+//!    proof (step 4), and one that displaces neither header is refused as
+//!    [`Refusal::Frozen`]. An event above the fork point is not refused for sitting
+//!    there: it goes on to the steps below, and is kept as voided evidence when it links.
 //! 4. **Fork.** If the author has another event at the same sequence number, stored or
 //!    held, the two are a fork, whatever their backlinks and dependencies. The proof for that
 //!    sequence number holds the two lowest IDs there, and the proofs at higher points stay. The
@@ -79,12 +82,16 @@
 //! the refused rival is sent again, while the other event is still held. The behaviour is
 //! pinned by `test_a_rival_refused_by_the_cap_is_seen_only_when_sent_again`.
 //!
-//! # Known limit: a rival refused as frozen
+//! # Events above a fork point are kept as evidence
 //!
-//! An event above its author's fork point is refused as frozen when it arrives after the fork.
-//! When it arrives before, it is kept as voided. So an `after` hash that names such an event is
-//! present in some arrival orders and not in others. The batch property names rivals, but it
-//! compares the batch path with per-event ingest in one arrival order, so it holds either way.
+//! An event above its author's fork point is decided on its own conflicts, backlink, and
+//! dependencies, like any other event. When it links, it is stored as voided evidence: the
+//! resolution never applies it, but it is present, so an `after` hash that names it is
+//! satisfied in every arrival order — the same state as when it arrived before the fork and
+//! the fork voided it. One whose backlink can never link is parked, and one that waits is
+//! held, as below the fork point. Only an event at a fork proof's own sequence number that
+//! displaces neither of the proof's two headers is refused as frozen: the position holds
+//! one event, and the headers are the events present there.
 //!
 //! The property tests in `tests/event_store_properties.rs` check the applied state against
 //! this definition, for every arrival order.
@@ -98,9 +105,9 @@ use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 use super::resolve::{self, decode_action, encode_action, encode_device_op};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
-    ACTIONS, APPLIED, CHAINS, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof, HASHES,
-    PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key,
-    store_body, store_chain, store_event, store_fork,
+    ACTIONS, APPLIED, CHAINS, COMPACTED, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof,
+    HASHES, PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof,
+    position_key, proof_at, store_body, store_chain, store_event, store_fork,
 };
 use super::{Ingest, Refusal};
 use id_core::membership::AuthId;
@@ -109,6 +116,7 @@ use id_core::rejection::Reason;
 use id_core::waiting::{AuthorKey, WaitingPool};
 use id_store::chain::{self, Event};
 use id_store::documents::{is_document_kind, is_removal_kind};
+use id_store::event_rows::{RowRead, RowWrite};
 use id_store::tag_claims::is_tag_kind;
 
 /// What the store decides for one event, before the waiting pool sees it.
@@ -129,37 +137,17 @@ enum Decision {
     Refuse(Refusal),
 }
 
-impl EventStore {
+impl<B: super::EventStoreStorage> EventStore<B> {
     /// Rebuilds device-operation rows from retained bodies when opening an older store.
     /// Bodies that were never retained cannot be recovered; the caller reports that limit.
     ///
     /// Memory stays bounded however long the stored history is (#11299): `EVENTS` is
-    /// scanned one row at a time and each recovered row is written as it is found, inside
+    /// scanned one page at a time and each recovered row is written as it is found, inside
     /// the same startup transaction, so nothing proportional to the history is held. Only
     /// the waiting rows are collected first, and the waiting pool is capped by
     /// [`WaitingLimits`](id_core::waiting::WaitingLimits).
     pub(super) fn recover_device_ops(txn: &WriteTransaction) -> Result<(usize, bool), StoreError> {
-        let mut meta = txn.open_table(super::META)?;
-        if meta.get(super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
-            return Ok((0, false));
-        }
-        let bodies = txn.open_table(super::BODIES)?;
-        let mut recovered = 0usize;
-        let mut incomplete = false;
-        {
-            let stored = txn.open_table(EVENTS)?;
-            for row in stored.iter()? {
-                let (_position, bytes) = row.map_err(StoreError::from)?;
-                let event = decode_stored(bytes.value())?;
-                recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
-            }
-        }
-        for row in super::waiting_rows::all(txn)? {
-            let event = chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string()))?;
-            recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
-        }
-        meta.insert(super::DEVICE_OPS_RECOVERED_KEY, b"1".as_slice())?;
-        Ok((recovered, incomplete))
+        recover_device_ops_rows(&mut &*txn)
     }
 
     /// Verifies one received event and applies what it allows.
@@ -273,7 +261,7 @@ impl EventStore {
         body: Option<&[u8]>,
         now_ms: u64,
     ) -> Result<Ingest, StoreError> {
-        self.transact(now_ms, |mirror| {
+        self.transact_shared(now_ms, |mirror| {
             let (staged, changed) =
                 ingest_in(mirror, event, action, body, now_ms, Labels::AsStored)?;
             Ok((staged.finish(mirror.txn)?, changed))
@@ -348,7 +336,7 @@ impl EventStore {
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError> {
         let fork_check: Vec<Event> = events.iter().map(|(event, _body)| event.clone()).collect();
-        self.transact(now_ms, |mirror| {
+        self.transact_shared(now_ms, |mirror| {
             let labels = if batch_may_fork(mirror, &fork_check)? {
                 Labels::AsStored
             } else {
@@ -369,7 +357,7 @@ impl EventStore {
                 .iter()
                 .any(|item| matches!(item, Staged::Stored { .. }))
             {
-                refresh(mirror.txn)?;
+                refresh_rows(mirror.txn)?;
             }
             let outcomes = staged
                 .into_iter()
@@ -426,7 +414,7 @@ impl EventStore {
     ///
     /// Returns a redb error if the write fails. The waiting events are then rebuilt from disk.
     pub fn expire_waiting(&mut self, now_ms: u64) -> Result<usize, StoreError> {
-        self.transact(now_ms, |mirror| {
+        self.transact_shared(now_ms, |mirror| {
             let expired = mirror.expire(now_ms)?;
             Ok((expired, expired > 0))
         })
@@ -448,10 +436,12 @@ impl EventStore {
     }
 }
 
-/// The first bytes of every `group.event` body: a CBOR array of seven items, then the
-/// family's tag as a text string. A body that starts with these bytes claims to be a
-/// group-layer event in the wire family of [`crate::groups::event`].
-const GROUP_EVENT_CLAIM: &[u8] = b"\x87\x6bgroup.event";
+/// The first bytes of every `group.event` body: a CBOR array of seven (v1) or eight
+/// (v2, with the `at` timestamp) items, then the family's tag as a text string. A body
+/// that starts with these bytes claims to be a group-layer event in the wire family
+/// of [`crate::groups::event`].
+const GROUP_EVENT_CLAIM_V1: &[u8] = b"\x87\x6bgroup.event";
+const GROUP_EVENT_CLAIM_V2: &[u8] = b"\x88\x6bgroup.event";
 
 /// The device operation an event's body carries, with the group the body names (issue
 /// #5656). `Ok(None)` when the body is absent, is not a `group.event` body, or is a
@@ -472,7 +462,7 @@ fn body_device_op(
     let Some(body) = body else {
         return Ok(None);
     };
-    if !body.starts_with(GROUP_EVENT_CLAIM) {
+    if !body.starts_with(GROUP_EVENT_CLAIM_V1) && !body.starts_with(GROUP_EVENT_CLAIM_V2) {
         return Ok(None);
     }
     let wire =
@@ -552,17 +542,17 @@ impl Staged {
     }
 
     /// The outcome, with its labels read from the store as it is now.
-    fn finish(self, txn: &WriteTransaction) -> Result<Ingest, StoreError> {
+    fn finish<T: RowRead + ?Sized>(self, txn: &mut T) -> Result<Ingest, StoreError> {
         match self {
             Self::Ready(outcome) => Ok(outcome),
             Self::Stored { id, released } => {
                 let mut applied_released = Vec::with_capacity(released.len());
                 for hash in released {
-                    if is_applied(txn, &hash)? {
+                    if is_applied_rows(txn, &hash)? {
                         applied_released.push(hash);
                     }
                 }
-                if is_applied(txn, &id)? {
+                if is_applied_rows(txn, &id)? {
                     Ok(Ingest::Accepted {
                         id,
                         released: applied_released,
@@ -582,12 +572,12 @@ impl Staged {
 /// before it. A fork needs two events at one position: a stored or held event and an arrival, two
 /// arrivals, or an author who already has a fork proof. The check is conservative. It can call a
 /// batch that does not fork a forking one, and never the other way round.
-fn batch_may_fork(m: &Mirror<'_>, events: &[Event]) -> Result<bool, StoreError> {
+fn batch_may_fork(m: &mut Mirror<'_>, events: &[Event]) -> Result<bool, StoreError> {
     let mut positions: HashMap<(AuthorKey, SeqNum), Hash> = HashMap::new();
     for event in events {
         let author = author_of(event);
         let seq = event.header.seq_num;
-        if read_proof(m.txn, &author)?.is_some() {
+        if read_proof_rows(m.txn, &author)?.is_some() {
             return Ok(true);
         }
         if positions
@@ -596,7 +586,7 @@ fn batch_may_fork(m: &Mirror<'_>, events: &[Event]) -> Result<bool, StoreError> 
         {
             return Ok(true);
         }
-        if stored_at(m.txn, &author, seq)?.is_some_and(|stored| stored.id != event.id) {
+        if stored_id_at_rows(m.txn, &author, seq)?.is_some_and(|stored_id| stored_id != event.id) {
             return Ok(true);
         }
         if m.pool
@@ -704,30 +694,30 @@ fn settle(
     labels: Labels,
 ) -> Result<Settled, StoreError> {
     let id = event.id;
-    let settled = match decide_in(m.txn, &event, rivals)? {
+    let settled = match decide_in(&mut *m.txn, &event, rivals)? {
         Decision::Accept => {
             if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+                store_action_rows(&mut *m.txn, &id, action)?;
             }
             if let Some(body) = body {
-                store_body(m.txn, &id, body)?;
+                store_body(&mut *m.txn, &id, body)?;
             }
             if let Some((op, group)) = device {
-                store_device_op(m.txn, &id, op, group.as_ref())?;
+                store_device_op_rows(&mut *m.txn, &id, op, group.as_ref())?;
             }
             // In a store with no group state every stored event applies, so the label is known
             // now, whatever the batch does later. Otherwise the label waits for the resolution.
             let applied = match labels {
                 Labels::AsStored => {
-                    if plain(m.txn)? {
-                        apply_plain(m.txn, &event)?;
+                    if plain_rows(&mut *m.txn)? {
+                        apply_plain_rows(&mut *m.txn, &event)?;
                     } else {
-                        refresh(m.txn)?;
+                        refresh_rows(&mut *m.txn)?;
                     }
-                    Some(is_applied(m.txn, &id)?)
+                    Some(is_applied_rows(&mut *m.txn, &id)?)
                 }
-                Labels::AtEnd if plain(m.txn)? => {
-                    apply_plain(m.txn, &event)?;
+                Labels::AtEnd if plain_rows(&mut *m.txn)? => {
+                    apply_plain_rows(&mut *m.txn, &event)?;
                     Some(true)
                 }
                 Labels::AtEnd => None,
@@ -739,10 +729,10 @@ fn settle(
         }
         Decision::Duplicate => {
             drop_released(m, &event, from_pool)?;
-            let device_attached = is_stored(m.txn, &id)? && device.is_some();
+            let device_attached = is_stored_rows(&mut *m.txn, &id)? && device.is_some();
             if device_attached && let Some((op, group)) = device {
-                store_device_op(m.txn, &id, op, group.as_ref())?;
-                refresh(m.txn)?;
+                store_device_op_rows(&mut *m.txn, &id, op, group.as_ref())?;
+                refresh_rows(&mut *m.txn)?;
             }
             // A body that arrives after its event was stored header-only is stored now:
             // the header commits to it by hash and size, so it is the author's body.
@@ -750,13 +740,15 @@ fn settle(
             // changed nothing would have its transaction aborted.
             let mut stored_body = false;
             if let Some(body) = body {
-                if is_stored(m.txn, &id)? {
-                    store_body(m.txn, &id, body)?;
+                if is_stored_rows(&mut *m.txn, &id)? {
+                    store_body(&mut *m.txn, &id, body)?;
                     stored_body = true;
                 }
             }
             Settled::Duplicate {
-                attached: attach_action(m.txn, &id, action)? || stored_body || device_attached,
+                attached: attach_action_rows(&mut *m.txn, &id, action)?
+                    || stored_body
+                    || device_attached,
             }
         }
         Decision::Fork { seq, proof } => {
@@ -766,7 +758,7 @@ fn settle(
                 return Err(corrupt("a batch that cannot fork found a fork"));
             }
             drop_released(m, &event, from_pool)?;
-            refresh(m.txn)?;
+            refresh_rows(&mut *m.txn)?;
             let mut released = Vec::new();
             for header in proof {
                 released.extend(m.present_proof(&header, now)?);
@@ -785,13 +777,13 @@ fn settle(
                 // refused event's action whenever the same call committed
                 // for an unrelated reason (e.g. an expiry).
                 if let Some(action) = action {
-                    store_action(m.txn, &id, action)?;
+                    store_action_rows(&mut *m.txn, &id, action)?;
                 }
                 if let Some(body) = body {
-                    store_body(m.txn, &id, body)?;
+                    store_body(&mut *m.txn, &id, body)?;
                 }
                 if let Some((op, group)) = device {
-                    store_device_op(m.txn, &id, op, group.as_ref())?;
+                    store_device_op_rows(&mut *m.txn, &id, op, group.as_ref())?;
                 }
             }
             held(hold)
@@ -800,13 +792,13 @@ fn settle(
             let hold = m.hold(event, Vec::new(), true, now)?;
             if hold == Hold::Held {
                 if let Some(action) = action {
-                    store_action(m.txn, &id, action)?;
+                    store_action_rows(&mut *m.txn, &id, action)?;
                 }
                 if let Some(body) = body {
-                    store_body(m.txn, &id, body)?;
+                    store_body(&mut *m.txn, &id, body)?;
                 }
                 if let Some((op, group)) = device {
-                    store_device_op(m.txn, &id, op, group.as_ref())?;
+                    store_device_op_rows(&mut *m.txn, &id, op, group.as_ref())?;
                 }
             }
             held(hold)
@@ -815,35 +807,66 @@ fn settle(
     Ok(settled)
 }
 
+/// Shared startup recovery. The native adapter and tenant transactions run the
+/// same policy, retaining only one page of stored events at a time.
+pub(super) fn recover_device_ops_rows<T: RowWrite + ?Sized>(
+    txn: &mut T,
+) -> Result<(usize, bool), StoreError> {
+    if txn.get("meta", super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
+        return Ok((0, false));
+    }
+    let mut recovered = 0;
+    let mut incomplete = false;
+    let mut after_key = None;
+    const PAGE_SIZE: usize = 256;
+    loop {
+        let page = txn.scan_page("events", after_key.as_deref(), PAGE_SIZE)?;
+        let page_len = page.len();
+        for (_, bytes) in &page {
+            let event = decode_stored(bytes)?;
+            recover_one(txn, &event, &mut recovered, &mut incomplete)?;
+        }
+        if page_len < PAGE_SIZE {
+            break;
+        }
+        after_key = page.last().map(|(key, _)| key.clone());
+    }
+    for row in super::waiting_rows::all(txn)? {
+        let event = chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string()))?;
+        recover_one(txn, &event, &mut recovered, &mut incomplete)?;
+    }
+    txn.put("meta", super::DEVICE_OPS_RECOVERED_KEY, b"1")?;
+    Ok((recovered, incomplete))
+}
+
 /// Recovers one event's device-operation row from its retained, verified body, if it has
 /// none yet. A group event whose body was never retained marks the recovery incomplete.
-fn recover_one(
-    txn: &WriteTransaction,
-    bodies: &redb::Table<'_, &'static [u8], &'static [u8]>,
+fn recover_one<T: RowWrite + ?Sized>(
+    txn: &mut T,
     event: &Event,
     recovered: &mut usize,
     incomplete: &mut bool,
 ) -> Result<(), StoreError> {
-    let has_device_op = txn
-        .open_table(DEVICE_OPS)?
-        .get(event.id.as_bytes().as_slice())?
-        .is_some();
+    let has_device_op = txn.get("device_ops", event.id.as_bytes())?.is_some();
     if has_device_op {
         return Ok(());
     }
-    let Some(body) = bodies.get(event.id.as_bytes().as_slice())? else {
+    let Some(body) = txn.get("bodies", event.id.as_bytes())? else {
         *incomplete |=
             event.header.payload_hash.is_some() && event.header.extensions.kind == "group.event";
         return Ok(());
     };
-    let body = body.value();
-    if committed(event, body).is_err() {
+    if committed(event, &body).is_err() {
         return Ok(());
     }
     if let Some((op, group)) =
-        body_device_op(event, Some(body)).map_err(|refusal| corrupt(format!("{refusal:?}")))?
+        body_device_op(event, Some(&body)).map_err(|refusal| corrupt(format!("{refusal:?}")))?
     {
-        store_device_op(txn, &event.id, &op, group.as_ref())?;
+        txn.put(
+            "device_ops",
+            event.id.as_bytes(),
+            &encode_device_op(&op, group.as_ref())?,
+        )?;
         *recovered += 1;
     }
     Ok(())
@@ -862,6 +885,15 @@ fn store_device_op(
     Ok(())
 }
 
+fn store_device_op_rows(
+    txn: &mut dyn RowWrite,
+    id: &Hash,
+    op: &crate::groups::DeviceOp,
+    group: Option<&Hash>,
+) -> Result<(), StoreError> {
+    txn.put("device_ops", id.as_bytes(), &encode_device_op(op, group)?)
+}
+
 /// The action of a held or stored group operation, from the actions table. A held event keeps
 /// its action there from the moment it arrives, so a release does not need the caller again.
 fn stored_action(
@@ -873,13 +905,132 @@ fn stored_action(
     row.map(|row| decode_action(row.value())).transpose()
 }
 
+fn stored_action_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    id: &Hash,
+) -> Result<Option<GroupAction<AuthId, ()>>, StoreError> {
+    txn.get("actions", id.as_bytes())?
+        .map(|row| decode_action(&row))
+        .transpose()
+}
+
+fn store_action_rows(
+    txn: &mut dyn RowWrite,
+    id: &Hash,
+    action: &GroupAction<AuthId, ()>,
+) -> Result<(), StoreError> {
+    txn.put("actions", id.as_bytes(), &encode_action(action)?)
+}
+
+fn attach_action_rows(
+    txn: &mut dyn RowWrite,
+    id: &Hash,
+    action: Option<&GroupAction<AuthId, ()>>,
+) -> Result<bool, StoreError> {
+    let Some(action) = action else {
+        return Ok(false);
+    };
+    if !is_stored_rows(txn, id)? || stored_action_rows(txn, id)?.is_some() {
+        return Ok(false);
+    }
+    store_action_rows(txn, id, action)?;
+    refresh_rows(txn)?;
+    Ok(true)
+}
+
+fn plain_rows<T: RowRead + ?Sized>(txn: &mut T) -> Result<bool, StoreError> {
+    Ok(
+        txn.scan_page("actions", None, 1)?.is_empty()
+            && txn.scan_page("forks", None, 1)?.is_empty(),
+    )
+}
+
+fn apply_plain_rows(txn: &mut dyn RowWrite, event: &Event) -> Result<(), StoreError> {
+    let author = author_of(event);
+    txn.put("applied", event.id.as_bytes(), &[])?;
+    set_prefix_rows(txn, &author, event.header.seq_num + 1, false)
+}
+
+fn refresh_rows(txn: &mut dyn RowWrite) -> Result<(), StoreError> {
+    let (stored, forks, headers) = resolve::load(txn)?;
+    let residue = super::compaction::load_residue_rows(txn)?;
+    let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
+
+    for (key, _) in txn.scan_all("applied")? {
+        txn.remove("applied", &key)?;
+    }
+    for id in &resolved.applied {
+        txn.put("applied", id.as_bytes(), &[])?;
+    }
+
+    let mut order: Vec<(AuthorKey, SeqNum, bool)> = stored
+        .iter()
+        .map(|item| {
+            (
+                author_of(&item.event),
+                item.event.header.seq_num,
+                resolved.applied.contains(&item.event.id),
+            )
+        })
+        .collect();
+    order.extend(
+        residue
+            .iter()
+            .map(|item| (item.author, item.seq, resolved.applied.contains(&item.id))),
+    );
+    order.sort_unstable();
+    let mut next: BTreeMap<AuthorKey, SeqNum> = forks.keys().map(|author| (*author, 0)).collect();
+    for (author, seq, applied) in order {
+        let run = next.entry(author).or_insert(0);
+        if applied && seq == *run {
+            *run += 1;
+        }
+    }
+    for (author, prefix) in next {
+        set_prefix_rows(txn, &author, prefix, forks.contains_key(&author))?;
+    }
+    Ok(())
+}
+
+fn set_prefix_rows(
+    txn: &mut dyn RowWrite,
+    author: &AuthorKey,
+    next_seq: SeqNum,
+    frozen: bool,
+) -> Result<(), StoreError> {
+    if next_seq == 0 && !frozen {
+        txn.remove("chains", author.as_slice())?;
+        return Ok(());
+    }
+    let head = next_seq
+        .checked_sub(1)
+        .map(|last| {
+            if let Some(event) = stored_at_rows(txn, author, last)? {
+                return Ok(event.id);
+            }
+            super::compaction::residue_at_rows(txn, author, last)?
+                .map(|residue| residue.id)
+                .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
+        })
+        .transpose()?;
+    super::store_chain(
+        &mut *txn,
+        author,
+        super::Chain {
+            next_seq,
+            head,
+            frozen,
+        },
+    )
+}
+
 /// Settles a released event that the decision does not apply. A fork proof header never applies,
 /// so it is held for good again. Any other event is refused, and its row goes.
 fn drop_released(m: &mut Mirror<'_>, event: &Event, from_pool: bool) -> Result<(), StoreError> {
     if !from_pool {
         return Ok(());
     }
-    if is_proof_header(m.txn, &author_of(event), &event.id)? {
+    if is_proof_header_rows(m.txn, &author_of(event), &event.id)? {
         m.park_proof(&event.id)
     } else {
         m.drop_row(&event.id)
@@ -907,7 +1058,7 @@ fn drain(
     while let Some(event) = queue.pop_front() {
         let id = event.id;
         let rivals = held_rivals(m.pool, &event);
-        let action = stored_action(m.txn, &id)?;
+        let action = stored_action_rows(m.txn, &id)?;
         match settle(
             m,
             event,
@@ -948,43 +1099,53 @@ fn held_rivals(pool: &WaitingPool<Hash, Event>, event: &Event) -> Vec<Event> {
 /// Decides `event` inside `txn`, and writes what the decision needs. `rivals` are the
 /// held events of the same author at the same sequence number.
 fn decide_in(
-    txn: &WriteTransaction,
+    txn: &mut dyn RowWrite,
     event: &Event,
     rivals: &[Event],
 ) -> Result<Decision, StoreError> {
     let author = author_of(event);
     let seq = event.header.seq_num;
-    if is_stored(txn, &event.id)? || is_proof_header(txn, &author, &event.id)? {
+    if is_stored_rows(txn, &event.id)? || is_proof_header_rows(txn, &author, &event.id)? {
         return Ok(Decision::Duplicate);
     }
     // Every other event the store knows of at this sequence number: stored, or held.
     let mut conflicts: Vec<Event> = rivals.to_vec();
-    if let Some(stored) = stored_at(txn, &author, seq)? {
+    if let Some(stored) = stored_at_rows(txn, &author, seq)? {
         conflicts.push(stored);
     }
-    if let Some(proof) = read_proof(txn, &author)? {
-        if seq > proof.seq {
+    // A proof at the event's own sequence number governs it, wherever that point sits:
+    // the proof keeps the two lowest IDs there, and an arrival that displaces neither
+    // header is refused as frozen. It cannot be kept as evidence instead: the position
+    // holds one event, and the two headers are the events present there.
+    if let Some(proof) = read_proof_at_rows(txn, &author, seq)? {
+        conflicts.extend([proof.first.clone(), proof.second.clone(), event.clone()]);
+        let (first, second) = two_lowest(conflicts)?;
+        if first.id == proof.first.id && second.id == proof.second.id {
             return Ok(Decision::Refuse(Refusal::Frozen));
         }
-        if seq == proof.seq {
-            // Another event at the fork point. The proof keeps the two lowest IDs there.
-            conflicts.extend([proof.first.clone(), proof.second.clone(), event.clone()]);
-            let (first, second) = two_lowest(conflicts)?;
-            if first.id == proof.first.id && second.id == proof.second.id {
-                return Ok(Decision::Refuse(Refusal::Frozen));
-            }
-            store_fork(txn, &author, seq, &first, &second)?;
-            return Ok(Decision::Fork {
-                seq,
-                proof: [first.id, second.id],
-            });
-        }
+        store_fork(&mut *txn, &author, seq, &first, &second)?;
+        return Ok(Decision::Fork {
+            seq,
+            proof: [first.id, second.id],
+        });
     }
+    // A compacted position keeps its event as residue: present, applied, and
+    // never overwritten. A rival there can never be proven a fork — a proof is
+    // written from stored bytes, and the bytes are gone — so it is parked, the
+    // answer a fork proof header's rival gets (#3797).
+    if super::compaction::residue_at_rows(txn, &author, seq)?.is_some() {
+        return Ok(Decision::Park);
+    }
+    // Above the author's fork point the event is not refused for sitting there. It is
+    // decided on its own conflicts, backlink, and dependencies below, and kept as voided
+    // evidence when it links, so an `after` hash that names it is present in every
+    // arrival order — the state it would be in had it arrived before the fork. The
+    // resolution never applies it: it sits at or above the fork point.
     if !conflicts.is_empty() {
-        // The first conflict at this sequence number, or one below the fork point.
+        // The first conflict at this sequence number, at any point of the chain.
         conflicts.push(event.clone());
         let (first, second) = two_lowest(conflicts)?;
-        store_fork(txn, &author, seq, &first, &second)?;
+        store_fork(&mut *txn, &author, seq, &first, &second)?;
         return Ok(Decision::Fork {
             seq,
             proof: [first.id, second.id],
@@ -996,7 +1157,7 @@ fn decide_in(
     // that is missing where there is no backlink, can never link, so the event is parked. A fork
     // proof header is present but never stored, so it is parked too: waiting for it would wait on
     // a dependency that is already present.
-    let mut waits = missing_deps(txn, &event.header.extensions.after)?;
+    let mut waits = missing_deps_rows(txn, &event.header.extensions.after)?;
     // A session checkpoint names its predecessor checkpoint (#3794), and the predecessor is
     // a dependency like an `after` hash: absent, the checkpoint waits for it; present only
     // as a fork proof header, it can never link, so the checkpoint is parked. A stored
@@ -1005,7 +1166,7 @@ fn decide_in(
     // broken segment chain, and the checkpoint is refused.
     if let Some(checkpoint) = &event.header.extensions.checkpoint {
         if let Some(prev_id) = checkpoint.segment.prev_checkpoint {
-            match stored_by_id(txn, &prev_id)? {
+            match stored_by_id_rows(txn, &prev_id)? {
                 Some(prev) => {
                     let predecessor = author_of(&prev) == author
                         && prev.header.extensions.checkpoint.as_ref().is_some_and(
@@ -1022,7 +1183,7 @@ fn decide_in(
                         )));
                     }
                 }
-                None if is_present(txn, &prev_id)? => return Ok(Decision::Park),
+                None if is_present_rows(txn, &prev_id)? => return Ok(Decision::Park),
                 None => waits.push(prev_id),
             }
         }
@@ -1030,13 +1191,16 @@ fn decide_in(
     if seq > 0 {
         let linked = match event.header.backlink {
             Some(backlink) => {
-                stored_at(txn, &author, seq - 1)?.is_some_and(|before| before.id == backlink)
+                stored_id_at_rows(txn, &author, seq - 1)?
+                    .is_some_and(|before_id| before_id == backlink)
+                    || super::compaction::residue_at_rows(txn, &author, seq - 1)?
+                        .is_some_and(|residue| residue.id == backlink)
             }
             None => false,
         };
         if !linked {
             match event.header.backlink {
-                Some(backlink) if !is_present(txn, &backlink)? => waits.push(backlink),
+                Some(backlink) if !is_present_rows(txn, &backlink)? => waits.push(backlink),
                 _ => return Ok(Decision::Park),
             }
         }
@@ -1049,8 +1213,8 @@ fn decide_in(
 }
 
 /// Stores `event`. Whether it applies is decided by [`refresh`], which the caller runs next.
-fn accept(txn: &WriteTransaction, event: &Event) -> Result<Decision, StoreError> {
-    store_event(txn, event)?;
+fn accept(txn: &mut dyn RowWrite, event: &Event) -> Result<Decision, StoreError> {
+    store_event(&mut *txn, event)?;
     Ok(Decision::Accept)
 }
 
@@ -1109,15 +1273,13 @@ fn apply_plain(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> 
 }
 
 pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
-    let (stored, forks, headers) = {
-        let events = txn.open_table(EVENTS)?;
-        let actions = txn.open_table(ACTIONS)?;
-        let device_ops = txn.open_table(DEVICE_OPS)?;
-        let forks = txn.open_table(FORKS)?;
-        let proof_headers = txn.open_table(PROOF_HEADERS)?;
-        resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
+    let mut rows = txn;
+    let (stored, forks, headers) = resolve::load(&mut rows)?;
+    let residue = {
+        let compacted = txn.open_table(COMPACTED)?;
+        super::compaction::load_residue(&compacted)?
     };
-    let resolved = resolve::resolve(&stored, &forks, &headers)?;
+    let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
 
     let mut applied_table = txn.open_table(APPLIED)?;
     let mut previous = Vec::new();
@@ -1144,6 +1306,13 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
             )
         })
         .collect();
+    // A compacted position counts toward its author's prefix like the stored
+    // event it was: the resolution still applies it (#3797).
+    order.extend(
+        residue
+            .iter()
+            .map(|item| (item.author, item.seq, resolved.applied.contains(&item.id))),
+    );
     order.sort_unstable();
     let mut next: BTreeMap<AuthorKey, SeqNum> = forks.keys().map(|author| (*author, 0)).collect();
     for (author, seq, applied) in order {
@@ -1156,6 +1325,22 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
         set_prefix(txn, &author, prefix, forks.contains_key(&author))?;
     }
     Ok(())
+}
+
+/// The ID of the event at `author`'s `seq`: the stored event's, or the
+/// compaction residue's when the position's bytes were reclaimed (#3797).
+///
+/// # Errors
+///
+/// Returns [`StoreError::Corrupt`] when the position holds neither.
+fn id_at(txn: &WriteTransaction, author: &AuthorKey, seq: SeqNum) -> Result<Hash, StoreError> {
+    if let Some(id) = stored_id_at(txn, author, seq)? {
+        return Ok(id);
+    }
+    match super::compaction::residue_at(&txn.open_table(COMPACTED)?, author, seq)? {
+        Some(residue) => Ok(residue.id),
+        None => Err(corrupt("an applied sequence number has no stored event")),
+    }
 }
 
 /// Writes `author`'s chain row for an applied prefix of `next_seq` events. A chain with
@@ -1173,9 +1358,8 @@ fn set_prefix(
     }
     let head = next_seq
         .checked_sub(1)
-        .map(|last| stored_event(txn, author, last))
-        .transpose()?
-        .map(|event| event.id);
+        .map(|last| id_at(txn, author, last))
+        .transpose()?;
     store_chain(
         txn,
         author,
@@ -1209,6 +1393,10 @@ fn is_stored(txn: &WriteTransaction, id: &Hash) -> Result<bool, StoreError> {
     Ok(found)
 }
 
+fn is_stored_rows<T: RowRead + ?Sized>(txn: &mut T, id: &Hash) -> Result<bool, StoreError> {
+    Ok(txn.get("hashes", id.as_bytes())?.is_some())
+}
+
 /// Whether `id` is a fork proof header of `author`. A header stays one after a later proof drops
 /// it, so the check reads the presence index, not the current proof.
 pub(super) fn is_proof_header(
@@ -1221,9 +1409,45 @@ pub(super) fn is_proof_header(
     Ok(indexed.is_some_and(|row| row.value() == author.as_slice()))
 }
 
+/// Row-backend form of [`is_proof_header`], used by the shared transaction
+/// driver during waiting-pool reconstruction.
+pub(super) fn is_proof_header_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    author: &AuthorKey,
+    id: &Hash,
+) -> Result<bool, StoreError> {
+    Ok(txn
+        .get("proof_ids", id.as_bytes())?
+        .is_some_and(|indexed| indexed.as_slice() == author.as_slice()))
+}
+
 /// The proof at `author`'s lowest fork point, which freezes the chain.
 fn read_proof(txn: &WriteTransaction, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
     lowest_proof(&txn.open_table(FORKS)?, author)
+}
+
+/// The proof at `author`'s `seq`, if the author has forked there.
+fn read_proof_at(
+    txn: &WriteTransaction,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<ForkProof>, StoreError> {
+    proof_at(&txn.open_table(FORKS)?, author, seq)
+}
+
+fn read_proof_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    author: &AuthorKey,
+) -> Result<Option<ForkProof>, StoreError> {
+    super::lowest_proof_rows(txn, author)
+}
+
+fn read_proof_at_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<ForkProof>, StoreError> {
+    super::proof_at_rows(txn, author, seq)
 }
 
 /// The stored event at `author`'s `seq`, applied or voided, if there is one.
@@ -1237,15 +1461,82 @@ fn stored_at(
     row.map(|row| decode_stored(row.value())).transpose()
 }
 
-fn stored_event(
+/// The ID of the stored event at `author`'s `seq`, if there is one, without decoding it.
+///
+/// An event's ID is the BLAKE3 digest of its bytes — that is how [`chain::decode`]
+/// and `sign` both derive it — so the ID of a stored row is the digest of the row's
+/// bytes, and nothing in the header needs to be read to know it. Callers that only
+/// compare IDs (the backlink check in [`decide_in`], the fork pre-check in
+/// [`batch_may_fork`], [`id_at`]) use this instead of [`stored_at`]: the full
+/// decode re-verifies the signature and re-checks the canonical form, which is
+/// the ~7 ms per stored event measured on #15328, and it buys those callers
+/// nothing.
+///
+/// Decision on #15328, recorded here because this is the first stored-read path
+/// that skips re-verification:
+///
+/// - (1) Reads that use a header field keep the full verified decode. Only
+///   ID-only comparisons move to this path.
+/// - (2) `decide_in`'s neighbour reads are ID-only where this function is used;
+///   the conflict read keeps the decode, because a fork proof is built from the
+///   stored event itself.
+/// - (3) No cheaper structural decode is adopted: p2panda's `AnyHeader::decode`
+///   couples field parsing to signature verification, and duplicating its
+///   parser here would be a second header grammar to keep in step.
+///
+/// Threat model (the file changing underneath the store, cited by
+/// `decode_stored`): the digest is recomputed from the bytes actually read, so
+/// a tampered row yields a *different* ID — comparisons against a backlink, a
+/// rival, or the `hashes` index fail closed, exactly as a mismatched ID read
+/// from a decoded header would. A tampered row is still caught by name when
+/// any path that reads its header decodes it: `decode_stored` refuses it as
+/// [`StoreError::Corrupt`]. What this path gives up is only the *timing* of
+/// that named error for rows whose headers are never read again.
+fn stored_id_at(
     txn: &WriteTransaction,
     author: &AuthorKey,
     seq: SeqNum,
-) -> Result<Event, StoreError> {
-    stored_at(txn, author, seq)?
-        .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
+) -> Result<Option<Hash>, StoreError> {
+    let events = txn.open_table(EVENTS)?;
+    let row = events.get(position_key(author, seq).as_slice())?;
+    Ok(row.map(|row| Hash::digest(row.value())))
 }
 
+fn stored_at_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<Event>, StoreError> {
+    let key = position_key(author, seq);
+    txn.get("events", &key)?
+        .map(|bytes| decode_stored(&bytes))
+        .transpose()
+}
+
+fn stored_by_id_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    id: &Hash,
+) -> Result<Option<Event>, StoreError> {
+    let Some(position) = txn.get("hashes", id.as_bytes())? else {
+        return Ok(None);
+    };
+    txn.get("events", &position)?
+        .map(|bytes| decode_stored(&bytes))
+        .transpose()
+}
+/// The ID of the stored event at `author`'s `seq`, if there is one, without
+/// decoding it. This is safe for ID-only comparisons: stored event IDs are the
+/// digest of their bytes, and a tampered row therefore fails closed against a
+/// backlink or rival ID. Any path that needs header fields still uses
+/// `stored_at_rows`, which verifies and decodes the stored event.
+fn stored_id_at_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<Hash>, StoreError> {
+    let key = position_key(author, seq);
+    Ok(txn.get("events", &key)?.map(|bytes| Hash::digest(&bytes)))
+}
 /// The stored event with this ID, applied or voided, if there is one. Reads the `hashes`
 /// index for the event's position, then the event at that position.
 fn stored_by_id(txn: &WriteTransaction, id: &Hash) -> Result<Option<Event>, StoreError> {
@@ -1269,6 +1560,19 @@ fn missing_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, Sto
     Ok(missing)
 }
 
+fn missing_deps_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    after: &[Hash],
+) -> Result<Vec<Hash>, StoreError> {
+    let mut missing = Vec::new();
+    for hash in after {
+        if !is_present_rows(txn, hash)? {
+            missing.push(*hash);
+        }
+    }
+    Ok(missing)
+}
+
 /// Whether the event with this ID applies, in the resolved state.
 pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
     let applied = txn.open_table(APPLIED)?;
@@ -1281,6 +1585,22 @@ pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, St
 /// for a present hash is never made to wait again.
 pub(super) fn is_present(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
     present_in(&txn.open_table(HASHES)?, &txn.open_table(PROOF_IDS)?, hash)
+}
+
+/// Row-backend form of [`is_present`].
+pub(super) fn is_present_rows<T: RowRead + ?Sized>(
+    txn: &mut T,
+    hash: &Hash,
+) -> Result<bool, StoreError> {
+    if txn.get("hashes", hash.as_bytes())?.is_some() {
+        return Ok(true);
+    }
+    Ok(txn.get("proof_ids", hash.as_bytes())?.is_some())
+}
+
+/// Row-backend form of [`is_applied`].
+fn is_applied_rows<T: RowRead + ?Sized>(txn: &mut T, hash: &Hash) -> Result<bool, StoreError> {
+    Ok(txn.get("applied", hash.as_bytes())?.is_some())
 }
 
 /// [`is_present`] over the `hashes` and `proof_ids` tables, whether they are read or written.
@@ -1340,6 +1660,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1390,6 +1711,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, Some(body), ext).unwrap()
     }
@@ -1403,6 +1725,75 @@ mod tests {
         let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
         assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
         assert_eq!(store.event_body(&event.id).unwrap(), body.as_slice());
+    }
+
+    /// Oracle: an event's ID is the BLAKE3 digest of its bytes (the definition
+    /// `chain::decode` and `sign` both use), so the ID read without decoding
+    /// must equal the signed event's ID at every stored position, and no ID
+    /// is read at a position that holds nothing (#15328).
+    #[test]
+    fn test_stored_id_at_matches_the_signed_events_ids_without_decoding() {
+        let (_dir, mut store) = open();
+        let signer = key(61);
+        let events = chain_of(&signer, 3);
+        for event in &events {
+            ingest(&mut store, event);
+        }
+        let txn = store.db.begin_write().unwrap();
+        for (seq, event) in events.iter().enumerate() {
+            let seq = u32::try_from(seq).unwrap();
+            assert_eq!(
+                stored_id_at(&txn, &author(&signer), seq).unwrap(),
+                Some(event.id),
+                "seq {seq}"
+            );
+        }
+        assert_eq!(stored_id_at(&txn, &author(&signer), 3).unwrap(), None);
+        assert_eq!(stored_id_at(&txn, &author(&key(62)), 0).unwrap(), None);
+    }
+
+    /// The tamper property of the ID-only path (#15328): rewrite a stored row's
+    /// bytes underneath the store, and the ID read from that position changes
+    /// with the bytes — it is the digest of what is actually there, never a
+    /// cached or indexed ID — while the full decode of the same row still
+    /// refuses it as corrupt, which is where tampering is caught by name.
+    #[test]
+    fn test_stored_id_at_digests_the_rows_actual_bytes_and_decode_still_refuses_them() {
+        let (_dir, mut store) = open();
+        let signer = key(63);
+        let events = chain_of(&signer, 1);
+        ingest(&mut store, &events[0]);
+        // Flip a byte inside the stored row's signature region: the row no
+        // longer verifies, and its digest is no longer the event's ID.
+        let mut tampered = events[0].bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        {
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(EVENTS).unwrap();
+                table
+                    .insert(
+                        position_key(&author(&signer), 0).as_slice(),
+                        tampered.as_slice(),
+                    )
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        let txn = store.db.begin_write().unwrap();
+        assert_eq!(
+            stored_id_at(&txn, &author(&signer), 0).unwrap(),
+            Some(Hash::digest(&tampered))
+        );
+        assert_ne!(
+            stored_id_at(&txn, &author(&signer), 0).unwrap(),
+            Some(events[0].id)
+        );
+        assert!(matches!(
+            stored_at(&txn, &author(&signer), 0),
+            Err(StoreError::Corrupt(_))
+        ));
     }
 
     #[test]
@@ -1474,6 +1865,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(91).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1493,6 +1885,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -1547,6 +1940,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1611,6 +2005,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(95).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1636,6 +2031,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1677,6 +2073,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(91).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1696,6 +2093,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -1761,7 +2159,7 @@ mod tests {
             .write(|txn| {
                 txn.open_table(super::super::META)?
                     .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
-                EventStore::recover_device_ops(txn)
+                EventStore::<redb::Database>::recover_device_ops(txn)
             })
             .unwrap();
         assert_eq!(
@@ -1811,7 +2209,7 @@ mod tests {
     fn refresh_all(store: &mut EventStore) {
         store
             .transact(0, |m| {
-                refresh(m.txn)?;
+                refresh_rows(m.txn)?;
                 Ok(((), true))
             })
             .unwrap();
@@ -1915,7 +2313,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_frozen_chain_refuses_its_later_events_and_changes_nothing() {
+    fn test_a_frozen_chain_keeps_its_later_events_as_voided_evidence() {
         let (_dir, mut store) = open();
         let signer = key(4);
         let who = author(&signer);
@@ -1927,11 +2325,16 @@ mod tests {
             Ingest::Fork { seq: 1, .. }
         ));
         let before = store.chain(&who).unwrap();
+        // The later event arrives after the fork. It is kept as voided evidence: stored,
+        // never applied, and the chain row is unchanged.
         assert_eq!(
             ingest(&mut store, &events[2]),
-            Ingest::Refused(Refusal::Frozen)
+            Ingest::Voided {
+                id: events[2].id,
+                released: vec![],
+            }
         );
-        assert!(store.event(&who, 2).unwrap().is_none());
+        assert_eq!(store.event(&who, 2).unwrap(), Some(events[2].clone()));
         assert_eq!(store.chain(&who).unwrap(), before);
         store.check_invariants().unwrap();
     }
@@ -2160,6 +2563,7 @@ mod tests {
 
             chat: None,
             anchor: None,
+            thread: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -2221,6 +2625,7 @@ mod tests {
 
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -2299,6 +2704,100 @@ mod tests {
     }
 
     #[test]
+    fn test_a_dependent_on_a_post_fork_event_resolves_in_either_arrival_order() {
+        // The order matrix of #12050: one signed event set — a chain through sequence 2,
+        // a rival at sequence 1, and another author's event whose `after` names sequence
+        // 2 — delivered fork-last and fork-first, per event and as a batch. The dependent
+        // event's disposition and the presence of the event it names must not depend on
+        // the order: the sequence-2 event is present in both orders and applied in
+        // neither final state, and the dependent applies in both.
+        let x = key(51);
+        let y = key(52);
+        let x_events = chain_of(&x, 3);
+        let rival = event(&x, 1, Some(x_events[0].id), Vec::new(), "rival");
+        let dependent = event(&y, 0, None, vec![x_events[2].id], "y");
+
+        let assert_final_state = |store: &EventStore| {
+            assert_eq!(
+                store.event(&author(&x), 2).unwrap(),
+                Some(x_events[2].clone()),
+                "the sequence-2 event is present"
+            );
+            assert_eq!(
+                store.chain(&author(&x)).unwrap(),
+                Some(Chain {
+                    next_seq: 1,
+                    head: Some(x_events[0].id),
+                    frozen: true,
+                })
+            );
+            assert_eq!(store.chain(&author(&y)).unwrap().unwrap().next_seq, 1);
+            store.check_invariants().unwrap();
+        };
+
+        // Fork last, per event: the sequence-2 event applies, then the fork voids it.
+        {
+            let (_dir, mut store) = open();
+            ingest_all(&mut store, &x_events);
+            assert!(matches!(
+                ingest(&mut store, &rival),
+                Ingest::Fork { seq: 1, .. }
+            ));
+            assert_eq!(
+                ingest(&mut store, &dependent),
+                Ingest::Accepted {
+                    id: dependent.id,
+                    released: vec![],
+                }
+            );
+            assert_final_state(&store);
+        }
+        // Fork first, per event: the sequence-2 event arrives above the fork point and
+        // is kept as voided evidence, so the dependent still applies.
+        {
+            let (_dir, mut store) = open();
+            ingest_all(&mut store, &x_events[..2]);
+            assert!(matches!(
+                ingest(&mut store, &rival),
+                Ingest::Fork { seq: 1, .. }
+            ));
+            assert_eq!(
+                ingest(&mut store, &x_events[2]),
+                Ingest::Voided {
+                    id: x_events[2].id,
+                    released: vec![],
+                }
+            );
+            assert_eq!(
+                ingest(&mut store, &dependent),
+                Ingest::Accepted {
+                    id: dependent.id,
+                    released: vec![],
+                }
+            );
+            assert_final_state(&store);
+        }
+        // Both orders again, as one batch each.
+        for order in [
+            vec![&x_events[0], &x_events[1], &x_events[2], &rival, &dependent],
+            vec![&x_events[0], &x_events[1], &rival, &x_events[2], &dependent],
+        ] {
+            let (_dir, mut store) = open();
+            let batch: Vec<Vec<u8>> = order.iter().map(|event| event.bytes.clone()).collect();
+            let outcomes = store.ingest_batch(&batch, 0).unwrap();
+            assert_eq!(
+                outcomes.last(),
+                Some(&Ingest::Accepted {
+                    id: dependent.id,
+                    released: vec![],
+                }),
+                "the dependent applies in the batch order {outcomes:?}"
+            );
+            assert_final_state(&store);
+        }
+    }
+
+    #[test]
     fn test_a_backlink_that_is_not_the_applied_head_is_parked_and_not_stored() {
         let (_dir, mut store) = open();
         let signer = key(13);
@@ -2327,8 +2826,8 @@ mod tests {
         // applied H1 by the first author, so its arrival forks that chain, and H2 becomes a proof
         // header: present, but never stored. R is released by that. It cannot link to H2, so it
         // must park. Holding it to wait for H2 would wait on a dependency that is already present.
-        // R is not the forking author's event: an event above the fork point is refused as frozen
-        // before the backlink is read, so only another author's backlink reaches this path.
+        // The forking author's own event above the fork point reaches this path too: it is
+        // decided on its backlink, not refused for sitting above the point.
         let (_dir, mut store) = open();
         let forker = key(15);
         let other = key(16);
@@ -2374,18 +2873,32 @@ mod tests {
 
     #[test]
     fn test_a_frozen_refusal_gives_the_frozen_reason() {
+        // The frozen refusal is now only for an event at the fork point itself that
+        // displaces neither of the proof's two headers: the position holds one event,
+        // and the headers are the events present there. Three events at sequence 1,
+        // taken in ID order: the first is stored, the second forks the chain and the
+        // proof holds the two of them, and the third displaces neither.
         let (_dir, mut store) = open();
         let signer = key(4);
-        let events = chain_of(&signer, 3);
-        ingest_all(&mut store, &events[..2]);
-        let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
+        let events = chain_of(&signer, 1);
+        ingest_all(&mut store, &events);
+        let mut at_point: Vec<Event> = ["one", "two", "three"]
+            .into_iter()
+            .map(|kind| event(&signer, 1, Some(events[0].id), Vec::new(), kind))
+            .collect();
+        at_point.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
         assert!(matches!(
-            ingest(&mut store, &rival),
+            ingest(&mut store, &at_point[0]),
+            Ingest::Accepted { .. }
+        ));
+        assert!(matches!(
+            ingest(&mut store, &at_point[1]),
             Ingest::Fork { seq: 1, .. }
         ));
-        let result = ingest(&mut store, &events[2]);
+        let result = ingest(&mut store, &at_point[2]);
         assert_eq!(result, Ingest::Refused(Refusal::Frozen));
         assert_eq!(result.reason(), Some(Reason::Frozen));
+        store.check_invariants().unwrap();
     }
 
     #[test]
@@ -2492,6 +3005,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(98).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -2518,6 +3032,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -2616,13 +3131,17 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
         let first = grouped(0, None);
         let second = grouped(1, Some(first.id));
         ingest(&mut store, &second);
-        assert!(store.group_members(&group).unwrap().is_empty());
+        assert_eq!(
+            store.group_members(&group).unwrap(),
+            [] as [([u8; 32], p2panda_core::SeqNum); 0]
+        );
         ingest(&mut store, &first);
         assert_eq!(
             store.group_members(&group).unwrap(),
@@ -2654,6 +3173,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -2744,6 +3264,81 @@ mod tests {
         let mut expected = vec![author(&alice), author(&bob), author(&carol)];
         expected.sort_unstable();
         assert_eq!(roster, expected);
+        store.check_invariants().unwrap();
+    }
+
+    /// The roster memo (#13043): resolving a roster folds the whole
+    /// store, so reads are served from the memo until the next
+    /// committed ingest moves the store generation. The resolution
+    /// count — not a clock — is the oracle: it grows once per
+    /// generation, however many unrelated events were ingested, and a
+    /// removal ingested after reads were memoized still takes effect
+    /// on the next read.
+    #[test]
+    fn test_roster_reads_are_memoized_until_the_next_ingest() {
+        let (alice, bob, carol) = (key(61), key(62), key(63));
+        let (_dir, mut store) = open();
+
+        // Alice creates the group with Bob as a reader.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::manage()),
+                (individual(&bob), p2panda_auth::Access::read()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+        assert!(store.event_applied(&group).unwrap());
+
+        let mut expected = vec![author(&alice), author(&bob)];
+        expected.sort_unstable();
+        let mut roster = store.roster(&group).unwrap();
+        roster.sort_unstable();
+        assert_eq!(roster, expected);
+        assert_eq!(store.roster_resolutions(), 1);
+
+        // Repeated reads — the relay gate's per-message pattern — are
+        // memo hits: no further fold of the store.
+        for _ in 0..4 {
+            assert_eq!(store.roster(&group).unwrap().len(), 2);
+        }
+        assert_eq!(store.roster_resolutions(), 1);
+
+        // A burst of unrelated content events moves the generation, so
+        // the next read re-resolves — once, however large the burst —
+        // and the reads after it are memo hits again.
+        let mut backlink = None;
+        for seq in 0..8 {
+            let event = event_with_body(&carol, seq, backlink, b"unrelated content");
+            backlink = Some(event.id);
+            let outcome = store
+                .ingest_with_body(&event.bytes, Some(b"unrelated content"), 0)
+                .unwrap();
+            assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
+        }
+        assert_eq!(store.roster(&group).unwrap().len(), 2);
+        assert_eq!(store.roster_resolutions(), 2);
+        assert_eq!(store.roster(&group).unwrap().len(), 2);
+        assert_eq!(store.roster_resolutions(), 2);
+
+        // A removal ingested after the memo was populated takes effect
+        // on the next read: one more resolution, and Bob is gone.
+        let remove_bob = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (remove_event, remove_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![create_event.id],
+            Some(group),
+            &remove_bob,
+        );
+        ingest_op(&mut store, &remove_event, &remove_body);
+        assert!(store.event_applied(&remove_event.id).unwrap());
+        assert_eq!(store.roster(&group).unwrap(), vec![author(&alice)]);
+        assert_eq!(store.roster_resolutions(), 3);
         store.check_invariants().unwrap();
     }
 
@@ -3397,7 +3992,7 @@ mod tests {
             "the released event applies"
         );
         assert_eq!(store.chain(&who).unwrap().unwrap().next_seq, 2);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -3430,7 +4025,7 @@ mod tests {
         // Due at 1_000 ms, so the open drops it and its row.
         let store = reopen(&dir, limits, 1_000);
         assert_eq!(store.waiting_len(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         let txn = store.db.begin_read().unwrap();
         assert!(
             txn.open_table(DEVICE_OPS)
@@ -3458,7 +4053,7 @@ mod tests {
         }
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert_eq!(store.waiting_len(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
     }
 
     /// #2690, at the mirror itself: a release whose `arrived` expires another
@@ -3520,7 +4115,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -3556,7 +4151,7 @@ mod tests {
         // events[2] (or any waiting row) survives.
         assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
         assert_eq!(store.waiting_len(), 0);
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -3784,7 +4379,9 @@ mod tests {
             store.is_waiting(&waits.id),
             "the event waits across the restart"
         );
-        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is refused.
+        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is
+        // kept as voided evidence rather than refused: its waiting row goes, and the
+        // event itself is stored, unapplied.
         assert_eq!(
             ingest(&mut store, &y0),
             Ingest::Accepted {
@@ -3793,7 +4390,16 @@ mod tests {
             }
         );
         assert!(!store.is_waiting(&waits.id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert_eq!(store.event(&author(&x), 2).unwrap(), Some(waits.clone()));
+        assert_eq!(
+            store.chain(&author(&x)).unwrap(),
+            Some(Chain {
+                next_seq: 1,
+                head: Some(x_events[0].id),
+                frozen: true,
+            })
+        );
         store.check_invariants().unwrap();
     }
 
@@ -3882,7 +4488,7 @@ mod tests {
                 let held = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
                 assert_eq!(held, waiting_rows::Hold::Held);
                 let released = m.release(&events[1].id, 0)?;
-                assert!(released.is_empty());
+                assert_eq!(released, [] as [id_store::chain::Event; 0]);
                 Ok(((), true))
             })
             .unwrap();
@@ -3899,7 +4505,12 @@ mod tests {
             deps: vec![events[0].id],
             bytes: events[1].bytes.clone(),
         };
-        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        store
+            .write(|txn| {
+                let mut txn = txn;
+                waiting_rows::put(&mut txn, &stale)
+            })
+            .unwrap();
         let again = store
             .transact(0, |m| {
                 let again = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
@@ -3951,7 +4562,7 @@ mod tests {
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), WEEK_MS);
         assert!(!store.is_waiting(&held.id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -3973,11 +4584,16 @@ mod tests {
             deps: vec![Hash::digest(b"a dependency that never arrives")],
             bytes: events[0].bytes.clone(),
         };
-        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        store
+            .write(|txn| {
+                let mut txn = txn;
+                waiting_rows::put(&mut txn, &stale)
+            })
+            .unwrap();
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert!(!store.is_waiting(&events[0].id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
         store.check_invariants().unwrap();
     }
 
@@ -4030,7 +4646,12 @@ mod tests {
             .waiting
             .restore(author(&y), waits.id, [x0.id], waits, 0)
             .unwrap();
-        store.write(|txn| waiting_rows::put(txn, &row)).unwrap();
+        store
+            .write(|txn| {
+                let mut txn = txn;
+                waiting_rows::put(&mut txn, &row)
+            })
+            .unwrap();
         let err = store.check_invariants().unwrap_err();
         assert!(err.to_string().contains("present"), "{err}");
     }

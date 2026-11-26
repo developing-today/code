@@ -9,6 +9,8 @@ exercised with a stub `fleet` binary on PATH.
 Covers:
 - observe mode imports nothing and reports the uncovered set;
 - import mode enqueues exactly the uncovered issues, one packet each;
+- a terminal completed dedupe hit retries once with the documented
+  `:dispatch:<hash>` suffix so the issue becomes live coverage;
 - a re-run after a successful import imports nothing (idempotence is
   the queue's dedupe key, but the script must not double-submit within
   a run or across runs given the same coverage answer);
@@ -23,6 +25,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -65,6 +68,27 @@ def fixture(
                 ],
             }
         },
+    }
+
+
+def ready_pr(
+    number: int,
+    created_at: str,
+    draft: bool = False,
+    body: str = "",
+    branch: str | None = None,
+) -> dict:
+    """A ready-PR enumeration row as `gh pr list` shapes it (see
+    check_coverage fetch_open_prs): number, title, body, head ref,
+    draft flag and created_at. The shepherd fallback is fail-closed —
+    a row missing draft/created_at proof is never filed on."""
+    return {
+        "number": number,
+        "title": f"PR {number}",
+        "body": body,
+        "head": {"ref": branch or f"queue/111-{number}-test"},
+        "draft": draft,
+        "created_at": created_at,
     }
 
 
@@ -255,6 +279,108 @@ class CoverageReconcileTest(unittest.TestCase):
         self.assertFalse(Path(paths[0]).exists())
         self.assertFalse(Path(paths[1]).exists())
 
+    def test_terminal_status_classifier_matches_queue_terminal_states(self):
+        """Done, failed, and cancelled rows trigger retry; live states do not."""
+        for status in ("done", "failed", "cancelled"):
+            with self.subTest(status=status):
+                self.assertTrue(
+                    check_coverage._is_terminal_dedupe_response({"status": status})
+                )
+        for status in ("queued", "claimed", "parked", "blocked"):
+            with self.subTest(status=status):
+                self.assertFalse(
+                    check_coverage._is_terminal_dedupe_response({"status": status})
+                )
+
+    def test_terminal_dedupe_hit_retries_with_dispatch_suffix(self):
+        """A completed key is not live coverage; retry once with a valid suffix."""
+        import unittest.mock
+
+        packet = check_coverage.triage_packet(
+            REPO, {"number": 42, "title": "still open"}, "2026-11-26T11:00:00Z"
+        )
+        original_key = packet["dedupe_key"]
+        calls: list[dict] = []
+
+        def run(cmd, **_kwargs):
+            submitted = json.loads(Path(cmd[3]).read_text())
+            calls.append(submitted)
+            if len(calls) == 1:
+                stdout = (
+                    "dedupe hit: existing task 7 (queue repo-health-code-pilot, status done)\n"
+                    + json.dumps(
+                        {"id": 7, "status": "done", "dedupe_key": original_key}
+                    )
+                )
+            else:
+                stdout = (
+                    "enqueued new task 8 (queue repo-health-code-pilot, status queued)\n"
+                    + json.dumps({"id": 8, "status": "queued"})
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=run
+        ):
+            ok, detail = check_coverage.enqueue_packet(
+                packet, QUEUE, "fleet", "http://broker", "/token"
+            )
+
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["dedupe_key"], original_key)
+        retry_key = calls[1]["dedupe_key"]
+        self.assertTrue(retry_key.startswith(f"{original_key}:dispatch:"))
+        suffix = retry_key.rsplit(":dispatch:", 1)[1]
+        self.assertEqual(len(suffix), 8)
+        self.assertTrue(all(ch in "0123456789abcdef" for ch in suffix))
+        self.assertEqual(calls[1]["payload"], calls[0]["payload"])
+
+    def test_terminal_pr_dedupe_hit_retries_with_dispatch_suffix(self):
+        """Ready-PR coverage also suffixes a completed shepherd key."""
+        import unittest.mock
+
+        packet = check_coverage.shepherd_packet(
+            REPO,
+            {
+                "number": 900,
+                "title": "ready PR",
+                "created_at": "2026-11-20T00:00:00Z",
+            },
+            "2026-11-26T11:00:00Z",
+        )
+        original_key = packet["dedupe_key"]
+        calls: list[dict] = []
+
+        def run(cmd, **_kwargs):
+            submitted = json.loads(Path(cmd[3]).read_text())
+            calls.append(submitted)
+            if len(calls) == 1:
+                stdout = (
+                    "not filed: dedupe key already belongs to completed task 7\n"
+                    + json.dumps(
+                        {"dedupe_match": {"rule": "dedupe_key_terminal"}}
+                    )
+                )
+            else:
+                stdout = (
+                    "enqueued new task 8 (queue repo-health-code-pilot, status queued)\n"
+                    + json.dumps({"id": 8, "status": "queued"})
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=run
+        ):
+            ok, detail = check_coverage.enqueue_packet(
+                packet, QUEUE, "fleet", "http://broker", "/token"
+            )
+
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["dedupe_key"], original_key)
+        self.assertTrue(calls[1]["dedupe_key"].startswith(f"{original_key}:dispatch:"))
+
 
 class OpenPrCoverageTest(unittest.TestCase):
     """#4951: an issue with an open fix PR is in-flight, not ownerless."""
@@ -303,7 +429,40 @@ class OpenPrCoverageTest(unittest.TestCase):
         packet = calls[0]["packet"]
         self.assertEqual(packet["payload"]["kind"], "pr_shepherd")
         self.assertEqual(packet["payload"]["pr"]["number"], 900)
-        self.assertTrue(packet["dedupe_key"].endswith(":pr:900"))
+        self.assertEqual(packet["payload"]["prs"][0]["number"], 900)
+        self.assertEqual(packet["dedupe_key"], f"repo-health:v1:pr:{REPO}:pr:900")
+        self.assertEqual(packet["payload"]["max_attempts"], 1000)
+
+    def test_each_open_pr_for_one_issue_gets_its_own_merge_watch(self):
+        pulls = [
+            {
+                "number": 900,
+                "title": "first slice (#3)",
+                "body": "",
+                "head": {"ref": "queue/111-3-first"},
+            },
+            {
+                "number": 901,
+                "title": "second slice (#3)",
+                "body": "",
+                "head": {"ref": "queue/112-3-second"},
+            },
+        ]
+        code, _ = self.run_cli(fixture([], [3], pulls), "--import")
+        self.assertEqual(code, 0)
+        calls = self.fleet.calls()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            {call["packet"]["payload"]["pr"]["number"] for call in calls},
+            {900, 901},
+        )
+        self.assertEqual(
+            {call["packet"]["dedupe_key"] for call in calls},
+            {
+                f"repo-health:v1:pr:{REPO}:pr:900",
+                f"repo-health:v1:pr:{REPO}:pr:901",
+            },
+        )
 
     def test_observe_mode_reports_pr_coverage_and_enqueues_nothing(self):
         pulls = [
@@ -859,6 +1018,46 @@ class VerdictCoverageTest(unittest.TestCase):
         self.assertEqual(
             check_coverage.verdict_from_comments(comments)["verdict"],
             "still_blocked",
+        )
+
+    def test_draft_and_young_prs_get_nothing(self):
+        pulls = [
+            ready_pr(951, "2026-11-01T00:00:00Z", draft=True),  # old but draft
+            ready_pr(952, "2026-11-08T10:00:00Z"),  # ready but 3h old
+        ]
+        code, _ = self.run_cli(fixture([], [], pulls), "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_pr_with_a_live_task_naming_it_gets_nothing(self):
+        pulls = [ready_pr(953, "2026-11-07T00:00:00Z")]
+        fx = fixture([], [], pulls)
+        # The broker's PR diff: PR 953 is named by a live task, so it
+        # is absent from uncovered_pulls.
+        fx["coverage"][REPO]["uncovered_pulls"] = []
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_merge_watch_pr_is_not_double_filed_as_shepherd(self):
+        pulls = [
+            ready_pr(
+                954,
+                "2026-11-07T00:00:00Z",
+                body="Closes #3",
+                branch="queue/111-3-fix-thing",
+            )
+        ]
+        fx = fixture([], [3], pulls)
+        fx["coverage"][REPO]["uncovered_pulls"] = [{"number": 954}]
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        calls = self.fleet.calls()
+        # Exactly one packet: the merge-watch, keyed by the canonical PR key.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0]["packet"]["dedupe_key"],
+            f"repo-health:v1:pr:{REPO}:pr:954",
         )
 
 

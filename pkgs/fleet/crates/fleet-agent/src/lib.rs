@@ -60,11 +60,20 @@ usage: fleet agent <verb> [options]
   kinds                         the agent kinds this fleet can enrol
   enroll --kind K --name N      register an agent and save its profile
          [--groups a,b] [--dry-run] [--profile PATH]
+         [--bootstrap TOKEN]    provision from the owner's single-use
+                                bootstrap token instead of the shared
+                                fleet token (see fleet bridge exchange)
+         [--model-provider P] [--model-id M] [--model-variant V]
+                                the lane's model stamp, recorded in
+                                the profile; `next` stamps its queue
+                                claims with it (the #4919 effort
+                                producer)
   doctor [--agent N]            which legs answer from this seat
   next   [--agent N]            the next piece of work, down the ladder:
          [--lane L] [--repo OWNER/NAME] [--low-water N]
          [--shortlist PATH] [--platform P] [--pool P]
          [--remaining-budget-minutes N] [--filter EXPR] [--queue Q]
+         [--model-provider P] [--model-id M] [--model-variant V]
          [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
   shortlist status|take|clear   the local list `next` draws on
   shortlist add --issue N --title T [--repo R] [--rank N] [--why TEXT]
@@ -72,6 +81,70 @@ usage: fleet agent <verb> [options]
 
 Every verb prints one JSON object. Exit: 0 ok, 2 usage, 3 a needed leg
 is down, 5 no work on any rung.";
+
+/// The shared tail of every per-verb usage: how output and exit
+/// codes work, whatever the verb. It is USAGE's own tail, pinned by
+/// test so the two cannot drift apart.
+const USAGE_FOOTER: &str = "\
+Every verb prints one JSON object. Exit: 0 ok, 2 usage, 3 a needed leg
+is down, 5 no work on any rung.";
+
+/// Per-verb usage for `fleet agent <verb> --help` (#13175): every
+/// verb used to print the one shared USAGE, so a help request for a
+/// single verb answered with all of them. Unknown verbs return
+/// None and the caller falls back to the shared USAGE.
+pub fn verb_usage(verb: &str) -> Option<String> {
+    let section = match verb {
+        "kinds" => {
+            "\
+usage: fleet agent kinds
+
+The agent kinds this fleet can enrol."
+        }
+        "enroll" => {
+            "\
+usage: fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
+       fleet agent enroll --kind K --name N --bootstrap TOKEN
+       [--model-provider P] [--model-id M] [--model-variant V]
+
+Register an agent and save its profile. With --bootstrap, the
+single-use token the owner minted for this agent is first exchanged
+for the agent's own bridge credentials (stored in the vault by name
+and recorded in the profile), and a Muse seat also gets its
+bridge wake hook written. The --model-* flags record the lane's
+model stamp in the profile; `fleet agent next` stamps its queue
+claims with it unless the caller passes its own --model-* flags,
+which is what lets completion telemetry carry the lane's effort
+(#4919). Re-enrolling without the flags keeps a recorded stamp."
+        }
+        "doctor" => {
+            "\
+usage: fleet agent doctor [--agent N]
+
+Which legs answer from this seat."
+        }
+        "next" => {
+            "\
+usage: fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N]
+       [--shortlist PATH] [--platform P] [--pool P]
+       [--remaining-budget-minutes N] [--filter EXPR] [--queue Q]
+       [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
+
+The next piece of work, down the ladder: pushed command, queue,
+local shortlist, highest priority."
+        }
+        "shortlist" => {
+            "\
+usage: fleet agent shortlist status|take|clear
+       fleet agent shortlist add --issue N --title T [--repo R] [--rank N] [--why TEXT]
+       fleet agent shortlist fill [--repo R] [--target N]
+
+The local list `next` draws on."
+        }
+        _ => return None,
+    };
+    Some(format!("{section}\n\n{USAGE_FOOTER}"))
+}
 
 /// A verb's failure: a usage error or a leg that is down.
 #[derive(Debug, Clone, PartialEq)]
@@ -526,9 +599,16 @@ pub fn execute(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
 
 /// The domain entry point: `fleet agent <verb> ...`.
 pub fn run(config: &Config, args: &[String]) -> i32 {
-    if args.is_empty() || wants_help(args) {
+    if args.is_empty() {
         println!("{USAGE}");
-        return if args.is_empty() { EXIT_USAGE } else { EXIT_OK };
+        return EXIT_USAGE;
+    }
+    if wants_help(args) {
+        match args.first().and_then(|verb| verb_usage(verb)) {
+            Some(text) => println!("{text}"),
+            None => println!("{USAGE}"),
+        }
+        return EXIT_OK;
     }
     // The sub-invocations load fleet config themselves; this domain
     // has no settings of its own yet.
