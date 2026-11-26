@@ -308,3 +308,149 @@ async fn a_local_host_and_a_hosted_node_agree_on_the_same_journal() {
         local_seen.snapshot.len()
     );
 }
+
+/// The same echo program the sandbox tests use: `plaza_update` returns
+/// the participant id and never traps, `plaza_view` presents "hello".
+#[cfg(feature = "sandbox")]
+const ECHO: &str = r#"
+    (module
+      (memory (export "memory") 1 1)
+      (data (i32.const 32) "hello")
+      (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+      (func (export "plaza_free") (param i32 i32))
+      (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+      (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+        local.get 0)
+      (func (export "plaza_view") (param i32) (result i32)
+        (i32.const 32))
+      (func (export "plaza_out_len") (result i32) (i32.const 5)))
+"#;
+
+/// Everything world-visible about a program world on one side: the
+/// replay of the installed program, the view it presents, the module
+/// file it was restored from, and the world's own input ceiling.
+#[cfg(feature = "sandbox")]
+#[derive(Debug, PartialEq, Eq)]
+struct ProgramObservation {
+    sequence: u64,
+    module_hash: Option<String>,
+    replayed_inputs: usize,
+    program_error: Option<String>,
+    snapshot: Vec<u8>,
+    modules: Vec<String>,
+    over_ceiling: String,
+    at_ceiling: bool,
+}
+
+#[cfg(feature = "sandbox")]
+async fn observe_program(
+    service: &WorldService,
+    report: &OpenReport,
+    dir: &Path,
+    ann: &JoinCapability,
+) -> ProgramObservation {
+    let world = service.world();
+    let snapshot = serde_json::to_vec(&world.snapshot(ann.clone()).await.unwrap()).unwrap();
+    let mut modules: Vec<String> = std::fs::read_dir(dir.join("modules"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    modules.sort();
+    // The world's input ceiling, checked last because an accepted input
+    // advances the world: one byte over is refused, the bound itself is
+    // admitted, on every side alike.
+    let bound = WorldLimits::default().input_bytes;
+    let over_ceiling = world
+        .input(ann.clone(), vec![b'x'; bound + 1])
+        .await
+        .expect_err("an input over the world's bound is refused")
+        .to_string();
+    let at_ceiling = world.input(ann.clone(), vec![b'x'; bound]).await.is_ok();
+    ProgramObservation {
+        sequence: report.sequence,
+        module_hash: report.module_hash.clone(),
+        replayed_inputs: report.replayed_inputs,
+        program_error: report.program_error.clone(),
+        snapshot,
+        modules,
+        over_ceiling,
+        at_ceiling,
+    }
+}
+
+/// Second fixture (#10698): a world with an installed Wasm program and
+/// inputs it has applied. Local and hosted replays must restore the same
+/// program from the same content-addressed module file, replay the same
+/// inputs to the same view, and enforce the same input ceiling, and a
+/// host-only setting must change none of it.
+#[cfg(feature = "sandbox")]
+#[tokio::test]
+async fn a_program_world_replays_identically_on_a_local_host_and_a_hosted_node() {
+    use crate::sandbox::{Sandbox, SandboxLimits};
+    use crate::world_store::ModuleDir;
+
+    const SEED: u64 = 7;
+    let fixture = TempDir::new().unwrap();
+    let source = fixture.path().join(WORLD);
+    let wasm = wat::parse_str(ECHO).unwrap();
+    let (service, _) = open_local(&source).await;
+    let hash = ModuleDir::new(source.join("modules")).save(&wasm).unwrap();
+    let program = Sandbox::compile(&wasm, SandboxLimits::default())
+        .unwrap()
+        .instantiate(SEED)
+        .unwrap();
+    let world = service.world();
+    world
+        .install_program(hash.clone(), SEED, Box::new(program))
+        .await
+        .unwrap();
+    let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+    for input in [b"first".as_slice(), b"second", b"third"] {
+        world.input(ann.clone(), input.to_vec()).await.unwrap();
+    }
+    world.shutdown().await.unwrap();
+    let journal = std::fs::read(source.join(JOURNAL_FILE)).unwrap();
+
+    let local_root = TempDir::new().unwrap();
+    let hosted_root = TempDir::new().unwrap();
+    let backend_root = TempDir::new().unwrap();
+    for root in [&local_root, &hosted_root, &backend_root] {
+        copy_tree(&source, &root.path().join(WORLD));
+    }
+
+    let local_dir = local_root.path().join(WORLD);
+    let (local, local_report) = open_local(&local_dir).await;
+    let local_seen = observe_program(&local, &local_report, &local_dir, &ann).await;
+    // The oracle, independent of either side: the program restored from
+    // the one module file it was installed from, with every input
+    // replayed and nothing failing.
+    assert_eq!(local_seen.module_hash.as_deref(), Some(hash.as_str()));
+    assert_eq!(local_seen.modules, vec![format!("{hash}.wasm")]);
+    assert_eq!(local_seen.replayed_inputs, 3);
+    assert_eq!(local_seen.program_error, None);
+    assert!(local_seen.at_ceiling);
+    assert!(
+        String::from_utf8_lossy(&local_seen.snapshot).contains("hello"),
+        "the replayed program presents its view"
+    );
+
+    for (root, backend) in [(&hosted_root, false), (&backend_root, true)] {
+        let sup = hosted(root.path(), backend).await;
+        let held = &sup.live[WORLD];
+        let dir = root.path().join(WORLD);
+        let seen = observe_program(&held.service, &held.report, &dir, &ann).await;
+        assert_eq!(
+            seen, local_seen,
+            "hosted program world (backend settings: {backend}) diverged"
+        );
+        drop(sup);
+        // Replay itself never rewrites the journal; only the two ceiling
+        // probes, which every side ran alike, were appended after it.
+        assert!(
+            std::fs::read(dir.join(JOURNAL_FILE))
+                .unwrap()
+                .starts_with(&journal),
+            "replay never rewrites the journal"
+        );
+    }
+}
