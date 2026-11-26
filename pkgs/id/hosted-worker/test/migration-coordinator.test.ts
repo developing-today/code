@@ -116,7 +116,7 @@ function world(faults: Faults = { loseTransition: 0 }) {
     },
   };
   let now = 1_000_000;
-  const base = workerMigrationPorts({ USERS: users as never }, directory);
+  const base = workerMigrationPorts(users as never, {}, directory);
   const ports: MigrationPorts = {
     ...base,
     // Each jurisdiction has its own bucket here, so the copy is real.

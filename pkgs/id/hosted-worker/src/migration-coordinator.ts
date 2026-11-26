@@ -218,10 +218,13 @@ export async function abortMigration(
   return record;
 }
 
-/** Production ports: user objects through the restricted namespace,
- * blob bytes through each jurisdiction's bucket binding. */
+/** Production ports: user objects only through `userStub` on the
+ * restricted namespace (the caller passes the front door's binding, so
+ * the #3400 boundary holds), blob bytes through each jurisdiction's
+ * bucket binding. */
 export function workerMigrationPorts(
-  env: { USERS: ObjectNamespaceLike; BLOBS?: R2BucketLike },
+  namespace: ObjectNamespaceLike,
+  env: { BLOBS?: R2BucketLike },
   directory: PersistentHostedAccountDirectory,
 ): MigrationPorts {
   return {
@@ -232,7 +235,7 @@ export function workerMigrationPorts(
       headers.set(HDR_JURISDICTION, jurisdiction);
       headers.set(HDR_ROUTED, "restricted");
       if (cse !== undefined) headers.set(HDR_CSE, cse ? "1" : "0");
-      const stub = userStub(env.USERS, record.bindingId, jurisdiction);
+      const stub = userStub(namespace, record.bindingId, jurisdiction);
       return stub.fetch(
         new Request(`https://hosted.internal${path}`, {
           method,
