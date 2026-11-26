@@ -144,7 +144,7 @@ describe("the edge queue door", () => {
       expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
       expect(db.query("SELECT COUNT(*) AS n FROM events").get()).toEqual({ n: 0 });
       const oracle = new FixtureQueueStore();
-      executeQueueVerb(
+      await executeQueueVerb(
         oracle,
         "enqueue",
         { queue: edge.queue, packet: packet() },

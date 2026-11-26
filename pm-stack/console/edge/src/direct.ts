@@ -1328,7 +1328,7 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
       const request = { queue: config.queue, packet: packet as Json };
       // Validation before I/O; dry-run also discovers the mirror lookup using
       // the verb's own repo/issue fallback rules, rather than a second parser.
-      const dry = executeQueueVerb(new EnqueueStore(), "enqueue", { ...request, dry_run: true }, env);
+      const dry = await executeQueueVerb(new EnqueueStore(), "enqueue", { ...request, dry_run: true }, env);
       if (dry.ok !== true) {
         return { code: Number(dry.exit ?? 2), stdout: "", stderr: String(dry.error ?? "queue enqueue refused") };
       }
@@ -1388,7 +1388,7 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
             ) as unknown as TaskRow,
         );
         const store = new EnqueueStore(snapshot);
-        const response = executeQueueVerb(store, "enqueue", request, env);
+        const response = await executeQueueVerb(store, "enqueue", request, env);
         if (response.ok !== true) {
           return {
             code: Number(response.exit ?? 2),

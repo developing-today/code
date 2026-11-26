@@ -332,7 +332,7 @@ describe("Edge prompt queue door (#13490)", () => {
     expect(await response.json()).toMatchObject({ ok: true, result: { issue: 7, queued: true } });
     expect(w.held().filter((h) => h.kind === "prompt.enqueue")).toEqual([]);
     const oracle = new FixtureQueueStore();
-    const enqueued = executeQueueVerb(
+    const enqueued = await executeQueueVerb(
       oracle,
       "enqueue",
       {
