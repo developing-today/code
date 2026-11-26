@@ -198,6 +198,45 @@
 //! let config: Config = kdl::de::from_str(kdl).unwrap();
 //! assert_eq!(config, Config { server: Server { server_kind: ServerKind::Big, app_type: "cool".into(), port_type: "internal".into() }});
 //! ```
+//!
+//! ## Annotation lists (fork, #5753 Q3)
+//!
+//! The fork keeps every annotation, so it also exposes each annotation
+//! list as an array of the raw payload strings. A single annotation is
+//! still a one-element array, never a bare string. The reserved
+//! pseudo-fields are read from the AST and never consume an entry:
+//!
+//! - `@annotations`: the node name's annotations.
+//! - `@children-annotations`: the children block's annotations.
+//! - `#<n>@annotations`: the `n`th positional argument's annotations.
+//! - `#@<prop>@annotations`: the value annotations of property `prop`.
+//!
+//! Property-key annotations are not exposed here (serde keys carry no
+//! metadata); read them from the document API.
+//!
+//! ```rust
+//! use serde::Deserialize;
+//!
+//! #[derive(Deserialize, Debug, PartialEq)]
+//! struct Doc {
+//!     triple: Triple,
+//! }
+//!
+//! #[derive(Deserialize, Debug, PartialEq)]
+//! struct Triple {
+//!     #[serde(rename = "@annotations")]
+//!     annotations: Vec<String>,
+//!     #[serde(rename = "#0")]
+//!     subject: String,
+//!     #[serde(rename = "#0@annotations")]
+//!     subject_annotations: Vec<String>,
+//! }
+//!
+//! let doc: Doc = kdl::de::from_str("(object)(predicate#knows)triple (person)alice\n").unwrap();
+//! assert_eq!(doc.triple.annotations, vec!["object", "predicate#knows"]);
+//! assert_eq!(doc.triple.subject, "alice");
+//! assert_eq!(doc.triple.subject_annotations, vec!["person"]);
+//! ```
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -1120,9 +1159,19 @@ struct NodeMapAccess<'a> {
     input: &'a Arc<String>,
 }
 
+/// Reserved pseudo-field for a node name's annotation list (#5753 Q3).
+pub const ANNOTATIONS_FIELD: &str = "@annotations";
+/// Reserved pseudo-field for a children block's annotation list (#5753 Q3).
+pub const CHILDREN_ANNOTATIONS_FIELD: &str = "@children-annotations";
+/// Suffix that turns an entry's `#<n>` / `#@<prop>` field name into the
+/// pseudo-field for that entry's annotation list.
+const ENTRY_ANNOTATIONS_SUFFIX: &str = "@annotations";
+
 #[derive(Debug)]
 enum NodeMapValue<'a> {
     Ident(&'a KdlIdentifier),
+    /// An annotation list, served as an array of payload strings.
+    Annotations(&'a [KdlIdentifier]),
     Arg(&'a KdlEntry),
     Args(Vec<&'a KdlEntry>),
     SingleNode(&'a KdlNode),
@@ -1147,6 +1196,18 @@ impl<'a> NodeMapAccess<'a> {
             {
                 entries.push(("#type".into(), NodeMapValue::Ident(ty)));
             }
+            if fields.contains(&ANNOTATIONS_FIELD) {
+                entries.push((
+                    ANNOTATIONS_FIELD.into(),
+                    NodeMapValue::Annotations(node.annotations()),
+                ));
+            }
+            if fields.contains(&CHILDREN_ANNOTATIONS_FIELD) {
+                entries.push((
+                    CHILDREN_ANNOTATIONS_FIELD.into(),
+                    NodeMapValue::Annotations(node.children_annotations()),
+                ));
+            }
         }
         if let Some(fields) = fields
             && let collect_all = fields.contains(&"#args")
@@ -1167,6 +1228,13 @@ impl<'a> NodeMapAccess<'a> {
                 let ty_name = format!("{idx_name}#type");
                 if let Some(ty) = arg.ty() {
                     entries.push((ty_name.into(), NodeMapValue::Ident(ty)));
+                }
+                let ann_name = format!("{idx_name}{ENTRY_ANNOTATIONS_SUFFIX}");
+                if fields.contains(&ann_name.as_ref()) {
+                    entries.push((
+                        ann_name.into(),
+                        NodeMapValue::Annotations(arg.annotations()),
+                    ));
                 }
                 if fields.contains(&idx_name.as_ref()) {
                     entries.push((idx_name.into(), NodeMapValue::Arg(arg)));
@@ -1197,6 +1265,13 @@ impl<'a> NodeMapAccess<'a> {
                 {
                     entries.push((ty_name.into(), NodeMapValue::Ident(ty)));
                 }
+                let ann_name = format!("{hash_name}{ENTRY_ANNOTATIONS_SUFFIX}");
+                if fields.contains(&ann_name.as_ref()) {
+                    entries.push((
+                        ann_name.into(),
+                        NodeMapValue::Annotations(prop.annotations()),
+                    ));
+                }
             }
             entries.push((name.into(), NodeMapValue::Arg(prop)));
             used_names.push(name);
@@ -1226,7 +1301,10 @@ impl<'a> NodeMapAccess<'a> {
         }
         if let Some(fields) = fields {
             for field in fields {
-                if !field.starts_with('#') && !used_names.contains(field) {
+                // `@`-prefixed names are reserved pseudo-fields, served
+                // above from the AST, never a child node.
+                if !field.starts_with('#') && !field.starts_with('@') && !used_names.contains(field)
+                {
                     entries.push((String::from(*field).into(), NodeMapValue::Omitted));
                 }
             }
@@ -1266,6 +1344,11 @@ impl<'de, 'a> MapAccess<'de> for NodeMapAccess<'a> {
         match value {
             NodeMapValue::Ident(ident) => {
                 seed.deserialize(IdentDeserializer::new(ident, self.input))
+            }
+            NodeMapValue::Annotations(list) => {
+                seed.deserialize(de::value::SeqDeserializer::<_, Error>::new(
+                    list.iter().map(|a| a.value().to_string()),
+                ))
             }
             NodeMapValue::Arg(entry) => seed.deserialize(ValueDeserializer::new(entry, self.input)),
             NodeMapValue::Args(entries) => seed.deserialize(ArgsSeqDeserializer {

@@ -37,7 +37,7 @@
 use serde::ser::{self, Serialize};
 use std::{collections::HashSet, fmt};
 
-use crate::{KdlDocument, KdlEntry, KdlNode, KdlValue};
+use crate::{KdlDocument, KdlEntry, KdlIdentifier, KdlNode, KdlValue};
 
 /// Errors that can occur during KDL serialization.
 #[derive(Debug)]
@@ -292,6 +292,7 @@ impl<'a> ser::Serializer for &'a mut DocumentSerializer {
             variant,
             children: KdlDocument::new(),
             used_indices: Default::default(),
+            annotations: VariantAnnotations::default(),
         })
     }
 }
@@ -395,6 +396,11 @@ impl<'a> ser::SerializeStruct for MapNodeSerializer<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
+        if is_annotation_key(key) {
+            return Err(ser::Error::custom(format!(
+                "`{key}` needs a node to annotate, but this struct is serialized as a document"
+            )));
+        }
         let mut node = KdlNode::new(key);
         serialize_value_into_node(&mut node, value)?;
         match node.get(0) {
@@ -418,6 +424,7 @@ struct StructVariantSerializer<'a> {
     variant: &'static str,
     used_indices: HashSet<usize>,
     children: KdlDocument,
+    annotations: VariantAnnotations,
 }
 
 impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
@@ -429,6 +436,9 @@ impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
+        if self.annotations.take_field(key, value)? {
+            return Ok(());
+        }
         let mut node = KdlNode::new(key);
         if let Some(attr_name) = key.strip_prefix("#@") {
             let kdl_val = to_kdl_value(value)?;
@@ -470,6 +480,7 @@ impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
     fn end(self) -> Result<Self::Ok, Self::Error> {
         let mut node = KdlNode::new(self.variant);
         node.set_children(self.children);
+        self.annotations.apply(&mut node);
         self.parent_nodes.push(node);
         Ok(())
     }
@@ -677,6 +688,7 @@ impl<'a> ser::Serializer for &'a mut NodeValueSerializer<'a> {
             parent: self.node,
             variant,
             children: KdlDocument::new(),
+            annotations: VariantAnnotations::default(),
         })
     }
 }
@@ -802,6 +814,9 @@ impl<'a> ser::SerializeStruct for NodeChildMapSerializer<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
+        if apply_annotation_field(self.node, key, value)? {
+            return Ok(());
+        }
         if let Some(attr_name) = key.strip_prefix("#@") {
             let kdl_val = to_kdl_value(value)?;
             self.node
@@ -845,6 +860,7 @@ struct NodeChildStructVariantSerializer<'a> {
     parent: &'a mut KdlNode,
     variant: &'static str,
     children: KdlDocument,
+    annotations: VariantAnnotations,
 }
 
 impl<'a> ser::SerializeStructVariant for NodeChildStructVariantSerializer<'a> {
@@ -856,6 +872,9 @@ impl<'a> ser::SerializeStructVariant for NodeChildStructVariantSerializer<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
+        if self.annotations.take_field(key, value)? {
+            return Ok(());
+        }
         let mut node = KdlNode::new(key);
         if let Some(attr_name) = key.strip_prefix("#@") {
             let kdl_val = to_kdl_value(value)?;
@@ -892,9 +911,134 @@ impl<'a> ser::SerializeStructVariant for NodeChildStructVariantSerializer<'a> {
     fn end(self) -> Result<Self::Ok, Self::Error> {
         let mut node = KdlNode::new(self.variant);
         node.set_children(self.children);
+        self.annotations.apply(&mut node);
         let parent_children = self.parent.ensure_children();
         parent_children.nodes_mut().push(node);
         Ok(())
+    }
+}
+
+/// Reserved field name for a node's own annotations (fork, #5753 Q3).
+const ANNOTATIONS_FIELD: &str = "@annotations";
+/// Reserved field name for the annotations on a node's children block.
+const CHILDREN_ANNOTATIONS_FIELD: &str = "@children-annotations";
+/// Suffix that targets one entry's annotations, as in `#0@annotations` or
+/// `#@key@annotations`.
+const ENTRY_ANNOTATIONS_SUFFIX: &str = "@annotations";
+
+fn is_annotation_key(key: &str) -> bool {
+    key == ANNOTATIONS_FIELD
+        || key == CHILDREN_ANNOTATIONS_FIELD
+        || (key.starts_with('#')
+            && key.ends_with(ENTRY_ANNOTATIONS_SUFFIX)
+            && key.len() > 1 + ENTRY_ANNOTATIONS_SUFFIX.len())
+}
+
+/// Serializes an annotation field value (a string or a sequence of strings)
+/// into a list of identifiers. Annotations are always a list, so a single
+/// string becomes a one-element list.
+fn annotation_list<T: ?Sized + Serialize>(
+    key: &str,
+    value: &T,
+) -> Result<Vec<KdlIdentifier>, Error> {
+    let mut scratch = KdlNode::new("-");
+    {
+        let mut ser = ArgsSerializer { node: &mut scratch };
+        value.serialize(&mut ser)?;
+    }
+    scratch
+        .entries()
+        .iter()
+        .map(|entry| match entry.value().as_string() {
+            Some(s) => Ok(KdlIdentifier::from(s)),
+            None => Err(ser::Error::custom(format!(
+                "`{key}` must hold strings, found {}",
+                entry.value()
+            ))),
+        })
+        .collect()
+}
+
+/// Applies an annotation pseudo-field to `node`. Returns `Ok(false)` when
+/// `key` is not an annotation field, so the caller handles it as before.
+///
+/// Entry annotations attach to an entry that was already serialized, so the
+/// `#N` or `#@key` field has to come before its `@annotations` field.
+fn apply_annotation_field<T: ?Sized + Serialize>(
+    node: &mut KdlNode,
+    key: &str,
+    value: &T,
+) -> Result<bool, Error> {
+    if key == ANNOTATIONS_FIELD {
+        node.set_annotations(annotation_list(key, value)?);
+        return Ok(true);
+    }
+    if key == CHILDREN_ANNOTATIONS_FIELD {
+        node.set_children_annotations(annotation_list(key, value)?);
+        return Ok(true);
+    }
+    if !is_annotation_key(key) {
+        return Ok(false);
+    }
+    let target = &key[..key.len() - ENTRY_ANNOTATIONS_SUFFIX.len()];
+    let list = annotation_list(key, value)?;
+    let entry = if let Some(prop) = target.strip_prefix("#@") {
+        node.entries_mut()
+            .iter_mut()
+            .rev()
+            .find(|e| e.name().map(|n| n.value()) == Some(prop))
+    } else {
+        let idx: usize = target[1..].parse().map_err(|e| Error {
+            msg: format!("Failed to parse index in {key}: {e}"),
+        })?;
+        node.entries_mut()
+            .iter_mut()
+            .filter(|e| e.name().is_none())
+            .nth(idx)
+    };
+    match entry {
+        Some(entry) => {
+            entry.set_annotations(list);
+            Ok(true)
+        }
+        None => Err(ser::Error::custom(format!(
+            "`{key}` has no `{target}` entry to annotate; serialize `{target}` before its annotations"
+        ))),
+    }
+}
+
+/// Node annotations collected while a struct variant's fields are serialized,
+/// applied to the variant node when it is built.
+#[derive(Default)]
+struct VariantAnnotations {
+    node: Option<Vec<KdlIdentifier>>,
+    children: Option<Vec<KdlIdentifier>>,
+}
+
+impl VariantAnnotations {
+    fn take_field<T: ?Sized + Serialize>(&mut self, key: &str, value: &T) -> Result<bool, Error> {
+        if key == ANNOTATIONS_FIELD {
+            self.node = Some(annotation_list(key, value)?);
+            Ok(true)
+        } else if key == CHILDREN_ANNOTATIONS_FIELD {
+            self.children = Some(annotation_list(key, value)?);
+            Ok(true)
+        } else if is_annotation_key(key) {
+            Err(ser::Error::custom(format!(
+                "`{key}`: entry annotations are not supported in struct variants"
+            )))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn apply(self, node: &mut KdlNode) {
+        if let Some(list) = self.node {
+            node.set_annotations(list);
+        }
+        if let Some(list) = self.children {
+            node.set_children_annotations(list);
+        }
     }
 }
 
