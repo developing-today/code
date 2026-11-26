@@ -195,7 +195,7 @@
       "workflow": "cf-worker-versions-release.yml",
       "address": "https://cold-store-rehydrator.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
-      "lastDeployedCommit": "a6d7addf843a122cfcadbe2bb8d798dc2f49a2b4"
+      "lastDeployedCommit": "ca2bac970c7793afed4f66a70ee1f05a4e5ee738"
     },
     {
       "name": "developing-today-backup",
