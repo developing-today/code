@@ -39,6 +39,18 @@ pub trait SearchBackend {
         None
     }
 
+    /// The effective filter-surface manifest this backend serves
+    /// under (#6228 Phase 3/4): the manifest loaded from the corpus
+    /// by [`crate::manifest::load_manifest`], or the built-in
+    /// surface. Serve mode binds its cache keys to this manifest's
+    /// `(version, content_hash)`, so a surface change can never be
+    /// answered from entries computed under another surface. The
+    /// default is the built-in surface, matching the loader's
+    /// fallback for backends that carry no manifest.
+    fn manifest(&self) -> crate::manifest::Manifest {
+        crate::manifest::builtin_manifest()
+    }
+
     /// Notes the backend has accumulated (setup notes, load-time
     /// coverage notes), in the order the Python appends them to
     /// `be.notes`. The orchestration snapshots this before and after
@@ -115,6 +127,9 @@ impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
     }
     fn snapshot_id(&self) -> Option<String> {
         (**self).snapshot_id()
+    }
+    fn manifest(&self) -> crate::manifest::Manifest {
+        (**self).manifest()
     }
     fn notes(&self) -> Vec<String> {
         (**self).notes()

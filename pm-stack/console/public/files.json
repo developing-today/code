@@ -43,6 +43,11 @@
       "kept": "installed"
     },
     {
+      "path": "pages/components.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
       "path": "app.css",
       "type": "text/css; charset=utf-8",
       "kept": "installed"
