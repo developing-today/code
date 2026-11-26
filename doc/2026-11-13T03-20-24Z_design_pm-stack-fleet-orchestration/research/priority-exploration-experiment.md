@@ -6,7 +6,7 @@ artifact `validation/report.json`. Regenerate and diff to review:
     python3 -I validation/report.py
 
 - Artifact schema: `pmo-offline-experiment/v1`
-- Artifact SHA-256 (result digest): `795e22050752b9c42b480104a45ee078c1e07ea7d501609b833d6d85db20d799`
+- Artifact SHA-256 (result digest): `6674fbadf7a361275f8b93b3decf297357121b386a000c772ac19d1ffd23e595`
 - Run ID: `MISSING — see Missing measurements`
 
 ## External source facts

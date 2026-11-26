@@ -151,7 +151,7 @@
   "result": "pass",
   "runtime": {
     "prng": "SHA-256 counter, pmo-experiment-v1 domain separator, 53-bit uniform grid; algorithm independent of Python random module",
-    "python": "3.14.8"
+    "python": "3.14.10"
   },
   "schema": "pmo-offline-experiment/v1",
   "small_population": {
