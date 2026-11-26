@@ -18,8 +18,11 @@ import {
   decodeBatch,
   DEFAULT_BRIDGE_LIMITS,
   encodeBatch,
+  encodedBatchBytes,
+  splitBatches,
   syncWithRetry,
   TAG,
+  type BridgeLimits,
   type FrameTransport,
 } from "../src/bridge-session.ts";
 import { DEFAULT_RANGE_PARAMS } from "../src/range.ts";
@@ -401,3 +404,174 @@ test("batch bounds are enforced by the codec", () => {
   const trailed = new Uint8Array([...one, 0]);
   assert.throws(() => decodeBatch(trailed, DEFAULT_BRIDGE_LIMITS), /trailing/);
 });
+
+// ----- batch framing accounting (#14644) -------------------------
+//
+// Senders used to budget the payload sum while decodeBatch bounds
+// the encoded batch (4-byte count + 4-byte length per event), so an
+// honest peer could emit a batch its peer was bound to reject.
+
+function serveWithLimits(
+  store: BridgeStore,
+  boundKey: IdKey,
+  transport: FrameTransport,
+  limits: BridgeLimits,
+): BridgeSessionServer {
+  return new BridgeSessionServer({
+    store,
+    bindingId: BINDING,
+    irohHex: boundKey.publicHex,
+    transport,
+    limits,
+    now: () => NOW,
+  });
+}
+
+test("splitBatches budgets the encoded size, not the payload sum", () => {
+  const limits = { ...DEFAULT_BRIDGE_LIMITS, maxBatchBytes: 100 };
+  const ev = (n: number) => new Uint8Array(n);
+  // Exactly fitting: 4 + (4 + 44) + (4 + 44) = 100 stays one batch.
+  assert.deepEqual(
+    splitBatches([ev(44), ev(44)], limits).map((b) => b.length),
+    [2],
+  );
+  // First overflow: the third event opens a new batch.
+  assert.deepEqual(
+    splitBatches([ev(44), ev(44), ev(44)], limits).map((b) => b.length),
+    [2, 1],
+  );
+  // Payload-only accounting would pair these (48 + 48 <= 100); the
+  // encoded size (4 + 52 + 52 = 108) must not.
+  assert.deepEqual(
+    splitBatches([ev(48), ev(48)], limits).map((b) => b.length),
+    [1, 1],
+  );
+  // The count bound still closes batches.
+  const counted = { ...limits, maxBatchBytes: 1 << 20, maxBatchEvents: 2 };
+  assert.deepEqual(
+    splitBatches([ev(1), ev(1), ev(1)], counted).map((b) => b.length),
+    [2, 1],
+  );
+  // An event that cannot fit any batch is a named error.
+  assert.throws(() => splitBatches([ev(200)], limits), /cannot fit the 100-byte batch bound/);
+});
+
+test("the default-limit 16 x 64 KiB case splits at 15 and every batch decodes", () => {
+  const events = Array.from({ length: 16 }, () => new Uint8Array(65536));
+  const batches = splitBatches(events, DEFAULT_BRIDGE_LIMITS);
+  assert.deepEqual(
+    batches.map((b) => b.length),
+    [15, 1],
+  );
+  for (const batch of batches) {
+    assert.ok(encodedBatchBytes(batch) <= DEFAULT_BRIDGE_LIMITS.maxBatchBytes);
+    assert.deepEqual(decodeBatch(encodeBatch(batch), DEFAULT_BRIDGE_LIMITS), batch);
+  }
+});
+
+test("property: every emitted batch is accepted by the decoder under the same limits", () => {
+  // Oracle (#14644): for generated size sequences and limit sets,
+  // each batch splitBatches emits decodes under the same limits,
+  // and the concatenation preserves the original sequence.
+  let state = 0x2f6e2b1;
+  const rand = (n: number): number => {
+    state = (state * 1103515245 + 12345) & 0x7fffffff;
+    return state % n;
+  };
+  for (let trial = 0; trial < 200; trial++) {
+    const limits = {
+      maxEventBytes: 4096,
+      maxBatchEvents: 1 + rand(8),
+      maxBatchBytes: 64 + rand(2048),
+      maxWantIds: 512,
+    };
+    const events = Array.from({ length: rand(24) }, () => new Uint8Array(1 + rand(200)));
+    const fittable = events.filter((e) => encodedBatchBytes([e]) <= limits.maxBatchBytes);
+    const batches = splitBatches(fittable, limits);
+    assert.deepEqual(batches.flat(), fittable);
+    for (const batch of batches) {
+      assert.ok(batch.length <= limits.maxBatchEvents);
+      assert.ok(encodedBatchBytes(batch) <= limits.maxBatchBytes);
+      assert.deepEqual(decodeBatch(encodeBatch(batch), limits), batch);
+    }
+  }
+});
+
+test("sessions converge when only the encoded size separates the batches", async () => {
+  const bound = await importIdKey(new Uint8Array(32).fill(51));
+  const alice = await importIdKey(new Uint8Array(32).fill(71));
+  const bob = await importIdKey(new Uint8Array(32).fill(72));
+  const clientStore = makeStore();
+  const serverStore = makeStore();
+  const aliceEvents = await chainOf(alice, 4, clientStore);
+  const bobEvents = await chainOf(bob, 4, serverStore);
+  // Events from seq 1 on share one size (seq 0 carries no backlink
+  // and is shorter); the bound below is set from that shared size.
+  const size = aliceEvents[1].bytes.length;
+  assert.ok(aliceEvents.slice(1).every((e) => e.bytes.length === size));
+  assert.ok(bobEvents.slice(1).every((e) => e.bytes.length === size));
+  // Two events fit by payload sum (2 * size <= bound) but not by
+  // encoded size (4 + 2 * (4 + size) > bound): payload accounting
+  // emits batches both decoders are bound to reject.
+  const limits = { ...DEFAULT_BRIDGE_LIMITS, maxBatchBytes: 2 * size + 4 };
+  const [clientEnd, serverEnd] = transportPair();
+  serveWithLimits(serverStore, bound, serverEnd, limits);
+  const client = new BridgeClient(clientEnd, {
+    store: clientStore,
+    key: bound,
+    bindingId: BINDING,
+    limits,
+    now: () => NOW,
+  });
+  const result = await client.sync();
+  assert.deepEqual(clientStore.canonical(), serverStore.canonical());
+  assert.deepEqual(result.withholding, []);
+});
+
+test("a held event that cannot fit any batch fails the session by name", async () => {
+  const bound = await importIdKey(new Uint8Array(32).fill(51));
+  const alice = await importIdKey(new Uint8Array(32).fill(73));
+  const clientStore = makeStore();
+  const serverStore = makeStore();
+  const events = await chainOf(alice, 2, serverStore);
+  const size = events[0].bytes.length;
+  // One event's framed size (4 + 4 + size) crosses the bound.
+  const limits = { ...DEFAULT_BRIDGE_LIMITS, maxBatchBytes: size + 7 };
+  const [clientEnd, serverEnd] = transportPair();
+  serveWithLimits(serverStore, bound, serverEnd, limits);
+  const client = new BridgeClient(clientEnd, {
+    store: clientStore,
+    key: bound,
+    bindingId: BINDING,
+    limits,
+    now: () => NOW,
+  });
+  await assert.rejects(() => client.sync(), /event_too_large/);
+});
+
+test("a client answer event that cannot fit any batch fails by name", async () => {
+  const bound = await importIdKey(new Uint8Array(32).fill(51));
+  const alice = await importIdKey(new Uint8Array(32).fill(74));
+  const clientStore = makeStore();
+  const serverStore = makeStore();
+  const events = await chainOf(alice, 2, clientStore);
+  const size = events[0].bytes.length;
+  const limits = { ...DEFAULT_BRIDGE_LIMITS, maxBatchBytes: size + 7 };
+  const [clientEnd, serverEnd] = transportPair();
+  serveWithLimits(serverStore, bound, serverEnd, limits);
+  const client = new BridgeClient(clientEnd, {
+    store: clientStore,
+    key: bound,
+    bindingId: BINDING,
+    limits,
+    now: () => NOW,
+  });
+  await assert.rejects(() => client.sync(), /cannot fit the .* batch bound/);
+});
+
+// Note: the 16 x 64 KiB default-limit scenario is covered at the
+// sender level by "the default-limit 16 x 64 KiB case splits at 15
+// and every batch decodes" — senders batch raw bytes, and a signed
+// event cannot be padded to exactly 64 KiB (event-tree byte strings
+// cap at 512 bytes and extension keys are a closed set), so no
+// end-to-end session variant of that exact size exists to run.

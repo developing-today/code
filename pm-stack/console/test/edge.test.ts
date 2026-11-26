@@ -15,12 +15,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
-import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
+import { Edge, type KV, ownerSettingsRecord, SILENT_MS } from "../edge/src/edge.ts";
+import { AUDIT_KEPT } from "../edge/src/edge-shared.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { platformSettings } from "../src/settings.ts";
+import { ownerSettingsAdopted, PLATFORM_SETTING_NAMES, platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { NEEDS_LABELS } from "../src/needs.ts";
@@ -33,6 +34,7 @@ import {
   machineReport,
   newKeyPair,
   sign,
+  STALE_ACT_ERROR,
 } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
@@ -53,6 +55,40 @@ const ISSUER = {
   source: "access" as const,
 };
 const START = Date.parse("2026-11-22T12:00:00Z");
+
+/** A collection kept one record per key (#14960), read back as the
+ * list its index names, in order. A world no object has read yet may
+ * still hold the old whole-array value, which is the list itself. */
+const storedList = <T>(stored: Map<string, unknown>, name: string, entry: (id: string) => string): T[] => {
+  const index = stored.get(`${name}:index`);
+  if (Array.isArray(index)) {
+    return index.flatMap((id) => {
+      if (typeof id !== "string") return [];
+      const value = stored.get(entry(id));
+      return value === undefined ? [] : [value as T];
+    });
+  }
+  return (stored.get(name) as T[] | undefined) ?? [];
+};
+const heldStored = (w: { stored: Map<string, unknown> }) => storedList(w.stored, "held", (id) => `held:${id}`);
+const takenStored = (w: { stored: Map<string, unknown> }) => storedList(w.stored, "taken", (id) => `taken:${id}`);
+/** The handed names as storage holds them (#14960). */
+const handedStored = (w: { stored: Map<string, unknown> }): string[] => {
+  const index = w.stored.get("handed:index");
+  if (Array.isArray(index)) return index.filter((id): id is string => typeof id === "string");
+  return (w.stored.get("handed") as string[] | undefined) ?? [];
+};
+/** The audit log as its entries are kept (#14960): one per key under
+ * its number, the kept window behind the next number. */
+const auditStored = (w: { stored: Map<string, unknown> }): unknown[] => {
+  const next = w.stored.get("audit:next");
+  if (typeof next === "number") {
+    const entries: unknown[] = [];
+    for (let seq = Math.max(0, next - AUDIT_KEPT); seq < next; seq++) entries.push(w.stored.get(`audit:${seq}`));
+    return entries;
+  }
+  return (w.stored.get("audit") as unknown[] | undefined) ?? [];
+};
 /** The order the platform's Workers are shown in, by what they belong to. */
 const ORDER = ["platform", "fleet", "data", "id", "lab"];
 const SECTION_NAMES = [
@@ -774,7 +810,15 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
       return {
         ok: true,
         status: 201,
-        json: async () => ({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 }),
+        json: async () => ({
+          batch: "b1",
+          messages: [],
+          unregistered: [],
+          matched: 1,
+          delivered: 1,
+          recipients: ["lane-1"],
+          remaining: 0,
+        }),
       };
     }
     if (method === "GET" && u.endsWith("/agents")) {
@@ -1200,6 +1244,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const done = memoryStore();
   /** What the machine says of itself in each report; null for a console
    * older than the saying, which says nothing. */
+  /** How the machine takes the owner's changed settings, when it does:
+   * a console older than that has none. */
+  const adopts: { now: ((said: unknown) => number | null) | null } = { now: null };
   const machineSays: { now: { name: string; actions: string[] } | null } = {
     now: { name: "nixos", actions: Object.keys(table).sort() },
   };
@@ -1207,6 +1254,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     new EdgeLink({
       version: "0123abcd4567",
       ...(machineSays.now ? { machine: () => machineSays.now as { name: string; actions: string[] } } : {}),
+      ...(adopts.now ? { adopt: adopts.now } : {}),
       apk: async () => {
         if (!build.bytes) return null;
         const bytes = build.bytes;
@@ -1324,6 +1372,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     link,
     makeLink,
     machineSays,
+    adopts,
     later,
     token,
     browse,
@@ -1402,6 +1451,7 @@ describe("before the host's first report", () => {
       hostVersion: null,
       listening: 0,
       machineSettingsDiffer: null,
+      settingsInForce: PLATFORM_SETTING_NAMES.map((name) => ({ name, source: "repository", since: null })),
       androidBuild: null,
       androidRelease: null,
       androidReleaseTrouble: null,
@@ -1411,6 +1461,7 @@ describe("before the host's first report", () => {
       woke: w.now.t,
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
+      routes: {},
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1420,6 +1471,41 @@ describe("before the host's first report", () => {
     // And the host still refuses a stranger itself.
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
+  });
+
+  test("route state: a flip on the internal channel is what health says, and it is kept (#14944)", async () => {
+    const w = await setup();
+    const flip = (body: unknown) =>
+      w.edge.now.fetch(
+        new Request("https://pm.internal/internal/route", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    const flipped = await flip({ surface: "board", tier: "hosted" });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // It is remembered across the edge's own restarts: it is kept in
+    // this object's storage, not in memory.
+    w.edge.now = w.makeEdge();
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // A flip that is not a surface and a tier is refused and changes nothing.
+    expect((await flip({ surface: "board", tier: "sideways" })).status).toBe(400);
+    expect((await flip({ tier: "tunnel" })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
   });
 
   test("the edge says which commit the host is running, as the host last reported it", async () => {
@@ -1818,7 +1904,7 @@ describe("actions", () => {
     // A refusal by the host is the host's answer, not "unreachable".
     const refused = await w.act("issue.comment", { issue: 13, text: "x" });
     expect([refused.status, await refused.json()]).toEqual([404, { error: "no such issue" }]);
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("with the host out of reach, what may be done late is held, done once when it is back, and the rest is refused", async () => {
@@ -1900,7 +1986,7 @@ describe("actions", () => {
     w.net.hostUp = true;
     // The host dies after writing down that it started the second one:
     // stand in for that by marking it started before the report.
-    const ids = (w.stored.get("held") as { id: string }[]).map((h) => h.id);
+    const ids = (heldStored(w) as { id: string }[]).map((h) => h.id);
     const done = { [ids[1]]: "started" };
     w.link.now = new EdgeLink({
       url: `https://${HOST}`,
@@ -2114,9 +2200,13 @@ describe("actions", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
       ],
       sections: [],
       refused: [],
+      settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines).toEqual([
       {
@@ -2138,6 +2228,8 @@ describe("actions", () => {
           "triage.enqueue",
         ],
         sections: [...SECTION_NAMES].sort(),
+        // A console that does not take the owner's settings says no revision.
+        settingsRev: null,
       },
     ]);
     // The machine goes away. What the owner does that may wait, waits; the list says what.
@@ -2212,7 +2304,15 @@ describe("actions", () => {
     await w.link.now.once();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
     expect((await machines()).machines).toEqual([
-      { name: "A machine", seen: w.now.t, quiet: false, version: "0123abcd4567", actions: [], sections: [] },
+      {
+        name: "A machine",
+        seen: w.now.t,
+        quiet: false,
+        version: "0123abcd4567",
+        actions: [],
+        sections: [],
+        settingsRev: null,
+      },
     ]);
     // A name that is not one, or a list that is not a list of kinds.
     for (const says of [
@@ -2260,7 +2360,7 @@ describe("actions", () => {
       again: true,
       waits: "machine",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([id]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([id]);
     // The laptop comes back and does it once; sent yet again, the device
     // is told how it came out.
     w.net.hostUp = true;
@@ -2377,7 +2477,7 @@ describe("actions", () => {
     for (let i = 0; i < 100; i++) expect((await w.act("ask.send", { text: `n${i}` })).status).toBe(200);
     const full = await w.act("ask.send", { text: "one too many" });
     expect(full.status).toBe(503);
-    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+    expect((heldStored(w) as unknown[]).length).toBe(100);
   });
 });
 
@@ -3261,7 +3361,7 @@ describe("the host's report is the host's", () => {
     });
     expect(inside.headers.get("x-pm-console")).toBe("1");
     expect(w.hostSaw).toEqual(["POST /internal/hold"]);
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 });
 
@@ -3825,6 +3925,506 @@ describe("the platform goes by its own settings, whatever a machine says", () =>
   });
 });
 
+// The settings the owner changes from the app are kept at the edge
+// under their own key, beside a machine's word and never in it, and
+// are gone by above both the repository and a machine (#14954, S2 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md). The
+// oracle is the precedence table of that design (§3), which
+// effectiveSettings() in src/settings.ts carries.
+describe("the owner's changed settings are kept at the edge and gone by", () => {
+  const labelCalls = (w: Awaited<ReturnType<typeof setup>>, label: string) =>
+    w.githubCalls.filter((call) => call.url.includes(`labels=${encodeURIComponent(label)}`));
+  /** Look again once what was read has gone stale, and wait for what
+   * that look started reading behind its answer. */
+  const lookAgain = async (w: Awaited<ReturnType<typeof setup>>) => {
+    w.githubCalls.length = 0;
+    for (let i = 0; i < 2; i++) {
+      w.now.t += 150_000;
+      await w.core();
+      await Promise.all(w.behind.splice(0));
+    }
+  };
+
+  test("an owner's label is read by, above main's, and above a machine that says another", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    const kept = await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    expect(kept).toMatchObject({
+      rev: 1,
+      by: OWNER,
+      values: { promptLabel: "owner/label" },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    const { res } = await w.core();
+    expect(res.status).toBe(200);
+    expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
+    expect(labelCalls(w, platformSettings().promptLabel)).toEqual([]);
+    expect(labelCalls(w, "machine/label")).toEqual([]);
+  });
+
+  test("an owner's list of repositories is read by, above the list a machine tells", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.needsRepos = ["developing-today/code", "developing-today/opencode"];
+    w.ghNeeds["developing-today/opencode"] = [
+      {
+        number: 5,
+        title: "Only on the machine's list",
+        labels: ["user/review"],
+      },
+    ];
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    await w.hostReads();
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    const lists = w.githubCalls.filter((call) => /labels=user%2F/.test(call.url)).map((call) => call.url);
+    expect(lists.some((url) => url.includes("/repos/developing-today/code/"))).toBe(true);
+    expect(lists.filter((url) => url.includes("/repos/developing-today/opencode/"))).toEqual([]);
+    expect(doc.census.reviews.map((item: { ref: string }) => item.ref)).not.toContain("developing-today/opencode#5");
+  });
+
+  test("kept beside what a machine told, not in it: a machine's next report and a restart leave it as the owner set it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    const kept = JSON.stringify(w.stored.get("ownerSettings"));
+    expect(JSON.stringify(w.stored.get("cfg"))).not.toContain("owner/label");
+    // The machine reports on other settings; its word is kept, the owner's stays.
+    w.edgeConfig.promptLabel = "machine/label";
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((w.stored.get("cfg") as { promptLabel: string }).promptLabel).toBe("machine/label");
+    expect(JSON.stringify(w.stored.get("ownerSettings"))).toBe(kept);
+    // A new object reads it back and goes by it.
+    w.edge.now = w.makeEdge(true);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    await lookAgain(w);
+    expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
+    expect(labelCalls(w, "machine/label")).toEqual([]);
+  });
+
+  test("a machine's report carrying what looks like the owner's settings changes nothing", async () => {
+    const w = await setup({ direct: true });
+    Object.assign(w.edgeConfig, {
+      ownerSettings: {
+        rev: 9,
+        at: START,
+        by: OWNER,
+        values: { promptLabel: "forged/label" },
+      },
+      values: { promptLabel: "forged/label" },
+      rev: 9,
+      by: OWNER,
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(w.stored.has("ownerSettings")).toBe(false);
+    expect(Object.keys(w.stored.get("cfg") as object)).not.toContain("ownerSettings");
+    expect(Object.keys(w.stored.get("cfg") as object)).not.toContain("values");
+    expect(labelCalls(w, "forged/label")).toEqual([]);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+    expect(auditStored(w).filter((e) => String((e as { kind?: string }).kind).startsWith("setting."))).toEqual([]);
+  });
+
+  test("each set and clear is a new revision and an audit entry that names the setting, never its value", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const t0 = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code", "developing-today/code"]);
+    expect(w.stored.get("ownerSettings")).toEqual({
+      rev: 2,
+      at: w.now.t,
+      by: OWNER,
+      values: {
+        promptLabel: "owner/label",
+        needsRepos: ["developing-today/code"],
+      },
+    });
+    w.now.t += 1_000;
+    const one = await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(one).toMatchObject({
+      rev: 3,
+      values: { needsRepos: ["developing-today/code"] },
+    });
+    // Clearing what is not changed changes nothing.
+    expect(await w.edge.now.clearOwnerSetting(OWNER, "promptLabel")).toEqual(one);
+    w.now.t += 1_000;
+    expect(await w.edge.now.clearOwnerSetting(OWNER)).toMatchObject({
+      rev: 4,
+      values: {},
+    });
+    const settings = auditStored(w).filter((e) => String((e as { kind?: string }).kind).startsWith("setting."));
+    expect(settings).toEqual([
+      {
+        kind: "setting.set",
+        name: "promptLabel",
+        rev: 1,
+        at: new Date(t0).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.set",
+        name: "needsRepos",
+        rev: 2,
+        at: new Date(t0 + 1_000).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.clear",
+        name: "promptLabel",
+        rev: 3,
+        at: new Date(t0 + 2_000).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.clear",
+        name: "needsRepos",
+        rev: 4,
+        at: new Date(t0 + 3_000).toISOString(),
+        by: OWNER,
+      },
+    ]);
+    expect(JSON.stringify(settings)).not.toContain("owner/label");
+    // Cleared, the repository speaks again at once.
+    await lookAgain(w);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+    expect(labelCalls(w, "owner/label")).toEqual([]);
+  });
+
+  test("a value not in the setting's shape is refused whole, and nothing is kept", async () => {
+    const w = await setup({ direct: true });
+    await expect(w.edge.now.setOwnerSetting(OWNER, "promptLabel", "")).rejects.toBeInstanceOf(OpError);
+    await expect(w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["not a repository"])).rejects.toBeInstanceOf(OpError);
+    expect(w.stored.has("ownerSettings")).toBe(false);
+    expect(auditStored(w)).toEqual([]);
+  });
+
+  test("a kept record that does not read as one is no record: the repository speaks", async () => {
+    for (const bad of [
+      null,
+      { rev: 0, at: START, by: OWNER, values: {} },
+      { rev: 1, at: START, by: "", values: {} },
+      { rev: 1, at: START, by: OWNER, values: { repo: "someone/else" } },
+      { rev: 1, at: START, by: OWNER, values: { promptLabel: 7 } },
+      { rev: 1, at: START, by: OWNER, values: { needsRepos: ["no-slash"] } },
+    ]) {
+      expect(ownerSettingsRecord(bad)).toBeNull();
+    }
+    expect(
+      ownerSettingsRecord({
+        rev: 2,
+        at: START,
+        by: OWNER,
+        values: { needsRepos: ["a/b", "a/b"] },
+        extra: 1,
+      }),
+    ).toEqual({
+      rev: 2,
+      at: START,
+      by: OWNER,
+      values: { needsRepos: ["a/b"] },
+    });
+    // Kept that way, the edge goes by the repository.
+    const w = await setup({ direct: true });
+    w.stored.set("ownerSettings", {
+      rev: 1,
+      at: START,
+      by: OWNER,
+      values: { promptLabel: "owner/label", repo: "x/y" },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(labelCalls(w, "owner/label")).toEqual([]);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+  });
+});
+
+// Which settings are in force, from where and since when, is said in
+// one place on two surfaces: by name and source on the public health
+// answer, and with values, main's value beside an owner's, who and at
+// which revision on the owner's Machines answer (#14955, S3 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md §4).
+describe("which settings are in force is said, and since when", () => {
+  const health = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/health", { token: null })).json()) as {
+      settingsInForce: { name: string; source: string; since: number | null }[];
+    };
+  const machines = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+  const source = (list: { name: string; source: string }[], name: string) =>
+    list.find((entry) => entry.name === name)?.source;
+
+  test("health says each setting's source and since when, and no value and nobody", async () => {
+    const w = await setup({ direct: true });
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.needsRepos = theirs;
+    await w.hostReads();
+    await w.link.now.once();
+    // A machine's list is in force for the list; main's for the rest.
+    let said = (await health(w)).settingsInForce;
+    expect(said.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(said.filter((entry) => entry.source !== "repository")).toEqual([
+      { name: "needsRepos", source: "machine", since: null },
+    ]);
+    // The owner changes the label: it is the owner's from then.
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    said = (await health(w)).settingsInForce;
+    expect(said.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // Nothing of what the value is, or who changed it, is in the public answer.
+    const text = JSON.stringify(await health(w));
+    expect(text).not.toContain("owner/label");
+    expect(text).not.toContain(OWNER);
+    expect(text).not.toContain("developing-today/opencode");
+    for (const entry of said) expect(Object.keys(entry).sort()).toEqual(["name", "since", "source"]);
+    // And cleared, main's is in force again.
+    w.now.t += 60_000;
+    await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+  });
+
+  test("the owner's Machines answer has the values, main's beside an owner's change, who and the revision", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    await w.hostReads();
+    await w.link.now.once();
+    const before = (await machines(w)).platform?.settings ?? [];
+    expect(before.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(before.find((entry) => entry.name === "queue")).toEqual({
+      name: "queue",
+      source: "repository",
+      since: null,
+      value: mains.queue,
+      repository: mains.queue,
+    });
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    const after = (await machines(w)).platform?.settings ?? [];
+    expect(after.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at + 1_000,
+      value: "owner/label",
+      repository: mains.promptLabel,
+      by: OWNER,
+      rev: 2,
+    });
+    expect(after.find((entry) => entry.name === "needsRepos")).toMatchObject({
+      source: "owner",
+      value: ["developing-today/code"],
+      repository: mains.needsRepos,
+      rev: 2,
+    });
+    // The two surfaces say the same sources.
+    const said = (await health(w)).settingsInForce;
+    expect(after.map(({ name, source, since }) => ({ name, source, since })) as unknown).toEqual(said);
+    // Nobody not signed in is told the values.
+    expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
+  });
+
+  test("the owner changes a setting from the app and puts it back: the edge does it, keeps it and goes by it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    const at = w.now.t;
+    const set = await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    expect([set.status, await set.json()]).toEqual([200, { ok: true, result: { rev: 1 } }]);
+    // Done here: no machine was asked, and none is handed it to do later.
+    expect(w.hostSaw.filter((call) => call.includes("/api/act"))).toEqual([]);
+    const answer = await machines(w);
+    expect(answer.held).toEqual([]);
+    expect(answer.platform?.settingsRev).toBe(1);
+    expect(answer.platform?.settings?.find((entry) => entry.name === "promptLabel")).toMatchObject({
+      source: "owner",
+      since: at,
+      value: "owner/label",
+      by: OWNER,
+      rev: 1,
+    });
+    // The public answer names it the owner's, from when it was changed.
+    expect((await health(w)).settingsInForce.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // A list of repositories is kept once each, in the order given.
+    w.now.t += 1_000;
+    const repos = await w.act("settings.set", {
+      name: "needsRepos",
+      value: ["developing-today/code", "developing-today/opencode", "developing-today/code"],
+      baseRev: 1,
+    });
+    expect(await repos.json()).toEqual({ ok: true, result: { rev: 2 } });
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "needsRepos")?.value).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+    ]);
+    // Put back, main's is in force again.
+    w.now.t += 1_000;
+    const cleared = await w.act("settings.clear", { name: "promptLabel", baseRev: 2 });
+    expect(await cleared.json()).toEqual({ ok: true, result: { rev: 3 } });
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+    expect(source((await health(w)).settingsInForce, "needsRepos")).toBe("owner");
+    // With no name, every one the owner changed is put back.
+    const all = await w.act("settings.clear", {});
+    expect(await all.json()).toEqual({ ok: true, result: { rev: 4 } });
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+    // The log says what was changed by name and by whom, never the value.
+    const log = JSON.stringify(auditStored(w));
+    expect(log).toContain("settings.set");
+    expect(log).toContain("setting.clear");
+    expect(log).not.toContain("owner/label");
+    expect(log).not.toContain("developing-today/opencode");
+  });
+
+  test("a change is checked whole: a name the owner may not change, or a value not the setting's shape, changes nothing", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const refused = async (kind: string, args: Record<string, unknown>) => {
+      const res = await w.act(kind, args);
+      return [res.status, ((await res.json()) as { error: string }).error.split(":")[0]];
+    };
+    expect(await refused("settings.set", { name: "queue", value: "another-queue" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: " padded" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "a,b" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "x".repeat(51) })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: [] })).toEqual([400, "needsRepos"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: ["not a repository"] })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.set", { name: "needsRepos", value: "developing-today/code" })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.clear", { name: "repo" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "ok", baseRev: -1 })).toEqual([400, "baseRev"]);
+    // Nothing was kept.
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+  });
+
+  test("a change made from an older look is refused with the settings as they are now", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Two tabs both see revision 0; the first one's change is made.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "first/label", baseRev: 0 })).status).toBe(200);
+    // The second, from the same look, is refused and told what is there now.
+    const late = await w.act("settings.set", { name: "promptLabel", value: "second/label", baseRev: 0 });
+    const body = (await late.json()) as { error: string; settings: { rev: number; values: Record<string, unknown> } };
+    expect(late.status).toBe(409);
+    expect(body.settings).toMatchObject({ rev: 1, values: { promptLabel: "first/label" }, by: OWNER });
+    const clear = await w.act("settings.clear", { name: "promptLabel", baseRev: 0 });
+    expect(clear.status).toBe(409);
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "promptLabel")?.value).toBe(
+      "first/label",
+    );
+    // Without a revision it is made over whatever is there.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "third/label" })).status).toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(2);
+  });
+
+  test("only someone the edge is sure is the owner changes a setting", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const res = await w.browse("/console/api/act", {
+      body: { kind: "settings.set", args: { name: "promptLabel", value: "stranger/label" } },
+      token: null,
+    });
+    expect(res.status).not.toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+  });
+
+  test("a machine is told the owner's changes, runs with them, and says so; until then the screen says it has not", async () => {
+    const w = await setup({ direct: true });
+    // The machine's own: main's label and its own list.
+    const own = { promptLabel: w.edgeConfig.promptLabel, needsRepos: [...w.edgeConfig.needsRepos] };
+    const runs = { ...own, rev: 0 };
+    const said: unknown[] = [];
+    w.adopts.now = (settings) => {
+      said.push(settings);
+      const adopted = ownerSettingsAdopted(own, settings);
+      if (adopted === null) return null;
+      Object.assign(runs, adopted.values, { rev: adopted.rev });
+      // It reports what it runs with, as a console does.
+      w.edgeConfig.promptLabel = adopted.values.promptLabel;
+      w.edgeConfig.needsRepos = adopted.values.needsRepos;
+      return adopted.rev;
+    };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    // Before the owner changes anything, nothing is said, and it runs with its own.
+    expect(said).toEqual([undefined]);
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(0);
+    let answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([0, 0]);
+    // The owner changes the label from the app: Cloudflare goes by it at
+    // once, and the machine has not taken it yet.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([1, 0]);
+    // With its next report it is told, runs with it and says so.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 1, values: { promptLabel: "owner/label" } });
+    expect(runs).toMatchObject({ promptLabel: "owner/label", needsRepos: own.needsRepos, rev: 1 });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(1);
+    answer = await machines(w);
+    expect(answer.machines[0].settingsRev).toBe(1);
+    // Running with the owner's label is not a difference from main.
+    expect(answer.machines[0].differs ?? []).toEqual([]);
+    const differ = ((await (await w.browse("/console/health", { token: null })).json()) as { machineSettingsDiffer: string[] })
+      .machineSettingsDiffer;
+    expect(differ).toEqual([]);
+    // Put back, the machine is told the record with nothing in it and runs with its own again.
+    await w.act("settings.clear", { name: "promptLabel" });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 2, values: {} });
+    expect(runs).toMatchObject({ ...own, rev: 2 });
+    // The machine's word survives the object being put away.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.edge.now = w.makeEdge();
+    expect((await machines(w)).machines[0].settingsRev).toBe(2);
+  });
+
+  test("a machine's own label, other than main's, is still said as one where the owner has not changed it", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await machines(w)).machines[0].differs?.map((d) => d.name)).toEqual(["promptLabel"]);
+    // Once the owner has changed it, the machine is compared with the change by its revision instead.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label" });
+    expect((await machines(w)).machines[0].differs ?? []).toEqual([]);
+    // A console older than taking the owner's settings says no revision.
+    expect((await machines(w)).machines[0].settingsRev).toBeNull();
+  });
+});
+
 describe("the edge does the core itself", () => {
   type World = Awaited<ReturnType<typeof setup>>;
   /** The switch is on, the tokens are there, and a machine has said
@@ -3915,7 +4515,16 @@ describe("the edge does the core itself", () => {
     const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
     expect(await sent.json()).toEqual({
       ok: true,
-      result: { to: ["lane-1"], command: false, batch: "b1", matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0, unregistered: [] },
+      result: {
+        to: ["lane-1"],
+        command: false,
+        batch: "b1",
+        matched: 1,
+        delivered: 1,
+        recipients: ["lane-1"],
+        remaining: 0,
+        unregistered: [],
+      },
     });
     // The bridge was asked once, over its binding, as the PM stack.
     expect(w.bridgeCalls).toHaveLength(1);
@@ -4356,9 +4965,9 @@ describe("the edge does the core itself", () => {
     expect(w.ran).toEqual([]);
     expect(onlyPokes(w)).toBe(true);
     // Only the reply's queue task waits for a machine.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // Each is on this side's record of what was done, without what was typed.
-    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; args: unknown }[];
+    const audit = auditStored(w) as { action: string; phase: string; ok?: boolean; args: unknown }[];
     expect(audit.filter((a) => a.phase === "done" && a.ok).map((a) => a.action)).toEqual([
       "ask.reply",
       "ask.close",
@@ -4370,6 +4979,138 @@ describe("the edge does the core itself", () => {
       "deploy.start",
     ]);
     expect(JSON.stringify(audit)).not.toContain("Thanks");
+  });
+
+  test("one audit event writes one entry, not the whole log (#14960)", async () => {
+    const w = await primary();
+    // A log at its kept size, kept one entry per key.
+    for (let seq = 0; seq < AUDIT_KEPT; seq++)
+      w.stored.set(`audit:${seq}`, { action: "seed", phase: "done", ok: true, n: seq });
+    w.stored.set("audit:next", AUDIT_KEPT);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("issue.comment", { issue: 7, text: "counted" })).status).toBe(200);
+    // Of the log, only the event's two entries (start and done) and the
+    // count beside them were written — never the whole log at once.
+    expect(w.puts.slice(before).filter((k) => k === "audit" || k.startsWith("audit:"))).toEqual([
+      "audit:300",
+      "audit:next",
+      "audit:301",
+      "audit:next",
+    ]);
+    // The kept size stands: the two oldest entries fell out of the window.
+    expect([w.stored.has("audit:0"), w.stored.has("audit:1"), w.stored.has("audit:301")]).toEqual([false, false, true]);
+    const log = auditStored(w) as { n?: number }[];
+    expect(log.length).toBe(AUDIT_KEPT);
+    expect(log[0].n).toBe(2);
+  });
+
+  test("one act more writes one act record, not the whole record of what was done (#14960)", async () => {
+    const w = await primary();
+    // The record at its kept size, kept one act per key, newest first.
+    const ids: string[] = [];
+    for (let n = 0; n < 30; n++) {
+      const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      ids.push(id);
+      w.stored.set(`act:${id}`, {
+        id,
+        kind: "issue.comment",
+        at: new Date(START + (30 - n) * 1000).toISOString(),
+        by: "owner",
+        status: "done",
+        note: "",
+      });
+    }
+    w.stored.set("acts:index", ids);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("issue.comment", { issue: 7, text: "counted" })).status).toBe(200);
+    const written = w.puts.slice(before).filter((k) => k === "acts" || k === "acts:index" || k.startsWith("act:"));
+    // The whole record was never written; the index was written once.
+    expect(written.filter((k) => k === "acts")).toEqual([]);
+    expect(written.filter((k) => k === "acts:index")).toHaveLength(1);
+    // Every act record written is the new act's own.
+    const fresh = [...new Set(written.filter((k) => k.startsWith("act:")))];
+    expect(fresh).toHaveLength(1);
+    expect(ids).not.toContain(fresh[0].slice(4));
+    // The kept size stands: the last act in the list fell out, record and all.
+    expect(w.stored.has(`act:${ids[29]}`)).toBe(false);
+    expect(storedList(w.stored, "acts", (id) => `act:${id}`)).toHaveLength(30);
+  });
+
+  test("taking one thing back writes the held index, not the whole list (#14960)", async () => {
+    const w = await primary();
+    // What is held, at its most, kept one record per key.
+    const ids: string[] = [];
+    for (let n = 0; n < 100; n++) {
+      const id = `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      ids.push(id);
+      w.stored.set(`held:${id}`, {
+        id,
+        kind: "issue.comment",
+        args: { issue: 7, text: `held ${n}` },
+        who: "owner",
+        at: new Date(START + n * 1000).toISOString(),
+        unsent: true,
+      });
+    }
+    w.stored.set("held:index", ids);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("held.drop", { id: ids[50] })).status).toBe(200);
+    // Only the index was written; the dropped record is forgotten, the rest untouched.
+    expect(w.puts.slice(before).filter((k) => k === "held" || k === "held:index" || k.startsWith("held:"))).toEqual([
+      "held:index",
+    ]);
+    expect(w.stored.has(`held:${ids[50]}`)).toBe(false);
+    expect(heldStored(w)).toHaveLength(99);
+  });
+
+  test("what an older copy kept as whole lists is read back the same, and kept the new way (#14960)", async () => {
+    const w = await primary();
+    // Storage as the version before this one left it: whole lists under plain names.
+    for (const k of [...w.stored.keys()]) {
+      if (/^(held|taken|handed|acts|act:|audit)/.test(k)) w.stored.delete(k);
+    }
+    const held = [
+      {
+        id: "20000000-0000-4000-8000-000000000001",
+        kind: "issue.comment",
+        args: { issue: 7, text: "kept" },
+        who: "owner",
+        at: new Date(START).toISOString(),
+        unsent: true,
+      },
+    ];
+    const acts = [
+      {
+        id: "20000000-0000-4000-8000-000000000002",
+        kind: "issue.comment",
+        at: new Date(START).toISOString(),
+        by: "owner",
+        status: "done",
+        note: "",
+      },
+    ];
+    w.stored.set("held", held);
+    w.stored.set("handed", [held[0].id]);
+    w.stored.set("acts", acts);
+    w.stored.set("audit", [{ action: "issue.comment", phase: "done", ok: true }]);
+    w.stored.set("taken", []);
+    w.edge.now = w.makeEdge();
+    const { doc } = await w.core();
+    // Read back the same: what is held is as it was, and the act is on the record.
+    expect(heldStored(w)).toEqual(held);
+    expect(handedStored(w)).toEqual([held[0].id]);
+    expect(doc.acts.map((a: { id: string }) => a.id)).toContain(acts[0].id);
+    // Kept the new way now: the plain names are gone, the records under their own.
+    expect([w.stored.has("held"), w.stored.has("handed"), w.stored.has("acts")]).toEqual([false, false, false]);
+    expect(w.stored.get(`held:${held[0].id}`)).toEqual(held[0]);
+    expect(w.stored.get(`act:${acts[0].id}`)).toEqual(acts[0]);
+    // The audit log, too: the next event is numbered after the kept entry.
+    expect((await w.act("issue.comment", { issue: 7, text: "after" })).status).toBe(200);
+    expect(w.stored.has("audit")).toBe(false);
+    expect(auditStored(w)[0]).toEqual({ action: "issue.comment", phase: "done", ok: true });
   });
 
   test("an action a device sends twice under one name is done here once, and answered the same after a restart too", async () => {
@@ -4386,7 +5127,7 @@ describe("the edge does the core itself", () => {
     expect(await third.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
     expect(comments()).toBe(1);
     // Its queue task is waiting for a machine once, too.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // On this side's record of what was done, under the device's name for it.
     expect(
       (await w.core()).doc.acts.filter((a: { id: string }) => a.id === id).map((a: { status: string }) => a.status),
@@ -4470,6 +5211,60 @@ describe("the edge does the core itself", () => {
     expect(w.ghMerged).toHaveLength(1);
   });
 
+  test("a timely action more than ten minutes old is not done unasked, by this side's clock or the device's (#13501)", async () => {
+    const w = await primary();
+    const MIN = 60_000;
+    const send = (body: Record<string, unknown>) => w.browse("/console/api/act", { body });
+    const refused = { error: STALE_ACT_ERROR, stale: true };
+    const t = w.now.t;
+    // Done eleven minutes ago by this side's clock: a device whose
+    // clock runs slow cannot talk it round by saying it sent it at once.
+    const slow = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000101",
+      at: t - 11 * MIN,
+      sent: t - 11 * MIN,
+    });
+    expect([slow.status, await slow.json()]).toEqual([409, refused]);
+    // Recent by this side's clock, old by the device's own: a clock
+    // that runs fast cannot hide that it waited.
+    const fast = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000102",
+      at: t + 60 * MIN,
+      sent: t + 72 * MIN,
+    });
+    expect([fast.status, await fast.json()]).toEqual([409, refused]);
+    // Neither was done, and neither name was written down: the owner
+    // may look again and send either under it.
+    expect(w.ghMerged).toEqual([]);
+    expect(w.stored.has("a:0b000000-0000-4000-8000-000000000101")).toBe(false);
+    // What the owner says of what is late is never held to it.
+    const comment = await send({
+      kind: "issue.comment",
+      args: { issue: 301, text: "Late, and still meant." },
+      at: t - 60 * MIN,
+      sent: t,
+    });
+    expect(comment.status).toBe(200);
+    // Looked at again and sent anyway: done.
+    const id = "0b000000-0000-4000-8000-000000000101";
+    const sure = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: t, sure: true });
+    expect(sure.status).toBe(200);
+    expect(w.ghMerged).toHaveLength(1);
+    // A name met before is answered as it was, however late it is
+    // asked about again: its answer may only have been lost on the way.
+    w.now.t += 30 * MIN;
+    const again = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: w.now.t });
+    expect([again.status, await again.json()]).toEqual([
+      200,
+      { ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" }, again: true },
+    ]);
+    expect(w.ghMerged).toHaveLength(1);
+  });
+
   test("machines: doing the core itself, the edge says which kinds it does and which sections it reads, less what it was turned away for", async () => {
     const w = await primary();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
@@ -4485,6 +5280,8 @@ describe("the edge does the core itself", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
         "ask.send",
         "ask.reply",
         "ask.close",
@@ -4499,6 +5296,8 @@ describe("the edge does the core itself", () => {
       ],
       sections: ["board", "prs", "priorities", "asks", "census", "done"],
       refused: [],
+      settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
     // Turned away for merging: that is a machine's for the hour, and said so.
@@ -4563,7 +5362,7 @@ describe("the edge does the core itself", () => {
       expect(said(w)[0]).toContain("the BMC is on");
       // No machine was asked, and nothing waits for one.
       expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
-      expect(w.stored.get("held") ?? []).toEqual([]);
+      expect(heldStored(w)).toEqual([]);
       // The list the app shows is read again before the answer: the
       // item is gone from the very next look, with nothing left to settle.
       expect((await w.core()).doc.census.hands).toEqual([]);
@@ -4579,7 +5378,7 @@ describe("the edge does the core itself", () => {
       expect(said(w)).toEqual([]);
       // Something was written, so it is not a machine's to do again from the start.
       expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
-      expect(w.stored.get("held") ?? []).toEqual([]);
+      expect(heldStored(w)).toEqual([]);
       w.ghBreaks.length = 0;
       const again = await w.act("hands.done", { ref: REF });
       expect(await again.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
@@ -4825,21 +5624,37 @@ describe("the edge does the core itself", () => {
       malformed: number;
       workers: { name: string; group: string; state: string; deploy: string; workflow: string | null; run: unknown }[];
     };
-    expect([p.malformed, p.checked]).toEqual([0, "2026-11-23"]);
+    // The oracle for what the list says is the file itself, read here
+    // apart from the code under test (the #14290 pattern, #14297):
+    // whoever updates the repository's list — a Worker deployed, a
+    // deploy workflow renamed — changes what is expected with it.
+    const listed = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"), "utf8")) as {
+      checked: string;
+      workers: { name: string; group: string; state: string; deploy: string; workflow: string | null }[];
+    };
+    const listedByName = new Map(listed.workers.map((w) => [w.name, w]));
+    expect([p.malformed, p.checked]).toEqual([0, listed.checked]);
+    expect(p.workers.map((x) => x.name).sort()).toEqual(listed.workers.map((w) => w.name).sort());
     // The platform first, then the rest by what they belong to.
+    const own = listedByName.get("pm-console-edge");
+    if (!own) throw new Error("pm-console-edge is not in the repository's list of Workers");
     expect(p.workers[0]).toMatchObject({
-      name: "pm-console-edge",
-      group: "platform",
-      state: "in service",
-      deploy: "actions",
-      workflow: "pm-console-edge-deploy.yml",
+      name: own.name,
+      group: own.group,
+      state: own.state,
+      deploy: own.deploy,
+      workflow: own.workflow,
       // The latest run of its deploy on main, read from GitHub here.
       run: { commit: expect.stringMatching(/^[0-9a-f]{12}$/), state: "success", at: "2026-11-22T11:50:00Z" },
     });
     const byName = new Map(p.workers.map((x) => [x.name, x]));
     // One that a machine deploys by hand has no run to show; one that is not deployed, neither.
-    expect(byName.get("message-bridge")).toMatchObject({ deploy: "by hand", workflow: null, run: null });
-    expect(byName.get("fleet-hosted")).toMatchObject({ state: "not deployed", deploy: "none", run: null });
+    const byHand = listed.workers.find((w) => w.deploy === "by hand");
+    if (!byHand) throw new Error("the repository's list has no by-hand Worker");
+    expect(byName.get(byHand.name)).toMatchObject({ deploy: "by hand", workflow: null, run: null });
+    const notDeployed = listed.workers.find((w) => w.deploy === "none");
+    if (!notDeployed) throw new Error("the repository's list has no undeployed Worker");
+    expect(byName.get(notDeployed.name)).toMatchObject({ state: notDeployed.state, deploy: "none", run: null });
     expect(p.workers.map((x) => x.group)).toEqual(
       [...p.workers.map((x) => x.group)].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)),
     );
@@ -5022,7 +5837,7 @@ describe("the edge does the core itself", () => {
       result: { issue: 500, url: "https://github.com/developing-today/code/issues/500", queued: true },
     });
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
-    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    const held = heldStored(w) as { kind: string; args: Record<string, unknown> }[];
     expect(held.map((h) => [h.kind, h.args.issue, h.args.text])).toEqual([
       ["prompt.enqueue", 500, "File this from the edge"],
     ]);
@@ -5059,7 +5874,7 @@ describe("the edge does the core itself", () => {
       "Owner: Do the docs",
     ]);
     expect(w.ghIssues[500].body).toContain("Change nothing to answer it");
-    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    const held = heldStored(w) as { kind: string; args: Record<string, unknown> }[];
     expect(held.map((h) => [h.kind, h.args.issue, h.args.intent])).toEqual([
       ["prompt.enqueue", 500, "question"],
       ["prompt.enqueue", 501, "directive"],
@@ -5084,7 +5899,7 @@ describe("the edge does the core itself", () => {
     ]);
     // A reply on the question is held as a question too.
     await w.act("ask.reply", { issue: 500, text: "Since when?" });
-    expect((w.stored.get("held") as typeof held).at(-1)?.args).toMatchObject({
+    expect((heldStored(w) as typeof held).at(-1)?.args).toMatchObject({
       issue: 500,
       intent: "question",
       text: "Since when?",
@@ -5200,15 +6015,13 @@ describe("the edge does the core itself", () => {
     expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();
-    expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args]),
-    ).toEqual([
+    expect((heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args])).toEqual([
       ["triage.enqueue", { issue: 500, title: body.title, rank: "now", at }],
       ["triage.enqueue", { issue: 301, title: "do this first", rank: "expedite", at, note: true }],
       ["prompt.enqueue", { issue: 501, text: "pick these up first\n\n(note, Fleet; from the PM app)", at }],
     ]);
     // What he typed is not on the record of what was done.
-    expect(JSON.stringify(w.stored.get("audit"))).not.toContain("badge count");
+    expect(JSON.stringify(auditStored(w))).not.toContain("badge count");
     // The Intake screen, read here, already has them.
     const intake = (await (await w.browse("/console/api/intake")).json()) as {
       items: { number: number; kind: string }[];
@@ -5230,7 +6043,7 @@ describe("the edge does the core itself", () => {
       ["triage.enqueue", 301],
       ["prompt.enqueue", 501],
     ]);
-    expect(w.stored.get("held")).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("a laptop from before this side read things itself changes nothing by saying what it has", async () => {
@@ -5287,7 +6100,7 @@ describe("the edge does the core itself", () => {
     const { result } = (await res.json()) as { result: { queued: boolean; note: string } };
     expect(result.queued).toBe(false);
     expect(result.note).toBe("filed, not queued: the issue could not be read from its task");
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("with too much already waiting, the issue is still filed and the answer says its task is not", async () => {
@@ -5307,7 +6120,7 @@ describe("the edge does the core itself", () => {
     const { result } = (await res.json()) as { result: { issue: number; queued: boolean; note: string } };
     expect(result).toMatchObject({ issue: 500, queued: false });
     expect(result.note).toBe("filed, not queued: too much is already waiting for a machine");
-    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+    expect((heldStored(w) as unknown[]).length).toBe(100);
   });
 
   test("the screens that need only GitHub and the queue are read here, and the ones that need a machine are asked of it", async () => {
@@ -5396,7 +6209,7 @@ describe("the edge does the core itself", () => {
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
     expect(await health()).toEqual(["pr.merge"]);
     // It is on this side's record as refused here, not as a failure of the owner's.
-    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; error?: string }[];
+    const audit = auditStored(w) as { action: string; phase: string; ok?: boolean; error?: string }[];
     expect(audit.filter((a) => a.action === "pr.merge" && a.phase === "done")).toEqual([
       expect.objectContaining({ ok: false, error: "refused here; left to a machine" }),
     ]);
@@ -5463,7 +6276,7 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.push((method) => method !== "GET");
     const comment = await w.act("issue.comment", { issue: 301, text: "later, then" });
     expect(await comment.json()).toEqual({ ok: true, held: true, result: null, waits: "either" });
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
     const merge = await w.act("pr.merge", { pr: 55 });
     expect(merge.status).toBe(503);
     expect(((await merge.json()) as { error: string }).error).toContain("not something to do late, so it is not kept");
@@ -6582,7 +7395,7 @@ describe("the edge does the core itself", () => {
     // And an action is done here, not held for the laptop.
     expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toMatchObject({ ok: true });
     expect(w.githubCalls.at(-1)).toMatchObject({ method: "POST", url: expect.stringContaining("/issues/14/comments") });
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("an older held action the laptop never took is done here first, under its own name", async () => {
@@ -6599,7 +7412,7 @@ describe("the edge does the core itself", () => {
       result: null,
       waits: "either",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
     w.net.hostUp = true;
@@ -6617,10 +7430,10 @@ describe("the edge does the core itself", () => {
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
     // The refused first try is recorded too: the two that count come last, in order.
     expect(posted.slice(-2)).toEqual(["older", "newer"]);
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
     expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
-    expect(w.stored.get("handed") ?? []).toEqual([]);
+    expect(handedStored(w)).toEqual([]);
   });
 
   test("a held rank is replaced by a newer rank about the same issue: the last one wins", async () => {
@@ -6637,7 +7450,7 @@ describe("the edge does the core itself", () => {
       result: null,
       waits: "either",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes ranking back.
     w.ghRefuses.length = 0;
     w.net.hostUp = true;
@@ -6648,7 +7461,7 @@ describe("the edge does the core itself", () => {
     const newerId = "0f000000-0000-4000-8000-000000000012";
     const second = await w.act("issue.rank", { issue: 201, rank: "now" }, newerId);
     expect(await second.json()).toMatchObject({ ok: true });
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
     expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.rank", state: "done" });
     expect(w.ghLabels[201]).toContain("now");
@@ -6679,13 +7492,13 @@ describe("the edge does the core itself", () => {
     const answer = await w.link.now.once();
     expect(answer?.commands.map((c) => c.id)).toEqual([olderId]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
-    expect(w.stored.get("handed")).toEqual([olderId]);
+    expect(handedStored(w)).toEqual([olderId]);
     // A newer comment about the same issue waits behind the handed one:
     // it is kept, not done here.
     const newerId = "0f000000-0000-4000-8000-000000000022";
     const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
     expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
     // Nothing was done here: the laptop did the older, the newer waits.
     // The only call this side made was the older one's refused try.
     expect(w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body)).toEqual(['{"body":"older"}']);
@@ -6717,9 +7530,7 @@ describe("the edge does the core itself", () => {
     const done = (await second.json()) as { ok?: boolean; held?: boolean };
     expect(done).toMatchObject({ ok: true });
     expect(done.held).toBeUndefined();
-    expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
-    ).toEqual([7]);
+    expect((heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([7]);
     const posted = w.githubCalls
       .filter((c) => comment(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
@@ -6736,7 +7547,7 @@ describe("the edge does the core itself", () => {
     w.githubCalls
       .filter((c) => COMMENT(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
-  const heldIds = (w: HeldWorld) => ((w.stored.get("held") as { id: string }[] | undefined) ?? []).map((h) => h.id);
+  const heldIds = (w: HeldWorld) => (heldStored(w) as { id: string }[]).map((h) => h.id);
   /** What is held, each with who it waits for, as the Machines screen is told it. */
   const heldWaits = async (w: HeldWorld) =>
     ((await (await w.browse("/console/api/machines")).json()) as MachinesAnswer).held.map((h) => [h.id, h.waits]);
@@ -6781,7 +7592,7 @@ describe("the edge does the core itself", () => {
     expect(w.now.t).toBe(t0 + 60 * 60_000);
     // Done here: asked of GitHub once more and no more, by no machine.
     expect(commented(w)).toEqual(["held, then done here", "held, then done here"]);
-    expect([heldIds(w), w.stored.get("taken") ?? [], w.stored.get("handed") ?? [], w.ran]).toEqual([[], [], [], []]);
+    expect([heldIds(w), takenStored(w), handedStored(w), w.ran]).toEqual([[], [], [], []]);
     expect(w.stored.get(`a:${ID(1)}`)).toMatchObject({ kind: "issue.comment", state: "done", status: 200 });
     const { doc } = await w.core();
     expect(doc.edge).toEqual({ held: 0, primary: true });
@@ -6882,7 +7693,7 @@ describe("the edge does the core itself", () => {
     w.net.edgeUp = true;
     await w.hostReads();
     expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(21), ID(22)]);
-    expect(w.stored.get("handed")).toEqual([ID(21), ID(22)]);
+    expect(handedStored(w)).toEqual([ID(21), ID(22)]);
     w.net.hostUp = false;
     w.net.edgeUp = false;
     // A later one about the same thing as a handed one waits behind it, held.
@@ -6892,12 +7703,12 @@ describe("the edge does the core itself", () => {
       held: true,
     });
     const before = commented(w).length;
-    const kept = (w.stored.get("held") as { id: string; at: string }[]).map((h) => Date.parse(h.at));
+    const kept = (heldStored(w) as { id: string; at: string }[]).map((h) => Date.parse(h.at));
     // Woken (to notice the laptop gone quiet), none of the three is done here: two are the
     // laptop's, which may have done them, and the third waits behind one of those.
     await wake(w);
     expect([commented(w).length, heldIds(w)]).toEqual([before, [ID(21), ID(22), ID(23)]]);
-    expect(w.stored.get("taken") ?? []).toEqual([]);
+    expect(takenStored(w)).toEqual([]);
     // Nor does it wake itself over them again and again: nothing here is its own to do, and
     // its next wake is the day's end of the oldest.
     expect(w.alarm.at).toBe(kept[0] + 24 * 60 * 60_000 + 1_000);
@@ -6935,17 +7746,14 @@ describe("the edge does the core itself", () => {
     const waking = w.edge.now.alarm();
     for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(commented(w)).toEqual(["A", "A"]);
-    expect([heldIds(w), (w.stored.get("taken") as { id: string }[]).map((t) => t.id)]).toEqual([
-      [ID(32), ID(33)],
-      [ID(31)],
-    ]);
+    expect([heldIds(w), (takenStored(w) as { id: string }[]).map((t) => t.id)]).toEqual([[ID(32), ID(33)], [ID(31)]]);
     // The laptop is back, and reports while A is still being done.
     w.net.hostUp = true;
     w.net.edgeUp = true;
     await w.hostReads();
     const answer = await w.link.now.once();
     expect(answer?.commands.map((c) => c.id)).toEqual([ID(33)]);
-    expect(w.stored.get("handed")).toEqual([ID(33)]);
+    expect(handedStored(w)).toEqual([ID(33)]);
     expect(w.ran.filter((r) => r.kind === "issue.comment").map((r) => r.args.text)).toEqual(["C"]);
     // GitHub answers. A is done here, then B behind it; C was the laptop's and is not done here.
     w.ghHolds.length = 0;
@@ -6958,7 +7766,7 @@ describe("the edge does the core itself", () => {
     // The laptop says C is done, and nothing waits.
     await w.hostReads();
     await w.link.now.once();
-    expect([heldIds(w), w.stored.get("handed") ?? []]).toEqual([[], []]);
+    expect([heldIds(w), handedStored(w)]).toEqual([[], []]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
     for (const n of [31, 32]) expect(w.stored.get(`a:${ID(n)}`)).toMatchObject({ state: "done", status: 200 });
   });
@@ -7003,7 +7811,7 @@ describe("the edge does the core itself", () => {
     const tried = w.now.t;
     expect(commented(w)).toEqual(["still refused", "still refused"]);
     expect(heldIds(w)).toEqual([ID(51), ID(52)]);
-    expect([w.stored.get("taken") ?? [], w.stored.get("handed") ?? []]).toEqual([[], []]);
+    expect([takenStored(w), handedStored(w)]).toEqual([[], []]);
     expect(w.stored.get(`a:${ID(51)}`)).toMatchObject({ state: "given" });
     // Not tried again before the kind's next hour is up.
     expect(w.alarm.at).toBe(tried + 60 * 60_000);
@@ -7039,11 +7847,17 @@ describe("the edge does the core itself", () => {
       [ID(64), 10, "ended"],
       [ID(65), 11, "untouched"],
     ]);
-    const held = w.stored.get("held") as { id: string; at: string }[];
+    const held = heldStored(w) as { id: string; at: string }[];
     const by = (n: number) => held.find((h) => h.id === ID(n)) as { id: string; at: string };
     // As an object put away part-way would leave things: four taken, three of them out of the list.
-    w.stored.set("taken", [by(61), by(62), by(63), by(64), "not one", { id: 7 }]);
-    w.stored.set("held", [by(63), by(65)]);
+    // (The taken index also names two that are not records of a taken thing: one with no
+    // record kept under its name, and one whose record's name is not a name.)
+    w.stored.set("taken:index", [ID(61), ID(62), ID(63), ID(64), "not one", ID(66)]);
+    for (const n of [61, 62, 63, 64]) w.stored.set(`taken:${ID(n)}`, by(n));
+    w.stored.set(`taken:${ID(66)}`, { id: 7 });
+    w.stored.set("held:index", [ID(63), ID(65)]);
+    w.stored.set(`held:${ID(63)}`, by(63));
+    w.stored.set(`held:${ID(65)}`, by(65));
     w.stored.set(`a:${ID(61)}`, { at: w.now.t, kind: "issue.comment", state: "running" });
     w.stored.set(`a:${ID(64)}`, { at: w.now.t, kind: "issue.comment", state: "done", status: 200, body: { ok: true } });
     // (The one never begun was put away just after being turned away again: its name's record
@@ -7055,7 +7869,7 @@ describe("the edge does the core itself", () => {
     // Never begun: it waits again, in its place (before the two that were kept after it).
     expect(heldIds(w)).toEqual([ID(62), ID(63), ID(65)]);
     expect(w.stored.get(`a:${ID(62)}`)).toMatchObject({ state: "given" });
-    expect(w.stored.has("taken")).toBe(false);
+    expect(takenStored(w)).toEqual([]);
     // Begun and not known to have ended: neither side does it again, and the owner is told to look.
     expect(w.stored.get(`a:${ID(61)}`)).toMatchObject({ state: "done", status: 502 });
     expect(doc.acts.find((a: { id: string }) => a.id === ID(61))).toMatchObject({
@@ -7121,7 +7935,7 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.length = 0;
     w.now.t += 60 * 60_000;
     // What it takes cannot be written down: it is not taken, and still waits.
-    w.storeFails.add("taken");
+    w.storeFails.add(`taken:${ID(121)}`);
     await w.edge.now.alarm();
     expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(121)]]);
     expect(((await w.core()).doc.edge as { held: number }).held).toBe(1);
@@ -7142,7 +7956,7 @@ describe("the edge does the core itself", () => {
     await heldComments(w, [[ID(125), 7, "older"]]);
     w.ghRefuses.length = 0;
     w.now.t += 61 * 60_000;
-    w.storeFails.add("taken");
+    w.storeFails.add(`taken:${ID(125)}`);
     await w.edge.now.alarm();
     expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(125)]]);
     // Storage is well again, and the owner comments on the same issue: the older is made
@@ -7193,7 +8007,7 @@ describe("the edge does the core itself", () => {
     expect([commented(w), heldIds(w)]).toEqual([[], [ID(141), ID(142)]]);
     expect(w.stored.get(`a:${ID(141)}`)).toMatchObject({ state: "given" });
     // Tried once, not over and over: taken, and then no longer taken.
-    expect(w.puts.slice(written).filter((key) => key === "taken")).toHaveLength(2);
+    expect(w.puts.slice(written).filter((key) => key === "taken:index")).toHaveLength(2);
     // The laptop comes back and does both, in order.
     w.net.hostUp = true;
     w.net.edgeUp = true;
@@ -7438,7 +8252,7 @@ describe("the edge does the core itself", () => {
       }),
     );
     const waking = w.edge.now.alarm();
-    const taken = () => ((w.stored.get("taken") as unknown[] | undefined) ?? []).length;
+    const taken = () => takenStored(w).length;
     for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(taken()).toBe(1);
     const again = w.act("issue.comment", { issue: 7, text: "taken, then offered" }, ID(251));
@@ -7451,19 +8265,16 @@ describe("the edge does the core itself", () => {
     // Made here, once, and not by the laptop.
     expect(commented(w)).toEqual(["taken, then offered", "taken, then offered"]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
-    expect([heldIds(w), w.stored.get("taken")]).toEqual([[], []]);
+    expect([heldIds(w), takenStored(w)]).toEqual([[], []]);
   });
 
   test("one kept before it was written down whether it reached a machine is taken to have: this side leaves it to the laptop", async () => {
     const w = await primary();
     await heldComments(w, [[ID(261), 7, "from before"]]);
     // As the version before this one stored it: with no word either way.
-    const stored = w.stored.get("held") as Record<string, unknown>[];
+    const stored = heldStored(w) as Record<string, unknown>[];
     expect(stored.map((h) => h.unsent)).toEqual([true]);
-    w.stored.set(
-      "held",
-      stored.map(({ unsent: _unsent, ...rest }) => rest),
-    );
+    w.stored.set(`held:${ID(261)}`, stored.map(({ unsent: _unsent, ...rest }) => rest)[0]);
     w.ghRefuses.length = 0;
     w.now.t += 61 * 60_000;
     await wakeNow(w);
@@ -7513,7 +8324,7 @@ describe("the edge does the core itself", () => {
       }),
     );
     const waking = w.edge.now.alarm();
-    const taken = () => ((w.stored.get("taken") as unknown[] | undefined) ?? []).length;
+    const taken = () => takenStored(w).length;
     for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(taken()).toBe(1);
     const again = w.act("issue.comment", { issue: 7, text: "taken, refused, offered" }, ID(255));
@@ -7527,7 +8338,7 @@ describe("the edge does the core itself", () => {
     // Refused twice by GitHub, made by nobody, and waiting again as it was.
     expect(commented(w)).toEqual(["taken, refused, offered", "taken, refused, offered"]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
-    expect([heldIds(w), w.stored.get("taken")]).toEqual([[ID(255)], []]);
+    expect([heldIds(w), takenStored(w)]).toEqual([[ID(255)], []]);
     expect(await heldWaits(w)).toEqual([[ID(255), "either"]]);
   });
 

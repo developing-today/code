@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
-use tiny_http::{Header, Response, Server, StatusCode};
+use std::net::TcpListener;
 
 struct State {
     secrets_url: String,
@@ -474,6 +474,20 @@ struct BrokerCoordGh {
     secrets_token: String,
     agent: ureq::Agent,
     token: Mutex<Option<(String, std::time::Instant)>>,
+    /// One sweep pass's responses by path: the run counts and the
+    /// live run ids come from the same per_page=100 list read, so a
+    /// pass costs 2 reads per repo instead of 4.
+    pass: Mutex<std::collections::HashMap<String, Value>>,
+}
+
+/// ETag cache for the coordinator's GitHub reads, kept across sweep
+/// passes: a repeat read sends If-None-Match, and GitHub's 304 answer
+/// does not count against the token's hourly REST limit. Without it
+/// the 20-second sweep spent ~2,900 of the shared 5,000 calls an hour.
+fn coord_etag_cache() -> &'static Mutex<std::collections::HashMap<String, (String, Value)>> {
+    static CACHE: std::sync::OnceLock<Mutex<std::collections::HashMap<String, (String, Value)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 impl BrokerCoordGh {
@@ -498,9 +512,31 @@ impl BrokerCoordGh {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, String> {
+        if let Some(v) = self
+            .pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+        {
+            return Ok(v.clone());
+        }
+        let v = self.fetch_json(path)?;
+        self.pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(path.to_string(), v.clone());
+        Ok(v)
+    }
+
+    fn fetch_json(&self, path: &str) -> Result<Value, String> {
         use std::time::Duration as D;
         let tok = self.token()?;
         let url = format!("https://api.github.com{path}");
+        let cached = coord_etag_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+            .cloned();
         let req = self
             .agent
             .get(&url)
@@ -509,29 +545,57 @@ impl BrokerCoordGh {
                 crate::turso_queue::STALENESS_LOOKUP_TIMEOUT.max(D::from_secs(2)),
             ))
             .build();
-        let mut resp = req
+        let mut req = req
             .header("Authorization", &format!("Bearer {tok}"))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "fleet-queue-broker")
+            .header("User-Agent", "fleet-queue-broker");
+        if let Some((etag, _)) = &cached {
+            req = req.header("If-None-Match", etag);
+        }
+        let mut resp = req
             .call()
             .map_err(|e| format!("github request failed for {path}: {e}"))?;
         let status = resp.status().as_u16();
+        if status == 304 {
+            if let Some((_, body)) = cached {
+                return Ok(body);
+            }
+            return Err(format!("github 304 without a cached body for {path}"));
+        }
         if status == 404 {
             return Err(format!("github 404 for {path}"));
         }
         if !(200..300).contains(&status) {
             return Err(format!("github http {status} for {path}"));
         }
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
         let text = resp
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("github response unreadable: {e}"))?;
-        serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))?;
+        if let Some(etag) = etag {
+            let mut cache = coord_etag_cache().lock().unwrap_or_else(|p| p.into_inner());
+            // Bounded: run-detail paths come and go; the list reads
+            // are a fixed handful per runner repo.
+            if cache.len() > 512 {
+                cache.clear();
+            }
+            cache.insert(path.to_string(), (etag, v.clone()));
+        }
+        Ok(v)
     }
 
     fn total_for(&self, repo: &str, status: &str) -> Result<i64, String> {
+        // Same path as ids_for: total_count rides on the per_page=100
+        // list, so this is answered from the pass cache.
         let v = self.get_json(&format!(
-            "/repos/{repo}/actions/runs?status={status}&per_page=1"
+            "/repos/{repo}/actions/runs?status={status}&per_page=100"
         ))?;
         v.get("total_count")
             .and_then(|t| t.as_i64())
@@ -556,7 +620,10 @@ impl BrokerCoordGh {
 
 impl crate::turso_queue::CoordGh for BrokerCoordGh {
     fn load_counts(&self, repo: &str) -> Result<(i64, i64), String> {
-        Ok((self.total_for(repo, "in_progress")?, self.total_for(repo, "queued")?))
+        Ok((
+            self.total_for(repo, "in_progress")?,
+            self.total_for(repo, "queued")?,
+        ))
     }
 
     fn live_run_ids(&self, repo: &str) -> Result<Vec<i64>, String> {
@@ -637,7 +704,7 @@ pub(crate) fn landing_from_json(
 /// half posting for the same block is safe. This half goes live
 /// only when the broker binary is replaced (the coordinated
 /// switch); until then the CLI half is the live path.
-fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+fn maybe_raise_needs_user(st: &State, req: &Value, resp: &Value) {
     if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return;
     }
@@ -645,7 +712,7 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
         return;
     }
     let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
-    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+    let Some(nd) = crate::needs_user::from_block_request(req, blocker) else {
         return;
     };
     let secrets_url = st.secrets_url.clone();
@@ -658,9 +725,9 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
-            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+            .and_then(|token| crate::needs_user::post_needs_user(token.expose(), &nd));
         match raised {
             Ok(_) => crate::log::info(
                 "queue-broker",
@@ -733,7 +800,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             .to_string()
     };
     let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
-    let info = crate::needs_drew::ExtensionAlert {
+    let info = crate::needs_user::ExtensionAlert {
         key: s("alert_key"),
         handle: handle.to_string(),
         context: resp
@@ -761,7 +828,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
         grace_until: s("grace_until"),
         reason: s("reason"),
     };
-    let body = crate::needs_drew::build_extension_alert_body(&info);
+    let body = crate::needs_user::build_extension_alert_body(&info);
     let secrets_url = st.secrets_url.clone();
     let secrets_token = st.secrets_token.clone();
     let agent = st.agent.clone();
@@ -772,11 +839,11 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
             .and_then(|token| {
-                crate::needs_drew::post_plain_alert_to(
-                    &crate::needs_drew::alerts_url(),
+                crate::needs_user::post_plain_alert_to(
+                    &crate::needs_user::alerts_url(),
                     token.expose(),
                     &body,
                 )
@@ -966,6 +1033,71 @@ fn retry_reprioritize_sync(st: &State, t: &crate::turso_queue::TursoBackend) {
     }
 }
 
+/// Cursor form of `/history-since` for the PM projector. The original
+/// timestamp filter remains available to older callers; `after_id` is
+/// the monotonic resume point so equal-second history rows cannot be
+/// skipped or replayed as the feed advances.
+fn dispatch_history_since_cursor(t: &crate::turso_queue::TursoBackend, req: &Value) -> Value {
+    let Some(after_id) = req.get("after_id").and_then(Value::as_i64) else {
+        return fail(2, "history-since: after_id must be an integer");
+    };
+    if after_id < 0 {
+        return fail(2, "history-since: after_id must be non-negative");
+    }
+    let limit = req
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(200)
+        .clamp(1, 50_000) as usize;
+    let task_id = req.get("task_id").and_then(Value::as_i64);
+    let since = req.get("since").and_then(Value::as_str);
+    let mut sql = "SELECT id, event_id, task_id, kind, from_status, to_status, from_priority, \
+                   to_priority, actor, session_id, model_provider, model_id, detail, source, created_at \
+                   FROM task_history WHERE id > ?"
+        .to_string();
+    let mut args = vec![crate::turso_queue::Arg::Int(after_id)];
+    if let Some(id) = task_id {
+        sql.push_str(" AND task_id = ?");
+        args.push(crate::turso_queue::Arg::Int(id));
+    }
+    if let Some(since) = since {
+        sql.push_str(" AND created_at >= ?");
+        args.push(crate::turso_queue::Arg::Text(since.to_string()));
+    }
+    sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit + 1));
+    match t.query_objs(&sql, &args, &["detail"]) {
+        Ok(rows) => history_cursor_page(rows, after_id, limit, task_id),
+        Err(e) => fail(2, e),
+    }
+}
+
+fn history_cursor_page(
+    mut rows: Vec<Value>,
+    after_id: i64,
+    limit: usize,
+    task_id: Option<i64>,
+) -> Value {
+    rows.retain(|row| {
+        row.get("id")
+            .and_then(Value::as_i64)
+            .is_some_and(|id| id > after_id)
+    });
+    rows.sort_by_key(|row| row.get("id").and_then(Value::as_i64).unwrap_or(i64::MAX));
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let next_cursor = rows
+        .last()
+        .and_then(|row| row.get("id"))
+        .and_then(Value::as_i64)
+        .unwrap_or(after_id);
+    ok(json!({
+        "rows": rows,
+        "task_id": task_id,
+        "next_cursor": next_cursor,
+        "has_more": has_more
+    }))
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -1014,14 +1146,18 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                     }
                 }
             }
-            let resp = crate::turso_queue::dispatch(turso, path, &effective_req);
+            let resp = if path == "/history-since" && effective_req.get("after_id").is_some() {
+                dispatch_history_since_cursor(turso, &effective_req)
+            } else {
+                crate::turso_queue::dispatch(turso, path, &effective_req)
+            };
             if path == "/reprioritize" && resp.get("ok").and_then(Value::as_bool) == Some(true) {
                 sync_reprioritized(st, turso, &resp);
             }
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
-                maybe_raise_needs_drew(st, req, &resp);
+                maybe_raise_needs_user(st, req, &resp);
             }
             // #13774: the emergency-extension needs-drew raise.
             if path == "/actions-exec-extend-request" {
@@ -1030,13 +1166,6 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             resp
         }
     }
-}
-
-fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_data(data)
-        .with_status_code(StatusCode(status))
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
 }
 
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
@@ -1076,6 +1205,17 @@ fn pre_body_refusal(
         }
     }
     None
+}
+
+/// #14191: attribute every queue event this request writes to the
+/// context id its `X-Fleet-Ctx-*` headers carry (none: no change).
+fn request_ctx_scope(
+    req: &crate::uds_http::HttpRequest,
+) -> crate::turso_queue::ctx_scope::CtxScope {
+    let ctx = fleet_config::ctx::Ctx::from_headers(
+        req.headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    );
+    crate::turso_queue::ctx_scope::enter(ctx.id())
 }
 
 /// Transport-agnostic request handling (#6216): the TCP loop adapts
@@ -1126,7 +1266,6 @@ fn handle_request(
 }
 
 pub fn run() -> i32 {
-    use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
     let home = match crate::home::from_env() {
@@ -1209,7 +1348,7 @@ pub fn run() -> i32 {
         coord_sweep_running: Mutex::new(false),
     });
 
-    let server = match Server::http(&bind) {
+    let server = match TcpListener::bind(&bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -1279,6 +1418,7 @@ pub fn run() -> i32 {
                     secrets_token: st.secrets_token.clone(),
                     agent: st.agent.clone(),
                     token: Mutex::new(None),
+                    pass: Mutex::new(std::collections::HashMap::new()),
                 };
                 let now = crate::turso_queue::now_iso();
                 let sum = crate::turso_queue::coordinator_sweep(turso, &gh, &now);
@@ -1328,6 +1468,7 @@ pub fn run() -> i32 {
                         })
                     },
                     move |req| {
+                        let _ctx = request_ctx_scope(req);
                         let (status, value) = handle_request(
                             &st,
                             &tok,
@@ -1336,6 +1477,7 @@ pub fn run() -> i32 {
                             req.header("X-Agent-Token"),
                             &req.body,
                         );
+                        crate::uds_http::log_ctx_trip("queue-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1357,58 +1499,63 @@ pub fn run() -> i32 {
         ),
     }
 
-    for mut req in server.incoming_requests() {
-        let state = Arc::clone(&state);
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let method = req.method().as_str().to_string();
-            let target = req.url().to_string();
-            let provided = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-                .map(|h| h.value.as_str().to_string());
-            // #6515: authenticate and size-check from the headers
-            // before reading any body byte. tiny_http 0.12 exposes
-            // no per-connection read timeout, so the residual TCP
-            // slow-body risk is bounded by this gate plus the capped
-            // read below and thread-per-connection isolation; the
-            // UDS transport carries real read timeouts (uds_http).
-            let content_length = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
-                .and_then(|h| h.value.as_str().parse::<u64>().ok());
-            if let Some((status, value)) = pre_body_refusal(
-                &method,
-                &target,
-                provided.as_deref(),
-                &token,
-                content_length,
-            ) {
-                let _ = req.respond(json_response(status, value));
-                return;
-            }
-            let mut body = Vec::new();
-            if method == "POST" {
-                // Capped read: cap+1 bytes detect an overrun that
-                // the declared length hid (or never declared).
-                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
-                let _ = req.as_reader().take(cap).read_to_end(&mut body);
-                if body.len() > crate::uds_http::MAX_BODY_BYTES {
-                    let _ = req.respond(json_response(
-                        413,
-                        json!({"error": "request body too large"}),
-                    ));
-                    return;
-                }
-            }
-            let (status, value) =
-                handle_request(&state, &token, &method, &target, provided.as_deref(), &body);
-            let _ = req.respond(json_response(status, value));
-        });
+    // BT-3 (#14401): Phase 1 TLS on the TCP leg, additive and
+    // default-off (design rules M1/M2). A half-configured or
+    // unusable leaf is a startup config error, never a silent
+    // plaintext fallback.
+    let broker_tls = match crate::broker_tls::BrokerTlsServer::from_env() {
+        Ok(tls) => tls,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
+    if broker_tls.is_some() {
+        crate::log::info(
+            "queue-broker",
+            "TLS server authentication on the TCP leg (BT-3 Phase 1): presenting the \
+             broker-server leaf; token auth unchanged; plaintext Phase 0 connections \
+             still accepted on the same port and logged",
+        );
     }
-    // incoming_requests() ends only when the server stops.
+
+    let pre_token = token.clone();
+    let precheck = move |head: &crate::uds_http::HttpRequest| {
+        pre_body_refusal(
+            &head.method,
+            &head.target,
+            head.header("X-Agent-Token"),
+            &pre_token,
+            head.header("Content-Length")
+                .and_then(|v| v.parse::<u64>().ok()),
+        )
+        .map(|(status, value)| {
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+            )
+        })
+    };
+    let handler = move |req: &crate::uds_http::HttpRequest| {
+        let _ctx = request_ctx_scope(req);
+        let (status, value) = handle_request(
+            &state,
+            &token,
+            &req.method,
+            &req.target,
+            req.header("X-Agent-Token"),
+            &req.body,
+        );
+        crate::uds_http::log_ctx_trip("queue-broker", req, status);
+        (
+            status,
+            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+        )
+    };
+    match broker_tls {
+        Some(tls) => crate::tcp_http::serve_tls(server, tls, precheck, handler),
+        None => crate::tcp_http::serve(server, precheck, handler),
+    }
     0
 }
 
@@ -1905,5 +2052,84 @@ mod reprioritize_sync_tests {
         );
         // The retry runs ahead of serving, from the latest task row.
         assert!(SRC.contains("retry_reprioritize_sync(st, turso)"));
+    }
+}
+
+#[cfg(test)]
+mod history_since_cursor_contract_tests {
+    use super::*;
+
+    // Oracle: the PM projector resumes from a task_history id cursor,
+    // receives rows in strictly increasing id order, and knows whether
+    // another page remains.
+    const SRC: &str = include_str!("queue_broker.rs");
+
+    #[test]
+    fn history_since_accepts_after_id_and_returns_page_cursor() {
+        let marker = ["fn dispatch_history_", "since_cursor("].concat();
+        let start = SRC
+            .find(&marker)
+            .expect("queue-broker cursor route must exist");
+        let rest = &SRC[start..];
+        let end = rest
+            .find("\nfn dispatch(")
+            .expect("cursor route must end at the next function");
+        let route = &rest[..end];
+        assert!(
+            route.contains("id > ?"),
+            "cursor excludes ids already seen: {route}"
+        );
+        assert!(
+            route.contains("ORDER BY id ASC"),
+            "pages are stable: {route}"
+        );
+        assert!(
+            route.contains("next_cursor"),
+            "the client can advance: {route}"
+        );
+        assert!(
+            route.contains("has_more"),
+            "the client can drain another page: {route}"
+        );
+        assert!(
+            SRC.contains("path == \"/history-since\" && effective_req.get(\"after_id\").is_some()"),
+            "after_id requests use the monotonic cursor route"
+        );
+    }
+
+    #[test]
+    fn cursor_pages_advance_without_replaying_seen_rows() {
+        let first = history_cursor_page(
+            vec![
+                json!({"id": 42, "task_id": 8}),
+                json!({"id": 40, "task_id": 7}),
+                json!({"id": 41, "task_id": 7}),
+            ],
+            39,
+            2,
+            None,
+        );
+        assert_eq!(
+            first["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![40, 41],
+            "oracle: an ID cursor returns the next two unseen history rows in ascending order"
+        );
+        assert_eq!(first["next_cursor"], 41);
+        assert_eq!(first["has_more"], true);
+
+        let second = history_cursor_page(
+            vec![json!({"id": 40}), json!({"id": 42})],
+            first["next_cursor"].as_i64().unwrap(),
+            2,
+            None,
+        );
+        assert_eq!(second["rows"], json!([{"id": 42}]));
+        assert_eq!(second["next_cursor"], 42);
+        assert_eq!(second["has_more"], false);
     }
 }

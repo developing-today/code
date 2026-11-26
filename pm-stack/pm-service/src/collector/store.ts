@@ -22,7 +22,7 @@ import {
 } from "../tenant-store/schema.ts";
 import { metadataBlockFromBody, type ProjectAudit, type ProjectPoolItem } from "./pool.ts";
 
-interface BoardRow {
+export interface BoardRow {
   board_id: string;
   org: string;
   number: number;
@@ -37,11 +37,13 @@ interface BoardRow {
 /** Every registry board, in sibling order. A row that fails the
  * slice-1 BoardDef validator is a hard error: a corrupt registry
  * must fail the run loudly, never silently shrink the pool. */
-export function loadRegistry(db: SqlDb): BoardDef[] {
-  const rows = db.all<BoardRow>(
-    `SELECT board_id, org, number, node_id, url, role, parent_board_id, sibling_order, title
-     FROM pm_boards ORDER BY sibling_order, board_id`,
-  );
+export const REGISTRY_SQL = `SELECT board_id, org, number, node_id, url, role, parent_board_id, sibling_order, title
+     FROM pm_boards ORDER BY sibling_order, board_id`;
+
+/** The registry from its rows — shared by the synchronous loader
+ * below and the async read path (CF-5c, #14969), so both serve the
+ * same registry from the same mapping and the same validation. */
+export function registryFromRows(rows: readonly BoardRow[]): BoardDef[] {
   return rows.map((row) => {
     const def: BoardDef = {
       id: row.board_id,
@@ -58,6 +60,10 @@ export function loadRegistry(db: SqlDb): BoardDef[] {
     if (problems.length) throw new Error(`invalid board registry row ${row.board_id}: ${problems.join("; ")}`);
     return def;
   });
+}
+
+export function loadRegistry(db: SqlDb): BoardDef[] {
+  return registryFromRows(db.all<BoardRow>(REGISTRY_SQL));
 }
 
 /** The board's current writer-of-record lease epoch (0 when no lease

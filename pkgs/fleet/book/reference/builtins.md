@@ -60,20 +60,21 @@ $ echo $?
 ## fleet session bind
 
 ```text
-Usage: fleet session bind [--session-id ID]
+Usage: fleet session bind [--session-id ID] [--force]
 ```
 
 | Flag           | Argument   | Default                  | Meaning                                                                                                                                                                                                   |
 | -------------- | ---------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--session-id` | session id | resolved (see Behaviour) | The explicit session identity to validate and persist. Both `--session-id ID` and `--session-id=ID` spellings are accepted; at most one value — a second value is the usage error shown in the help dump. |
+| `--force`      | —          | off                      | Remove the worktree marker without validating it before resolving, so a dead binding can be replaced in place (#14454). May precede or follow `--session-id`; a second `--force` is a usage error.        |
 
 **Behaviour.** `fleet session bind` validates and persists this worktree's session identity. The identity is an OpenCode session id of the form `ses_` followed by ASCII letters and digits — anything else fails closed.
 
-Resolution precedence: the explicit `--session-id` → `$FLEET_SESSION_ID` → the OpenCode environment → the worktree's marker file. The marker is a plain one-line file `.fleet-session-id` at the git worktree root, so each worktree retains its own active session association. A marker is used only when the session is **live** — checked against the OpenCode server's session endpoint; a stale marker (ended or unverifiable session) is an explicit error naming the file and the id, never a silent fall-through, and an unavailable server is not proof a recorded session is live.
+Resolution precedence: the explicit `--session-id` → `$FLEET_SESSION_ID` → the OpenCode environment → the worktree's marker file. The marker is a plain one-line file `.fleet-session-id` at the git worktree root, so each worktree retains its own active session association. A marker is used only when the session is **live** — checked against the OpenCode server's session endpoint; a stale marker (ended or unverifiable session) is an explicit error naming the file and the id, never a silent fall-through, and an unavailable server is not proof a recorded session is live. The liveness check also answers false in builds without the session probe, so a marker that merely cannot be verified is never removed on its own: only an explicit `--force` clears it, and the operator asserts the recorded session is gone when they pass it.
 
-A successful bind sets `FLEET_SESSION_ID` for fleet's child processes and persists the identity to the marker, so a later bare invocation in the same worktree resolves the same session. Every domain invocation runs this initialisation (with no explicit id) before dispatch; `fleet init` runs it explicitly.
+A successful bind sets `FLEET_SESSION_ID` for fleet's child processes and persists the identity to the marker, so a later bare invocation in the same worktree resolves the same session. Every domain invocation runs this initialisation (with no explicit id) before dispatch; `fleet init` runs it explicitly. A worktree whose marker names an ended session blocks every domain invocation until the marker is removed or rebound — `fleet session bind --force` does that in place from inside the worktree, then resolves (and persists) any supplied or inherited identity, or nothing when there is none.
 
-Exit codes: 0 ok · 2 usage error, malformed session id, or stale/unverifiable marker.
+Exit codes: 0 ok · 2 usage error, malformed session id, stale/unverifiable marker, or a marker that could not be removed.
 
 ```text
 $ fleet session bind --session-id ses_01J9EXAMPLE0000000000000

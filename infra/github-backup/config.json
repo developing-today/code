@@ -34,6 +34,7 @@
     "skip_zero_commit_repos": true,
     "force_include": [
       "dezren39/opencode",
+      "developing-today-forks/opencode",
       "dezren39/Quake_4_Alpha",
       "dezren39/nixpkgs",
       "developing-today-forks/nixpkgs",
@@ -41,6 +42,7 @@
     ],
     "force_include_reasons": {
       "dezren39/opencode": "502 MB but the live chain parent of developing-today-forks/opencode.",
+      "developing-today-forks/opencode": "611 MB fork over the cap, but a fleet repo required in the R2 cold-bundle set; its chain parent dezren39/opencode is already force-included.",
       "dezren39/Quake_4_Alpha": "1.35 GB, Drew's own recent work (not a passive mirror).",
       "dezren39/nixpkgs": "nixpkgs family member (pool).",
       "developing-today-forks/nixpkgs": "nixpkgs family member (pool).",

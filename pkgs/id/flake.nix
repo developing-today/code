@@ -112,7 +112,7 @@
           # Keyed by crate name-version, not rev: a p2panda rev bump keeps the
           # key, so these hashes (and default.nix's) must be updated by hand (#643).
           outputHashes = {
-            "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+            "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
           };
         };
 
@@ -441,6 +441,70 @@
           ];
         };
 
+        # Native shell (F13.6, #12819 slice 1): the installable Bevy client,
+        # Linux first per the Q1 platform order on #6297. A separate output
+        # so the default `id` packages never acquire Bevy. Tests stay in the
+        # test-native-shell check; this derivation only builds and wraps.
+        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          id-native-shell = pkgs.rustPlatform.buildRustPackage {
+            pname = "id-native-shell";
+            version = "0.1.0";
+            src = ./.;
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
+              };
+            };
+
+            cargoBuildFlags = [
+              "-p"
+              "id-native-shell"
+            ];
+            doCheck = false;
+            dontUseCmakeConfigure = true;
+
+            # nix-common's buildInputs carry the GUI system libraries the
+            # Bevy window/render features link (wayland, X11, xkbcommon,
+            # Vulkan) next to OpenSSL.
+            inherit buildInputs;
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.cmake
+              pkgs.makeWrapper
+              rustToolchain
+            ];
+
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+            # winit and wgpu dlopen these at runtime; the dev shell sets the
+            # same LD_LIBRARY_PATH in nix-common's shellHook.
+            postFixup = ''
+              wrapProgram $out/bin/id-native-shell \
+                --prefix LD_LIBRARY_PATH : ${
+                  pkgs.lib.makeLibraryPath [
+                    pkgs.wayland
+                    pkgs.libxkbcommon
+                    pkgs.xorg.libX11
+                    pkgs.xorg.libXcursor
+                    pkgs.xorg.libXrandr
+                    pkgs.xorg.libXi
+                    pkgs.vulkan-loader
+                  ]
+                }
+            '';
+
+            meta = commonMeta // {
+              description = "Native reference shell for id: a Bevy client speaking the F13.1 shell contract";
+              mainProgram = "id-native-shell";
+              platforms = pkgs.lib.platforms.linux;
+            };
+          };
+        };
+
         # ─── Dynamic app generation from justfile ──────────────────────────
         #
         # Apps are generated from just-recipes.json (produced by `just just-recipes`).
@@ -554,6 +618,13 @@
                 # id-native-shell gate (#5582): the crate is a non-default
                 # workspace member, invisible to the default-member checks.
                 clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
+                # id-bevy-bridge gate (#13704): also a non-default member.
+                # test-bevy-bridge runs the replay oracle, the acceptance
+                # gate for a bump of the bridge's pinned bevy_ecs.
+                clippy-bevy-bridge = mkCheckCargoOnly "clippy-bevy-bridge" "clippy-bevy-bridge";
+                # id-bevy-presenter gate (#13705): the Bevy slice 4
+                # presenter-client app, another non-default member.
+                clippy-bevy-presenter = mkCheckCargoOnly "clippy-bevy-presenter" "clippy-bevy-presenter";
                 web-lint = mkCheckBiome "web-lint" "web-lint";
                 # test-unit plus the four shards cover the same root suite
                 # as test-sandbox, without building and running that suite twice.
@@ -567,8 +638,11 @@
                 test-unit = mkCheck "test-unit" "test-unit";
                 test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
                 test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
+                test-android-remote = mkCheckCargoOnly "test-android-remote" "test-android-remote";
                 test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
                 test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
+                test-bevy-bridge = mkCheckCargoOnly "test-bevy-bridge" "test-bevy-bridge";
+                test-bevy-presenter = mkCheckCargoOnly "test-bevy-presenter" "test-bevy-presenter";
                 # Rust example guests (#7904): plaza-sdk (examples/rust-world)
                 # and rust-counter (examples/rust-counter) are standalone
                 # crates outside the pkgs/id workspace, so no workspace test
@@ -1091,9 +1165,14 @@
                 "cargo-check"
                 "clippy-lint"
                 "clippy-native-shell"
+                "clippy-bevy-bridge"
+                "clippy-bevy-presenter"
                 "web-lint"
                 "test"
                 "test-native-shell"
+                "test-android-remote"
+                "test-bevy-bridge"
+                "test-bevy-presenter"
                 "test-rust-examples"
                 "test-web-unit"
                 "test-web-typecheck"
@@ -1108,7 +1187,7 @@
         # =======================================================================
         # Packages: nix build
         # =======================================================================
-        packages = {
+        packages = nativeShellPackages // {
           # Web-enabled package (primary product)
           id-web =
             if craneLib != null && !checkRuntimePackages then
@@ -1161,7 +1240,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
               };
             };
 
@@ -1253,7 +1332,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
               };
             };
 

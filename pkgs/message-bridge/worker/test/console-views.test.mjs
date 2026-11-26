@@ -66,6 +66,7 @@ async function harness() {
     directory: () => call(`/fleet/${cred}/directory`),
     credentials: () => call(`/fleet/${cred}/credentials`),
     offers: () => call(`/fleet/${cred}/offers`),
+    wakeHooks: () => call(`/fleet/${cred}/wake-hooks`),
     post: (what, body) => post(`/fleet/${cred}/${what}`, body),
   });
   return {
@@ -259,6 +260,43 @@ test("sql: credential state folds live and revoked rows per agent, hashes never 
   assert.equal(state[0].state, "revoked");
   assert.equal(state[0].revoked_at, "2026-11-24T03:00:00Z");
   assert.deepEqual(state[0].scopes, []);
+});
+
+test("read scope: the wake hooks through the PM credential match the owner's list; setting stays the owner's (#14544)", async () => {
+  const h = await seeded();
+  const postJson = (path, body) =>
+    h.call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  // The owner sets a hook through the wake-hooks API; a set with no
+  // URL removes it again, and the list reflects both acts.
+  const set = await postJson(`/api/${TOKEN}/wake-hooks`, {
+    address: "agent:felix",
+    url: "https://hooks.example/wake/felix",
+    token: "hook-secret",
+  });
+  assert.equal(set.status, 200, await set.text().catch(() => ""));
+  const ownerList = await (await h.call(`/api/${TOKEN}/wake-hooks`)).json();
+  assert.equal(ownerList.hooks.length, 1);
+
+  // The PM credential reads the same projection: host only, never
+  // the token or the path.
+  const res = await h.as(h.pm).wakeHooks();
+  assert.equal(res.status, 200);
+  const { hooks } = await res.json();
+  assert.deepEqual(hooks, ownerList.hooks);
+  assert.equal(hooks[0].address, "agent:felix");
+  assert.equal(hooks[0].host, "hooks.example");
+  assert.equal(hooks[0].has_token, true);
+  assert.ok(!JSON.stringify(hooks).includes("hook-secret") && !JSON.stringify(hooks).includes("/wake/felix"));
+
+  // A credential without the read scope is turned away, and no
+  // credential may set or remove through this address: those stay
+  // owner-token acts (the console holds them for a machine).
+  assert.equal((await h.as(h.felixCred).wakeHooks()).status, 404);
+  assert.equal((await postJson(`/fleet/${h.pm}/wake-hooks`, { address: "agent:felix" })).status, 405);
+
+  const removed = await (await postJson(`/api/${TOKEN}/wake-hooks`, { address: "agent:felix" })).json();
+  assert.equal(removed.removed, true);
+  assert.deepEqual((await (await h.as(h.pm).wakeHooks()).json()).hooks, []);
 });
 
 test("read scope: the offers list through the PM credential shows offers with their claims (#14375)", async () => {

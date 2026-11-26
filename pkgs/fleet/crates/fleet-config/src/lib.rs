@@ -16,6 +16,8 @@
 //! keys are malformed for this purpose (#5460): a misspelled `[domains]`
 //! table or `idle_exit_secs` key is a parse error, not a silent default.
 
+pub mod ctx;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -1066,7 +1068,7 @@ impl Config {
         &self,
         env_contents: Option<&str>,
         env_location: Option<&str>,
-        file_path: &std::path::Path,
+        _file_path: &std::path::Path,
     ) -> Result<Option<ResolvedHost>, ConfigError> {
         if let Some(text) = env_contents {
             let label = PathBuf::from("$FLEET_HOST_CONFIG");
@@ -1085,14 +1087,9 @@ impl Config {
                 HostSource::EnvContents,
             ));
         }
-        if let Some(location) = env_location {
-            let location = location.trim();
-            if location.is_empty() {
-                // An all-whitespace value is the empty case of the
-                // #5473 rule wearing spaces; treat it as unset and
-                // fall through to the file.
-                return self.resolve_host_from(None, None, file_path);
-            }
+        // An all-whitespace value is the empty case of the #5473 rule
+        // wearing spaces; treat it as unset and fall through to the file.
+        if let Some(location) = env_location.map(str::trim).filter(|v| !v.is_empty()) {
             if self.host.location.as_deref() == Some(location) && self.host.is_present() {
                 return Ok(Self::resolved_from_manifest(
                     self.host.clone(),
@@ -2677,6 +2674,19 @@ socket = "rel/s.sock"
             cfg.resolve_host_from(None, Some("lab-99"), &path).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn host_whitespace_env_location_falls_through_to_file() {
+        let (_d, path, cfg) = cfg_from(
+            "[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n",
+        );
+        let resolved = cfg
+            .resolve_host_from(None, Some(" \t "), &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.location, "sandbox");
+        assert_eq!(resolved.source, HostSource::File);
     }
 
     #[test]
