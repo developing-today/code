@@ -15,19 +15,25 @@
 //! change to the pool and the matching change to the rows, inside one write transaction. If
 //! the transaction commits, the two agree, and a crash leaves the state as of the last commit.
 //! On open the pool is rebuilt from the rows.
+//!
+//! Every row operation goes through [`RowWrite`](id_store::event_rows::RowWrite), so the same
+//! logic runs over both the native redb transaction and the tenant [TenantWrite] session. No
+//! table is named here beyond the shared names the seam already validates.
 
 use p2panda_core::{Hash, SeqNum};
-use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
-use super::{
-    DEVICE_OPS, StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num,
-};
+use super::{StoreError, be_u64, corrupt, hash_of, row_event, seq_num};
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 use id_store::chain::Event;
+use id_store::event_rows::RowWrite;
 
 /// Bytes before a row's dependencies: the author, the sequence number, the arrival time, the
 /// arrival number, and the dependency count.
 const HEAD_LEN: usize = 32 + 8 + 8 + 8 + 1;
+
+const WAITING: &str = "waiting";
+const WAITING_BY_DEP: &str = "waiting_by_dep";
+const DEVICE_OPS: &str = "device_ops";
 
 /// One held event, as its row holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,38 +107,34 @@ impl Row {
 }
 
 /// The row for `id`, if one is held.
-pub(super) fn get(txn: &WriteTransaction, id: &Hash) -> Result<Option<Row>, StoreError> {
-    let rows = txn.open_table(WAITING)?;
-    let found = rows.get(id.as_bytes().as_slice())?;
-    found
-        .map(|found| Row::decode(*id, found.value()))
-        .transpose()
+pub(super) fn get<T: RowWrite + ?Sized>(txn: &mut T, id: &Hash) -> Result<Option<Row>, StoreError> {
+    let found = txn.get(WAITING, id.as_bytes().as_slice())?;
+    found.map(|found| Row::decode(*id, &found)).transpose()
 }
 
 /// Every row, in arrival order.
-pub(super) fn all(txn: &WriteTransaction) -> Result<Vec<Row>, StoreError> {
-    let rows = txn.open_table(WAITING)?;
+pub(super) fn all<T: RowWrite + ?Sized>(txn: &mut T) -> Result<Vec<Row>, StoreError> {
     let mut all = Vec::new();
-    for entry in rows.iter()? {
-        let (key, value) = entry?;
-        all.push(Row::decode(hash_of(key.value())?, value.value())?);
+    for (key, value) in txn.scan_all(WAITING)? {
+        all.push(Row::decode(hash_of(&key)?, &value)?);
     }
     all.sort_by_key(|row| row.arrival);
     Ok(all)
 }
 
 /// Writes `row` in place of any row with its ID, and indexes the dependencies it waits for.
-pub(super) fn put(txn: &WriteTransaction, row: &Row) -> Result<(), StoreError> {
+pub(super) fn put<T: RowWrite + ?Sized>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
     if let Some(old) = get(txn, &row.id)? {
         unindex(txn, &old)?;
     }
     let encoded = row.encode()?;
-    let mut rows = txn.open_table(WAITING)?;
-    rows.insert(row.id.as_bytes().as_slice(), encoded.as_slice())?;
-    drop(rows);
-    let mut by_dep = txn.open_multimap_table(WAITING_BY_DEP)?;
+    txn.put(WAITING, row.id.as_bytes().as_slice(), &encoded)?;
     for dep in &row.deps {
-        by_dep.insert(dep.as_bytes().as_slice(), row.id.as_bytes().as_slice())?;
+        txn.multi_put(
+            WAITING_BY_DEP,
+            dep.as_bytes().as_slice(),
+            row.id.as_bytes().as_slice(),
+        )?;
     }
     Ok(())
 }
@@ -141,38 +143,38 @@ pub(super) fn put(txn: &WriteTransaction, row: &Row) -> Result<(), StoreError> {
 /// it: a held device operation is only kept while the event is held, so its row and its
 /// operation go together (#8160). Every drop of a held-but-not-stored event uses this, so no
 /// caller can leave the operation behind.
-pub(super) fn drop_held(txn: &WriteTransaction, id: &Hash) -> Result<(), StoreError> {
+pub(super) fn drop_held<T: RowWrite + ?Sized>(txn: &mut T, id: &Hash) -> Result<(), StoreError> {
     delete(txn, id)?;
-    txn.open_table(DEVICE_OPS)?
-        .remove(id.as_bytes().as_slice())?;
+    txn.remove(DEVICE_OPS, id.as_bytes().as_slice())?;
     Ok(())
 }
 
 /// Removes the row for `id`, if there is one.
-pub(super) fn delete(txn: &WriteTransaction, id: &Hash) -> Result<(), StoreError> {
+pub(super) fn delete<T: RowWrite + ?Sized>(txn: &mut T, id: &Hash) -> Result<(), StoreError> {
     let Some(old) = get(txn, id)? else {
         return Ok(());
     };
     unindex(txn, &old)?;
-    let mut rows = txn.open_table(WAITING)?;
-    rows.remove(id.as_bytes().as_slice())?;
+    txn.remove(WAITING, id.as_bytes().as_slice())?;
     Ok(())
 }
 
-fn unindex(txn: &WriteTransaction, row: &Row) -> Result<(), StoreError> {
-    let mut by_dep = txn.open_multimap_table(WAITING_BY_DEP)?;
+fn unindex<T: RowWrite + ?Sized>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
     for dep in &row.deps {
-        by_dep.remove(dep.as_bytes().as_slice(), row.id.as_bytes().as_slice())?;
+        txn.multi_remove(
+            WAITING_BY_DEP,
+            dep.as_bytes().as_slice(),
+            row.id.as_bytes().as_slice(),
+        )?;
     }
     Ok(())
 }
 
 /// The IDs of the rows that wait for `dep`.
-fn waiters_of(txn: &WriteTransaction, dep: &Hash) -> Result<Vec<Hash>, StoreError> {
-    let by_dep = txn.open_multimap_table(WAITING_BY_DEP)?;
+fn waiters_of<T: RowWrite + ?Sized>(txn: &mut T, dep: &Hash) -> Result<Vec<Hash>, StoreError> {
     let mut waiters = Vec::new();
-    for waiter in by_dep.get(dep.as_bytes().as_slice())? {
-        waiters.push(hash_of(waiter?.value())?);
+    for value in txn.multi_values(WAITING_BY_DEP, dep.as_bytes().as_slice())? {
+        waiters.push(hash_of(&value)?);
     }
     Ok(waiters)
 }
@@ -193,7 +195,7 @@ pub(super) enum Hold {
 /// and the rows together, so the two agree whenever the transaction commits.
 pub(super) struct Mirror<'a> {
     /// The transaction that every row change runs in.
-    pub txn: &'a WriteTransaction,
+    pub txn: &'a mut dyn RowWrite,
     /// The pool. Callers read it for rival checks and take ready events from it.
     pub pool: &'a mut WaitingPool<Hash, Event>,
     /// The arrival number the next held event takes.
@@ -218,7 +220,7 @@ impl Mirror<'_> {
     fn flush_expired(&mut self, now: u64) -> Result<usize, StoreError> {
         let expired = self.pool.expire(now);
         for (_author, event) in &expired {
-            drop_held(self.txn, &event.id)?;
+            drop_held(&mut self.txn, &event.id)?;
         }
         Ok(expired.len())
     }
@@ -248,7 +250,7 @@ impl Mirror<'_> {
         // An event that waits again keeps its first arrival time, so the age cap counts all of its
         // waiting. A released event keeps its row until the caller decides it, and the row holds
         // that time. An event the store has not held before arrived now.
-        let arrived_at = match get(self.txn, &id)? {
+        let arrived_at = match get(&mut self.txn, &id)? {
             Some(row) => row.arrived_at,
             None => now,
         };
@@ -269,15 +271,15 @@ impl Mirror<'_> {
                     deps: stored_deps,
                     bytes,
                 };
-                put(self.txn, &row)?;
+                put(&mut self.txn, &row)?;
                 Ok(Hold::Held)
             }
             Ok(()) => {
-                delete(self.txn, &id)?;
+                delete(&mut self.txn, &id)?;
                 Ok(Hold::Skipped)
             }
             Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                delete(self.txn, &id)?;
+                delete(&mut self.txn, &id)?;
                 Ok(Hold::Full)
             }
         }
@@ -292,7 +294,7 @@ impl Mirror<'_> {
         // `release` expired every event due at `now` into the pool's buffer; their
         // rows go in this transaction too, not a later one's.
         self.flush_expired(now)?;
-        delete(self.txn, id)?;
+        delete(&mut self.txn, id)?;
         self.drop_dep(id)?;
         Ok(released)
     }
@@ -302,7 +304,7 @@ impl Mirror<'_> {
     /// applies, so it waits for nothing, as a parked event does. The proof keeps its conflicts
     /// seen. Returns the released events in arrival order.
     pub fn present_proof(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
-        let held = get(self.txn, id)?;
+        let held = get(&mut self.txn, id)?;
         let released = self.pool.release(*id, now);
         // As in `release`: the events `release` expired lose their rows here. The
         // flush runs before the park below, so a held proof that was itself due is
@@ -319,7 +321,7 @@ impl Mirror<'_> {
     /// there. A header can be released by another header's arrival, and then it is decided
     /// before its own arrival parks it. Nothing is held for an ID without a row.
     pub fn park_proof(&mut self, id: &Hash) -> Result<(), StoreError> {
-        match get(self.txn, id)? {
+        match get(&mut self.txn, id)? {
             Some(row) => self.park(row),
             None => Ok(()),
         }
@@ -339,16 +341,16 @@ impl Mirror<'_> {
         self.pool
             .restore_held_for_good(parked.author, parked.id, event, parked.arrived_at)
             .map_err(|_refused| corrupt("a held proof header cannot be held for good"))?;
-        put(self.txn, &parked)
+        put(&mut self.txn, &parked)
     }
 
     /// Removes `id` from the dependencies of every row that waits for it.
-    fn drop_dep(&self, id: &Hash) -> Result<(), StoreError> {
-        for waiter in waiters_of(self.txn, id)? {
-            let mut row = get(self.txn, &waiter)?
+    fn drop_dep(&mut self, id: &Hash) -> Result<(), StoreError> {
+        for waiter in waiters_of(&mut self.txn, id)? {
+            let mut row = get(&mut self.txn, &waiter)?
                 .ok_or_else(|| corrupt("a dependency is indexed to a waiting event with no row"))?;
             row.deps.retain(|dep| dep != id);
-            put(self.txn, &row)?;
+            put(&mut self.txn, &row)?;
         }
         Ok(())
     }
@@ -360,6 +362,6 @@ impl Mirror<'_> {
     /// one mark for the life of the pool.
     pub fn drop_row(&mut self, id: &Hash) -> Result<(), StoreError> {
         self.pool.forget(id);
-        drop_held(self.txn, id)
+        drop_held(&mut self.txn, id)
     }
 }

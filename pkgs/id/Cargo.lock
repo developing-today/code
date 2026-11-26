@@ -5150,6 +5150,7 @@ name = "id-events"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "cbor-core",
  "clap",
  "ed25519-dalek 3.0.0",
@@ -5162,6 +5163,7 @@ dependencies = [
  "p2panda-core",
  "proptest",
  "redb 5.0.0",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -5260,6 +5262,7 @@ name = "id-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "blake3",
  "cbor-core",
  "clap",
@@ -5280,6 +5283,7 @@ dependencies = [
  "postcard",
  "proptest",
  "redb 5.0.0",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_bytes",

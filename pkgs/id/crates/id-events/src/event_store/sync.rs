@@ -43,16 +43,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use id_store::event_rows::RowRead;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
-use redb::{ReadableDatabase, ReadableTable};
 
 use super::range::{
     self, Entry, Id, Key, Params, Party, all_skip, check_bounds, decode_frame, frames,
 };
-use super::{
-    EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, decode_stored,
-    position_key,
-};
+use super::{EventStore, Ingest, StoreError, corrupt, decode_stored, position_key};
 use crate::pull_policy::{PullGate, PullRefused};
 use id_store::chain::{self, Event};
 use id_store::store_traits::SharedEventStore;
@@ -397,7 +394,7 @@ pub async fn sync_on_streams<S: RangeStore>(
     .await
 }
 
-impl EventStore {
+impl<B: super::EventStoreStorage> EventStore<B> {
     /// The sync set, sorted by key: each stored event, and each fork proof header, once.
     ///
     /// Compacted events are not advertised (#13401): a compacted event is
@@ -412,34 +409,30 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub(crate) fn sync_entries(&self) -> Result<Vec<(Key, Id)>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let hashes = txn.open_table(HASHES)?;
-        let headers = txn.open_table(PROOF_HEADERS)?;
-        let residue = super::compaction::load_residue_read(&txn)?;
-        let compacted: HashSet<Vec<u8>> = residue
-            .iter()
-            .map(|item| position_key(&item.author, item.seq).to_vec())
-            .collect();
-        let mut entries: Vec<(Key, Id)> = Vec::new();
-        for row in hashes.iter()? {
-            let (id, position) = row?;
-            if compacted.contains(position.value()) {
-                continue;
+        self.db.with_read(|rows| {
+            let compacted: HashSet<Vec<u8>> = super::compaction::load_residue_rows(rows)?
+                .iter()
+                .map(|item| position_key(&item.author, item.seq).to_vec())
+                .collect();
+            let mut entries: Vec<(Key, Id)> = Vec::new();
+            for (id_bytes, position) in rows.scan_all("hashes")? {
+                if compacted.contains(&position) {
+                    continue;
+                }
+                let id = id_of(&id_bytes)?;
+                entries.push((sync_key(&position, &id)?, id));
             }
-            let id = id_of(id.value())?;
-            entries.push((sync_key(position.value(), &id)?, id));
-        }
-        for row in headers.iter()? {
-            let (_id, bytes) = row?;
-            let header = decode_stored(bytes.value())?;
-            let author = *header.header.verifying_key.as_bytes();
-            let position = position_key(&author, header.header.seq_num);
-            let id = *header.id.as_bytes();
-            entries.push((sync_key(&position, &id)?, id));
-        }
-        entries.sort_unstable_by_key(|e| e.0);
-        entries.dedup_by(|a, b| a.0 == b.0);
-        Ok(entries)
+            for (_id, bytes) in rows.scan_all("proof_headers")? {
+                let header = decode_stored(&bytes)?;
+                let author = *header.header.verifying_key.as_bytes();
+                let position = position_key(&author, header.header.seq_num);
+                let id = *header.id.as_bytes();
+                entries.push((sync_key(&position, &id)?, id));
+            }
+            entries.sort_unstable_by_key(|e| e.0);
+            entries.dedup_by(|a, b| a.0 == b.0);
+            Ok(entries)
+        })
     }
 
     /// The encoded bytes of the event with this ID, if the store holds it as a stored event or as
@@ -449,16 +442,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub(crate) fn sync_bytes(&self, id: &Id) -> Result<Option<Vec<u8>>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let hashes = txn.open_table(HASHES)?;
-        if let Some(position) = hashes.get(id.as_slice())? {
-            let events = txn.open_table(EVENTS)?;
-            let stored = events.get(position.value())?;
-            return Ok(stored.map(|bytes| bytes.value().to_vec()));
-        }
-        let headers = txn.open_table(PROOF_HEADERS)?;
-        let kept = headers.get(id.as_slice())?;
-        Ok(kept.map(|bytes| bytes.value().to_vec()))
+        self.db.with_read(|rows| {
+            if let Some(position) = rows.get("hashes", id)? {
+                return rows.get("events", &position);
+            }
+            rows.get("proof_headers", id)
+        })
     }
 }
 
@@ -935,6 +924,7 @@ mod tests {
     use id_core::waiting::WaitingLimits;
     use id_store::chain::ChainExt;
     use p2panda_core::{Hash, SigningKey};
+    use redb::{ReadableDatabase, ReadableTable};
     use std::sync::Arc;
 
     use iroh::endpoint::{Endpoint, presets};
