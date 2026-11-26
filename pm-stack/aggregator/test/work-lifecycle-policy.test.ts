@@ -11,6 +11,7 @@ import {
   type LifecycleEvidence,
   type LifecyclePolicyOptions,
   type Read,
+  type RuleId,
   type SessionReadback,
 } from "../src/work-lifecycle-policy.ts";
 
@@ -156,7 +157,7 @@ describe("pm_work_lifecycle_policy/v1", () => {
 
   test("work_lifecycle_edge_cases_match_golden_oracle", () => {
     const expired = { lease_until: "2026-11-25T11:58:00Z" };
-    const rows: [string, LifecycleEvidence, LifecycleColumnResult["column"], string, string[], string[]][] = [
+    const rows: [string, LifecycleEvidence, LifecycleColumnResult["column"], RuleId, string[], string[]][] = [
       ["claimed but unbound", ev({ broker: p(claimed(), "fleet_broker") }), "Inbox/Triage", "R6", ["claim_binding_unverified", "no_bound_session"], ["claimed_binding_unknown"]],
       ["broker-bound, no readback", ev({ broker: p(claimed({ binding: { progress_session_id: "ses_a", ledger_session_id: "not_read" } }), "fleet_broker") }), "Inbox/Triage", "R6", ["claim_binding_unverified", "session_readback_absent"], ["claimed_binding_unknown"]],
       ["lease expired, sweep pending", ev({ broker: p(claimed(expired), "fleet_broker") }), "Backlog", "R8", ["claim_lease_expired_awaiting_reclaim"], ["claimed_lease_expired"]],
