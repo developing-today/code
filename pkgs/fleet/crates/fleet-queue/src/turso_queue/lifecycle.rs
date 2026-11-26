@@ -1771,6 +1771,38 @@ pub(crate) fn foreign_lane_claim(row: &Value, req: &Value) -> Option<(String, St
     (caller != holder).then(|| (holder.to_string(), caller.to_string()))
 }
 
+/// #9487 (REL-02 design record §10): the holder guard every
+/// holder write carries. `claimed_by` reads the claim, then the
+/// write commits later; an unconditional `WHERE id = ?` let a
+/// writer whose claim lapsed and was re-taken in that window
+/// overwrite the new holder's row. The guard is the heartbeat's
+/// claim tuple (heartbeat.sql), so a write lands only while the
+/// claim it read is still the claim on the row. Lanes share one
+/// worker id, so worker_id alone would not tell two claims apart;
+/// claimed_at, lane_id and attempts do.
+pub(crate) const HOLDER_GUARD: &str = " AND status = 'claimed' AND worker_id = ? AND claimed_at IS ? AND lane_id IS ? AND attempts = ?";
+
+/// The four arguments that bind HOLDER_GUARD, taken from the row
+/// `claimed_by` returned.
+pub(crate) fn holder_guard_args(worker: &str, row: &Value) -> [Arg; 4] {
+    [
+        Arg::Text(worker.to_string()),
+        arg_str(row["claimed_at"].as_str()),
+        arg_str(row["lane_id"].as_str()),
+        Arg::Int(row["attempts"].as_i64().unwrap_or(0)),
+    ]
+}
+
+/// The refusal a guarded holder write returns when it matched no
+/// row: the claim changed between the read and the write, and
+/// nothing was written.
+pub(crate) fn claim_changed(verb: &str, task_id: i64) -> Value {
+    fail(
+        5,
+        format!("{verb}: claim for task {task_id} changed before the write committed"),
+    )
+}
+
 pub(crate) fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -1834,6 +1866,23 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
         ),
     );
     let work = (|| -> Result<Value, TErr> {
+        // #9487: the task row's progress write goes first and
+        // carries the holder guard, so a checkpoint from a claim
+        // that changed after claimed_by read it writes nothing --
+        // neither the task row nor the per-worker KV entry.
+        let mut args = vec![
+            Arg::Text(progress.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!("UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?{HOLDER_GUARD}"),
+            &args,
+        )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("checkpoint_task", task_id));
+        }
         // PG checkpoints is a per-worker KV (worker_id, key, value):
         // the checkpoint lands under task:<id> with the stage +
         // progress as the value; the task row's progress merge above
@@ -1850,14 +1899,6 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Text(now_iso()),
             ],
         )?;
-        t.exec(
-            "UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
         touch_worker(t, &worker, Some(task_id))?;
         event(
             t,
@@ -1866,10 +1907,11 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
             "checkpoint",
             &json!({"stage": stage, "via": "checkpoint_task_turso"}),
         )?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+        let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok(ok(json!({"row": row})))
     })();
     match work {
-        Ok(row) => ok(json!({"row": row})),
+        Ok(v) => v,
         Err(e) => terr(e),
     }
 }
@@ -2048,46 +2090,60 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let explicit_delay = req.get("not_before").is_some_and(|v| !v.is_null())
         || req.get("delay_seconds").is_some_and(|v| !v.is_null());
     let work = (|| -> Result<Value, TErr> {
-        if to_sink {
+        // #9487: both landings carry the holder guard; a park from
+        // a claim that changed after claimed_by read it writes
+        // nothing.
+        let upd = if to_sink {
+            let mut args = vec![
+                if explicit_delay {
+                    Arg::Text(not_before.clone())
+                } else {
+                    Arg::Null
+                },
+                Arg::Text(now_iso()),
+                Arg::Text(progress.to_string()),
+                Arg::Text(result.to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ];
+            args.extend(holder_guard_args(&worker, &row));
             t.exec(
-                "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
-                   not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
-                   required_budget_minutes = NULL, \
-                   last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
-                   updated_at = ? WHERE id = ?",
-                &[
-                    if explicit_delay {
-                        Arg::Text(not_before.clone())
-                    } else {
-                        Arg::Null
-                    },
-                    Arg::Text(now_iso()),
-                    Arg::Text(progress.to_string()),
-                    Arg::Text(result.to_string()),
-                    Arg::Text(now_iso()),
-                    Arg::Int(task_id),
-                ],
-            )?;
+                &format!(
+                    "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
+                       not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                       required_budget_minutes = NULL, \
+                       last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
+                       updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+                ),
+                &args,
+            )?
         } else {
+            let mut args = vec![
+                Arg::Text(not_before.clone()),
+                Arg::Text(park_kind.to_string()),
+                Arg::Text(wk.to_string()),
+                Arg::Text(condition.to_string()),
+                required_budget_arg,
+                Arg::Text(now_iso()),
+                Arg::Text(progress.to_string()),
+                Arg::Text(result.to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ];
+            args.extend(holder_guard_args(&worker, &row));
             t.exec(
-                "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
-                   not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
-                   required_budget_minutes = ?, \
-                   last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
-                   updated_at = ? WHERE id = ?",
-                &[
-                    Arg::Text(not_before.clone()),
-                    Arg::Text(park_kind.to_string()),
-                    Arg::Text(wk.to_string()),
-                    Arg::Text(condition.to_string()),
-                    required_budget_arg,
-                    Arg::Text(now_iso()),
-                    Arg::Text(progress.to_string()),
-                    Arg::Text(result.to_string()),
-                    Arg::Text(now_iso()),
-                    Arg::Int(task_id),
-                ],
-            )?;
+                &format!(
+                    "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
+                       not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
+                       required_budget_minutes = ?, \
+                       last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
+                       updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+                ),
+                &args,
+            )?
+        };
+        if upd.affected == 0 {
+            return Ok(claim_changed("park_task", task_id));
         }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         if let Some(old) = &cleared {
@@ -2205,17 +2261,24 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
         // (migration 0023 §4's rule, mirrored from the claim path).
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
         let (progress, cleared) = clear_binding(&progress, "release_repo_task");
-        t.exec(
-            "UPDATE tasks SET status = 'queued', worker_id = NULL, \
-               lease_until = NULL, not_before = NULL, park_kind = NULL, \
-               wait_kind = NULL, progress = ?, updated_at = ? \
-             WHERE id = ?",
-            &[
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
+        let mut args = vec![
+            Arg::Text(progress.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!(
+                "UPDATE tasks SET status = 'queued', worker_id = NULL, \
+                   lease_until = NULL, not_before = NULL, park_kind = NULL, \
+                   wait_kind = NULL, progress = ?, updated_at = ? \
+                 WHERE id = ?{HOLDER_GUARD}"
+            ),
+            &args,
         )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("release_repo_task", task_id));
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         // #14993: record the limitation on the task's lane ledger
         // (the row the claim pick reads). A claimed task may have
@@ -2277,10 +2340,11 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 &row,
             ),
         )?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+        let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok(ok(json!({ "row": row })))
     })();
     match work {
-        Ok(row) => ok(json!({ "row": row })),
+        Ok(v) => v,
         Err(e) => terr(e),
     }
 }
@@ -2371,29 +2435,49 @@ mod reprioritize_tests {
     use std::sync::{Arc, Mutex};
 
     pub(super) fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
+        let (t, db, _) = fake_backend_with_race();
+        (t, db)
+    }
+
+    /// SQL the fake runs once, just before the next statement that
+    /// starts with `UPDATE tasks` (#9487): the race window between
+    /// a verb's claimed_by read and its first write, made
+    /// deterministic.
+    pub(super) type RaceHook = Arc<Mutex<Option<String>>>;
+
+    pub(super) fn fake_backend_with_race()
+    -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>, RaceHook) {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         for ddl in SCHEMA {
             conn.execute_batch(ddl).unwrap();
         }
         let db = Arc::new(Mutex::new(conn));
+        let hook: RaceHook = Arc::new(Mutex::new(None));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let base = format!("http://{addr}");
         let db_thread = db.clone();
+        let hook_thread = hook.clone();
         std::thread::spawn(move || {
             for sock in listener.incoming() {
                 let Ok(sock) = sock else { return };
                 let db_conn = db_thread.clone();
-                std::thread::spawn(move || handle_conn(sock, db_conn));
+                let hook_conn = hook_thread.clone();
+                std::thread::spawn(move || handle_conn(sock, db_conn, hook_conn));
             }
         });
         (
             TursoBackend::new(base, "test".to_string(), ureq::agent()),
             db,
+            hook,
         )
     }
 
-    fn handle_conn(mut sock: std::net::TcpStream, db: Arc<Mutex<rusqlite::Connection>>) {
+    fn handle_conn(
+        mut sock: std::net::TcpStream,
+        db: Arc<Mutex<rusqlite::Connection>>,
+        hook: RaceHook,
+    ) {
         let mut reader = BufReader::new(sock.try_clone().unwrap());
         loop {
             let mut request_line = String::new();
@@ -2420,7 +2504,7 @@ mod reprioritize_tests {
             if reader.read_exact(&mut body).is_err() {
                 return;
             }
-            let payload = run_pipeline(&db, &body);
+            let payload = run_pipeline(&db, &hook, &body);
             let text = payload.to_string();
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
@@ -2434,7 +2518,7 @@ mod reprioritize_tests {
         }
     }
 
-    fn run_pipeline(db: &Arc<Mutex<rusqlite::Connection>>, body: &[u8]) -> Value {
+    fn run_pipeline(db: &Arc<Mutex<rusqlite::Connection>>, hook: &RaceHook, body: &[u8]) -> Value {
         let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let conn = db.lock().unwrap();
         let mut results = Vec::new();
@@ -2469,6 +2553,11 @@ mod reprioritize_tests {
                                 ),
                                 _ => rusqlite::types::Value::Null,
                             });
+                        }
+                    }
+                    if sql.trim_start().starts_with("UPDATE tasks ") {
+                        if let Some(race) = hook.lock().unwrap().take() {
+                            conn.execute_batch(&race).unwrap();
                         }
                     }
                     results.push(execute_sql(&conn, sql, &params));
@@ -3296,6 +3385,64 @@ mod task_history_tests {
             .map(|r| r["id"].as_i64().unwrap())
             .collect();
         assert!(all_ids.contains(&other_queue), "{all}");
+    }
+
+    /// #13068: `list --status dep_blocked` returns the rows health counts
+    /// as dep-blocked (blocked rows with a `blocked_deps` record) through
+    /// the broker `/list` route, while `--status blocked` still lists
+    /// every blocked row.
+    #[test]
+    fn list_dep_blocked_matches_health_count_13068() {
+        let (t, _) = fake_backend();
+        let queue = "dep-list-13068";
+        let dep_blocked = seed_consumer_task(&t, queue, "blocked", 3_000);
+        let plain_blocked = seed_consumer_task(&t, queue, "blocked", 2_000);
+        let queued_with_deps = seed_consumer_task(&t, queue, "queued", 1_000);
+        let other_queue = seed_consumer_task(&t, "dep-list-13068-other", "blocked", 1_000);
+        for id in [dep_blocked, queued_with_deps, other_queue] {
+            t.exec(
+                "UPDATE tasks SET blocked_deps = ? WHERE id = ?",
+                &[
+                    Arg::Text(r#"[{"kind":"issue","ref":"developing-today/code#1"}]"#.into()),
+                    Arg::Int(id),
+                ],
+            )
+            .unwrap();
+        }
+
+        let ids = |resp: &Value| -> Vec<i64> {
+            let mut ids: Vec<i64> = resp["rows"]
+                .as_array()
+                .unwrap_or_else(|| panic!("no rows: {resp}"))
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let dep = crate::turso_queue::dispatch(
+            &t,
+            "/list",
+            &json!({"queue": queue, "status": "dep_blocked", "limit": 500}),
+        );
+        assert_eq!(ids(&dep), vec![dep_blocked], "{dep}");
+        assert_eq!(dep["total"], 1, "{dep}");
+
+        let blocked = crate::turso_queue::dispatch(
+            &t,
+            "/list",
+            &json!({"queue": queue, "status": "blocked", "limit": 500}),
+        );
+        assert_eq!(ids(&blocked), vec![dep_blocked, plain_blocked], "{blocked}");
+
+        let health = super::super::verb_health(&t, &json!({"queue": queue}));
+        let entry = health["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["queue"] == queue))
+            .unwrap_or_else(|| panic!("no health row for {queue}: {health}"));
+        assert_eq!(entry["dep_blocked"], dep["total"], "{health}");
+        assert_eq!(entry["blocked"], 2, "{health}");
     }
 
     /// Oracle (#14170 Q8, design §9): the needs-user read returns only
@@ -4258,5 +4405,214 @@ mod task_notes_tests {
             )
             .expect("final normalized edge remains readable");
         assert_eq!(final_deps[0]["state"], "cleared");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (#9487, REL-02 design record §10): every holder write is
+// conditional on the claim it read. The race hook re-claims the row
+// between claimed_by's read and the verb's first `UPDATE tasks`, the
+// way a lapsed claim taken by another lane would; the verb must
+// refuse with exit 5 and leave the new holder's row, its lease, its
+// checkpoint KV and the event log exactly as they were.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod holder_guard_tests {
+    use super::super::verb_complete;
+    use super::reprioritize_tests::{events_for, fake_backend_with_race};
+    use super::*;
+
+    const QUEUE: &str = "repo-health-code-pilot";
+    const WORKER: &str = "guard-worker";
+
+    fn enqueue_claim(t: &TursoBackend, number: i64) -> i64 {
+        let packet = json!({
+            "title": format!("holder guard {number}"), "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1", "kind": "small_fix",
+                "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45, "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+            }
+        });
+        let enq = verb_enqueue(t, &json!({"queue": QUEUE, "packet": packet}));
+        assert_eq!(enq["ok"], true, "{enq}");
+        let id = enq["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            t,
+            &json!({
+                "worker": WORKER, "queue": QUEUE, "lane": "guard-lane-a",
+                "session_id": "ses_guard", "model_provider": "anthropic",
+                "model_id": "claude-haiku-5-5", "model_variant": "default"
+            }),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        assert_eq!(claimed["row"]["id"].as_i64(), Some(id), "{claimed}");
+        id
+    }
+
+    /// The other lane's re-claim, applied inside the race window.
+    fn reclaim_sql(id: i64) -> String {
+        format!(
+            "UPDATE tasks SET claimed_at = '2099-01-01T00:00:00Z', lane_id = 'guard-lane-b', \
+             attempts = attempts + 1, progress = '{{\"holder\":\"lane-b\"}}' WHERE id = {id}"
+        )
+    }
+
+    fn count(t: &TursoBackend, sql: &str, id: i64) -> i64 {
+        let rows = t.query_objs(sql, &[Arg::Int(id)], &[]).unwrap();
+        rows[0]["n"].as_i64().unwrap()
+    }
+
+    fn snapshot(t: &TursoBackend, id: i64) -> (Value, i64, i64, i64) {
+        (
+            get_task(t, id).unwrap().expect("task row"),
+            count(t, "SELECT COUNT(*) AS n FROM leases WHERE task_id = ?", id),
+            count(t, "SELECT COUNT(*) AS n FROM events WHERE task_id = ?", id),
+            count(
+                t,
+                "SELECT COUNT(*) AS n FROM checkpoints WHERE key = 'task:' || ?",
+                id,
+            ),
+        )
+    }
+
+    fn complete_req(id: i64, number: i64) -> Value {
+        let now = now_iso();
+        json!({
+            "task_id": id, "worker": WORKER,
+            "result": {
+                "evidence": "verified closure note",
+                "disposition": {
+                    "checked_at": now, "source": "fleet gh readback",
+                    "issue": {"number": number, "state": "closed", "closed_at": now},
+                    "pulls": [], "verdict": "closed_verified"
+                }
+            }
+        })
+    }
+
+    type Verb = fn(&TursoBackend, &Value) -> Value;
+    type Req = fn(i64, i64) -> Value;
+
+    fn cases() -> Vec<(&'static str, Verb, Req)> {
+        vec![
+            (
+                "release_repo_task",
+                verb_release as Verb,
+                (|id, _| json!({"task_id": id, "worker": WORKER, "reason": "guard test"})) as Req,
+            ),
+            (
+                "park_task",
+                verb_park as Verb,
+                (|id, _| json!({"task_id": id, "worker": WORKER, "reason": "guard test", "delay_seconds": 1200}))
+                    as Req,
+            ),
+            (
+                "checkpoint_task",
+                verb_checkpoint as Verb,
+                (|id, _| json!({"task_id": id, "worker": WORKER, "stage": "guard", "progress": {"step": 1}}))
+                    as Req,
+            ),
+            ("complete_task", verb_complete as Verb, complete_req as Req),
+        ]
+    }
+
+    #[test]
+    fn holder_writes_refuse_a_claim_changed_after_the_read_9487() {
+        let (t, _db, race) = fake_backend_with_race();
+        for (n, (verb, call, req)) in cases().into_iter().enumerate() {
+            let number = 948_700 + n as i64;
+            let id = enqueue_claim(&t, number);
+            let (_, leases_before, events_before, _) = snapshot(&t, id);
+            *race.lock().unwrap() = Some(reclaim_sql(id));
+            let out = call(&t, &req(id, number));
+            assert!(
+                race.lock().unwrap().is_none(),
+                "{verb}: race window reached"
+            );
+            let (after_row, leases, events, checkpoints) = snapshot(&t, id);
+            assert_eq!(out["ok"], false, "{verb}: {out}");
+            assert_eq!(out["exit"], 5, "{verb}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(&format!("{verb}: claim for task {id} changed")),
+                "{verb}: {out}"
+            );
+            // The new holder's claim stands untouched.
+            assert_eq!(after_row["status"], "claimed", "{verb}: {after_row}");
+            assert_eq!(after_row["lane_id"], "guard-lane-b", "{verb}: {after_row}");
+            assert_eq!(after_row["claimed_at"], "2099-01-01T00:00:00Z", "{verb}");
+            assert_eq!(after_row["progress"], json!({"holder": "lane-b"}), "{verb}");
+            assert!(after_row["resolution"].is_null(), "{verb}: {after_row}");
+            assert_eq!(checkpoints, 0, "{verb}: no checkpoint KV write");
+            // Nothing after the refused write ran: the lease is
+            // still there and no event was appended.
+            assert_eq!(leases, leases_before, "{verb}: lease kept");
+            assert_eq!(events, events_before, "{verb}: no event appended");
+            for kind in ["released", "parked", "checkpoint", "completed"] {
+                assert!(
+                    events_for(&t, id, kind).is_empty(),
+                    "{verb}: no {kind} event"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn holder_writes_land_on_an_unchanged_claim_9487() {
+        for (n, (verb, call, req)) in cases().into_iter().enumerate() {
+            // A fresh store per verb: a released task is queued
+            // again, and the next case's claim would pick it.
+            let (t, _db, _race) = fake_backend_with_race();
+            let number = 948_750 + n as i64;
+            let id = enqueue_claim(&t, number);
+            let out = call(&t, &req(id, number));
+            assert_eq!(out["ok"], true, "{verb}: {out}");
+            let row = get_task(&t, id).unwrap().expect("task row");
+            let want = match verb {
+                "release_repo_task" => "queued",
+                "park_task" => "parked",
+                "checkpoint_task" => "claimed",
+                _ => "done",
+            };
+            assert_eq!(row["status"], want, "{verb}: {row}");
+        }
+    }
+
+    #[test]
+    fn holder_guard_matches_the_heartbeat_tuple_9487() {
+        // Source oracle: the guard is the heartbeat statement's own
+        // claim tuple, and each holder verb's write carries it.
+        let hb = include_str!("heartbeat.sql");
+        for col in [
+            "status = 'claimed'",
+            "worker_id = ?5",
+            "claimed_at IS ?6",
+            "lane_id IS ?7",
+            "attempts = ?8",
+        ] {
+            assert!(hb.contains(col), "{col}");
+        }
+        for col in [
+            "status = 'claimed'",
+            "worker_id = ?",
+            "claimed_at IS ?",
+            "lane_id IS ?",
+            "attempts = ?",
+        ] {
+            assert!(HOLDER_GUARD.contains(col), "{col}");
+        }
+        assert_eq!(
+            HOLDER_GUARD.matches('?').count(),
+            holder_guard_args("w", &json!({})).len()
+        );
     }
 }

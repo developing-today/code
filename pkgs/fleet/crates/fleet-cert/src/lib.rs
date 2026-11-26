@@ -10,6 +10,8 @@
 //! shell over the public API in this crate —
 //!
 //! - [`algorithm`] — the algorithm registry (§§3.1, 6.3, 24.1);
+//! - [`algorithm_lab`] — per-algorithm benchmarks and environment
+//!   probes behind `algorithms benchmark | doctor` (§6.1, #13729);
 //! - [`timeparse`] — the §5.4 time grammar (RFC3339 + Gregorian
 //!   calendar durations);
 //! - [`naming`] — generation/partition coordinates and slugs (§5.2);
@@ -41,6 +43,7 @@
 //!   chain validator (§3.2).
 
 pub mod algorithm;
+pub mod algorithm_lab;
 pub mod bundle;
 pub mod chain;
 pub mod cli;

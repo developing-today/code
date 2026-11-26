@@ -18,8 +18,8 @@ import (
 )
 
 // Phase 3 of #1384 (#9963), the headline acceptance: a fresh daemon
-// start with a config loaded from a file that opts its stdio server
-// in runs it supervised (opt-in while sockets are keyed by name). The pool is what
+// start with a default config loaded from a file — no supervised key
+// anywhere — runs its stdio server supervised. The pool is what
 // a daemon start builds from the resolved config, so the proof is:
 // load, resolve, acquire, and a supervisor socket exists with the
 // instance's child behind it.
@@ -29,7 +29,7 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 	bin := testsupport.EraMCPBinary(t)
 	log := filepath.Join(t.TempDir(), "frames")
 	cfgPath := filepath.Join(t.TempDir(), "mcpx.json")
-	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}, "mcpx": {"supervised": true}}}}`
+	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}}}}`
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !r.Mcpx.SupervisedEnabled() {
-		t.Fatal("an opted-in config should resolve to supervised")
+		t.Fatal("a default file-loaded config should resolve to supervised")
 	}
 	p := pool.New(r)
 	defer p.Close()
@@ -81,6 +81,87 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 		t.Fatalf("supervised child %d still alive after the reap", childPID)
 	} else if !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("check supervised child %d after the reap: %v", childPID, err)
+	}
+}
+
+// The defect that forced #11343 to pause the default: one server
+// acquired under two scopes at once. The supervisor socket is keyed
+// per instance, so the second acquire no longer dials the first
+// instance's supervisor and gets refused "already attached" — each
+// scope gets its own supervisor, its own socket, and its own child.
+func TestSameServerTwoScopesGetDistinctSupervisors(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("MCPX_STATE_DIR", stateDir)
+	bin := testsupport.EraMCPBinary(t)
+	log := filepath.Join(t.TempDir(), "frames")
+	cfgPath := filepath.Join(t.TempDir(), "mcpx.json")
+	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}, "mcpx": {"scope": "cwd", "max": 4}}}}`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := cfg.Resolve("era")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pool.New(r)
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rootA, rootB := t.TempDir(), t.TempDir()
+	scopeA := config.ResolvedScope{Key: "cwd:" + rootA, Root: rootA}
+	scopeB := config.ResolvedScope{Key: "cwd:" + rootB, Root: rootB}
+	defer func() { _ = testsupport.StopSupervisors(stateDir) }()
+	leaseA, err := p.Acquire(ctx, scopeA)
+	if err != nil {
+		t.Fatalf("acquire scope A: %v", err)
+	}
+	defer leaseA.Release()
+	leaseB, err := p.Acquire(ctx, scopeB)
+	if err != nil {
+		t.Fatalf("acquire scope B (the #11343 refusal case): %v", err)
+	}
+	defer leaseB.Release()
+
+	sockA := mcpclient.SupervisorSocketPathForInstance(stateDir, "era", scopeA.Key)
+	sockB := mcpclient.SupervisorSocketPathForInstance(stateDir, "era", scopeB.Key)
+	if sockA == sockB {
+		t.Fatalf("two scopes share supervisor socket %s", sockA)
+	}
+	for _, sock := range []string{sockA, sockB} {
+		if _, err := os.Stat(sock); err != nil {
+			t.Fatalf("no supervisor socket at %s: %v", sock, err)
+		}
+	}
+	st := p.Status()
+	if len(st.Instances) != 2 {
+		t.Fatalf("status instances = %+v, want two", st.Instances)
+	}
+	pids := map[int]bool{}
+	for _, in := range st.Instances {
+		if in.PID <= 0 {
+			t.Fatalf("instance %+v has no child pid", in)
+		}
+		pids[in.PID] = true
+	}
+	if len(pids) != 2 {
+		t.Fatalf("instances share a child: %+v", st.Instances)
+	}
+	leaseA.Release()
+	leaseB.Release()
+	p.Close()
+	if err := testsupport.StopSupervisors(stateDir); err != nil {
+		t.Fatalf("stop supervised children: %v", err)
+	}
+	for pid := range pids {
+		if err := syscall.Kill(pid, 0); err == nil {
+			t.Fatalf("supervised child %d still alive after the reap", pid)
+		} else if !errors.Is(err, syscall.ESRCH) {
+			t.Fatalf("check supervised child %d after the reap: %v", pid, err)
+		}
 	}
 }
 

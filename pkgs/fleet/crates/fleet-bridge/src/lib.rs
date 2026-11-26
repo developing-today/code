@@ -400,10 +400,11 @@ values are never printed. A refused exchange stores nothing."
         }
         "notes" => {
             "\
-usage: fleet bridge notes <send | inbox | ack> [options]
+usage: fleet bridge notes <send | inbox | ack | get | watch> [options]
 
 The class/name notes surface, authenticated by this identity's own
-notes token (Bearer header, resolved by vault name).
+notes token (Bearer header, resolved by vault name). `get` alone needs
+no token.
 
   notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] <text | ->
         a * segment in --to wildcards. --kind instruction makes the
@@ -411,7 +412,17 @@ notes token (Bearer header, resolved by vault name).
         a sender. --reply-to ID answers a note in your inbox and is
         routed to its real sender; it may replace --to.
   notes inbox                  this identity's pending notes
-  notes ack (--up-to ID | ID...)   acknowledge notes"
+  notes ack (--up-to ID | ID...)   acknowledge notes
+  notes get CLASS/NAME         the path's public wake signal: a bare
+        UUID that changes when a note is delivered, and also rotates
+        on its own every 10-40 minutes, so a change is a reason to
+        look, never proof of a note
+  notes watch [--wait SECS] [--interval SECS]
+        block until this identity has pending notes, then print them
+        (the inbox answer, plus how it woke). Polls the public signal
+        every --interval (default 15) and reads the inbox only when
+        the signal changes; gives up after --wait (default and most
+        86400) with an empty answer"
         }
         "health" => {
             "\
@@ -784,6 +795,36 @@ impl Client {
         self.call_req(method, path, body, Some(token))
     }
 
+    /// One unauthenticated GET whose answer is plain text (the notes
+    /// public signal), trimmed.
+    fn get_text(&self, path: &str) -> R<String> {
+        let url = format!("{}{}", self.base, path);
+        let mut resp = self
+            .agent
+            .get(&url)
+            .header("Accept", "text/plain")
+            .header("User-Agent", "fleet-bridge")
+            .call()
+            .map_err(|e| {
+                BridgeError::Transport(format!(
+                    "GET to the bridge failed: {}",
+                    self.scrub(&e.to_string())
+                ))
+            })?;
+        let status = resp.status().as_u16();
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| BridgeError::Transport(format!("reading the bridge's answer: {e}")))?;
+        if !(200..300).contains(&status) {
+            return Err(BridgeError::Http {
+                status,
+                message: self.scrub(text.trim()).chars().take(300).collect(),
+            });
+        }
+        Ok(text.trim().to_string())
+    }
+
     fn call_req(
         &self,
         method: &str,
@@ -1120,7 +1161,7 @@ fn verb_exchange(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
 fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
     let Some((sub, nrest)) = rest.split_first() else {
         return Err(usage(
-            "notes needs a verb: send, inbox or ack (try: fleet bridge notes --help)",
+            "notes needs a verb: send, inbox, ack, get or watch (try: fleet bridge notes --help)",
         ));
     };
     match sub.as_str() {
@@ -1185,9 +1226,133 @@ fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
             let mut client = Client::new(&ctx.settings.url);
             client.call_bearer("POST", "/notes/ack", Some(&payload), &token)
         }
+        "get" => {
+            let a = parse(nrest, &[], &[])?;
+            let [identity] = a.positional.as_slice() else {
+                return Err(usage("notes get needs one CLASS/NAME"));
+            };
+            let identity = signal_identity(identity)?;
+            let client = Client::new(&ctx.settings.url);
+            let signal = client.get_text(&format!("/{identity}"))?;
+            Ok(json!({ "identity": identity, "signal": signal }))
+        }
+        "watch" => {
+            let a = parse(nrest, &[], &["--wait", "--interval"])?;
+            a.no_positional("notes watch")?;
+            let wait = a.uint("--wait")?.unwrap_or(MAX_WAIT_SECS);
+            if wait > MAX_WAIT_SECS {
+                return Err(usage(format!("--wait is at most {MAX_WAIT_SECS} seconds")));
+            }
+            let interval = a
+                .uint("--interval")?
+                .unwrap_or(DEFAULT_INTERVAL_SECS)
+                .max(1);
+            let token = notes_token(ctx)?;
+            let mut client = Client::new(&ctx.settings.url);
+            notes_watch(ctx, &mut client, &token, wait, interval)
+        }
         other => Err(usage(format!(
-            "unknown notes verb '{other}' (send, inbox or ack)"
+            "unknown notes verb '{other}' (send, inbox, ack, get or watch)"
         ))),
+    }
+}
+
+/// The worker's reserved first segments: these paths are routes, not
+/// a class's public signal (notes.js RESERVED_SIGNAL_CLASSES).
+const RESERVED_SIGNAL_CLASSES: &[&str] = &[
+    ".well-known",
+    "api",
+    "authorize",
+    "enroll",
+    "fleet",
+    "healthz",
+    "mcp",
+    "notes",
+    "p",
+    "register",
+    "token",
+];
+
+/// A `class/name` whose public signal can be read: two segments of
+/// 1-64 `a-z 0-9 . _ -` starting with a letter or digit (the worker's
+/// NOTE_SEGMENT), no wildcard, and not a reserved route.
+fn signal_identity(raw: &str) -> R<String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let segment_ok = |seg: &str| {
+        let b = seg.as_bytes();
+        !b.is_empty()
+            && b.len() <= 64
+            && b[0].is_ascii_alphanumeric()
+            && b.iter()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    };
+    match lower.split('/').collect::<Vec<_>>().as_slice() {
+        [class, name] if segment_ok(class) && segment_ok(name) => {
+            if RESERVED_SIGNAL_CLASSES.contains(class) {
+                Err(usage(format!(
+                    "'{class}' is a bridge route, not a notes class"
+                )))
+            } else {
+                Ok(lower)
+            }
+        }
+        _ => Err(usage(format!(
+            "'{raw}' is not CLASS/NAME (two segments of a-z 0-9 . _ -, no wildcard)"
+        ))),
+    }
+}
+
+/// `notes watch`: read the inbox once (notes may already be waiting,
+/// and its answer names this token's identity), then poll that
+/// identity's public signal and read the inbox again only when the
+/// signal changes. The signal also rotates on its own, so a change
+/// with an empty inbox just resets the baseline. Returns the first
+/// non-empty inbox answer, or the last (empty) one when --wait runs
+/// out, with `woke` (pending | signal | null) and `waited` seconds.
+fn notes_watch(ctx: &Ctx, client: &mut Client, token: &str, wait: u64, interval: u64) -> R<Value> {
+    let started = Instant::now();
+    let mut slept = 0u64;
+    let finish = |mut inbox: Value, woke: Option<&str>, waited: u64| {
+        inbox["woke"] = json!(woke);
+        inbox["waited"] = json!(waited);
+        inbox
+    };
+    let has_notes = |v: &Value| {
+        v.get("notes")
+            .and_then(Value::as_array)
+            .is_some_and(|n| !n.is_empty())
+    };
+    let inbox = client.call_bearer("GET", "/notes/inbox", None, token)?;
+    if has_notes(&inbox) {
+        return Ok(finish(inbox, Some("pending"), 0));
+    }
+    let identity = inbox
+        .get("identity")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            BridgeError::Transport("the bridge's inbox answer named no identity".to_string())
+        })
+        .and_then(signal_identity)?;
+    let signal_path = format!("/{identity}");
+    let mut last = client.get_text(&signal_path)?;
+    let mut latest = inbox;
+    loop {
+        let elapsed = started.elapsed().as_secs().max(slept);
+        if elapsed >= wait {
+            return Ok(finish(latest, None, elapsed));
+        }
+        let step = interval.min(wait - elapsed);
+        (ctx.sleep)(Duration::from_secs(step));
+        slept += step;
+        let now = client.get_text(&signal_path)?;
+        if now != last {
+            last = now;
+            latest = client.call_bearer("GET", "/notes/inbox", None, token)?;
+            if has_notes(&latest) {
+                let waited = started.elapsed().as_secs().max(slept);
+                return Ok(finish(latest, Some("signal"), waited));
+            }
+        }
     }
 }
 

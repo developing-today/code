@@ -1600,25 +1600,34 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
         &req.get("result").cloned().unwrap_or(json!({})),
     );
     let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
-               resolution = ?, resolution_category = ?, resolution_substatus = ?, \
-               resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
-               completed_at = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(result.to_string()),
-                Arg::Text(fields.resolution.clone()),
-                Arg::Text(fields.category.clone()),
-                arg_str(fields.substatus.as_deref()),
-                arg_str(fields.reason.as_deref()),
-                arg_str(fields.reference.as_deref()),
-                Arg::Text(worker.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Int(task_id),
-            ],
+        // #9487: the completion carries the holder guard; a claim
+        // that changed after claimed_by read it completes nothing.
+        let mut args = vec![
+            Arg::Text(result.to_string()),
+            Arg::Text(fields.resolution.clone()),
+            Arg::Text(fields.category.clone()),
+            arg_str(fields.substatus.as_deref()),
+            arg_str(fields.reason.as_deref()),
+            arg_str(fields.reference.as_deref()),
+            Arg::Text(worker.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!(
+                "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
+                   resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+                   resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
+                   completed_at = ?, updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+            ),
+            &args,
         )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("complete_task", task_id));
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         touch_worker(t, &worker, None)?;
         event(
@@ -1836,9 +1845,19 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
+    // #13068: dep-blocked tasks are not a stored status — they are
+    // `blocked` rows carrying a `blocked_deps` record (#8276), which
+    // health counts separately as `dep_blocked`. `--status dep_blocked`
+    // selects exactly those rows, matching the health count;
+    // `--status blocked` keeps its meaning and lists every blocked row,
+    // dep-blocked ones included.
     if let Some(s) = req_str(req, "status") {
-        conds += " AND status = ?";
-        args.push(Arg::Text(s.to_string()));
+        if s == "dep_blocked" {
+            conds += " AND status = 'blocked' AND blocked_deps IS NOT NULL";
+        } else {
+            conds += " AND status = ?";
+            args.push(Arg::Text(s.to_string()));
+        }
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
@@ -1899,7 +1918,13 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps", "ready_condition", "labels"]
+        &[
+            "progress",
+            "payload",
+            "blocked_deps",
+            "ready_condition",
+            "labels",
+        ]
     } else {
         &[]
     };

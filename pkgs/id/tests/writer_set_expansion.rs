@@ -70,6 +70,7 @@ fn feed_auth(
         after,
         MembershipRole::Auth {
             author,
+            authorization_actor: None,
             group,
             action,
         },
@@ -308,6 +309,7 @@ fn test_expand_fork_invalidated_grant_changes_expansion_and_cache_keys_on_resolu
         let role = if as_action {
             MembershipRole::Auth {
                 author: author(ALICE),
+                authorization_actor: None,
                 group: Some(group()),
                 action: GroupAction::Add {
                     member: individual(author(DAVE)),
@@ -761,6 +763,7 @@ proptest! {
                 after: after.clone(),
                 role: MembershipRole::Auth {
                     author: author(ALICE),
+                    authorization_actor: None,
                     group: Some(group()),
                     action,
                 },

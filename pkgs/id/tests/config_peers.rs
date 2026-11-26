@@ -183,7 +183,11 @@ fn identity_and_shape_errors_fail_closed() {
         json!({ "peer_id": "a", "policy_version": 1, "class": "trusted" }),
         json!({ "peer_id": "a", "policy_version": 1, "operations": ["sync.write"] }),
         json!({ "peer_id": "a", "policy_version": -1 }),
-        json!({ "peer_id": "a", "policy_version": 1, "overrides": {} }),
+        json!({
+            "peer_id": "a",
+            "policy_version": 1,
+            "overrides": { "sync.send": { "class": "fully_trusted" } }
+        }),
         json!({ "peer_id": "a", "policy_version": 1, "trust_everything": true }),
     ] {
         assert!(

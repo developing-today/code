@@ -1830,7 +1830,6 @@ fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
     Ok(samples)
 }
 
-
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|arg| arg == "--quick");

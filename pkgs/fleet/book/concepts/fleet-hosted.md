@@ -218,12 +218,12 @@ implementations of the store interfaces wherever a production
 binding has not replaced them. The queue store is the one seam
 production has replaced so far:
 
-| Seam in the Worker                                     | Production home                                                                 |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `FixtureSessionRegistry`                               | The session registry's production store                                         |
-| `FixtureMetadataStore`                                 | The #9074 metadata database                                                     |
+| Seam in the Worker                                     | Production home                                                                                                                                                            |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FixtureSessionRegistry`                               | The session registry's production store                                                                                                                                    |
+| `FixtureMetadataStore`                                 | The #9074 metadata database                                                                                                                                                |
 | `FixtureQueueStore`                                    | The fleet-queue D1 database, behind the D1 queue store (#14868) — replaced in production by the `QUEUE_D1` binding (#14870); the fixture remains the local and test wiring |
-| The fixture tenancy directory (`TENANCY_FIXTURE_JSON`) | Component E's tenancy database, which does not exist yet                        |
+| The fixture tenancy directory (`TENANCY_FIXTURE_JSON`) | Component E's tenancy database, which does not exist yet                                                                                                                   |
 
 `wrangler.toml` declares the `QUEUE_D1` binding and the bridge
 service binding; it declares no KV, R2, Durable Objects or queues,

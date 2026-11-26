@@ -593,9 +593,7 @@ def build_dump(client, exported_at):
             if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
                 body.append(stmt)
             else:
-                body.extend(
-                    _split_row_insert(name, colnames, row, pk_cols, splits)
-                )
+                body.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
     lines.extend(create_lines)
     lines.extend(body)
     for kind, _name, _t, sql in schema:

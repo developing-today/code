@@ -90,7 +90,11 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         &json!({"queue": queue, "payload": task.get("payload").cloned().unwrap_or(json!({}))}),
     );
     let override_reason = dedupe_override(&packet);
-    let work = (|| -> Result<(Value, Option<Value>, Option<Value>), TErr> {
+    // The tuple is (row, predecessor, work-identity collision,
+    // dedupe-key match report). The two reports are the envelope
+    // fields a filer reads to learn its filing was absorbed rather
+    // than created (#10627).
+    let work = (|| -> Result<(Value, Option<Value>, Option<Value>, Option<Value>), TErr> {
         let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
             let existing = t.query_objs(
@@ -106,7 +110,8 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 if let Some(id) = row.get("id").and_then(Value::as_i64) {
                     seed_task_links(t, id, &row, "enqueue_repo_task")?;
                 }
-                return Ok((row, None, None));
+                let report = dedupe_match_detail(&row, false);
+                return Ok((row, None, None, Some(report)));
             }
             // #13091: a COMPLETED predecessor is terminal for the
             // key. The work was done and dispositioned; a re-filing
@@ -122,7 +127,14 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
-                    return Ok((row.clone(), None, None));
+                    // #10627: the absorption itself is #13091's
+                    // standing rule; what was missing is the report.
+                    // Name the terminal match in the envelope so a
+                    // caller can suffix the key and re-file in the
+                    // same pass instead of mistaking the completed
+                    // row for the task it asked for.
+                    let report = dedupe_match_detail(row, true);
+                    return Ok((row.clone(), None, None, Some(report)));
                 }
             }
             predecessor = terminal;
@@ -139,7 +151,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("");
             if let Some(holder) = live_identity_holder(t, ident, kind)? {
                 let detail = collision_detail(&holder, ident);
-                return Ok((holder, None, Some(detail)));
+                return Ok((holder, None, Some(detail), None));
             }
             // #13091: a COMPLETED holder of the identity absorbs
             // the filing the same way. #10627 left terminal rows
@@ -159,7 +171,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                      task is never re-served (#13091) — file with \
                      payload.dedupe_override=\"<reason>\" for a deliberate parallel"
                 );
-                return Ok((holder, None, Some(detail)));
+                return Ok((holder, None, Some(detail), None));
             }
         }
         let ins = t.exec(
@@ -281,17 +293,20 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 "enqueue_staleness_check",
             )?;
             let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
-            return Ok((row, predecessor, None));
+            return Ok((row, predecessor, None, None));
         }
-        Ok((row, predecessor, None))
+        Ok((row, predecessor, None, None))
     })();
     match work {
-        Ok((row, predecessor, collision)) if !row.is_null() => {
+        Ok((row, predecessor, collision, dedupe_match)) if !row.is_null() => {
             let mut envelope = json!({
                 "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
             });
             if let Some(c) = collision {
                 envelope["work_identity_collision"] = c;
+            }
+            if let Some(m) = dedupe_match {
+                envelope["dedupe_match"] = m;
             }
             if let Some(pred) = &predecessor {
                 envelope["revived_from"] = json!({

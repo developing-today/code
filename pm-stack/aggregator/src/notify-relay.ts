@@ -9,9 +9,10 @@
 //   - Heartbeat: POST {stackEpoch, seq, at} every ~60s. The
 //     stackEpoch is minted per aggregator start; the edge treats
 //     an epoch change after silence as the recovery boundary.
-//     The response carries the pending-answer count (step 3's
-//     drain; this client only reads it, the drain itself is
-//     step 3).
+//     The response carries the pending-answer count; above 0, the
+//     same contact drains them (step 3, #13469): GET /answers,
+//     apply each through the laptop's own answer path, then
+//     POST /answers/ack for every answer with a final outcome.
 //   - Subscription mirror: on any subscription-store change (the
 //     server routes call requestNotifyRelaySubscriptionSync) the
 //     COMPLETE mirrored set is POSTed as one snapshot under a
@@ -32,6 +33,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AlertsStore, IncidentMirrorRow, PushSubscriptionRow } from "./alerts.ts";
 import type { Config } from "./config.ts";
+import type { EdgeAnswer, EdgeApplyOutcome } from "./needs-drew-answer.ts";
 import type { NotificationCandidate } from "./notifications.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 
@@ -83,16 +85,35 @@ export function notificationMirrorEvent(
     stateFingerprint: candidate.stateFingerprint,
     ...(candidate.needsDrew ? { needsDrew: candidate.needsDrew } : {}),
   };
+  // #13469: a question mirrored with its token hash is answerable at
+  // the edge. The marker gives it a new id, so a question mirrored
+  // before the edge could answer it is mirrored once more.
+  const identity: unknown[] = [
+    notificationMirrorId({ objectRef: candidate.objectRef, transition, payload }),
+    occurrenceId,
+  ];
+  if (candidate.needsDrew?.tokenHash) identity.push("answerable");
   return {
-    mirrorId: createHash("sha256")
-      .update(
-        JSON.stringify([notificationMirrorId({ objectRef: candidate.objectRef, transition, payload }), occurrenceId]),
-      )
-      .digest("hex"),
+    mirrorId: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
     objectRef: candidate.objectRef,
     transition,
     raisedAt,
     payload,
+  };
+}
+
+/** #13469: a needs-Drew question that stopped candidating (answered
+ * here, or aged out) is withdrawn at the edge, so its answer page
+ * refuses further answers. One cleared event per raised occurrence. */
+export function needsDrewClearedEvent(objectRef: string, occurrenceId: string, clearedAt: string): MirroredEvent {
+  return {
+    mirrorId: createHash("sha256")
+      .update(JSON.stringify(["cleared", objectRef, occurrenceId]))
+      .digest("hex"),
+    objectRef,
+    transition: "cleared",
+    raisedAt: clearedAt,
+    payload: { class: "needs-user" },
   };
 }
 
@@ -162,6 +183,20 @@ export interface NotifyRelayDeps {
   fetchImpl?: typeof fetch;
   now?: () => number;
   mintEpoch?: () => string;
+  /** #13469: apply one answer taken at the edge to the ledger. A
+   * returned outcome is final and acked; a throw leaves the answer at
+   * the edge for the next contact. Absent: answers are not drained. */
+  applyAnswer?: (answer: EdgeAnswer) => Promise<EdgeApplyOutcome>;
+}
+
+export interface AnswerDrainRecord {
+  at: string;
+  applied: number;
+  duplicate: number;
+  unknown: number;
+  rejected: number;
+  failed: number;
+  acked: number;
 }
 
 export class NotifyRelayClient {
@@ -191,6 +226,8 @@ export class NotifyRelayClient {
   lastError: string | null = null;
   lastHeartbeatAt: string | null = null;
   lastPendingAnswers: number | null = null;
+  lastDrain: AnswerDrainRecord | null = null;
+  private drainInFlight: Promise<void> | null = null;
 
   constructor(private readonly deps: NotifyRelayDeps) {
     this.stackEpoch = (deps.mintEpoch ?? (() => crypto.randomUUID()))();
@@ -247,8 +284,75 @@ export class NotifyRelayClient {
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
     }
+    // Answers drain in the same contact as the beat that reported them
+    // (design §1), so answer latency while the stack is up is one beat.
+    if ((this.lastPendingAnswers ?? 0) > 0) await this.drainAnswers();
     // Heartbeats must not queue behind an arbitrarily long mirror backlog.
     await this.flushMirrorEvents();
+  }
+
+  /** Pull the answers taken at the edge, apply each once, and ack
+   * every answer whose outcome is final. Fail-soft: an answer whose
+   * application throws stays at the edge and is offered again. */
+  async drainAnswers(): Promise<void> {
+    if (!this.deps.applyAnswer) return;
+    if (this.drainInFlight) return this.drainInFlight;
+    const run = this.drainAnswersOnce().catch((err) => {
+      this.lastError = err instanceof Error ? err.message : String(err);
+    });
+    this.drainInFlight = run;
+    try {
+      await run;
+    } finally {
+      this.drainInFlight = null;
+    }
+  }
+
+  private async drainAnswersOnce(): Promise<void> {
+    const apply = this.deps.applyAnswer;
+    if (!apply) return;
+    const secret = await this.resolveSecret(NOTIFY_RELAY_SECRET_NAME);
+    if (!secret) throw new Error(`relay shared secret unavailable (bws: ${NOTIFY_RELAY_SECRET_NAME})`);
+    const res = await this.fetchImpl(`${this.deps.url}/answers`, {
+      headers: { authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`relay answers GET failed: HTTP ${res.status}`);
+    const body = (await res.json().catch(() => null)) as { answers?: unknown } | null;
+    const answers = Array.isArray(body?.answers) ? body.answers.filter(isEdgeAnswer) : [];
+    const record: AnswerDrainRecord = {
+      at: new Date(this.now()).toISOString(),
+      applied: 0,
+      duplicate: 0,
+      unknown: 0,
+      rejected: 0,
+      failed: 0,
+      acked: 0,
+    };
+    const ack: string[] = [];
+    for (const answer of answers) {
+      try {
+        const outcome = await apply(answer);
+        record[outcome] += 1;
+        ack.push(answer.answerId);
+      } catch (err) {
+        record.failed += 1;
+        this.lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (ack.length) {
+      const acked = await this.fetchImpl(`${this.deps.url}/answers/ack`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+        body: JSON.stringify({ answerIds: ack }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!acked.ok) throw new Error(`relay answers ack failed: HTTP ${acked.status}`);
+      const ackBody = (await acked.json().catch(() => null)) as { pendingAnswers?: unknown } | null;
+      record.acked = ack.length;
+      if (typeof ackBody?.pendingAnswers === "number") this.lastPendingAnswers = ackBody.pendingAnswers;
+    }
+    this.lastDrain = record;
   }
 
   /** Persist before sending; an ambiguous network failure retries the
@@ -325,7 +429,25 @@ export class NotifyRelayClient {
       const priorPending = this.pendingEvents;
       const nextActive = new Map(priorActive);
       const nextPending = [...priorPending];
-      for (const key of nextActive.keys()) if (!current.has(key)) nextActive.delete(key);
+      const currentRefs = new Set(mirrorable.map((candidate) => candidate.objectRef));
+      const clearedAt = new Date(this.now()).toISOString();
+      for (const [key, active] of nextActive) {
+        if (current.has(key)) continue;
+        nextActive.delete(key);
+        // #13469: a needs-Drew question that stopped candidating is
+        // withdrawn at the edge (a new state of the same question is
+        // not a withdrawal: its raised event supersedes the old one).
+        const objectRef = activeObjectRef(key);
+        if (objectRef?.startsWith("needs-drew:") && !currentRefs.has(objectRef)) {
+          const cleared = needsDrewClearedEvent(objectRef, active.occurrenceId, clearedAt);
+          if (
+            !this.ackedEvents.has(cleared.mirrorId) &&
+            !nextPending.some((pending) => pending.mirrorId === cleared.mirrorId)
+          ) {
+            nextPending.push(cleared);
+          }
+        }
+      }
       for (const candidate of mirrorable) {
         const key = JSON.stringify([candidate.class, candidate.objectRef, candidate.stateFingerprint]);
         let active = nextActive.get(key);
@@ -611,6 +733,30 @@ export class NotifyRelayClient {
   }
 }
 
+/** The object ref inside an active-candidate key
+ * (`JSON.stringify([class, objectRef, stateFingerprint])`). */
+function activeObjectRef(key: string): string | null {
+  try {
+    const parsed = JSON.parse(key) as unknown;
+    return Array.isArray(parsed) && typeof parsed[1] === "string" ? parsed[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function isEdgeAnswer(value: unknown): value is EdgeAnswer {
+  if (!value || typeof value !== "object") return false;
+  const answer = value as Record<string, unknown>;
+  return (
+    typeof answer.answerId === "string" &&
+    answer.answerId.length > 0 &&
+    typeof answer.ledgerId === "string" &&
+    answer.ledgerId.length > 0 &&
+    typeof answer.answeredAt === "string" &&
+    typeof answer.answerTokenHash === "string"
+  );
+}
+
 // ------------------------------------------------------ singleton wiring
 
 let singleton: NotifyRelayClient | null = null;
@@ -620,10 +766,19 @@ let singleton: NotifyRelayClient | null = null;
  * deployed/configured yet — the aggregator runs exactly as
  * before in that case. Called once from server.ts startup,
  * beside startAlertEngine. */
-export function startNotifyRelay(cfg: Config, getStore: NotifyRelayDeps["getStore"]): NotifyRelayClient | null {
+export function startNotifyRelay(
+  cfg: Config,
+  getStore: NotifyRelayDeps["getStore"],
+  applyAnswer?: NotifyRelayDeps["applyAnswer"],
+): NotifyRelayClient | null {
   if (!cfg.notifyRelay.url) return null;
   if (singleton) return singleton;
-  singleton = new NotifyRelayClient({ url: cfg.notifyRelay.url, stateFile: cfg.notifyRelay.stateFile, getStore });
+  singleton = new NotifyRelayClient({
+    url: cfg.notifyRelay.url,
+    stateFile: cfg.notifyRelay.stateFile,
+    getStore,
+    ...(applyAnswer ? { applyAnswer } : {}),
+  });
   void singleton.start().catch(() => {
     // start() records its own errors; the catch only keeps an
     // early rejection from surfacing as an unhandled rejection.

@@ -68,7 +68,7 @@ fn hex_decode(text: &str, len: usize) -> Option<Vec<u8>> {
     }
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(len);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let hi = char::from(pair[0]).to_digit(16)?;
         let lo = char::from(pair[1]).to_digit(16)?;
         out.push(u8::try_from(hi * 16 + lo).ok()?);
@@ -752,6 +752,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 

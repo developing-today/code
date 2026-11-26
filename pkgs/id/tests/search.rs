@@ -94,6 +94,7 @@ impl Writer {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         })
     }
 }
@@ -112,6 +113,7 @@ fn tag_ext(kind: &str, op: TagOp, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 

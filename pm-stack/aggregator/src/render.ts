@@ -71,6 +71,7 @@ import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notificatio
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
 import { PROMPT_MODES, PROMPT_TARGETS, type PromptRecord } from "./prompts.ts";
+import { PRIMARY_PROMPT_PAGES, renderPromptDock, renderSectionPrompt } from "./prompt-widget.ts";
 import {
   reconciledInProgress,
   type InProgressSignal,
@@ -78,7 +79,7 @@ import {
   type QueueRow,
   type ReconciledInProgressItem,
 } from "./queue-view.ts";
-import type { HealthView, PageHealth } from "./health.ts";
+import { dedupeGathererProviders, type HealthView, type PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
   type AaConfig,
@@ -608,10 +609,19 @@ function layout(
   // the sections as <optgroup>s, and both list every page.
   const links = navLinks(active);
   const dropdown = pageDropdown(active);
+  // #10032 S1: the prompt dock. A page reports its own manifest id; a
+  // sub-page (item, project detail) reports the page that reaches it.
+  const exactPage = pageByRoute(active)?.id;
+  const promptPage = exactPage ?? pageByRoute(manifestRouteFor(active) ?? "/")?.id ?? "overview";
+  const promptDock = renderPromptDock({
+    page: promptPage,
+    pageScope: exactPage !== undefined && PRIMARY_PROMPT_PAGES.includes(exactPage),
+  });
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}<a class="badge prompt-unread" href="/chat" data-prompt-unread hidden>✉ <span data-prompt-unread-count>0</span> unread</a>${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
+${promptDock}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script><script src="/assets/prompt-badge.js?v=prompt-badge-2026-11-23" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
@@ -1686,7 +1696,7 @@ export function renderBoardBody(
               }
             }
           }
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}${renderSectionPrompt("board", item.id)}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1867,6 +1877,7 @@ function roadmapCard(
   spend?: SpendCardsView | null,
   epicRollups?: Map<string, EpicRollup>,
   showRowNotes = false,
+  promptPage?: string,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1908,7 +1919,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}${promptPage ? renderSectionPrompt(promptPage, row.subject) : ""}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1924,7 +1935,7 @@ function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
-  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean },
+  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean; promptPage?: string },
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1934,7 +1945,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes, options?.promptPage)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -2004,9 +2015,13 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No priority rows in the current roadmap source.</p>';
   } else if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend, {
+      promptPage: "roadmap",
+    });
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend, {
+      promptPage: "roadmap",
+    });
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const byTheme = new Map<string, RoadmapRow[]>();
@@ -2021,7 +2036,19 @@ export function renderRoadmap(
             const cards = (laneRows: RoadmapRow[]) =>
               laneRows
                 .map((row) =>
-                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                  roadmapCard(
+                    row,
+                    items,
+                    counts,
+                    drill?.get(row.subject),
+                    annotations,
+                    briefs,
+                    forecasts,
+                    spend,
+                    undefined,
+                    false,
+                    "roadmap",
+                  ),
                 )
                 .join("");
             const lanes = dg.lanes
@@ -2139,7 +2166,26 @@ export function commentsFixtureSourced(provenance: Provenance): boolean {
   return provenance.comments.startsWith("fixtures");
 }
 
+/** #14065 slice 3: live mode withholds fixture comments when the
+ * projector is off or unreachable, so the stream is plainly empty. */
+export const UNAVAILABLE_COMMENTS_CAUSE =
+  "the comment stream is unavailable while the projector is off or unreachable (#14065)";
+
+export function commentsUnavailable(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("unavailable");
+}
+
+/** Why an empty comment stream may not mean "no discussion", or null. */
+export function commentsMissingCause(provenance: Provenance): string | null {
+  if (commentsFixtureSourced(provenance)) return FIXTURE_COMMENTS_CAUSE;
+  if (commentsUnavailable(provenance)) return UNAVAILABLE_COMMENTS_CAUSE;
+  return null;
+}
+
 export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  if (commentsUnavailable(provenance)) {
+    return `<div class="banner">The comment stream is unavailable while the projector is off or unreachable (#14065) — GitHub comments are not shown, and an empty stream does not mean the work has no discussion.</div>`;
+  }
   return commentsFixtureSourced(provenance)
     ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
     : "";
@@ -2181,12 +2227,16 @@ export function renderItem(
           /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
           provenance.items.startsWith("fixtures")
             ? "resolution fell back to fixtures (projector off, #1199)"
-            : "some linked refs could not be resolved from the current sources"
+            : /\+ unavailable for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
+                provenance.items.startsWith("unavailable")
+              ? "the projector is off or unreachable, so refs outside the project pool are unresolved (#14065)"
+              : "some linked refs could not be resolved from the current sources"
         }`
       : "Linked issues / PRs";
   const commentsBanner = fixtureCommentsBannerHtml(provenance);
-  const emptyCommentRow = commentsFixtureSourced(provenance)
-    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+  const missingCause = commentsMissingCause(provenance);
+  const emptyCommentRow = missingCause
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${missingCause}</td></tr>`
     : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
@@ -3900,7 +3950,7 @@ export function renderTodayBody(
     ? allObjectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}${renderSectionPrompt("today", o.ref || `objective:${i + 1}`)}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -4016,7 +4066,7 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
       const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}</article>`;
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}${renderSectionPrompt("queue", item.ref || item.title)}</article>`;
     })
     .join("")}</div>`;
 }
@@ -6543,7 +6593,7 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       const port = s.def.port !== null ? String(s.def.port) : "—";
       const upWhen = s.def.upWhen ? `<br><span class="muted">up = ${esc(s.def.upWhen)}</span>` : "";
       const notes = s.def.notes ? `<br><span class="muted">${esc(s.def.notes)}</span>` : "";
-      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
+      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state === "late" ? "stale" : s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
     })
     .join("");
   const sectionRows = view.feed.sections.length
@@ -6558,14 +6608,22 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
         })
         .join("")
     : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
-  const gathererRows = view.quotaGatherer?.providers.length
-    ? view.quotaGatherer.providers
+  // #14062: one row per provider, service and credential (the gatherer can
+  // list one more than once), the gatherer's own error text on a failed row,
+  // and the lag note said once under the table rather than on every row.
+  const gathererProviders = dedupeGathererProviders(view.quotaGatherer?.providers ?? []);
+  const gathererLagNotes = [...new Set(gathererProviders.map((p) => p.lagNote).filter(Boolean))];
+  const gathererRows = gathererProviders.length
+    ? gathererProviders
         .map(
           (p) =>
-            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}</td><td>unknown</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "—"}</td><td>${esc(p.lagNote)}</td></tr>`,
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}${p.state === "error" || p.state === "lapsed" ? ` <span class="muted">\u2014 ${p.error ? esc(p.error) : "the gatherer gave no reason"}</span>` : ""}</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "\u2014"}</td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="6" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
+    : `<tr><td colspan="4" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
+  const gathererNote = gathererLagNotes.length
+    ? `<p class="muted">Behind by is not shown: ${gathererLagNotes.map((note) => esc(note)).join("; ")}.</p>`
+    : "";
   const orch = view.jobs.orchestration;
   const orchLine = orch.generatedAt
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
@@ -6640,7 +6698,13 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
               : "up";
       const remaining = s.budgetRemainingPercent === null ? "\u2014" : `${s.budgetRemainingPercent.toFixed(1)}%`;
       const burn = s.burnRate1h === null ? "\u2014" : s.burnRate1h.toFixed(2);
-      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${esc(s.state)}</td></tr>`;
+      // #14062: a budget spent earlier in the window while the facet reads
+      // inside its target now says both, so the row never contradicts itself.
+      const state =
+        s.state === "exhausted" && s.latestBad === false
+          ? `exhausted over the window <span class="muted">\u00b7 now within target</span>`
+          : esc(s.state);
+      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${state}</td></tr>`;
     })
     .join("");
   const sloSection = view.slo
@@ -6707,7 +6771,8 @@ ${sloSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Quota gatherer sources</h2>
-<div class="tblwrap"><table><caption>Quota-gatherer provider freshness and lag</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th></tr>${gathererRows}</table></div>
+<div class="tblwrap"><table><caption>Quota-gatherer provider freshness</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Last sync</th></tr>${gathererRows}</table></div>
+${gathererNote}
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -6752,9 +6817,10 @@ export function renderDiscuss(
   // #1500: the same fixture banner + honest empty wording as the item
   // page, keyed off the comments provenance this page already receives.
   const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussMissingCause = commentsMissingCause(provenance);
   const discussEmptyWording =
-    commentsFixtureSourced(provenance) && comments.length === 0
-      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+    discussMissingCause && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${discussMissingCause}</p>`
       : "";
   const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
@@ -7342,7 +7408,7 @@ function projectCard(s: ProjectSummary): string {
   const homeLine = s.homeDoc
     ? `<br><span class="muted">Home doc: <a href="${esc(s.homeDoc.url)}">${esc(s.homeDoc.path)}</a></span>`
     : "";
-  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a></div>`;
+  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a>${renderSectionPrompt("program", s.id)}</div>`;
 }
 
 /** /program as the projects index (#1121): one card per configured
@@ -8254,8 +8320,7 @@ function incidentCard(i: Incident, events: IncidentEvent[] = [], all: Incident[]
   // §6.2 threshold earn a durable incident page; link it from the card.
   const ownEvents = events.filter((e) => e.incident_id === i.id);
   const pageLink =
-    ownEvents.some((e) => e.detail?.healthHook !== undefined) &&
-    incidentPageThreshold(i, ownEvents, all).qualifies
+    ownEvents.some((e) => e.detail?.healthHook !== undefined) && incidentPageThreshold(i, ownEvents, all).qualifies
       ? `<br><a href="/reports/incident/${esc(i.id)}">Incident page</a>`
       : "";
   return `<div class="card incident" id="incident-${esc(i.id)}">

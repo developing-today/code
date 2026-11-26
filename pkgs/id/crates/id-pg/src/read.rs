@@ -208,6 +208,13 @@ pub trait PageDecoder {
     /// order. The cursor of a page's last row is where the next page
     /// starts.
     fn cursor(&self, row: &Self::Row, ordering: &[OrderKey]) -> Result<Vec<Value>, DecodeError>;
+
+    /// Remove `columns` from `row`. The reader calls this with the
+    /// request's cursor-only columns once the row's cursor is no longer
+    /// needed, so a projection that leaves out an ordering key returns
+    /// only the columns it asked for (#15010). A column the row does
+    /// not carry is ignored.
+    fn drop_columns(&self, row: &mut Self::Row, columns: &[String]);
 }
 
 /// Why a read failed.
@@ -546,6 +553,8 @@ pub fn live_read<T: Transport, D: PageDecoder>(
     // Refusals come first and need no mode: they depend on the query text
     // alone, and nothing is sent until the query passes (§9 invariant 1).
     let mut request = translator.translate(query)?;
+    // The same for every page: later pages change only the cursor.
+    let cursor_only = request.cursor_only.clone();
     let collection = collection_for(endpoint, query)?;
     match modes.mode_for(&collection.relation)? {
         ReadMode::Live => {}
@@ -581,6 +590,11 @@ pub fn live_read<T: Transport, D: PageDecoder>(
             None => None,
         };
         if complete || next_cursor.is_none() || pages >= max_pages {
+            if !cursor_only.is_empty() {
+                for row in &mut rows {
+                    decoder.drop_columns(row, &cursor_only);
+                }
+            }
             return Ok(LiveResult {
                 rows,
                 consistency: Consistency::PerRequest,

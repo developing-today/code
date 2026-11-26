@@ -112,9 +112,8 @@ export class PmEdge extends DurableObject<Env> {
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
-      ledgerPages: env.LEDGER_PAGES === "on"
-        ? { url: env.PM_LEDGER_DB_URL ?? "", token: env.PM_LEDGER_DB_TOKEN }
-        : undefined,
+      ledgerPages:
+        env.LEDGER_PAGES === "on" ? { url: env.PM_LEDGER_DB_URL ?? "", token: env.PM_LEDGER_DB_TOKEN } : undefined,
       // Live connections to the app. The platform holds them, so they
       // stay open while this object is put away between events, and it
       // is woken (by its alarm) only when there is something to read.

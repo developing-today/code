@@ -692,6 +692,46 @@ impl WorldHandle {
             .context("world actor dropped execution profile response")?
     }
 
+    /// Durably replace this world's presentation policy (#14731 slice
+    /// 2b) and return the stored policy.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a policy past its size bounds, on a read-only world, or on
+    /// world storage failure.
+    pub async fn set_presentation_policy(
+        &self,
+        policy: id_core::presentation_policy::PresentationPolicy,
+    ) -> Result<id_core::presentation_policy::PresentationPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetPresentationPolicy { policy, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped presentation policy response")?
+    }
+
+    /// Read this world's presentation policy. It is public pre-join
+    /// metadata (#5970 §5).
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the world actor is closed.
+    pub async fn presentation_policy(
+        &self,
+    ) -> Result<id_core::presentation_policy::PresentationPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PresentationPolicyInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped presentation policy")
+    }
+
     /// Read this world's currently requested resource profile.
     pub async fn execution_profile(&self) -> Result<crate::world_limits::WorldExecutionProfile> {
         let (reply, response) = oneshot::channel();

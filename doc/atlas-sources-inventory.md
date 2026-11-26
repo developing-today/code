@@ -9,15 +9,15 @@ Acceptance item 1 of #9097: every source, its store, volume, update mechanism
 its group section; do not edit another slice's section. Append-only: a slice
 adds its section (or extends it) without rewording settled sections.
 
-| Group | #9097 item | Slice | State |
-|---|---|---|---|
-| 1. Turso queue / PM-stack | item 1: fleet-queue data, PM-stack aggregator state / boards / reconcile | S1 (this slice, task 22929) | LANDED here |
-| 2. GitHub — all orgs/repos | item 2 | S2 | PLACEHOLDER — not this slice |
-| 3. Muse conversations + data | item 3 | S3 | PLACEHOLDER — not this slice |
-| 4. OpenCode sessions + data (incl. thinking-traces decision) | item 4 | S4 | PLACEHOLDER — not this slice |
-| 5. ID objects | item 5 | S5 | PLACEHOLDER — not this slice |
-| 6. Inventory-pass extras (notes/zettel, Reports Space, ask-ledger, quota/burn, laptop state) | item 6 | S6 | PLACEHOLDER — not this slice |
-| 7. Continuous-update design + connector filings index | acceptance items 2–3 | S7 | PLACEHOLDER — not this slice |
+| Group                                                                                        | #9097 item                                                               | Slice                       | State                        |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------- | ---------------------------- |
+| 1. Turso queue / PM-stack                                                                    | item 1: fleet-queue data, PM-stack aggregator state / boards / reconcile | S1 (this slice, task 22929) | LANDED here                  |
+| 2. GitHub — all orgs/repos                                                                   | item 2                                                                   | S2                          | PLACEHOLDER — not this slice |
+| 3. Muse conversations + data                                                                 | item 3                                                                   | S3                          | PLACEHOLDER — not this slice |
+| 4. OpenCode sessions + data (incl. thinking-traces decision)                                 | item 4                                                                   | S4                          | PLACEHOLDER — not this slice |
+| 5. ID objects                                                                                | item 5                                                                   | S5                          | PLACEHOLDER — not this slice |
+| 6. Inventory-pass extras (notes/zettel, Reports Space, ask-ledger, quota/burn, laptop state) | item 6                                                                   | S6                          | PLACEHOLDER — not this slice |
+| 7. Continuous-update design + connector filings index                                        | acceptance items 2–3                                                     | S7                          | PLACEHOLDER — not this slice |
 
 Corpus anchor (last verified census, NOT a live count): **18,325 sessions /
 122,124 messages / 107,639 chunks** (2026-10-31 publish, recorded on #3125;
@@ -109,8 +109,8 @@ Three sub-sources, one group. None has an Atlas connector today.
     Grist-only row is seed/mirror, never truth). Design record:
     `doc/2026-10-24T11-05-38Z_design_project-management-stack/`.
   - Fresh volume: **UNVERIFIED in this slice** — Kaneo task counts per project
-    + roadmap-row counts + Grist row counts not pulled (needs Kaneo/Grist
-    credentials). Recount: §3 step 4.
+    - roadmap-row counts + Grist row counts not pulled (needs Kaneo/Grist
+      credentials). Recount: §3 step 4.
   - Current mechanism: none (roadmap-sync mirrors files→Grist only; nothing
     feeds Atlas).
   - Target: sweep over Kaneo tasks per project + roadmap files at rest (git is
@@ -191,6 +191,7 @@ the error and keep the previous number untouched and dated.
 ## Placeholders for other slices (do not fill in S1)
 
 ### Group 2 — GitHub (S2)
+
 Owner: S2. Scope per #9097 item 2: all issues/PRs/commits/files for all orgs
 and repos in scope (developing-today, developing-today-forks,
 Clustered-Computing, personal), extending #6023 beyond comments. Existing
@@ -199,23 +200,27 @@ ground: #6023 closed (comments extraction), #10688 writer landed
 (external half) OPEN.
 
 ### Group 3 — Claude conversations + data (S3)
+
 Owner: S3. Scope per #9097 item 3: main + side chats, memory tree, artifacts.
 No export/API mechanism on record (2026-11-23 research: UNVERIFIED) — S3
 decides the mechanism in this section.
 
 ### Group 4 — OpenCode sessions + data (S4)
+
 Owner: S4. Scope per #9097 item 4: OpenCode session store (laptop server
 127.0.0.1:13420) + OpenChamber session data, via session-close hook or store
 sweep. Must include #9097's explicit **thinking-traces investigation +
 recommendation** (volume, value, classification per workstream D) — undecided.
 
 ### Group 5 — ID objects (S5)
+
 Owner: S5. Scope per #9097 item 5 + #6062 publication line: laptop redb, Turso
 ID DBs, hosted stores as they arrive — into Atlas (reverse of the designed
 Atlas→ID #6062/#11182–#11186 direction). End state per #9109 Part C:
 automatic vectorization (Snowflake + second embedder) feeding ID search.
 
 ### Group 6 — Inventory-pass extras (S6)
+
 Owner: S6. Scope per #9097 item 6: notes/zettel, Fleet Reports Space records,
 ask-ledger logs, quota/burn records, laptop state stores; related open
 connectors #8622 (memory-lancedb), #8626 (memory/notes/docs/research), #9576
@@ -224,6 +229,7 @@ the disposition of each candidate from research §2.7 (Gmail paused 2026-11-22,
 Drive, Slack allowlist, CI runs, non-Atlas Turso DBs).
 
 ### Group 7 — Continuous-update design + connector filings index (S7)
+
 Owner: S7. #9097 acceptance items 2–3: per-source connector issues filed (or
 existing ones linked: #6023, #8626, …) with acceptance criteria each; the
 continuous-update design (hooks + sweeps + watermark); the canonical corpus
@@ -252,4 +258,4 @@ recount procedure's promotion from §3 of this file into the standing runbook.
 - Prior art cited, not duplicated: #6019 operations design (§§2–6: source
   classes, delta→filter→land→promote pipeline, guardrails, plan ceiling,
   runbook); 2026-11-23 Atlas sources/consumers research (§2.1 item-1 holder
-  + status "no connector built", §2.7 candidates, §4 gates).
+  - status "no connector built", §2.7 candidates, §4 gates).

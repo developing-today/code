@@ -683,7 +683,18 @@ export class TenantOpsDO {
     this.requireActor(actor, ["owner", "platform"], "deletion completion");
     const requestedAt = this.meta("deletion_requested_at");
     const windowMs = this.coolingOffMs();
-    if (requestedAt === null || Date.parse(at) - Date.parse(requestedAt) < windowMs) {
+    // A missing or unreadable start time cannot prove the window
+    // elapsed, so it refuses: NaN would otherwise compare false and
+    // let the drop through at once.
+    const elapsedMs = requestedAt === null ? Number.NaN : Date.parse(at) - Date.parse(requestedAt);
+    if (!Number.isFinite(elapsedMs)) {
+      throw new FailClosed(
+        409,
+        "cooling_off_unproven",
+        "deletion: the recorded deletion request time is missing or unreadable, so the cooling-off window (§4 step 10) cannot be shown to have elapsed; the tenant stays in deleting with its credentials revoked",
+      );
+    }
+    if (elapsedMs < windowMs) {
       throw new FailClosed(
         409,
         "cooling_off",
