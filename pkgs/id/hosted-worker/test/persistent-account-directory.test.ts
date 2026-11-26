@@ -68,6 +68,50 @@ test("persistent duplicate signup returns the stored row without changing its po
   }
 });
 
+test("read-only binding lookup returns matching stable records and leaves storage unchanged", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const record = await directory.signup({
+      subjectKey: "subject-lookup",
+      bindingId: BINDING,
+      jurisdiction: "eu",
+    });
+    const before = db.prepare("SELECT * FROM hosted_accounts").all();
+    assert.deepEqual(await directory.findByBindingId(BINDING), record);
+    assert.deepEqual(db.prepare("SELECT * FROM hosted_accounts").all(), before);
+  } finally {
+    db.close();
+  }
+});
+
+test("read-only binding lookup returns missing for unknown rows", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    assert.equal(await directory.findByBindingId(BINDING), undefined);
+    assert.deepEqual(await directory.listLegacyInventory(), []);
+  } finally {
+    db.close();
+  }
+});
+
+test("read-only binding lookup identifies a legacy-only row without mutation", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const legacy = await directory.inventoryLegacy({ subjectKey: "subject-legacy", bindingId: BINDING });
+    const before = db.prepare("SELECT * FROM legacy_hosted_accounts").all();
+    assert.equal(await directory.findByBindingId(BINDING), undefined);
+    assert.deepEqual(await directory.findLegacyByBindingId(BINDING), legacy);
+    await assert.rejects(
+      directory.signup({ subjectKey: "subject-legacy", bindingId: BINDING, jurisdiction: "us" }),
+      (error: unknown) => error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
+    );
+    assert.deepEqual(db.prepare("SELECT * FROM legacy_hosted_accounts").all(), before);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test("concurrent persistent signups for one subject preserve exactly one row", async () => {
   const { db, directory: accountDirectory } = await createTestDirectory();
   try {

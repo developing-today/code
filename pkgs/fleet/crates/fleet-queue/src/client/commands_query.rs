@@ -131,6 +131,55 @@ pub(super) fn cmd_meta(rest: &[String]) -> i32 {
     0
 }
 
+/// Stewardship staleness read (#14170 Q8): one broker call returns the
+/// actionable tasks whose last history transition is older than the
+/// threshold plus the claims near their lease cap.
+pub(super) fn cmd_staleness(rest: &[String]) -> i32 {
+    let args = parse_verb_args(
+        "staleness",
+        rest,
+        &["queue", "older-than-seconds", "lease-cap-seconds", "limit"],
+        &[],
+    );
+    reject_extra_pos("staleness", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(v) = args.get_i64("older-than-seconds") {
+        req["older_than_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("lease-cap-seconds") {
+        req["lease_cap_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/staleness", &req));
+    print_json(&resp);
+    0
+}
+
+/// Stewardship needs-user read (#14170 Q8): blocked/parked tasks with an
+/// open `question` metadata entry, oldest first.
+pub(super) fn cmd_needs_user(rest: &[String]) -> i32 {
+    let args = parse_verb_args("needs-user", rest, &["queue", "state", "limit"], &[]);
+    reject_extra_pos("needs-user", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(s) = args.get("state") {
+        req["state"] = json!(s);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/needs-user", &req));
+    print_json(&resp);
+    0
+}
+
 pub(super) fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_verb_args("validate", rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -280,6 +329,30 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
                 "the holding task is in a different queue ({q} != requested {queue})"
             ));
         }
+    } else if let Some(m) = resp.get("dedupe_match") {
+        // #10627: the broker absorbed the filing into the task that
+        // already holds this dedupe key and filed nothing. A
+        // terminal match is the dangerous one — the key's work is
+        // complete, so the caller must suffix the key to file the
+        // work again; say that instead of the generic dedupe line
+        // the timestamp heuristics below would produce.
+        if m.get("rule").and_then(|v| v.as_str()) == Some("dedupe_key_terminal") {
+            line = format!(
+                "not filed: dedupe key already belongs to completed task {} (queue {q}, status {s}); \
+                 suffix the dedupe key to file this work again, or set payload.dedupe_override for a deliberate parallel",
+                fmt_cell(Some(&tid)),
+            );
+        } else {
+            line = format!(
+                "dedupe hit: existing task {} (queue {q}, status {s}) already holds this dedupe key; nothing filed",
+                fmt_cell(Some(&tid)),
+            );
+        }
+        if q != queue {
+            warnings.push(format!(
+                "the holding task is in a different queue ({q} != requested {queue})"
+            ));
+        }
     } else if let Some(pred) = resp.get("revived_from") {
         // Broker-side revive (#6838): the key's prior task was
         // terminal, so this enqueue created a fresh task linked to
@@ -322,7 +395,18 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
     for w in &warnings {
         println!("warning: {w}");
     }
-    print_json(&row);
+    // #10627: carry the broker's absorption report into the printed
+    // JSON — the bare row alone reads as a fresh filing to a machine
+    // consumer, which is how terminal dedupe returns stranded work.
+    let mut printed = row;
+    if let Some(o) = printed.as_object_mut() {
+        for key in ["dedupe_match", "work_identity_collision"] {
+            if let Some(v) = resp.get(key) {
+                o.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    print_json(&printed);
     0
 }
 
@@ -1162,7 +1246,9 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let json_out = args.has("json");
     if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}));
+            print_json(
+                &json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}),
+            );
             return 0;
         }
         println!("task {task_id}: no timeline records");
@@ -2041,4 +2127,146 @@ fn cmd_note_remove(rest: &[String]) -> i32 {
     let resp = unwrap_ok(call("/note-remove", &body));
     print_json(&require_row(&resp, "note_remove"));
     0
+}
+
+/// Queue relationship management backed by normalized queue_links.
+pub(super) fn cmd_link(rest: &[String]) -> i32 {
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!("{}", usage("link"));
+        return if rest.is_empty() { 2 } else { 0 };
+    }
+    let (subcommand, rest) = rest.split_first().expect("link subcommand is present");
+    if is_help_arg(subcommand) {
+        println!("{}", usage("link"));
+        return 0;
+    }
+    match subcommand.as_str() {
+        "add" => cmd_link_add(rest),
+        "remove" => cmd_link_remove(rest),
+        "list" => {
+            let parsed = parse_verb_args("link list", rest, &[], &["include-removed", "json"]);
+            reject_extra_pos("link list", &parsed, 1);
+            let task_id = parsed.pos_i64(0, "task_id");
+            let resp = unwrap_ok(call(
+                "/link-list",
+                &json!({
+                    "task_id": task_id,
+                    "include_removed": parsed.has("include-removed"),
+                }),
+            ));
+            if parsed.has("json") {
+                print_json(&resp);
+            } else {
+                println!(
+                    "{}",
+                    resp.get("links").cloned().unwrap_or_else(|| json!([]))
+                );
+            }
+            0
+        }
+        sub => {
+            eprint(&format!(
+                "repo-queue: unknown link command {sub:?}\n{}",
+                usage("link")
+            ));
+            2
+        }
+    }
+}
+
+fn cmd_link_add(rest: &[String]) -> i32 {
+    let verb = "link add";
+    let args = parse_verb_args(
+        "link add",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        true,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn cmd_link_remove(rest: &[String]) -> i32 {
+    let verb = "link remove";
+    let args = parse_verb_args(
+        "link remove",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        false,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn finish_link_change(
+    verb: &str,
+    add: bool,
+    task_id: i64,
+    worker: String,
+    link_kind: Option<String>,
+    issue: Option<String>,
+    pr: Option<String>,
+    other_task: Option<String>,
+) -> i32 {
+    let target_count = [issue.is_some(), pr.is_some(), other_task.is_some()]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    if target_count != 1 {
+        die(
+            2,
+            &format!("{verb}: exactly one of --issue, --pr, or --task is required"),
+        );
+    }
+    let mut body = json!({
+        "task_id": task_id,
+        "worker": worker,
+        "link_kind": link_kind.unwrap_or_else(|| "related".to_owned()),
+    });
+    if let Some(issue) = issue {
+        let (repo, number) = parse_link_target(&issue, "issue");
+        body["other_issue"] = json!({"repo": repo, "number": number});
+    } else if let Some(pr) = pr {
+        let (repo, number) = parse_link_target(&pr, "pr");
+        body["other_pr"] = json!({"repo": repo, "number": number});
+    } else if let Some(task) = other_task {
+        body["other_task_id"] = json!(
+            task.parse::<i64>()
+                .unwrap_or_else(|_| die(2, "link: --task must be a positive integer"))
+        );
+    }
+    let path = if add { "/link-add" } else { "/link-remove" };
+    print_json(&unwrap_ok(call(path, &body)));
+    0
+}
+
+fn parse_link_target(value: &str, label: &str) -> (String, i64) {
+    let Some((repo, number)) = value.rsplit_once('#') else {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    };
+    let number = number
+        .parse::<i64>()
+        .unwrap_or_else(|_| die(2, &format!("link: --{label} number must be positive")));
+    if repo.split('/').count() != 2 || repo.split('/').any(str::is_empty) || number <= 0 {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    }
+    (repo.to_owned(), number)
 }

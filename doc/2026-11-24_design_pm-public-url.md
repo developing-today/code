@@ -49,7 +49,7 @@ door:
 - **Two cooperating paths serve the one hostname:**
   - The **`pm-console-edge` Worker** sits on the hostname's route
     (`pm-stack/console/edge/wrangler.jsonc`, `PUBLIC_HOST =
-    pm.security.cab`). It serves the app, its state and notifications
+pm.security.cab`). It serves the app, its state and notifications
     from Cloudflare, and checks the caller with the same identity code
     the origin uses (`pm-stack/console/src/auth.ts`). The route is
     placed on the Worker by `scripts/expose.py` once the Worker answers
@@ -146,7 +146,7 @@ aggregator :4870 ── loopback + tailnet only, unchanged
 - **D6 — Aggregator Access-JWT author derivation gets enabled on the
   public path (slice S3).** With the console passing dashboard paths
   through, configuring `PM_AGG_ACCESS_TEAM_DOMAIN` / `PM_AGG_ACCESS_AUD`
-  / `PM_AGG_OWNER_IDS` makes dashboard *writes* derive authorship from
+  / `PM_AGG_OWNER_IDS` makes dashboard _writes_ derive authorship from
   the verified JWT instead of a caller-supplied author — closing the
   #1253 follow-through on exactly the path this design creates. Reads
   are unaffected; unconfigured deployments keep today's behaviour.

@@ -35,8 +35,11 @@ members = [
   "crates/id-cli",
   "crates/id-import-notion",
   "crates/id-client",
+  "crates/id-android-remote",
   "crates/id-pg",
   "crates/id-grants",
+  "crates/id-bevy-bridge",
+  "crates/id-bevy-presenter",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -154,15 +157,15 @@ iroh-tickets = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
-p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
+p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
 # LogSync. A vendored copy whose store dependency has no SQLite default (vendor/README.md).
 p2panda-sync = { path = "vendor/p2panda-sync" }
 # Group membership and the auth DAG (P2.1). The `serde` feature (P2.3) serializes group actions,
 # which the event store keeps with each group operation. `test_utils` is not enabled: it turns on
 # test-only behaviour in p2panda-core, so the test types come from our own tests.
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+p2panda-auth = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", features = [
   "serde",
 ] }
 # DataScheme group encryption (P4.1) moved to id-groups in step 4 of the
@@ -258,7 +261,11 @@ iroh-blobs = "0.103"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
-n0-mainline = "0.8"
+# Pinned to 0.7 (#15143): iroh-mainline-address-lookup 0.6 is built on
+# n0-mainline 0.7, and the test passes its DhtBuilder into that crate, so a
+# direct 0.8 dependency puts two n0-mainline versions in the graph and the
+# test fails with E0308. Unify on 0.7 until the lookup crate moves to 0.8.
+n0-mainline = "0.7"
 # The lookup under test in tests/dht_testnet.rs (P7.3); the root package
 # only names it for that test, so it is a dev-dependency.
 iroh-mainline-address-lookup = "0.6"
@@ -400,8 +407,12 @@ codegen-units = 256
 strip = false
 
 [profile.test]
-# Include debug info for better error messages
-debug = true
+# Line tables only, not full debuginfo (#15181): with debug = true every
+# one of the ~95 test binaries carried ~1 GB of debuginfo (56 GB under
+# debug/deps), so a fresh `cargo test -p id --no-run` exhausted the fleet
+# executor's disk (61 GB free) and the linker died mid-build. Line tables
+# keep file:line in panics and backtraces at a fraction of the size.
+debug = "line-tables-only"
 opt-level = 0
 
 [[bench]]

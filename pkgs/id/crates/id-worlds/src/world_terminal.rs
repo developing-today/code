@@ -79,6 +79,98 @@ pub enum PresentationTier {
     Tier3,
 }
 
+/// How a session's frames reach the terminal, chosen by the player at
+/// run time (#14861, design decisions D2/D3). The mode is negotiated per
+/// session — over SSH with the `ID_DISPLAY` environment request — and
+/// never changes what a world program sends: the frame is data; the
+/// mode only picks the painting.
+///
+/// - `Auto` is the absence of a choice: exactly the pre-mode behaviour
+///   (alternate screen, probe-selected tier).
+/// - `Alternate` and `Primary` are the cursor modes: both paint with
+///   cursor addressing at at least Tier 2, because choosing one is the
+///   player's statement that the terminal has it; Tier 1 extras still
+///   require the probe's positive evidence. They differ in the screen
+///   buffer and the exit framing: alternate leaves its buffer and
+///   restores the shell as it was; primary paints in place and leaves
+///   the final frame on show, cursor below it.
+/// - `Text` is the low-write mode: no escape sequences at all, Tier 3
+///   text deltas only.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DisplayMode {
+    /// No explicit choice: the pre-mode behaviour.
+    #[default]
+    Auto,
+    /// Cursor painting inside the alternate screen buffer.
+    Alternate,
+    /// Cursor painting in the primary buffer; the final frame stays.
+    Primary,
+    /// Line-oriented text deltas; never an escape byte.
+    Text,
+}
+
+impl DisplayMode {
+    /// The SSH environment variable that carries the choice (D3).
+    pub const ENV_NAME: &str = "ID_DISPLAY";
+
+    /// Parse a negotiated value. `None` is an unknown value: the shell
+    /// refuses the join rather than guessing (D3).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "alternate" => Some(Self::Alternate),
+            "primary" => Some(Self::Primary),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
+
+    /// The negotiated name of this mode.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Alternate => "alternate",
+            Self::Primary => "primary",
+            Self::Text => "text",
+        }
+    }
+
+    /// Whether the session paints inside the alternate screen buffer.
+    /// Only raw sessions consult this; command mode never enters it.
+    #[must_use]
+    pub fn uses_alt_screen(self) -> bool {
+        matches!(self, Self::Auto | Self::Alternate)
+    }
+
+    /// The presentation tier a completed probe yields under this mode:
+    /// the probe's own verdict for `Auto`; at least Tier 2 for the
+    /// cursor modes, with Tier 1 kept only on the probe's positive
+    /// evidence; Tier 3 for `Text`, however capable the terminal is.
+    #[must_use]
+    pub fn tier(self, outcome: &ProbeOutcome) -> PresentationTier {
+        tier_for_mode(self, outcome.profile, outcome.tier())
+    }
+}
+
+/// The tier rule behind [`DisplayMode::tier`], shared with the
+/// presenter constructors that only hold a profile.
+fn tier_for_mode(
+    mode: DisplayMode,
+    profile: TerminalProfile,
+    probed: PresentationTier,
+) -> PresentationTier {
+    match mode {
+        DisplayMode::Auto => probed,
+        DisplayMode::Alternate | DisplayMode::Primary => match profile.tier() {
+            PresentationTier::Tier1 => PresentationTier::Tier1,
+            _ => PresentationTier::Tier2,
+        },
+        DisplayMode::Text => PresentationTier::Tier3,
+    }
+}
+
 /// Profile plus input bytes that were not complete matching query replies.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProbeOutcome {
@@ -431,7 +523,16 @@ impl TextDelta {
 ///   against the previous screen (full repaint when a diff is impossible,
 ///   e.g. after a resize or [`TierPresenter::invalidate`]).
 /// - Tier 3 renders text only: no full-screen escapes, and after the
-///   first view only the changed lines (a [`TextDelta`]).
+///   first view only the changed lines (a [`TextDelta`]). A view whose
+///   dimensions differ from the previous one is a full frame again
+///   (the join/resize form, #14937).
+///
+/// Under [`DisplayMode::Primary`] the cell-grid tiers paint with the
+/// primary-mode contract instead ([`ScreenSurface::paint_primary`]):
+/// no alternate screen is involved, the previous frame stays in
+/// scrollback, and each transition is cursor-addressed erase/rewrite
+/// runs over it. The mode never selects Tier 3, so the text path is
+/// unreachable for it.
 ///
 /// Incremental state is committed only after a render is produced, so a
 /// caller that drops a frame can re-render the same view safely.
@@ -439,8 +540,12 @@ impl TextDelta {
 pub struct TierPresenter {
     profile: TerminalProfile,
     tier: PresentationTier,
+    mode: DisplayMode,
     previous_screen: Option<ScreenSurface>,
     previous_text: Vec<String>,
+    /// Dimensions of the last screen this presenter projected to text;
+    /// a change forces the text path's full-frame form (#14937).
+    previous_text_dims: Option<(u16, u16)>,
     counters: PresenterCounters,
     sync_used: bool,
 }
@@ -453,8 +558,10 @@ impl TierPresenter {
         Self {
             tier: profile.tier(),
             profile,
+            mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
+            previous_text_dims: None,
             counters: PresenterCounters::default(),
             sync_used: false,
         }
@@ -467,17 +574,49 @@ impl TierPresenter {
         Self {
             tier: outcome.tier(),
             profile: outcome.profile,
+            mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
+            previous_text_dims: None,
             counters: PresenterCounters::default(),
             sync_used: false,
         }
+    }
+
+    /// A presenter for a completed probe under a chosen [`DisplayMode`]
+    /// (#14861 D2). `Auto` is exactly [`TierPresenter::from_outcome`];
+    /// the explicit modes apply the mode's tier rule
+    /// ([`DisplayMode::tier`]) to the probed profile.
+    #[must_use]
+    pub fn from_outcome_for_mode(outcome: &ProbeOutcome, mode: DisplayMode) -> Self {
+        let mut presenter = Self::from_outcome(outcome);
+        presenter.tier = mode.tier(outcome);
+        presenter.mode = mode;
+        presenter
+    }
+
+    /// A presenter for a directly supplied profile under a chosen
+    /// [`DisplayMode`], for adapters that must paint before any probe
+    /// completes: a text session may never emit an escape byte, so it
+    /// cannot wait for the probe to learn it is Tier 3.
+    #[must_use]
+    pub fn for_mode(profile: TerminalProfile, mode: DisplayMode) -> Self {
+        let mut presenter = Self::new(profile);
+        presenter.tier = tier_for_mode(mode, profile, profile.tier());
+        presenter.mode = mode;
+        presenter
     }
 
     /// The tier this presenter renders.
     #[must_use]
     pub fn tier(&self) -> PresentationTier {
         self.tier
+    }
+
+    /// The display mode this presenter paints for.
+    #[must_use]
+    pub fn mode(&self) -> DisplayMode {
+        self.mode
     }
 
     /// The profile this presenter was built from.
@@ -497,11 +636,27 @@ impl TierPresenter {
     pub fn invalidate(&mut self) {
         self.previous_screen = None;
         self.previous_text = Vec::new();
+        self.previous_text_dims = None;
     }
 
     /// Render one screen view for this presenter's tier.
     pub fn render_screen(&mut self, screen: &ScreenSurface) -> String {
         if self.tier == PresentationTier::Tier3 {
+            // A size change is answered with the terse full-frame form
+            // (#14937): the text path's full form is a diff against
+            // nothing, so a resize drops the remembered lines before
+            // diffing, exactly as a join does. The shell forwards the
+            // resize to the world, and the world's answering view
+            // carries the new dimensions, so the presenter sees every
+            // resize here.
+            let dims = (screen.width, screen.height);
+            if self
+                .previous_text_dims
+                .is_some_and(|previous| previous != dims)
+            {
+                self.previous_text.clear();
+            }
+            self.previous_text_dims = Some(dims);
             let projection = screen.text_projection();
             let lines: Vec<String> = if projection.is_empty() {
                 Vec::new()
@@ -510,16 +665,37 @@ impl TierPresenter {
             };
             return self.render_lines(&lines);
         }
-        let (body, full) = match self
-            .previous_screen
-            .as_ref()
-            .and_then(|previous| screen.render_ansi_diff(previous))
-        {
-            Some(diff) => (diff, false),
-            None => match screen.render_ansi() {
-                Some(full) => (full, true),
-                None => return String::new(),
-            },
+        let (body, full) = if self.mode == DisplayMode::Primary {
+            // Primary mode paints with the slice-1 harness contract
+            // (Term.paint_primary): cursor-addressed erase/rewrite runs
+            // over the previous frame, which stays in scrollback. A
+            // dimension or version change is answered with a full
+            // repaint, per the contract's host guidance; an unchanged
+            // frame paints as the empty string.
+            let previous = self.previous_screen.as_ref().filter(|previous| {
+                previous.width == screen.width
+                    && previous.height == screen.height
+                    && previous.version == screen.version
+            });
+            match previous.and_then(|previous| screen.paint_primary(previous)) {
+                Some(diff) => (diff, false),
+                None => match screen.paint_primary_full() {
+                    Some(full) => (full, true),
+                    None => return String::new(),
+                },
+            }
+        } else {
+            match self
+                .previous_screen
+                .as_ref()
+                .and_then(|previous| screen.render_ansi_diff(previous))
+            {
+                Some(diff) => (diff, false),
+                None => match screen.render_ansi() {
+                    Some(full) => (full, true),
+                    None => return String::new(),
+                },
+            }
         };
         self.previous_screen = Some(screen.clone());
         if body.is_empty() {
@@ -636,7 +812,7 @@ pub fn encode_sixel(rgb: &[u8], width: usize, height: usize) -> Option<String> {
     }
     let mut colors: Vec<(u8, u8, u8)> = Vec::new();
     let mut index = vec![0_usize; pixels];
-    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+    for (i, pixel) in rgb.as_chunks::<3>().0.iter().enumerate() {
         let key = (pixel[0], pixel[1], pixel[2]);
         index[i] = match colors.iter().position(|color| *color == key) {
             Some(position) => position,
@@ -993,7 +1169,9 @@ fn decode_hex(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;
@@ -1154,6 +1332,118 @@ mod tests {
         assert!(outcome.conflicted);
         assert_eq!(outcome.tier(), PresentationTier::Tier3);
         assert_eq!(outcome.profile, TerminalProfile::default());
+    }
+
+    #[test]
+    fn display_mode_names_round_trip_and_unknown_values_are_refused() {
+        // Oracle: design D3 names exactly four negotiated values; any
+        // other value is unknown and must not parse, so the shell can
+        // refuse the join instead of guessing a mode.
+        for (value, mode) in [
+            ("auto", DisplayMode::Auto),
+            ("alternate", DisplayMode::Alternate),
+            ("primary", DisplayMode::Primary),
+            ("text", DisplayMode::Text),
+        ] {
+            assert_eq!(DisplayMode::parse(value), Some(mode));
+            assert_eq!(mode.name(), value);
+        }
+        assert_eq!(DisplayMode::parse(""), None);
+        assert_eq!(DisplayMode::parse("PRIMARY"), None);
+        assert_eq!(DisplayMode::parse("sideways"), None);
+    }
+
+    #[test]
+    fn display_mode_tier_rules_follow_the_design_table() {
+        // Oracle: design D2 — cursor modes paint at at least Tier 2,
+        // Tier 1 extras only on the probe's positive evidence, and
+        // text forces Tier 3 however capable the terminal is.
+        let tier1 = parse_transcript(&[SIXEL_DA_REPLY, SYNC_OUTPUT_REPLY].concat());
+        let tier2 = parse_transcript(&[COLOR_COUNT_REPLY, CURSOR_POSITION_REPLY].concat());
+        let tier3 = parse_transcript(&[]);
+
+        assert_eq!(DisplayMode::Auto.tier(&tier1), PresentationTier::Tier1);
+        assert_eq!(DisplayMode::Auto.tier(&tier3), PresentationTier::Tier3);
+
+        for cursor_mode in [DisplayMode::Alternate, DisplayMode::Primary] {
+            assert_eq!(cursor_mode.tier(&tier3), PresentationTier::Tier2);
+            assert_eq!(cursor_mode.tier(&tier2), PresentationTier::Tier2);
+            assert_eq!(cursor_mode.tier(&tier1), PresentationTier::Tier1);
+        }
+
+        assert_eq!(DisplayMode::Text.tier(&tier1), PresentationTier::Tier3);
+        assert_eq!(DisplayMode::Text.tier(&tier3), PresentationTier::Tier3);
+
+        // The presenter constructors apply the same rule.
+        assert_eq!(
+            TierPresenter::from_outcome_for_mode(&tier3, DisplayMode::Primary).tier(),
+            PresentationTier::Tier2
+        );
+        assert_eq!(
+            TierPresenter::from_outcome_for_mode(&tier1, DisplayMode::Text).tier(),
+            PresentationTier::Tier3
+        );
+        assert_eq!(
+            TierPresenter::from_outcome_for_mode(&tier1, DisplayMode::Auto).tier(),
+            TierPresenter::from_outcome(&tier1).tier()
+        );
+        assert_eq!(
+            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text).tier(),
+            PresentationTier::Tier3
+        );
+        assert_eq!(
+            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Alternate).tier(),
+            PresentationTier::Tier2
+        );
+    }
+
+    #[test]
+    fn text_mode_presenter_output_never_contains_an_escape_byte() {
+        // Oracle: design D2 — in text mode no escape sequence is ever
+        // written, even for the first (full) frame.
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let first = presenter.render_screen(&screen(&["hello", "world"]));
+        let second = presenter.render_screen(&screen(&["hello", "there"]));
+
+        assert!(!first.contains('\x1b'), "first frame escaped: {first:?}");
+        assert!(!second.contains('\x1b'), "delta frame escaped: {second:?}");
+        assert!(
+            first.contains("hello"),
+            "first frame lost its text: {first:?}"
+        );
+    }
+
+    #[test]
+    fn text_presenter_answers_a_resize_with_a_full_frame() {
+        // Oracle: issue #14937 — a text session renders each frame as
+        // plain text lines, emitting only the lines that changed, with
+        // a terse full-frame form on join and on resize. The full form
+        // is exactly the changed-lines form computed against nothing,
+        // so applying it over any prior frame state yields the new
+        // frame (TextDelta::apply parity).
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+
+        let joined = presenter.render_screen(&screen(&["alpha", "beta"]));
+        assert_eq!(joined, "alpha\r\nbeta\r\n", "join is a full frame");
+
+        let quiet = presenter.render_screen(&screen(&["alpha", "beta"]));
+        assert_eq!(quiet, "", "an unchanged frame costs zero bytes");
+
+        let delta = presenter.render_screen(&screen(&["alpha", "gamma"]));
+        assert_eq!(delta, "gamma\r\n", "only the changed line is emitted");
+
+        // Resize: the same leading lines at a new size still repaints
+        // in full, because the reader's frame state no longer matches.
+        let resized = presenter.render_screen(&screen(&["alpha", "beta", "extra"]));
+        assert_eq!(
+            resized, "alpha\r\nbeta\r\nextra\r\n",
+            "a resize answers with the full-frame form"
+        );
+        assert!(!resized.contains('\x1b'), "full frame escaped: {resized:?}");
+
+        // After the resize frame, deltas resume against the new size.
+        let after = presenter.render_screen(&screen(&["alpha", "beta", "extra"]));
+        assert_eq!(after, "", "post-resize frame is a delta again");
     }
 
     #[test]
@@ -1354,6 +1644,69 @@ mod tests {
             presenter.render_screen(&second),
             second.render_ansi().expect("full render")
         );
+    }
+
+    /// Slice 2 of #14861: a primary-mode presenter paints the Term
+    /// contract bytes — a full primary repaint first, then
+    /// cursor-addressed erase/rewrite transitions over the previous
+    /// frame — and never touches the alternate screen.
+    #[test]
+    fn primary_presenter_paints_the_term_contract_over_the_previous_frame() {
+        let profile = TerminalProfile {
+            cursor_position_report: true,
+            indexed_color: true,
+            ..TerminalProfile::default()
+        };
+        let mut presenter = TierPresenter::for_mode(profile, DisplayMode::Primary);
+        assert_eq!(presenter.mode(), DisplayMode::Primary);
+        assert_eq!(presenter.tier(), PresentationTier::Tier2);
+
+        let first = screen(&["abc", "def"]);
+        let second = screen(&["abc", "dXf"]);
+        // First frame: a full primary repaint (page erase + runs painted
+        // from a blank screen).
+        assert_eq!(
+            presenter.render_screen(&first),
+            first.paint_primary_full().expect("full primary paint")
+        );
+        // Transition: exactly the contract bytes over the previous frame.
+        assert_eq!(
+            presenter.render_screen(&second),
+            second.paint_primary(&first).expect("primary transition")
+        );
+        assert_eq!(
+            second.paint_primary(&first).expect("primary transition"),
+            "\x1b[2;2H\x1b[0mX\x1b[0m"
+        );
+        // An unchanged view paints nothing and records no frame.
+        assert_eq!(presenter.render_screen(&second), "");
+        assert_eq!(presenter.counters().frames, 2);
+        assert_eq!(presenter.counters().full_render_frames, 1);
+        // A resize is answered with a full repaint, per the contract's
+        // host guidance.
+        let resized = screen(&["abc"]);
+        assert_eq!(
+            presenter.render_screen(&resized),
+            resized.paint_primary_full().expect("full primary paint")
+        );
+        // Invalidation (attach) also forces a full repaint.
+        presenter.invalidate();
+        assert_eq!(
+            presenter.render_screen(&resized),
+            resized.paint_primary_full().expect("full primary paint")
+        );
+    }
+
+    #[test]
+    fn primary_presenter_never_enters_the_alternate_screen() {
+        let mut presenter =
+            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Primary);
+        let out = presenter.render_screen(&screen(&["hi"]));
+        assert!(!out.contains("\x1b[?1049h"), "{out:?}");
+        assert!(!out.contains("\x1b[?1049l"), "{out:?}");
+        // The alternate painter's full render homes before erasing; the
+        // primary full repaint erases in place.
+        assert!(out.starts_with("\x1b[2J"), "{out:?}");
     }
 
     #[test]

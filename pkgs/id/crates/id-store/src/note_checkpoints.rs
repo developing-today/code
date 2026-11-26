@@ -675,6 +675,7 @@ impl NoteCheckpoints {
             note,
             content,
             parents,
+            proposal: None,
         };
         check_note_op(REVISE_KIND, &op)?;
         self.append(AppliedNote {
@@ -1236,10 +1237,7 @@ mod tests {
 
         let rebuilt =
             NoteCheckpoints::from_events_with_policies(log.events().to_vec(), policies).unwrap();
-        assert_eq!(
-            rebuilt.recorded_access(scoped),
-            log.recorded_access(scoped)
-        );
+        assert_eq!(rebuilt.recorded_access(scoped), log.recorded_access(scoped));
         assert_eq!(rebuilt.recorded_access(plain), None);
         assert_eq!(rebuilt.policies().unwrap(), log.policies().unwrap());
     }

@@ -221,6 +221,45 @@ pub fn hoisted_entries<'a>(tree: &'a BlockTree, focus: &BlockId) -> Option<Vec<O
     Some(out)
 }
 
+/// How [`readable_outline`] shows a note: unfolded, folded at some
+/// blocks, or hoisted to one block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlineMode<'m> {
+    /// Every block, as [`outline_entries`].
+    Full,
+    /// Rows under the named blocks hidden, as [`folded_entries`].
+    Folded(&'m BTreeSet<BlockId>),
+    /// Only the subtree of the named block, as [`hoisted_entries`].
+    Hoisted(&'m BlockId),
+}
+
+/// The outline of `note` for one reader, under the same `can_read`
+/// predicate as every other projection (normally
+/// [`crate::read_authority::NoteReader::may_read`]).
+///
+/// Returns `None` when the reader may not read the note, the same
+/// answer a hoist on a missing block gives, so a denied outline says
+/// nothing about the note's blocks or whether it exists (#5839
+/// invariant 6). Transclusion blocks in the rows are the note's own
+/// authored references; rendering what they point at goes through
+/// [`render_transclusion`], which checks the source note.
+#[must_use]
+pub fn readable_outline<'a>(
+    note: &Hash,
+    tree: &'a BlockTree,
+    mode: OutlineMode<'_>,
+    can_read: &CanRead<'_>,
+) -> Option<Vec<OutlineEntry<'a>>> {
+    if !can_read(note) {
+        return None;
+    }
+    match mode {
+        OutlineMode::Full => Some(outline_entries(tree)),
+        OutlineMode::Folded(collapsed) => Some(folded_entries(tree, collapsed)),
+        OutlineMode::Hoisted(focus) => hoisted_entries(tree, focus),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Journal (D4)
 // ---------------------------------------------------------------------------

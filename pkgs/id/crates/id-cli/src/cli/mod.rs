@@ -36,11 +36,13 @@
 //!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
+//!   host       Host mode: run a data root of world directories and operate it
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   talk         Talk pages: post on and list an object's discussion
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -110,9 +112,11 @@ pub mod claim;
 pub mod doc;
 pub mod gallery;
 pub mod groups;
+pub mod host;
 pub mod match_audit;
 pub mod petname;
 pub mod tag;
+pub mod talk;
 pub mod walk;
 pub mod world;
 pub mod writer_sets;
@@ -121,18 +125,20 @@ pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
+pub use host::HostCommand;
 pub use match_audit::MatchAuditCommand;
 pub use petname::PetnameCommand;
 pub use tag::TagCommand;
+pub use talk::TalkCommand;
 pub use walk::WalkCommand;
 pub use world::{
-    JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
-    WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
-    WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs,
-    WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs, WorldLogsArgs,
-    WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs,
-    WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs,
-    WorldVerifyArgs, WorldVia,
+    JournalCommand, WorldAnnounceArgs, WorldApplyArgs, WorldCapsArgs, WorldCommand,
+    WorldCompileArgs, WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs,
+    WorldDownloadArgs, WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs,
+    WorldInviteArgs, WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs,
+    WorldLogsArgs, WorldLookupArgs, WorldMeasureArgs, WorldMirrorArgs, WorldPresentationArgs,
+    WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs,
+    WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 
@@ -223,7 +229,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub groups_log: Option<PathBuf>,
 
-    /// The event store that `doc` and `claim` read and append to.
+    /// The event store that `doc`, `claim` and `talk` read and append to.
     ///
     /// Defaults to `events` in the data directory. A relative path is relative to the data
     /// directory, so a store shared by several nodes is best given as an absolute path.
@@ -554,6 +560,14 @@ pub struct ServeArgs {
     /// (they reopen from their journal on demand). `0` keeps them open.
     #[arg(long, default_value_t = 600, requires = "world")]
     pub world_idle_secs: u64,
+    /// Serve the worlds directory as a host-mode data root (#10693): keep
+    /// its `host.json`, wake asleep worlds when clients name them (unless
+    /// `id host wake-mode` set `operator`), never close `id host pin`
+    /// worlds for idleness or room, record idle closes as asleep, refuse
+    /// archived worlds, and reopen the worlds recorded live at startup.
+    /// `id host list` shows the states.
+    #[arg(long, requires = "world", conflicts_with = "ephemeral")]
+    pub world_host: bool,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.
@@ -1416,6 +1430,11 @@ pub enum Command {
     /// federation exchange protocol, conflict reports (#12232).
     #[command(subcommand)]
     Walk(WalkCommand),
+    /// Host mode over a data root of world directories (#10693): run
+    /// the root's live worlds until Ctrl-C, or list every world's
+    /// lifecycle state and storage without opening any world.
+    #[command(subcommand)]
+    Host(HostCommand),
     /// Groups: create, show the policy, add, remove, set roles, and list (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
@@ -1484,6 +1503,27 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
+    ///
+    /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
+    /// the object may post; a correction is a new post that supersedes the old one, which stays
+    /// listed and is marked superseded.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id talk post DOCUMENT "this section needs a source"
+    /// id talk post DOCUMENT "fixed wording" --supersedes POST
+    /// id talk list DOCUMENT --json
+    /// ```
+    Talk {
+        /// Print JSON instead of lines (one array for `list`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The talk action to run.
+        #[command(subcommand)]
+        command: TalkCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).

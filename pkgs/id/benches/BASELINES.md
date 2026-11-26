@@ -683,3 +683,74 @@ The deciding run for the criterion remains what it was: the
 unloaded laptop re-run of the many-worlds harness, still
 outstanding; a loaded number is not substituted for it.
 `baseline.txt` is untouched.
+
+## First 10x stress run (#13087) — the hub ceiling wall, and an at-cap completion (2026-11-25, ci-runner)
+
+Machine class: `ci-runner` — the fleet-command executor's container on a
+GitHub-hosted runner (4 CPUs, AMD EPYC 7763, 15 GB RAM, container overlay
+storage; rustc 1.99.1). This is not the reference laptop class:
+`baseline.txt` / `baseline.jsonl` are unchanged, and no number here is
+comparable to the fleet-laptop rows above. The reference-laptop 10x fleet
+run remains outstanding (see the end of this section). Bench binary at
+main `fcc1cae304` (branch `felix/13087-10x-stress-limits`, no code
+changes). Producing commands, from `pkgs/id/`:
+
+```sh
+# tier attempt (run 45598189927):
+ID_BENCH_MW_IDLE_WORLDS=10000 ID_BENCH_MW_ACTIVE_WORLDS=1000 \
+  cargo bench --bench world_bench -- --only many_worlds
+# boundary + at-cap runs (run 45604414422): same, with
+# ID_BENCH_MW_ACTIVE_WORLDS=257 and =256
+```
+
+**The wall at the tier configuration (measured, 5 of 5 reps).** Every
+rep at the full 10x configuration (10,000 idle / 1,000 active) failed in
+~25 s with:
+
+```text
+Error: server has too many worlds open; try again shortly
+```
+
+The bench creates the 10,000 idle worlds (create, drop the lease), then
+holds the active worlds' leases concurrently. The hub it builds uses
+`HubLimits::default()`, whose `max_open_worlds` is 256
+(`crates/id-worlds/src/world_hub.rs`); eviction only frees *unleased*
+durable worlds, so the 257th concurrent lease is refused with
+`ResolveError::TooManyWorlds`. A confirmation run at 257 active worlds
+failed the same way. The wall is a codified code/config limit, not a
+host limit — the host was idle at the refusal — and it is filed as
+#15056 (tier-sized hub limits for the harness, then re-run). `id serve`
+already exposes the same ceiling as the operator setting
+`world_max_open`; the bench hardcodes the default.
+
+**The at-cap completion (10,000 idle / 256 active, 1 rep completed).**
+At the largest configuration the default hub admits, the run completes
+and every verification assertion passes (checkpoints=256, evicted=256,
+reopened=256):
+
+```text
+profile many_worlds journal_appends=51712 journal_append_mean_us=459 journal_append_p50_us=500 journal_append_p95_us=2000 journal_append_p99_us=2000 commands=51968 command_mean_us=3458439 command_p50_us=18446744073709551615 command_p95_us=18446744073709551615 command_p99_us=18446744073709551615 queue_depth_max=0 checkpoints_during_load=0
+bench many_worlds unit=ms_per_command median=211217.200 min=0.309 reps=1 p50_ms=211217.200 p95_ms=942836.565 p99_ms=1007152.602 wake_p50_ms=202953.721 wake_p95_ms=934447.776 wake_p99_ms=999145.115 input_ack_p50_ms=8033.817 input_ack_p95_ms=8410.307 input_ack_p99_ms=8536.673 target_p99_ms=50 target_met=false idle_worlds=10000 active_worlds=256 events_per_second=20 duration_secs=10 commands=51200 load_elapsed_secs=1030.245 completed_events_per_second=49.7 checkpoint_triggers=256 checkpoints=256 evicted=256 reopened=256
+```
+
+Reading of this venue's numbers (they describe this 4-core container,
+not the platform): the offered load was 5,120 inputs/s; 49.7/s
+completed. The journal is not the constraint — 51,712 appends averaged
+459 µs. The tail is wake lateness (p99 999,145 ms of a 1,007,153 ms
+end-to-end p99): 256 world actors plus their guests and the submission
+drivers cannot get the venue's 4 cores, so the 10 s load phase took
+1,030 s of wall time to drain. This is the #557 scheduling disease at
+10x population on too few cores, recorded as such; it decides nothing
+about the laptop class, where the same code at 1x population completes
+1,997/s of 2,000 offered. The profile line's command percentiles read
+`18446744073709551615` (`u64::MAX`): the actor histogram's overflow
+bucket reports `u64::MAX` by design and the printer emits it unmarked —
+filed as #15094. The bench line's percentiles are computed from raw
+samples and are unaffected. Two further at-cap reps were started; the
+second was still running when the dispatch job hit its time limit, so
+this section records the one completed rep rather than a median.
+
+What this run settles and what it does not: the 10x tier's first wall
+is measured and is the hub's 256 concurrent-lease ceiling (#15056).
+The fleet run at the full tier, and any laptop-class 10x number, wait
+on that fix and on a reference-laptop run; #13087 stays open for them.

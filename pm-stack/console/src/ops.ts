@@ -250,6 +250,61 @@ function matchReport(out: Record<string, unknown> | null, to: string[], command:
  * the same hour. */
 export const TOKEN_EXPIRY_KEPT_MS = 10 * 60_000;
 
+/** Where the repository-described Cloudflare configuration was last
+ * successfully applied from: the apply workflow's own record. */
+export interface ApplyProvenance {
+  /** The workflow that applied it, and who set it going when GitHub
+   * says so: the source the configuration was applied from. */
+  source: string;
+  /** The commit the applying run had checked out, in full. */
+  commit: string;
+  /** When that run finished, as GitHub recorded it (ISO 8601). */
+  at: string;
+  /** The run's own page, for the owner to look at. */
+  url: string;
+}
+
+/** The latest successful apply in a workflow-runs answer, or null when
+ * there is none. Only a dispatched run can apply at all — pushes and
+ * pull requests of pm-cloudflare-config.yml only validate — and only a
+ * run that finished successfully applied anything: a failed or
+ * still-running one is never presented as an apply. A run whose record
+ * is malformed is passed over, not trusted. Nothing here dispatches a
+ * workflow or reads a secret: it only reads the runs GitHub already
+ * recorded. */
+export function latestApply(got: unknown): ApplyProvenance | null {
+  const runs = (got as { workflow_runs?: unknown } | null)?.workflow_runs;
+  if (!Array.isArray(runs)) return null;
+  let best: (ApplyProvenance & { done: number }) | null = null;
+  for (const raw of runs) {
+    const run = raw as {
+      event?: unknown;
+      status?: unknown;
+      conclusion?: unknown;
+      head_branch?: unknown;
+      head_sha?: unknown;
+      updated_at?: unknown;
+      html_url?: unknown;
+      name?: unknown;
+      triggering_actor?: { login?: unknown } | null;
+      actor?: { login?: unknown } | null;
+    } | null;
+    if (!run || typeof run !== "object") continue;
+    if (run.event !== "workflow_dispatch" || run.head_branch !== "main") continue;
+    if (run.status !== "completed" || run.conclusion !== "success") continue;
+    if (typeof run.head_sha !== "string" || !/^[0-9a-f]{40}$/.test(run.head_sha)) continue;
+    if (typeof run.html_url !== "string" || !run.html_url.startsWith("https://")) continue;
+    if (typeof run.updated_at !== "string") continue;
+    const done = Date.parse(run.updated_at);
+    if (!Number.isFinite(done)) continue;
+    const workflow = typeof run.name === "string" && run.name ? run.name : "pm-console-cloudflare config";
+    const actor = run.triggering_actor?.login ?? run.actor?.login;
+    const source = typeof actor === "string" && actor ? `${workflow}, dispatched by ${actor}` : workflow;
+    if (!best || done > best.done) best = { source, commit: run.head_sha, at: run.updated_at, url: run.html_url, done };
+  }
+  return best ? { source: best.source, commit: best.commit, at: best.at, url: best.url } : null;
+}
+
 export class Ops {
   private queueToken: string | null = null;
   /** What each token said of when it runs out, by its name, and when
@@ -1083,25 +1138,60 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Have the edge do the core itself, or stop it. On gives the Worker
-   * the repository automation token and the queue store token, read
-   * from the secret store by the setup script and sent to Cloudflare;
-   * off takes them away, and is remembered. It can only be done on a
-   * machine, where the secret store is. */
-  async edgeDirect(on: unknown) {
+  /** Persist the desired direct-mode state in the repository, then ask
+   * Actions to apply it. Token rotation is explicit because Worker
+   * secret values cannot be read back to determine whether they changed. */
+  async edgeDirect(on: unknown, refreshTokens: unknown = false) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
-    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
-    const said = `${r.stdout}\n${r.stderr}`
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-    if (r.code !== 0) {
-      throw new OpError(
-        502,
-        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
-      );
+    if (typeof refreshTokens !== "boolean") throw new OpError(400, "refreshTokens: true or false");
+    if (refreshTokens && !on) throw new OpError(400, "refreshTokens requires direct mode on");
+    const file = `repos/${this.cfg.repo}/contents/infra/pm-cloudflare/state.json`;
+    const current = (await this.gh([file])) as { sha?: unknown; content?: unknown } | null;
+    if (typeof current?.sha !== "string" || typeof current.content !== "string") {
+      throw new OpError(502, "could not read the Cloudflare repository state");
     }
-    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+    let state: Record<string, unknown>;
+    try {
+      const binary = atob(current.content.replace(/\s/g, ""));
+      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      throw new OpError(502, "the Cloudflare repository state was not valid JSON");
+    }
+    const worker = state.worker as Record<string, unknown> | undefined;
+    if (!worker || (worker.direct !== "on" && worker.direct !== "off")) {
+      throw new OpError(502, "the Cloudflare repository state has no valid worker.direct setting");
+    }
+    worker.direct = on ? "on" : "off";
+    const bytes = new TextEncoder().encode(`${JSON.stringify(state, null, 2)}\n`);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    await this.gh(["-X", "PUT", file], {
+      message: `pm-console: ${on ? "enable" : "disable"} edge direct mode`,
+      sha: current.sha,
+      content: btoa(binary),
+      branch: "main",
+    });
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/dispatches`], {
+      ref: "main",
+      inputs: { mode: "apply", refresh_tokens: String(refreshTokens) },
+    });
+    return { on, started: "pm-cloudflare-config.yml" };
+  }
+
+  /** Where the repository-described Cloudflare configuration was last
+   * successfully applied from, per the apply workflow's runs on main.
+   * A read only: it dispatches nothing, changes no Cloudflare state,
+   * and returns no secret value — only the run's source, commit,
+   * completion time and page. `apply` is null when no successful apply
+   * is on record, which the screen says as provenance unavailable. */
+  async cloudflareApply() {
+    const got = await this.gh([
+      `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/runs?branch=main&event=workflow_dispatch&per_page=10`,
+    ]);
+    return { apply: latestApply(got) };
   }
 
   // ---- services ----------------------------------------------------------

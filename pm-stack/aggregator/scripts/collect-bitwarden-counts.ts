@@ -75,9 +75,7 @@ function parseArgs(argv: string[]): { date: string; view: string; print: boolean
 const { date, view: viewPath, print } = parseArgs(process.argv.slice(2));
 
 const bwsBin = process.env.BWS_BIN ?? "bws";
-const counts = collectBitwardenCounts((args) =>
-  execFileSync(bwsBin, args, { encoding: "utf8", env: process.env }),
-);
+const counts = collectBitwardenCounts((args) => execFileSync(bwsBin, args, { encoding: "utf8", env: process.env }));
 
 const view = await readFile(viewPath, "utf8");
 const updated = applyBitwardenRead(view, counts, date);
@@ -85,9 +83,7 @@ const updated = applyBitwardenRead(view, counts, date);
 if (print) {
   const bw = extractSaasServices(updated).find((s) => s.id === "bitwarden");
   const records = recordsFromSaasServices(bw ? [bw] : [], "collect-bitwarden-counts");
-  console.log(
-    JSON.stringify({ date, counts, records }, null, 2),
-  );
+  console.log(JSON.stringify({ date, counts, records }, null, 2));
 } else {
   await writeFile(viewPath, updated);
   console.log(

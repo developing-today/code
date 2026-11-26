@@ -991,6 +991,54 @@ fn test_cli_parse_doc_content() {
 }
 
 #[test]
+fn test_cli_parse_talk_post_and_list() {
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "post",
+        "abc123",
+        "needs a source",
+        "--supersedes",
+        "content/raw-blake3-256.00",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command:
+                TalkCommand::Post {
+                    object,
+                    body,
+                    reply_to,
+                    supersedes,
+                },
+        }) => {
+            assert!(!json);
+            assert_eq!(object, "abc123");
+            assert_eq!(body, "needs a source");
+            assert_eq!(reply_to, None);
+            assert_eq!(supersedes.as_deref(), Some("content/raw-blake3-256.00"));
+        }
+        _ => panic!("Expected Talk::Post command"),
+    }
+
+    // `--json` is global to `talk`: it may follow the subcommand.
+    let cli = Cli::parse_from(["id", "talk", "list", "abc123", "--json"]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command: TalkCommand::List { object },
+        }) => {
+            assert!(json);
+            assert_eq!(object, "abc123");
+        }
+        _ => panic!("Expected Talk::List command"),
+    }
+
+    // A post needs its body.
+    assert!(Cli::try_parse_from(["id", "talk", "post", "abc123"]).is_err());
+}
+
+#[test]
 fn test_cli_verify() {
     // Verify CLI structure is valid
     Cli::command().debug_assert();
@@ -2117,6 +2165,40 @@ fn test_cli_parse_world_boot_window() {
 }
 
 #[test]
+fn test_cli_parse_world_host() {
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-host",
+    ]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(args.world_host),
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(!args.world_host),
+        _ => panic!("Expected Serve command"),
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--world-host"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-host",
+            "--ephemeral",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn test_cli_parse_id_client() {
     let cli = Cli::parse_from(["id", "id", "--client"]);
     assert!(matches!(cli.command, Some(Command::Id { client: true })));
@@ -2844,6 +2926,43 @@ fn test_cli_parse_world_profile() {
 }
 
 #[test]
+fn test_cli_parse_world_presentation() {
+    let node = "a".repeat(64);
+    let cli = Cli::parse_from(["id", "world", "presentation", &node]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Presentation(args) => {
+                assert!(args.set.is_none());
+                assert!(args.admin_token.is_none());
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    let cli = Cli::parse_from([
+        "id",
+        "world",
+        "presentation",
+        &node,
+        "--set",
+        "policy.json",
+        "--admin-token",
+        "adm",
+    ]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Presentation(args) => {
+                assert_eq!(args.set, Some(std::path::PathBuf::from("policy.json")));
+                assert_eq!(args.admin_token, Some("adm".to_owned()));
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
 fn test_cli_parse_world_dev_fuzz() {
     let cli = Cli::parse_from([
         "id",
@@ -3225,4 +3344,50 @@ fn test_cli_parse_keyset_recovery_commands() {
             }
         })
     ));
+}
+
+#[test]
+fn test_cli_parse_host_pin_and_wake_mode() {
+    let cli = Cli::parse_from(["id", "host", "pin", "/data", "w", "--off"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Pin { world, off, .. })) => {
+            assert_eq!(world, "w");
+            assert!(off);
+        }
+        _ => panic!("Expected host pin"),
+    }
+    let cli = Cli::parse_from(["id", "host", "wake-mode", "/data", "w", "operator"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::WakeMode { mode, .. })) => assert_eq!(mode, "operator"),
+        _ => panic!("Expected host wake-mode"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "wake-mode", "/data", "w", "never"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_host_key_export_import() {
+    let cli = Cli::parse_from(["id", "host", "key", "/data"]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Key { .. }))
+    ));
+    let cli = Cli::parse_from(["id", "host", "export", "/data", "w", "w.export"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Export { world, file, .. })) => {
+            assert_eq!(world, "w");
+            assert_eq!(file, std::path::PathBuf::from("w.export"));
+        }
+        _ => panic!("Expected host export"),
+    }
+    let cli = Cli::parse_from([
+        "id", "host", "import", "/data", "w.export", "--source", "ab",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Import { source, actor, .. })) => {
+            assert_eq!(source, "ab");
+            assert_eq!(actor, "operator");
+        }
+        _ => panic!("Expected host import"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
 }

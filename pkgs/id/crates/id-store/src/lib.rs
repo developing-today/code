@@ -57,5 +57,7 @@ pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
 pub mod talk_page;
+pub mod thread_resolution;
+pub mod thread_text;
 
 pub use store::STORE_PATH;
