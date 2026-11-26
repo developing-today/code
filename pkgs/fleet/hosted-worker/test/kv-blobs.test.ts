@@ -389,14 +389,29 @@ test("the encoded reference has the Rust encoding's exact shape", () => {
 
 const CAPABILITY_KEY = "test-capability-key-0123456789abcdef";
 
-function setHead(primary: SqlitePrimary, key: string, value: string, state = "live", namespace = "files"): void {
+function setHead(
+  primary: SqlitePrimary,
+  key: string,
+  value: string,
+  state = "live",
+  namespace = "files",
+  envelope = "kv:ref-v1",
+): void {
   const scope = namespace === "files" ? "shared:team" : `${privateScopePrefix(BINDING_A)}laptop`;
+  const bytes = new TextEncoder().encode(value);
   primary.db
     .prepare(
       `INSERT OR REPLACE INTO kv_heads (scope_id, registry_id, namespace, key, version, state, value, writer, written_at_ms)
        VALUES (?, ?, ?, ?, 1, ?, ?, 'test', 0)`,
     )
-    .run(scope, REGISTRY, namespace, key, state, new TextEncoder().encode(value));
+    .run(scope, REGISTRY, namespace, key, state, bytes);
+  primary.db
+    .prepare(
+      `INSERT OR REPLACE INTO kv_versions (scope_id, registry_id, namespace, key, version, parent_version, state, value,
+         writer, host_incarnation, outbox_id, written_at_ms, envelope)
+       VALUES (?, ?, ?, ?, 1, 0, ?, ?, 'test', 'test', ?, 0, ?)`,
+    )
+    .run(scope, REGISTRY, namespace, key, state, bytes, key, envelope);
 }
 
 function capabilityReq(token: string, body: unknown): Request {
@@ -512,10 +527,12 @@ test("a corrupt stored copy ends the read with an error instead of the value", a
 
 test("the mint needs a live blob reference the caller may read", async () => {
   const { primary, d, bucket, answer } = await uploadedAndHeaded(pattern(200));
-  // A plain value, a tombstone and an absent key are not references.
+  // A plain value, a tombstone and an absent key are not references, and
+  // neither is an inline value that only spells one: the envelope decides.
   setHead(primary, "plain", "just text");
   setHead(primary, "dead", answer.reference, "tombstone");
-  for (const key of ["plain", "dead", "absent"]) {
+  setHead(primary, "spelled", answer.reference, "live", "files", "kv:raw-v1");
+  for (const key of ["plain", "dead", "spelled", "absent"]) {
     const res = await mint(d, key);
     assert.equal(res.status, 404, key);
     assert.equal(((await res.json()) as { error: string }).error, "no_live_reference");

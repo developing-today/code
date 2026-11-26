@@ -269,6 +269,8 @@ pub fn sync_with_blobs(
 pub enum GlobalError {
     Local(KvError),
     Central(CentralError),
+    /// A blob-backed value could not be read and verified.
+    Blob(crate::blob::BlobError),
     NotFound,
     /// The value is over the namespace's inline threshold; central has no
     /// blob plane before Phase 3.
@@ -286,6 +288,7 @@ impl GlobalError {
         match self {
             Self::Local(error) => error.code(),
             Self::Central(error) => error.code(),
+            Self::Blob(error) => error.code(),
             Self::NotFound => "not_found",
             Self::NeedsPhase3 { .. } => "pending_needs_phase3",
             Self::Conflict { .. } => "conflict",
@@ -306,6 +309,7 @@ impl std::fmt::Display for GlobalError {
         match self {
             Self::Local(error) => write!(f, "{error}"),
             Self::Central(error) => write!(f, "{error}"),
+            Self::Blob(error) => write!(f, "{error}"),
             Self::NotFound => f.write_str("no live central value for this key"),
             Self::NeedsPhase3 { threshold } => write!(
                 f,
@@ -333,6 +337,15 @@ impl From<CentralError> for GlobalError {
     }
 }
 
+impl From<crate::blob_read::ValueError> for GlobalError {
+    fn from(error: crate::blob_read::ValueError) -> Self {
+        match error {
+            crate::blob_read::ValueError::Central(error) => Self::Central(error),
+            crate::blob_read::ValueError::Blob(error) => Self::Blob(error),
+        }
+    }
+}
+
 /// The central address `identity` reaches for `namespace`/`key`, from the
 /// authoritative definition.
 fn address(
@@ -350,25 +363,21 @@ fn address(
 }
 
 /// `--global get`: the authoritative central head, bypassing the overlay and
-/// any cache. Writes the value's bytes to `out`.
+/// any cache. Writes the value's bytes to `out`: a blob-backed head through
+/// `blobs`, verified against its reference.
 pub fn global_get(
     primary: &dyn Pipeline,
     identity: &Identity<'_>,
     namespace: &str,
     key: &str,
+    blobs: Option<&dyn crate::blob_read::BlobReader>,
     out: &mut dyn Write,
 ) -> Result<u64, GlobalError> {
     let (_, address) = address(primary, identity, namespace, key)?;
     match central::head(primary, &address)? {
-        Some(Head {
-            live: true,
-            value,
-            version,
-            ..
-        }) => {
-            out.write_all(&value)
-                .map_err(|error| GlobalError::Local(KvError::Io(error)))?;
-            Ok(version)
+        Some(head @ Head { live: true, .. }) => {
+            crate::blob_read::write_value(&head.envelope, &head.value, &address, blobs, out)?;
+            Ok(head.version)
         }
         _ => Err(GlobalError::NotFound),
     }
@@ -633,7 +642,7 @@ mod tests {
         assert_eq!(version, 1);
         let mut out = Vec::new();
         assert_eq!(
-            global_get(&primary, &me(), "status", "agent", &mut out).unwrap(),
+            global_get(&primary, &me(), "status", "agent", None, &mut out).unwrap(),
             1
         );
         assert_eq!(out, b"one");
@@ -662,7 +671,7 @@ mod tests {
         assert_eq!(deleted, 2);
         let mut out = Vec::new();
         assert!(matches!(
-            global_get(&primary, &me(), "status", "agent", &mut out),
+            global_get(&primary, &me(), "status", "agent", None, &mut out),
             Err(GlobalError::NotFound)
         ));
         assert!(
@@ -723,10 +732,10 @@ mod tests {
         .unwrap();
         let mut out = Vec::new();
         assert!(matches!(
-            global_get(&primary, &other, "notes", "todo", &mut out),
+            global_get(&primary, &other, "notes", "todo", None, &mut out),
             Err(GlobalError::NotFound)
         ));
-        let unknown = global_get(&primary, &me(), "nowhere", "todo", &mut out).unwrap_err();
+        let unknown = global_get(&primary, &me(), "nowhere", "todo", None, &mut out).unwrap_err();
         assert_eq!(unknown.code(), "unknown_namespace");
         assert!(!unknown.is_unavailable());
     }

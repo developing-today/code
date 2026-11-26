@@ -48,6 +48,7 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_archive.sql")),
     (3, include_str!("../migrations/0003_blobs.sql")),
     (4, include_str!("../migrations/0004_placement.sql")),
+    (5, include_str!("../migrations/0005_envelope.sql")),
 ];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
@@ -549,6 +550,34 @@ pub(crate) const VERSION_INSERT: &str = concat!(
     " AND receipt.outcome = 'committed'"
 );
 
+/// The publish-CAS conflict body: as [`CONFLICT_INSERT`], proposing a
+/// blob reference (design §11).
+pub(crate) const BLOB_CONFLICT_INSERT: &str = concat!(
+    "INSERT INTO kv_conflicts (
+            scope_id, registry_id, namespace, key, expected_version, actual_version,
+            proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms,
+            proposed_envelope)
+        SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'
+        FROM idem_receipts AS receipt
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'conflict'"
+);
+
+/// The publish-CAS version: as [`VERSION_INSERT`], whose value is a blob
+/// reference (design §11). The head the same transaction writes takes its
+/// envelope from this row.
+pub(crate) const BLOB_VERSION_INSERT: &str = concat!(
+    "INSERT INTO kv_versions (
+            scope_id, registry_id, namespace, key, version, parent_version,
+            state, value, writer, host_incarnation, outbox_id, written_at_ms, envelope)
+        SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'
+        FROM idem_receipts AS receipt
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'"
+);
+
 pub(crate) const HEAD_UPSERT: &str = concat!(
     "INSERT INTO kv_heads (
             scope_id, registry_id, namespace, key, version, state, value, writer, written_at_ms)
@@ -739,9 +768,21 @@ impl Jitter {
 pub struct Head {
     pub version: u64,
     pub live: bool,
+    /// The stored bytes: the value itself, or for a `kv:ref-v1` head the
+    /// encoded blob reference.
     pub value: Vec<u8>,
     pub writer: String,
     pub written_at_ms: i64,
+    /// The row envelope version (design §11): `kv:raw-v1` or `kv:ref-v1`.
+    pub envelope: String,
+}
+
+impl Head {
+    /// The head's value under its envelope. An envelope this client does
+    /// not know is refused, never read as bytes.
+    pub fn envelope(&self) -> std::result::Result<crate::blob::Envelope, crate::blob::BlobError> {
+        crate::blob::Envelope::from_row(&self.envelope, &self.value)
+    }
 }
 
 /// One row of a key's history.
@@ -789,6 +830,36 @@ pub(crate) const CONFLICTS_READ: &str = concat!(
              FROM kv_conflicts WHERE ",
     address_filter!(),
     " ORDER BY id"
+);
+
+/// The envelope of a head: its version row's, inline bytes when that row
+/// is absent (a head written before history was kept).
+macro_rules! head_envelope {
+    () => {
+        "COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row
+            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id
+              AND version_row.namespace = head.namespace AND version_row.key = head.key
+              AND version_row.version = head.version), 'kv:raw-v1')"
+    };
+}
+
+/// [`HEAD_READ`] with the head's envelope (design §11).
+pub(crate) const HEAD_ENVELOPED_READ: &str = concat!(
+    "SELECT head.version, head.state, head.value, head.writer, head.written_at_ms, ",
+    head_envelope!(),
+    "
+         FROM kv_heads AS head
+         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3 AND head.key = ?4"
+);
+
+/// [`HEADS_READ`] with each head's envelope (design §11).
+pub(crate) const HEADS_ENVELOPED_READ: &str = concat!(
+    "SELECT head.key, head.version, head.state, head.value, head.writer, head.written_at_ms, ",
+    head_envelope!(),
+    "
+         FROM kv_heads AS head
+         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3
+         ORDER BY head.key"
 );
 
 pub(crate) const HEADS_READ: &str =
@@ -885,7 +956,7 @@ fn op_of(state: &Value, value: Value) -> Op {
 
 /// The authoritative head of `address`, tombstones included.
 pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
-    let rows = read(primary, HEAD_READ, &address_args(address))?;
+    let rows = read(primary, HEAD_ENVELOPED_READ, &address_args(address))?;
     Ok(rows.into_iter().next().map(|mut row| {
         let value = std::mem::replace(&mut row[2], Value::Null);
         Head {
@@ -894,6 +965,7 @@ pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
             value: value.into_bytes().unwrap_or_default(),
             writer: string(&row[3]),
             written_at_ms: row[4].as_i64().unwrap_or(0),
+            envelope: string(&row[5]),
         }
     }))
 }
@@ -907,7 +979,7 @@ pub fn heads(
 ) -> Result<Vec<(String, Head)>> {
     let rows = read(
         primary,
-        HEADS_READ,
+        HEADS_ENVELOPED_READ,
         &[text(scope_id), text(registry_id), text(namespace)],
     )?;
     Ok(rows
@@ -922,6 +994,7 @@ pub fn heads(
                     value: value.into_bytes().unwrap_or_default(),
                     writer: string(&row[4]),
                     written_at_ms: row[5].as_i64().unwrap_or(0),
+                    envelope: string(&row[6]),
                 },
             )
         })

@@ -106,6 +106,28 @@
       "sql": "SELECT key, version, state, value, writer, written_at_ms FROM kv_heads\n         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key"
     },
     {
+      "args": 4,
+      "class": "read",
+      "name": "head.read_enveloped",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "SELECT head.version, head.state, head.value, head.writer, head.written_at_ms, COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row\n            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id\n              AND version_row.namespace = head.namespace AND version_row.key = head.key\n              AND version_row.version = head.version), 'kv:raw-v1')\n         FROM kv_heads AS head\n         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3 AND head.key = ?4",
+      "writer": null
+    },
+    {
+      "args": 3,
+      "class": "read",
+      "name": "heads.read_enveloped",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "SELECT head.key, head.version, head.state, head.value, head.writer, head.written_at_ms, COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row\n            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id\n              AND version_row.namespace = head.namespace AND version_row.key = head.key\n              AND version_row.version = head.version), 'kv:raw-v1')\n         FROM kv_heads AS head\n         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3\n         ORDER BY head.key",
+      "writer": null
+    },
+    {
       "name": "listing.read",
       "class": "read",
       "args": 3,
@@ -282,6 +304,28 @@
       "sql": "INSERT OR IGNORE INTO idem_receipts (\n        writer, host_incarnation, outbox_id, request_fingerprint, attempt,\n        scope_id, registry_id, namespace, key, expected_version,\n        outcome, version, recorded_at_ms)\n    SELECT ?8, ?9, ?10, ?11, ?12, ?1, ?2, ?3, ?4, ?5,\n        CASE WHEN head.version = ?5 THEN 'committed' ELSE 'conflict' END,\n        CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,\n        ?13\n    FROM (SELECT COALESCE((SELECT version FROM kv_heads\n        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head\n    WHERE EXISTS (SELECT 1 FROM kv_blobs AS blob\n        WHERE blob.jurisdiction = ?14 AND blob.tier = ?15 AND blob.content_id = ?16)"
     },
     {
+      "args": 13,
+      "class": "write",
+      "name": "blob.cas_conflict_insert",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "INSERT INTO kv_conflicts (\n            scope_id, registry_id, namespace, key, expected_version, actual_version,\n            proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms,\n            proposed_envelope)\n        SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'\n        FROM idem_receipts AS receipt\n        WHERE receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12 AND receipt.outcome = 'conflict'",
+      "writer": 8
+    },
+    {
+      "args": 13,
+      "class": "write",
+      "name": "blob.cas_version_insert",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "INSERT INTO kv_versions (\n            scope_id, registry_id, namespace, key, version, parent_version,\n            state, value, writer, host_incarnation, outbox_id, written_at_ms, envelope)\n        SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'\n        FROM idem_receipts AS receipt\n        WHERE receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12 AND receipt.outcome = 'committed'",
+      "writer": 8
+    },
+    {
       "name": "blob.ref_insert",
       "class": "write",
       "args": 16,
@@ -396,6 +440,13 @@
         "statements": [
           "CREATE TABLE IF NOT EXISTS kv_namespace_placement (\n    registry_id TEXT NOT NULL,\n    namespace TEXT NOT NULL,\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    updated_at_ms INTEGER NOT NULL,\n    PRIMARY KEY (registry_id, namespace)\n) WITHOUT ROWID"
         ]
+      },
+      {
+        "statements": [
+          "ALTER TABLE kv_versions ADD COLUMN envelope TEXT NOT NULL DEFAULT 'kv:raw-v1'",
+          "ALTER TABLE kv_conflicts ADD COLUMN proposed_envelope TEXT NOT NULL DEFAULT 'kv:raw-v1'"
+        ],
+        "version": 5
       }
     ]
   }

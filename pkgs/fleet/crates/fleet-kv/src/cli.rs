@@ -87,7 +87,7 @@ unknown_namespace, backup_target_exists, not_a_snapshot, ...),
 2 usage error, 69 unavailable.
 ";
 
-const GET_USAGE: &str = "usage: fleet kv get [--global | --allow-stale] [--verbose] --namespace NS KEY\n\nPrint the value's bytes exactly: this host's overlay first, then (after a sync)\nthe central head, cached for at most 1 s. A missing or masked key exits 1 with\nnot_found. Central unreachable: unavailable, or stale for an expired cached head\n(exit 69); --allow-stale reads that head anyway. --verbose prints the source to\nstderr. --global reads the authoritative central head instead.\n";
+const GET_USAGE: &str = "usage: fleet kv get [--global | --allow-stale] [--verbose] --namespace NS KEY\n\nPrint the value's bytes exactly: this host's overlay first, then (after a sync)\nthe central head, cached for at most 1 s. A missing or masked key exits 1 with\nnot_found. Central unreachable: unavailable, or stale for an expired cached head\n(exit 69); --allow-stale reads that head anyway. --verbose prints the source to\nstderr. --global reads the authoritative central head instead. A central value\nstored as a blob streams through the blob door beside FLEET_KV_URL and is checked\nagainst its reference: a length or digest mismatch exits 1 (blob_length_mismatch,\nblob_digest_mismatch) after the bytes read so far, which are not the value.\n";
 const SET_USAGE: &str = "usage: fleet kv set [--global [--expect VERSION]] --namespace NS KEY (VALUE | --stdin)\n\nStore bytes as a new local version and queue it for the sweep. Prints the version.\n--global writes central directly by compare-and-swap; --expect VERSION (0 for\nabsent) fails with conflict unless central is still at VERSION.\n";
 const LIST_USAGE: &str = "usage: fleet kv list [--global | --allow-stale] [--verbose] --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN, where ORIGIN is local, central,\nboth or masked. --verbose adds each central row a local row hides\n(shadowed-by-local). --allow-stale lists local rows when central is unreachable.\n";
 const DELETE_USAGE: &str = "usage: fleet kv delete [--global [--expect VERSION]] --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n--global writes the tombstone to central directly by compare-and-swap.\n";
@@ -749,6 +749,19 @@ fn blob_plane_from_env() -> BlobPlaneOpened {
     }
 }
 
+/// The blob door's read side, for central heads that hold a blob
+/// reference (design §9). It reaches the door only when a read meets one.
+fn blob_reader() -> Option<&'static dyn crate::blob_read::BlobReader> {
+    #[cfg(feature = "http")]
+    {
+        Some(&crate::http::EnvBlobReader)
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        None
+    }
+}
+
 fn not_configured() -> CentralError {
     CentralError::NotConfigured(
         "set FLEET_KV_URL and FLEET_KV_TOKEN_FILE to reach the central store".into(),
@@ -1050,7 +1063,7 @@ fn execute_central(
 ) -> i32 {
     let written = match command {
         Command::Get { namespace, key, .. } => {
-            match sync::global_get(primary, identity, &namespace, &key, out) {
+            match sync::global_get(primary, identity, &namespace, &key, blob_reader(), out) {
                 Ok(_) => Ok(()),
                 Err(error) => return refuse_global(err, &error),
             }
@@ -1440,6 +1453,7 @@ fn execute(
                 store,
                 identity,
                 central: primary,
+                blobs: blob_reader(),
                 allow_stale,
                 now_ms: read::now_ms(),
             };
@@ -1500,6 +1514,7 @@ fn execute(
                 store,
                 identity,
                 central: primary,
+                blobs: blob_reader(),
                 allow_stale,
                 now_ms: read::now_ms(),
             };
