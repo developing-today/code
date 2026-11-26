@@ -5,8 +5,8 @@
 //! touches nothing. Typed store refusals print `error: <code>: <message>` and
 //! exit 1. `--global` and `sync` reach the central plane (code#13316): when
 //! it is not configured or cannot be reached they exit 69 before the local
-//! store is opened. `--force-blob` marks a local set for blob placement;
-//! with `--global` it is refused as `pending_needs_phase3` (exit 69).
+//! store is opened. `--force-blob` marks a set for blob placement; with
+//! `--global` the value goes through the upload door at once.
 
 use std::io::{Read, Write};
 
@@ -83,7 +83,9 @@ partition the namespace's definition places it in (namespace define
 --blob-partition JUR/TIER), then writes the reference; a namespace with no
 placement keeps such values waiting as no_blob_placement.
 set --force-blob places the value in a blob at any size when sync sends
-it; with --global it is refused with pending_needs_phase3 (exit 69).
+it; with --global it goes through the upload door at once, as does any
+--global value above the inline threshold (no_blob_placement, exit 69,
+when the namespace has no blob placement).
 
 Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, conflict,
 unknown_namespace, backup_target_exists, not_a_snapshot, ...),
@@ -311,7 +313,6 @@ impl Command {
 #[derive(Debug, PartialEq, Eq)]
 enum ParseError {
     Usage(String),
-    Central(&'static str),
 }
 
 fn usage(message: impl Into<String>) -> ParseError {
@@ -432,11 +433,6 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
         return Err(usage(format!(
             "--global applies to get, set, list and delete, not `kv {first}`"
         )));
-    }
-    if force_blob && global {
-        // A --global write is one CAS from this command; it has no upload
-        // step yet.
-        return Err(ParseError::Central("--force-blob with --global"));
     }
     if allow_stale && global {
         return Err(usage(
@@ -803,10 +799,6 @@ fn log_operation(command: &Command, err: &mut dyn Write, ctx: &fleet_config::ctx
 
 fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
     match error {
-        ParseError::Central(flag) => {
-            let _ = writeln!(err, "error: pending_needs_phase3: {flag} is not wired yet");
-            EXIT_UNAVAILABLE
-        }
         ParseError::Usage(message) => {
             let _ = writeln!(err, "error: usage: {message}\n\n{USAGE}");
             EXIT_USAGE
@@ -933,8 +925,8 @@ fn refuse_global(err: &mut dyn Write, error: &GlobalError) -> i32 {
 pub type Opened = Result<(LocalStore, crate::launch::LaunchIdentity), (&'static str, String)>;
 
 /// Validate a whole command line without touching anything. Returns the
-/// exit code when the invocation is already answered (help, a usage error
-/// or the `--global` refusal) and `None` when it needs the store.
+/// exit code when the invocation is already answered (help or a usage
+/// error) and `None` when it needs the store.
 pub fn preflight(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
     match parse(args) {
         Ok(Command::Help(text)) => Some(match out.write_all(text.as_bytes()) {
@@ -1183,28 +1175,32 @@ fn execute_central(
             key,
             value,
             global,
-            ..
+            force_blob,
         } => {
             let value = match value {
-                ValueSource::Inline(value) => value.into_bytes(),
-                // Bounded by the largest inline value central can hold; the
-                // namespace's own threshold is checked again before the CAS.
-                ValueSource::Stdin => {
-                    match sync::read_bounded(stdin, crate::working::INLINE_LIMIT as u64) {
-                        Ok(value) => value,
-                        Err(error) => return refuse_global(err, &error),
-                    }
-                }
+                ValueSource::Inline(value) => sync::GlobalValue::Bytes(value.into_bytes()),
+                // Up to the resident budget in memory; past it the value
+                // spools beside the store and goes to a blob.
+                ValueSource::Stdin => match global_stdin(store, stdin) {
+                    Ok(value) => value,
+                    Err(error) => return refuse_global(err, &error),
+                },
+            };
+            let configured = match blob_plane_from_env() {
+                Ok(configured) => configured,
+                Err(error) => return refuse_central(err, &error),
             };
             let expect = global.and_then(Expect::version);
-            match sync::global_write(
+            match sync::global_set(
                 store,
                 primary,
                 identity,
                 &namespace,
                 &key,
-                Op::Set(value),
+                value,
+                force_blob,
                 expect,
+                configured.as_deref(),
                 &mut sleep,
             ) {
                 Ok(version) => writeln!(out, "{version}"),
@@ -1415,6 +1411,32 @@ fn write_sweep(
             deletion.digest, deletion.epoch
         )
     })
+}
+
+/// A `--global set --stdin` value: in memory up to the resident budget,
+/// spooled beside the store past it (an in-memory store keeps it whole).
+fn global_stdin(
+    store: &LocalStore,
+    stdin: &mut dyn Read,
+) -> Result<sync::GlobalValue, GlobalError> {
+    let io = |error| GlobalError::Local(KvError::Io(error));
+    let mut head = Vec::new();
+    (&mut *stdin)
+        .take(crate::working::INLINE_LIMIT as u64 + 1)
+        .read_to_end(&mut head)
+        .map_err(io)?;
+    if head.len() <= crate::working::INLINE_LIMIT {
+        return Ok(sync::GlobalValue::Bytes(head));
+    }
+    match &store.working_dir {
+        Some(dir) => sync::Spool::create(dir, &head, stdin)
+            .map(sync::GlobalValue::Spooled)
+            .map_err(io),
+        None => {
+            stdin.read_to_end(&mut head).map_err(io)?;
+            Ok(sync::GlobalValue::Bytes(head))
+        }
+    }
 }
 
 /// The central admin verbs, against an opened central plane.
@@ -2037,7 +2059,7 @@ mod tests {
         );
         assert_eq!(blob.code, EXIT_UNAVAILABLE);
         assert!(
-            blob.err.starts_with("error: pending_needs_phase3"),
+            blob.err.starts_with("error: central_not_configured"),
             "{}",
             blob.err
         );
@@ -2955,7 +2977,7 @@ mod tests {
                 &mut out,
                 &mut err
             ),
-            Some(EXIT_UNAVAILABLE)
+            None
         );
         assert_eq!(
             preflight(
