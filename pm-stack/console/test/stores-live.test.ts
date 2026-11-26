@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { storeSaid } from "../public/app.js";
 import { readConfig } from "../src/config.ts";
 import { Ops, type Fetch, type Run } from "../src/ops.ts";
-import { storeAnswered, storeLiveStatements, storeNotAnswering } from "../src/store-live.ts";
+import { storeAnswered, storeLiveStatements, storeNotAnswering, type StoreResult } from "../src/store-live.ts";
 import { storesList, type StoreRow } from "../src/stores.ts";
 
 const file = readFileSync(join(import.meta.dir, "..", "..", "platform", "stores.json"), "utf8");
@@ -23,8 +23,10 @@ const listed = storesList(JSON.parse(file)).stores;
 const queue = listed.find((s) => s.name === "fleet-queue") as StoreRow;
 const platform = listed.find((s) => s.name === "fleet-platform") as StoreRow;
 
+type PipelineResult = { type: "error" } | { type: "ok"; response: { result: NonNullable<StoreResult> } };
+
 /** A pipeline answer in the wire shape: one result per statement. */
-const answer = (values: (number | null)[][], refused: number[] = []) => ({
+const answer = (values: (number | null)[][], refused: number[] = []): { results: PipelineResult[] } => ({
   results: values.map((row, i) =>
     refused.includes(i)
       ? { type: "error" }
@@ -39,6 +41,10 @@ const answer = (values: (number | null)[][], refused: number[] = []) => ({
         },
   ),
 });
+
+/** Translate the wire's refused results into the absent measurements storeAnswered accepts. */
+const measurements = (results: PipelineResult[]): StoreResult[] =>
+  results.map((result) => (result.type === "ok" ? result.response.result : undefined));
 
 /** An Ops whose GitHub serves the list, whose secrets are the
  * stand-ins given, and whose fetch is answered per store address. */
@@ -70,14 +76,14 @@ test("the asking: size, one count per table the app reads, and the schema versio
 });
 
 test("an answer is read against the numbers the stand-in sent", () => {
-  const got = storeAnswered(platform, answer([[4096], [3], [0], [12], [1], [2], [0], [5], [7]]).results.map((r) => r.response.result));
+  const got = storeAnswered(platform, measurements(answer([[4096], [3], [0], [12], [1], [2], [0], [5], [7]]).results));
   expect(got.answers).toBe(true);
   expect(got.error).toBeNull();
   expect(got.sizeBytes).toBe(4096);
   expect(Object.values(got.rows)).toEqual([3, 0, 12, 1, 2, 0, 5]);
   expect(got.liveSchemaVersion).toBe("7");
   // A statement the store refused leaves only its own count null.
-  const partial = storeAnswered(platform, [answer([[4096]]).results[0].response.result, undefined]);
+  const partial = storeAnswered(platform, [measurements(answer([[4096]]).results)[0], undefined]);
   expect(partial.answers).toBe(true);
   expect(partial.sizeBytes).toBe(4096);
   expect(Object.values(partial.rows).every((n) => n === null)).toBe(true);
@@ -203,7 +209,7 @@ test("a rotated token is fetched again, once, and the store then answers", async
 });
 
 test("the screen's words: an answering store shows its numbers; one that does not is said as not answering", () => {
-  const liveStore = storeAnswered(queue, answer([[2048], [3]]).results.map((r) => r.response.result));
+  const liveStore = storeAnswered(queue, measurements(answer([[2048], [3]]).results));
   expect(storeSaid(liveStore).text).toContain("Answers. Size 2.0 KiB. Schema version 3.");
   const down = storeNotAnswering(queue, "the store answered http 503");
   const said = storeSaid(down);

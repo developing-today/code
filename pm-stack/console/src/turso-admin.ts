@@ -52,7 +52,7 @@ export interface TursoAdminRequest {
  * workflow must not be asked to do is refused here, before dispatch. */
 export function tursoAdminRequest(args: Record<string, unknown>): TursoAdminRequest {
   const operation = args.operation;
-  if (!(TURSO_OPERATIONS as readonly unknown[]).includes(operation)) {
+  if (operation !== "create-db" && operation !== "mint-token") {
     throw new OpError(400, "operation: create-db or mint-token");
   }
   const database = args.database;
