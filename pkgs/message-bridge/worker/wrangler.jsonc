@@ -30,5 +30,11 @@
   "durable_objects": {
     "bindings": [{ "name": "MESSAGES", "class_name": "MessageStore" }]
   },
+  // Bridge state backup (#14951): the scheduled export of the whole
+  // MessageStore lands in this bucket (backup.js). The cron is the
+  // daily run; POST /api/<token>/backup-export is the same run on
+  // demand, and backup-import restores an export into a namespace.
+  "r2_buckets": [{ "binding": "BRIDGE_BACKUP", "bucket_name": "message-bridge-backup" }],
+  "triggers": { "crons": ["17 8 * * *"] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MessageStore"] }]
 }

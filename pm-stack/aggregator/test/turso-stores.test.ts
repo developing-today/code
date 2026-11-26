@@ -176,6 +176,50 @@ test("activity writes only changed rows and preserves watchdog windows and seman
   expect((await writer.load())!.gaps.find((g) => g.id === "open")).toEqual(clearedGap);
 });
 
+test("activity save sends only rows whose content changed since the last write or load", async () => {
+  const db = new Database(":memory:");
+  db.exec(`create table agg_activity_ingestion(source text primary key, checkpoint text, seen_ids text, source_status text, updated_at text);
+    create table agg_activity_gaps(id text primary key, source text, gap_from text, gap_to text, status text, detected_at text, resolved_at text, updated_at text);`);
+  const base = localClient(db);
+  const sent: string[] = [];
+  const counting = {
+    ref: "counting",
+    async query<T>(input: string): Promise<T[]> {
+      if (input.startsWith("insert")) sent.push(input);
+      return base.query<T>(input);
+    },
+  };
+  const t0 = "2026-11-25T00:00:00.000Z";
+  const gaps = Array.from({ length: 500 }, (_, i) => ({
+    id: `g${i}`,
+    source: "watchdog",
+    from: t0,
+    to: t0,
+    status: "backfilled" as const,
+    detectedAt: t0,
+    resolvedAt: t0,
+  }));
+  const data: IngestionFile = { version: 1, checkpoints: {}, seen: { watchdog: ["a"] }, gaps, sourceStatus: {} };
+  const remote = createTursoActivityRemote(async () => counting);
+  await remote.save(data);
+  expect(sent.length).toBe(4); // 1 ingestion + 3 gap chunks
+  sent.length = 0;
+  await remote.save(structuredClone(data));
+  expect(sent).toEqual([]); // unchanged: nothing sent at all
+  const next = structuredClone(data);
+  next.seen.watchdog.push("b");
+  next.gaps[7].to = "2026-11-25T00:01:00.000Z";
+  await remote.save(next);
+  expect(sent.length).toBe(2);
+  expect(sent[1]).toContain("'g7'");
+  expect(sent[1]).not.toContain("'g8'");
+  sent.length = 0;
+  const restarted = createTursoActivityRemote(async () => counting);
+  const loaded = (await restarted.load())!;
+  await restarted.save(loaded);
+  expect(sent).toEqual([]); // a fresh process seeds its memory from the load
+  db.close();
+});
 test("alerts partial-index dedupe, JSON preference merge and ack are preserved", async () => {
   const db = new Database(":memory:");
   db.exec(`create table alerts_incidents(id text primary key default (lower(hex(randomblob(16)))), source text, incident_key text, severity text, title text, body text, status text default 'open', occurrences integer default 1, first_seen_at text default (strftime('%Y-%m-%dT%H:%M:%fZ','now')), last_seen_at text, delivered_at text, escalated_at text, acked_at text, closed_at text);

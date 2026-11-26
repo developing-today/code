@@ -147,6 +147,64 @@ never enter a subprocess argument. Suites:
 `pm-stack/scripts/fence-check.test.sh` (fencing rule), both run by
 `.github/workflows/pm-stack-tests.yml`.
 
+### One-hour Kaneo recovery evidence
+
+Promotion also consumes `--kaneo-recovery-record-file FILE`, independently of
+`--backup-record-file`. Missing or invalid evidence refuses promotion (exit 3)
+before any database query, with a refusal receipt. This gate cannot be relaxed
+by `--max-backup-age-hours`. A recent upload timestamp is not a recent recovery
+point: the **data capture time** must be within one hour and no later than the
+verification completion time.
+
+The record uses the existing complete archive verification schema (`date`,
+`finishedAt`, `result: "complete"`, `archiveSha256`, and all three `destinations`
+equal to `"ok"` for `local`, `r2`, `drive`), with two additional fields:
+
+```json
+{
+  "source": { "host": "actual-source-host", "port": 5432, "database": "kaneo" },
+  "recoveryPointAt": "2026-11-25T02:00:00Z"
+}
+```
+
+This fragment is not a usable record: the complete archive fields are required.
+Source identity must match the normalized source DSN host, port, and database
+(no credentials in this record). The independent backup/restore verifier must
+observe and supply these fields from the Kaneo archive; do **not** copy a
+dashboard backup's completion time into `recoveryPointAt` or fabricate a pass.
+This slice adds a consumer gate, not a verifier, hourly backup job, or PITR.
+No live recovery point or RPO compliance is claimed. The acceptance window
+still owes a real restore and observed recovery point. Tests cover generated
+age boundaries and fixture mutations; `.github/workflows/pm-stack-tests.yml`
+runs both `kaneo-recovery-point-check.test.py` and the driver suite.
+
+### The file-store driver: `pm-stack/scripts/grist-pad-sync.sh`
+
+Steps 1 and 5 run through one driver per file store (`--store grist|pad`),
+so the Grist/Pad syncs are mechanical instead of advisory:
+
+- File sets (from the §2 inventory): grist syncs `home.sqlite3` + `docs/`
+  (`grist-sessions.db` is runtime state and is never synced); pad syncs
+  `pad.db` + `encryption.key` + `config.toml` + `attachments/`.
+- `--mode presync` (step 1, while live): copies the store's file set from
+  the source dir to the target dir, then requires post-copy sha256 parity
+  of the copied set. Pre-copy drift is reported, not failed.
+- `--mode final` (step 5, the gate): refuses (exit 3, REFUSED receipt,
+  copies nothing) unless `pm-stack/scripts/fence-check.sh --store <store>`
+  reports **FENCED** — per-store, so pad can go final while grist still
+  runs, matching the Pad → Grist → Kaneo stop order — and, for pad, the
+  source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
+  copies and requires exact parity, including zero unaccounted target
+  files under the synced set (exit 4 otherwise; only the operator removes
+  them). The driver never deletes target files: target-only files are
+  preserved and counted in the receipt (presync tolerates them, final
+  refuses on them), and unrelated files elsewhere in the target (sync-tool
+  metadata, `grist-sessions.db`) are out of scope.
+- Receipts record the fence verdict, file counts, pre-copy drift, target
+  extras, and the verdict line; paths are local directory paths, no
+  secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
+  `.github/workflows/pm-stack-tests.yml` alongside the fencing suites.
+
 ## 5. Rollback
 
 - **Kaneo:** stop Kaneo, restore the local DSN, start the local stack. Any
@@ -165,9 +223,15 @@ never enter a subprocess argument. Suites:
   promoted home, verify SQLite integrity (and Pad's WAL/checkpoint state),
   restore the selected authoritative generation to the old volume, verify
   checksums and application readability, then reopen only the single old
-  writer. Where reconciliation is needed, keep both writers stopped until
-  the selected data and recoverable writes are verified; neither volume is
-  disposable during this process.
+  writer. The restore copy is driven by
+  `pm-stack/scripts/grist-pad-sync.sh` with the source and target dirs
+  swapped (selected generation → laptop volume), under the same
+  fence-then-exact-parity gate as the cutover final — the driver copies in
+  one direction only and never deletes target files, so it restores a
+  selected generation; it does not merge divergent writes. Where
+  reconciliation is needed, keep both writers stopped until the selected
+  data and recoverable writes are verified; neither volume is disposable
+  during this process.
 - Rollback is abandoned (volumes eligible for cleanup) only after 7 stable
   days and a recorded drill per the cold-restore runbook.
 
@@ -178,8 +242,10 @@ never enter a subprocess argument. Suites:
   cadence, then rehearse from off-machine copies with the source fenced.
   An offline preflight does not complete criterion 1 of #6816.
 - Step 2 (windowed): the cutover itself, per §4 — run `preflight`, `presync`, then the
-  fenced writers, then `promote` (the gate in §4 names the driver and what
-  it refuses). Rollback (§5) is driven by `kaneo-cutover.sh --mode
+  fenced writers, then `promote` (Kaneo's gate in §4 names the driver and
+  what it refuses; Grist/Pad finals go through `grist-pad-sync.sh --mode
+final`, per-store fenced with a clean pad WAL — §4 names that driver
+  too). Rollback (§5) is driven by `kaneo-cutover.sh --mode
 rollback` (fence-gated replay with parity receipt, stub-tested); the
   DSN flip, restarts, and the first window run remain operator steps.
 - Step 3 (windowed): the first isolated laptop-off drill, recorded per

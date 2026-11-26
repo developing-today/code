@@ -180,6 +180,8 @@ def format_uri(ref: ObjRef | HeadRef) -> str:
 def _parse_u64(text: str) -> int:
     if not _DEC.fullmatch(text):
         raise UriError("noncanonical_decimal")
+    if len(text) > 20:  # 2^64-1 has 20 digits; also keeps int() off huge strings
+        raise UriError("decimal_out_of_range")
     value = int(text)
     if value > _U64_MAX:
         raise UriError("decimal_out_of_range")

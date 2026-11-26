@@ -72,6 +72,11 @@ pub struct SocialObject {
     pub schema_version: u64,
     /// The version this object succeeds, if it is a version.
     pub succeeds_ref: Option<ObjectRef>,
+    /// The social object a feed entry surfaces. Required for
+    /// [`SocialObjectKind::FeedEntry`] and absent for every other
+    /// profile (envelope design #13095 §4); see
+    /// [`super::social_envelope`] for the validator.
+    pub target_ref: Option<ObjectRef>,
 }
 
 /// The selected deployment profile bounding one traversal.
@@ -134,8 +139,41 @@ pub struct Traversal {
 
 /// Bytes one expanded object charges against the profile's byte
 /// budget: its two digests plus its author claim bytes.
-fn entry_cost(object: &SocialObject) -> usize {
+pub(super) const fn entry_cost(object: &SocialObject) -> usize {
     32 + 32 + object.author.len()
+}
+
+/// The authorized objects by ID, and each one's authorized children
+/// in [`ref_order_key`] order. Unauthorized objects take no part; a
+/// repeated listing of one ID keeps the first.
+pub(super) fn authorized_index<'a>(
+    objects: &'a [SocialObject],
+    authorized: impl Fn(&SocialObject) -> bool,
+) -> (
+    HashMap<ObjectRef, &'a SocialObject>,
+    HashMap<ObjectRef, Vec<ObjectRef>>,
+) {
+    let mut by_id: HashMap<ObjectRef, &SocialObject> = HashMap::new();
+    let mut children: HashMap<ObjectRef, Vec<ObjectRef>> = HashMap::new();
+    for object in objects {
+        if !authorized(object) {
+            continue;
+        }
+        // Objects are immutable, so a repeated listing of one ID is
+        // the same object; the first listing wins.
+        if by_id.contains_key(&object.object_id) {
+            continue;
+        }
+        by_id.insert(object.object_id, object);
+        if let Some(parent) = object.parent_ref {
+            children.entry(parent).or_default().push(object.object_id);
+        }
+    }
+    for list in children.values_mut() {
+        list.sort_by_key(ref_order_key);
+        list.dedup();
+    }
+    (by_id, children)
 }
 
 /// Iterative depth-first traversal of the authorized children of
@@ -157,26 +195,7 @@ pub fn traverse(
     profile: &TraversalProfile,
     authorized: impl Fn(&SocialObject) -> bool,
 ) -> Traversal {
-    let mut by_id: HashMap<ObjectRef, &SocialObject> = HashMap::new();
-    let mut children: HashMap<ObjectRef, Vec<ObjectRef>> = HashMap::new();
-    for object in objects {
-        if !authorized(object) {
-            continue;
-        }
-        // Objects are immutable, so a repeated listing of one ID is
-        // the same object; the first listing wins.
-        if by_id.contains_key(&object.object_id) {
-            continue;
-        }
-        by_id.insert(object.object_id, object);
-        if let Some(parent) = object.parent_ref {
-            children.entry(parent).or_default().push(object.object_id);
-        }
-    }
-    for list in children.values_mut() {
-        list.sort_by_key(|id| ref_order_key(id));
-        list.dedup();
-    }
+    let (by_id, children) = authorized_index(objects, authorized);
 
     let mut entries = Vec::new();
     let mut complete = true;

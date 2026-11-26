@@ -453,6 +453,7 @@ impl QuotaLedgerStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -801,9 +802,11 @@ mod tests {
             // No close: the handle drops here.
         }
         assert!(store.is_checked_out(&AGENT, "w"));
-        assert!(store
-            .open(AGENT, "w", "archivist", class(2, None), 2)
-            .is_err());
+        assert!(
+            store
+                .open(AGENT, "w", "archivist", class(2, None), 2)
+                .is_err()
+        );
 
         let released = store.release(&AGENT, "w").unwrap();
         assert_eq!(released.spend_at(2).tool_calls, 1);
@@ -857,10 +860,7 @@ mod tests {
         // A properly closed pair has no checkout to release, and
         // release must not disturb the banked ledger.
         assert_eq!(store.release(&AGENT, "w"), None);
-        assert_eq!(
-            store.spend_for_agent(&AGENT, "w", 0).unwrap().tool_calls,
-            1
-        );
+        assert_eq!(store.spend_for_agent(&AGENT, "w", 0).unwrap().tool_calls, 1);
     }
 
     #[test]

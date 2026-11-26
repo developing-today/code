@@ -18,7 +18,21 @@ import { navLinks } from "../src/render.ts";
 import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
-const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
+// The #13052 split moved the route families into the server-*.ts seam
+// modules; reachability is a property of the whole server layer, so the
+// scan covers every module the split produced.
+const serverSource = [
+  "server.ts",
+  "server-alert-routes.ts",
+  "server-contexts.ts",
+  "server-decision-routes.ts",
+  "server-pages.ts",
+  "server-respond.ts",
+  "server-wiring.ts",
+  "server-write-routes.ts",
+]
+  .map((f) => readFileSync(join(SRC, f), "utf8"))
+  .join("\n");
 const renderSource = readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 /** The CSS rule body for a selector in the stylesheet string. */

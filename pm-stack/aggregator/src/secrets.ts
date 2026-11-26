@@ -39,7 +39,8 @@ async function firstReadable(paths: string[]): Promise<string | null> {
 
 async function resolveBwsSecretUncached(key: string): Promise<BwsSecretLookup> {
   const bwsBin =
-    process.env.BWS_BIN ?? (await firstReadable([join("/run/current-system/sw/bin/bws"), join(home(), "tools/bin/bws")]));
+    process.env.BWS_BIN ??
+    (await firstReadable([join("/run/current-system/sw/bin/bws"), join(home(), "tools/bin/bws")]));
   const accessTokenFile =
     process.env.BWS_ACCESS_TOKEN_FILE ??
     (await firstReadable([join(home(), ".config/bws/access-token"), join(home(), ".config/bitwarden/access-token")]));

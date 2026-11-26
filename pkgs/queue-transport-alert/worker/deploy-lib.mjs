@@ -3,6 +3,7 @@
 // only checks the arguments, which deploy.sh does before Bitwarden or
 // sops are touched.
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 export const USAGE = [
   "usage: deploy.mjs [--dry-run]",
@@ -125,4 +126,40 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.error(error.message);
     process.exit(2);
   }
+}
+
+// The home-resolution contract (#5762/#8220 unit 3, #14757), shaped after
+// bin/home-dir.mjs: home is a non-empty HOME; unset or empty is a named
+// error at the first surface that needs a path — no passwd fallback
+// (os.homedir() falls back to the passwd entry when HOME is unset, which
+// is exactly the substitute directory the contract forbids).
+export class HomeUnsetError extends Error {
+  constructor(purpose) {
+    super(
+      `HOME is not set or is empty: ${purpose} requires a non-empty HOME ` +
+        "(home-resolution contract, issues #5762/#8220)",
+    );
+    this.name = "HomeUnsetError";
+  }
+}
+
+/** The non-empty HOME, or a HomeUnsetError naming `purpose`. */
+export function requireHome(env = process.env, purpose = "this tool") {
+  const home = env.HOME;
+  if (typeof home !== "string" || home === "") throw new HomeUnsetError(purpose);
+  return home;
+}
+
+// The broker token file the deploy reads: QTA_BROKER_TOKEN_FILE, else the
+// default under HOME. The token FILE is optional (absent = the previous
+// version's BROKER_AGENT_TOKEN carries over), but resolving its default
+// path is not: a deploy whose HOME is unset or empty fails here with the
+// named error rather than silently treating the token as absent and
+// pinning the previous secret by accident (#14757 decision, recorded in
+// the PR that landed this).
+export function resolveBrokerTokenFile(env = process.env) {
+  return (
+    env.QTA_BROKER_TOKEN_FILE ??
+    join(requireHome(env, "the queue broker token file (QTA_BROKER_TOKEN_FILE)"), ".config", "queue-broker", "token")
+  );
 }

@@ -677,9 +677,11 @@ mod tests {
     async fn test_non_unix_key_custody_refuses_the_key() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("key");
-        assert!(load_or_create_keypair(path.to_str().unwrap())
-            .await
-            .is_err());
+        assert!(
+            load_or_create_keypair(path.to_str().unwrap())
+                .await
+                .is_err()
+        );
         assert!(
             !path.exists(),
             "no key file may be written without enforced custody"
