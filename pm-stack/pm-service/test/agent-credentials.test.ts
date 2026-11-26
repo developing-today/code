@@ -47,6 +47,17 @@ function deps(store: InMemoryAgentCredentialStore, now: () => number = () => NOW
 }
 
 describe("agent credential issuance (H4 §4.5)", () => {
+  test("issuance fails closed when no lifecycle auditor is configured", async () => {
+    const store = new InMemoryAgentCredentialStore();
+    const result = await issueAgentCredential(
+      ownerSession,
+      { tenantId: BINDING, audience: AUDIENCE },
+      { store, now: () => NOW, generateJti: () => "unaudited", generateSecret: () => "fixture-secret" },
+    );
+    expect(result).toEqual({ ok: false, reason: "issuance_failed" });
+    expect(await store.getByJti("unaudited")).toBeNull();
+  });
+
   test("owner session mints a single-tenant agent credential; secret shown once, never stored", async () => {
     const store = new InMemoryAgentCredentialStore();
     const result = await issueAgentCredential(ownerSession, { tenantId: BINDING, audience: AUDIENCE, ttlSec: 3600 }, deps(store));
@@ -203,6 +214,7 @@ describe("surface C HTTP integration (H4 acceptance)", () => {
   test("issue → exchange → act with audit attribution → revoke → next request denies", async () => {
     const store = new InMemoryAgentCredentialStore();
     const audits: AgentAudit[] = [];
+    const lifecycleEvents: unknown[] = [];
     let nowSec = NOW;
     const handler = createSurfaceCHandler({
       store,
@@ -214,6 +226,7 @@ describe("surface C HTTP integration (H4 acceptance)", () => {
         audit: async (actor) => { audits.push(actor); },
       },
       mintAccessToken: signClaims,
+      auditLifecycle: async (event) => { lifecycleEvents.push(event); },
       now: () => nowSec,
       generateJti: () => "e2e-credential-1",
       generateSecret: () => "e2e-fixture-secret",
@@ -231,6 +244,7 @@ describe("surface C HTTP integration (H4 acceptance)", () => {
       body: JSON.stringify({ tenantId: BINDING, audience: AUDIENCE, ttlSec: 86400 }),
     }));
     expect(issuedRes.status).toBe(201);
+    expect(issuedRes.headers.get("cache-control")).toBe("no-store");
     const issuedBody = (await issuedRes.json()) as { credential: { jti: string }; secret: string };
     expect(issuedBody.credential.jti).toBe("e2e-credential-1");
     expect(JSON.stringify(await store.getByJti("e2e-credential-1"))).not.toContain(issuedBody.secret);
@@ -241,6 +255,7 @@ describe("surface C HTTP integration (H4 acceptance)", () => {
       body: JSON.stringify({ grant_type: "client_credentials", client_id: "e2e-credential-1", client_secret: issuedBody.secret, audience: AUDIENCE }),
     }));
     expect(tokenRes.status).toBe(200);
+    expect(tokenRes.headers.get("cache-control")).toBe("no-store");
     const tokenBody = (await tokenRes.json()) as { access_token: string; expires_in: number };
     expect(tokenBody.expires_in).toBe(900);
 
@@ -249,10 +264,9 @@ describe("surface C HTTP integration (H4 acceptance)", () => {
       headers: { authorization: `Bearer ${tokenBody.access_token}`, "x-tenant-id": BINDING },
     }));
     expect(whoami.status).toBe(200);
-    const whoamiBody = (await whoami.json()) as { principal: ResolvedPrincipal; audit: AgentAudit };
-    expect(whoamiBody.principal.roles).toEqual(["agent"]);
-    expect(whoamiBody.audit).toEqual({ jti: "e2e-credential-1", accountId: ACCOUNT, bindingId: BINDING, tenantId: BINDING });
-    expect(audits).toEqual([whoamiBody.audit]);
+    const whoamiBody = (await whoami.json()) as Record<string, unknown>;
+    expect(whoamiBody).toEqual({ role: "agent", tenantId: BINDING });
+    expect(audits).toEqual([{ jti: "e2e-credential-1", accountId: ACCOUNT, bindingId: BINDING, tenantId: BINDING }]);
 
     // A foreign tenant denies even with the same token.
     const foreign = await handler(new Request(`${base}/api/agent/whoami`, {
@@ -265,6 +279,16 @@ describe("surface C HTTP integration (H4 acceptance)", () => {
       method: "DELETE", headers: { "x-owner-session": "yes" },
     }));
     expect(revokeRes.status).toBe(200);
+    expect(lifecycleEvents).toEqual([
+      {
+        kind: "issued", jti: "e2e-credential-1", accountId: ACCOUNT,
+        bindingId: BINDING, tenantId: BINDING, actorTokenId: ownerSession.tokenId, at: NOW,
+      },
+      {
+        kind: "revoked", jti: "e2e-credential-1", accountId: ACCOUNT,
+        bindingId: BINDING, tenantId: BINDING, actorTokenId: ownerSession.tokenId, at: NOW,
+      },
+    ]);
     const afterRevoke = await handler(new Request(`${base}/api/agent/whoami`, {
       headers: { authorization: `Bearer ${tokenBody.access_token}`, "x-tenant-id": BINDING },
     }));
