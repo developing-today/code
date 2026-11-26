@@ -110,6 +110,17 @@ impl PayloadClass {
         }
     }
 
+    /// The class whose support query uses image ID `id`.
+    #[must_use]
+    pub const fn from_query_id(id: u32) -> Option<Self> {
+        match id {
+            41 => Some(Self::Png),
+            42 => Some(Self::Rgba),
+            43 => Some(Self::RgbaZlib),
+            _ => None,
+        }
+    }
+
     /// The image ID this class's support query uses. Distinct from the
     /// startup probe's ID 31 and from each other, so a reply names exactly
     /// one outstanding query.
@@ -353,18 +364,27 @@ pub fn encode_delete(image_id: NonZeroU32) -> String {
     format!("\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")
 }
 
+/// The PNG class's query: a 1 × 1 PNG under query ID 41.
+pub const PNG_QUERY: &str = "\x1b_Ga=q,t=d,f=100,i=41;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\x1b\\";
+
+/// The raw RGBA class's query: one transparent pixel under query ID 42.
+pub const RGBA_QUERY: &str = "\x1b_Ga=q,t=d,f=32,s=1,v=1,i=42;AAAAAA==\x1b\\";
+
+/// The compressed RGBA class's query: one transparent pixel, zlib, under
+/// query ID 43.
+pub const RGBA_ZLIB_QUERY: &str = "\x1b_Ga=q,t=d,f=32,s=1,v=1,o=z,i=43;eJxjYGBgAAAABAAB\x1b\\";
+
 /// The `a=q` query asking whether this terminal accepts `class`: a 1 × 1
 /// payload of exactly that class, under the class's query ID. The query
-/// is not quiet, because its reply is the whole point.
+/// is not quiet, because its reply is the whole point. The startup probe
+/// sends all three in its one burst (`world_terminal::PROBE_QUERIES`).
 #[must_use]
-pub fn encode_query(class: PayloadClass) -> String {
-    let id = class.query_id();
-    let (keys, payload) = match class {
-        PayloadClass::Png => ("f=100", PNG_QUERY_PAYLOAD),
-        PayloadClass::Rgba => ("f=32,s=1,v=1", RGBA_QUERY_PAYLOAD),
-        PayloadClass::RgbaZlib => ("f=32,s=1,v=1,o=z", RGBA_ZLIB_QUERY_PAYLOAD),
-    };
-    format!("\x1b_Ga=q,t=d,{keys},i={id};{payload}\x1b\\")
+pub const fn encode_query(class: PayloadClass) -> &'static str {
+    match class {
+        PayloadClass::Png => PNG_QUERY,
+        PayloadClass::Rgba => RGBA_QUERY,
+        PayloadClass::RgbaZlib => RGBA_ZLIB_QUERY,
+    }
 }
 
 /// Per-session record of which payload classes this terminal accepted.
@@ -398,7 +418,15 @@ impl GraphicsGate {
             return None;
         }
         self.outstanding[class.index()] = true;
-        Some(encode_query(class))
+        Some(encode_query(class).to_owned())
+    }
+
+    /// Record an answer that another reply parser read for this session,
+    /// such as the startup probe, which sends every class query in its
+    /// burst and matches only replies to queries it sent.
+    pub const fn record_answer(&mut self, class: PayloadClass, accepted: bool) {
+        self.outstanding[class.index()] = false;
+        self.accepted[class.index()] = Some(accepted);
     }
 
     /// Offer one complete APC body (the bytes between `ESC _` and `ESC \`).
@@ -706,6 +734,39 @@ mod tests {
         // Query IDs never collide with each other or the startup probe's 31.
         let ids: Vec<u32> = PayloadClass::ALL.iter().map(|c| c.query_id()).collect();
         assert_eq!(ids, [41, 42, 43]);
+    }
+
+    #[test]
+    fn the_query_constants_carry_the_class_payloads() {
+        assert_eq!(
+            PNG_QUERY,
+            format!("\x1b_Ga=q,t=d,f=100,i=41;{PNG_QUERY_PAYLOAD}\x1b\\")
+        );
+        assert_eq!(
+            RGBA_QUERY,
+            format!("\x1b_Ga=q,t=d,f=32,s=1,v=1,i=42;{RGBA_QUERY_PAYLOAD}\x1b\\")
+        );
+        assert_eq!(
+            RGBA_ZLIB_QUERY,
+            format!("\x1b_Ga=q,t=d,f=32,s=1,v=1,o=z,i=43;{RGBA_ZLIB_QUERY_PAYLOAD}\x1b\\")
+        );
+        for class in PayloadClass::ALL {
+            assert_eq!(PayloadClass::from_query_id(class.query_id()), Some(class));
+        }
+        assert_eq!(PayloadClass::from_query_id(31), None);
+    }
+
+    #[test]
+    fn a_recorded_answer_needs_the_kitty_bit_too() {
+        let mut gate = GraphicsGate::new(true);
+        gate.record_answer(PayloadClass::Png, true);
+        gate.record_answer(PayloadClass::Rgba, false);
+        assert!(gate.accepts(PayloadClass::Png));
+        assert!(!gate.accepts(PayloadClass::Rgba));
+        assert!(!gate.accepts(PayloadClass::RgbaZlib));
+        let mut shut = GraphicsGate::new(false);
+        shut.record_answer(PayloadClass::Png, true);
+        assert!(!shut.accepts(PayloadClass::Png));
     }
 
     #[test]
