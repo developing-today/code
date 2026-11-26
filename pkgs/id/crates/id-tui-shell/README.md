@@ -39,9 +39,23 @@ cargo test -p id-tui-shell   # capability-statement tests
   newest lines and the cursor after the typed text.
   `tests/render.rs` checks the recorded session on ratatui's
   test backend.
-- **Open** on issue #12818: the terminal loop (crossterm
-  backend, key handling into the frame builders) and the iroh
-  connection that drives the fold.
+- **Key handling — landed** (`src/keys.rs`): Tab moves focus
+  between the panels; chat focus edits a line and Enter sends
+  `chat`, document focus sends keys as `input` bytes and pastes
+  as `paste`, all through the frame builders.
+- **Session loop and terminal — landed** (`src/app.rs`,
+  `src/term.rs`, `src/main.rs`): the `id-tui-shell` binary dials
+  the world host the way `id world join` does, joins with the
+  capability, and folds host frames and keys through `App`. When
+  the stream drops it redials and resumes from its last applied
+  sequence; a host refusal ends the session. `tests/app.rs`
+  drives `App` with the recorded sessions.
+
+Run it against a world host:
+
+```sh
+cargo run -p id-tui-shell -- --node <node-id> --capability <cap> [--world <name>]
+```
 
 ## Capability statement
 

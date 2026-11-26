@@ -16,11 +16,13 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 id = { path = "../..", default-features = false, features = ["world"] }
-# Renderer only: no terminal backend here. The crossterm backend comes
-# with the terminal loop, so the drawing code stays testable on
-# ratatui's in-memory test backend.
-ratatui = { version = "0.30.2", default-features = false, features = ["std"] }
+anyhow = "1"
+iroh = "1"
+# The crossterm backend drives the terminal loop in the binary; the
+# drawing code itself stays testable on ratatui's in-memory test backend.
+ratatui = { version = "0.30.2", default-features = false, features = ["std", "crossterm"] }
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }
 
 [lints.rust]
 unsafe_code = "warn"
