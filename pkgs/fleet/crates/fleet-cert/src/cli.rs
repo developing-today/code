@@ -32,7 +32,7 @@ Usage: fleet cert <group> <verb> [options]
        fleet pki  <group> <verb> [options]   (alias)
 
 Groups and verbs (spec §6.1 tree; status as built):
-  root     create | inspect | list | validate
+  root     create | renew | rotate | inspect | list | validate
   issuer   create | renew | rotate | inspect | list
   leaf     issue | renew | rotate | inspect | list
   ocsp     sign | inspect | test
@@ -713,6 +713,79 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["root", "root-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let root = p
+                .get("root")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("root renew requires --root <root-dir>"))?;
+            let signer = signer_source(&p, "root-key-dir", "root renew")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::RootRenewRequest {
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "root renew")?;
+            let manifest = engine::renew_root_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Root set renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec!["root", "out", "private-store"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(
+                rest,
+                &flags,
+                &["allow-legacy-root-strength", "private-in-bundle", "json"],
+            )?;
+            let root = p
+                .get("root")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("root rotate requires --root <root-dir>"))?;
+            // §24.3 ceremony: the new keys' destination must be explicit.
+            let private_store = match (p.get("private-store"), p.has("private-in-bundle")) {
+                (Some(dir), _) => Some(PathBuf::from(dir)),
+                (None, true) => None,
+                (None, false) => {
+                    return Err(CertError::policy(
+                        "root rotation is a ceremony: name the new root key destination \
+                         explicitly — --private-store <dir> or --private-in-bundle \
+                         (spec §24.3)",
+                    ));
+                }
+            };
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::RootRotateRequest {
+                root_bundle: PathBuf::from(&root),
+                not_before: nb,
+                not_after: na,
+                allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+                private_store,
+            };
+            let out = p.require("out", "root rotate")?;
+            let manifest = engine::rotate_root_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Root set rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::RootSet)),
         "list" => list_cmd(rest, json_out, BundleType::RootSet),
         "validate" => {
@@ -742,7 +815,7 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(if all_ok { code } else { 1 })
         }
         other => Err(CertError::usage(format!(
-            "unknown root verb '{other}' (create | inspect | list | validate)"
+            "unknown root verb '{other}' (create | renew | rotate | inspect | list | validate)"
         ))),
     }
 }
@@ -2453,8 +2526,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
     (
-        "root renew/rotate, root/issuer replace",
-        "remaining lifecycle verbs (spec §5.2); issuer renew/rotate and leaf renew/rotate are built",
+        "root/issuer replace",
+        "the replace orchestration (spec §5.2); root, issuer and leaf renew/rotate are built",
     ),
     (
         "bundle pack/unpack/diff/migrate",
@@ -2586,7 +2659,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "issuer", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
