@@ -695,7 +695,7 @@ pub async fn pull_all<S: BridgeStore, H: BridgeHttp>(
             let Ok(event) = id_store::chain::decode(bytes) else {
                 continue;
             };
-            let author = hex_encode(event.header.public_key.as_bytes());
+            let author = hex_encode(event.header.verifying_key.as_bytes());
             let next = u64::from(event.header.seq_num).saturating_add(1);
             let position = positions.entry(author).or_insert(0);
             if next > *position {
@@ -726,7 +726,6 @@ mod tests {
     use id_store::chain::{ChainExt, sign};
     use id_store::event_types::{Ingest, Refusal};
 
-    use crate::bridge::BridgeStore as _;
     use crate::hex::hex_to_array;
 
     const BINDING: &str = "binding-1";
