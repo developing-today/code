@@ -54,7 +54,8 @@ central namespaces (operators, need kv-admin):
   namespace define NS (--shared SCOPE | --private)
                                                define or update NS on central
   namespace list                               print every central namespace
-  blob gc        JUR/TIER [--grace-ms MS]      collect unreferenced blobs in a
+  blob gc        JUR/TIER [--grace-ms MS] [--purge]
+                                               collect unreferenced blobs in a
                                                partition after their grace
 
 Values of any size are accepted: up to 1 MiB they are stored inline, and
@@ -100,7 +101,7 @@ const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\n
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
 const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES] [--blob-partition JUR/TIER]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). --blob-partition JUR/TIER places NS's blobs in that\njurisdiction and sensitivity tier; with none, values over the threshold wait\n(no_blob_placement) and the upload door refuses them. Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-<TAB>JUR/TIER|-,\nwhere SCOPE is shared:ID or private.\n";
-const BLOB_USAGE: &str = "usage: fleet kv blob gc JURISDICTION/TIER [--grace-ms MS]\n\nRun one garbage-collection pass over a central blob partition. Needs the\ncentral store and an admin credential (the hosted door's kv-admin role); the\nlocal store is not opened. The pass marks published blobs that no key\nreferences as candidates, clears candidates that gained a reference or lost\ntheir object, then fences the delete of every candidate unreferenced for at\nleast the grace (--grace-ms, default 24 hours). A reference that lands during\nthe grace keeps the blob. The object bytes are not removed from the store by\nthis verb.\n\nPrints `partition=JUR/TIER marked=N cleared=N deleted=N`, then\n`deleted content=DIGEST epoch=N` for each fenced delete.\n";
+const BLOB_USAGE: &str = "usage: fleet kv blob gc JURISDICTION/TIER [--grace-ms MS] [--purge]\n\nRun one garbage-collection pass over a central blob partition. Needs the\ncentral store and an admin credential (the hosted door's kv-admin role); the\nlocal store is not opened. The pass marks published blobs that no key\nreferences as candidates, clears candidates that gained a reference or lost\ntheir object, then fences the delete of every candidate unreferenced for at\nleast the grace (--grace-ms, default 24 hours). A reference that lands during\nthe grace keeps the blob. A fenced delete retires the central record only.\n--purge then asks the blob door to remove the bytes of every deleted blob\nthat no published row names, in rounds until none are left.\n\nPrints `partition=JUR/TIER marked=N cleared=N deleted=N`, then\n`deleted content=DIGEST epoch=N` for each fenced delete. With --purge it\nthen prints `purged content=DIGEST` for each removal, `released\ncontent=DIGEST` for each removal the door will retry later, and\n`purged=N released=N`.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +262,7 @@ enum Command {
     BlobGc {
         partition: crate::blob::Partition,
         grace_ms: i64,
+        purge: bool,
     },
 }
 
@@ -604,6 +606,7 @@ fn parse_blob(args: &[String]) -> Result<Command, ParseError> {
         )));
     }
     let mut grace_ms = crate::plane::GRACE_MS;
+    let mut purge = false;
     let mut positionals: Vec<String> = Vec::new();
     let mut rest = args[1..].iter();
     let mut only_positionals = false;
@@ -619,6 +622,7 @@ fn parse_blob(args: &[String]) -> Result<Command, ParseError> {
         match flag {
             "--" if inline.is_none() => only_positionals = true,
             "--help" | "-h" => return Ok(Command::Help(BLOB_USAGE)),
+            "--purge" if inline.is_none() => purge = true,
             "--grace-ms" => {
                 let raw = match inline {
                     Some(value) => value,
@@ -650,6 +654,7 @@ fn parse_blob(args: &[String]) -> Result<Command, ParseError> {
     Ok(Command::BlobGc {
         partition,
         grace_ms,
+        purge,
     })
 }
 
@@ -1312,6 +1317,82 @@ fn execute_central(
     finish(written, err)
 }
 
+/// The most purge rounds one `blob gc --purge` runs.
+const MAX_PURGE_ROUNDS: usize = 1000;
+
+/// `blob gc`: one GC pass, then, with `--purge`, purge rounds through the
+/// door until it reports no more deleted bytes or a round removes nothing.
+/// `purger` is `None` without `--purge`, `Some(None)` in a build with no
+/// door.
+fn blob_gc(
+    primary: &dyn Pipeline,
+    partition: &crate::blob::Partition,
+    grace_ms: i64,
+    purger: Option<Option<&dyn crate::blob_central::BlobPurger>>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let sweep = match crate::blob_central::gc_pass(
+        primary,
+        partition,
+        crate::central::now_ms(),
+        grace_ms,
+    ) {
+        Ok(sweep) => sweep,
+        Err(error) => return refuse_central(err, &error),
+    };
+    if let Err(error) = write_sweep(out, partition, &sweep) {
+        return finish(Err(error), err);
+    }
+    let Some(purger) = purger else {
+        return EXIT_OK;
+    };
+    let Some(purger) = purger else {
+        return refuse_central(
+            err,
+            &CentralError::NotConfigured("this build has no blob door to purge through".into()),
+        );
+    };
+    let (mut purged, mut released) = (0usize, 0usize);
+    for _ in 0..MAX_PURGE_ROUNDS {
+        let round = match purger.purge(partition) {
+            Ok(round) => round,
+            Err(error) => return refuse_central(err, &error),
+        };
+        let written = round
+            .purged
+            .iter()
+            .try_for_each(|id| writeln!(out, "purged content={id}"))
+            .and_then(|()| {
+                round
+                    .released
+                    .iter()
+                    .try_for_each(|id| writeln!(out, "released content={id}"))
+            });
+        if let Err(error) = written {
+            return finish(Err(error), err);
+        }
+        purged += round.purged.len();
+        released += round.released.len();
+        if !round.more || round.purged.is_empty() {
+            break;
+        }
+    }
+    finish(writeln!(out, "purged={purged} released={released}"), err)
+}
+
+/// The blob door's purge side: it removes deleted bytes (design §9, §10).
+fn blob_purger() -> Option<&'static dyn crate::blob_central::BlobPurger> {
+    #[cfg(feature = "http")]
+    {
+        Some(&crate::http::EnvBlobPurger)
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        None
+    }
+}
+
 /// One line for the pass, then one per fenced deletion.
 fn write_sweep(
     out: &mut dyn Write,
@@ -1429,10 +1510,17 @@ fn execute_admin(
         Command::BlobGc {
             partition,
             grace_ms,
-        } => match crate::blob_central::gc_pass(primary, &partition, central::now_ms(), grace_ms) {
-            Ok(sweep) => write_sweep(out, &partition, &sweep),
-            Err(error) => return refuse_central(err, &error),
-        },
+            purge,
+        } => {
+            return blob_gc(
+                primary,
+                &partition,
+                grace_ms,
+                purge.then(blob_purger),
+                out,
+                err,
+            );
+        }
         _ => {
             let _ = writeln!(err, "error: usage: this verb is not a central admin verb");
             return EXIT_USAGE;
@@ -2328,6 +2416,118 @@ mod tests {
         assert_eq!(
             text(&listed),
             "status\tshared:fleet-status\t3\t262144\tglobal\teu/standard\n"
+        );
+    }
+
+    struct Rounds(std::cell::RefCell<Vec<Result<crate::blob_central::Purged, CentralError>>>);
+
+    impl crate::blob_central::BlobPurger for Rounds {
+        fn purge(
+            &self,
+            partition: &crate::blob::Partition,
+        ) -> Result<crate::blob_central::Purged, CentralError> {
+            assert_eq!(partition, &crate::blob::Partition::new("eu", "standard"));
+            self.0.borrow_mut().remove(0)
+        }
+    }
+
+    fn purged(purged: &[&str], released: &[&str], more: bool) -> crate::blob_central::Purged {
+        crate::blob_central::Purged {
+            purged: purged.iter().map(|id| id.to_string()).collect(),
+            released: released.iter().map(|id| id.to_string()).collect(),
+            more,
+        }
+    }
+
+    #[test]
+    fn central_cli_blob_gc_purges_in_rounds_until_the_door_is_done() {
+        let central = Central::new();
+        crate::central::migrate(&*central.primary).expect("migrate");
+        let partition = crate::blob::Partition::new("eu", "standard");
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let rounds = Rounds(std::cell::RefCell::new(vec![
+            Ok(purged(&[&a, &b], &[], true)),
+            Ok(purged(&[&c], &[&a], false)),
+        ]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(Some(&rounds)),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_OK, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!(
+                "partition=eu/standard marked=0 cleared=0 deleted=0\n\
+                 purged content={a}\npurged content={b}\n\
+                 purged content={c}\nreleased content={a}\npurged=3 released=1\n"
+            )
+        );
+        assert!(rounds.0.borrow().is_empty());
+
+        // A full round that removed nothing stops the loop.
+        let stuck = Rounds(std::cell::RefCell::new(vec![Ok(purged(&[], &[&a], true))]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(Some(&stuck)),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_OK);
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .ends_with(&format!("\nreleased content={a}\npurged=0 released=1\n"))
+        );
+        assert!(stuck.0.borrow().is_empty());
+
+        // A refused round keeps what the pass printed and exits typed.
+        let refused = Rounds(std::cell::RefCell::new(vec![Err(CentralError::Refused {
+            code: "forbidden",
+            message: "kv-admin required".into(),
+        })]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(Some(&refused)),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_REFUSED);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "partition=eu/standard marked=0 cleared=0 deleted=0\n"
+        );
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .starts_with("error: forbidden: ")
+        );
+
+        // A build with no door refuses the purge after the pass.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(None),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_UNAVAILABLE);
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("central_not_configured")
         );
     }
 

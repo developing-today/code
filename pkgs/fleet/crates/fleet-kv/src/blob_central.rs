@@ -209,6 +209,23 @@ pub fn mark_published(primary: &dyn Pipeline, reference: &KvBlobRefV1) -> Result
     Ok(results.last().is_some_and(|rows| !rows.rows.is_empty()))
 }
 
+/// What one purge of a partition's deleted bytes did, as the door reports
+/// it: the content ids whose bytes it removed, the ones it released
+/// unpurged for a later purge, and whether its batch was full.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Purged {
+    pub purged: Vec<String>,
+    pub released: Vec<String>,
+    pub more: bool,
+}
+
+/// The door that removes the bytes of fenced deletes: only it holds the
+/// bucket. It claims, removes and finishes with [`purge_claim`] and
+/// [`purge_finish`]'s statements.
+pub trait BlobPurger {
+    fn purge(&self, partition: &Partition) -> Result<Purged>;
+}
+
 /// How long a purge claim holds before another purge may take it over.
 pub const PURGE_LEASE_MS: i64 = 60 * 60 * 1000;
 

@@ -18,6 +18,7 @@ use std::time::Duration;
 use serde_json::{Value as Json, json};
 
 use crate::blob::{KvBlobRefV1, Partition};
+use crate::blob_central::{BlobPurger, Purged};
 use crate::blob_read::BlobReader;
 use crate::central::{Address, CentralError, Pipeline, Result, Rows, Statement, Value};
 use crate::sweep::{BlobUpload, BlobUploader};
@@ -260,6 +261,117 @@ impl BlobReader for EnvBlobReader {
             })?
             .open(address, reference)
     }
+}
+
+/// The purge side of the blob door (design §9, §10): `POST
+/// {FLEET_KV_URL}/blobs/purge?jurisdiction=J&tier=T` removes the bytes of
+/// blobs GC already deleted centrally. The bearer must hold kv-admin.
+pub struct HttpBlobPurger {
+    url: String,
+    bearer: String,
+    agent: ureq::Agent,
+}
+
+impl HttpBlobPurger {
+    pub fn new(url: &str, bearer: &str) -> Result<Self> {
+        let pipeline = HttpPipeline::new(url, bearer)?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(UPLOAD_TIMEOUT))
+            .build()
+            .into();
+        Ok(Self {
+            url: pipeline.url,
+            bearer: pipeline.bearer,
+            agent,
+        })
+    }
+
+    /// The purger the environment configures beside the central endpoint,
+    /// or `None` when no central endpoint is configured.
+    pub fn from_env() -> Result<Option<Self>> {
+        let Some(pipeline) = HttpPipeline::from_env()? else {
+            return Ok(None);
+        };
+        Self::new(&pipeline.url, &pipeline.bearer).map(Some)
+    }
+}
+
+impl BlobPurger for HttpBlobPurger {
+    fn purge(&self, partition: &Partition) -> Result<Purged> {
+        let mut response = self
+            .agent
+            .post(&format!("{}/blobs/purge", self.url))
+            .query("jurisdiction", &partition.jurisdiction)
+            .query("tier", &partition.tier)
+            .header("Authorization", &format!("Bearer {}", self.bearer))
+            .send_empty()
+            .map_err(|error| CentralError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| CentralError::Unavailable(format!("reading the answer: {error}")))?;
+        if status == 429 || status >= 500 {
+            return Err(CentralError::Unavailable(format!(
+                "HTTP {status}: {}",
+                snippet(&text)
+            )));
+        }
+        if !(200..300).contains(&status) {
+            return Err(refusal(status, &text));
+        }
+        parse_purge_answer(&text, partition)
+    }
+}
+
+/// [`HttpBlobPurger`] as the environment configures it.
+pub struct EnvBlobPurger;
+
+impl BlobPurger for EnvBlobPurger {
+    fn purge(&self, partition: &Partition) -> Result<Purged> {
+        HttpBlobPurger::from_env()?
+            .ok_or_else(|| {
+                CentralError::NotConfigured(format!(
+                    "purging blob bytes needs the door: set {URL_VAR} and {TOKEN_FILE_VAR}"
+                ))
+            })?
+            .purge(partition)
+    }
+}
+
+/// The purge door's answer, once it names the partition asked for and
+/// every content id is a digest.
+pub fn parse_purge_answer(text: &str, partition: &Partition) -> Result<Purged> {
+    let parsed: Json = serde_json::from_str(text)
+        .map_err(|error| CentralError::Store(format!("a non-JSON purge answer: {error}")))?;
+    let field = |name: &str| parsed.get(name).and_then(Json::as_str).unwrap_or_default();
+    if field("jurisdiction") != partition.jurisdiction || field("tier") != partition.tier {
+        return Err(CentralError::Store(
+            "the purge answer names another partition".into(),
+        ));
+    }
+    let digests = |name: &str| -> Result<Vec<String>> {
+        parsed
+            .get(name)
+            .and_then(Json::as_array)
+            .ok_or_else(|| CentralError::Store(format!("the purge answer has no {name} list")))?
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .filter(|id| crate::blob::valid_digest(id))
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        CentralError::Store(format!("the purge answer's {name} holds a non-digest"))
+                    })
+            })
+            .collect()
+    };
+    Ok(Purged {
+        purged: digests("purged")?,
+        released: digests("released")?,
+        more: parsed.get("more").and_then(Json::as_bool).unwrap_or(false),
+    })
 }
 
 /// The read query in the capability door's answer, once the capability
@@ -804,6 +916,41 @@ mod tests {
             }
         });
         format!("http://{address}/v1/kv")
+    }
+
+    #[test]
+    fn central_http_purge_answer_is_checked_before_it_is_believed() {
+        let eu = Partition::new("eu", "standard");
+        let digest = "a".repeat(64);
+        let answer = json!({
+            "jurisdiction": "eu",
+            "tier": "standard",
+            "purged": [digest],
+            "released": [],
+            "more": true,
+        });
+        assert_eq!(
+            parse_purge_answer(&answer.to_string(), &eu).unwrap(),
+            Purged {
+                purged: vec![digest.clone()],
+                released: vec![],
+                more: true,
+            }
+        );
+        let mut elsewhere = answer.clone();
+        elsewhere["jurisdiction"] = json!("us");
+        let mut not_digest = answer.clone();
+        not_digest["released"] = json!(["../escape"]);
+        let mut missing = answer.clone();
+        missing.as_object_mut().unwrap().remove("purged");
+        for bad in [elsewhere, not_digest, missing] {
+            assert!(matches!(
+                parse_purge_answer(&bad.to_string(), &eu),
+                Err(CentralError::Store(_))
+            ));
+        }
+        assert!(parse_purge_answer("not json", &eu).is_err());
+        assert!(HttpBlobPurger::new("http://kv.example.com", "token").is_err());
     }
 
     #[test]
