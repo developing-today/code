@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use p2panda_auth::traits::AuthorizationActor;
 use p2panda_core::Hash;
 
 use super::fold::{Decision, Effect, Engine, FoldError, Judged, Refusal, access_role, causal_past};
@@ -102,13 +103,15 @@ struct Link {
 }
 
 /// A grant is expired at the action's asserted time `at` when the action is timestamped at or
-/// past the grant's bound. An untimestamped action never expires a grant (D1 limitation:
-/// the bound is judged from signed fields only, so a backdated action is an attributable
-/// log fact but not a real-time cutoff).
+/// past the grant's bound. A bounded grant fails closed: an untimestamped action is outside
+/// its bound, since an action that asserts no time cannot show it falls before the bound
+/// (#14876). An unbounded grant never expires. The bound is judged from signed fields only
+/// (D1), so a backdated action is an attributable log fact but not a real-time cutoff.
 const fn expired(expires_at: Option<u64>, at: Option<u64>) -> bool {
     match (expires_at, at) {
         (Some(bound), Some(t)) => t >= bound,
-        _ => false,
+        (Some(_), None) => true,
+        (None, _) => false,
     }
 }
 
@@ -165,6 +168,7 @@ impl Engine {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Delegation {
@@ -201,6 +205,7 @@ impl Engine {
         }
         if self.is_grantor_of_record(by_id, grant, author, &seen) {
             return Ok(Ok(Decision {
+                authorization_actor: None,
                 group,
                 action: None,
                 effect: Effect::Veto(grant),
@@ -224,6 +229,7 @@ impl Engine {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Veto(grant),
@@ -237,18 +243,18 @@ impl Engine {
         by_id: &BTreeMap<Hash, &Event>,
         event: &Event,
         op: MemberOp,
-        decision: Decision,
+        mut decision: Decision,
     ) -> Result<Judged, FoldError> {
-        let author = match self.effective_author(by_id, decision.group, event) {
-            Some((a, _)) => a,
-            None => event.author,
+        let (author, author_role) = match self.effective_author(by_id, decision.group, event) {
+            Some(found) => found,
+            None => (event.author, Role::Pull),
         };
         if let MemberOp::Remove { member, .. } = op
             && member == author
         {
             return Ok(Ok(decision));
         }
-        let manages = self.authorized(
+        let authorized = self.authorized(
             by_id,
             decision.group,
             author,
@@ -257,7 +263,10 @@ impl Engine {
             false,
             event.at,
         )?;
-        if manages {
+        if authorized {
+            if author_role < Role::Manage {
+                decision.authorization_actor = Some(AuthorizationActor::Verified);
+            }
             Ok(Ok(decision))
         } else {
             Ok(Err(Refusal::NoChain))
@@ -266,8 +275,8 @@ impl Engine {
 
     /// The grants in force at the head of the events: every grant that its own link carries when
     /// every event is in the past. Each is reported once, under its own event ID. Expiry is
-    /// judged against the latest asserted timestamp in the set; untimestamped sets expire
-    /// nothing (D1).
+    /// judged against the latest asserted timestamp in the set; in a wholly untimestamped set
+    /// every bounded grant is out of force (#14876).
     pub(super) fn in_force(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,

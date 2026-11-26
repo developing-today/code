@@ -31,6 +31,7 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
+use crate::note_projections::CanRead;
 use crate::notes::NoteRecord;
 use id_core::waiting::AuthorKey;
 
@@ -230,34 +231,78 @@ impl LinkProjection {
             .collect()
     }
 
-    /// [`LinkProjection::links_from`] for one viewer: `visible` names every note
-    /// the viewer may access. A source the viewer cannot access has no visible
-    /// links, and an edge to an inaccessible target is dropped whole, so the
-    /// target's existence does not leak through the link.
+    /// [`LinkProjection::links_from`] for one reader: `can_read` is the
+    /// same predicate every note projection takes, normally
+    /// [`crate::read_authority::NoteReader::may_read`]. A source the
+    /// reader cannot read has no links, and an edge to an unreadable
+    /// target is dropped whole, so the target's existence does not leak
+    /// through the link.
     #[must_use]
-    pub fn links_from_visible(&self, source: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
-        if !visible.contains(&source) {
+    pub fn links_from_readable(&self, source: Hash, can_read: &CanRead<'_>) -> Vec<&LinkRecord> {
+        if !can_read(&source) {
             return Vec::new();
         }
         self.links_from(source)
             .into_iter()
-            .filter(|edge| visible.contains(&edge.target))
+            .filter(|edge| can_read(&edge.target))
             .collect()
     }
 
-    /// [`LinkProjection::backlinks_to`] for one viewer: `visible` names every note
-    /// the viewer may access. A target the viewer cannot access has no visible
-    /// backlinks, and a backlink from an inaccessible source is dropped with its
-    /// authored surface, which is the source's content.
+    /// [`LinkProjection::backlinks_to`] for one reader, under the same
+    /// predicate as [`LinkProjection::links_from_readable`]. A target the
+    /// reader cannot read has no backlinks, and a backlink from an
+    /// unreadable source is dropped with its authored surface, which is
+    /// the source's content.
     #[must_use]
-    pub fn backlinks_to_visible(&self, target: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
-        if !visible.contains(&target) {
+    pub fn backlinks_to_readable(&self, target: Hash, can_read: &CanRead<'_>) -> Vec<&LinkRecord> {
+        if !can_read(&target) {
             return Vec::new();
         }
         self.backlinks_to(target)
             .into_iter()
-            .filter(|edge| visible.contains(&edge.source))
+            .filter(|edge| can_read(&edge.source))
             .collect()
+    }
+
+    /// [`LinkProjection::links_from_readable`] one page at a time, with the
+    /// cursor rule of [`LinkProjection::links_from_visible_page`]: the
+    /// cursor is looked up only among edges the reader may see.
+    #[must_use]
+    pub fn links_from_readable_page(
+        &self,
+        source: Hash,
+        can_read: &CanRead<'_>,
+        limit: usize,
+        after: Option<Hash>,
+    ) -> VisibleLinkPage<'_> {
+        Self::page(self.links_from_readable(source, can_read), limit, after)
+    }
+
+    /// [`LinkProjection::backlinks_to_readable`] one page at a time, with
+    /// the same cursor rule.
+    #[must_use]
+    pub fn backlinks_to_readable_page(
+        &self,
+        target: Hash,
+        can_read: &CanRead<'_>,
+        limit: usize,
+        after: Option<Hash>,
+    ) -> VisibleLinkPage<'_> {
+        Self::page(self.backlinks_to_readable(target, can_read), limit, after)
+    }
+
+    /// [`LinkProjection::links_from_readable`] over a precomputed set:
+    /// `visible` names every note the viewer may access.
+    #[must_use]
+    pub fn links_from_visible(&self, source: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
+        self.links_from_readable(source, &|note: &Hash| visible.contains(note))
+    }
+
+    /// [`LinkProjection::backlinks_to_readable`] over a precomputed set:
+    /// `visible` names every note the viewer may access.
+    #[must_use]
+    pub fn backlinks_to_visible(&self, target: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
+        self.backlinks_to_readable(target, &|note: &Hash| visible.contains(note))
     }
 
     /// [`LinkProjection::links_from_visible`] one page at a time, for the
@@ -467,6 +512,7 @@ mod tests {
                 note: hash(note),
                 content: content(bytes),
                 parents: parents.iter().map(|parent| hash(*parent)).collect(),
+                proposal: None,
             },
         }
     }

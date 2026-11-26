@@ -11,8 +11,9 @@ if [[ $# -ne 0 ]]; then
 fi
 set -euo pipefail
 FQ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if ! GIT_DIR="$(git -C "$FQ_DIR" rev-parse --git-dir 2>/dev/null)" ||
-  ! GIT_COMMON_DIR="$(git -C "$FQ_DIR" rev-parse --git-common-dir 2>/dev/null)"; then
+# Both values must use the same path format even from a subdirectory.
+if ! GIT_DIR="$(git -C "$FQ_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null)" ||
+  ! GIT_COMMON_DIR="$(git -C "$FQ_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
   echo "fleet-queue-backup: refusing to install from a directory that is not a Git checkout: $FQ_DIR" >&2
   exit 1
 fi

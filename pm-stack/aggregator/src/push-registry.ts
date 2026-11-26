@@ -304,7 +304,13 @@ export class ItemStageStore {
     return rows[0] ?? null;
   }
 
-  private async event(itemRef: string, from: ItemStage | null, to: ItemStage, reason: string | null | undefined, at: string) {
+  private async event(
+    itemRef: string,
+    from: ItemStage | null,
+    to: ItemStage,
+    reason: string | null | undefined,
+    at: string,
+  ) {
     await this.db.query(
       `insert into push_item_stage_events (item_ref, from_stage, to_stage, reason, at) values (${sqlStr(itemRef)}, ${
         from ? sqlStr(from) : "null"

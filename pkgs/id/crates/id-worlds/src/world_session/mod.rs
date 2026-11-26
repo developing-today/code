@@ -57,10 +57,10 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
-/// Document store API (split from this module, #8594).
-mod documents;
 /// Session-layer admin audit (split from this module, #13057).
 mod audit;
+/// Document store API (split from this module, #8594).
+mod documents;
 
 /// Producer-side Android gesture translation (#1831 slice S3a). Inert
 /// until the S3 app shell wires it to a live session (slice S3b); its
@@ -91,8 +91,9 @@ pub(crate) use documents::{
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
-    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
-    PointerEvent, SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES,
+    PRESENTATION_POLICY_CURRENT, PRESENTATION_POLICY_SAVED, PointerButton, PointerEvent,
+    SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -172,6 +173,7 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         ClientFrame::InstallBegin { admin_token, .. } => admin_token.as_deref(),
         ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
+        ClientFrame::SetPresentationPolicy { admin_token, .. } => Some(admin_token),
         _ => None,
     }
 }
@@ -2036,6 +2038,62 @@ async fn handle_client_frame<I: SessionIo>(
                                 applies_on_next_program_install_or_process_restart: false,
                             },
                             message: "current persisted execution profile",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::SetPresentationPolicy {
+            admin_token,
+            policy,
+        } => {
+            match service
+                .set_presentation_policy(Some(&admin_token), policy)
+                .await
+            {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_SAVED,
+                        },
+                    )
+                    .await;
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "accepted",
+                        serde_json::json!({}),
+                    );
+                }
+                Err(error) => {
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "refused",
+                        serde_json::json!({}),
+                    );
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::PresentationPolicyInfo {} => {
+            match service.presentation_policy().await {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_CURRENT,
                         },
                     )
                     .await;

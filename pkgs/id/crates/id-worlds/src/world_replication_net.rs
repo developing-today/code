@@ -150,7 +150,7 @@ async fn serve_stream(
         let snapshot = tokio::task::spawn_blocking(move || snapshot_source.read())
             .await
             .context("initial replication snapshot read task")??;
-        let sidecars = gather_sidecars(&lease, &snapshot.bytes).await?;
+        let sidecars = gather_sidecars(lease.service(), &snapshot.bytes).await?;
         send_snapshot(
             &mut send,
             signing_key,
@@ -189,7 +189,7 @@ async fn serve_stream(
                 prev_frame_digest = digest;
             }
             Ok(ReplicationUpdate::Reset(reset)) => {
-                let sidecars = gather_sidecars(&lease, &reset.bytes).await?;
+                let sidecars = gather_sidecars(lease.service(), &reset.bytes).await?;
                 let (after, version, digest) = send_snapshot(
                     &mut send,
                     signing_key,
@@ -233,9 +233,23 @@ fn ensure_nonce(nonce: &[u8; 16]) -> Result<()> {
 /// store holds them. Refreshed on every snapshot — the initial sync
 /// and every compaction/header reset — which is the replication
 /// refresh cadence for facts the journal itself does not carry.
-struct SnapshotSidecars {
+pub(crate) struct SnapshotSidecars {
     directory: Vec<u8>,
     module: Option<Vec<u8>>,
+}
+
+/// Where a session's signed frames go: the replication stream, or a
+/// world export file ([`crate::world_export`]). Both receive exactly the
+/// same frames in the same order.
+pub(crate) trait FrameSink {
+    /// Write one encoded frame.
+    fn put(&mut self, frame: &[u8]) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+impl FrameSink for SendStream {
+    async fn put(&mut self, frame: &[u8]) -> Result<()> {
+        write_frame_bounded(write_frame(self, frame), FRAME_WRITE_TIMEOUT).await
+    }
 }
 
 /// Capture the sidecars for one snapshot image: subjects are the
@@ -245,8 +259,8 @@ struct SnapshotSidecars {
 /// the service's content-addressed store under the actor's active
 /// module hash — a load failure aborts the stream rather than serving
 /// a journal whose program the replica could never restore.
-async fn gather_sidecars(
-    lease: &crate::world_hub::WorldLease,
+pub(crate) async fn gather_sidecars(
+    service: &crate::world_session::WorldService,
     snapshot_bytes: &[u8],
 ) -> Result<SnapshotSidecars> {
     let mut subjects = std::collections::BTreeSet::new();
@@ -259,7 +273,6 @@ async fn gather_sidecars(
             subjects.insert(subject);
         }
     }
-    let service = lease.service();
     let (directory, active_hash) = service.world().replica_sidecars(subjects).await?;
     let module = match (active_hash, service.module_dir.as_ref()) {
         (Some(hash), Some(dir)) => Some(
@@ -273,8 +286,8 @@ async fn gather_sidecars(
 
 // Take ownership of each snapshot so its journal buffer cannot escape into
 // the long-lived update loop after the transfer has been sent.
-async fn send_snapshot(
-    send: &mut SendStream,
+pub(crate) async fn send_snapshot(
+    send: &mut impl FrameSink,
     signing_key: &SigningKey,
     world_id: &str,
     source: [u8; 32],
@@ -362,7 +375,7 @@ async fn send_snapshot(
 }
 
 async fn send_tail(
-    send: &mut SendStream,
+    send: &mut impl FrameSink,
     signing_key: &SigningKey,
     world_id: &str,
     source: [u8; 32],
@@ -398,7 +411,7 @@ async fn send_tail(
 }
 
 async fn send_terminal(
-    send: &mut SendStream,
+    send: &mut impl FrameSink,
     signing_key: &SigningKey,
     world_id: &str,
     source: [u8; 32],
@@ -419,14 +432,14 @@ async fn send_terminal(
 }
 
 async fn write_envelope(
-    send: &mut SendStream,
+    send: &mut impl FrameSink,
     signing_key: &SigningKey,
     envelope: ReplicationEnvelope,
 ) -> Result<[u8; 32]> {
     let signed = SignedReplicationEnvelope::sign(envelope, signing_key)
         .context("replication signing key does not match source")?;
     let bytes = signed.encode_frame().context("encode replication frame")?;
-    write_frame_bounded(write_frame(send, &bytes), FRAME_WRITE_TIMEOUT).await?;
+    send.put(&bytes).await?;
     Ok(frame_digest(&bytes))
 }
 
@@ -456,7 +469,7 @@ pub const REPLICA_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// A fresh, non-zero session nonce for one replication session. The
 /// server binds every signed frame of the session to this nonce, and
 /// the receiver refuses frames minted for any other session.
-fn fresh_session_nonce() -> [u8; 16] {
+pub(crate) fn fresh_session_nonce() -> [u8; 16] {
     use rand::RngExt as _;
     loop {
         let nonce: [u8; 16] = rand::rng().random();

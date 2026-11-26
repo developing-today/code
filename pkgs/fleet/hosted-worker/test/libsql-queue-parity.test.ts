@@ -214,8 +214,9 @@ test("schema: an existing queue database gains manual_only with an automatic def
       dep_recheck_seconds: null,
     });
     assert.equal(row.manual_only, false);
-    const column = (db.prepare("PRAGMA table_info(tasks)").all() as { name: string; dflt_value: string }[])
-      .find((col) => col.name === "manual_only");
+    const column = (db.prepare("PRAGMA table_info(tasks)").all() as { name: string; dflt_value: string }[]).find(
+      (col) => col.name === "manual_only",
+    );
     assert.equal(column?.dflt_value, "0");
   } finally {
     db.close();
@@ -279,12 +280,8 @@ test("store: a full task row round-trips every column through the shared schema"
 test("manual-only rows are skipped automatically but remain claimable by id", async () => {
   const t = openStore();
   try {
-    const enqueued = await enqueue(
-      t.store,
-      nativeEnv(),
-      fixPacket(917801, {}, { manual_only: true, priority: 10 }),
-    );
-    const manualId = ((enqueued["row"] as JsonObject)["id"] as number);
+    const enqueued = await enqueue(t.store, nativeEnv(), fixPacket(917801, {}, { manual_only: true, priority: 10 }));
+    const manualId = (enqueued["row"] as JsonObject)["id"] as number;
 
     const automatic = await claim(t.store, nativeEnv(), { worker: "automatic", queue: "repo-health" });
     assert.equal(automatic["row"], null, "an automatic lane must not claim a manual-only row");
@@ -307,9 +304,9 @@ test("manual-only at the head does not block ordinary automatic work", async () 
   const t = openStore();
   try {
     const manual = await enqueue(t.store, nativeEnv(), fixPacket(917802, {}, { manual_only: true, priority: 10 }));
-    const manualId = ((manual["row"] as JsonObject)["id"] as number);
+    const manualId = (manual["row"] as JsonObject)["id"] as number;
     const ordinary = await enqueue(t.store, nativeEnv(), fixPacket(917803, {}, { priority: 50 }));
-    const ordinaryId = ((ordinary["row"] as JsonObject)["id"] as number);
+    const ordinaryId = (ordinary["row"] as JsonObject)["id"] as number;
 
     const automatic = await claim(t.store, nativeEnv(), { worker: "automatic", queue: "repo-health" });
     assert.equal((automatic["row"] as JsonObject)["id"], ordinaryId);

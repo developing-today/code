@@ -75,6 +75,19 @@
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
+      "id": "id.rust.id-pg.integration",
+      "paths": ["pkgs/id/crates/id-pg/tests/*.rs"],
+      "invocation": "nix develop ./pkgs/id --command bash pkgs/id/scripts/test-postgrest-contract.sh",
+      "venue": {
+        "workflow": ".github/workflows/id-pg-postgrest-contract.yml",
+        "job_step": "postgrest-contract / Run injectable and real PostgREST container contracts",
+        "state": "not yet audited",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The script runs the offline integration tests and the ignored real-PostgREST contract target separately. Configuration is not evidence of a successful CI run."
+    },
+    {
       "id": "id.rust.unit",
       "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
@@ -384,6 +397,34 @@
       },
       "status": "mapped",
       "notes": "The hw-shell check runs the integration targets of this non-default workspace member, mirroring test-native-shell. live_wake is the live-host behavioral check for the hardware-shell spike (#10929); it ran nowhere until wired 2026-11-23 (#12230), verified green standalone first."
+    },
+    {
+      "id": "id.bevy-bridge.replay-oracle",
+      "paths": ["pkgs/id/crates/id-bevy-bridge/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-bridge runs cargo nextest -p id-bevy-bridge)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-bridge",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13702, 13703, 13704],
+      "notes": "The bevy-bridge check runs every integration target of this non-default workspace member: fixture projection (slice 1), the journal tail and intents (slice 2), and the replay oracle with its recorded corpus, soak and fault injection (slice 3). The replay oracle is the acceptance gate for a bump of the bridge's pinned bevy_ecs."
+    },
+    {
+      "id": "id.bevy-presenter.e2e",
+      "paths": ["pkgs/id/crates/id-bevy-presenter/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-presenter runs cargo nextest -p id-bevy-presenter)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-presenter",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13705, 13706],
+      "notes": "The bevy-presenter check runs the Bevy slice 4 presenter-client app headless against the demo world hosted as a separate process: projection, intents end to end, predicted presentation that reconciles or snaps back, the provider manifest and surface grants, and the replay oracle over the host's journal. It also runs slice 5, the host posture: the Bevy process hosting the world with its journal on disk, a second presenter (in process and as the app in its own process) seeing the same world as with an external host, the host's own presenter on the same path, admission by manifest up to capacity, and a reopened or killed host resuming from its last acknowledged position."
     },
     {
       "id": "id.bench.compare-script",
@@ -1274,6 +1315,19 @@
       "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
     },
     {
+      "id": "scripts.fleet-binary-keeper",
+      "paths": ["scripts/tests/test_fleet_binary_keeper.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run fleet binary keeper contract tests (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
       "id": "scripts.provider-retirement-gate",
       "paths": ["scripts/tests/test_check_provider_retirement_gate.py"],
       "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v",
@@ -1341,7 +1395,8 @@
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh",
-        "nixos/home/oc-password-sync.test.sh"
+        "nixos/home/oc-password-sync.test.sh",
+        "nixos/home/stable-entrypoints.test.sh"
       ],
       "invocation": "nix flake check (make-laptop-backups-checks)",
       "venue": {
@@ -1361,6 +1416,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
@@ -1399,6 +1455,32 @@
       },
       "status": "mapped",
       "related_issues": [6400]
+    },
+    {
+      "id": "fleet.static-release",
+      "paths": [".github/scripts/check-fleet-static-release.test.sh"],
+      "invocation": "bash .github/scripts/check-fleet-static-release.sh && bash .github/scripts/check-fleet-static-release.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/fleet-static-release.yml",
+        "job_step": "publish / Contract — wiring matches registry and policy (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
+      "id": "cf.record-worker-deploy",
+      "paths": ["scripts/tests/test_record_worker_deploy.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_record_worker_deploy.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run cf worker record-deploy retry tests (#15041)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [15041]
     },
     {
       "id": "web-gen-api.e2e",

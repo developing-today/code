@@ -40,6 +40,9 @@ fleet-agent = { workspace = true, optional = true }
 # chains and bundles over the fleet-cert library crate.
 fleet-cert = { workspace = true, optional = true }
 fleet-orgs = { workspace = true, optional = true }
+# The kv domain (code#13314): identity-scoped local key/value bytes over
+# the fleet-kv crate; a working-seat client, so full only.
+fleet-kv = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The OpenCode session liveness probe (session_state.rs) only;
 # optional so the connect variant stays under the D7 size gate.
@@ -98,6 +101,7 @@ full = [
   "cert",
   "actions",
   "orgs",
+  "kv",
   "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
@@ -180,6 +184,7 @@ agent = ["dep:fleet-agent"]
 # never in serve (no daemon role) or connect (size gate).
 cert = ["dep:fleet-cert"]
 orgs = ["dep:fleet-orgs"]
+kv = ["dep:fleet-kv"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

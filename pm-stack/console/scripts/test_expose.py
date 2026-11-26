@@ -541,12 +541,21 @@ class Expose(unittest.TestCase):
 
     def test_expose_does_not_manage_worker_secrets_or_direct_mode(self):
         source = pathlib.Path(expose.__file__).read_text()
-        for forbidden in ("EDGE_DIRECT", "GITHUB_TOKEN", "QUEUE_TOKEN", "BRIDGE_TOKEN", "edge-direct", "workers/scripts/"):
+        for forbidden in (
+            "EDGE_DIRECT",
+            "GITHUB_TOKEN",
+            "QUEUE_TOKEN",
+            "BRIDGE_TOKEN",
+            "edge-direct",
+            "workers/scripts/",
+        ):
             self.assertNotIn(forbidden, source)
         account = Account()
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(account.worker_secrets, {})
-        self.assertFalse((pathlib.Path(self.home) / ".local/state/pm-console/edge-direct").exists())
+        self.assertFalse(
+            (pathlib.Path(self.home) / ".local/state/pm-console/edge-direct").exists()
+        )
 
     def test_runs_that_may_change_something_take_turns(self):
         import threading

@@ -61,6 +61,7 @@
 pub use id_core::port;
 
 pub mod account_charge;
+pub mod attachment_dispatch;
 pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod creator_announcements;
@@ -69,6 +70,8 @@ pub mod creator_org_views;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
+#[cfg(unix)]
+pub mod host_control;
 pub mod input_framing;
 pub mod program_bundle;
 pub mod program_gallery;
@@ -92,6 +95,7 @@ pub mod world_compile;
 #[cfg(feature = "sandbox")]
 pub mod world_dev;
 pub mod world_doctor;
+pub mod world_export;
 pub mod world_fixture;
 pub mod world_hub;
 pub mod world_line;

@@ -300,7 +300,11 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "partial-fixtures" | "fixtures" | "stale" | "absent" | "invalid" | "error";
+  /** "unavailable" (#14065): live mode could not read the source and
+   * withheld the fixtures rather than render invented rows.
+   * "partial-unavailable" (#14065 slice 3): items served live for the
+   * project pool, with refs outside it left unresolved. */
+  state: "live" | "partial-fixtures" | "partial-unavailable" | "fixtures" | "stale" | "absent" | "invalid" | "error" | "unavailable";
   ageMs?: number;
   count?: number;
   countLabel?: string;

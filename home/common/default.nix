@@ -1128,6 +1128,16 @@ in
   # for single-file merges (home/root).
   imports = [ inputs.openchamber.homeManagerModules.openchamber ];
 
+  # Stable deploy entrypoint (code#14187): for the laptop user, the
+  # generated unit's ExecStart is force-overridden to
+  # %h/.local/state/openchamber/start by
+  # nixos/home/stable-entrypoints.nix (wired in
+  # nixos/hosts/default.nix), and Home Manager activation keeps that
+  # link pointing at this module's start wrapper, so the launch
+  # semantics below are unchanged. A deploy app may repoint the link
+  # and restart the service; it must not write the unit file. The
+  # contract: nixos/home/stable-entrypoints.nix and
+  # doc/fleet/services.md; the consumer is dezren39/darwin-nix#1393.
   services.openchamber = {
     enable = true;
     # uiPasswordFile (the browser-UI password the old serve script
@@ -1286,8 +1296,16 @@ in
 
   # Consumer refinements on the module's mcpx unit: the parts of the
   # hand-rolled unit the module does not express. (Description,
-  # ExecStart, Restart = always and the 20 s stop window are the
-  # module's own.)
+  # Restart = always and the 20 s stop window are the module's own.
+  # ExecStart and ExecReload are the stable entrypoint's, code#14187:
+  # for the laptop user, nixos/home/stable-entrypoints.nix
+  # force-overrides both to %h/.local/state/mcpx/bin/mcpx — ExecStart
+  # with this daemon's rendered --config, ExecReload with `reload` —
+  # and activation keeps that link pointing at the daemon's package.
+  # The ExecReload definition below is the fallback for configs
+  # without the entrypoint module. Contract:
+  # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
+  # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
       After = [ "network-online.target" ];
