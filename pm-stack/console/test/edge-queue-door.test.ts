@@ -559,6 +559,9 @@ describe("Edge task cancel and unblock door (#13490)", () => {
     w.queue.failure = "transport";
     const response = await w.act("task.cancel", cancel);
     expect(response.status).not.toBe(200);
+    // The refusal names the queue door's own cancel path, not a handoff:
+    // the store was reached and answered nothing.
+    expect(JSON.stringify(await response.json())).toContain("queue cancel");
     expect(w.queue.tasks).toEqual(before);
     expect(w.queue.events).toEqual(events);
     expect(w.queue.transactions).toEqual([]);
@@ -572,6 +575,9 @@ describe("Edge task cancel and unblock door (#13490)", () => {
     w.queue.failure = "step";
     const response = await w.act("task.cancel", cancel);
     expect(response.status).not.toBe(200);
+    // The refusal names the queue door's own cancel path: the batch was
+    // attempted and rolled back, not handed to a machine.
+    expect(JSON.stringify(await response.json())).toContain("queue cancel");
     expect(w.queue.tasks).toEqual(before);
     expect(w.queue.events).toEqual(events);
     expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "ROLLBACK"]);
