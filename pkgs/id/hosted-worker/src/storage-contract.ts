@@ -603,7 +603,7 @@ export interface BackendManifest {
   /** The unit placed: a binding id (tenant), shard or deployment. */
   unit: string;
   backend: BackendId;
-  /** D1's tenant-scoped database selector; never a credential. Required
+  /** Identifier for this unit's D1 database; never a credential. Required
    * for `d1` placements and omitted for other backends (#15538). */
   database_id?: string;
   /** Monotonic placement generation, ≥ 1. */
@@ -652,7 +652,7 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
   }
   if (m.backend === "d1") {
     if (typeof m.database_id !== "string" || m.database_id.trim() === "") {
-      return { ok: false, refusal: placementUnknown("D1 backend manifest has no tenant database_id") };
+      return { ok: false, refusal: placementUnknown("D1 backend manifest has no database_id") };
     }
   } else if (m.database_id !== undefined && m.database_id !== null) {
     return { ok: false, refusal: placementUnknown("non-D1 backend manifest carries a D1 database_id") };
