@@ -1312,14 +1312,14 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
         constructor(private readonly snapshot: TaskRow[] = []) {
           super();
         }
-        override allTasks(): TaskRow[] {
+        override async allTasks(): Promise<TaskRow[]> {
           return this.snapshot;
         }
-        override insertTask(row: Omit<TaskRow, "id">): TaskRow {
+        override async insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow> {
           // A sentinel, never a real DB id. Event persistence remaps it below.
           return { ...row, id: -1 };
         }
-        override mirrorLabels(repo: string, number: number): string[] | null {
+        override async mirrorLabels(repo: string, number: number): Promise<string[] | null> {
           mirrorRef = { repo, number };
           if (mirrorError) throw mirrorError;
           return mirrorLabels;
