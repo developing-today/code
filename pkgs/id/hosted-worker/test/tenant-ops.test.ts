@@ -64,6 +64,23 @@ function fakeSql(db: DatabaseSync) {
   };
 }
 
+function fakeTenancyDb(db: DatabaseSync) {
+  return {
+    prepare(query: string) {
+      let params: unknown[] = [];
+      return {
+        bind(...values: Array<string | number | null>) {
+          params = values;
+          return this;
+        },
+        async first<T extends Record<string, unknown>>(): Promise<T | null> {
+          return (db.prepare(query).get(...(params as never[])) as T | undefined) ?? null;
+        },
+      };
+    },
+  };
+}
+
 class FakeProvider implements TenantDatabaseProvider {
   byRequest = new Map<string, TenantDatabaseHandle>();
   createCalls = 0;
@@ -111,7 +128,7 @@ function makeOps(db: DatabaseSync, env: Record<string, unknown> = {}, binding: s
     storage: { sql: fakeSql(db) },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return new TenantOpsDO(state as never, env as never);
+  return new TenantOpsDO(state as never, { TENANCY_DB: fakeTenancyDb(db), ...env } as never);
 }
 
 function seedBinding(db: DatabaseSync, status = "active", binding: string = BINDING) {
@@ -263,6 +280,24 @@ test("tenant requests require an active account in the tenancy registry", async 
   assert.equal(res.body.state, "failed");
   const events = db.prepare("SELECT detail FROM ops_journal WHERE event = 'failed'").all() as { detail: string }[];
   assert.equal(JSON.parse(events[0].detail).reason, "account_not_active");
+});
+
+test("tenant operations read binding authority from the shared tenancy database", async () => {
+  const tenantStorage = freshTenancyDb();
+  const centralTenancy = freshTenancyDb();
+  seedBinding(centralTenancy);
+  const ops = makeOps(tenantStorage, { TENANCY_DB: fakeTenancyDb(centralTenancy) });
+
+  const res = await post(ops, "/v1/tenant/request", OWNER, { jurisdiction: "us", at: T0 });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.state, "requested");
+  assert.equal(tenantRow(tenantStorage)?.state, "requested");
+  assert.equal(
+    (centralTenancy.prepare("SELECT binding_id FROM binding WHERE binding_id = ?").get(BINDING) as { binding_id: string })
+      .binding_id,
+    BINDING,
+  );
 });
 
 test("concurrent sign-ups create exactly one database (§11 item 2)", async () => {
