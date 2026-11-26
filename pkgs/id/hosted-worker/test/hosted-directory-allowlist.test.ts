@@ -47,6 +47,13 @@ function columnNames(db: DatabaseSync, table: string): string[] {
   return rows.map((r) => r.name);
 }
 
+function assertDirectorySchema(db: DatabaseSync): void {
+  assert.deepEqual(tableNames(db), ["hosted_accounts"]);
+  assert.deepEqual(columnNames(db, "hosted_accounts"), [
+    ...HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
+  ]);
+}
+
 // Graph content, journals, blob bytes, and private profile data must
 // never enter the shared schema. Pseudonymous subject/binding keys are
 // the sanctioned identifiers (like content_hash in the tenancy never-
@@ -85,10 +92,29 @@ function neverSharedViolations(columns: [string, string][]): string[] {
 test("shared directory migration creates exactly the allowlisted table and columns", () => {
   const db = freshDirectoryDb();
   try {
-    assert.deepEqual(tableNames(db), ["hosted_accounts"]);
-    assert.deepEqual(columnNames(db, "hosted_accounts"), [
-      ...HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
-    ]);
+    assertDirectorySchema(db);
+  } finally {
+    db.close();
+  }
+});
+
+test("schema allowlist rejects a non-system table with a sqlite-like name", () => {
+  const db = freshDirectoryDb();
+  try {
+    db.exec("CREATE TABLE sqliteXprivate (private_profile TEXT)");
+    assert.throws(() => assertDirectorySchema(db));
+  } finally {
+    db.close();
+  }
+});
+
+test("schema allowlist rejects generated columns", () => {
+  const db = freshDirectoryDb();
+  try {
+    db.exec(
+      "ALTER TABLE hosted_accounts ADD COLUMN private_profile TEXT GENERATED ALWAYS AS (subject_key) VIRTUAL",
+    );
+    assert.throws(() => assertDirectorySchema(db));
   } finally {
     db.close();
   }
