@@ -1,0 +1,68 @@
+name: github-backup hosted publisher
+
+# First hosted publisher slice for #15000: reconstruct the four source
+# mirrors directly from GitHub, then publish and verify their plain mirrors.
+# R2 bundles and rehost publication remain later slices of the same issue.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-backup-hosted-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Reconstruct and publish four plain mirrors
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create least-privilege mirror token
+        id: mirror-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "5612056"
+          private-key: ${{ secrets.FLEET_APP_PRIVATE_KEY }}
+          owner: developing-today
+          repositories: |
+            code-mirror
+            fleet-mirror
+            openchamber-mirror
+            opencode-mirror
+          permission-contents: write
+
+      - name: Create ephemeral backup root
+        id: root
+        shell: bash
+        run: |
+          path="$(mktemp -d "$RUNNER_TEMP/github-backup.XXXXXX")"
+          printf 'path=%s\n' "$path" >> "$GITHUB_OUTPUT"
+
+      - name: Reconstruct sources from GitHub
+        env:
+          HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
+        run: python3 -I infra/github-backup/bin/hosted_seed_fleet.py --root "$HOSTED_BACKUP_ROOT"
+
+      - name: Publish and verify plain mirrors
+        env:
+          GH_TOKEN: ${{ steps.mirror-token.outputs.token }}
+          HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
+        run: |
+          gh auth setup-git
+          python3 -I infra/github-backup/bin/plain_mirror_all.py --root "$HOSTED_BACKUP_ROOT"
+
+      - name: Remove ephemeral backup root
+        if: always() && steps.root.outputs.path != ''
+        env:
+          HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
+        run: rm -rf -- "$HOSTED_BACKUP_ROOT"
