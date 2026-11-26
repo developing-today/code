@@ -83,9 +83,9 @@ fn bad_arguments_and_unconfigured_central_are_answered_before_anything_is_create
         "{}",
         stderr(&local_blob)
     );
-    // --force-blob with --global is still pending: a --global write is
-    // one CAS from this command and has no upload step yet, so parsing
-    // refuses it before anything is created.
+    // --force-blob with --global is wired too (#15378): it streams
+    // through the upload door, so it passes parsing and, with no central
+    // store configured, is answered like any other --global verb.
     let blob = fleet(
         &dir,
         &[
@@ -100,8 +100,12 @@ fn bad_arguments_and_unconfigured_central_are_answered_before_anything_is_create
         ],
         None,
     );
-    assert_eq!(blob.status.code(), Some(69));
-    assert!(stderr(&blob).contains("pending_needs_phase3"));
+    assert_eq!(blob.status.code(), Some(69), "{}", stderr(&blob));
+    assert!(
+        stderr(&blob).contains("central_not_configured"),
+        "{}",
+        stderr(&blob)
+    );
     let help = fleet(&dir, &["kv", "--help"], None);
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("clear-override"));

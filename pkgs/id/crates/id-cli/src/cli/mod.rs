@@ -347,6 +347,21 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
     }
 }
 
+/// A `--world-partition` label: lowercase `[a-z0-9-]`, 1 to 63 bytes, the
+/// same syntax the journal partition fence accepts.
+fn parse_world_partition(raw: &str) -> Result<String, String> {
+    if !raw.is_empty()
+        && raw.len() <= 63
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Ok(raw.to_owned())
+    } else {
+        Err("a partition label is 1 to 63 bytes of lowercase a-z, 0-9 and -".to_owned())
+    }
+}
+
 /// The arguments of `id serve`, extracted from the `Command`
 /// variant into their own `Args` struct (#4751): clap's derive inlines
 /// a struct-style variant's argument construction into the parent
@@ -557,9 +572,11 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 1024, requires = "world")]
     pub world_max_sessions: usize,
     /// Close durable worlds that no session used for this many seconds
-    /// (they reopen from their journal on demand). `0` keeps them open.
-    #[arg(long, default_value_t = 600, requires = "world")]
-    pub world_idle_secs: u64,
+    /// (they reopen from their journal on demand). Defaults to 600, or to
+    /// 900 under `--world-host`. `0` keeps them open, and is refused under
+    /// `--world-host`, where `id host pin` keeps a world awake instead.
+    #[arg(long, requires = "world")]
+    pub world_idle_secs: Option<u64>,
     /// Serve the worlds directory as a host-mode data root (#10693): keep
     /// its `host.json`, wake asleep worlds when clients name them (unless
     /// `id host wake-mode` set `operator`), never close `id host pin`
@@ -568,6 +585,19 @@ pub struct ServeArgs {
     /// `id host list` shows the states.
     #[arg(long, requires = "world", conflicts_with = "ephemeral")]
     pub world_host: bool,
+    /// Serve worlds inside one jurisdiction partition (#3898). Every world
+    /// this server creates is bound to the label before its first journal
+    /// byte; a world bound to another partition, or never bound, is treated
+    /// as absent: it is not listed, cannot be opened or created, and reads
+    /// exactly like a name that does not exist. The label is lowercase
+    /// `[a-z0-9-]`, at most 63 bytes, and comes only from the operator.
+    #[arg(
+        long,
+        requires = "world",
+        conflicts_with_all = ["ephemeral", "world_host"],
+        value_parser = parse_world_partition
+    )]
+    pub world_partition: Option<String>,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.

@@ -811,7 +811,7 @@ mod tests {
             cursor.ordinal >= 1,
             "the snapshot absorbs at least the Created header"
         );
-        assert!(!receiver.read_journal().unwrap().is_empty());
+        assert_ne!(receiver.read_journal().unwrap(), [] as [u8; 0]);
 
         // A refused session (wrong admin token) commits nothing and
         // the previously synced cursor stands.
@@ -905,7 +905,7 @@ mod tests {
         .await
         .unwrap();
         let journal = receiver.read_journal().unwrap();
-        assert!(!journal.is_empty());
+        assert_ne!(journal, [] as [u8; 0]);
 
         // Outage: the writer goes away entirely.
         let dead_addr = writer.addr.clone();
@@ -1089,7 +1089,7 @@ mod tests {
         assert!(commits >= 1, "the snapshot commit was absorbed");
         assert_eq!(receiver.committed_cursor(), Some(synced));
         let journal = receiver.read_journal().unwrap();
-        assert!(!journal.is_empty());
+        assert_ne!(journal, [] as [u8; 0]);
 
         // Reconnect: the restarted writer (same directory, same
         // pinned source) serves a fresh follow session that catches

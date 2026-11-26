@@ -1387,8 +1387,8 @@ mod tests {
             .await
             .unwrap();
         assert!(saw_resume.load(Ordering::SeqCst));
-        assert!(result.withholding.is_empty());
-        assert!(result.acks.is_empty());
+        assert_eq!(result.withholding, [] as [Withholding; 0]);
+        assert_eq!(result.acks, [] as [OutcomeSummary; 0]);
         let _server = handle.await.unwrap().unwrap();
     }
 
@@ -1458,7 +1458,7 @@ mod tests {
             .await
             .unwrap();
         assert!(saw_hello.load(Ordering::SeqCst));
-        assert!(result.withholding.is_empty());
+        assert_eq!(result.withholding, [] as [Withholding; 0]);
         assert_eq!(client_store.bridge_sync_entries().unwrap().len(), 3);
         assert!(dialer.resume_token().is_some());
     }

@@ -29,6 +29,11 @@ use crate::forms::{ServeOutcome, T2, announce};
 const EXIT_TIMEOUT: i32 = 124;
 const EXIT_USAGE: i32 = 2;
 const DEFAULT_TIMEOUT_S: u64 = 300;
+/// The exec grace window (developing-today/code#15420, design #10356
+/// section 3.4): how long the daemon keeps a dropped `exec` running
+/// for `fleet http attach`. 0 is the immediate reap.
+const DEFAULT_GRACE_S: u64 = 60;
+const MAX_GRACE_S: u64 = 600;
 
 const USAGE: &str = "\
 Usage: fleet http <command> [args...]
@@ -41,17 +46,25 @@ Commands:
   health   Daemon reachability (GET /health through the ladder)
   jobs     List daemon jobs
   kill JOB Terminate a daemon job
-  exec [--cwd D] [--timeout S] [--shell] -- cmd...
+  exec [--cwd D] [--timeout S] [--grace S] [--shell] -- cmd...
            Run synchronously; the daemon's exit code propagates.
            --timeout is in seconds and always applies (default
-           300); a daemon-side timeout exits 124. The daemon has no
-           stdin channel: exec refuses piped or redirected stdin
-           that carries data (exit 2). Stage data with
-           `fleet proxy put`, or use `fleet ssh exec` for
-           interactive input.
+           300); a daemon-side timeout exits 124. If the connection
+           drops, the command keeps running for --grace seconds
+           (0-600, default 60) and the error names the
+           `fleet http attach` command that picks it up; --grace 0
+           reaps it at once. The daemon has no stdin channel: exec
+           refuses piped or redirected stdin that carries data
+           (exit 2). Stage data with `fleet proxy put`, or use
+           `fleet ssh exec` for interactive input.
   run [--cwd D] [--shell] -- cmd...
            Submit as a background job; prints the job id
   poll JOB [--wait S]   Poll a job, optionally waiting
+  sessions [--json]     Daemon jobs as connect sessions: id, origin,
+                        state, start, spooled bytes, bytes dropped,
+                        owning context id (#15420)
+  attach JOB [--wait S] Stream a session's output from the saved
+                        cursor; a finished session is read to the end
   fetch REMOTE LOCAL    Fetch a file written by a job";
 
 fn build_ladder(config: &Config) -> Result<Arc<Ladder>, String> {
@@ -117,11 +130,35 @@ fn render_exec_reply(body: &Value) -> i32 {
         .unwrap_or(1)
 }
 
+/// The `/exec` request body. A grace of 0 sends no `grace_s`, so the
+/// request is byte-for-byte what it was before the grace window.
+fn exec_body(spec: Value, timeout_s: u64, grace_s: u64) -> Value {
+    let mut body = json!({ "cmds": [spec], "timeout_s": timeout_s });
+    if grace_s > 0 {
+        body["grace_s"] = json!(grace_s);
+    }
+    body
+}
+
+/// The error for an exec whose connection failed mid-flight. With a
+/// grace window the command is still running on the laptop under the
+/// trip id, so the message names the exact command that attaches.
+fn exec_failure(err: &str, trip: &str, grace_s: u64) -> String {
+    if grace_s == 0 {
+        return err.to_string();
+    }
+    format!(
+        "{err}\nhttp: the command keeps running on the laptop for {grace_s}s; \
+         attach with: fleet http attach {trip}"
+    )
+}
+
 fn serve_with_ladder(
     ladder: &Arc<Ladder>,
     cwd: Option<&str>,
     shell: bool,
     timeout_s: u64,
+    grace_s: u64,
     cmd: &[String],
 ) -> ServeOutcome {
     if let Err(m) = guard::check_job(cwd, cmd) {
@@ -135,22 +172,26 @@ fn serve_with_ladder(
     let spec = client::command_spec(cwd, shell, cmd);
     let trip = new_trip();
     let deadline = Duration::from_secs(timeout_s + fleet_laptop_agent::TRANSPORT_GRACE_S);
-    let body = json!({ "cmds": [spec], "timeout_s": timeout_s });
+    let body = exec_body(spec, timeout_s, grace_s);
     match client::call(ladder, &trip, "POST", "/exec", Some(body), false, deadline) {
         Ok(reply) => ServeOutcome::Served(render_exec_reply(&reply.body)),
         Err(client::CallFailure::Deadline) => {
             client::cancel(ladder, &trip);
             ServeOutcome::TimedOut
         }
+        Err(e @ client::CallFailure::Transport(_)) => {
+            ServeOutcome::Failed(exec_failure(&e.to_string(), &trip, grace_s))
+        }
         Err(e) => ServeOutcome::Failed(e.to_string()),
     }
 }
 
-/// Serve one exec through this tier. Used by the standalone verb
-/// and by tier 0.
+/// Serve one exec through this tier for tier 0. Tier 0 moves on to the
+/// next form when this one fails, so a dropped command must not keep
+/// running here: no grace window, the immediate reap.
 pub fn serve(config: &Config, cwd: Option<&str>, timeout_s: u64, cmd: &[String]) -> ServeOutcome {
     match build_ladder(config) {
-        Ok(ladder) => serve_with_ladder(&ladder, cwd, false, timeout_s, cmd),
+        Ok(ladder) => serve_with_ladder(&ladder, cwd, false, timeout_s, 0, cmd),
         Err(m) => ServeOutcome::Failed(m),
     }
 }
@@ -158,6 +199,7 @@ pub fn serve(config: &Config, cwd: Option<&str>, timeout_s: u64, cmd: &[String])
 struct ExecArgs {
     cwd: Option<String>,
     timeout_s: u64,
+    grace_s: u64,
     shell: bool,
     cmd: Vec<String>,
 }
@@ -165,6 +207,7 @@ struct ExecArgs {
 fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, String> {
     let mut cwd = None;
     let mut timeout_s = DEFAULT_TIMEOUT_S;
+    let mut grace_s = DEFAULT_GRACE_S;
     let mut shell = false;
     let mut i = 0;
     while i < args.len() {
@@ -177,6 +220,7 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
             return Ok(ExecArgs {
                 cwd,
                 timeout_s,
+                grace_s,
                 shell,
                 cmd,
             });
@@ -199,6 +243,14 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
             timeout_s = v
                 .parse()
                 .map_err(|_| "--timeout must be seconds".to_string())?;
+        } else if a == "--grace" && with_timeout {
+            i += 1;
+            grace_s = parse_grace(args.get(i).ok_or("--grace needs a value")?)?;
+        } else if let Some(v) = a.strip_prefix("--grace=") {
+            if !with_timeout {
+                return Err("--grace is not taken here".into());
+            }
+            grace_s = parse_grace(v)?;
         } else if a == "--shell" {
             shell = true;
         } else {
@@ -207,6 +259,13 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
         i += 1;
     }
     Err("missing -- before the command".into())
+}
+
+fn parse_grace(v: &str) -> Result<u64, String> {
+    v.parse::<u64>()
+        .ok()
+        .filter(|g| *g <= MAX_GRACE_S)
+        .ok_or_else(|| format!("--grace must be seconds 0-{MAX_GRACE_S}"))
 }
 
 /// What the caller's stdin holds, for the stdin contract of
@@ -346,6 +405,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
                 parsed.cwd.as_deref(),
                 parsed.shell,
                 parsed.timeout_s,
+                parsed.grace_s,
                 &parsed.cmd,
             ) {
                 ServeOutcome::Served(code) => code,
@@ -380,9 +440,17 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
                 client::command_spec(parsed.cwd.as_deref(), parsed.shell, &parsed.cmd),
             )
         }
-        "poll" => {
+        "sessions" => match args.get(1).map(String::as_str) {
+            None => client::sessions(&ladder, false),
+            Some("--json") => client::sessions(&ladder, true),
+            Some(other) => {
+                eprintln!("http: sessions: unexpected argument {other}\n{USAGE}");
+                EXIT_USAGE
+            }
+        },
+        "poll" | "attach" => {
             let Some(job) = args.get(1) else {
-                eprintln!("http: poll needs a job id\n{USAGE}");
+                eprintln!("http: {} needs a job id\n{USAGE}", args[0]);
                 return EXIT_USAGE;
             };
             let mut wait: u64 = 30;
@@ -416,6 +484,62 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use std::os::fd::{FromRawFd, OwnedFd};
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn exec_grace_defaults_to_60_and_takes_0_to_600_15420() {
+        let p = parse_exec_args(&strs(&["--", "true"]), true).unwrap();
+        assert_eq!(p.grace_s, 60);
+        for (args, want) in [
+            (&["--grace", "0", "--", "true"][..], 0),
+            (&["--grace=600", "--", "true"][..], 600),
+            (&["--grace", "5", "--timeout", "9", "--", "true"][..], 5),
+        ] {
+            let p = parse_exec_args(&strs(args), true).unwrap();
+            assert_eq!(p.grace_s, want, "{args:?}");
+        }
+        for bad in ["601", "-1", "x", ""] {
+            let e = parse_exec_args(&strs(&["--grace", bad, "--", "true"]), true)
+                .err()
+                .unwrap();
+            assert!(e.contains("--grace must be seconds 0-600"), "{bad}: {e}");
+        }
+        // run takes no grace: it is already a job.
+        assert!(parse_exec_args(&strs(&["--grace=5", "--", "true"]), false).is_err());
+    }
+
+    #[test]
+    fn exec_body_sends_grace_only_when_set_15420() {
+        let spec = json!({"argv": ["true"]});
+        let plain = exec_body(spec.clone(), 30, 0);
+        assert_eq!(
+            plain,
+            json!({"cmds": [{"argv": ["true"]}], "timeout_s": 30})
+        );
+        let graced = exec_body(spec, 30, 60);
+        assert_eq!(graced["grace_s"], 60);
+    }
+
+    #[test]
+    fn dropped_exec_names_the_attach_command_15420() {
+        let m = exec_failure("transport error: reset", "a1b2c3d4e5f6", 60);
+        assert!(m.starts_with("transport error: reset"), "{m}");
+        assert!(m.contains("keeps running on the laptop for 60s"), "{m}");
+        assert!(m.contains("fleet http attach a1b2c3d4e5f6"), "{m}");
+        assert_eq!(
+            exec_failure("transport error: reset", "t", 0),
+            "transport error: reset"
+        );
+    }
+
+    #[test]
+    fn usage_names_the_grace_flag_15420() {
+        assert!(USAGE.contains("--grace S"));
+        assert!(USAGE.contains("fleet http attach"));
+    }
 
     fn pipe() -> (OwnedFd, OwnedFd) {
         let mut fds = [0 as libc::c_int; 2];

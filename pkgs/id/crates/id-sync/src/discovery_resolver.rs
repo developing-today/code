@@ -605,8 +605,11 @@ mod tests {
         assert_eq!(by_name.len(), 1);
         assert_eq!(by_name[0].announcement.announcement.seq, 4);
         assert_eq!(search(&registries, "SAILING", NOW).len(), 1);
-        assert!(search(&registries, "sail", NOW).is_empty());
+        assert_eq!(search(&registries, "sail", NOW), [] as [&RegistryEntry; 0]);
         assert_eq!(search(&registries, "", NOW).len(), 1);
-        assert!(search(&registries, "", NOW + 3_600).is_empty());
+        assert_eq!(
+            search(&registries, "", NOW + 3_600),
+            [] as [&RegistryEntry; 0]
+        );
     }
 }

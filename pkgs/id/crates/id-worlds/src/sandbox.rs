@@ -4368,8 +4368,9 @@ mod tests {
                 }
             }
         }
-        assert!(
-            failures.is_empty(),
+        assert_eq!(
+            failures,
+            [] as [String; 0],
             "fuel budgets exceeded:\n{}\nre-baseline deliberately: update the table and say why in the commit",
             failures.join("\n")
         );

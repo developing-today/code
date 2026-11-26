@@ -44,12 +44,12 @@
     },
     {
       "name": "hardware",
-      "session": null,
+      "session": "sessions/hardware.jsonl",
       "statement": {
-        "presents": ["snapshot", "view"],
+        "presents": ["error", "event", "form_result_status", "snapshot", "view"],
         "providers": [],
-        "sends": ["input", "join"],
-        "workflow": ["input", "join"]
+        "sends": ["form_result", "join"],
+        "workflow": ["form_result", "join"]
       }
     }
   ],
