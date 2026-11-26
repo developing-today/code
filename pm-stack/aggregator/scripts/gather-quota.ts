@@ -188,6 +188,7 @@ import {
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
+import { fleetPlatformUrl } from "../src/decision-events-sync.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
 import { fetchOpenCodeProviderQuota } from "../src/opencode-provider-quota.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
@@ -910,7 +911,7 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
 }
 
 const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
-const TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform";
+const TURSO_URL = fleetPlatformUrl();
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
