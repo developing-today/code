@@ -3563,3 +3563,59 @@ fn test_cli_parse_host_key_export_import() {
     }
     assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
 }
+
+const HOSTED_BINDING: &str = "0123456789abcdef0123456789abcdef";
+
+fn parse_hosted(args: &[&str]) -> Result<(bool, HostedCommand), clap::Error> {
+    let cli = Cli::try_parse_from(args)?;
+    match cli.command {
+        Some(Command::Hosted { json, command }) => Ok((json, command)),
+        other => panic!("expected `hosted`, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_cli_parse_hosted_actions() {
+    for (action, expect) in [("heads", 0), ("push", 1), ("pull", 2)] {
+        let (json, command) = parse_hosted(&[
+            "id",
+            "hosted",
+            action,
+            "--url",
+            "https://id.example/",
+            "--binding",
+            HOSTED_BINDING,
+            "--key-file",
+            "k.key",
+            "--json",
+        ])
+        .expect("hosted parses");
+        assert!(json);
+        let index = match command {
+            HostedCommand::Heads { .. } => 0,
+            HostedCommand::Push { .. } => 1,
+            HostedCommand::Pull { .. } => 2,
+        };
+        assert_eq!(index, expect, "{action}");
+        let target = command.target();
+        assert_eq!(target.url, "https://id.example");
+        assert_eq!(target.binding, HOSTED_BINDING);
+        assert_eq!(target.key_file, Some(std::path::PathBuf::from("k.key")));
+    }
+}
+
+#[test]
+fn test_cli_parse_hosted_rejects_bad_targets() {
+    let parse = |url: &str, binding: &str| {
+        parse_hosted(&["id", "hosted", "push", "--url", url, "--binding", binding])
+    };
+    assert!(parse("https://id.example", HOSTED_BINDING).is_ok());
+    assert!(parse("http://localhost:8787", HOSTED_BINDING).is_ok());
+    assert!(parse("http://127.0.0.1", HOSTED_BINDING).is_ok());
+    assert!(parse("http://id.example", HOSTED_BINDING).is_err());
+    assert!(parse("http://localhost.evil.example", HOSTED_BINDING).is_err());
+    assert!(parse("ftp://id.example", HOSTED_BINDING).is_err());
+    assert!(parse("https://", HOSTED_BINDING).is_err());
+    assert!(parse("https://id.example", "0123456789ABCDEF0123456789ABCDEF").is_err());
+    assert!(parse("https://id.example", "abc").is_err());
+}
