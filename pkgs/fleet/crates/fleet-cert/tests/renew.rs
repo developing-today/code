@@ -16,7 +16,7 @@ use fleet_cert::engine;
 use fleet_cert::graph::CrossSigningMode;
 use fleet_cert::model::{
     IssuerCreateRequest, IssuerPurpose, IssuerRenewRequest, IssuerRotateRequest, LeafIssueRequest,
-    LeafRenewRequest, RootCreateRequest, SignerSource,
+    LeafRenewRequest, LeafRotateRequest, RootCreateRequest, SignerSource,
 };
 use fleet_cert::timeparse::Rfc3339;
 use std::path::{Path, PathBuf};
@@ -751,4 +751,182 @@ fn rotation_refuses_a_root_set_the_issuers_do_not_chain_to() {
         .to_string();
     assert!(err.contains("not the root set"), "{err}");
     assert!(!out.join("manifest.json").exists());
+}
+
+fn leaf_rotate_request(leaf: &Path, issuer: &Path, csr: Option<PathBuf>) -> LeafRotateRequest {
+    LeafRotateRequest {
+        leaf_bundle: leaf.to_path_buf(),
+        issuer_bundle: issuer.to_path_buf(),
+        issuer_signer: SignerSource {
+            key_dir: issuer.join("private/keys"),
+        },
+        not_before: ts("2027-04-15T00:00:00Z"),
+        not_after: ts("2027-07-14T00:00:00Z"),
+        csr,
+        private_store: None,
+    }
+}
+
+#[test]
+fn leaf_rotation_gives_a_new_key_in_the_next_generation() {
+    let tmp = TempDir::new("leaf-rotate");
+    let root_dir = tmp.path().join("roots");
+    let issuer_dir = tmp.path().join("web");
+    let rotated_dir = tmp.path().join("web-g2");
+    make_roots(&root_dir);
+    make_issuers(&root_dir, &issuer_dir);
+    engine::rotate_issuer_set(&rotate_request(&issuer_dir, &root_dir), &rotated_dir).unwrap();
+    let root = load_bundle(&root_dir).unwrap();
+    for algo in ALGOS {
+        let leaf_dir = tmp.path().join(format!("leaf-{}", algo.name()));
+        server_leaf(
+            &issuer_dir,
+            &leaf_dir,
+            algo,
+            None,
+            "server",
+            "www.example.test",
+            None,
+        );
+        let old = load_bundle(&leaf_dir).unwrap();
+        let before = &old.manifest.certificates[0];
+        let old_der = cert_der(&old, &before.cert_path);
+        // The same issuer set, and then the rotated one.
+        for (issuer, tag) in [(&issuer_dir, "same"), (&rotated_dir, "rotated")] {
+            let out = tmp.path().join(format!("leaf-{}-{tag}", algo.name()));
+            let manifest =
+                engine::rotate_leaf(&leaf_rotate_request(&leaf_dir, issuer, None), &out).unwrap();
+            let new = load_bundle(&out).unwrap();
+            let issuer_bundle = load_bundle(issuer).unwrap();
+            assert_eq!(manifest.generation, 2, "{tag}");
+            assert_eq!(manifest.revision, 1, "{tag}");
+            assert_eq!(
+                manifest.predecessor.as_deref(),
+                Some(old.manifest.bundle_id.as_str())
+            );
+            assert_eq!(manifest.purpose.as_deref(), Some("server"));
+            let after = &new.manifest.certificates[0];
+            let new_der = cert_der(&new, &after.cert_path);
+            assert_ne!(
+                fleet_cert::dns::spki_der(&new_der).unwrap(),
+                fleet_cert::dns::spki_der(&old_der).unwrap(),
+                "{} {tag}: rotation must replace the leaf key",
+                algo.name()
+            );
+            assert_eq!(after.algorithm, before.algorithm);
+            assert_eq!(after.subject_dn, before.subject_dn);
+            assert_eq!(after.partition, "b");
+            assert_eq!(sans(&new_der), sans(&old_der));
+            let key = after.key_path.as_deref().unwrap();
+            assert_ne!(
+                read_artifact(&new, key).unwrap(),
+                read_artifact(&old, before.key_path.as_deref().unwrap()).unwrap()
+            );
+            let report = engine::validate_leaf(
+                &new,
+                &[&issuer_bundle, &root],
+                TrustSelection::All,
+                ts("2027-06-01T00:00:00Z"),
+            )
+            .unwrap();
+            assert!(
+                report.valid,
+                "{} {tag} rotated leaf must validate: {:?}",
+                algo.name(),
+                report.checks.iter().filter(|c| !c.ok).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_csr_issued_leaf_rotates_only_from_a_csr_with_a_new_key() {
+    let tmp = TempDir::new("leaf-rotate-csr");
+    let root_dir = tmp.path().join("roots");
+    let issuer_dir = tmp.path().join("general");
+    make_roots(&root_dir);
+    engine::create_issuer_set(
+        &IssuerCreateRequest {
+            root_bundle: root_dir.clone(),
+            root_signer: SignerSource {
+                key_dir: root_dir.join("private/keys"),
+            },
+            name: "Base".into(),
+            purpose: IssuerPurpose::General,
+            ou: None,
+            slots: vec![
+                (AlgorithmId::P256, "a".into()),
+                (AlgorithmId::P256, "b".into()),
+            ],
+            cross_signing: CrossSigningMode::Both,
+            not_before: ts("2026-01-01T00:00:00Z"),
+            not_after: ts("2031-01-01T00:00:00Z"),
+            allow_legacy_root_strength: false,
+            permitted_dns: vec![],
+            private_store: None,
+        },
+        &issuer_dir,
+    )
+    .unwrap();
+    let csr_for = |key: &rcgen::KeyPair, file: &str| {
+        let csr = rcgen::CertificateParams::new(vec!["ignored.example".to_string()])
+            .unwrap()
+            .serialize_request(key)
+            .unwrap();
+        let path = tmp.path().join(file);
+        std::fs::write(&path, csr.pem().unwrap()).unwrap();
+        path
+    };
+    let old_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let old_csr = csr_for(&old_key, "old.csr.pem");
+    let leaf_dir = tmp.path().join("broker");
+    server_leaf(
+        &issuer_dir,
+        &leaf_dir,
+        AlgorithmId::P256,
+        Some(old_csr.clone()),
+        "broker-server",
+        "queue-broker.fleet.internal",
+        Some("100.99.113.103"),
+    );
+    let err = engine::rotate_leaf(
+        &leaf_rotate_request(&leaf_dir, &issuer_dir, None),
+        &tmp.path().join("no-csr"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("CSR"), "{err}");
+    let err = engine::rotate_leaf(
+        &leaf_rotate_request(&leaf_dir, &issuer_dir, Some(old_csr)),
+        &tmp.path().join("same-key"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("new key"), "{err}");
+    assert!(!tmp.path().join("same-key").exists());
+
+    let new_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let out = tmp.path().join("broker-g2");
+    let manifest = engine::rotate_leaf(
+        &leaf_rotate_request(
+            &leaf_dir,
+            &issuer_dir,
+            Some(csr_for(&new_key, "new.csr.pem")),
+        ),
+        &out,
+    )
+    .unwrap();
+    assert_eq!(manifest.generation, 2);
+    assert_eq!(manifest.key_location, "host-local");
+    assert!(manifest.files.iter().all(|f| f.visibility != "private"));
+    let new = load_bundle(&out).unwrap();
+    let der = cert_der(&new, &new.manifest.certificates[0].cert_path);
+    // Oracle: the host's new key pair, which never left this test.
+    assert!(
+        fleet_cert::dns::spki_der(&der)
+            .unwrap()
+            .ends_with(&new_key.public_key_raw())
+    );
+    assert!(sans(&der).contains(&"dns:queue-broker.fleet.internal".to_string()));
+    assert!(sans(&der).iter().any(|s| s.starts_with("ip:")));
 }
