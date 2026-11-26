@@ -313,10 +313,14 @@ export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): 
   return out;
 }
 
-/** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
-export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
+/** Registry links for one subject (kaneo:/grist:/gh:), from GET /links.
+ * A failed read returns null (fail-soft, like projectorItems and
+ * projectorComments) so callers can tell "registry unreachable" apart
+ * from "reachable but no links for this subject" (#8570: the board
+ * provenance must say the links are unavailable, not claim them). */
+export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[] | null> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
-  if (!r.ok) return [];
+  if (!r.ok) return null;
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
   // Stored rows bypass the projector's POST /links gate (legacy/seeded
   // data), so the shared ref rule (#4952) is applied here at the read

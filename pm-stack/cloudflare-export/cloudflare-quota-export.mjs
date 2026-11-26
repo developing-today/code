@@ -44,7 +44,6 @@
  */
 import fs from "node:fs";
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -681,6 +680,20 @@ function usageError(message) {
   throw new ExportError("usage", 2, message);
 }
 
+/** HOME for the default --out-dir, per the #5762 home-resolution contract
+ * (#8220): an unset or empty HOME is a usage error (nothing is written),
+ * never os.homedir's silent passwd fallback; a set HOME is unchanged. */
+function requireHome() {
+  const home = process.env.HOME;
+  if (home === undefined || home.trim() === "") {
+    usageError(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so the default --out-dir cannot be derived; ` +
+        "set HOME or pass --out-dir (home-resolution contract #5762: no passwd fallback)",
+    );
+  }
+  return home;
+}
+
 export function parseArgs(argv) {
   const values = {};
   for (let i = 0; i < argv.length; i++) {
@@ -699,7 +712,7 @@ export function parseArgs(argv) {
     i++; // consume the value: no token is read twice
   }
   return {
-    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "cloudflare-export"),
+    outDir: values["--out-dir"] ?? join(requireHome(), "atlas", "cloudflare-export"),
     accountId: values["--account-id"],
   };
 }

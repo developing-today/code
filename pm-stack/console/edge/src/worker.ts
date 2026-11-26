@@ -31,6 +31,21 @@ interface Env {
    * from the bridge; without either, those stay a machine's. */
   BRIDGE?: { fetch(request: Request): Promise<Response> };
   BRIDGE_TOKEN?: string;
+  /** The fleet-platform ledger the hosted M4 ledger surfaces read
+   * (#14968), and their opt-in flag: off unless it reads `on`, and
+   * only after the #14865 gate check recorded on #14968. Which store
+   * answers is LEDGER_STORE: `d1` (the owner ruling of 2026-11-26 on
+   * #14866) reads the LEDGER_DB binding — the D1 database named
+   * fleet-platform; anything else reads the Turso ledger at
+   * PM_LEDGER_DB_URL, whose token is a Worker secret, put there by
+   * scripts/expose.py from the vault (name:
+   * turso.fleet-platform-rw-token). The Turso arm is the rollback:
+   * the same var, flipped back. */
+  PM_LEDGER_DB_URL?: string;
+  PM_LEDGER_DB_TOKEN?: string;
+  LEDGER_PAGES?: string;
+  LEDGER_STORE?: string;
+  LEDGER_DB?: import("./ledger-pages.ts").LedgerD1Database;
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -98,13 +113,18 @@ export class PmEdge extends DurableObject<Env> {
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.
         bridgeFetch: bridge
-          ? (url: string | URL | Request, init?: RequestInit) =>
-              bridge.fetch(new Request(url as string, init))
+          ? (url: string | URL | Request, init?: RequestInit) => bridge.fetch(new Request(url as string, init))
           : undefined,
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
+      ledgerPages:
+        env.LEDGER_PAGES === "on"
+          ? env.LEDGER_STORE === "d1"
+            ? { store: "d1", db: env.LEDGER_DB }
+            : { store: "turso", url: env.PM_LEDGER_DB_URL ?? "", token: env.PM_LEDGER_DB_TOKEN }
+          : undefined,
       // Live connections to the app. The platform holds them, so they
       // stay open while this object is put away between events, and it
       // is woken (by its alarm) only when there is something to read.

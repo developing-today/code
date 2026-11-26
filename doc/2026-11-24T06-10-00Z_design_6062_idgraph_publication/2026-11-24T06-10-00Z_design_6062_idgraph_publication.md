@@ -2,7 +2,7 @@
 
 - Date: 2026-11-24T06:10:00Z
 - Source issue: [developing-today/code#6062](https://github.com/developing-today/code/issues/6062) — `design(id/atlas): ID-graph publication format — Atlas objects + provenance/lineage relations as ID-graph objects`
-- Parent: [#6022](https://github.com/developing-today/code/issues/6022) (agent-note placement; now CLOSED) — decides *which* classes publish
+- Parent: [#6022](https://github.com/developing-today/code/issues/6022) (agent-note placement; now CLOSED) — decides _which_ classes publish
 - Program: [#6018](https://github.com/developing-today/code/issues/6018) (Atlas ingestion program)
 - Tracking: [#13873](https://github.com/developing-today/code/issues/13873) (AUDIT-7 Lane 6 DESIGN-GAPS)
 - Queue task: 21677 (`repo-health-code-pilot`, slice-1, owned paths `doc/` only, design-only)
@@ -10,7 +10,7 @@
 
 ## 1. Problem and context (evidence-bounded from #6062)
 
-#6062's body scopes a follow-up to #6022: #6022 decides *which* note/object classes publish into the ID graph; #6062 designs the *format* for Atlas-side publication. Quoted scope from the issue body:
+#6062's body scopes a follow-up to #6022: #6022 decides _which_ note/object classes publish into the ID graph; #6062 designs the _format_ for Atlas-side publication. Quoted scope from the issue body:
 
 - "Atlas objects (files, versions, chunks/spans, ingest runs) as ID-graph objects: identity, writer-set, and which provenance fields ride along."
 - "Provenance/lineage relations mapped from the PROV-lite record (sibling comment on #3125: `wasRevisionOf` for version↔version, `specializationOf` for version↔logical file, `wasDerivedFrom`, `wasGeneratedBy`, `wasAttributedTo`) into the ID graph's relation vocabulary — one mapping, so the graph shows the same lineage the corpus stores."
@@ -75,7 +75,7 @@ These mirror the filed sub-issues #11182–#11186 (filed 2026-11-17 under #6062/
 
 ## 6. Rollout and rollback
 
-Rollout (design-only record, so this is the rollout of the *contract*, consumed by S1–S5): land this record + README bullet via PR to `main` (this task); link the record from #6062; keep #6062 OPEN as the parent until #11182–#11186 land. Projector rollout (for implementers): ship behind a dry-run/project-behind flag — emit to a scratch view, run the S5 conformance audit, then promote the view; projection v1 advertised by the projector, pinned by consumers.
+Rollout (design-only record, so this is the rollout of the _contract_, consumed by S1–S5): land this record + README bullet via PR to `main` (this task); link the record from #6062; keep #6062 OPEN as the parent until #11182–#11186 land. Projector rollout (for implementers): ship behind a dry-run/project-behind flag — emit to a scratch view, run the S5 conformance audit, then promote the view; projection v1 advertised by the projector, pinned by consumers.
 
 Rollback: no data migration is involved. If the record is wrong, supersede by a new dated record (dated records are never rewritten); if a projector slice mis-emits, fix by correction publication (`tag.clear` + new claims, core §6.2) and re-projection from Atlas — never by editing Atlas from the graph or by deleting ID history. ID-side removal primitives (`document.remove`, `tag.clear`, `idset.rescind`) affect the projection only.
 

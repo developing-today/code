@@ -57,13 +57,13 @@ backend/repo itself, inserts its update into its category chat
 **insert-only (it never reads the chat)**, and ends. Chats are write-sinks,
 not state stores. The approved map:
 
-| Sink | Chat | Covers |
-| --- | --- | --- |
-| Reports | `f5915c63` | exceptions, errors, decisions (2026-11-07 ruling; unchanged) |
-| Lanes | `8117667e` | all lane effort (Muse lanes + OpenChamber lane notes) |
-| Designs, Issues & PRs | `fc1aea1a` | all GitHub activity |
+| Sink                          | Chat       | Covers                                                                              |
+| ----------------------------- | ---------- | ----------------------------------------------------------------------------------- |
+| Reports                       | `f5915c63` | exceptions, errors, decisions (2026-11-07 ruling; unchanged)                        |
+| Lanes                         | `8117667e` | all lane effort (Muse lanes + OpenChamber lane notes)                               |
+| Designs, Issues & PRs         | `fc1aea1a` | all GitHub activity                                                                 |
 | Queues, PM Health & Questions | `964a47dc` | queue state, PM-stack health, pending questions (renamed from "Orchestration pass") |
-| Pools & Quota | `d92d987b` | pool composition, quota, token usage (renamed from "Pool intelligence") |
+| Pools & Quota                 | `d92d987b` | pool composition, quota, token usage (renamed from "Pool intelligence")             |
 
 Open questions, settled with the approval (defaults in the design doc):
 

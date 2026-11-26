@@ -41,12 +41,12 @@ Non-goals:
 
 ## 3. Alternatives considered
 
-| Alternative | Benefits | Costs / risks | Decision |
-|---|---|---|---|
-| Input and output both over SSE | One transport. | SSE is server-to-client only; input needs a second channel anyway. | Rejected for input. SSE is the output default. |
-| WebSocket for everything | One bidirectional channel; matches pass 2. | Some clients cannot hold a socket; plain REST apps need no socket at all. | Accepted as an option, not the only path. |
-| Separate protocol per presentation type | Tailored to each output. | Breaks argv parity and the replay model. | Rejected. One event model; presentation is a payload kind. |
-| Unbounded session log | Simple replay. | Unbounded memory and disk; violates "nothing kept indefinitely". | Rejected. Ring log with byte cap and TTL (§4.4). |
+| Alternative                             | Benefits                                   | Costs / risks                                                             | Decision                                                   |
+| --------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Input and output both over SSE          | One transport.                             | SSE is server-to-client only; input needs a second channel anyway.        | Rejected for input. SSE is the output default.             |
+| WebSocket for everything                | One bidirectional channel; matches pass 2. | Some clients cannot hold a socket; plain REST apps need no socket at all. | Accepted as an option, not the only path.                  |
+| Separate protocol per presentation type | Tailored to each output.                   | Breaks argv parity and the replay model.                                  | Rejected. One event model; presentation is a payload kind. |
+| Unbounded session log                   | Simple replay.                             | Unbounded memory and disk; violates "nothing kept indefinitely".          | Rejected. Ring log with byte cap and TTL (§4.4).           |
 
 ## 4. Chosen approach
 
@@ -80,7 +80,7 @@ happen to arrive. An app that needs a terminal declares `session`.
 
 - **Output** streams as events. Default transport is SSE
   (`text/event-stream`). Each event carries `id: <seq>`, `event: out | err |
-  exit | app`, and `data:` as a JSON object.
+exit | app`, and `data:` as a JSON object.
 - **Input** for `session` mode is a numbered frame sequence:
   `POST /v1/sessions/{id}/input` with `{ seq, bytes }`. The server accepts
   frames in order, rejects gaps and duplicates with a distinct error, and
@@ -106,12 +106,12 @@ happen to arrive. An app that needs a terminal declares `session`.
 Each session keeps an ordered event log with sequence numbers. Clients read
 it with the replay modes from the design brief:
 
-| Mode | Query | Returns |
-|---|---|---|
-| since last time | `?since=<seq>` | events with `seq > since` |
-| after | `?after=<seq>` | same as since, exclusive, named for clarity in apps |
-| before and after | `?before=<seq>&after=<seq>` | a window |
-| all | `?all=1` | the whole retained log |
+| Mode             | Query                       | Returns                                             |
+| ---------------- | --------------------------- | --------------------------------------------------- |
+| since last time  | `?since=<seq>`              | events with `seq > since`                           |
+| after            | `?after=<seq>`              | same as since, exclusive, named for clarity in apps |
+| before and after | `?before=<seq>&after=<seq>` | a window                                            |
+| all              | `?all=1`                    | the whole retained log                              |
 
 Retention is bounded in two ways: a byte cap per session (default 16 MiB,
 configurable) and an idle TTL (default 1 hour locally, configurable up to 24
@@ -172,13 +172,13 @@ requests on localhost do not require a credential.
 
 ## 5. Decisions and defaults
 
-| # | Decision | Default taken here | Who may change it |
-|---|---|---|---|
-| D1 | Input transport for `session` mode | Numbered POST frames; WebSocket optional | Pass 1 if it needs a different framing |
-| D2 | Default retention | 16 MiB per session, 1 h idle TTL | Pass 3 with measurements |
-| D3 | Replay modes | Four modes in §4.4 | Pass 3 |
-| D4 | Pass-2 envelope | Unchanged | Only via a joint `fleet-id-cbor-v2` bump |
-| D5 | Flag and env spellings | Names as used here | Pass 1 wins on syntax |
+| #   | Decision                           | Default taken here                       | Who may change it                        |
+| --- | ---------------------------------- | ---------------------------------------- | ---------------------------------------- |
+| D1  | Input transport for `session` mode | Numbered POST frames; WebSocket optional | Pass 1 if it needs a different framing   |
+| D2  | Default retention                  | 16 MiB per session, 1 h idle TTL         | Pass 3 with measurements                 |
+| D3  | Replay modes                       | Four modes in §4.4                       | Pass 3                                   |
+| D4  | Pass-2 envelope                    | Unchanged                                | Only via a joint `fleet-id-cbor-v2` bump |
+| D5  | Flag and env spellings             | Names as used here                       | Pass 1 wins on syntax                    |
 
 ## 6. Build slices (dependency order)
 

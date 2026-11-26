@@ -44,6 +44,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -180,10 +181,21 @@ class GhClient:
         return json.loads(out.stdout) if out.stdout.strip() else None
 
     def recently_closed_issues(self, repo, since_iso):
-        issues = self.api(
-            f"repos/{repo}/issues?state=closed&since={since_iso}"
-            "&sort=updated&direction=asc&per_page=100"
+        # Percent-encode the query: since_iso carries a "+00:00" UTC
+        # offset, and a raw "+" in a query string decodes as a space,
+        # which makes GitHub silently return an empty list (found
+        # live 2026-11-25 during the #10105 fixture verification --
+        # the watchdog saw no closes at all).
+        query = urllib.parse.urlencode(
+            {
+                "state": "closed",
+                "since": since_iso,
+                "sort": "updated",
+                "direction": "asc",
+                "per_page": 100,
+            }
         )
+        issues = self.api(f"repos/{repo}/issues?{query}")
         return [i for i in issues or [] if "pull_request" not in i]
 
     def timeline(self, repo, number):

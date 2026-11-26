@@ -42,11 +42,11 @@ line that closes that gap, on the program's schedule rather than ahead of it.
 
 ## 3. The brokers today (census, from source)
 
-| Broker | Crate | Transports today | Auth today |
-| --- | --- | --- | --- |
-| Secrets broker | `fleet-secrets` | Unix sockets: session broker socket + per-role socket (dual-bind, #6216/#6218); off-host reach via the session-proxy leg | Bearer token from a token file; socket access gated by filesystem permissions |
-| Queue broker | `fleet-queue` | TCP on the tailnet (`QUEUE_BROKER_BIND`, default `100.99.113.103:4801`); local UDS via the shared dual-bind machinery (`uds_http.rs`) | Bearer token from a token file (`~/.config/queue-broker/token`) |
-| Laptop-agent | `fleet-laptop-agent` | TCP agent endpoint on the laptop; legs to the other brokers over tailnet/proxy (one leg also carries a Cloudflare Access service token) | Bearer token from a token file |
+| Broker         | Crate                | Transports today                                                                                                                        | Auth today                                                                    |
+| -------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Secrets broker | `fleet-secrets`      | Unix sockets: session broker socket + per-role socket (dual-bind, #6216/#6218); off-host reach via the session-proxy leg                | Bearer token from a token file; socket access gated by filesystem permissions |
+| Queue broker   | `fleet-queue`        | TCP on the tailnet (`QUEUE_BROKER_BIND`, default `100.99.113.103:4801`); local UDS via the shared dual-bind machinery (`uds_http.rs`)   | Bearer token from a token file (`~/.config/queue-broker/token`)               |
+| Laptop-agent   | `fleet-laptop-agent` | TCP agent endpoint on the laptop; legs to the other brokers over tailnet/proxy (one leg also carries a Cloudflare Access service token) | Bearer token from a token file                                                |
 
 Properties of the current state that the design must respect:
 
@@ -100,11 +100,11 @@ Issuer-set choice and profile are decided in the ADR filed alongside this record
 
 Per-broker application:
 
-| Broker | Server cert | Client cert | Notes |
-| --- | --- | --- | --- |
-| Queue broker | `broker-server` on the TCP leg (`:4801`) | `broker-client` when it dials the secrets broker / laptop-agent | First mover (§5): its clients are numerous but its own recovery does not depend on another broker's TLS |
-| Laptop-agent | `broker-server` on its TCP endpoint | `broker-client` on its broker legs | Second: it is a client of both other brokers and a server to fleet clients |
-| Secrets broker | `broker-server` on its off-host leg only | `broker-client` for broker peer sync if/when that lands (#13948's line) | **Last** (§5, rule M4). UDS legs never take TLS (decision D-UDS, §5) |
+| Broker         | Server cert                              | Client cert                                                             | Notes                                                                                                   |
+| -------------- | ---------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Queue broker   | `broker-server` on the TCP leg (`:4801`) | `broker-client` when it dials the secrets broker / laptop-agent         | First mover (§5): its clients are numerous but its own recovery does not depend on another broker's TLS |
+| Laptop-agent   | `broker-server` on its TCP endpoint      | `broker-client` on its broker legs                                      | Second: it is a client of both other brokers and a server to fleet clients                              |
+| Secrets broker | `broker-server` on its off-host leg only | `broker-client` for broker peer sync if/when that lands (#13948's line) | **Last** (§5, rule M4). UDS legs never take TLS (decision D-UDS, §5)                                    |
 
 ## 5. mTLS posture and migration path
 
@@ -130,7 +130,7 @@ either factor alone is insufficient on the TCP legs once Phase 3 lands.
   leaf on the TCP leg; clients validate against the distributed trust bundle
   (§6) and fail closed, with a named operator override for break-glass. Token
   auth unchanged. Clients without bundle support keep working over UDS or the
-  tailnet leg only until they are bundle-capable — Phase 1 never *removes* a
+  tailnet leg only until they are bundle-capable — Phase 1 never _removes_ a
   working path, it adds a verified one and makes it the default for capable
   clients.
 - **Phase 2 — dual-accept client authentication.** Clients present
@@ -161,8 +161,8 @@ either factor alone is insufficient on the TCP legs once Phase 3 lands.
   point may obtaining or renewing the secrets broker's own certificate
   require a secret that only the secrets broker can hand out.
 - **M5 — One broker at a time, in census order.** Queue broker → laptop-agent
-  → secrets broker. A broker does not enter Phase *n+1* until the previous
-  broker has completed Phase *n* without a rollback event.
+  → secrets broker. A broker does not enter Phase _n+1_ until the previous
+  broker has completed Phase _n_ without a rollback event.
 
 ## 6. Trust distribution
 
@@ -233,14 +233,14 @@ no production CA operation, no vault write, no live escrow, and no rotation.
 
 ## 8. Failure and rollback story
 
-| Failure | Detection | Response | Rollback |
-| --- | --- | --- | --- |
-| Broker leaf expires | Renewal is automated at 50% of the 90-day life; health surface reports leaf age; alert at 75% | On-host renewal (M4 path for the secrets broker); overlap window: the broker can present the renewed leaf without dropping the old one mid-flight | Expiry degrades that broker's TCP leg to the M1 permissive posture by flag, not to silence; UDS unaffected |
-| Issuer partition compromise / mis-issuance | #9164 chain-matrix tests + CRL issuance | Brokers verify against **both** A/B partitions; issuance fails over to the clean partition; compromised partition's leaves revoked via real signed CRLs on the mirrors | Remove the compromised partition from the bundle by two-phase rollover (§6); tokens were never dependent on it, so authorisation is untouched |
-| Trust-bundle distribution failure | Bundle-version acknowledgements in the health surface (§6) show stale clients | Rollover pauses at the distribute phase — activation never proceeds without acknowledgements; clients keep last-known-good anchors | Old anchor set remains active; nothing to roll back because activation is the last step |
-| Bad config push (phase flag) | Broker startup self-check + health surface | M1: defaults are permissive; a flag that fails validation is refused at load and the previous posture kept | Set the flag back; the previous phase's accept path is still in the binary (M2) |
-| CA unavailable at renewal time | Renewal attempts from 50% life leave a 45-day runway | Retry with backoff across both partitions; alert well before expiry | The runway *is* the rollback: no same-day expiry cliff exists in this design |
-| Full retreat needed | Operator decision | — | Phase flags return the estate to Phase 0 (token-only) per broker, in reverse census order (secrets broker first on retreat). The Phase 0 accept path is retained in the binary until a separate removal decision is recorded — removal is not part of this design |
+| Failure                                    | Detection                                                                                     | Response                                                                                                                                                               | Rollback                                                                                                                                                                                                                                                          |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Broker leaf expires                        | Renewal is automated at 50% of the 90-day life; health surface reports leaf age; alert at 75% | On-host renewal (M4 path for the secrets broker); overlap window: the broker can present the renewed leaf without dropping the old one mid-flight                      | Expiry degrades that broker's TCP leg to the M1 permissive posture by flag, not to silence; UDS unaffected                                                                                                                                                        |
+| Issuer partition compromise / mis-issuance | #9164 chain-matrix tests + CRL issuance                                                       | Brokers verify against **both** A/B partitions; issuance fails over to the clean partition; compromised partition's leaves revoked via real signed CRLs on the mirrors | Remove the compromised partition from the bundle by two-phase rollover (§6); tokens were never dependent on it, so authorisation is untouched                                                                                                                     |
+| Trust-bundle distribution failure          | Bundle-version acknowledgements in the health surface (§6) show stale clients                 | Rollover pauses at the distribute phase — activation never proceeds without acknowledgements; clients keep last-known-good anchors                                     | Old anchor set remains active; nothing to roll back because activation is the last step                                                                                                                                                                           |
+| Bad config push (phase flag)               | Broker startup self-check + health surface                                                    | M1: defaults are permissive; a flag that fails validation is refused at load and the previous posture kept                                                             | Set the flag back; the previous phase's accept path is still in the binary (M2)                                                                                                                                                                                   |
+| CA unavailable at renewal time             | Renewal attempts from 50% life leave a 45-day runway                                          | Retry with backoff across both partitions; alert well before expiry                                                                                                    | The runway _is_ the rollback: no same-day expiry cliff exists in this design                                                                                                                                                                                      |
+| Full retreat needed                        | Operator decision                                                                             | —                                                                                                                                                                      | Phase flags return the estate to Phase 0 (token-only) per broker, in reverse census order (secrets broker first on retreat). The Phase 0 accept path is retained in the binary until a separate removal decision is recorded — removal is not part of this design |
 
 ## 9. Slice map (implementation issues filed under #13685)
 

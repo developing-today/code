@@ -13,6 +13,7 @@ import { join } from "node:path";
 
 interface HealthBody {
   status: string;
+  degraded?: boolean;
   source: Record<string, string>;
   sections?: { orchestration: { state: string; runId?: string } };
 }
@@ -153,7 +154,10 @@ afterAll(() => {
 
 describe("/api/health provenance priming (#1267)", () => {
   test("the first-ever response reports the live facets truthfully", () => {
-    expect(firstHealth?.status).toBe("ok");
+    // #14062: the status follows the degraded flag. This live-source
+    // server's probes reach nothing, so it is degraded and says so.
+    expect(firstHealth?.degraded).toBe(true);
+    expect(firstHealth?.status).toBe("degraded");
     expect(firstHealth?.source.quota).toContain("live (fleet feed");
     expect(firstHealth?.source.quota).toContain("1 credential row(s)");
     expect(firstHealth?.source.quota).toContain("1 active session(s)");
