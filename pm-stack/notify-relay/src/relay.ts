@@ -7,6 +7,8 @@
 // Object performs; src/index.ts is only storage + scheduling
 // around this module.
 
+import type { AnsweredRecord, PendingAnswer } from "./answers.ts";
+
 /** A heartbeat every ~60s; the alarm sits at last-beat + 150s
  * (~2 missed beats + margin, design §2). The alarm is the only
  * scheduler in the design. */
@@ -42,6 +44,18 @@ export interface Heartbeat {
   at?: string;
 }
 
+/** A push-worthy throat event mirrored for reconciliation. The
+ * payload is descriptive only: this Durable Object never delivers it. */
+export interface MirrorEvent {
+  mirrorId: string;
+  objectRef: string;
+  transition: string;
+  raisedAt: string;
+  payload: Record<string, unknown>;
+}
+
+export const MIRROR_RETENTION_MS = 30 * 24 * 60 * 60_000;
+
 export interface HeartbeatState {
   stackEpoch: string | null;
   lastSeq: number | null;
@@ -68,6 +82,13 @@ export interface RelayState {
    * the push payloads' /status deep link. */
   origin: string | null;
   lastDelivery: DeliveryRecord | null;
+  mirrorEvents: MirrorEvent[];
+  /** Answers taken at the edge, waiting for the aggregator's drain
+   * (step 3, src/answers.ts). */
+  pendingAnswers: PendingAnswer[];
+  /** The first answer per question, kept after its drain so a
+   * repeat is answered the same way. */
+  answered: AnsweredRecord[];
 }
 
 export const emptyRelayState = (): RelayState => ({
@@ -75,7 +96,32 @@ export const emptyRelayState = (): RelayState => ({
   heartbeat: { stackEpoch: null, lastSeq: null, lastBeatAt: null, silentSince: null },
   origin: null,
   lastDelivery: null,
+  mirrorEvents: [],
+  pendingAnswers: [],
+  answered: [],
 });
+
+/** Keep the 30-day mirror log bounded by event time (the laptop's
+ * transition time), so retries cannot extend an old event's life. */
+export function pruneMirrorEvents(events: MirrorEvent[], now: number): MirrorEvent[] {
+  const cutoff = now - MIRROR_RETENTION_MS;
+  return events.filter((event) => Date.parse(event.raisedAt) >= cutoff);
+}
+
+export function applyMirrorEvent(
+  state: RelayState,
+  event: MirrorEvent,
+  now: number,
+): { state: RelayState; outcome: "stored" | "duplicate" | "expired" } {
+  const retained = pruneMirrorEvents(state.mirrorEvents, now);
+  if (Date.parse(event.raisedAt) < now - MIRROR_RETENTION_MS) {
+    return { state: { ...state, mirrorEvents: retained }, outcome: "expired" };
+  }
+  if (retained.some((existing) => existing.mirrorId === event.mirrorId)) {
+    return { state: { ...state, mirrorEvents: retained }, outcome: "duplicate" };
+  }
+  return { state: { ...state, mirrorEvents: [...retained, event] }, outcome: "stored" };
+}
 
 // ---------------------------------------------------------------- auth
 
@@ -203,6 +249,26 @@ export function validateHeartbeat(body: unknown): Validation<Heartbeat> {
   }
   if (at !== undefined && typeof at !== "string") return { ok: false, error: "at must be a string when present" };
   return { ok: true, value: { stackEpoch, seq, ...(at !== undefined ? { at } : {}) } };
+}
+
+/** Validate the authenticated /mirror/event append shape. */
+export function validateMirrorEvent(body: unknown): Validation<MirrorEvent> {
+  if (!isRecord(body)) return { ok: false, error: "body must be an object" };
+  const { mirrorId, objectRef, transition, raisedAt, payload } = body;
+  if (typeof mirrorId !== "string" || mirrorId.length === 0 || mirrorId.length > 160) {
+    return { ok: false, error: "mirrorId must be a non-empty string of at most 160 chars" };
+  }
+  if (typeof objectRef !== "string" || objectRef.length === 0 || objectRef.length > 512) {
+    return { ok: false, error: "objectRef must be a non-empty string of at most 512 chars" };
+  }
+  if (typeof transition !== "string" || transition.length === 0 || transition.length > 64) {
+    return { ok: false, error: "transition must be a non-empty string of at most 64 chars" };
+  }
+  if (typeof raisedAt !== "string" || !Number.isFinite(Date.parse(raisedAt))) {
+    return { ok: false, error: "raisedAt must be a valid date string" };
+  }
+  if (!isRecord(payload)) return { ok: false, error: "payload must be an object" };
+  return { ok: true, value: { mirrorId, objectRef, transition, raisedAt, payload } };
 }
 
 // -------------------------------------------------------- state machine

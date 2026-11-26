@@ -1077,6 +1077,26 @@ def notes(args, package, root):
     return {"note": relative}
 
 
+def is_standalone_research(package):
+    """Recognize dirname.md records, never incomplete managed packages."""
+    record = package / f"{package.name}.md"
+    if not record.is_file():
+        return False
+    if any(
+        (package / artifact).exists()
+        for artifact in (
+            "main.md",
+            "transcript.txt",
+            "design.md",
+            "changes.md",
+            "concepts",
+            "notes",
+        )
+    ):
+        return False
+    return not STATE.search(unfenced(record.read_text()))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1137,7 +1157,7 @@ def main(argv=None):
                     for p in request_root.iterdir()
                     if p.is_dir()
                     and (
-                        name_re.fullmatch(p.name)
+                        (name_re.fullmatch(p.name) and not is_standalone_research(p))
                         or (p / "main.md").is_file()
                         and STATE.search(unfenced((p / "main.md").read_text()))
                     )

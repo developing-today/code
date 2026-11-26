@@ -19,11 +19,10 @@
 //! the only granularity this model has. Every multi-note projection
 //! takes a caller-provided `can_read` predicate and never exposes a
 //! note (or its existence metadata, including through transclusion)
-//! to a reader the predicate denies. Wiring that predicate to the
-//! #5678 resolution order (object → user default → server config →
-//! public) is the named follow-on packet on #8218, explicitly left
-//! out of this slice per its acceptance criteria — the predicate
-//! seam is the handoff point, not a silent drop.
+//! to a reader the predicate denies. The #5678 resolution order
+//! (object → user default → server config → public) is
+//! [`crate::read_authority::NoteReader`], which callers pass as that
+//! predicate (#12751).
 //!
 //! Tests in this module name the #5839 design record
 //! (`doc/2026-11-10T20-12-00Z_design_id_content_model/`) as their
@@ -133,9 +132,13 @@ pub struct ProjectedNote {
 }
 
 /// A read-authority predicate over note IDs: `true` means the viewer
-/// may read the note. Wiring this to the #5678 resolution order is
-/// the named follow-on packet on #8218.
-pub type CanRead = dyn Fn(&Hash) -> bool;
+/// may read the note. The #5678 resolution order is
+/// [`crate::read_authority::NoteReader::may_read`]; pass
+/// `&|n: &Hash| reader.may_read(n)`.
+///
+/// The alias carries a lifetime so a predicate may borrow its reader
+/// state (a `dyn` in a type alias otherwise defaults to `'static`).
+pub type CanRead<'a> = dyn Fn(&Hash) -> bool + 'a;
 
 // ---------------------------------------------------------------------------
 // Outline (D3)
@@ -218,6 +221,45 @@ pub fn hoisted_entries<'a>(tree: &'a BlockTree, focus: &BlockId) -> Option<Vec<O
     Some(out)
 }
 
+/// How [`readable_outline`] shows a note: unfolded, folded at some
+/// blocks, or hoisted to one block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlineMode<'m> {
+    /// Every block, as [`outline_entries`].
+    Full,
+    /// Rows under the named blocks hidden, as [`folded_entries`].
+    Folded(&'m BTreeSet<BlockId>),
+    /// Only the subtree of the named block, as [`hoisted_entries`].
+    Hoisted(&'m BlockId),
+}
+
+/// The outline of `note` for one reader, under the same `can_read`
+/// predicate as every other projection (normally
+/// [`crate::read_authority::NoteReader::may_read`]).
+///
+/// Returns `None` when the reader may not read the note, the same
+/// answer a hoist on a missing block gives, so a denied outline says
+/// nothing about the note's blocks or whether it exists (#5839
+/// invariant 6). Transclusion blocks in the rows are the note's own
+/// authored references; rendering what they point at goes through
+/// [`render_transclusion`], which checks the source note.
+#[must_use]
+pub fn readable_outline<'a>(
+    note: &Hash,
+    tree: &'a BlockTree,
+    mode: OutlineMode<'_>,
+    can_read: &CanRead<'_>,
+) -> Option<Vec<OutlineEntry<'a>>> {
+    if !can_read(note) {
+        return None;
+    }
+    match mode {
+        OutlineMode::Full => Some(outline_entries(tree)),
+        OutlineMode::Folded(collapsed) => Some(folded_entries(tree, collapsed)),
+        OutlineMode::Hoisted(focus) => hoisted_entries(tree, focus),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Journal (D4)
 // ---------------------------------------------------------------------------
@@ -237,7 +279,7 @@ pub struct JournalRow<'a> {
 /// omitted entirely — including their existence metadata (#5839
 /// invariant 6).
 #[must_use]
-pub fn journal_view<'a>(notes: &'a [ProjectedNote], can_read: &CanRead) -> Vec<JournalRow<'a>> {
+pub fn journal_view<'a>(notes: &'a [ProjectedNote], can_read: &CanRead<'_>) -> Vec<JournalRow<'a>> {
     let mut rows: Vec<JournalRow<'a>> = notes
         .iter()
         .filter(|n| can_read(&n.note))
@@ -281,7 +323,7 @@ pub enum CaptureTarget<'a> {
 pub fn capture_target<'a>(
     notes: &'a [ProjectedNote],
     date: CalendarDate,
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> CaptureTarget<'a> {
     for note in notes {
         if note.dates.contains(&date) && can_read(&note.note) {
@@ -369,7 +411,7 @@ pub struct DatabaseRow<'a> {
 pub fn database_view<'a>(
     def: &DatabaseDefinition,
     notes: &'a [ProjectedNote],
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> Vec<DatabaseRow<'a>> {
     let mut rows: Vec<DatabaseRow<'a>> = notes
         .iter()
@@ -463,7 +505,7 @@ pub fn describe_cell_edit(
     note: &ProjectedNote,
     column: &str,
     value: PropertyValue,
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> Option<PropertyEdit> {
     if !can_read(&note.note) {
         return None;
@@ -508,7 +550,7 @@ pub fn render_transclusion<'a>(
     pinned_tree: Option<&'a BlockTree>,
     head_tree: Option<&'a BlockTree>,
     source_note: &Hash,
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> TransclusionRender<'a> {
     if !can_read(source_note) {
         return TransclusionRender::Unresolved;
@@ -539,7 +581,7 @@ pub fn render_transclusion<'a>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::note_blocks::{BlockKind, BlockTree};
@@ -712,7 +754,7 @@ mod tests {
         assert_eq!(rows[0].date.day, 20);
         assert_eq!(rows[1].date.day, 23);
         // No view exposes a note to a denied reader (#5839 invariant 6).
-        assert!(journal_view(&notes, &deny_all).is_empty());
+        assert_eq!(journal_view(&notes, &deny_all), [] as [JournalRow<'_>; 0]);
         let can_read_first = |h: &Hash| *h == hash(1);
         let rows = journal_view(&notes, &can_read_first);
         assert_eq!(rows.len(), 1);
@@ -810,7 +852,10 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[2].cells, vec![None]);
         // Unreadable notes are omitted entirely (#5839 invariant 6).
-        assert!(database_view(&def, &notes, &deny_all).is_empty());
+        assert_eq!(
+            database_view(&def, &notes, &deny_all),
+            [] as [DatabaseRow<'_>; 0]
+        );
     }
 
     #[test]
