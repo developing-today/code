@@ -850,6 +850,19 @@
       "related_issues": [12828]
     },
     {
+      "id": "pm-service.oauth-pkce",
+      "paths": ["pm-stack/pm-service/test/worker-auth.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test test/worker-auth.test.ts",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14261]
+    },
+    {
       "id": "opencode-claimant.install",
       "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
