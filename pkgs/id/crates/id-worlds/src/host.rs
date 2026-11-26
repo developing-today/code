@@ -221,11 +221,16 @@ pub struct HostFile {
 }
 
 impl HostFile {
-    /// Empty host file for `root`.
+    /// Empty host file for `root`, naming it by its canonical path so a
+    /// reader in any working directory finds the same root. A server
+    /// that opens its data root by a relative path (`id serve` runs in
+    /// its state directory and uses `.id-worlds`) must not record that
+    /// relative path, or the operator CLI, reading the root by its
+    /// absolute path, refuses the file as another root's.
     pub fn empty(root: &Path) -> Self {
         Self {
             version: HOST_FILE_VERSION,
-            data_root: root.to_path_buf(),
+            data_root: canonical_or_plain(root),
             worlds: BTreeMap::new(),
         }
     }
@@ -1668,6 +1673,20 @@ mod tests {
         assert_eq!(loaded.worlds["a"].history.len(), 2);
         assert_eq!(loaded.worlds["a"].history[0].prior, LifecycleState::Asleep);
         assert_eq!(loaded.worlds["b"].state, LifecycleState::Archived);
+    }
+
+    #[test]
+    fn host_file_names_its_root_canonically() {
+        // nixos-world-host found this: the server opened `.id-worlds`
+        // relative to its state directory, recorded that relative
+        // path, and the operator CLI then refused the file when it
+        // loaded the same root by its absolute path.
+        let root = data_root_with(&["a"]);
+        let roundabout = root.path().join("a").join("..");
+        let file = HostFile::rebuild(&roundabout).unwrap();
+        assert_eq!(file.data_root, std::fs::canonicalize(root.path()).unwrap());
+        file.save(&roundabout).unwrap();
+        HostFile::load(root.path()).unwrap();
     }
 
     #[test]
