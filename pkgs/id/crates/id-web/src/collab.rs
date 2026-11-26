@@ -3164,7 +3164,7 @@ mod tests {
             matches!(err, PublishCheckpointError::NotNoteSession(_)),
             "a filename session has no note to checkpoint: {err}"
         );
-        assert!(state.note_events().await.is_empty());
+        assert_eq!(state.note_events().await, [] as [AppliedNote; 0]);
     }
 
     #[tokio::test]
