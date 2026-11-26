@@ -31,6 +31,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "pool",
             "launched-by",
             "remaining-budget-minutes",
+            "manual-override",
         ],
         &["handoff", "bind"],
     );
@@ -149,6 +150,24 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // plain claim never names a task.
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
+    }
+    if let Some(reason) = args.get("manual-override") {
+        if args.get_i64("task").filter(|task| *task > 0).is_none() {
+            die(2, "claim: --manual-override requires --task <positive-id>");
+        }
+        if reason.trim().is_empty() {
+            die(2, "claim: --manual-override reason must not be empty");
+        }
+        if args.get("from-session").is_some()
+            || args.has("handoff")
+            || args.get_i64("count").unwrap_or(1) != 1
+        {
+            die(
+                2,
+                "claim: --manual-override cannot combine with transfer, handoff, or batch",
+            );
+        }
+        body["manual_override"] = json!(reason.trim());
     }
     // --count <n> (#8217): batch claim — the broker runs the same
     // atomic pick n times and answers with every claimed row. The
