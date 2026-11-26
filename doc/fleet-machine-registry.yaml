@@ -98,16 +98,16 @@ machines:
       last_seen: '2026-11-25T12:24:06Z'
       status: unreachable
       checks:
-        reported_at: '2026-11-26T09:24:10Z'
+        reported_at: '2026-11-26T09:54:26Z'
         reachable:
           state: failed
           ssh: true
           opencode_server_http: null
         load_headroom:
           state: ok
-          load15: 1.56
+          load15: 1.29
           cpu_cores: 16
-          load15_per_core: 0.098
+          load15_per_core: 0.081
         disk_headroom:
           state: ok
           volume: worktree (home)
