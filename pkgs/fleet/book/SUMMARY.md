@@ -43,6 +43,8 @@
 - [fleet agent](reference/agent.md)
 - [fleet shell](reference/shell.md)
 - [fleet search](reference/search.md)
+- [fleet orgs](reference/orgs.md)
+- [fleet cert](reference/cert.md)
 - [fleet laptop-agent](reference/laptop-agent.md)
 - [fleet laptop route forms](reference/laptop-route-forms.md)
 - [fleet actions](reference/actions.md)
@@ -77,7 +79,21 @@
 
 - [Running the brokers as services](operations/services.md)
 - [Health checks and the heal stack](operations/health-and-healing.md)
+- [Backup inventory](operations/backup-inventory.md)
+- [Backing up `fleet kv`](operations/kv-backup.md)
+- [Running the `fleet kv` central plane](operations/kv-central.md)
 - [Troubleshooting](operations/troubleshooting.md)
 - [Deploying this book](operations/deploying-this-book.md)
 - [FAQ](operations/faq.md)
 - [Glossary](operations/glossary.md)
+
+# Research and development
+
+- [Fleet research and development](research/overview.md)
+- [Delivery plan and evidence gates](research/roadmap.md)
+- [Queue guarantees and dispatch decisions](research/queue-placement.md)
+- [Seat identity, credential readiness and channel recovery](research/seats-and-recovery.md)
+- [Operational verification](research/operational-verification.md)
+- [Remote verification, fork convergence and releases](research/builds-and-releases.md)
+- [Quota decisions, operator status and service contracts](research/quota-status-integration.md)
+- [Fleet issue map for November 23, 2026](research/issue-map.md)

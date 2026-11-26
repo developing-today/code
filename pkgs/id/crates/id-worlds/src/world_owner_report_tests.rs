@@ -284,7 +284,7 @@ fn sample_keeps_only_the_newest() {
     assert_eq!(ids, vec![3, 2]);
     req.limits.sample_limit = 0;
     let report = project(Cursor::new(bytes), &req, None).unwrap();
-    assert!(report.joins.recent.is_empty());
+    assert_eq!(report.joins.recent, [] as [JoinSample; 0]);
     assert_eq!(report.joins.count, 3);
 }
 

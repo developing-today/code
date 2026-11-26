@@ -426,8 +426,8 @@ are diagnostic and do not add to the combined percentile, as with
    storage service.
 
 This is the #557 disease in a second form: there, actor tasks
-*parked* workers on a blocking journal wait (fixed by
-`block_in_place`, #12499); here, guest execution *burns* workers
+_parked_ workers on a blocking journal wait (fixed by
+`block_in_place`, #12499); here, guest execution _burns_ workers
 with CPU-bound synchronous calls, so the remedy is placement, not
 unparking — guest calls must run where they cannot starve the
 runtime (dedicated execution threads or a bounded blocking pool),
@@ -683,3 +683,152 @@ The deciding run for the criterion remains what it was: the
 unloaded laptop re-run of the many-worlds harness, still
 outstanding; a loaded number is not substituted for it.
 `baseline.txt` is untouched.
+
+## First 10x stress run (#13087) — the hub ceiling wall, and an at-cap completion (2026-11-25, ci-runner)
+
+Machine class: `ci-runner` — the fleet-command executor's container on a
+GitHub-hosted runner (4 CPUs, AMD EPYC 7763, 15 GB RAM, container overlay
+storage; rustc 1.99.1). This is not the reference laptop class:
+`baseline.txt` / `baseline.jsonl` are unchanged, and no number here is
+comparable to the fleet-laptop rows above. The reference-laptop 10x fleet
+run remains outstanding (see the end of this section). Bench binary at
+main `fcc1cae304` (branch `felix/13087-10x-stress-limits`, no code
+changes). Producing commands, from `pkgs/id/`:
+
+```sh
+# tier attempt (run 45598189927):
+ID_BENCH_MW_IDLE_WORLDS=10000 ID_BENCH_MW_ACTIVE_WORLDS=1000 \
+  cargo bench --bench world_bench -- --only many_worlds
+# boundary + at-cap runs (run 45604414422): same, with
+# ID_BENCH_MW_ACTIVE_WORLDS=257 and =256
+```
+
+**The wall at the tier configuration (measured, 5 of 5 reps).** Every
+rep at the full 10x configuration (10,000 idle / 1,000 active) failed in
+~25 s with:
+
+```text
+Error: server has too many worlds open; try again shortly
+```
+
+The bench creates the 10,000 idle worlds (create, drop the lease), then
+holds the active worlds' leases concurrently. The hub it builds uses
+`HubLimits::default()`, whose `max_open_worlds` is 256
+(`crates/id-worlds/src/world_hub.rs`); eviction only frees *unleased*
+durable worlds, so the 257th concurrent lease is refused with
+`ResolveError::TooManyWorlds`. A confirmation run at 257 active worlds
+failed the same way. The wall is a codified code/config limit, not a
+host limit — the host was idle at the refusal — and it is filed as
+#15056 (tier-sized hub limits for the harness, then re-run). `id serve`
+already exposes the same ceiling as the operator setting
+`world_max_open`; the bench hardcodes the default.
+
+**The at-cap completion (10,000 idle / 256 active, 1 rep completed).**
+At the largest configuration the default hub admits, the run completes
+and every verification assertion passes (checkpoints=256, evicted=256,
+reopened=256):
+
+```text
+profile many_worlds journal_appends=51712 journal_append_mean_us=459 journal_append_p50_us=500 journal_append_p95_us=2000 journal_append_p99_us=2000 commands=51968 command_mean_us=3458439 command_p50_us=18446744073709551615 command_p95_us=18446744073709551615 command_p99_us=18446744073709551615 queue_depth_max=0 checkpoints_during_load=0
+bench many_worlds unit=ms_per_command median=211217.200 min=0.309 reps=1 p50_ms=211217.200 p95_ms=942836.565 p99_ms=1007152.602 wake_p50_ms=202953.721 wake_p95_ms=934447.776 wake_p99_ms=999145.115 input_ack_p50_ms=8033.817 input_ack_p95_ms=8410.307 input_ack_p99_ms=8536.673 target_p99_ms=50 target_met=false idle_worlds=10000 active_worlds=256 events_per_second=20 duration_secs=10 commands=51200 load_elapsed_secs=1030.245 completed_events_per_second=49.7 checkpoint_triggers=256 checkpoints=256 evicted=256 reopened=256
+```
+
+Reading of this venue's numbers (they describe this 4-core container,
+not the platform): the offered load was 5,120 inputs/s; 49.7/s
+completed. The journal is not the constraint — 51,712 appends averaged
+459 µs. The tail is wake lateness (p99 999,145 ms of a 1,007,153 ms
+end-to-end p99): 256 world actors plus their guests and the submission
+drivers cannot get the venue's 4 cores, so the 10 s load phase took
+1,030 s of wall time to drain. This is the #557 scheduling disease at
+10x population on too few cores, recorded as such; it decides nothing
+about the laptop class, where the same code at 1x population completes
+1,997/s of 2,000 offered. The profile line's command percentiles read
+`18446744073709551615` (`u64::MAX`): the actor histogram's overflow
+bucket reports `u64::MAX` by design and the printer emits it unmarked —
+filed as #15094. The bench line's percentiles are computed from raw
+samples and are unaffected. Two further at-cap reps were started; the
+second was still running when the dispatch job hit its time limit, so
+this section records the one completed rep rather than a median.
+
+What this run settles and what it does not: the 10x tier's first wall
+is measured and is the hub's 256 concurrent-lease ceiling (#15056).
+The fleet run at the full tier, and any laptop-class 10x number, wait
+on that fix and on a reference-laptop run; #13087 stays open for them.
+
+## Fuel-spinning hub lifecycle profile (#1067, 2026-11-26, AMD Ryzen 7 7840U)
+
+Reference host: AMD Ryzen 7 7840U, 8 cores / 16 logical threads, 123 GiB
+RAM; `rustc 1.99.1`. This is a local reference-host measurement, not a
+CI container result. Both phases used 300 victim samples, 3 seconds,
+100 victim commands/s, 15 spinner worlds, fuel admission bound 14 and
+20,000,000 fuel per respawn attempt. Command from `pkgs/id/`:
+
+```sh
+ID_BENCH_GUEST_BURN_CONCURRENCY=14 cargo bench --bench world_bench -- --only fuel_spin_isolation
+ID_BENCH_GUEST_BURN_CONCURRENCY=14 cargo bench --bench world_bench -- --only fuel_spin_persistent
+```
+
+The respawn profile (`fuel_spin_isolation`) measured victim p99 at
+1.463 ms calm and 40.764 ms under burn (27.859x); its spinner worlds
+settled 29.8B fuel. The persistent-world profile measured p99 at
+1.976 ms calm and 4.023 ms under burn (2.036x); its spinner worlds
+settled 202.2B fuel. Both exceed the 1.10x target. The persistent run
+completed 87,142 finite updates versus 1,490 trapped respawn spins.
+
+These are diagnostic, not workload-matched numbers: the persistent
+profile settled 6.8x more total fuel in the same phase. They show that
+world/guest respawn churn strongly worsens victim latency, while also
+showing that keeping guests alive does not meet the latency target by
+itself. A follow-up must match the per-world fuel workload and measure
+the scheduler's fairness policy before drawing a target verdict. No
+existing `baseline.txt` measurement is replaced by these diagnostic
+profiles.
+## Journal ack modes, one full F11.8 run per mode (2026-11-24, slice #557)
+
+Command per mode (from `pkgs/id/`, via `~/tools/fleet-build-lock`):
+
+```sh
+cargo bench --bench world_bench -- --only many_worlds            # sync (default, no env var)
+ID_BENCH_MW_JOURNAL_ACK_MODE=batched cargo bench --bench world_bench -- --only many_worlds
+ID_BENCH_MW_JOURNAL_ACK_MODE=async cargo bench --bench world_bench -- --only many_worlds
+```
+
+Code state: branch `lane/code-i/22182-many-worlds-ack-modes` at
+`19ff780de3c` (bench-only selector `ID_BENCH_MW_JOURNAL_ACK_MODE` +
+`journal_ack_mode=` result token; no production default or durability
+change). Selector unit tests: `cargo test -p id --lib bench_ack_mode`,
+4/4 pass. `cargo clippy -p id --all-targets` fails on this venue for
+pre-existing reasons (rustc 1.99.0 rmeta vs clippy-driver 1.99.1
+E0514 across `id-core`; same failure with an isolated target dir);
+no new clippy signal from this slice.
+
+Venue honesty: the laptop was NOT idle — load average 9–13 across
+the three runs (shared fleet load). Per-mode conditions are stamped
+below. These numbers stand as the first per-mode reference under
+load, not the unloaded deciding run the criterion calls for.
+
+- sync (start load avg 12.33; end 11.07):
+
+```text
+bench many_worlds unit=ms_per_command median=8.507 min=3.900 reps=1 journal_ack_mode=sync p50_ms=8.507 p95_ms=11.072 p99_ms=12.055 wake_p50_ms=0.782 wake_p95_ms=1.486 wake_p99_ms=1.601 input_ack_p50_ms=7.776 input_ack_p95_ms=10.161 input_ack_p99_ms=11.087 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.005 completed_events_per_second=1999.1 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+- batched (start load avg 11.07; end 9.24):
+
+```text
+bench many_worlds unit=ms_per_command median=1.304 min=0.495 reps=1 journal_ack_mode=batched p50_ms=1.304 p95_ms=2.015 p99_ms=8.220 wake_p50_ms=1.225 wake_p95_ms=1.919 wake_p99_ms=2.027 input_ack_p50_ms=0.064 input_ack_p95_ms=0.103 input_ack_p99_ms=6.940 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.000 completed_events_per_second=2000.0 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+- async (start load avg 9.24; end 12.93):
+
+```text
+bench many_worlds unit=ms_per_command median=1.278 min=0.448 reps=1 journal_ack_mode=async p50_ms=1.278 p95_ms=2.014 p99_ms=3.178 wake_p50_ms=1.198 wake_p95_ms=1.904 wake_p99_ms=2.440 input_ack_p50_ms=0.064 input_ack_p95_ms=0.242 input_ack_p99_ms=1.142 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.001 completed_events_per_second=1999.8 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+Verdict vs `target_met` (p99 <= 50 ms): all three modes
+`target_met=true` under the loaded venue. The relaxed modes cut the
+ack wait as expected (input_ack_p50 7.776 ms sync vs 0.064 ms
+batched/async); the remaining p99 in batched mode (8.220 ms) is the
+per-64 sync tail, in async mode (3.178 ms) scheduling/wake.
+`baseline.txt` is untouched — the deciding comparison stays the
+unloaded-laptop re-run.

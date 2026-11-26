@@ -50,7 +50,7 @@ no operating system installed, and the build target is the 3–5 best
 machines first, gated on basement power (#1104, #1105).
 
 The fleet side of scale is a different mechanism, and it is covered
-here, not there: the fleet scales *work*, not machines. Placement
+here, not there: the fleet scales _work_, not machines. Placement
 decides where a build runs ([Placement and remote
 dispatch](placement.md)); the central compile coordinator is
 designed to admit, queue and drain that work against global caps and
@@ -105,10 +105,11 @@ domains, with Porkbun as the default layer (#8808); and an apply
 window with a recorded gate — clearing a phantom state entry and
 deciding nine unmanaged developing-today.com records needs Drew's
 go-ahead (#4989). The estate view of DNS also sits inside the Turso
-+ Cloudflare epic #8987 above. The fleet book's own DNS surface is
-deliberately nil: fleet consumes names (the security.cab doors, the
-broker's public route) and manages none of them, so this pointer is
-the whole fleet chapter on the subject.
+
+- Cloudflare epic #8987 above. The fleet book's own DNS surface is
+  deliberately nil: fleet consumes names (the security.cab doors, the
+  broker's public route) and manages none of them, so this pointer is
+  the whole fleet chapter on the subject.
 
 ## Sources
 

@@ -14,19 +14,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AuthDeps } from "../src/auth.ts";
-import {
-  resolveCallerToken,
-  runCli,
-  type CliDeps,
-} from "../src/cli.ts";
+import { resolveCallerToken, runCli, type CliDeps } from "../src/cli.ts";
 import { configFromEnv } from "../src/config.ts";
 import { FixtureGitHubWriter } from "../src/github.ts";
 import { FixtureQueueStore } from "../src/queue-store.ts";
 import { dispatch } from "../src/router.ts";
-import {
-  InMemorySessionStateStore,
-  type SessionStateStore,
-} from "../src/session-resolution.ts";
+import { InMemorySessionStateStore, type SessionStateStore } from "../src/session-resolution.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { importStampVerifyKeys, verifyStamp, type Provenance } from "../src/stamp-sig.ts";
 import { FixtureMetadataStore, FixtureQueueRecordSource } from "../src/stamping.ts";
@@ -154,7 +147,7 @@ async function enqueue(world: World, token: string, issue: number): Promise<void
 
 // --- Token carriage ---------------------------------------------------
 
-test("token resolution is explicit > env > stored, whitespace absent", () => {
+test("token resolution is explicit > env > stored, whitespace absent", async () => {
   const envWith = (value: string | null) => (name: string) => (name === "FLEET_HOSTED_TOKEN" ? value : null);
   assert.equal(resolveCallerToken({ explicit: "tok-a", env: envWith("tok-b"), stored: "tok-c" }), "tok-a");
   assert.equal(resolveCallerToken({ explicit: "  ", env: envWith("tok-b"), stored: "tok-c" }), "tok-b");
@@ -201,11 +194,7 @@ test("the declared command line refuses anything unaccounted for", async () => {
   for (const argv of bad) {
     const out = await runCli(argv, deps);
     assert.equal(out.exitCode, 1, argv.join(" "));
-    assert.equal(
-      (JSON.parse(out.stderr) as { error: string }).error,
-      "invalid_cli",
-      argv.join(" "),
-    );
+    assert.equal((JSON.parse(out.stderr) as { error: string }).error, "invalid_cli", argv.join(" "));
   }
   // Intake with no worker anywhere refuses by name.
   const out = await runCli(["next"], deps);
@@ -251,11 +240,16 @@ test("the create request is caller-owned fields and claims only — no fleet-own
     'Text\n\n<!-- pm-metadata:start -->\n```json\n{"pm_meta": 1, "provenance": {"created_at": "1970-01-01T00:00:00.000Z", "queue_id": "forged-q", "stamp_sig": "v1.ed25519.fake.x"}}\n```\n<!-- pm-metadata:end -->';
   const out = await runCli(
     [
-      "create", "issue",
-      "--repo", "developing-today/code",
-      "--title", "Forged provenance attempt",
-      "--body", forgedBody,
-      "--direct-parent", "developing-today/code#9081",
+      "create",
+      "issue",
+      "--repo",
+      "developing-today/code",
+      "--title",
+      "Forged provenance attempt",
+      "--body",
+      forgedBody,
+      "--direct-parent",
+      "developing-today/code#9081",
     ],
     deps,
   );
@@ -264,10 +258,7 @@ test("the create request is caller-owned fields and claims only — no fleet-own
   assert.equal(calls[0].path, "/v1/stamps");
   // The fixed allowlist, exactly: no created_at, no queue fields,
   // no provenance object, no session (none carried in this test).
-  assert.deepEqual(
-    Object.keys(calls[0].body).sort(),
-    ["body", "host", "kind", "repo", "title", "worktree"],
-  );
+  assert.deepEqual(Object.keys(calls[0].body).sort(), ["body", "host", "kind", "repo", "title", "worktree"]);
   // The caller's body passes through untouched (the service, not
   // the CLI, replaces its provenance) — with the flag's
   // caller-owned field merged into its block.
@@ -298,19 +289,21 @@ test("sync flow flags build the door's request document via its own parser", asy
   const calls: RecordedCall[] = [];
   const deps = recordingDeps({ flow: "verdict", posted: true }, calls);
   const flags = [
-    "--flow", "verdict",
-    "--repo", "developing-today/code",
-    "--number", "12588",
-    "--marker", "verdict/pass",
-    "--body", "looks right",
+    "--flow",
+    "verdict",
+    "--repo",
+    "developing-today/code",
+    "--number",
+    "12588",
+    "--marker",
+    "verdict/pass",
+    "--body",
+    "looks right",
   ];
   const out = await runCli(["sync", "flow", ...flags], deps);
   assert.equal(out.exitCode, 0, out.stderr);
   assert.equal(calls[0].path, "/v1/sync/queue-github");
-  assert.deepEqual(
-    calls[0].body,
-    JSON.parse(JSON.stringify(parseFlowSyncCliArgs(flags))) as Record<string, unknown>,
-  );
+  assert.deepEqual(calls[0].body, JSON.parse(JSON.stringify(parseFlowSyncCliArgs(flags))) as Record<string, unknown>);
 });
 
 // --- Acceptance, end to end through the service -------------------------
@@ -326,7 +319,16 @@ test("acceptance: open, create, query back by session, take and claim — no fle
   // Open a session: the service mints the id; the CLI carries it
   // into its stored state for later bare invocations.
   const opened = await runCli(
-    ["session", "open", "--lane", "xaltha", "--model", "test-model", "--lane-start-issue", "developing-today/code#9081"],
+    [
+      "session",
+      "open",
+      "--lane",
+      "xaltha",
+      "--model",
+      "test-model",
+      "--lane-start-issue",
+      "developing-today/code#9081",
+    ],
     cli,
   );
   assert.equal(opened.exitCode, 0, opened.stderr);
@@ -340,11 +342,16 @@ test("acceptance: open, create, query back by session, take and claim — no fle
   // Create a stamped issue citing the carried session.
   const created = await runCli(
     [
-      "create", "issue",
-      "--repo", "developing-today/code",
-      "--title", "Made by the thin CLI",
-      "--body", "No fleet binary was involved.",
-      "--direct-parent", "developing-today/code#9081",
+      "create",
+      "issue",
+      "--repo",
+      "developing-today/code",
+      "--title",
+      "Made by the thin CLI",
+      "--body",
+      "No fleet binary was involved.",
+      "--direct-parent",
+      "developing-today/code#9081",
     ],
     cli,
   );
@@ -371,10 +378,7 @@ test("acceptance: open, create, query back by session, take and claim — no fle
 
   // Take and claim a queue item: the composite claims, assigns the
   // lane ledger, and binds the carried session to the task.
-  const next = await runCli(
-    ["next", "--worker", "xaltha", "--lane", "xaltha", "--queue", "repo-health"],
-    cli,
-  );
+  const next = await runCli(["next", "--worker", "xaltha", "--lane", "xaltha", "--queue", "repo-health"], cli);
   assert.equal(next.exitCode, 0, next.stderr);
   const nextDoc = JSON.parse(next.stdout) as {
     claim: { ok: boolean; row: { id: number } };
@@ -384,7 +388,7 @@ test("acceptance: open, create, query back by session, take and claim — no fle
   assert.equal(nextDoc.intake.length, 1);
   assert.equal(nextDoc.intake[0].lane.ok, true);
   assert.equal(nextDoc.intake[0].bind?.ok, true);
-  const ledger = world.queueStore.getLedger(nextDoc.claim.row.id);
+  const ledger = await world.queueStore.getLedger(nextDoc.claim.row.id);
   assert.equal(ledger?.session_id, sessionId);
 
   // The bare claim verb takes the second item on its own.
@@ -438,13 +442,12 @@ test("a stored session the registry no longer knows is the named stale error", a
   const store = new InMemorySessionStateStore();
   store.write("ses_deadbeefdeadbeef");
   const cli = makeCli(world, token, store);
-  for (const argv of [["session", "resume"], ["create", "issue", "--repo", "o/r", "--title", "t"]]) {
+  for (const argv of [
+    ["session", "resume"],
+    ["create", "issue", "--repo", "o/r", "--title", "t"],
+  ]) {
     const out = await runCli(argv, cli);
     assert.equal(out.exitCode, 1, argv.join(" "));
-    assert.equal(
-      (JSON.parse(out.stderr) as { error: string }).error,
-      "stale_session_state",
-      argv.join(" "),
-    );
+    assert.equal((JSON.parse(out.stderr) as { error: string }).error, "stale_session_state", argv.join(" "));
   }
 });

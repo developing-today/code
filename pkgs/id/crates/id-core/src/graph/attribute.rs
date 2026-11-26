@@ -58,9 +58,7 @@ use super::term::{ObjectRef, Term, TermError};
 use crate::canonical_cbor::{CborError, Value, decode_canonical, encode_canonical};
 use crate::hash_profile::ProfileDispatch;
 use crate::id_shape::{ContentId, HashProfile};
-use crate::signed_envelope::{
-    Body, Envelope, EnvelopeError, EnvelopeId, PayloadId, SUITE_ED25519,
-};
+use crate::signed_envelope::{Body, Envelope, EnvelopeError, EnvelopeId, PayloadId, SUITE_ED25519};
 
 /// The payload schema version this reader writes and accepts.
 pub const SCHEMA_VERSION: u64 = 1;

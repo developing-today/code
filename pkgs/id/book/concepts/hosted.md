@@ -29,29 +29,42 @@ The per-user object is `UserDO` in `src/user-do.ts`. Its schema version is 3, st
 
 Every route first runs the common guard: routing context present, runtime jurisdiction matches, and the persisted (binding_id, jurisdiction) pair — bound immutably by the first routed request — matches. The object exposes 15 method routes over 13 paths:
 
-| Method and path | Purpose |
-|---|---|
-| `GET /v1/usage` | Usage, ceiling, and whether the user is at cap (`at_cap`) |
-| `GET /v1/export` | Full KV and blob index export; stays available at cap, by design |
-| `GET /v1/state` | binding_id, jurisdiction, schema_version, object name |
-| `GET /v1/bridge/challenge` | Issue a single-use ID-key proof nonce (bridge, #3818) |
-| `GET /v1/bridge/heads` | Bridge chain heads; a fresh ID-key proof is required per call |
-| `POST /v1/bridge/push` | Ingest a batch of signed events; outcomes are accepted, duplicate, fork, waiting, refused |
-| `POST /v1/bridge/pull` | Pull events beyond per-author positions; binary batch, with `x-bridge-more` and `x-bridge-heads` headers |
-| `GET /v1/bridge/export` | Export sets for the native `build_export` (#13157); 502 naming the hash if R2 cannot produce a cited blob |
-| `WS /v1/bridge/ws` | Bridge session; in-band CHALLENGE/AUTH, binary frames only |
-| `PUT /v1/blobs` | Store a content-addressed blob, keyed by SHA-256 hex; deduplicated across users, with a per-user reference row |
-| `GET /v1/blobs/{64-hex}` | Fetch a referenced blob |
+| Method and path             | Purpose                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/usage`             | Usage, ceiling, and whether the user is at cap (`at_cap`)                                                           |
+| `GET /v1/export`            | Full KV and blob index export; stays available at cap, by design                                                    |
+| `GET /v1/state`             | binding_id, jurisdiction, schema_version, object name                                                               |
+| `GET /v1/bridge/challenge`  | Issue a single-use ID-key proof nonce (bridge, #3818)                                                               |
+| `GET /v1/bridge/heads`      | Bridge chain heads; a fresh ID-key proof is required per call                                                       |
+| `POST /v1/bridge/push`      | Ingest a batch of signed events; outcomes are accepted, duplicate, fork, waiting, refused                           |
+| `POST /v1/bridge/pull`      | Pull events beyond per-author positions; binary batch, with `x-bridge-more` and `x-bridge-heads` headers            |
+| `GET /v1/bridge/export`     | Export sets for the native `build_export` (#13157); 502 naming the hash if R2 cannot produce a cited blob           |
+| `WS /v1/bridge/ws`          | Bridge session; in-band CHALLENGE/AUTH, binary frames only                                                          |
+| `PUT /v1/blobs`             | Store a content-addressed blob, keyed by SHA-256 hex; deduplicated across users, with a per-user reference row      |
+| `GET /v1/blobs/{64-hex}`    | Fetch a referenced blob                                                                                             |
 | `DELETE /v1/blobs/{64-hex}` | Drop this user's reference only; the R2 bytes are deliberately not deleted (garbage collection is the #9935 family) |
-| `PUT /v1/kv/{key}` | Per-user KV write; the key must match `[A-Za-z0-9._-]{1,128}` |
-| `GET /v1/kv/{key}` | KV read |
-| `DELETE /v1/kv/{key}` | KV delete; available at cap |
+| `PUT /v1/kv/{key}`          | Per-user KV write; the key must match `[A-Za-z0-9._-]{1,128}`                                                       |
+| `GET /v1/kv/{key}`          | KV read                                                                                                             |
+| `DELETE /v1/kv/{key}`       | KV delete; available at cap                                                                                         |
 
 Any other path or method returns 404 with `{"error":"not_found"}`. Bridge routes additionally fail closed when the binding record names no ID (Iroh root) key.
 
 Read the table as a data plane, because that is what it is. The hosted object holds one bound user's KV, blob references, and a signed-object bridge store. As a sync peer it holds signed objects and fork evidence; it assigns no order, re-signs nothing, and serves no authoritative snapshot. Ordering and authority stay with the authors' chains, exactly as on a native node.
 
-Also in the package, but not routed by `worker.ts`, are `src/provisioning.ts` and `provisioning-surface.ts` (a provisioning surface), `src/account-directory.ts`, `src/admission-gate.ts`, `src/export.ts`, and a currency gateway proof of concept under `src/currency/` (`gateway`, `ledger`, `relay`, `crypto`; #2298). The currency proof of concept is explicitly not the permanent currency service: it is an in-process ledger stub modelled on TigerBeetle, with gateway-signed balance snapshots and a UserDO relay reconciling by request-ID lookup. [Currency, tokens and metering](currency.md) covers it in place.
+Also in the package, but not routed by `worker.ts`, are `src/provisioning.ts` and `provisioning-surface.ts` (a provisioning surface), `src/account-directory.ts`, `src/admission-gate.ts`, `src/export.ts`, `src/tenant-ops.ts` (the `TenantOpsDO` provisioning state machine of the tenancy design §4 — exported and bound as `TENANT_OPS`, but driven by the tenancy control plane, not the front door), and a currency gateway proof of concept under `src/currency/` (`gateway`, `ledger`, `relay`, `crypto`; #2298). The currency proof of concept is explicitly not the permanent currency service: it is an in-process ledger stub modelled on TigerBeetle, with gateway-signed balance snapshots and a UserDO relay reconciling by request-ID lookup. [Currency, tokens and metering](currency.md) covers it in place.
+
+## Identity links: which doors open an account
+
+The tenancy control plane's account registry is keyed by `account_id`, and an account is opened through a login **door** — `github`, `google`, `microsoft` or `devtoday`. Which doors open which account is the `identity_link` table in the central tenancy database (migration `0002_identity_link.sql`, H2 of #9086; the schema is inventoried in [Data stores and schemas](../reference/data-stores.md)). The link/unlink API over it is `src/identity-link.ts`, a library module rather than a routed surface: its `resolveAccountIdByDoor` is the lookup the SSO front door (H1) wires to the tenancy DB. Only **active** links resolve — an unlinked door stops opening the account immediately — and the lookup takes the door explicitly, because the (door, provider subject) pair is the key and no subject-only lookup is offered.
+
+The module enforces one ceremony for every mutation:
+
+- **Link** requires both an authenticated session on the account — resolved by the caller through an existing active door, with the session's binding verified as the account's own active binding — and a completed upstream login on the new door (the door plus the subject it issued). Links are only ever added to the session's own account; there is no way to name another account as the target. First-link and account creation are the provider's gated path (design §4.4), not this API: the account row must already exist.
+- **Unlink** is guarded by the last-door rule: an account's single active link cannot be unlinked without a replacement door linked in the same operation, because an account with no doors is unrecoverable except by Drew-level intervention. The replacement is linked first, and only then is the old door unlinked; if the replacement link is refused, nothing changes.
+- **One account per door-identity, ever.** The table's uniqueness spans history, so a second account claiming a door-identity the first account once held — even after unlink — is refused (`door_identity_claimed`). The owning account re-linking its own unlinked door reactivates the retained history row.
+- **Every change is audited, atomically.** Each link and unlink writes an `identity_link_event` row (actor binding and timestamp) in the same transaction as the state change (#15024), so a failed audit insert leaves no unaudited identity mutation behind and the caller can simply retry. Refusals change nothing and write nothing: domain refusals are returned as `{ ok: false, reason }` — `bad_door`, `account_not_found`, `actor_not_account_binding`, `door_identity_claimed`, `already_linked`, `link_not_active`, `last_door_guard` — never thrown and never partially applied.
+
+Continuity is by construction: tenant access keys off `account_id` and `binding_id`, never off a door, and the module touches no `binding`, `tenant_db`, `role_grant` or `credential` rows for effect — so linking or unlinking cannot touch tenant rows, re-key a database, or invalidate a session's tokens. Email is contact-only and never appears in the link tables at all.
 
 ## What it does not yet do
 

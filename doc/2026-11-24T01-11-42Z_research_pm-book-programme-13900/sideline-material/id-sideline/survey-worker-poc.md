@@ -136,20 +136,21 @@ serialized through a per-object promise chain; lazy init shared through one
 promise; a /step runs update → hash → journal-insert as one serialized unit.
 
 Code facts:
+
 - Imports `PlazaGuest` from `./guest.ts`, `loadHostedModule` +
   `HostedManifest` type from `./manifest.ts`, and COUNTER_WASM from
   `../../examples/roc-counter/counter.wasm` (with a @ts-expect-error comment:
   wrangler supplies a WebAssembly.Module).
 - `MANIFEST = { name: "roc-counter", portability: "portable" }`, `SEED = 0`.
 - Constructor: `CREATE TABLE IF NOT EXISTS journal (step INTEGER PRIMARY
-  KEY, participant INTEGER NOT NULL, event TEXT NOT NULL, snapshot BLOB NOT
-  NULL, view TEXT NOT NULL, records TEXT, snapshot_hash TEXT NOT NULL)`.
+KEY, participant INTEGER NOT NULL, event TEXT NOT NULL, snapshot BLOB NOT
+NULL, view TEXT NOT NULL, records TEXT, snapshot_hash TEXT NOT NULL)`.
   Unversioned schema — no version constant.
 - `serialized(fn)`: promise-chain queue; runs fn after all previously queued
   requests, on both fulfilment and rejection paths.
 - `ensureGuest()`: if guest cached, return it; else shared promise: read
   latest journal row (`SELECT step, snapshot FROM journal ORDER BY step DESC
-  LIMIT 1`), `loadHostedModule(MANIFEST, COUNTER_WASM, SEED)`, if a row
+LIMIT 1`), `loadHostedModule(MANIFEST, COUNTER_WASM, SEED)`, if a row
   exists `guest.restore(asBytes(rows[0].snapshot))` and set `this.step`;
   a failed init clears the cached promise so it does not poison later
   requests. `asBytes` accepts Uint8Array/ArrayBuffer, throws otherwise
@@ -161,7 +162,7 @@ Code facts:
   - POST /step → parse JSON body (null on failure); validate
     `participant` is a number, integer, ≥ 0 and `event` a non-empty string,
     else 400 `{error: "step requires a non-negative integer participant and
-    a non-empty string event"}` — validated BEFORE touching the guest.
+a non-empty string event"}` — validated BEFORE touching the guest.
     Then ensureGuest, nextStep = step+1; in try: guest.update(participant,
     encoded event); view = guest.view(); records = guest.records();
     snapshot = guest.snapshot() (throw if none: "guest exports no snapshot;
@@ -170,15 +171,15 @@ Code facts:
     and rethrow (a failure before journal commit may leave the guest
     advanced without a matching row; next request restores from journal).
     On success: step = nextStep; answer `{step, view, records,
-    snapshotHash}` (records decoded or null).
+snapshotHash}` (records decoded or null).
   - Otherwise: `const guest = await this.ensureGuest()` runs FIRST (so an
     unmatched request still instantiates/restores the guest — survey
     observation recorded in the chapter); then GET /state → `{step, view,
-    records, snapshotHash}` with snapshotHash null if the guest exports no
+records, snapshotHash}` with snapshotHash null if the guest exports no
     snapshot; anything else → plain `new Response("not found", {status: 404})`
     (plain text, not JSON).
 - Front door (default export): `name = url.searchParams.get("world") ??
-  "default"`; `env.WORLD.get(env.WORLD.idFromName(name))`; forward the
+"default"`; `env.WORLD.get(env.WORLD.idFromName(name))`; forward the
   request unchanged.
 
 ## src/manifest.ts — hosted loader (read in full)
@@ -187,7 +188,7 @@ Code facts:
   the reason; native host traps at run time. (#2271, #2057.)
 - `HOSTED_MEMORY_CEILING_BYTES = 64 * 1024 * 1024` (64MB, #2057 ceiling).
 - `HostedManifest { name: string; portability?: "portable" | "native";
-  wasm_memory_bytes?: number }`.
+wasm_memory_bytes?: number }`.
 - `assertHostable`: portability === "native" → throw
   `manifest ${name}: portability=native is not hostable in a Worker isolate`;
   wasm_memory_bytes > ceiling → throw naming declared bytes and the ceiling.
@@ -211,7 +212,7 @@ Code facts:
   copy_input/free_input: allocate max(len,1), pass logical length, free with
   allocation length.
 - `GuestLimits { messageBytes: number }`; `DEFAULT_LIMITS = { messageBytes:
-  1024 * 1024 }`.
+1024 * 1024 }`.
 - `PlazaGuest.instantiate(bytes, seed, limits)` (compile + fromModule) and
   `PlazaGuest.fromModule(module, seed, limits)` (the workerd path: wrangler's
   CompiledWasm rule hands a module, not bytes).

@@ -86,14 +86,14 @@ One independent test (iamkunal9, published 2026-10-19) ran RustFS 1.0.3,
 SeaweedFS 4.48 (`weed mini`), and the last MinIO community release on
 identical single-node conditions, defaults only, median of five runs:
 
-| Workload | RustFS | SeaweedFS | MinIO |
-| --- | --- | --- | --- |
-| 64 KiB PUT (MiB/s) | 56.8 | **99.4** | 49.7 |
-| 64 KiB GET (MiB/s) | **149.5** | 114.0 | 121.7 |
-| 8 MiB PUT (MiB/s) | **325.5** | 106.9 | 318.8 |
-| 8 MiB GET (MiB/s) | **455.8** | 410.3 | 426.6 |
-| 256 MiB multipart PUT (MiB/s) | 276.4 | 125.7 | **323.8** |
-| 256 MiB GET (MiB/s) | 1,036.3 | 580.8 | **1,279.6** |
+| Workload                      | RustFS    | SeaweedFS | MinIO       |
+| ----------------------------- | --------- | --------- | ----------- |
+| 64 KiB PUT (MiB/s)            | 56.8      | **99.4**  | 49.7        |
+| 64 KiB GET (MiB/s)            | **149.5** | 114.0     | 121.7       |
+| 8 MiB PUT (MiB/s)             | **325.5** | 106.9     | 318.8       |
+| 8 MiB GET (MiB/s)             | **455.8** | 410.3     | 426.6       |
+| 256 MiB multipart PUT (MiB/s) | 276.4     | 125.7     | **323.8**   |
+| 256 MiB GET (MiB/s)           | 1,036.3   | 580.8     | **1,279.6** |
 
 Latency (p99): 64 KiB PUT — SeaweedFS 39.3 ms beats RustFS 61.6 ms; 8 MiB PUT
 — RustFS 158.3 ms beats SeaweedFS 580.5 ms. Resource use: SeaweedFS peaked at
@@ -139,23 +139,23 @@ RustFS build was an alpha; this is evidence about that era, not about 1.0.x.
 
 ## 3. Features, side by side
 
-| Area | SeaweedFS | RustFS |
-| --- | --- | --- |
-| Chunking | Few-MB chunk blobs + meta chunk for large files; small files packed as needles | Every object erasure-split in 1 MiB blocks across a set |
-| Dedup | None (storage layer) | None |
-| Durability scheme | Replication for hot data (rack/DC-aware); background RS(10,4) EC for warm data, fixed ratio in OSS, 1.4× overhead, tolerates 4 losses | Reed-Solomon EC at write time, automatic parity EC:0–EC:4, up to ~75% efficiency at 16 drives |
-| Metadata | Master (Raft) + filer DB (pluggable; the scaling ceiling; one row/object on S3 path) | Inline `xl.meta` per object per shard; no metadata DB; inode/ListObjects cost is the ceiling |
-| S3: versioning | Yes | Yes |
-| S3: Object Lock | Yes (governance/compliance/legal hold) | Yes — but see the 2026 bypass CVE in section 5 |
-| S3: lifecycle | Expiration works; **transition rules not supported** (s3-testsuite lifecycle 2/8; overall 174/207 = 84%, versioning 14/14, object lock 8/8) | ILM lifecycle + tiering to remote S3 listed available |
-| S3: multipart | All 7 operations | Yes |
-| S3: Select | **No Object Select** | S3 Select listed available |
-| S3: IAM/policies/STS | Present, partial vs MinIO's depth | IAM/policies listed available; its own matrix says "broad compatibility for supported features", explicitly not complete coverage |
-| S3: replication | `filer.sync` cross-cluster (active-active or active-passive, resumable); `filer.backup`/`filer.replicate` to external S3/GCS/Azure/B2 | Site replication (RustFS peers only) + bucket replication to generic S3 targets via a per-target version ledger |
-| Access beyond S3 | FUSE mount, WebDAV, SFTP, HDFS, Kubernetes CSI + operator, TUS resumable uploads, HTTP; built-in S3 Tables (Iceberg REST) and Lance table buckets in OSS | WebDAV and FTP/FTPS gateways built in (off by default); SFTP and OpenStack Swift as opt-in build features; a separate MCP server; **no native FUSE/POSIX mount** (third-party s3fs-fuse is the documented fallback). (rustfs.com multi-protocol page, checked 2026-11-24.) |
-| Tiering | Transparent cloud tiering/offload built in | ILM tiering to remote S3 |
-| Encryption | AES256-GCM at rest; TLS/mTLS between components; JWT-signed volume access; SSE-S3/SSE-KMS/SSE-C with KMS providers incl. OpenBao/Vault/AWS/Azure/GCP | TLS; server-side encryption + RustFS KMS listed available |
-| Operational caveats | Missing replicas are **not** auto-repaired (run `volume.fix.replication` or the maintenance worker); self-healing, data recovery, point-in-time recovery are Enterprise-only; a file and a folder cannot share a path (`a/b` and `a/b/c` cannot coexist) | Pool topology fixed at initialisation; site replication needs RustFS-compatible peers |
+| Area                 | SeaweedFS                                                                                                                                                                                                                                                | RustFS                                                                                                                                                                                                                                                                     |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chunking             | Few-MB chunk blobs + meta chunk for large files; small files packed as needles                                                                                                                                                                           | Every object erasure-split in 1 MiB blocks across a set                                                                                                                                                                                                                    |
+| Dedup                | None (storage layer)                                                                                                                                                                                                                                     | None                                                                                                                                                                                                                                                                       |
+| Durability scheme    | Replication for hot data (rack/DC-aware); background RS(10,4) EC for warm data, fixed ratio in OSS, 1.4× overhead, tolerates 4 losses                                                                                                                    | Reed-Solomon EC at write time, automatic parity EC:0–EC:4, up to ~75% efficiency at 16 drives                                                                                                                                                                              |
+| Metadata             | Master (Raft) + filer DB (pluggable; the scaling ceiling; one row/object on S3 path)                                                                                                                                                                     | Inline `xl.meta` per object per shard; no metadata DB; inode/ListObjects cost is the ceiling                                                                                                                                                                               |
+| S3: versioning       | Yes                                                                                                                                                                                                                                                      | Yes                                                                                                                                                                                                                                                                        |
+| S3: Object Lock      | Yes (governance/compliance/legal hold)                                                                                                                                                                                                                   | Yes — but see the 2026 bypass CVE in section 5                                                                                                                                                                                                                             |
+| S3: lifecycle        | Expiration works; **transition rules not supported** (s3-testsuite lifecycle 2/8; overall 174/207 = 84%, versioning 14/14, object lock 8/8)                                                                                                              | ILM lifecycle + tiering to remote S3 listed available                                                                                                                                                                                                                      |
+| S3: multipart        | All 7 operations                                                                                                                                                                                                                                         | Yes                                                                                                                                                                                                                                                                        |
+| S3: Select           | **No Object Select**                                                                                                                                                                                                                                     | S3 Select listed available                                                                                                                                                                                                                                                 |
+| S3: IAM/policies/STS | Present, partial vs MinIO's depth                                                                                                                                                                                                                        | IAM/policies listed available; its own matrix says "broad compatibility for supported features", explicitly not complete coverage                                                                                                                                          |
+| S3: replication      | `filer.sync` cross-cluster (active-active or active-passive, resumable); `filer.backup`/`filer.replicate` to external S3/GCS/Azure/B2                                                                                                                    | Site replication (RustFS peers only) + bucket replication to generic S3 targets via a per-target version ledger                                                                                                                                                            |
+| Access beyond S3     | FUSE mount, WebDAV, SFTP, HDFS, Kubernetes CSI + operator, TUS resumable uploads, HTTP; built-in S3 Tables (Iceberg REST) and Lance table buckets in OSS                                                                                                 | WebDAV and FTP/FTPS gateways built in (off by default); SFTP and OpenStack Swift as opt-in build features; a separate MCP server; **no native FUSE/POSIX mount** (third-party s3fs-fuse is the documented fallback). (rustfs.com multi-protocol page, checked 2026-11-24.) |
+| Tiering              | Transparent cloud tiering/offload built in                                                                                                                                                                                                               | ILM tiering to remote S3                                                                                                                                                                                                                                                   |
+| Encryption           | AES256-GCM at rest; TLS/mTLS between components; JWT-signed volume access; SSE-S3/SSE-KMS/SSE-C with KMS providers incl. OpenBao/Vault/AWS/Azure/GCP                                                                                                     | TLS; server-side encryption + RustFS KMS listed available                                                                                                                                                                                                                  |
+| Operational caveats  | Missing replicas are **not** auto-repaired (run `volume.fix.replication` or the maintenance worker); self-healing, data recovery, point-in-time recovery are Enterprise-only; a file and a folder cannot share a path (`a/b` and `a/b/c` cannot coexist) | Pool topology fixed at initialisation; site replication needs RustFS-compatible peers                                                                                                                                                                                      |
 
 Sources: project wikis/docs and README feature tables checked 2026-11-23/24;
 SeaweedFS s3-testsuite scores from the project wiki (checked 2026-11).
@@ -227,7 +227,7 @@ choices, and the metadata store, not in acknowledged writes:**
    script running against a single-copy (`defaultReplication=000`) cluster.
 4. **Delete-resurrection edge (issue #12786, 2026-11-19, v4.54).** A delete
    whose tombstone reached the `.dat` file before its `.idx` row can, after
-   a crash, resurrect as an *empty* object (200, 0 bytes) instead of a 404 —
+   a crash, resurrect as an _empty_ object (200, 0 bytes) instead of a 404 —
    documented in the code as an intentional tradeoff (an empty placeholder
    beats a wrong tombstone dropping an acknowledged write).
 5. **Iceberg orphan-cleanup bug (PR #11978, 2026-10-23).** Table maintenance
@@ -273,8 +273,8 @@ marks:**
 
 ## 6. Supplemental: fit for a Cozystack estate
 
-*(This section is about our decisions specifically; everything above stands
-generically.)*
+_(This section is about our decisions specifically; everything above stands
+generically.)_
 
 Cozystack ships SeaweedFS as its built-in S3 (Cozystack repo and docs,
 checked 2026-11): a `Bucket` application via COSI bucket claims,

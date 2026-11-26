@@ -35,12 +35,12 @@ A probe is healthy only on HTTP 200 with a JSON body of
 The failure class is the diagnosis, and the probe carries it in its
 detail string:
 
-| Probe result | What it means |
-| --- | --- |
-| 301/302/303/307/401/403 | "Cloudflare Access refused the probe's service token, or it is unset" |
-| 502/503/504/530 | "The tunnel could not reach the broker" |
-| 200 with a non-`ok:true` or non-JSON body | The body itself, clipped to 200 characters |
-| Timeout | The URL and the timeout, named |
+| Probe result                              | What it means                                                         |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| 301/302/303/307/401/403                   | "Cloudflare Access refused the probe's service token, or it is unset" |
+| 502/503/504/530                           | "The tunnel could not reach the broker"                               |
+| 200 with a non-`ok:true` or non-JSON body | The body itself, clipped to 200 characters                            |
+| Timeout                                   | The URL and the timeout, named                                        |
 
 When the Access secrets are missing, the probe returns `skipped` and
 the pass only logs. A watchdog that cannot authenticate its own probe
@@ -63,7 +63,7 @@ local script below) is small:
 - One alert per outage window: the Worker finds an open issue titled
   with the prefix `Queue transport incident:` and comments on it, or
   files one titled `Queue transport incident: repo-queue broker
-  unreachable since <window_start>` with labels `kind/bug`,
+unreachable since <window_start>` with labels `kind/bug`,
   `priority/high`, `area/infra` and `source/fleet-monitor`.
 - The first healthy probe after an alerted window posts exactly one
   recovery comment carrying the outage span.
@@ -109,14 +109,14 @@ the queue that would carry the triage is the thing that was down.
 
 ## The status surface
 
-| Route | What it serves |
-| --- | --- |
-| `GET /` | The status page: PWA-installable, auto-refreshing every 60 seconds |
-| `GET /status`, `GET /status.json` | The same view as JSON, CORS-open |
-| `GET /sw.js`, `/manifest.webmanifest`, `/icon.svg`, `/vapid.json` | The PWA and push plumbing |
-| `POST /subscribe`, `POST /unsubscribe` | Device push registration |
-| `POST /test-push` | A push to that device only, at most once per 30 seconds |
-| `POST /admin/test-push` | A push to all devices; `X-Admin-Token` must equal the Access client secret, compared in constant time |
+| Route                                                             | What it serves                                                                                        |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `GET /`                                                           | The status page: PWA-installable, auto-refreshing every 60 seconds                                    |
+| `GET /status`, `GET /status.json`                                 | The same view as JSON, CORS-open                                                                      |
+| `GET /sw.js`, `/manifest.webmanifest`, `/icon.svg`, `/vapid.json` | The PWA and push plumbing                                                                             |
+| `POST /subscribe`, `POST /unsubscribe`                            | Device push registration                                                                              |
+| `POST /test-push`                                                 | A push to that device only, at most once per 30 seconds                                               |
+| `POST /admin/test-push`                                           | A push to all devices; `X-Admin-Token` must equal the Access client secret, compared in constant time |
 
 The status values are `up`, `degraded`, `down`, `stale` (no probe in
 25 minutes) and `unknown`, with `last_check`, `last_ok`,

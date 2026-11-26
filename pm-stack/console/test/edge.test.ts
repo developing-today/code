@@ -14,14 +14,17 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { queueWrites } from "../edge/src/direct.ts";
-import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
+import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
+import { Edge, type KV, ownerSettingsRecord, SILENT_MS } from "../edge/src/edge.ts";
+import { AUDIT_KEPT } from "../edge/src/edge-shared.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
+import { ownerSettingsAdopted, PLATFORM_SETTING_NAMES, platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
+import { NEEDS_LABELS } from "../src/needs.ts";
 import {
   type EdgeConfig,
   edgeConfig as parseEdgeConfig,
@@ -31,12 +34,15 @@ import {
   machineReport,
   newKeyPair,
   sign,
+  STALE_ACT_ERROR,
 } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
+import { TASKS_BY_DAY_SQL } from "../src/trends.ts";
+import { DONE_COUNT_SQL, DONE_KINDS_SQL, DONE_TASKS_SQL } from "../src/work.ts";
 import { asThePlatformFetch, browser, signer } from "./support.ts";
 
 const HOST = "pm.example";
@@ -49,6 +55,40 @@ const ISSUER = {
   source: "access" as const,
 };
 const START = Date.parse("2026-11-22T12:00:00Z");
+
+/** A collection kept one record per key (#14960), read back as the
+ * list its index names, in order. A world no object has read yet may
+ * still hold the old whole-array value, which is the list itself. */
+const storedList = <T>(stored: Map<string, unknown>, name: string, entry: (id: string) => string): T[] => {
+  const index = stored.get(`${name}:index`);
+  if (Array.isArray(index)) {
+    return index.flatMap((id) => {
+      if (typeof id !== "string") return [];
+      const value = stored.get(entry(id));
+      return value === undefined ? [] : [value as T];
+    });
+  }
+  return (stored.get(name) as T[] | undefined) ?? [];
+};
+const heldStored = (w: { stored: Map<string, unknown> }) => storedList(w.stored, "held", (id) => `held:${id}`);
+const takenStored = (w: { stored: Map<string, unknown> }) => storedList(w.stored, "taken", (id) => `taken:${id}`);
+/** The handed names as storage holds them (#14960). */
+const handedStored = (w: { stored: Map<string, unknown> }): string[] => {
+  const index = w.stored.get("handed:index");
+  if (Array.isArray(index)) return index.filter((id): id is string => typeof id === "string");
+  return (w.stored.get("handed") as string[] | undefined) ?? [];
+};
+/** The audit log as its entries are kept (#14960): one per key under
+ * its number, the kept window behind the next number. */
+const auditStored = (w: { stored: Map<string, unknown> }): unknown[] => {
+  const next = w.stored.get("audit:next");
+  if (typeof next === "number") {
+    const entries: unknown[] = [];
+    for (let seq = Math.max(0, next - AUDIT_KEPT); seq < next; seq++) entries.push(w.stored.get(`audit:${seq}`));
+    return entries;
+  }
+  return (w.stored.get("audit") as unknown[] | undefined) ?? [];
+};
 /** The order the platform's Workers are shown in, by what they belong to. */
 const ORDER = ["platform", "fleet", "data", "id", "lab"];
 const SECTION_NAMES = [
@@ -60,12 +100,13 @@ const SECTION_NAMES = [
   "questions",
   "prs",
   "priorities",
+  "done",
   "agents",
   "services",
   "more",
 ];
 
-async function setup(options: { direct?: boolean } = {}) {
+async function setup(options: { direct?: boolean; kinds?: readonly string[]; bridge?: boolean } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
@@ -112,6 +153,9 @@ async function setup(options: { direct?: boolean } = {}) {
   // laptop has been away for a while.
   const githubCalls: { method: string; url: string; body?: string; unchanged?: true }[] = [];
   const queueCalls: { sql: string; args: (string | number)[] }[] = [];
+  /** Calls the edge made of anywhere that is neither GitHub nor the
+   * queue store main names, and whether each carried a token. */
+  const strays: { url: string; token: boolean }[] = [];
   const ghIssues: Record<
     number,
     {
@@ -161,6 +205,22 @@ async function setup(options: { direct?: boolean } = {}) {
     201: [{ body: "Done: the docs are updated.", created_at: "2026-11-22T12:31:00Z", user: { type: "User" } }],
   };
   const ghLabels: Record<number, string[]> = { 201: ["owner/prompt"], 202: ["owner/prompt"], 301: ["now"] };
+  /** What each repository's list of open issues holds that waits on the
+   * owner, as GitHub gives it: issues and pull requests carrying
+   * `user/review` or `user/escalated`. A repository taken out of here
+   * is one this token cannot see. */
+  const ghNeeds: Record<
+    string,
+    {
+      number: number;
+      title: string;
+      labels: string[];
+      body?: string | null;
+      pr?: boolean;
+      updated_at?: string;
+      state?: string;
+    }[]
+  > = Object.fromEntries(cfg.needsRepos.map((repo) => [repo, []]));
   const ghLabelNames = new Set(["owner/prompt"]);
   const ghPrs = [
     {
@@ -215,6 +275,10 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Pull requests merged and workflows started through GitHub's API. */
   const ghMerged: { pr: number; body: unknown }[] = [];
   const ghStarted: { workflow: string; body: unknown }[] = [];
+  /** What GitHub lists as closed, most lately touched first. */
+  const ghClosed: Record<string, unknown>[] = [];
+  /** Tasks the queue's events say were finished, newest first, as its store answers for them. */
+  const queueDone: { id: number; title: string; at: string; issue: number | null; pr: number | null }[] = [];
   const queueTasks: {
     id: number;
     title: string;
@@ -311,6 +375,45 @@ async function setup(options: { direct?: boolean } = {}) {
   const queueAnswer = (sql: string, args: (string | number)[]) => {
     const cols = (names: string[]) => names.map((name) => ({ name }));
     const rows = (rs: { value: string | number | null }[][]) => rs;
+    if (sql === TASKS_BY_DAY_SQL) {
+      // Finished tasks by day, from the same finished tasks the Done screen is given.
+      const days = new Map<string, number>();
+      for (const t of queueDone) {
+        if (`${t.at}Z` >= String(args[0])) days.set(t.at.slice(0, 10), (days.get(t.at.slice(0, 10)) ?? 0) + 1);
+      }
+      return {
+        cols: cols(["day", "kind", "n"]),
+        rows: rows(
+          [...days.entries()].sort().map(([day, n]) => [{ value: day }, { value: "small fix" }, { value: n }]),
+        ),
+      };
+    }
+    if (sql === DONE_TASKS_SQL) {
+      return {
+        cols: cols(["id", "title", "at", "lane", "model", "kind", "issue", "pr", "verdict"]),
+        rows: rows(
+          queueDone.map((t) => [
+            { value: t.id },
+            { value: t.title },
+            { value: t.at },
+            { value: null },
+            { value: null },
+            { value: null },
+            { value: t.issue },
+            { value: t.pr },
+            { value: null },
+          ]),
+        ),
+      };
+    }
+    if (sql === DONE_COUNT_SQL) return { cols: cols(["n"]), rows: rows([[{ value: queueDone.length }]]) };
+    if (sql === DONE_KINDS_SQL) {
+      // None of the stand-in's finished tasks says what kind it is.
+      return {
+        cols: cols(["kind", "n"]),
+        rows: rows(queueDone.length ? [[{ value: "" }, { value: queueDone.length }]] : []),
+      };
+    }
     if (sql.includes("count(*) AS n") && sql.includes("GROUP BY status")) {
       const counts = new Map<string, number>();
       for (const t of queueTasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
@@ -337,10 +440,9 @@ async function setup(options: { direct?: boolean } = {}) {
     }
     if (sql.includes("status = 'blocked'")) {
       return {
-        cols: cols(["why", "n"]),
-        rows: rows([
-          [{ value: "waiting on the owner" }, { value: queueTasks.filter((t) => t.status === "blocked").length }],
-        ]),
+        // By the kind of reason, as the board asks: every one here has a reason written on it.
+        cols: cols(["kind", "n"]),
+        rows: rows([[{ value: "reason" }, { value: queueTasks.filter((t) => t.status === "blocked").length }]]),
       };
     }
     if (sql.includes("title LIKE ?")) {
@@ -388,9 +490,51 @@ async function setup(options: { direct?: boolean } = {}) {
     const path = u.pathname.replace(/^\/repos\/developing-today\/code\//, "");
     const ok = (data: unknown, status = 200) => ({ ok: true, status, json: async () => data });
     const fail = (status: number, data: unknown) => ({ ok: false, status, json: async () => data });
+    // Any repository's open issues and pull requests carrying one of
+    // the labels that say something waits on the owner, a page at a time.
+    const listed = /^\/repos\/([^/]+\/[^/]+)\/issues$/.exec(u.pathname);
+    const wanted = u.searchParams.get("labels");
+    if (method === "GET" && listed && wanted !== null && (NEEDS_LABELS as readonly string[]).includes(wanted)) {
+      const repo = listed[1];
+      const all = ghNeeds[repo];
+      if (!all) return fail(404, { message: "Not Found" });
+      const per = Number(u.searchParams.get("per_page") ?? 30);
+      const page = Number(u.searchParams.get("page") ?? 1);
+      return ok(
+        all
+          .filter((i) => i.labels.includes(wanted))
+          .slice((page - 1) * per, page * per)
+          .map((i) => ({
+            number: i.number,
+            title: i.title,
+            body: i.body ?? null,
+            state: i.state ?? "open",
+            html_url: `https://github.com/${repo}/${i.pr ? "pull" : "issues"}/${i.number}`,
+            updated_at: i.updated_at ?? "2026-11-22T12:00:00Z",
+            labels: i.labels.map((name) => ({ name })),
+            ...(i.pr ? { pull_request: { url: "x" } } : {}),
+          })),
+      );
+    }
     if (method === "GET" && path === "pulls") return ok(ghPrs);
     if (method === "GET" && u.pathname === "/search/issues")
       return ok({ items: ghSearch, total_count: ghSearch.length });
+    // What is closed is a list of its own.
+    if (method === "GET" && path === "issues" && u.searchParams.get("state") === "closed") return ok(ghClosed);
+    // Everything changed at or after a time, oldest change first, a
+    // page at a time: what the history behind the Trends screen asks.
+    if (method === "GET" && path === "issues" && u.searchParams.get("state") === "all" && u.searchParams.has("since")) {
+      const since = u.searchParams.get("since") ?? "";
+      const per = Math.min(100, Number(u.searchParams.get("per_page") ?? 30));
+      const changed = (i: Record<string, unknown>) => String(i.updated_at ?? "");
+      return ok(
+        (ghClosed as Record<string, unknown>[])
+          .map((i): Record<string, unknown> => ({ state: "closed", created_at: i.closed_at, ...i }))
+          .filter((i) => changed(i) >= since)
+          .sort((a, b) => changed(a).localeCompare(changed(b)) || Number(a.number) - Number(b.number))
+          .slice(0, per),
+      );
+    }
     if (method === "GET" && path === "issues") {
       // GitHub lists the issues that carry the label asked for.
       const label = u.searchParams.get("labels");
@@ -468,8 +612,10 @@ async function setup(options: { direct?: boolean } = {}) {
     const issueMatch = /^issues\/(\d+)$/.exec(path);
     if (method === "GET" && issueMatch) {
       const n = Number(issueMatch[1]);
+      // As GitHub answers for one issue: its title with the rest.
       return ok({
         number: n,
+        ...(ghIssues[n] ? { title: ghIssues[n].title } : {}),
         state: ghIssues[n]?.state ?? "open",
         labels: (ghLabels[n] ?? []).map((name) => ({ name })),
       });
@@ -529,7 +675,18 @@ async function setup(options: { direct?: boolean } = {}) {
     const labelMatch = /^issues\/(\d+)\/labels\/(.+)$/.exec(path);
     if (method === "DELETE" && labelMatch) {
       const n = Number(labelMatch[1]);
-      ghLabels[n] = ghLabels[n].filter((l) => l !== decodeURIComponent(labelMatch[2]));
+      const label = decodeURIComponent(labelMatch[2]);
+      // One of the labels that say something waits on the owner: it is
+      // on the item where the lists above are read from. Taken off one
+      // that does not carry it, GitHub says so (its own words, read
+      // from it on 2026-11-24).
+      if ((NEEDS_LABELS as readonly string[]).includes(label)) {
+        const item = (ghNeeds["developing-today/code"] ?? []).find((i) => i.number === n);
+        if (!item?.labels.includes(label)) return fail(404, { message: "Label does not exist", status: "404" });
+        item.labels = item.labels.filter((l) => l !== label);
+        return ok([]);
+      }
+      ghLabels[n] = ghLabels[n].filter((l) => l !== label);
       return ok({});
     }
     if (method === "POST" && path === "labels") {
@@ -545,6 +702,145 @@ async function setup(options: { direct?: boolean } = {}) {
     }
     throw new Error(`unexpected GitHub call ${method} ${url}`);
   };
+  /** The bridge, as the edge reaches it over its service binding
+   * (#14373): every call recorded, and the agents and the message log
+   * it answers with. `bridgeRefuses` makes its next answer the plain
+   * 404 of a credential the bridge no longer knows. */
+  const bridgeCalls: { method: string; url: string; body?: string }[] = [];
+  const bridgeAgents = [
+    { name: "lane-1", groups: ["muse"], first_seen: "2026-11-24T00:00:00Z", last_seen: "2026-11-24T01:00:00Z" },
+  ];
+  const bridgeLog = [
+    { id: 3, agent: "lane-1", direction: "inbound", kind: "message", sender: "service:pm-stack", body: "earlier" },
+  ];
+  // The unified views the console's Messages and Agents screens read
+  // (#14374): one row per surface with its real sender, the unified
+  // directory (a notes-only identity included), and credential state.
+  const bridgePipeline = [
+    {
+      surface: "connector",
+      id: 11,
+      kind: "instruction",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "claude",
+      direction: "inbound",
+      read_at: null,
+      body: "owner instruction",
+    },
+    {
+      surface: "fleet",
+      id: 12,
+      kind: "command",
+      sender_addr: "agent:lane-1",
+      sender_label: "lane-1",
+      receiver: "agent:lane-2",
+      direction: "inbound",
+      read_at: null,
+      body: "agent command",
+    },
+    {
+      surface: "notes",
+      id: 13,
+      kind: "note",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "muse/lane-1",
+      direction: "inbound",
+      read_at: null,
+      body: "a note",
+    },
+  ];
+  const bridgeDirectory = [
+    {
+      surface: "fleet",
+      name: "lane-1",
+      groups: ["muse"],
+      presence: "last_seen",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: "2026-11-24T01:00:00Z",
+      unread: 1,
+    },
+    {
+      surface: "notes",
+      name: "muse/scout-1",
+      identity: "muse/scout-1",
+      scopes: { can_send: true, can_inbox: true },
+      presence: "none",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: null,
+    },
+  ];
+  const bridgeCredentials = [
+    {
+      agent: "lane-1",
+      state: "active",
+      scopes: ["inbox", "send"],
+      addr: null,
+      credentials: 1,
+      live: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    },
+  ];
+  const bridgeEnrollTokens = [
+    {
+      agent: "new-1",
+      kind: "muse",
+      groups: ["muse"],
+      notes_identity: null,
+      created: "2026-11-24T00:00:00Z",
+      expires_at: "2026-11-25T00:00:00Z",
+      used_at: null,
+      revoked_at: null,
+      state: "pending",
+    },
+  ];
+  const bridgeRefuses = { on: false };
+  const bridgeFetch = (async (
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    bridgeCalls.push({ method, url: u, body: init?.body });
+    if (bridgeRefuses.on) return { ok: false, status: 404, json: async () => JSON.parse("") };
+    if (method === "POST" && u.endsWith("/send")) {
+      // A send's answer is its match report (#14375).
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          batch: "b1",
+          messages: [],
+          unregistered: [],
+          matched: 1,
+          delivered: 1,
+          recipients: ["lane-1"],
+          remaining: 0,
+        }),
+      };
+    }
+    if (method === "GET" && u.endsWith("/agents")) {
+      return { ok: true, status: 200, json: async () => ({ agents: bridgeAgents }) };
+    }
+    if (method === "GET" && u.includes("/messages")) {
+      return { ok: true, status: 200, json: async () => ({ messages: bridgeLog }) };
+    }
+    if (method === "GET" && u.includes("/pipeline")) {
+      return { ok: true, status: 200, json: async () => ({ messages: bridgePipeline }) };
+    }
+    if (method === "GET" && u.endsWith("/directory")) {
+      return { ok: true, status: 200, json: async () => ({ agents: bridgeDirectory }) };
+    }
+    if (method === "GET" && u.endsWith("/credentials")) {
+      return { ok: true, status: 200, json: async () => ({ credentials: bridgeCredentials }) };
+    }
+    if (method === "GET" && u.endsWith("/enroll-tokens")) {
+      return { ok: true, status: 200, json: async () => ({ enroll_tokens: bridgeEnrollTokens }) };
+    }
+    throw new Error(`unexpected bridge fetch ${method} ${u}`);
+  }) as never;
   /** The direct source, made to fail by a test that turns it on. */
   const directDown = { on: false };
   const directFetch = (async (
@@ -621,6 +917,7 @@ async function setup(options: { direct?: boolean } = {}) {
       }
       return { ok: true, status: 200, json: async () => ({ results }) };
     }
+    strays.push({ url: u, token: Boolean(init?.headers?.authorization ?? init?.headers?.Authorization) });
     throw new Error(`unexpected direct fetch ${u}`);
   }) as never;
 
@@ -647,6 +944,22 @@ async function setup(options: { direct?: boolean } = {}) {
     },
   };
   const alarm = { at: 0 };
+  /** The platform's live connections, standing in: who is connected
+   * (each by what it was sent), as the platform holds them whether or
+   * not the object is in memory. */
+  const live: { open: string[][]; refuses: boolean } = { open: [], refuses: false };
+  const sockets = {
+    accept: (_req: Request) => {
+      live.open.push([]);
+      // What the platform answers an upgrade with (its 101 cannot be made outside it).
+      return new Response(null, { status: 200, headers: { "x-live": "accepted" } });
+    },
+    send: (text: string) => {
+      for (const got of live.open) got.push(text);
+      return live.open.length;
+    },
+    count: () => live.open.length,
+  };
   /** What the edge left running behind an answer. */
   const behind: Promise<unknown>[] = [];
   /** A new object over the same storage, as after a restart; `direct`
@@ -663,13 +976,16 @@ async function setup(options: { direct?: boolean } = {}) {
             enabled: true,
             githubToken: "gh-test",
             queueToken: "queue-test",
+            ...(options.bridge ? { bridgeToken: "pm-cred-test", bridgeFetch } : {}),
             fetchImpl: asThePlatformFetch(directFetch) as typeof directFetch,
+            ...(options.kinds ? { kinds: options.kinds } : {}),
           }
         : undefined,
       setAlarm: async (at) => {
         alarm.at = at;
       },
       getAlarm: async () => alarm.at || null,
+      sockets,
       later: (work) => {
         behind.push(work);
       },
@@ -686,6 +1002,11 @@ async function setup(options: { direct?: boolean } = {}) {
     questions: { open: [] },
     prs: [],
     priorities: { issues: [], truncated: false },
+    done: {
+      tasks: { day: 0, kinds: [], latest: [] },
+      merged: { day: 0, more: false, latest: [] },
+      closed: { day: 0, more: false, latest: [] },
+    },
     agents: [],
     services: [] as unknown[],
     more: [],
@@ -730,6 +1051,7 @@ async function setup(options: { direct?: boolean } = {}) {
     "issue.comment": {
       run: async (a) => {
         ran.push({ kind: "issue.comment", args: a });
+        await gate.wait;
         if (a.issue === 13) throw new OpError(404, "no such issue");
         return { commented: a.issue };
       },
@@ -789,6 +1111,14 @@ async function setup(options: { direct?: boolean } = {}) {
       touch: [],
       audit: (a) => ({ ref: a.ref }),
     },
+    "hands.done": {
+      run: async (a) => {
+        ran.push({ kind: "hands.done", args: a });
+        return { ref: a.ref, done: true };
+      },
+      touch: ["census"],
+      audit: (a) => ({ ref: a.ref }),
+    },
     // Something said to an agent: about nothing else, so nothing orders it.
     "message.send": {
       run: async (a) => {
@@ -813,15 +1143,21 @@ async function setup(options: { direct?: boolean } = {}) {
     },
   };
   const net: {
+    /** The host can be reached. When it cannot, what answers in its
+     * place says so (the tunnel is down), unless `silent`. */
     hostUp: boolean;
     edgeUp: boolean;
     loseAnswer: boolean;
     giveUpEarly: boolean;
+    /** Out of reach with nothing to say so: asking it only runs out of time. */
+    silent: boolean;
+    /** The host does the work and answers, and its answer cannot be read. */
+    garble: boolean;
     /** A report of more than this many bytes does not get through: it
      * is cut off on the way ("lost", a slow connection running out of
      * time) or turned away by something in front of the edge ("refused"). */
     large: { over: number; fate: "lost" | "refused" } | null;
-  } = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false, large: null };
+  } = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false, silent: false, garble: false, large: null };
   /** The size of each report the host sent, whether or not it arrived. */
   const reportSizes: number[] = [];
   /** Each report the host sent, as it read. */
@@ -866,6 +1202,27 @@ async function setup(options: { direct?: boolean } = {}) {
     ["/console/outbox.js", "// what is kept"],
     ["/icons/icon-192.png", "PNG"],
   ]);
+  const askHost = async (r: Request): Promise<Response | null> => {
+    if (!net.hostUp) return null;
+    hostSaw.push(`${r.method} ${new URL(r.url).pathname}`);
+    // Through the tunnel: the connection is local, the headers are the edge's.
+    const answer = handle(r, hostDeps, "127.0.0.1").then(marked);
+    // The edge stops waiting while the host is still at it.
+    if (net.giveUpEarly) {
+      stillRunning.push(answer);
+      return null;
+    }
+    // The host does the work and its answer is lost on the way back.
+    if (net.loseAnswer) {
+      await answer;
+      return null;
+    }
+    if (net.garble) {
+      const said = await answer;
+      return new Response("{", { status: said.status, headers: said.headers });
+    }
+    return answer;
+  };
   const io: Io = {
     state: (r) => edge.now.fetch(r),
     // The platform's file store tags each file by its content; the icon
@@ -874,23 +1231,10 @@ async function setup(options: { direct?: boolean } = {}) {
       files.has(path)
         ? new Response(files.get(path), path.startsWith("/icons/") ? {} : { headers: { ETag: `"tag-of-${path}"` } })
         : new Response("", { status: 404 }),
-    host: async (r) => {
-      if (!net.hostUp) return null;
-      hostSaw.push(`${r.method} ${new URL(r.url).pathname}`);
-      // Through the tunnel: the connection is local, the headers are the edge's.
-      const answer = handle(r, hostDeps, "127.0.0.1").then(marked);
-      // The edge stops waiting while the host is still at it.
-      if (net.giveUpEarly) {
-        stillRunning.push(answer);
-        return null;
-      }
-      // The host does the work and its answer is lost on the way back.
-      if (net.loseAnswer) {
-        await answer;
-        return null;
-      }
-      return answer;
-    },
+    host: askHost,
+    // Asked to do something: a host that cannot be reached is said to
+    // be, as Cloudflare says of a tunnel with no connection.
+    act: async (r) => (!net.hostUp && !net.silent ? "unreached" : askHost(r)),
     publicHost: HOST,
     version: "test",
     later: (work) => later.push(work),
@@ -900,6 +1244,9 @@ async function setup(options: { direct?: boolean } = {}) {
   const done = memoryStore();
   /** What the machine says of itself in each report; null for a console
    * older than the saying, which says nothing. */
+  /** How the machine takes the owner's changed settings, when it does:
+   * a console older than that has none. */
+  const adopts: { now: ((said: unknown) => number | null) | null } = { now: null };
   const machineSays: { now: { name: string; actions: string[] } | null } = {
     now: { name: "nixos", actions: Object.keys(table).sort() },
   };
@@ -907,6 +1254,7 @@ async function setup(options: { direct?: boolean } = {}) {
     new EdgeLink({
       version: "0123abcd4567",
       ...(machineSays.now ? { machine: () => machineSays.now as { name: string; actions: string[] } } : {}),
+      ...(adopts.now ? { adopt: adopts.now } : {}),
       apk: async () => {
         if (!build.bytes) return null;
         const bytes = build.bytes;
@@ -1024,6 +1372,7 @@ async function setup(options: { direct?: boolean } = {}) {
     link,
     makeLink,
     machineSays,
+    adopts,
     later,
     token,
     browse,
@@ -1057,11 +1406,20 @@ async function setup(options: { direct?: boolean } = {}) {
     access,
     edgeConfig,
     directDown,
+    bridgeCalls,
+    bridgeAgents,
+    bridgeLog,
+    bridgeRefuses,
     githubCalls,
     queueCalls,
+    strays,
+    live,
     ghIssues,
     ghComments,
     ghLabels,
+    ghNeeds,
+    ghClosed,
+    queueDone,
     ghPrs,
     ghSearch,
     queueTasks,
@@ -1091,6 +1449,9 @@ describe("before the host's first report", () => {
       github: { answers: 0, unchanged: 0, since: w.now.t, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
+      listening: 0,
+      machineSettingsDiffer: null,
+      settingsInForce: PLATFORM_SETTING_NAMES.map((name) => ({ name, source: "repository", since: null })),
       androidBuild: null,
       androidRelease: null,
       androidReleaseTrouble: null,
@@ -1099,6 +1460,8 @@ describe("before the host's first report", () => {
       version: "test",
       woke: w.now.t,
       clock: { wanted: false, next: null },
+      held: { either: 0, machine: 0, asked: 0 },
+      routes: {},
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1109,6 +1472,43 @@ describe("before the host's first report", () => {
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
   });
+
+  test("route state: a flip on the internal channel is what health says, and it is kept (#14944)", async () => {
+    const w = await setup();
+    const flip = (body: unknown) =>
+      w.edge.now.fetch(
+        new Request("https://pm.internal/internal/route", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    const flipped = await flip({ surface: "board", tier: "hosted" });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // It is remembered across the edge's own restarts: it is kept in
+    // this object's storage, not in memory.
+    w.edge.now = w.makeEdge();
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // A flip that is not a surface and a tier is refused and changes nothing.
+    expect((await flip({ surface: "board", tier: "sideways" })).status).toBe(400);
+    expect((await flip({ tier: "tunnel" })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+  });
+
+
 
   test("the edge says which commit the host is running, as the host last reported it", async () => {
     const w = await setup();
@@ -1149,6 +1549,43 @@ describe("before the host's first report", () => {
     );
     expect(res.status).toBe(200);
     expect((await health()).hostVersion).toBeNull();
+  });
+
+  // The platform's own settings are the repository's (src/settings.ts),
+  // and the Worker carries them. A machine tells the ones it runs with
+  // in every report; one on other code, or with another environment,
+  // tells others. Which those are is said to anyone who asks, by name
+  // only: no value of any setting is public.
+  test("the edge says in which of the platform's settings the machine runs with others, by name only", async () => {
+    const w = await setup();
+    const differ = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>)
+        .machineSettingsDiffer;
+    // No machine has said anything yet: nothing to compare.
+    expect(await differ()).toBeNull();
+    await w.hostReads();
+    await w.link.now.once();
+    // The machine runs main's console with nothing set otherwise.
+    expect(await differ()).toEqual([]);
+    // A machine on older code: its list of repositories is the one main had then.
+    const mains = [...w.edgeConfig.needsRepos];
+    w.edgeConfig.needsRepos = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.queue = "a-queue-of-its-own";
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect(await differ()).toEqual(["queue", "needsRepos"]);
+    const page = await (await w.browse("/console/health", { token: null })).text();
+    expect(page).not.toContain("a-queue-of-its-own");
+    expect(page).not.toContain("developing-today/opencode");
+    // It is kept with the settings, across the edge's own restarts.
+    w.edge.now = w.makeEdge();
+    expect(await differ()).toEqual(["queue", "needsRepos"]);
+    // The machine follows main again.
+    w.edgeConfig.needsRepos = mains;
+    w.edgeConfig.queue = platformSettings().queue;
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect(await differ()).toEqual([]);
   });
 
   test("the first report teaches the edge the host's key and who the owner is", async () => {
@@ -1469,7 +1906,43 @@ describe("actions", () => {
     // A refusal by the host is the host's answer, not "unreachable".
     const refused = await w.act("issue.comment", { issue: 13, text: "x" });
     expect([refused.status, await refused.json()]).toEqual([404, { error: "no such issue" }]);
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
+  });
+
+  test("route state: the owner flips a surface at /console/api/route, and only the owner (#14944)", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    // The owner's flip, through the front door as the console sends it.
+    const flipped = await w.browse("/console/api/route", { body: { surface: "board", tier: "hosted" } });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // Flipping back is the rollback, and health says that too.
+    const back = await w.browse("/console/api/route", { body: { surface: "board", tier: "tunnel" } });
+    expect(back.status).toBe(200);
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+    // A stranger cannot flip: the edge is not sure of them, so the
+    // request goes to the host as any unverified request does, and
+    // the route state does not change.
+    await w.browse("/console/api/route", { body: { surface: "board", tier: "hosted" }, token: null });
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+    // What is not a surface and a tier is refused, as on the internal channel.
+    expect((await w.browse("/console/api/route", { body: { surface: "board", tier: "sideways" } })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
   });
 
   test("with the host out of reach, what may be done late is held, done once when it is back, and the rest is refused", async () => {
@@ -1480,7 +1953,7 @@ describe("actions", () => {
     w.net.edgeUp = false;
 
     const held = await w.act("ask.send", { text: "Do this when you are back" });
-    expect(await held.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     // A merge acts on what the owner saw; it is never done late.
     const merge = await w.act("pr.merge", { pr: 7 });
     expect(merge.status).toBe(503);
@@ -1551,7 +2024,7 @@ describe("actions", () => {
     w.net.hostUp = true;
     // The host dies after writing down that it started the second one:
     // stand in for that by marking it started before the report.
-    const ids = (w.stored.get("held") as { id: string }[]).map((h) => h.id);
+    const ids = (heldStored(w) as { id: string }[]).map((h) => h.id);
     const done = { [ids[1]]: "started" };
     w.link.now = new EdgeLink({
       url: `https://${HOST}`,
@@ -1596,7 +2069,7 @@ describe("actions", () => {
     const res = await w.act("ask.send", { text: "only once" });
     w.net.loseAnswer = false;
     // The edge cannot tell "never arrived" from "done, answer lost": it holds it.
-    expect(await res.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await res.json()).toEqual({ ok: true, held: true, result: null, waits: "asked" });
     expect(w.ran).toHaveLength(1);
     // The host is offered it under the name it was relayed with, knows
     // it did it, and says so instead of doing it again.
@@ -1723,7 +2196,7 @@ describe("actions", () => {
     // would be done first, and the older move would undo it.
     w.net.hostUp = true;
     const second = await w.act("task.move", { task: 21016, to: "last" });
-    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     expect(w.ran.filter((r) => r.kind === "task.move")).toEqual([]);
     // Another task is nothing to do with it: it is done at once.
     const other = await w.act("task.move", { task: 21017, to: "first" });
@@ -1765,9 +2238,13 @@ describe("actions", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
       ],
       sections: [],
       refused: [],
+      settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines).toEqual([
       {
@@ -1778,6 +2255,7 @@ describe("actions", () => {
         // What it said it can do: the kinds of action it has, and every section it reads.
         actions: [
           "ask.send",
+          "hands.done",
           "issue.comment",
           "message.send",
           "need.comment",
@@ -1788,6 +2266,8 @@ describe("actions", () => {
           "triage.enqueue",
         ],
         sections: [...SECTION_NAMES].sort(),
+        // A console that does not take the owner's settings says no revision.
+        settingsRev: null,
       },
     ]);
     // The machine goes away. What the owner does that may wait, waits; the list says what.
@@ -1809,7 +2289,7 @@ describe("actions", () => {
     // The object is put away and another starts in its place: it still knows the machine.
     w.edge.now = w.makeEdge();
     expect((await machines()).machines.map((m) => [m.name, m.actions.length, m.sections.length])).toEqual([
-      ["nixos", 9, SECTION_NAMES.length],
+      ["nixos", 10, SECTION_NAMES.length],
     ]);
     // The owner takes one back before the machine has it.
     const dropped = await w.act("held.drop", { id: kept });
@@ -1836,7 +2316,7 @@ describe("actions", () => {
     const again = await w.act("held.drop", { id: kept });
     expect([again.status, await again.json()]).toEqual([
       404,
-      { error: "That is no longer waiting: a machine took it, or it was taken back already." },
+      { error: "That is no longer waiting: it was done or is being done, or was taken back already." },
     ]);
     // The machine is back: it is given what still waits, and not what was taken back.
     w.net.hostUp = true;
@@ -1862,7 +2342,15 @@ describe("actions", () => {
     await w.link.now.once();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
     expect((await machines()).machines).toEqual([
-      { name: "A machine", seen: w.now.t, quiet: false, version: "0123abcd4567", actions: [], sections: [] },
+      {
+        name: "A machine",
+        seen: w.now.t,
+        quiet: false,
+        version: "0123abcd4567",
+        actions: [],
+        sections: [],
+        settingsRev: null,
+      },
     ]);
     // A name that is not one, or a list that is not a list of kinds.
     for (const says of [
@@ -1901,14 +2389,16 @@ describe("actions", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "machine",
     });
     expect(await (await w.act("ask.send", { text: "kept once" }, id)).json()).toEqual({
       ok: true,
       held: true,
       result: null,
       again: true,
+      waits: "machine",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([id]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([id]);
     // The laptop comes back and does it once; sent yet again, the device
     // is told how it came out.
     w.net.hostUp = true;
@@ -1933,7 +2423,7 @@ describe("actions", () => {
     w.net.giveUpEarly = true;
     const res = await w.act("need.comment", { ref: "code#1", text: "slow" });
     w.net.giveUpEarly = false;
-    expect(await res.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await res.json()).toEqual({ ok: true, held: true, result: null, waits: "asked" });
     // Offered again while still running: not run a second time, and not answered for yet.
     w.now.t += 1_000;
     const during = await w.link.now.once();
@@ -2025,7 +2515,7 @@ describe("actions", () => {
     for (let i = 0; i < 100; i++) expect((await w.act("ask.send", { text: `n${i}` })).status).toBe(200);
     const full = await w.act("ask.send", { text: "one too many" });
     expect(full.status).toBe(503);
-    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+    expect((heldStored(w) as unknown[]).length).toBe(100);
   });
 });
 
@@ -2909,7 +3399,7 @@ describe("the host's report is the host's", () => {
     });
     expect(inside.headers.get("x-pm-console")).toBe("1");
     expect(w.hostSaw).toEqual(["POST /internal/hold"]);
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 });
 
@@ -3121,12 +3611,865 @@ describe("notifications and phones, from the edge", () => {
   });
 });
 
+// The app is told when something changes, and reads again at once. The
+// connection is the platform's (a WebSocket the Worker's object holds,
+// kept by Cloudflare while the object sleeps); here it is stood in for.
+// The oracle for "changed" is the document's own tag: a message means
+// the document named would be answered with another tag.
+describe("the app is told when something changes", () => {
+  type World = Awaited<ReturnType<typeof setup>>;
+  const connect = (w: World, init: { token?: string | null; upgrade?: boolean } = {}) =>
+    w.browse("/console/api/events", {
+      ...(init.token === undefined ? {} : { token: init.token }),
+      headers: init.upgrade === false ? {} : { upgrade: "websocket" },
+    });
+  /** Everything this side reads itself, read once: after this a read is
+   * a change only if what it reads has changed. */
+  const readAll = async (w: World) => {
+    for (let look = 0; look < 2; look++) {
+      await w.core();
+      await w.browse("/console/api/doc/ops");
+      await w.browse("/console/api/doc/done");
+      await Promise.all(w.behind.splice(0));
+    }
+  };
+  const said = (w: World) => w.live.open.map((got) => got.map((text) => JSON.parse(text)));
+  const tag = async (w: World, doc: string) => (await w.browse(`/console/api/doc/${doc}`)).headers.get("etag");
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("only the owner, signed in, is connected; anything else is not a connection", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Not signed in: the Worker connects nobody (the request goes on to the machine, which refuses a stranger).
+    expect((await connect(w, { token: null })).headers.get("x-live")).toBeNull();
+    expect(
+      (await connect(w, { token: await w.token({ email: "someone@else.example" }) })).headers.get("x-live"),
+    ).toBeNull();
+    expect(w.live.open).toHaveLength(0);
+    // Signed in, but not asking to be connected.
+    expect((await connect(w, { upgrade: false })).status).toBe(426);
+    expect(w.live.open).toHaveLength(0);
+    // The owner, asking to be connected.
+    const res = await connect(w);
+    expect(res.headers.get("x-live")).toBe("accepted");
+    expect(w.live.open).toHaveLength(1);
+    // And health says how many are connected, which is all it says of them.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { listening: number };
+    expect(health.listening).toBe(1);
+  });
+
+  test("what the owner does changes the core document: everyone connected is told once, and the document has another tag", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await connect(w);
+    await connect(w);
+    await tick();
+    for (const got of w.live.open) got.length = 0;
+    const before = await tag(w, "core");
+    expect((await w.act("issue.comment", { issue: 14, text: "live" })).status).toBe(200);
+    await tick();
+    // Each connection was told that the core document changed: once, however many things changed in it.
+    expect(said(w)).toEqual([[{ t: "changed", docs: ["core"] }], [{ t: "changed", docs: ["core"] }]]);
+    expect(await tag(w, "core")).not.toBe(before);
+  });
+
+  test("a read that changes nothing says nothing, and one that changes a list says which document", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await readAll(w);
+    await connect(w);
+    await tick();
+    w.live.open[0].length = 0;
+    // Past every list's age, with nothing changed at GitHub or in the queue.
+    w.now.t += 10 * 60_000;
+    await w.edge.now.alarm();
+    await tick();
+    expect(said(w)).toEqual([[]]);
+    // A task is claimed: the board is another board.
+    w.queueTasks[1].status = "claimed";
+    w.now.t += 10 * 60_000;
+    await w.edge.now.alarm();
+    await tick();
+    expect(said(w)).toEqual([[{ t: "changed", docs: ["core"] }]]);
+  });
+
+  test("while someone is connected the Worker keeps reading by itself, and stops asking to be woken for it when nobody is", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await connect(w);
+    // It asked to be woken within the half minute.
+    expect(w.alarm.at).toBeGreaterThan(w.now.t);
+    expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30_000);
+    // Woken past the board's age: the board is read again with nobody asking for a document.
+    const reads = () => w.queueCalls.length;
+    const before = reads();
+    w.now.t += 2 * 60_000;
+    await w.edge.now.alarm();
+    expect(reads()).toBeGreaterThan(before);
+    expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30_000);
+    // Everyone goes away: the next wake is not for this (the machine's silence is still watched for).
+    w.live.open.length = 0;
+    w.now.t += 30_000;
+    await w.edge.now.alarm();
+    expect(w.alarm.at === 0 || w.alarm.at > w.now.t + 30_000).toBe(true);
+    const after = reads();
+    w.now.t += 2 * 60_000;
+    await w.edge.now.alarm();
+    expect(reads()).toBe(after);
+  });
+
+  test("a machine's report that changes what only it has is passed on too", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await connect(w);
+    await tick();
+    w.live.open[0].length = 0;
+    (w.data.sessions as { waiting: unknown[] }).waiting = [{ id: "s1", title: "Log in", ref: "", why: "" }];
+    w.now.t += 11_000;
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await tick();
+    expect(said(w)[0]).toContainEqual({ t: "changed", docs: ["core"] });
+  });
+
+  test("with nobody connected nothing is sent, and a Worker with no connections to hold says so", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await w.act("issue.comment", { issue: 14, text: "nobody listening" })).status).toBe(200);
+    await tick();
+    expect(w.live.open).toEqual([]);
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { listening: number };
+    expect(health.listening).toBe(0);
+  });
+});
+
+// The repository's settings are the platform's own (#14163): the Worker
+// carries them in its bundle and goes by them. A machine tells the ones
+// it runs with in every report, and until this they were what the
+// Worker acted by: the defaults of whatever checkout the laptop's
+// console was started from, a branch nobody merged included. The oracle
+// throughout is src/settings.ts, which is main's word.
+describe("the platform goes by its own settings, whatever a machine says", () => {
+  const OTHERS = {
+    repo: "someone/else",
+    queue: "another-queue",
+    queueDbUrl: "https://elsewhere.example",
+    queueTokenName: "another.token",
+    androidPackage: "another.package",
+    promptLabel: "another/label",
+  };
+  const health = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+
+  test("a machine that says another repository, queue, store address, token name, package and label: the Worker reads and acts by main's", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    // The fingerprint of the certificate the Android app is signed with
+    // is the deployment's, and is the machine's to tell.
+    const fingerprint = Array.from({ length: 32 }, () => "AB").join(":");
+    Object.assign(w.edgeConfig, OTHERS, { androidFingerprints: [fingerprint] });
+    await w.hostReads();
+    await w.link.now.once();
+    const { res, doc } = await w.core();
+    expect(res.status).toBe(200);
+    // The board is the queue store's own word, read where main says it
+    // is and for the queue main names: it could not have been read at
+    // all from where the machine said.
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(w.queueCalls.length).toBeGreaterThan(0);
+    expect(w.queueCalls.some((call) => call.args.includes(mains.queue))).toBe(true);
+    expect(w.queueCalls.some((call) => call.args.includes(OTHERS.queue))).toBe(false);
+    // Nothing was asked of anywhere else, with the queue's token or without it.
+    expect(w.strays).toEqual([]);
+    // GitHub was asked about main's repository and by main's label.
+    expect(w.githubCalls.length).toBeGreaterThan(0);
+    expect(w.githubCalls.filter((call) => call.url.includes(OTHERS.repo))).toEqual([]);
+    expect(w.githubCalls.filter((call) => call.url.includes(encodeURIComponent(OTHERS.promptLabel)))).toEqual([]);
+    expect(
+      w.githubCalls.some((call) =>
+        call.url.startsWith(
+          `https://api.github.com/repos/${mains.repo}/issues?labels=${encodeURIComponent(mains.promptLabel)}`,
+        ),
+      ),
+    ).toBe(true);
+    // What the owner does is done there too.
+    const sent = (await (await w.act("issue.comment", { issue: 14, text: "by main's settings" })).json()) as {
+      ok: boolean;
+    };
+    expect(sent.ok).toBe(true);
+    expect(w.githubCalls.at(-1)).toMatchObject({
+      method: "POST",
+      url: `https://api.github.com/repos/${mains.repo}/issues/14/comments`,
+    });
+    // The Android app is linked by the package main names, signed as the machine says.
+    const links = (await (await w.browse("/.well-known/assetlinks.json", { token: null })).json()) as {
+      target: { package_name: string; sha256_cert_fingerprints: string[] };
+    }[];
+    expect(links.map((link) => [link.target.package_name, link.target.sha256_cert_fingerprints])).toEqual([
+      [mains.androidPackage, [fingerprint]],
+    ]);
+    // And it says, by name, where the machine differs.
+    expect((await health(w)).machineSettingsDiffer).toEqual(Object.keys(OTHERS));
+    expect(w.strays).toEqual([]);
+  });
+
+  test("what a machine told is kept as it told it: after a restart the Worker still goes by main's, and still says where the machine differs", async () => {
+    const w = await setup({ direct: true });
+    Object.assign(w.edgeConfig, OTHERS);
+    await w.hostReads();
+    await w.link.now.once();
+    w.edge.now = w.makeEdge(true);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const { doc } = await w.core();
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(w.strays).toEqual([]);
+    expect((await health(w)).machineSettingsDiffer).toEqual(Object.keys(OTHERS));
+    // Kept as told, not as gone by: what is compared after a restart is the machine's own word.
+    expect(w.stored.get("cfg")).toMatchObject(OTHERS);
+    // And kept once: a machine that goes on saying the same is not written down again with every report.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.puts.length = 0;
+    w.now.t += 5_000;
+    await w.link.now.once();
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect(w.puts.filter((key) => key === "cfg")).toEqual([]);
+  });
+
+  // Where things are the Worker knows by itself; who may sign in it
+  // does not. With the switch on and both tokens, and no machine having
+  // said, it is not doing the core, and nobody is signed in by it.
+  test("with the switch and the tokens but no machine's word on who may sign in, the Worker does not do the core", async () => {
+    const w = await setup({ direct: true });
+    const said = await health(w);
+    expect([said.configured, said.directEnabled, said.primary, said.directReady]).toEqual([false, true, false, false]);
+    expect(said.machineSettingsDiffer).toBeNull();
+    expect(w.githubCalls).toEqual([]);
+    expect(w.queueCalls).toEqual([]);
+    // The first report is what changes that.
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await health(w)).primary).toBe(true);
+  });
+
+  test("a machine that takes back what it said changes nothing the Worker does, and is no longer said to differ", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    Object.assign(w.edgeConfig, OTHERS);
+    await w.hostReads();
+    await w.link.now.once();
+    const before = (await w.core()).doc.board;
+    Object.assign(
+      w.edgeConfig,
+      Object.fromEntries(Object.keys(OTHERS).map((name) => [name, mains[name as keyof typeof OTHERS]])),
+    );
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((await w.core()).doc.board).toEqual(before);
+    expect((await health(w)).machineSettingsDiffer).toEqual([]);
+    expect(w.strays).toEqual([]);
+  });
+
+  // Not changed by this, and said so that it is not taken for done: who
+  // may sign in is the deployment's, set by the script that sets the
+  // hostname up, and a machine's report is still what tells it (#13495).
+  test("who may sign in is still as the machine tells it", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const second = "second@example.com";
+    /** Who answered the Machines screen for this address: the Worker
+     * itself, or the laptop it passes anyone it does not know on to
+     * (which in this world still has the first owner), or nobody. */
+    const served = async (email?: string) => {
+      const res = await w.browse("/console/api/machines", email ? { token: await w.token({ email }) } : {});
+      return res.status === 200 ? ((await res.json()) as MachinesAnswer).served : res.status;
+    };
+    expect([await served(), await served(second)]).toEqual(["edge", 403]);
+    w.edgeConfig.owners = [second];
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect([await served(second), await served()]).toEqual(["edge", "machine"]);
+  });
+
+  // The list of repositories is set apart (see the design record): a
+  // machine takes a reply only for an item in a repository on its own
+  // list, so while a machine tells a list the Worker reads by that one.
+  test("for the list of repositories the Worker goes by the machine's while a machine tells one, and says that it differs", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.needsRepos = theirs;
+    w.ghNeeds["developing-today/opencode"] = [{ number: 5, title: "Under its old name", labels: ["user/review"] }];
+    await w.hostReads();
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    expect(doc.census.reviews.map((item: { ref: string }) => item.ref)).toEqual(["developing-today/opencode#5"]);
+    const lists = w.githubCalls.filter((call) => /labels=user%2F/.test(call.url)).map((call) => call.url);
+    expect(lists.filter((url) => url.includes("/repos/developing-today/opencode/"))).toHaveLength(2);
+    expect(lists.filter((url) => mains.needsRepos.slice(1).some((repo) => url.includes(`/repos/${repo}/`)))).toEqual(
+      [],
+    );
+    expect((await health(w)).machineSettingsDiffer).toEqual(["needsRepos"]);
+  });
+
+  test("machines: a machine on other settings is said with what it says, what main says, and which the Worker goes by", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    await w.hostReads();
+    await w.link.now.once();
+    // On main's settings there is nothing to say, and nothing is.
+    expect(Object.keys((await machines()).machines[0])).not.toContain("differs");
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.queue = OTHERS.queue;
+    w.edgeConfig.needsRepos = theirs;
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((await machines()).machines[0].differs).toEqual([
+      { name: "queue", machine: OTHERS.queue, platform: mains.queue, goesBy: "platform" },
+      { name: "needsRepos", machine: theirs, platform: mains.needsRepos, goesBy: "machine" },
+    ]);
+    // What a machine says is shown as it said it, but not without end.
+    w.edgeConfig.queue = "q".repeat(5_000);
+    w.edgeConfig.needsRepos = Array.from({ length: 400 }, (_, i) => `o/r${i}`);
+    w.now.t += 5_000;
+    await w.link.now.once();
+    const long = (await machines()).machines[0].differs ?? [];
+    expect((long[0].machine as string).length).toBeLessThanOrEqual(200);
+    expect((long[1].machine as string[]).length).toBeLessThanOrEqual(50);
+    // Nobody not signed in is told any of it.
+    expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
+  });
+});
+
+// The settings the owner changes from the app are kept at the edge
+// under their own key, beside a machine's word and never in it, and
+// are gone by above both the repository and a machine (#14954, S2 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md). The
+// oracle is the precedence table of that design (§3), which
+// effectiveSettings() in src/settings.ts carries.
+describe("the owner's changed settings are kept at the edge and gone by", () => {
+  const labelCalls = (w: Awaited<ReturnType<typeof setup>>, label: string) =>
+    w.githubCalls.filter((call) => call.url.includes(`labels=${encodeURIComponent(label)}`));
+  /** Look again once what was read has gone stale, and wait for what
+   * that look started reading behind its answer. */
+  const lookAgain = async (w: Awaited<ReturnType<typeof setup>>) => {
+    w.githubCalls.length = 0;
+    for (let i = 0; i < 2; i++) {
+      w.now.t += 150_000;
+      await w.core();
+      await Promise.all(w.behind.splice(0));
+    }
+  };
+
+  test("an owner's label is read by, above main's, and above a machine that says another", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    const kept = await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    expect(kept).toMatchObject({
+      rev: 1,
+      by: OWNER,
+      values: { promptLabel: "owner/label" },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    const { res } = await w.core();
+    expect(res.status).toBe(200);
+    expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
+    expect(labelCalls(w, platformSettings().promptLabel)).toEqual([]);
+    expect(labelCalls(w, "machine/label")).toEqual([]);
+  });
+
+  test("an owner's list of repositories is read by, above the list a machine tells", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.needsRepos = ["developing-today/code", "developing-today/opencode"];
+    w.ghNeeds["developing-today/opencode"] = [
+      {
+        number: 5,
+        title: "Only on the machine's list",
+        labels: ["user/review"],
+      },
+    ];
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    await w.hostReads();
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    const lists = w.githubCalls.filter((call) => /labels=user%2F/.test(call.url)).map((call) => call.url);
+    expect(lists.some((url) => url.includes("/repos/developing-today/code/"))).toBe(true);
+    expect(lists.filter((url) => url.includes("/repos/developing-today/opencode/"))).toEqual([]);
+    expect(doc.census.reviews.map((item: { ref: string }) => item.ref)).not.toContain("developing-today/opencode#5");
+  });
+
+  test("kept beside what a machine told, not in it: a machine's next report and a restart leave it as the owner set it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    const kept = JSON.stringify(w.stored.get("ownerSettings"));
+    expect(JSON.stringify(w.stored.get("cfg"))).not.toContain("owner/label");
+    // The machine reports on other settings; its word is kept, the owner's stays.
+    w.edgeConfig.promptLabel = "machine/label";
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((w.stored.get("cfg") as { promptLabel: string }).promptLabel).toBe("machine/label");
+    expect(JSON.stringify(w.stored.get("ownerSettings"))).toBe(kept);
+    // A new object reads it back and goes by it.
+    w.edge.now = w.makeEdge(true);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    await lookAgain(w);
+    expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
+    expect(labelCalls(w, "machine/label")).toEqual([]);
+  });
+
+  test("a machine's report carrying what looks like the owner's settings changes nothing", async () => {
+    const w = await setup({ direct: true });
+    Object.assign(w.edgeConfig, {
+      ownerSettings: {
+        rev: 9,
+        at: START,
+        by: OWNER,
+        values: { promptLabel: "forged/label" },
+      },
+      values: { promptLabel: "forged/label" },
+      rev: 9,
+      by: OWNER,
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(w.stored.has("ownerSettings")).toBe(false);
+    expect(Object.keys(w.stored.get("cfg") as object)).not.toContain("ownerSettings");
+    expect(Object.keys(w.stored.get("cfg") as object)).not.toContain("values");
+    expect(labelCalls(w, "forged/label")).toEqual([]);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+    expect(auditStored(w).filter((e) => String((e as { kind?: string }).kind).startsWith("setting."))).toEqual([]);
+  });
+
+  test("each set and clear is a new revision and an audit entry that names the setting, never its value", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const t0 = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code", "developing-today/code"]);
+    expect(w.stored.get("ownerSettings")).toEqual({
+      rev: 2,
+      at: w.now.t,
+      by: OWNER,
+      values: {
+        promptLabel: "owner/label",
+        needsRepos: ["developing-today/code"],
+      },
+    });
+    w.now.t += 1_000;
+    const one = await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(one).toMatchObject({
+      rev: 3,
+      values: { needsRepos: ["developing-today/code"] },
+    });
+    // Clearing what is not changed changes nothing.
+    expect(await w.edge.now.clearOwnerSetting(OWNER, "promptLabel")).toEqual(one);
+    w.now.t += 1_000;
+    expect(await w.edge.now.clearOwnerSetting(OWNER)).toMatchObject({
+      rev: 4,
+      values: {},
+    });
+    const settings = auditStored(w).filter((e) => String((e as { kind?: string }).kind).startsWith("setting."));
+    expect(settings).toEqual([
+      {
+        kind: "setting.set",
+        name: "promptLabel",
+        rev: 1,
+        at: new Date(t0).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.set",
+        name: "needsRepos",
+        rev: 2,
+        at: new Date(t0 + 1_000).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.clear",
+        name: "promptLabel",
+        rev: 3,
+        at: new Date(t0 + 2_000).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.clear",
+        name: "needsRepos",
+        rev: 4,
+        at: new Date(t0 + 3_000).toISOString(),
+        by: OWNER,
+      },
+    ]);
+    expect(JSON.stringify(settings)).not.toContain("owner/label");
+    // Cleared, the repository speaks again at once.
+    await lookAgain(w);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+    expect(labelCalls(w, "owner/label")).toEqual([]);
+  });
+
+  test("a value not in the setting's shape is refused whole, and nothing is kept", async () => {
+    const w = await setup({ direct: true });
+    await expect(w.edge.now.setOwnerSetting(OWNER, "promptLabel", "")).rejects.toBeInstanceOf(OpError);
+    await expect(w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["not a repository"])).rejects.toBeInstanceOf(OpError);
+    expect(w.stored.has("ownerSettings")).toBe(false);
+    expect(auditStored(w)).toEqual([]);
+  });
+
+  test("a kept record that does not read as one is no record: the repository speaks", async () => {
+    for (const bad of [
+      null,
+      { rev: 0, at: START, by: OWNER, values: {} },
+      { rev: 1, at: START, by: "", values: {} },
+      { rev: 1, at: START, by: OWNER, values: { repo: "someone/else" } },
+      { rev: 1, at: START, by: OWNER, values: { promptLabel: 7 } },
+      { rev: 1, at: START, by: OWNER, values: { needsRepos: ["no-slash"] } },
+    ]) {
+      expect(ownerSettingsRecord(bad)).toBeNull();
+    }
+    expect(
+      ownerSettingsRecord({
+        rev: 2,
+        at: START,
+        by: OWNER,
+        values: { needsRepos: ["a/b", "a/b"] },
+        extra: 1,
+      }),
+    ).toEqual({
+      rev: 2,
+      at: START,
+      by: OWNER,
+      values: { needsRepos: ["a/b"] },
+    });
+    // Kept that way, the edge goes by the repository.
+    const w = await setup({ direct: true });
+    w.stored.set("ownerSettings", {
+      rev: 1,
+      at: START,
+      by: OWNER,
+      values: { promptLabel: "owner/label", repo: "x/y" },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(labelCalls(w, "owner/label")).toEqual([]);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+  });
+});
+
+// Which settings are in force, from where and since when, is said in
+// one place on two surfaces: by name and source on the public health
+// answer, and with values, main's value beside an owner's, who and at
+// which revision on the owner's Machines answer (#14955, S3 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md §4).
+describe("which settings are in force is said, and since when", () => {
+  const health = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/health", { token: null })).json()) as {
+      settingsInForce: { name: string; source: string; since: number | null }[];
+    };
+  const machines = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+  const source = (list: { name: string; source: string }[], name: string) =>
+    list.find((entry) => entry.name === name)?.source;
+
+  test("health says each setting's source and since when, and no value and nobody", async () => {
+    const w = await setup({ direct: true });
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.needsRepos = theirs;
+    await w.hostReads();
+    await w.link.now.once();
+    // A machine's list is in force for the list; main's for the rest.
+    let said = (await health(w)).settingsInForce;
+    expect(said.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(said.filter((entry) => entry.source !== "repository")).toEqual([
+      { name: "needsRepos", source: "machine", since: null },
+    ]);
+    // The owner changes the label: it is the owner's from then.
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    said = (await health(w)).settingsInForce;
+    expect(said.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // Nothing of what the value is, or who changed it, is in the public answer.
+    const text = JSON.stringify(await health(w));
+    expect(text).not.toContain("owner/label");
+    expect(text).not.toContain(OWNER);
+    expect(text).not.toContain("developing-today/opencode");
+    for (const entry of said) expect(Object.keys(entry).sort()).toEqual(["name", "since", "source"]);
+    // And cleared, main's is in force again.
+    w.now.t += 60_000;
+    await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+  });
+
+  test("the owner's Machines answer has the values, main's beside an owner's change, who and the revision", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    await w.hostReads();
+    await w.link.now.once();
+    const before = (await machines(w)).platform?.settings ?? [];
+    expect(before.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(before.find((entry) => entry.name === "queue")).toEqual({
+      name: "queue",
+      source: "repository",
+      since: null,
+      value: mains.queue,
+      repository: mains.queue,
+    });
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    const after = (await machines(w)).platform?.settings ?? [];
+    expect(after.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at + 1_000,
+      value: "owner/label",
+      repository: mains.promptLabel,
+      by: OWNER,
+      rev: 2,
+    });
+    expect(after.find((entry) => entry.name === "needsRepos")).toMatchObject({
+      source: "owner",
+      value: ["developing-today/code"],
+      repository: mains.needsRepos,
+      rev: 2,
+    });
+    // The two surfaces say the same sources.
+    const said = (await health(w)).settingsInForce;
+    expect(after.map(({ name, source, since }) => ({ name, source, since })) as unknown).toEqual(said);
+    // Nobody not signed in is told the values.
+    expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
+  });
+
+  test("the owner changes a setting from the app and puts it back: the edge does it, keeps it and goes by it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    const at = w.now.t;
+    const set = await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    expect([set.status, await set.json()]).toEqual([200, { ok: true, result: { rev: 1 } }]);
+    // Done here: no machine was asked, and none is handed it to do later.
+    expect(w.hostSaw.filter((call) => call.includes("/api/act"))).toEqual([]);
+    const answer = await machines(w);
+    expect(answer.held).toEqual([]);
+    expect(answer.platform?.settingsRev).toBe(1);
+    expect(answer.platform?.settings?.find((entry) => entry.name === "promptLabel")).toMatchObject({
+      source: "owner",
+      since: at,
+      value: "owner/label",
+      by: OWNER,
+      rev: 1,
+    });
+    // The public answer names it the owner's, from when it was changed.
+    expect((await health(w)).settingsInForce.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // A list of repositories is kept once each, in the order given.
+    w.now.t += 1_000;
+    const repos = await w.act("settings.set", {
+      name: "needsRepos",
+      value: ["developing-today/code", "developing-today/opencode", "developing-today/code"],
+      baseRev: 1,
+    });
+    expect(await repos.json()).toEqual({ ok: true, result: { rev: 2 } });
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "needsRepos")?.value).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+    ]);
+    // Put back, main's is in force again.
+    w.now.t += 1_000;
+    const cleared = await w.act("settings.clear", { name: "promptLabel", baseRev: 2 });
+    expect(await cleared.json()).toEqual({ ok: true, result: { rev: 3 } });
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+    expect(source((await health(w)).settingsInForce, "needsRepos")).toBe("owner");
+    // With no name, every one the owner changed is put back.
+    const all = await w.act("settings.clear", {});
+    expect(await all.json()).toEqual({ ok: true, result: { rev: 4 } });
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+    // The log says what was changed by name and by whom, never the value.
+    const log = JSON.stringify(auditStored(w));
+    expect(log).toContain("settings.set");
+    expect(log).toContain("setting.clear");
+    expect(log).not.toContain("owner/label");
+    expect(log).not.toContain("developing-today/opencode");
+  });
+
+  test("a change is checked whole: a name the owner may not change, or a value not the setting's shape, changes nothing", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const refused = async (kind: string, args: Record<string, unknown>) => {
+      const res = await w.act(kind, args);
+      return [res.status, ((await res.json()) as { error: string }).error.split(":")[0]];
+    };
+    expect(await refused("settings.set", { name: "queue", value: "another-queue" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: " padded" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "a,b" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "x".repeat(51) })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: [] })).toEqual([400, "needsRepos"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: ["not a repository"] })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.set", { name: "needsRepos", value: "developing-today/code" })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.clear", { name: "repo" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "ok", baseRev: -1 })).toEqual([400, "baseRev"]);
+    // Nothing was kept.
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+  });
+
+  test("a change made from an older look is refused with the settings as they are now", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Two tabs both see revision 0; the first one's change is made.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "first/label", baseRev: 0 })).status).toBe(200);
+    // The second, from the same look, is refused and told what is there now.
+    const late = await w.act("settings.set", { name: "promptLabel", value: "second/label", baseRev: 0 });
+    const body = (await late.json()) as { error: string; settings: { rev: number; values: Record<string, unknown> } };
+    expect(late.status).toBe(409);
+    expect(body.settings).toMatchObject({ rev: 1, values: { promptLabel: "first/label" }, by: OWNER });
+    const clear = await w.act("settings.clear", { name: "promptLabel", baseRev: 0 });
+    expect(clear.status).toBe(409);
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "promptLabel")?.value).toBe(
+      "first/label",
+    );
+    // Without a revision it is made over whatever is there.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "third/label" })).status).toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(2);
+  });
+
+  test("only someone the edge is sure is the owner changes a setting", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const res = await w.browse("/console/api/act", {
+      body: { kind: "settings.set", args: { name: "promptLabel", value: "stranger/label" } },
+      token: null,
+    });
+    expect(res.status).not.toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+  });
+
+  test("a machine is told the owner's changes, runs with them, and says so; until then the screen says it has not", async () => {
+    const w = await setup({ direct: true });
+    // The machine's own: main's label and its own list.
+    const own = { promptLabel: w.edgeConfig.promptLabel, needsRepos: [...w.edgeConfig.needsRepos] };
+    const runs = { ...own, rev: 0 };
+    const said: unknown[] = [];
+    w.adopts.now = (settings) => {
+      said.push(settings);
+      const adopted = ownerSettingsAdopted(own, settings);
+      if (adopted === null) return null;
+      Object.assign(runs, adopted.values, { rev: adopted.rev });
+      // It reports what it runs with, as a console does.
+      w.edgeConfig.promptLabel = adopted.values.promptLabel;
+      w.edgeConfig.needsRepos = adopted.values.needsRepos;
+      return adopted.rev;
+    };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    // Before the owner changes anything, nothing is said, and it runs with its own.
+    expect(said).toEqual([undefined]);
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(0);
+    let answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([0, 0]);
+    // The owner changes the label from the app: Cloudflare goes by it at
+    // once, and the machine has not taken it yet.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([1, 0]);
+    // With its next report it is told, runs with it and says so.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 1, values: { promptLabel: "owner/label" } });
+    expect(runs).toMatchObject({ promptLabel: "owner/label", needsRepos: own.needsRepos, rev: 1 });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(1);
+    answer = await machines(w);
+    expect(answer.machines[0].settingsRev).toBe(1);
+    // Running with the owner's label is not a difference from main.
+    expect(answer.machines[0].differs ?? []).toEqual([]);
+    const differ = (
+      (await (await w.browse("/console/health", { token: null })).json()) as { machineSettingsDiffer: string[] }
+    ).machineSettingsDiffer;
+    expect(differ).toEqual([]);
+    // Put back, the machine is told the record with nothing in it and runs with its own again.
+    await w.act("settings.clear", { name: "promptLabel" });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 2, values: {} });
+    expect(runs).toMatchObject({ ...own, rev: 2 });
+    // The machine's word survives the object being put away.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.edge.now = w.makeEdge();
+    expect((await machines(w)).machines[0].settingsRev).toBe(2);
+  });
+
+  test("a machine's own label, other than main's, is still said as one where the owner has not changed it", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await machines(w)).machines[0].differs?.map((d) => d.name)).toEqual(["promptLabel"]);
+    // Once the owner has changed it, the machine is compared with the change by its revision instead.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label" });
+    expect((await machines(w)).machines[0].differs ?? []).toEqual([]);
+    // A console older than taking the owner's settings says no revision.
+    expect((await machines(w)).machines[0].settingsRev).toBeNull();
+  });
+});
+
 describe("the edge does the core itself", () => {
   type World = Awaited<ReturnType<typeof setup>>;
   /** The switch is on, the tokens are there, and a machine has said
    * where things are: from its first report on, this side does the core. */
-  async function primary() {
-    const w = await setup({ direct: true });
+  async function primary(kinds?: readonly string[]) {
+    const w = await setup({ direct: true, ...(kinds ? { kinds } : {}) });
     await w.hostReads();
     await w.link.now.once();
     w.hostSaw.length = 0;
@@ -3199,6 +4542,164 @@ describe("the edge does the core itself", () => {
     expect(later.res.status).toBe(200);
     expect(later.doc.board.counts).toEqual({ claimed: 2, blocked: 1 });
     expect(later.doc.read.board).toBe(new Date(w.now.t).toISOString());
+  });
+
+  test("a message is delivered by the edge through the bridge, with every machine away, and the agents and the log are read there", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    // Every machine goes away: nothing can be relayed or held for one.
+    w.net.hostUp = false;
+    const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
+    expect(await sent.json()).toEqual({
+      ok: true,
+      result: {
+        to: ["lane-1"],
+        command: false,
+        batch: "b1",
+        matched: 1,
+        delivered: 1,
+        recipients: ["lane-1"],
+        remaining: 0,
+        unregistered: [],
+      },
+    });
+    // The bridge was asked once, over its binding, as the PM stack.
+    expect(w.bridgeCalls).toHaveLength(1);
+    expect(w.bridgeCalls[0].method).toBe("POST");
+    expect(w.bridgeCalls[0].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(JSON.parse(w.bridgeCalls[0].body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["lane-1"],
+      body: "from the edge",
+      kind: "message",
+    });
+    // Nothing waits for a machine, and no machine was asked for anything.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held).toEqual([]);
+    expect(w.ran).toEqual([]);
+    // The agents list is the bridge's, read here: the ops document
+    // shows the agent the bridge named, not the host's empty list.
+    const ops = (await (await w.browse("/console/api/doc/ops")).json()) as { agents: { name: string }[] };
+    expect(ops.agents.map((a) => a.name)).toEqual(["lane-1"]);
+    // The message log is the bridge's too, at the address the app asks.
+    const log = (await (await w.browse("/console/api/messages?limit=15")).json()) as { body: string }[];
+    expect(log.map((m) => m.body)).toEqual(["earlier"]);
+    expect(w.bridgeCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "POST https://bridge.internal/fleet/pm-cred-test/send",
+      "GET https://bridge.internal/fleet/pm-cred-test/agents",
+      "GET https://bridge.internal/fleet/pm-cred-test/messages?limit=15&order=desc",
+    ]);
+    expect(w.hostSaw).not.toContain("GET /console/api/messages?limit=15");
+  });
+
+  test("the unified pipeline and directory are read at the edge, and a revoke is held for a machine, never done here", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    w.net.hostUp = false;
+    // The Messages screen's read: one feed over all three surfaces,
+    // the filters the owner chose carried to the bridge, and every
+    // row's real sender intact — an agent's command names the agent.
+    const feed = (await (await w.browse("/console/api/pipeline?kind=command&sender=lane-1")).json()) as {
+      surface: string;
+      sender_addr: string;
+    }[];
+    expect(feed.map((m) => [m.surface, m.sender_addr])).toEqual([
+      ["connector", "user:drew"],
+      ["fleet", "agent:lane-1"],
+      ["notes", "user:drew"],
+    ]);
+    // The Agents screen's read: the unified directory with credential
+    // state merged in — the fleet agent active, the notes-only
+    // identity present with no presence invented for it.
+    const directory = (await (await w.browse("/console/api/directory")).json()) as {
+      name: string;
+      surface: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string } | null;
+    }[];
+    const lane = directory.find((a) => a.name === "lane-1");
+    expect(lane?.credential?.state).toBe("active");
+    const scout = directory.find((a) => a.name === "muse/scout-1");
+    expect(scout?.surface).toBe("notes");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("active");
+    expect(w.bridgeCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET https://bridge.internal/fleet/pm-cred-test/pipeline?order=desc&kind=command&sender=lane-1&limit=100",
+      "GET https://bridge.internal/fleet/pm-cred-test/directory",
+      "GET https://bridge.internal/fleet/pm-cred-test/credentials",
+    ]);
+    expect(w.hostSaw).not.toContain("GET /console/api/pipeline?kind=command&sender=lane-1");
+    expect(w.hostSaw).not.toContain("GET /console/api/directory");
+    // The provisioning read (#14376): the minted enroll tokens'
+    // state, read the same way — state only, no hash, no value.
+    const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as {
+      agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
+      state: string;
+    }[];
+    expect(enrollTokens).toEqual([
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
+    ]);
+    expect(w.bridgeCalls.at(-1)?.method).toBe("GET");
+    expect(w.bridgeCalls.at(-1)?.url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(w.hostSaw).not.toContain("GET /console/api/enroll-tokens");
+    // A revoke asked here is held for a machine — the edge's
+    // credential holds the read scope only — and the bridge is not
+    // asked for one.
+    const callsBefore = w.bridgeCalls.length;
+    const held = await w.act("agent.revoke", { surface: "fleet", name: "lane-1" });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // Taking back unused enroll tokens is held the same way (#14376).
+    const heldEnroll = await w.act("agent.revoke-enroll", { agent: "new-1" });
+    expect(await heldEnroll.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // A mint is never held: its answer is the secret itself, shown
+    // once on the screen that asked — with no machine answering, it
+    // is refused, and the bridge is not asked for one either.
+    const mint = await w.act("agent.mint-enroll", { agent: "new-2", kind: "muse" });
+    expect(((await mint.json()) as { held?: unknown }).held).not.toBe(true);
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held.map((entry) => entry.kind)).toEqual(["agent.revoke", "agent.revoke-enroll"]);
+  });
+
+  test("a bridge credential the bridge no longer knows stops the send here, with the reason said", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    w.bridgeRefuses.on = true;
+    const sent = await w.act("message.send", { to: ["lane-1"], text: "never sent" });
+    expect(sent.status).toBe(502);
+    expect(((await sent.json()) as { error: string }).error).toContain("turned the PM credential away");
+    // It was not handed to a machine either: the refusal is the
+    // credential's, and a machine's own dispatch is another matter.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held).toEqual([]);
+    expect(w.ran).toEqual([]);
   });
 
   test("a section is read again when its own interval has passed, behind the answer and never in its way", async () => {
@@ -3356,7 +4857,7 @@ describe("the edge does the core itself", () => {
     expect(w.stored.has("m:board")).toBe(false);
     w.now.t += 1_000;
     const answer = await w.link.now.once();
-    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
     expect(answer?.want).toEqual([]);
     // The laptop's own board changes. Its report carries neither the
     // board nor its word on how current the board is.
@@ -3503,9 +5004,9 @@ describe("the edge does the core itself", () => {
     expect(w.ran).toEqual([]);
     expect(onlyPokes(w)).toBe(true);
     // Only the reply's queue task waits for a machine.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // Each is on this side's record of what was done, without what was typed.
-    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; args: unknown }[];
+    const audit = auditStored(w) as { action: string; phase: string; ok?: boolean; args: unknown }[];
     expect(audit.filter((a) => a.phase === "done" && a.ok).map((a) => a.action)).toEqual([
       "ask.reply",
       "ask.close",
@@ -3517,6 +5018,138 @@ describe("the edge does the core itself", () => {
       "deploy.start",
     ]);
     expect(JSON.stringify(audit)).not.toContain("Thanks");
+  });
+
+  test("one audit event writes one entry, not the whole log (#14960)", async () => {
+    const w = await primary();
+    // A log at its kept size, kept one entry per key.
+    for (let seq = 0; seq < AUDIT_KEPT; seq++)
+      w.stored.set(`audit:${seq}`, { action: "seed", phase: "done", ok: true, n: seq });
+    w.stored.set("audit:next", AUDIT_KEPT);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("issue.comment", { issue: 7, text: "counted" })).status).toBe(200);
+    // Of the log, only the event's two entries (start and done) and the
+    // count beside them were written — never the whole log at once.
+    expect(w.puts.slice(before).filter((k) => k === "audit" || k.startsWith("audit:"))).toEqual([
+      "audit:300",
+      "audit:next",
+      "audit:301",
+      "audit:next",
+    ]);
+    // The kept size stands: the two oldest entries fell out of the window.
+    expect([w.stored.has("audit:0"), w.stored.has("audit:1"), w.stored.has("audit:301")]).toEqual([false, false, true]);
+    const log = auditStored(w) as { n?: number }[];
+    expect(log.length).toBe(AUDIT_KEPT);
+    expect(log[0].n).toBe(2);
+  });
+
+  test("one act more writes one act record, not the whole record of what was done (#14960)", async () => {
+    const w = await primary();
+    // The record at its kept size, kept one act per key, newest first.
+    const ids: string[] = [];
+    for (let n = 0; n < 30; n++) {
+      const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      ids.push(id);
+      w.stored.set(`act:${id}`, {
+        id,
+        kind: "issue.comment",
+        at: new Date(START + (30 - n) * 1000).toISOString(),
+        by: "owner",
+        status: "done",
+        note: "",
+      });
+    }
+    w.stored.set("acts:index", ids);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("issue.comment", { issue: 7, text: "counted" })).status).toBe(200);
+    const written = w.puts.slice(before).filter((k) => k === "acts" || k === "acts:index" || k.startsWith("act:"));
+    // The whole record was never written; the index was written once.
+    expect(written.filter((k) => k === "acts")).toEqual([]);
+    expect(written.filter((k) => k === "acts:index")).toHaveLength(1);
+    // Every act record written is the new act's own.
+    const fresh = [...new Set(written.filter((k) => k.startsWith("act:")))];
+    expect(fresh).toHaveLength(1);
+    expect(ids).not.toContain(fresh[0].slice(4));
+    // The kept size stands: the last act in the list fell out, record and all.
+    expect(w.stored.has(`act:${ids[29]}`)).toBe(false);
+    expect(storedList(w.stored, "acts", (id) => `act:${id}`)).toHaveLength(30);
+  });
+
+  test("taking one thing back writes the held index, not the whole list (#14960)", async () => {
+    const w = await primary();
+    // What is held, at its most, kept one record per key.
+    const ids: string[] = [];
+    for (let n = 0; n < 100; n++) {
+      const id = `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      ids.push(id);
+      w.stored.set(`held:${id}`, {
+        id,
+        kind: "issue.comment",
+        args: { issue: 7, text: `held ${n}` },
+        who: "owner",
+        at: new Date(START + n * 1000).toISOString(),
+        unsent: true,
+      });
+    }
+    w.stored.set("held:index", ids);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("held.drop", { id: ids[50] })).status).toBe(200);
+    // Only the index was written; the dropped record is forgotten, the rest untouched.
+    expect(w.puts.slice(before).filter((k) => k === "held" || k === "held:index" || k.startsWith("held:"))).toEqual([
+      "held:index",
+    ]);
+    expect(w.stored.has(`held:${ids[50]}`)).toBe(false);
+    expect(heldStored(w)).toHaveLength(99);
+  });
+
+  test("what an older copy kept as whole lists is read back the same, and kept the new way (#14960)", async () => {
+    const w = await primary();
+    // Storage as the version before this one left it: whole lists under plain names.
+    for (const k of [...w.stored.keys()]) {
+      if (/^(held|taken|handed|acts|act:|audit)/.test(k)) w.stored.delete(k);
+    }
+    const held = [
+      {
+        id: "20000000-0000-4000-8000-000000000001",
+        kind: "issue.comment",
+        args: { issue: 7, text: "kept" },
+        who: "owner",
+        at: new Date(START).toISOString(),
+        unsent: true,
+      },
+    ];
+    const acts = [
+      {
+        id: "20000000-0000-4000-8000-000000000002",
+        kind: "issue.comment",
+        at: new Date(START).toISOString(),
+        by: "owner",
+        status: "done",
+        note: "",
+      },
+    ];
+    w.stored.set("held", held);
+    w.stored.set("handed", [held[0].id]);
+    w.stored.set("acts", acts);
+    w.stored.set("audit", [{ action: "issue.comment", phase: "done", ok: true }]);
+    w.stored.set("taken", []);
+    w.edge.now = w.makeEdge();
+    const { doc } = await w.core();
+    // Read back the same: what is held is as it was, and the act is on the record.
+    expect(heldStored(w)).toEqual(held);
+    expect(handedStored(w)).toEqual([held[0].id]);
+    expect(doc.acts.map((a: { id: string }) => a.id)).toContain(acts[0].id);
+    // Kept the new way now: the plain names are gone, the records under their own.
+    expect([w.stored.has("held"), w.stored.has("handed"), w.stored.has("acts")]).toEqual([false, false, false]);
+    expect(w.stored.get(`held:${held[0].id}`)).toEqual(held[0]);
+    expect(w.stored.get(`act:${acts[0].id}`)).toEqual(acts[0]);
+    // The audit log, too: the next event is numbered after the kept entry.
+    expect((await w.act("issue.comment", { issue: 7, text: "after" })).status).toBe(200);
+    expect(w.stored.has("audit")).toBe(false);
+    expect(auditStored(w)[0]).toEqual({ action: "issue.comment", phase: "done", ok: true });
   });
 
   test("an action a device sends twice under one name is done here once, and answered the same after a restart too", async () => {
@@ -3533,7 +5166,7 @@ describe("the edge does the core itself", () => {
     expect(await third.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
     expect(comments()).toBe(1);
     // Its queue task is waiting for a machine once, too.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // On this side's record of what was done, under the device's name for it.
     expect(
       (await w.core()).doc.acts.filter((a: { id: string }) => a.id === id).map((a: { status: string }) => a.status),
@@ -3617,6 +5250,60 @@ describe("the edge does the core itself", () => {
     expect(w.ghMerged).toHaveLength(1);
   });
 
+  test("a timely action more than ten minutes old is not done unasked, by this side's clock or the device's (#13501)", async () => {
+    const w = await primary();
+    const MIN = 60_000;
+    const send = (body: Record<string, unknown>) => w.browse("/console/api/act", { body });
+    const refused = { error: STALE_ACT_ERROR, stale: true };
+    const t = w.now.t;
+    // Done eleven minutes ago by this side's clock: a device whose
+    // clock runs slow cannot talk it round by saying it sent it at once.
+    const slow = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000101",
+      at: t - 11 * MIN,
+      sent: t - 11 * MIN,
+    });
+    expect([slow.status, await slow.json()]).toEqual([409, refused]);
+    // Recent by this side's clock, old by the device's own: a clock
+    // that runs fast cannot hide that it waited.
+    const fast = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000102",
+      at: t + 60 * MIN,
+      sent: t + 72 * MIN,
+    });
+    expect([fast.status, await fast.json()]).toEqual([409, refused]);
+    // Neither was done, and neither name was written down: the owner
+    // may look again and send either under it.
+    expect(w.ghMerged).toEqual([]);
+    expect(w.stored.has("a:0b000000-0000-4000-8000-000000000101")).toBe(false);
+    // What the owner says of what is late is never held to it.
+    const comment = await send({
+      kind: "issue.comment",
+      args: { issue: 301, text: "Late, and still meant." },
+      at: t - 60 * MIN,
+      sent: t,
+    });
+    expect(comment.status).toBe(200);
+    // Looked at again and sent anyway: done.
+    const id = "0b000000-0000-4000-8000-000000000101";
+    const sure = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: t, sure: true });
+    expect(sure.status).toBe(200);
+    expect(w.ghMerged).toHaveLength(1);
+    // A name met before is answered as it was, however late it is
+    // asked about again: its answer may only have been lost on the way.
+    w.now.t += 30 * MIN;
+    const again = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: w.now.t });
+    expect([again.status, await again.json()]).toEqual([
+      200,
+      { ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" }, again: true },
+    ]);
+    expect(w.ghMerged).toHaveLength(1);
+  });
+
   test("machines: doing the core itself, the edge says which kinds it does and which sections it reads, less what it was turned away for", async () => {
     const w = await primary();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
@@ -3632,19 +5319,24 @@ describe("the edge does the core itself", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
         "ask.send",
         "ask.reply",
         "ask.close",
         "issue.comment",
         "need.comment",
+        "hands.done",
         "issue.rank",
         "task.move",
         "pr.merge",
         "deploy.start",
         "intake.send",
       ],
-      sections: ["board", "prs", "priorities", "asks"],
+      sections: ["board", "prs", "priorities", "asks", "census", "done"],
       refused: [],
+      settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
     // Turned away for merging: that is a machine's for the hour, and said so.
@@ -3654,6 +5346,311 @@ describe("the edge does the core itself", () => {
     expect(turned?.actions).not.toContain("pr.merge");
     expect(turned?.actions).toContain("issue.rank");
     expect(turned?.refused).toEqual(["pr.merge"]);
+  });
+
+  // "Done" on something that needed the owner's hands is the label
+  // taken off and the fleet told. It was a machine's to do: with the
+  // laptop away it waited. The Worker does it itself now, as it does a
+  // reply (#13491). The oracle is GitHub's stand-in: what the item
+  // carries and what was said on it afterwards.
+  describe("what needed the owner's hands, marked done with no machine", () => {
+    const REF = "developing-today/code#301";
+    /** One thing only he can do, in the repository the stand-in keeps comments for. */
+    const handsItem = (w: World) => {
+      w.ghNeeds["developing-today/code"].push({
+        number: 301,
+        title: "amd will not boot",
+        labels: ["user/escalated"],
+        body: 'It needs a person.\n<!-- hands:v1 kind=physical action="Power the host on at its BMC." -->',
+      });
+      // What was read before it was there is kept for two minutes: past that.
+      w.now.t += 121_000;
+    };
+    /** The list as GitHub has it now: the first look after a start
+     * shows the copy from before and reads behind it. */
+    const hands = async (w: World) => {
+      await w.core();
+      await settle(w);
+      return (await w.core()).doc.census.hands.map((i: { ref: string }) => i.ref);
+    };
+    const said = (w: World) => (w.ghComments[301] ?? []).map((c) => c.body);
+    const onItem = (method: string, tail: RegExp) => (m: string, url: string) => m === method && tail.test(url);
+
+    test("the label is taken off and the fleet is told, by the Worker itself, and the item leaves the list at once", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.net.hostUp = false;
+      w.net.edgeUp = false;
+      expect(await hands(w)).toEqual([REF]);
+      const before = w.githubCalls.length;
+      const done = await w.act("hands.done", { ref: REF, note: "the BMC is on" });
+      expect(await done.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
+      // The label first, then the comment, each once.
+      expect(
+        w.githubCalls
+          .slice(before)
+          .filter((c) => c.method !== "GET")
+          .map((c) => [c.method, new URL(c.url).pathname]),
+      ).toEqual([
+        ["DELETE", "/repos/developing-today/code/issues/301/labels/user%2Fescalated"],
+        ["POST", "/repos/developing-today/code/issues/301/comments"],
+      ]);
+      expect(w.ghNeeds["developing-today/code"][0].labels).toEqual([]);
+      expect(said(w)).toHaveLength(1);
+      expect(said(w)[0]).toContain("Done by the owner");
+      expect(said(w)[0]).toContain("the BMC is on");
+      // No machine was asked, and nothing waits for one.
+      expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
+      expect(heldStored(w)).toEqual([]);
+      // The list the app shows is read again before the answer: the
+      // item is gone from the very next look, with nothing left to settle.
+      expect((await w.core()).doc.census.hands).toEqual([]);
+    });
+
+    test("the comment fails after the label is off: it is said to have failed, no machine is given it, and trying again says it once", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.ghBreaks.push(onItem("POST", /\/issues\/301\/comments$/));
+      const first = await w.act("hands.done", { ref: REF });
+      expect(first.status).toBe(502);
+      expect(w.ghNeeds["developing-today/code"][0].labels).toEqual([]);
+      expect(said(w)).toEqual([]);
+      // Something was written, so it is not a machine's to do again from the start.
+      expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
+      expect(heldStored(w)).toEqual([]);
+      w.ghBreaks.length = 0;
+      const again = await w.act("hands.done", { ref: REF });
+      expect(await again.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
+      expect(said(w)).toHaveLength(1);
+    });
+
+    test("a label an agent already took off: the fleet is still told, once", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.ghNeeds["developing-today/code"][0].labels = [];
+      const done = await w.act("hands.done", { ref: REF });
+      expect(await done.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
+      expect(said(w)).toHaveLength(1);
+    });
+
+    test("a token that may not write there: nothing is written, and it is a machine's to do for the hour, as a reply is", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.ghRefuses.push(onItem("DELETE", /\/issues\/301\/labels\//));
+      const done = await w.act("hands.done", { ref: REF });
+      expect(done.status).toBe(200);
+      // The machine did it (the stand-in for it records what it ran).
+      expect(w.ran.filter((r) => r.kind === "hands.done")).toHaveLength(1);
+      expect(said(w)).toEqual([]);
+      const health = (await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] };
+      expect(health.refused).toEqual(["hands.done"]);
+    });
+
+    test("only for an item in a repository on the list, as on a machine", async () => {
+      const w = await primary();
+      const before = w.githubCalls.length;
+      const res = await w.act("hands.done", { ref: "someone/else#1" });
+      expect(res.status).toBe(400);
+      expect(w.githubCalls.slice(before).filter((c) => c.method !== "GET")).toEqual([]);
+    });
+  });
+
+  /** What needs the owner, as GitHub's stand-in has it for these tests. */
+  const NEEDS = (w: World) => {
+    w.ghNeeds["developing-today/code"].push(
+      {
+        number: 11,
+        title: "Sign the lease",
+        labels: ["user/escalated", "kind/chore"],
+        body: 'Notes.\n<!-- hands:v1 kind=signature action="Sign the lease and send it back." -->',
+      },
+      { number: 12, title: "Review the plan", labels: ["user/review"], pr: true },
+    );
+    w.ghNeeds["dezren39/darwin-nix"].push({
+      number: 3,
+      title: "Which host?",
+      labels: ["user/escalated"],
+      body: "Reason: two hosts fit",
+      updated_at: "2026-11-21T08:30:00Z",
+    });
+  };
+  const needsCalls = (w: World) => w.githubCalls.filter((c) => /\/issues\?state=open&labels=user%2F/.test(c.url));
+
+  test("what needs the owner is read here from each repository's own list, with no machine", async () => {
+    const w = await primary();
+    // Nothing waits on him yet.
+    expect((await w.core()).doc.census).toMatchObject({ hands: [], reviews: [], other: [] });
+    await settle(w);
+    const repos = Object.keys(w.ghNeeds);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    NEEDS(w);
+    w.now.t += 121_000;
+    await w.core();
+    await settle(w);
+    const { doc } = await w.core();
+    expect(doc.census).toEqual({
+      at: null,
+      complete: true,
+      unread: [],
+      hands: [
+        {
+          ref: "developing-today/code#11",
+          title: "Sign the lease",
+          url: "https://github.com/developing-today/code/issues/11",
+          pr: false,
+          updated: "2026-11-22T12:00:00",
+          kind: "signature",
+          action: "Sign the lease and send it back.",
+        },
+      ],
+      reviews: [
+        {
+          ref: "developing-today/code#12",
+          title: "Review the plan",
+          url: "https://github.com/developing-today/code/pull/12",
+          pr: true,
+          updated: "2026-11-22T12:00:00",
+        },
+      ],
+      other: [
+        {
+          ref: "dezren39/darwin-nix#3",
+          title: "Which host?",
+          url: "https://github.com/dezren39/darwin-nix/issues/3",
+          pr: false,
+          updated: "2026-11-21T08:30:00",
+          why: "two hosts fit",
+        },
+      ],
+    });
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    // Asked of each repository's list of each label, and never of the search.
+    const asked = needsCalls(w).map((c) => new URL(c.url).pathname);
+    expect(new Set(asked)).toEqual(new Set(repos.map((repo) => `/repos/${repo}/issues`)));
+    expect(w.githubCalls.some((c) => c.url.includes("/search/") && c.url.includes("user%2F"))).toBe(false);
+  });
+
+  test("a repository this side's token cannot see is named and the rest is shown; with none it can see, the last good copy stays and says why", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    NEEDS(w);
+    delete w.ghNeeds["developing-today-forks/opencode"];
+    w.now.t += 121_000;
+    await w.core();
+    await settle(w);
+    const partial = (await w.core()).doc;
+    expect([partial.census.complete, partial.census.unread]).toEqual([false, ["developing-today-forks/opencode"]]);
+    expect(partial.census.hands.map((i: { ref: string }) => i.ref)).toEqual(["developing-today/code#11"]);
+    expect(partial.health.census).toEqual({ ok: true, error: null });
+    // None of them now.
+    for (const repo of Object.keys(w.ghNeeds)) delete w.ghNeeds[repo];
+    w.now.t += 121_000;
+    await w.core();
+    await settle(w);
+    const none = (await w.core()).doc;
+    expect(none.census).toEqual(partial.census);
+    expect(none.health.census.ok).toBe(false);
+    expect(none.health.census.error).toContain("what needs you could not be read");
+    // Not seeing a repository is not being turned away: the list is still this side's to read.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] };
+    expect(health.refused).toEqual([]);
+  });
+
+  test("the lists that need the owner are asked for by their tags: unchanged, they cost nothing and nothing is kept again", async () => {
+    const w = await primary();
+    w.ghTags.on = true;
+    NEEDS(w);
+    const lists = Object.keys(w.ghNeeds).length * 2;
+    /** One round of reading, two minutes on: the calls it made for these lists. */
+    const round = async () => {
+      const from = needsCalls(w).length;
+      w.now.t += 121_000;
+      await w.core();
+      await settle(w);
+      return needsCalls(w).slice(from);
+    };
+    const changed = (calls: typeof w.githubCalls) =>
+      calls
+        .filter((c) => c.unchanged !== true)
+        .map(
+          (c) =>
+            `${new URL(c.url).pathname.split("/").slice(2, 4).join("/")} ${new URL(c.url).searchParams.get("labels")}`,
+        );
+    // Every list is asked for. The three that changed since the last read are read whole;
+    // the rest are "not modified".
+    const whole = await round();
+    expect([whole.length, changed(whole)]).toEqual([
+      lists,
+      [
+        "developing-today/code user/review",
+        "developing-today/code user/escalated",
+        "dezren39/darwin-nix user/escalated",
+      ],
+    ]);
+    const first = (await w.core()).doc.census;
+    expect(first.hands).toHaveLength(1);
+    const written = w.puts.length;
+    // Two minutes on, the same lists are asked for, and each is "not modified".
+    const again = await round();
+    expect([again.length, again.every((c) => c.unchanged === true)]).toEqual([lists, true]);
+    expect((await w.core()).doc.census).toEqual(first);
+    // What is shown did not change, so the copy kept is not written out again.
+    expect(w.puts.slice(written).filter((key) => key.startsWith("m:census:"))).toEqual([]);
+    // One of them changes: that list is read whole, and the others are still "not modified".
+    w.ghNeeds["dezren39/darwin-nix"].push({ number: 4, title: "Another", labels: ["user/review"] });
+    expect(changed(await round())).toEqual(["dezren39/darwin-nix user/review"]);
+    expect((await w.core()).doc.census.reviews.map((i: { ref: string }) => i.ref)).toEqual([
+      "developing-today/code#12",
+      "dezren39/darwin-nix#4",
+    ]);
+  });
+
+  test("a laptop that has not said which repositories to look in goes on reporting what needs the owner itself", async () => {
+    const w = await primary();
+    NEEDS(w);
+    // Its report names no repositories (a console from before it did).
+    const saidBefore = needsCalls(w).length;
+    w.edgeConfig.needsRepos = [];
+    (w.data.census as { reviews: unknown[] }).reviews = [
+      { ref: "developing-today/code#12", title: "From the laptop", url: "u", pr: true, updated: "" },
+    ];
+    w.now.t += 1_000;
+    await w.hostReads();
+    // It is told the list is not read here, sends its own, and that is what is shown.
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "done"]);
+    w.now.t += 121_000;
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await settle(w);
+    expect((await w.core()).doc.census.reviews.map((i: { title: string }) => i.title)).toEqual(["From the laptop"]);
+    // And GitHub is not asked again for lists it has no repositories to ask of.
+    expect(needsCalls(w).length).toBe(saidBefore);
+    expect((await w.core()).doc.health.census).toEqual({ ok: true, error: null });
+  });
+
+  test("refused every one of the lists, this side leaves what needs the owner to the laptop for the hour, as with anything it reads", async () => {
+    const w = await primary();
+    NEEDS(w);
+    w.ghRefuses.push((method, url) => method === "GET" && /labels=user%2F/.test(url));
+    w.now.t += 121_000;
+    await w.core();
+    await settle(w);
+    const health = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    expect(await health()).toEqual(["read.census"]);
+    // The laptop is told the list is its own to send again, and its copy is what is shown.
+    (w.data.census as { hands: unknown[] }).hands = [
+      { ref: "developing-today/code#11", title: "From the laptop", url: "u", pr: false, updated: "", action: "" },
+    ];
+    w.now.t += 1_000;
+    await w.hostReads();
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "done"]);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((await w.core()).doc.census.hands.map((i: { title: string }) => i.title)).toEqual(["From the laptop"]);
   });
 
   test("the platform's Workers are read at the edge from the repository's own list, with the last deploy of each that Actions deploys", async () => {
@@ -3666,21 +5663,37 @@ describe("the edge does the core itself", () => {
       malformed: number;
       workers: { name: string; group: string; state: string; deploy: string; workflow: string | null; run: unknown }[];
     };
-    expect([p.malformed, p.checked]).toEqual([0, "2026-11-23"]);
+    // The oracle for what the list says is the file itself, read here
+    // apart from the code under test (the #14290 pattern, #14297):
+    // whoever updates the repository's list — a Worker deployed, a
+    // deploy workflow renamed — changes what is expected with it.
+    const listed = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"), "utf8")) as {
+      checked: string;
+      workers: { name: string; group: string; state: string; deploy: string; workflow: string | null }[];
+    };
+    const listedByName = new Map(listed.workers.map((w) => [w.name, w]));
+    expect([p.malformed, p.checked]).toEqual([0, listed.checked]);
+    expect(p.workers.map((x) => x.name).sort()).toEqual(listed.workers.map((w) => w.name).sort());
     // The platform first, then the rest by what they belong to.
+    const own = listedByName.get("pm-console-edge");
+    if (!own) throw new Error("pm-console-edge is not in the repository's list of Workers");
     expect(p.workers[0]).toMatchObject({
-      name: "pm-console-edge",
-      group: "platform",
-      state: "in service",
-      deploy: "actions",
-      workflow: "pm-console-edge-deploy.yml",
+      name: own.name,
+      group: own.group,
+      state: own.state,
+      deploy: own.deploy,
+      workflow: own.workflow,
       // The latest run of its deploy on main, read from GitHub here.
       run: { commit: expect.stringMatching(/^[0-9a-f]{12}$/), state: "success", at: "2026-11-22T11:50:00Z" },
     });
     const byName = new Map(p.workers.map((x) => [x.name, x]));
     // One that a machine deploys by hand has no run to show; one that is not deployed, neither.
-    expect(byName.get("message-bridge")).toMatchObject({ deploy: "by hand", workflow: null, run: null });
-    expect(byName.get("fleet-hosted")).toMatchObject({ state: "not deployed", deploy: "none", run: null });
+    const byHand = listed.workers.find((w) => w.deploy === "by hand");
+    if (!byHand) throw new Error("the repository's list has no by-hand Worker");
+    expect(byName.get(byHand.name)).toMatchObject({ deploy: "by hand", workflow: null, run: null });
+    const notDeployed = listed.workers.find((w) => w.deploy === "none");
+    if (!notDeployed) throw new Error("the repository's list has no undeployed Worker");
+    expect(byName.get(notDeployed.name)).toMatchObject({ state: notDeployed.state, deploy: "none", run: null });
     expect(p.workers.map((x) => x.group)).toEqual(
       [...p.workers.map((x) => x.group)].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)),
     );
@@ -3863,7 +5876,7 @@ describe("the edge does the core itself", () => {
       result: { issue: 500, url: "https://github.com/developing-today/code/issues/500", queued: true },
     });
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
-    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    const held = heldStored(w) as { kind: string; args: Record<string, unknown> }[];
     expect(held.map((h) => [h.kind, h.args.issue, h.args.text])).toEqual([
       ["prompt.enqueue", 500, "File this from the edge"],
     ]);
@@ -3879,6 +5892,73 @@ describe("the edge does the core itself", () => {
     expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
     expect((await w.core()).doc.edge).toEqual({ held: 0, primary: true });
+  });
+
+  // A question or a standing instruction is filed here as what it is,
+  // and the machine that files its task is told which: the task then
+  // asks for an answer, or for the instruction to be recorded, and not
+  // for "something to be done". The oracle is GitHub's stand-in (the
+  // issue as filed) and what the machine was handed.
+  test("a question and a standing instruction are filed here as what they are, and the machine is told which when it files the task", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const asked = await w.act("ask.send", { text: "Why did the join slice stall?", intent: "question" });
+    expect(((await asked.json()) as { result: { issue: number } }).result.issue).toBe(500);
+    await w.act("ask.send", { text: "No merges on a red check.", intent: "directive" });
+    await w.act("ask.send", { text: "Do the docs" });
+    expect([500, 501, 502].map((n) => w.ghIssues[n].title)).toEqual([
+      "Owner asks: Why did the join slice stall?",
+      "Owner directs: No merges on a red check.",
+      "Owner: Do the docs",
+    ]);
+    expect(w.ghIssues[500].body).toContain("Change nothing to answer it");
+    const held = heldStored(w) as { kind: string; args: Record<string, unknown> }[];
+    expect(held.map((h) => [h.kind, h.args.issue, h.args.intent])).toEqual([
+      ["prompt.enqueue", 500, "question"],
+      ["prompt.enqueue", 501, "directive"],
+      // Something to do is held as it always was: nothing more is said of it.
+      ["prompt.enqueue", 502, undefined],
+    ]);
+    expect(Object.keys(held[2].args).sort()).toEqual(["at", "issue", "text"]);
+    // The list he sees says which each is.
+    w.now.t += 46_000;
+    await w.core();
+    await settle(w);
+    const listed = (await w.core()).doc.asks as { issue: number; intent: string }[];
+    expect(
+      listed
+        .filter((a) => a.issue >= 500)
+        .map((a) => [a.issue, a.intent])
+        .sort(),
+    ).toEqual([
+      [500, "question"],
+      [501, "directive"],
+      [502, "task"],
+    ]);
+    // A reply on the question is held as a question too.
+    await w.act("ask.reply", { issue: 500, text: "Since when?" });
+    expect((heldStored(w) as typeof held).at(-1)?.args).toMatchObject({
+      issue: 500,
+      intent: "question",
+      text: "Since when?",
+    });
+    // An intent that is none of the three is refused, and nothing is filed for it.
+    const before = w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues")).length;
+    const odd = await w.act("ask.send", { text: "x", intent: "rant" });
+    expect(odd.status).toBe(400);
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues")).length).toBe(before);
+    // The machine comes back and is handed each with what it is.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    await w.link.now.once();
+    expect(w.ran.filter((r) => r.kind === "prompt.enqueue").map((r) => [r.args.issue, r.args.intent])).toEqual([
+      [500, "question"],
+      [501, "directive"],
+      [502, undefined],
+      [500, "question"],
+    ]);
   });
 
   test("a task the laptop files late is on the board here as soon as the laptop says it is done", async () => {
@@ -3974,15 +6054,13 @@ describe("the edge does the core itself", () => {
     expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();
-    expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args]),
-    ).toEqual([
+    expect((heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args])).toEqual([
       ["triage.enqueue", { issue: 500, title: body.title, rank: "now", at }],
       ["triage.enqueue", { issue: 301, title: "do this first", rank: "expedite", at, note: true }],
       ["prompt.enqueue", { issue: 501, text: "pick these up first\n\n(note, Fleet; from the PM app)", at }],
     ]);
     // What he typed is not on the record of what was done.
-    expect(JSON.stringify(w.stored.get("audit"))).not.toContain("badge count");
+    expect(JSON.stringify(auditStored(w))).not.toContain("badge count");
     // The Intake screen, read here, already has them.
     const intake = (await (await w.browse("/console/api/intake")).json()) as {
       items: { number: number; kind: string }[];
@@ -4004,7 +6082,7 @@ describe("the edge does the core itself", () => {
       ["triage.enqueue", 301],
       ["prompt.enqueue", 501],
     ]);
-    expect(w.stored.get("held")).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("a laptop from before this side read things itself changes nothing by saying what it has", async () => {
@@ -4045,7 +6123,7 @@ describe("the edge does the core itself", () => {
     // Nothing of what this side reads is asked of it (it would send the
     // whole section every time, and it would never be taken).
     expect(answer.want).toEqual([]);
-    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
     // Its word did not make this side read anything again ...
     expect(asked(w)).toBe(before);
     // ... nor is its trouble said of a section this side reads well.
@@ -4061,7 +6139,7 @@ describe("the edge does the core itself", () => {
     const { result } = (await res.json()) as { result: { queued: boolean; note: string } };
     expect(result.queued).toBe(false);
     expect(result.note).toBe("filed, not queued: the issue could not be read from its task");
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("with too much already waiting, the issue is still filed and the answer says its task is not", async () => {
@@ -4081,7 +6159,7 @@ describe("the edge does the core itself", () => {
     const { result } = (await res.json()) as { result: { issue: number; queued: boolean; note: string } };
     expect(result).toMatchObject({ issue: 500, queued: false });
     expect(result.note).toBe("filed, not queued: too much is already waiting for a machine");
-    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+    expect((heldStored(w) as unknown[]).length).toBe(100);
   });
 
   test("the screens that need only GitHub and the queue are read here, and the ones that need a machine are asked of it", async () => {
@@ -4170,7 +6248,7 @@ describe("the edge does the core itself", () => {
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
     expect(await health()).toEqual(["pr.merge"]);
     // It is on this side's record as refused here, not as a failure of the owner's.
-    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; error?: string }[];
+    const audit = auditStored(w) as { action: string; phase: string; ok?: boolean; error?: string }[];
     expect(audit.filter((a) => a.action === "pr.merge" && a.phase === "done")).toEqual([
       expect.objectContaining({ ok: false, error: "refused here; left to a machine" }),
     ]);
@@ -4236,8 +6314,8 @@ describe("the edge does the core itself", () => {
     w.net.edgeUp = false;
     w.ghRefuses.push((method) => method !== "GET");
     const comment = await w.act("issue.comment", { issue: 301, text: "later, then" });
-    expect(await comment.json()).toEqual({ ok: true, held: true, result: null });
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
+    expect(await comment.json()).toEqual({ ok: true, held: true, result: null, waits: "either" });
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
     const merge = await w.act("pr.merge", { pr: 55 });
     expect(merge.status).toBe(503);
     expect(((await merge.json()) as { error: string }).error).toContain("not something to do late, so it is not kept");
@@ -4300,6 +6378,259 @@ describe("the edge does the core itself", () => {
     ).toEqual(["task.move", "read.board"]);
   });
 
+  // What was finished lately is read here like the rest of the core:
+  // the queue's own events and GitHub's list of what is closed. The
+  // oracle is the two stand-ins: what they hold is what is shown,
+  // whatever a machine's copy says.
+  describe("what was finished lately", () => {
+    type Done = {
+      done: {
+        tasks: { day: number; kinds: { kind: string | null; n: number }[]; latest: Record<string, unknown>[] };
+        merged: { day: number; more: boolean; latest: { number: number; by: string }[] };
+        closed: { day: number; more: boolean; latest: { number: number; reason: string | null }[] };
+      };
+      health: Record<string, { ok: boolean; error: string | null }>;
+    };
+    const read = async (w: World) => (await (await w.browse("/console/api/doc/done")).json()) as Done;
+    const CLOSED_LIST =
+      "https://api.github.com/repos/developing-today/code/issues?state=closed&sort=updated&direction=desc&per_page=100";
+    const finish = (w: World) => {
+      w.queueDone.push({ id: 21001, title: "Fix the claim scan", at: "2026-11-22T11:00:00", issue: 5, pr: 77 });
+      w.ghClosed.push(
+        {
+          number: 77,
+          title: "fix: claim scan",
+          html_url: "https://github.com/developing-today/code/pull/77",
+          closed_at: "2026-11-22T11:00:00Z",
+          updated_at: "2026-11-22T11:00:00Z",
+          user: { login: "lane-a" },
+          pull_request: { merged_at: "2026-11-22T11:00:00Z" },
+        },
+        {
+          number: 5,
+          title: "Claim scan is slow",
+          html_url: "https://github.com/developing-today/code/issues/5",
+          closed_at: "2026-11-22T11:05:00Z",
+          updated_at: "2026-11-22T11:05:00Z",
+          state_reason: "completed",
+          user: { login: "owner" },
+        },
+      );
+    };
+
+    test("the history behind Trends is read and kept by Cloudflare: no machine is asked, and its own clock reads on", async () => {
+      const w = await primary();
+      finish(w);
+      w.ghClosed.push({
+        number: 78,
+        title: "feat(pm-console): a screen of trends",
+        html_url: "https://github.com/developing-today/code/pull/78",
+        created_at: "2026-11-22T09:00:00Z",
+        closed_at: "2026-11-22T10:00:00Z",
+        updated_at: "2026-11-22T10:00:00Z",
+        user: { login: "lane-b" },
+        pull_request: { merged_at: "2026-11-22T10:00:00Z" },
+      });
+      // No machine: the laptop is out of reach.
+      w.net.hostUp = false;
+      const saw = w.hostSaw.length;
+      const res = await w.browse("/console/api/trends?days=7");
+      expect(res.status).toBe(200);
+      const doc = (await res.json()) as {
+        window: number;
+        days: string[];
+        history: { whole: boolean; from: string; covered: string | null };
+        merged: { all: number[]; kinds: Record<string, number[]>; projects: Record<string, number[]> };
+        features: { latest: Record<string, { number: number; title: string }[]> };
+        issues: { closed: number[] };
+        tasks: { all: number[] };
+        partial?: boolean;
+      };
+      // The last day and two older stretches are read by this first ask; the rest is still to come.
+      expect([doc.window, doc.days[doc.days.length - 1], doc.history.whole, doc.history.covered, doc.partial]).toEqual([
+        7,
+        "2026-11-22",
+        false,
+        "2026-11-15T12:00:00Z",
+        undefined,
+      ]);
+      const last = (list: number[]) => list[list.length - 1];
+      // Two pull requests merged that day (a fix and a feature), one issue closed, one task finished.
+      expect([last(doc.merged.all), last(doc.merged.kinds.feat), last(doc.merged.kinds.fix)]).toEqual([2, 1, 1]);
+      expect(last(doc.merged.projects["pm-stack"])).toBe(1);
+      expect(doc.features.latest["pm-stack"]).toEqual([
+        {
+          number: 78,
+          title: "a screen of trends",
+          at: "2026-11-22T10:00:00Z",
+          url: "https://github.com/developing-today/code/pull/78",
+        },
+      ] as never);
+      expect(last(doc.issues.closed)).toBe(1);
+      expect(last(doc.tasks.all)).toBe(1);
+      expect(w.hostSaw.length).toBe(saw);
+      // GitHub was asked for everything changed in the last day, then for two older stretches, each
+      // up to where the one after it began.
+      const history = () =>
+        w.githubCalls.filter((c) => c.url.includes("since=")).map((c) => new URL(c.url).searchParams.get("since"));
+      expect(history()).toEqual(["2026-11-21T12:00:00Z", "2026-11-19T12:00:00Z", "2026-11-15T12:00:00Z"]);
+      // What it read is in the object's own storage: where it has read to, and a day.
+      const kept = [...w.stored.keys()].filter((k) => k.startsWith("trend:")).sort();
+      expect(kept).toEqual(["trend:day:2026-11-22", "trend:meta"]);
+      const meta = () => JSON.parse(w.stored.get("trend:meta") as string) as Record<string, unknown>;
+      expect([meta().from, meta().cursor, meta().live, meta().whole]).toEqual([
+        "2026-08-24",
+        "2026-11-22T11:05:00Z",
+        true,
+        false,
+      ]);
+      // Asked for again before then, it answers from what it has: nothing is read on behind the
+      // answer, where it could be cut off part-way. Its clock does that.
+      const sooner = (await (await w.browse("/console/api/trends?days=7")).json()) as typeof doc;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect([sooner.history.whole, history().length]).toEqual([false, 3]);
+      // The screen was asked for, so the object's own clock reads the rest on, starting at once: a
+      // look at what is new and five pages of older stretches, which is all of them.
+      expect(w.alarm.at).toBe(w.now.t + 1000);
+      w.now.t += 1000;
+      await w.edge.now.alarm();
+      expect(history().slice(3)).toEqual([
+        "2026-11-22T11:05:00Z",
+        "2026-11-08T12:00:00Z",
+        "2026-10-23T12:00:00Z",
+        "2026-09-23T12:00:00Z",
+        "2026-08-24T00:00:00Z",
+      ]);
+      expect([meta().whole, meta().back, meta().readAt]).toEqual([true, null, new Date(w.now.t).toISOString()]);
+      // Whole, it wakes for it again within half an hour (sooner if something else is due, as the
+      // laptop going quiet is here); a wake before then asks GitHub nothing of it, and neither does
+      // the screen asked for again.
+      expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30 * 60_000);
+      w.now.t += 60_000;
+      await w.edge.now.alarm();
+      expect(history().length).toBe(8);
+      const whole = (await (await w.browse("/console/api/trends?days=7")).json()) as typeof doc;
+      expect([whole.history.whole, whole.history.covered]).toEqual([true, "2026-08-24T00:00:00Z"]);
+      expect(history().length).toBe(8);
+      // Something merges. Nobody opens the screen; half an hour on, the object's own clock reads on
+      // from where it stopped, and the screen has it when it is next opened.
+      w.ghClosed.push({
+        number: 79,
+        title: "feat(id): later",
+        html_url: "https://github.com/developing-today/code/pull/79",
+        created_at: "2026-11-22T12:10:00Z",
+        closed_at: "2026-11-22T12:20:00Z",
+        updated_at: "2026-11-22T12:20:00Z",
+        pull_request: { merged_at: "2026-11-22T12:20:00Z" },
+      });
+      w.now.t += 31 * 60_000;
+      await w.edge.now.alarm();
+      expect(history().length).toBe(9);
+      expect(history()[8]).toBe("2026-11-22T11:05:00Z");
+      const day = JSON.parse(w.stored.get("trend:day:2026-11-22") as string) as { pm: Record<string, unknown[]> };
+      expect(Object.keys(day.pm).sort()).toEqual(["77", "78", "79"]);
+      expect(day.pm["79"]).toEqual(["feat", "id", 10, "12:20", "later"]);
+      // It reads on like that only while somebody looks at the screen. A day after it was last
+      // asked for, a wake reads nothing of it: an object nobody needs is not kept awake.
+      w.now.t += 25 * 60 * 60_000;
+      await w.edge.now.alarm();
+      await w.edge.now.alarm();
+      expect(history().length).toBe(9);
+      // Opened again, it is read on at once (and by the clock again after).
+      await w.browse("/console/api/trends?days=7");
+      expect(history().length).toBe(10);
+    });
+
+    test("it comes from the queue store and GitHub, laptop or no laptop", async () => {
+      const w = await primary();
+      finish(w);
+      // The laptop is reporting, and its copy says nothing was finished.
+      const doc = await read(w);
+      expect(doc.done.tasks).toEqual({
+        day: 1,
+        kinds: [{ kind: null, n: 1 }],
+        latest: [
+          {
+            id: 21001,
+            title: "Fix the claim scan",
+            at: "2026-11-22T11:00:00",
+            lane: null,
+            model: null,
+            kind: null,
+            issue: 5,
+            pr: 77,
+            verdict: null,
+            url: "https://github.com/developing-today/code/issues/5",
+            prUrl: "https://github.com/developing-today/code/pull/77",
+          },
+        ],
+      });
+      expect([doc.done.merged.day, doc.done.merged.more, doc.done.merged.latest.map((m) => [m.number, m.by])]).toEqual([
+        1,
+        false,
+        [[77, "lane-a"]],
+      ]);
+      expect(doc.done.closed.latest.map((c) => [c.number, c.reason])).toEqual([[5, "completed"]]);
+      expect(doc.health.done).toEqual({ ok: true, error: null });
+      // Read from the two of them, by the platform's own settings and
+      // this side's own clock; the laptop was asked for nothing.
+      expect(onlyPokes(w)).toBe(true);
+      expect(w.githubCalls.map((c) => c.url)).toContain(CLOSED_LIST);
+      const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+      expect(w.queueCalls.filter((c) => c.sql === DONE_TASKS_SQL).map((c) => c.args)).toEqual([
+        [stamp(START - 7 * 24 * 3_600_000), platformSettings().queue],
+      ]);
+      expect(w.queueCalls.filter((c) => c.sql === DONE_COUNT_SQL).map((c) => c.args)).toEqual([
+        [stamp(START - 24 * 3_600_000), platformSettings().queue],
+      ]);
+      // And with the laptop gone for good, it is still read, and what is new is shown.
+      w.net.hostUp = false;
+      w.net.edgeUp = false;
+      w.queueDone.unshift({ id: 21002, title: "Another", at: "2026-11-22T12:01:00", issue: null, pr: null });
+      w.now.t += 121_000;
+      await read(w);
+      await settle(w);
+      expect((await read(w)).done.tasks.latest.map((t) => t.id)).toEqual([21002, 21001]);
+    });
+
+    test("turned away for GitHub's list, it is a machine's to read for the hour, and said so", async () => {
+      const w = await primary();
+      finish(w);
+      const refused = async () =>
+        ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+      const lists = () => w.githubCalls.filter((c) => c.url === CLOSED_LIST).length;
+      expect((await read(w)).done.merged.latest.map((m) => m.number)).toEqual([77]);
+      await settle(w);
+      w.ghRefuses.push((method, url) => method === "GET" && url.includes("state=closed"));
+      w.now.t += 121_000;
+      await read(w);
+      await settle(w);
+      expect(await refused()).toEqual(["read.done"]);
+      // Until a machine's copy comes, the copy read here is shown as one
+      // that could not be read again; GitHub is not asked again for it
+      // within the hour, and it is said to have been turned away.
+      const waiting = await read(w);
+      expect(waiting.done.merged.latest.map((m) => m.number)).toEqual([77]);
+      expect(waiting.health.done.ok).toBe(false);
+      const asked = lists();
+      w.now.t += 121_000;
+      await read(w);
+      await settle(w);
+      const still = await read(w);
+      expect(lists()).toBe(asked);
+      expect(still.done.merged.latest.map((m) => m.number)).toEqual([77]);
+      expect(still.health.done).toEqual({ ok: false, error: expect.stringContaining("turned away") });
+      // The laptop is told it is not read here, and its next report brings its own.
+      w.now.t += 1_000;
+      expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
+      w.now.t += 1_000;
+      await w.link.now.once();
+      const theirs = await read(w);
+      expect(theirs.done).toEqual(w.data.done as never);
+      expect(theirs.health.done).toEqual({ ok: true, error: null });
+    });
+  });
+
   test("a section this side's token is refused for is the laptop's to read, as before, until the token is put right", async () => {
     const w = await primary();
     const health = async () =>
@@ -4337,7 +6668,7 @@ describe("the edge does the core itself", () => {
     expect(still.health.prs).toEqual({ ok: false, error: expect.stringContaining("turned away") });
     // The laptop is told the list is not read here any more ...
     w.now.t += 1_000;
-    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census", "done"]);
     // ... so its next report brings its own copy, which is shown as it
     // was before this side read anything.
     w.now.t += 1_000;
@@ -4372,7 +6703,7 @@ describe("the edge does the core itself", () => {
     expect((await ops()).prs.map((p) => p.number)).toEqual([55]);
     expect(lists()).toBeGreaterThan(asked);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
   });
 
   test("what this side is turned away for is remembered when the object starts again, and tried again when the owner says", async () => {
@@ -4411,7 +6742,7 @@ describe("the edge does the core itself", () => {
     expect((await ops()).prs).toEqual(w.data.prs as never);
     await settle(w);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census", "done"]);
     await w.act("pr.merge", { pr: 55 });
     expect([lists(), merges()]).toEqual(asked);
     expect(w.ran.map((r) => r.kind)).toEqual(["pr.merge", "pr.merge"]);
@@ -4688,9 +7019,11 @@ describe("the edge does the core itself", () => {
       return seen;
     };
     const limited = await look();
-    // It was told once, by the first thing it asked. Nothing else that draws on the hour was
-    // asked: not the other list of that round, and not the second look.
-    expect(hourly()).toBe(before.hourly + 1);
+    // It was told by what it asked at once: the first call of each of the two lists the first
+    // screen reads from GitHub (the prompts, and what needs the owner). Nothing else that
+    // draws on the hour was asked: not the rest of either list, not the other screen's list,
+    // and not the second look.
+    expect(hourly()).toBe(before.hourly + 2);
     expect([limited.ops.prs, limited.ops.priorities, limited.core.asks]).toEqual([
       first.ops.prs,
       first.ops.priorities,
@@ -4714,18 +7047,18 @@ describe("the edge does the core itself", () => {
     const refused = async () =>
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
     w.now.t += 20 * 60_000;
-    expect(await refused()).toEqual(["read.asks", "read.prs"]);
+    expect(await refused()).toEqual(["read.asks", "read.census", "read.prs"]);
     await settle(w);
     // Something the owner does meanwhile is not sent either: it is kept, not lost.
     const tried = await w.act("issue.rank", { issue: 301, rank: "next" });
     expect(await tried.json()).toMatchObject({ ok: true, held: true });
-    expect(hourly()).toBe(before.hourly + 1);
+    expect(hourly()).toBe(before.hourly + 2);
     // That kind of action is left to a machine for five minutes, as when no time is given,
     // and not for the rest of the hour: what failed beside a call held back may have
     // failed for a reason of its own. (Tried again here, it is held back again.)
-    expect(await refused()).toEqual(["issue.rank", "read.asks", "read.prs"]);
+    expect(await refused()).toEqual(["issue.rank", "read.asks", "read.census", "read.prs"]);
     w.now.t += 5 * 60_000 + 1_000;
-    expect(await refused()).toEqual(["read.asks", "read.prs"]);
+    expect(await refused()).toEqual(["read.asks", "read.census", "read.prs"]);
     await settle(w);
     // For the rest of the forty: screens looked at, minutes passing, the check that health
     // makes. None of it asks GitHub for anything counted by the hour, and what is held back
@@ -4736,13 +7069,13 @@ describe("the edge does the core itself", () => {
       const said = await githubSaid(w);
       await settle(w);
       expect([minute, said.quiet, said.answers]).toEqual([minute, { core: back, search: null }, w.githubCalls.length]);
-      expect([minute, hourly()]).toEqual([minute, before.hourly + 1]);
+      expect([minute, hourly()]).toEqual([minute, before.hourly + 2]);
     }
     // The time comes, and GitHub answers again: it is asked, and what it says is shown with nothing wrong.
     w.ghLimits.length = 0;
     w.now.t = back + 181_000;
     const after = await look();
-    expect(hourly()).toBeGreaterThan(before.hourly + 1);
+    expect(hourly()).toBeGreaterThan(before.hourly + 2);
     expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
     expect([after.ops.health.prs.ok, after.ops.health.priorities.ok, after.core.health.asks.ok]).toEqual([
       true,
@@ -4829,14 +7162,14 @@ describe("the edge does the core itself", () => {
     await settle(w);
     expect(await health()).toEqual(["read.priorities"]);
     w.now.t += 1_000;
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks", "census", "done"]);
     w.ghLimits.length = 0;
     w.now.t += 4 * 60_000;
     expect(await health()).toEqual(["read.priorities"]);
     w.now.t += 61_000;
     expect(await health()).toEqual([]);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
   });
 
   test("a section is judged by its own sources: the queue refusing does not hand the laptop what is read from GitHub", async () => {
@@ -4950,7 +7283,7 @@ describe("the edge does the core itself", () => {
     expect(health.directReady).toBe(true);
     const selfCheck = health.selfCheck as { at: number; kinds: Record<string, { ok: boolean }> };
     expect(selfCheck.at).toBe(START);
-    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "priorities", "prs"]);
+    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "census", "done", "priorities", "prs"]);
     expect(Object.values(selfCheck.kinds).every((k) => k.ok)).toBe(true);
     // A second health read reuses the stored self-check: no more reads.
     const calls = asked(w);
@@ -5002,7 +7335,7 @@ describe("the edge does the core itself", () => {
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const held = await w.act("issue.comment", { issue: 14, text: "late" });
-    expect(await held.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     // And what the plan's screens read is the laptop's to answer.
     expect((await w.browse("/console/api/roadmap?area=fleet")).status).toBe(503);
     expect(w.githubCalls).toEqual([]);
@@ -5059,10 +7392,14 @@ describe("the edge does the core itself", () => {
     expect((await half.core()).doc.edge).toEqual({ held: 0, primary: false });
   });
 
-  test("a laptop too old to say where the queue is: the app is served from its reports, and nothing is done here", async () => {
+  // Until #14163 a laptop too old to say where the queue is left the
+  // Worker serving its reports and doing nothing itself. The Worker
+  // knows where things are by its own bundle now: it needs a machine to
+  // have said who may sign in, and nothing else.
+  test("a laptop too old to say where the queue is: the Worker does the core itself all the same, by main's settings", async () => {
     const w = await setup({ direct: true });
     // What an older laptop reports: the same settings, without the
-    // fields acting here needs. That shape still validates, with those empty.
+    // fields acting here needed. That shape still validates, with those empty.
     const legacy = w.edgeConfig as unknown as Record<string, unknown>;
     delete legacy.queueDbUrl;
     delete legacy.queueTokenName;
@@ -5077,26 +7414,27 @@ describe("the edge does the core itself", () => {
     });
     await w.hostReads();
     await w.link.now.once();
-    // The laptop goes out of reach: the app is still served, from its copy.
+    // The laptop goes out of reach: the board is the queue store's own word, read here.
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const { res, doc } = await w.core();
     expect(res.status).toBe(200);
-    expect(doc.board).toEqual(w.data.board);
-    expect(doc.asks).toEqual([]);
-    expect(doc.edge).toEqual({ held: 0, primary: false });
-    expect(w.githubCalls).toEqual([]);
-    expect(w.queueCalls).toEqual([]);
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(doc.asks.map((a: { issue: number }) => a.issue)).toEqual([202, 201]);
+    expect(w.strays).toEqual([]);
     const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
-    expect(health.configured).toBe(true);
-    expect(health.primary).toBe(false);
-    expect(health.directReady).toBe(false);
-    // And an action is held for the laptop, not done here.
-    expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toEqual({
-      ok: true,
-      held: true,
-      result: null,
-    });
+    expect([health.configured, health.primary, health.directReady]).toEqual([true, true, true]);
+    expect(health.machineSettingsDiffer).toEqual(["queueDbUrl", "queueTokenName", "promptLabel", "needsRepos"]);
+    // A machine that names no repositories goes on reporting what needs
+    // the owner itself: the Worker does not read that from none.
+    expect(doc.census).toEqual(w.data.census);
+    expect(w.githubCalls.filter((call) => /labels=user%2F/.test(call.url))).toEqual([]);
+    // And an action is done here, not held for the laptop.
+    expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toMatchObject({ ok: true });
+    expect(w.githubCalls.at(-1)).toMatchObject({ method: "POST", url: expect.stringContaining("/issues/14/comments") });
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("an older held action the laptop never took is done here first, under its own name", async () => {
@@ -5111,8 +7449,9 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
     w.net.hostUp = true;
@@ -5130,10 +7469,10 @@ describe("the edge does the core itself", () => {
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
     // The refused first try is recorded too: the two that count come last, in order.
     expect(posted.slice(-2)).toEqual(["older", "newer"]);
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
     expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
-    expect(w.stored.get("handed") ?? []).toEqual([]);
+    expect(handedStored(w)).toEqual([]);
   });
 
   test("a held rank is replaced by a newer rank about the same issue: the last one wins", async () => {
@@ -5148,8 +7487,9 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes ranking back.
     w.ghRefuses.length = 0;
     w.net.hostUp = true;
@@ -5160,7 +7500,7 @@ describe("the edge does the core itself", () => {
     const newerId = "0f000000-0000-4000-8000-000000000012";
     const second = await w.act("issue.rank", { issue: 201, rank: "now" }, newerId);
     expect(await second.json()).toMatchObject({ ok: true });
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
     expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.rank", state: "done" });
     expect(w.ghLabels[201]).toContain("now");
@@ -5179,6 +7519,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
@@ -5190,13 +7531,13 @@ describe("the edge does the core itself", () => {
     const answer = await w.link.now.once();
     expect(answer?.commands.map((c) => c.id)).toEqual([olderId]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
-    expect(w.stored.get("handed")).toEqual([olderId]);
+    expect(handedStored(w)).toEqual([olderId]);
     // A newer comment about the same issue waits behind the handed one:
     // it is kept, not done here.
     const newerId = "0f000000-0000-4000-8000-000000000022";
     const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
-    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
     // Nothing was done here: the laptop did the older, the newer waits.
     // The only call this side made was the older one's refused try.
     expect(w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body)).toEqual(['{"body":"older"}']);
@@ -5215,6 +7556,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
@@ -5227,14 +7569,945 @@ describe("the edge does the core itself", () => {
     const done = (await second.json()) as { ok?: boolean; held?: boolean };
     expect(done).toMatchObject({ ok: true });
     expect(done.held).toBeUndefined();
-    expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
-    ).toEqual([7]);
+    expect((heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([7]);
     const posted = w.githubCalls
       .filter((c) => comment(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
     expect(posted.slice(-1)).toEqual(["unrelated"]);
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
+  });
+
+  // ---- what is held, done here when this side can again (#13831) -----------
+
+  const COMMENT = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+  type HeldWorld = Awaited<ReturnType<typeof primary>>;
+  /** The words of every comment asked of GitHub, in order (refused ones too). */
+  const commented = (w: HeldWorld) =>
+    w.githubCalls
+      .filter((c) => COMMENT(c.method, c.url))
+      .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
+  const heldIds = (w: HeldWorld) => (heldStored(w) as { id: string }[]).map((h) => h.id);
+  /** What is held, each with who it waits for, as the Machines screen is told it. */
+  const heldWaits = async (w: HeldWorld) =>
+    ((await (await w.browse("/console/api/machines")).json()) as MachinesAnswer).held.map((h) => [h.id, h.waits]);
+  /** This side wakes itself: at the time it asked for, and (as in service) as an object that has just started. */
+  const wake = async (w: HeldWorld) => {
+    w.now.t = Math.max(w.now.t, w.alarm.at);
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    await settle(w);
+  };
+  /** Turned away for comments with every machine away: each comment asked for is held. */
+  const heldComments = async (w: HeldWorld, comments: [id: string, issue: number, text: string][]) => {
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    for (const [id, issue, text] of comments) {
+      expect(await (await w.act("issue.comment", { issue, text }, id)).json()).toEqual({
+        ok: true,
+        held: true,
+        result: null,
+        waits: "either",
+      });
+      w.now.t += 1_000;
+    }
+  };
+  const ID = (n: number) => `0f000000-0000-4000-8000-${String(100_000 + n).padStart(12, "0")}`;
+
+  test("what is held and never reached a machine is done here when this side can again: with no machine, once, and the owner sees it done", async () => {
+    const w = await primary();
+    const t0 = w.now.t;
+    await heldComments(w, [[ID(1), 7, "held, then done here"]]);
+    expect(w.stored.get(`a:${ID(1)}`)).toMatchObject({ state: "given" });
+    expect(commented(w)).toEqual(["held, then done here"]);
+    // The token is put right. Nothing tells this side so: it finds out when its hour for the
+    // kind is up, and it has asked to be woken then. A wake before that (to notice the laptop
+    // gone quiet) asks GitHub nothing about it.
+    w.ghRefuses.length = 0;
+    await wake(w);
+    expect(w.now.t).toBeLessThan(t0 + 60 * 60_000);
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(1)]]);
+    await wake(w);
+    expect(w.now.t).toBe(t0 + 60 * 60_000);
+    // Done here: asked of GitHub once more and no more, by no machine.
+    expect(commented(w)).toEqual(["held, then done here", "held, then done here"]);
+    expect([heldIds(w), takenStored(w), handedStored(w), w.ran]).toEqual([[], [], [], []]);
+    expect(w.stored.get(`a:${ID(1)}`)).toMatchObject({ kind: "issue.comment", state: "done", status: 200 });
+    const { doc } = await w.core();
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(1))).toMatchObject({
+      kind: "issue.comment",
+      status: "done",
+    });
+    // Sent again under its name, it is answered from the record, not done again; and a
+    // machine that comes back is handed nothing.
+    const again = (await (await w.act("issue.comment", { issue: 7, text: "held, then done here" }, ID(1))).json()) as {
+      again?: boolean;
+    };
+    expect([again.again, commented(w).length]).toEqual([true, 2]);
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.ran).toEqual([]);
+  });
+
+  test("kept with the laptop long gone and nobody to tell, it still asks to be woken for it: nothing else would wake it", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // The laptop went quiet, and that has been said. Nothing is left to wake this side.
+    await wake(w);
+    expect(w.stored.get("silent")).toBe(true);
+    const idle = w.alarm.at;
+    w.now.t += 3 * 60 * 60_000;
+    const kept = w.now.t;
+    await heldComments(w, [[ID(91), 7, "kept late at night"]]);
+    expect(idle).toBeLessThan(kept);
+    expect(w.alarm.at).toBe(kept + 60 * 60_000);
+    w.ghRefuses.length = 0;
+    await wake(w);
+    expect([commented(w), heldIds(w)]).toEqual([["kept late at night", "kept late at night"], []]);
+    // With nothing held, and nothing else to wake for, it asks for no wake at all.
+    const after = w.alarm.at;
+    await wake(w);
+    expect(w.alarm.at).toBe(after);
+  });
+
+  test("turned away for calling too often, what is held is done at the time GitHub gave and not before", async () => {
+    const w = await primary();
+    const t0 = w.now.t;
+    const back = Math.floor((t0 + 40 * 60_000) / 1000) * 1000;
+    w.ghLimits.push(COMMENT);
+    w.ghLimitSays.headers = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "when GitHub answers" }, ID(2))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "either",
+    });
+    w.ghLimits.length = 0;
+    const asked = w.githubCalls.length;
+    // Woken before the time (for the laptop gone quiet): nothing is asked of GitHub at all.
+    await wake(w);
+    expect([w.now.t < back, w.githubCalls.length, heldIds(w)]).toEqual([true, asked, [ID(2)]]);
+    // Woken again half a minute before the time: still nothing, and its next wake is the time
+    // itself (a pass that found nothing due does not put the next one off).
+    w.now.t = back - 30_000;
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    expect([w.githubCalls.length, w.alarm.at]).toEqual([asked, back]);
+    // Its next wake is the time GitHub gave, and then it is done.
+    await wake(w);
+    expect(w.now.t).toBe(back);
+    expect(commented(w)).toEqual(["when GitHub answers", "when GitHub answers"]);
+    expect([heldIds(w), w.ran]).toEqual([[], []]);
+    expect(w.stored.get(`a:${ID(2)}`)).toMatchObject({ state: "done", status: 200 });
+  });
+
+  test("done in the order they were done: two about one thing one after the other, and one about another thing not kept behind them", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(11), 7, "first about seven"],
+      [ID(12), 8, "about eight"],
+      [ID(13), 7, "second about seven"],
+    ]);
+    w.ghRefuses.length = 0;
+    await wake(w);
+    await wake(w);
+    expect(commented(w).slice(1)).toEqual(["first about seven", "about eight", "second about seven"]);
+    expect([heldIds(w), w.ran]).toEqual([[], []]);
+  });
+
+  test("one a machine has been handed is the machine's: this side does not do it, nor anything else about the same thing", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(21), 7, "handed"],
+      [ID(22), 9, "about nine"],
+    ]);
+    // The laptop comes back and is handed both. It goes again before saying what became of them.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(21), ID(22)]);
+    expect(handedStored(w)).toEqual([ID(21), ID(22)]);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // A later one about the same thing as a handed one waits behind it, held.
+    w.now.t += 2 * 60 * 60_000;
+    w.ghRefuses.length = 0;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "behind it" }, ID(23))).json()).toMatchObject({
+      held: true,
+    });
+    const before = commented(w).length;
+    const kept = (heldStored(w) as { id: string; at: string }[]).map((h) => Date.parse(h.at));
+    // Woken (to notice the laptop gone quiet), none of the three is done here: two are the
+    // laptop's, which may have done them, and the third waits behind one of those.
+    await wake(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([before, [ID(21), ID(22), ID(23)]]);
+    expect(takenStored(w)).toEqual([]);
+    // Nor does it wake itself over them again and again: nothing here is its own to do, and
+    // its next wake is the day's end of the oldest.
+    expect(w.alarm.at).toBe(kept[0] + 24 * 60 * 60_000 + 1_000);
+    // The laptop never comes back. At the day's end the first it was handed is dropped, and
+    // said to have been; what waited behind it is then this side's, and is done here, once.
+    await wake(w);
+    expect(heldIds(w)).toEqual([ID(22)]);
+    expect(commented(w).slice(before)).toEqual(["behind it"]);
+    const { doc } = await w.core();
+    // (Not "not sent": the laptop was handed it, and may have done it.)
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(21))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/may have got this, and did not say what became of it within a day/),
+    });
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(23))).toMatchObject({ status: "done" });
+  });
+
+  test("a machine reporting while this side is doing one: it is not handed that one, nor one behind it about the same thing, and each is done once", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(31), 7, "A"],
+      [ID(32), 7, "B"],
+      [ID(33), 8, "C"],
+    ]);
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    // This side wakes and begins A; GitHub is slow to answer.
+    let answerNow: () => void = () => {};
+    w.ghHolds.push({
+      match: COMMENT,
+      wait: new Promise<void>((resolve) => {
+        answerNow = resolve;
+      }),
+    });
+    const waking = w.edge.now.alarm();
+    for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(commented(w)).toEqual(["A", "A"]);
+    expect([heldIds(w), (takenStored(w) as { id: string }[]).map((t) => t.id)]).toEqual([[ID(32), ID(33)], [ID(31)]]);
+    // The laptop is back, and reports while A is still being done.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    const answer = await w.link.now.once();
+    expect(answer?.commands.map((c) => c.id)).toEqual([ID(33)]);
+    expect(handedStored(w)).toEqual([ID(33)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment").map((r) => r.args.text)).toEqual(["C"]);
+    // GitHub answers. A is done here, then B behind it; C was the laptop's and is not done here.
+    w.ghHolds.length = 0;
+    answerNow();
+    await waking;
+    await settle(w);
+    expect(commented(w)).toEqual(["A", "A", "B"]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    expect(heldIds(w)).toEqual([ID(33)]);
+    // The laptop says C is done, and nothing waits.
+    await w.hostReads();
+    await w.link.now.once();
+    expect([heldIds(w), handedStored(w)]).toEqual([[], []]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    for (const n of [31, 32]) expect(w.stored.get(`a:${ID(n)}`)).toMatchObject({ state: "done", status: 200 });
+  });
+
+  test("a newer one about a thing arriving while an older held one is being done here waits for it, and is done after", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(41), 7, "older"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    let answerNow: () => void = () => {};
+    w.ghHolds.push({
+      match: (method, url) => COMMENT(method, url),
+      wait: new Promise<void>((resolve) => {
+        answerNow = resolve;
+      }),
+    });
+    const waking = w.edge.now.alarm();
+    for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
+    // The owner comments again on the same issue. It is not asked of GitHub until the older has ended.
+    w.net.edgeUp = true;
+    const newer = w.act("issue.comment", { issue: 7, text: "newer" }, ID(42));
+    for (let turn = 0; turn < 20; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(commented(w)).toEqual(["older", "older"]);
+    w.ghHolds.length = 0;
+    answerNow();
+    await waking;
+    expect(await (await newer).json()).toMatchObject({ ok: true });
+    await settle(w);
+    expect(commented(w)).toEqual(["older", "older", "newer"]);
+    expect(heldIds(w)).toEqual([]);
+  });
+
+  test("turned away again when it tries: what it took goes back as it was, where it was, and a machine can still be handed it", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(51), 7, "still refused"],
+      [ID(52), 8, "behind"],
+    ]);
+    // The hour passes and the token is as it was.
+    await wake(w);
+    await wake(w);
+    const tried = w.now.t;
+    expect(commented(w)).toEqual(["still refused", "still refused"]);
+    expect(heldIds(w)).toEqual([ID(51), ID(52)]);
+    expect([takenStored(w), handedStored(w)]).toEqual([[], []]);
+    expect(w.stored.get(`a:${ID(51)}`)).toMatchObject({ state: "given" });
+    // Not tried again before the kind's next hour is up.
+    expect(w.alarm.at).toBe(tried + 60 * 60_000);
+    // Sent again under its name meanwhile, it is not done here: it is a machine's by name, and waits once.
+    w.ghRefuses.length = 0;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "still refused" }, ID(51))).json()).toMatchObject({
+      held: true,
+      again: true,
+    });
+    expect(commented(w)).toHaveLength(2);
+    // The laptop comes back, is handed both in order, and does each once.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(51), ID(52)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment").map((r) => r.args.text)).toEqual([
+      "still refused",
+      "behind",
+    ]);
+    await w.hostReads();
+    await w.link.now.once();
+    expect(heldIds(w)).toEqual([]);
+    // Nothing more was asked of GitHub here.
+    expect(commented(w)).toHaveLength(2);
+  });
+
+  test("put away while it had one taken: an object that starts again settles each by its record, and nothing is done twice", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(61), 7, "begun, and not known to have ended"],
+      [ID(62), 8, "never begun"],
+      [ID(63), 9, "back in the list already"],
+      [ID(64), 10, "ended"],
+      [ID(65), 11, "untouched"],
+    ]);
+    const held = heldStored(w) as { id: string; at: string }[];
+    const by = (n: number) => held.find((h) => h.id === ID(n)) as { id: string; at: string };
+    // As an object put away part-way would leave things: four taken, three of them out of the list.
+    // (The taken index also names two that are not records of a taken thing: one with no
+    // record kept under its name, and one whose record's name is not a name.)
+    w.stored.set("taken:index", [ID(61), ID(62), ID(63), ID(64), "not one", ID(66)]);
+    for (const n of [61, 62, 63, 64]) w.stored.set(`taken:${ID(n)}`, by(n));
+    w.stored.set(`taken:${ID(66)}`, { id: 7 });
+    w.stored.set("held:index", [ID(63), ID(65)]);
+    w.stored.set(`held:${ID(63)}`, by(63));
+    w.stored.set(`held:${ID(65)}`, by(65));
+    w.stored.set(`a:${ID(61)}`, { at: w.now.t, kind: "issue.comment", state: "running" });
+    w.stored.set(`a:${ID(64)}`, { at: w.now.t, kind: "issue.comment", state: "done", status: 200, body: { ok: true } });
+    // (The one never begun was put away just after being turned away again: its name's record
+    // had been cleared for the try, and not yet written back.)
+    w.stored.delete(`a:${ID(62)}`);
+    const asked = commented(w).length;
+    w.edge.now = w.makeEdge();
+    const { doc } = await w.core();
+    // Never begun: it waits again, in its place (before the two that were kept after it).
+    expect(heldIds(w)).toEqual([ID(62), ID(63), ID(65)]);
+    expect(w.stored.get(`a:${ID(62)}`)).toMatchObject({ state: "given" });
+    expect(takenStored(w)).toEqual([]);
+    // Begun and not known to have ended: neither side does it again, and the owner is told to look.
+    expect(w.stored.get(`a:${ID(61)}`)).toMatchObject({ state: "done", status: 502 });
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(61))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/restarted while doing this/),
+    });
+    // The one that had ended is as its record says.
+    expect(w.stored.get(`a:${ID(64)}`)).toMatchObject({ state: "done", status: 200 });
+    expect(doc.edge).toEqual({ held: 3, primary: true });
+    // The laptop comes back: it is handed the three that wait, and no other.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(62), ID(63), ID(65)]);
+    expect(commented(w)).toHaveLength(asked);
+    // Something in storage that is not a list of them is nothing taken.
+    for (const odd of [7, "x", { id: ID(61) }, null]) {
+      w.stored.set("taken", odd);
+      w.edge.now = w.makeEdge();
+      expect([odd, (await w.core()).res.status]).toEqual([odd, 200]);
+    }
+  });
+
+  // Since "done" became this side's (#13491) no kind of today's that
+  // only a machine can do is about the same thing as one done here. The
+  // rule has to hold for the next that is, so this object is told not
+  // to do "done": it stands for a kind only a machine can do.
+  test("one that only a machine can do is a machine's: this side does not try it, and what comes after it about the same thing waits behind it", async () => {
+    const w = await primary(DIRECT_ACTIONS.filter((kind) => kind !== "hands.done"));
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const ref = "developing-today/code#1";
+    // Marking a need done is a machine's to do here; a comment on it is something this side does.
+    expect(await (await w.act("hands.done", { ref }, ID(111))).json()).toMatchObject({ held: true });
+    w.now.t += 1_000;
+    const asked = w.githubCalls.length;
+    expect(await (await w.act("need.comment", { ref, text: "after it" }, ID(112))).json()).toMatchObject({
+      held: true,
+    });
+    // Nothing was tried here for either, and neither was failed.
+    expect(heldIds(w)).toEqual([ID(111), ID(112)]);
+    // Each is said to wait for a machine: the one only it can do, and the one behind it.
+    expect(await heldWaits(w)).toEqual([
+      [ID(111), "machine"],
+      [ID(112), "machine"],
+    ]);
+    expect(w.stored.get(`a:${ID(111)}`)).toMatchObject({ state: "given" });
+    // Woken, this side still does neither: the comment is behind what is a machine's.
+    await wake(w);
+    expect([heldIds(w), w.githubCalls.length]).toEqual([[ID(111), ID(112)], asked]);
+    const { doc } = await w.core();
+    expect(doc.acts.filter((a: { status: string }) => a.status === "failed")).toEqual([]);
+    // The laptop comes back and does both, in order.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(111), ID(112)]);
+  });
+
+  test("a pass that could do nothing is not tried again at once, until the owner says to", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(121), 7, "when storage is well"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    // What it takes cannot be written down: it is not taken, and still waits.
+    w.storeFails.add(`taken:${ID(121)}`);
+    await w.edge.now.alarm();
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(121)]]);
+    expect(((await w.core()).doc.edge as { held: number }).held).toBe(1);
+    // Its next wake for it is a minute on, not the next second.
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+    // Storage is well again, and the owner says to try again now: it wakes at once, and does it.
+    w.storeFails.clear();
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    expect(w.alarm.at).toBe(w.now.t + 1_000);
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect([commented(w).length, heldIds(w)]).toEqual([2, []]);
+  });
+
+  test("a take that could not be written down does not leave the thing marked as being done: a newer one about it is not left waiting", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(125), 7, "older"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    w.storeFails.add(`taken:${ID(125)}`);
+    await w.edge.now.alarm();
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(125)]]);
+    // Storage is well again, and the owner comments on the same issue: the older is made
+    // first, then the newer. (Were the issue still marked as being worked on, this would wait
+    // for an end that never comes.)
+    w.storeFails.clear();
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(126));
+    expect(await newer.json()).toMatchObject({ ok: true, result: expect.anything() });
+    expect([commented(w), heldIds(w)]).toEqual([["older", "older", "newer"], []]);
+  });
+
+  test("a side that no longer does the core does none of what is held: it stays a machine's, and is not failed", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(131), 7, "for whoever does the core"]]);
+    w.ghRefuses.length = 0;
+    // The switch is turned off (which restarts the Worker), and the hour passes.
+    w.edge.now = w.makeEdge(false);
+    w.now.t += 61 * 60_000;
+    await w.edge.now.alarm();
+    await settle(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(131)]]);
+    expect(w.stored.get(`a:${ID(131)}`)).toMatchObject({ state: "given" });
+    // The laptop comes back and does it.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(131)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("an older held one this side is turned away for again keeps a newer one about the same thing behind it, though the newer is a kind it can do", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    w.ghRefuses.push(labels);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "now" }, ID(141))).json()).toMatchObject({
+      held: true,
+    });
+    // The hour for ranking is up, GitHub still refuses it, and the owner comments on the same
+    // issue. The rank is tried first, refused again, and goes back; the comment, which this
+    // side could make, waits behind it and is not made out of turn.
+    w.now.t += 61 * 60_000;
+    const written = w.puts.length;
+    expect(await (await w.act("issue.comment", { issue: 201, text: "after the rank" }, ID(142))).json()).toMatchObject({
+      held: true,
+    });
+    expect([commented(w), heldIds(w)]).toEqual([[], [ID(141), ID(142)]]);
+    expect(w.stored.get(`a:${ID(141)}`)).toMatchObject({ state: "given" });
+    // Tried once, not over and over: taken, and then no longer taken.
+    expect(w.puts.slice(written).filter((key) => key === "taken:index")).toHaveLength(2);
+    // The laptop comes back and does both, in order.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(141), ID(142)]);
+  });
+
+  test("of two ranks held for one issue the last wins, and a comment about an issue does not replace its rank", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    w.ghRefuses.push(labels);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    for (const [id, issue, rank] of [
+      [ID(71), 201, "next"],
+      [ID(72), 201, "now"],
+      [ID(73), 202, "priority/high"],
+    ] as const) {
+      expect(await (await w.act("issue.rank", { issue, rank }, id)).json()).toMatchObject({ held: true });
+      w.now.t += 1_000;
+    }
+    w.ghRefuses.length = 0;
+    // The hour for ranking is up, and before this side has woken the owner comments on #202:
+    // its rank, held and older, is done first. A comment is not a newer rank.
+    w.now.t += 60 * 60_000;
+    w.net.edgeUp = true;
+    expect(await (await w.act("issue.comment", { issue: 202, text: "and a word" }, ID(74))).json()).toMatchObject({
+      ok: true,
+    });
+    expect(w.ghLabels[202]).toContain("priority/high");
+    expect(w.stored.get(`a:${ID(73)}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 200 });
+    expect(commented(w)).toEqual(["and a word"]);
+    // Then it wakes: of the two ranks for #201 the older is dropped as replaced, and the newer done.
+    await wake(w);
+    expect(w.stored.get(`a:${ID(71)}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
+    expect(w.stored.get(`a:${ID(72)}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 200 });
+    expect(w.ghLabels[201]).toContain("now");
+    expect(w.ghLabels[201]).not.toContain("next");
+    expect(heldIds(w)).toEqual([]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(71))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/Replaced by a newer issue\.rank/),
+    });
+  });
+
+  test("one the laptop may have done, its answer lost on the way back, is the laptop's by name: this side never does it, however long the laptop is away", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    // Turned away here, it goes to the laptop, which makes the comment. Its answer is lost on the way back.
+    w.net.loseAnswer = true;
+    expect(
+      await (await w.act("issue.comment", { issue: 7, text: "made by the laptop" }, ID(201))).json(),
+    ).toMatchObject({ held: true });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    // The laptop goes away. The token is put right, the hour passes, and this side wakes.
+    w.net.loseAnswer = false;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.ghRefuses.length = 0;
+    const asked = commented(w).length;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    // It does not make the comment a second time, and still holds it for the laptop.
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(201)]]);
+    expect(await heldWaits(w)).toEqual([[ID(201), "asked"]]);
+    // Nor when the owner says to try again now.
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    w.now.t += 2_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(201)]]);
+    // The laptop comes back, is handed it by name, and says what became of it: made once.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(201)]);
+    await w.link.now.once();
+    expect([heldIds(w), w.ran.filter((r) => r.kind === "issue.comment").length, commented(w).length]).toEqual([
+      [],
+      1,
+      asked,
+    ]);
+  });
+
+  /** Woken now, as an object that has just started. (Not at the time it asked for: with nothing
+   * of its own to do, that is the day's end of what it holds.) */
+  const wakeNow = async (w: HeldWorld) => {
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    await settle(w);
+  };
+
+  test("out of reach with nothing to say so, the laptop may have got it, and it is never done here; said to be out of reach, it is", async () => {
+    // Two comments, each turned away here with the laptop out of reach: one way, then the other.
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.net.silent = true;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "may have arrived" }, ID(211))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "asked",
+    });
+    w.net.silent = false;
+    expect(await (await w.act("issue.comment", { issue: 8, text: "never arrived" }, ID(212))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "either",
+    });
+    expect(await heldWaits(w)).toEqual([
+      [ID(211), "asked"],
+      [ID(212), "either"],
+    ]);
+    // The health answer, which anyone may read, counts them and says nothing else of them.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { held: unknown };
+    expect(health.held).toEqual({ either: 1, machine: 0, asked: 1 });
+    const { doc } = await w.core();
+    const noted = (id: string) => doc.acts.find((a: { id: string }) => a.id === id)?.note;
+    expect(noted(ID(211))).toMatch(/did not answer\. It may have got this/);
+    expect(noted(ID(212))).toMatch(/Cloudflare does it as soon as it can again/);
+    // So far GitHub was asked for the first, and refused it; with this side turned away by
+    // then, the second was not asked for at all.
+    expect(commented(w)).toEqual(["may have arrived"]);
+    // GitHub takes comments again, and the hour passes.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    // Only the one that reached nobody is made here. The other is still the laptop's.
+    expect([commented(w), heldIds(w)]).toEqual([["may have arrived", "never arrived"], [ID(211)]]);
+  });
+
+  test("offered again while it waits here, having reached no machine, it is not sent toward the laptop: it waits as it was, and is done once", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(221), 7, "offered twice"]]);
+    // The device never heard that it was kept, and offers it again. By now the laptop can be
+    // reached (it has not reported yet): sent on, the comment would be made there.
+    w.net.hostUp = true;
+    const again = await w.act("issue.comment", { issue: 7, text: "offered twice" }, ID(221));
+    expect(await again.json()).toEqual({ ok: true, held: true, result: null, again: true, waits: "either" });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    expect(heldIds(w)).toEqual([ID(221)]);
+    // This side makes it when it can: once.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w), heldIds(w)]).toEqual([["offered twice", "offered twice"], []]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    // Offered a third time, it is answered from what was written down.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "offered twice" }, ID(221))).json()).toMatchObject({
+      ok: true,
+      again: true,
+    });
+    expect(commented(w)).toHaveLength(2);
+  });
+
+  test("offered again while its first asking of the laptop is still out: word that the second never arrived is not word that the first did not", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    // Turned away here, it goes to the laptop, which is slow about it.
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "asked twice" }, ID(231));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    // The device gives up on that try and offers it again. By now the tunnel is down.
+    w.net.hostUp = false;
+    const second = await w.act("issue.comment", { issue: 7, text: "asked twice" }, ID(231));
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "asked" });
+    // GitHub takes comments again and the hour passes: this side still does not make it.
+    w.ghRefuses.length = 0;
+    const asked = commented(w).length;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(231)]]);
+    // The laptop finishes the first asking. It made the comment, once, and its answer settles the name.
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect([heldIds(w), w.ran.filter((r) => r.kind === "issue.comment").length, commented(w).length]).toEqual([
+      [],
+      1,
+      asked,
+    ]);
+  });
+
+  test("a newer one about the same thing does not go ahead of one the laptop may have: it waits behind it, and one about something else does not", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.loseAnswer = true;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "the laptop's" }, ID(241))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    w.net.loseAnswer = false;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // This side takes comments again.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    w.edge.now = w.makeEdge();
+    const asked = commented(w).length;
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(242));
+    expect(await newer.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(commented(w)).toHaveLength(asked);
+    expect(await heldWaits(w)).toEqual([
+      [ID(241), "asked"],
+      [ID(242), "machine"],
+    ]);
+    // A comment on another issue is nothing to do with either: it is made at once.
+    expect(await (await w.act("issue.comment", { issue: 8, text: "other" }, ID(243))).json()).toMatchObject({
+      ok: true,
+      result: expect.anything(),
+    });
+    expect(commented(w).slice(asked)).toEqual(["other"]);
+    // Woken, this side still does neither of the two.
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked + 1, [ID(241), ID(242)]]);
+  });
+
+  test("offered again at the moment this side has taken it to do itself, it is not sent to the laptop as well: the answer is what came of doing it here", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(251), 7, "taken, then offered"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    // The laptop can be reached again (it has not reported): a name sent toward it is done there.
+    w.net.hostUp = true;
+    w.edge.now = w.makeEdge();
+    // Its record is slow to read. The wake has taken it, and has not yet written down that it
+    // has begun, when the device offers it again: by its record it is still a machine's.
+    let read = () => {};
+    w.storeSlow.set(
+      `a:${ID(251)}`,
+      new Promise<void>((resolve) => {
+        read = resolve;
+      }),
+    );
+    const waking = w.edge.now.alarm();
+    const taken = () => takenStored(w).length;
+    for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(taken()).toBe(1);
+    const again = w.act("issue.comment", { issue: 7, text: "taken, then offered" }, ID(251));
+    for (let turn = 0; turn < 20; turn++) await new Promise((r) => setTimeout(r, 1));
+    w.storeSlow.clear();
+    read();
+    await waking;
+    expect(await (await again).json()).toMatchObject({ ok: true, again: true });
+    await settle(w);
+    // Made here, once, and not by the laptop.
+    expect(commented(w)).toEqual(["taken, then offered", "taken, then offered"]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    expect([heldIds(w), takenStored(w)]).toEqual([[], []]);
+  });
+
+  test("one kept before it was written down whether it reached a machine is taken to have: this side leaves it to the laptop", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(261), 7, "from before"]]);
+    // As the version before this one stored it: with no word either way.
+    const stored = heldStored(w) as Record<string, unknown>[];
+    expect(stored.map((h) => h.unsent)).toEqual([true]);
+    w.stored.set(`held:${ID(261)}`, stored.map(({ unsent: _unsent, ...rest }) => rest)[0]);
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(261)]]);
+    expect(await heldWaits(w)).toEqual([[ID(261), "asked"]]);
+    // The laptop, back, is handed it by name.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(261)]);
+  });
+
+  test("the laptop answers for a name and its answer cannot be read: the name is the laptop's, and nothing is left waiting under it", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.loseAnswer = true;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "answered, unread" }, ID(271))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    w.net.loseAnswer = false;
+    // The device offers it again; the laptop says how it went, and what it says does not arrive whole.
+    w.net.garble = true;
+    const again = await w.act("issue.comment", { issue: 7, text: "answered, unread" }, ID(271));
+    w.net.garble = false;
+    expect([again.status, await again.json()]).toEqual([503, { error: "the host's answer could not be read" }]);
+    expect(heldIds(w)).toEqual([]);
+    // Offered once more, the laptop's own answer comes through: made once.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "answered, unread" }, ID(271))).json()).toMatchObject({
+      ok: true,
+    });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("turned away again at the moment it is offered again: the device is told it is not over, and it is not sent to the laptop", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(255), 7, "taken, refused, offered"]]);
+    // The hour passes with GitHub still refusing comments, and the laptop can be reached again.
+    w.now.t += 61 * 60_000;
+    w.net.hostUp = true;
+    w.edge.now = w.makeEdge();
+    let read = () => {};
+    w.storeSlow.set(
+      `a:${ID(255)}`,
+      new Promise<void>((resolve) => {
+        read = resolve;
+      }),
+    );
+    const waking = w.edge.now.alarm();
+    const taken = () => takenStored(w).length;
+    for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(taken()).toBe(1);
+    const again = w.act("issue.comment", { issue: 7, text: "taken, refused, offered" }, ID(255));
+    for (let turn = 0; turn < 20; turn++) await new Promise((r) => setTimeout(r, 1));
+    w.storeSlow.clear();
+    read();
+    await waking;
+    const answer = await again;
+    expect([answer.status, await answer.json()]).toEqual([409, { error: "This is still being done.", running: true }]);
+    await settle(w);
+    // Refused twice by GitHub, made by nobody, and waiting again as it was.
+    expect(commented(w)).toEqual(["taken, refused, offered", "taken, refused, offered"]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    expect([heldIds(w), takenStored(w)]).toEqual([[ID(255)], []]);
+    expect(await heldWaits(w)).toEqual([[ID(255), "either"]]);
+  });
+
+  test("a rank the laptop may have set is not replaced by a newer rank: the newer waits behind it, and neither is done here", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    const labelled = () => w.githubCalls.filter((c) => labels(c.method, c.url)).length;
+    w.ghRefuses.push(labels);
+    // Turned away here, the rank goes to the laptop. Its answer is lost on the way back.
+    w.net.loseAnswer = true;
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "now" }, ID(281))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    w.net.loseAnswer = false;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // This side may label again, and the owner ranks the issue again.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    w.edge.now = w.makeEdge();
+    const asked = labelled();
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "next" }, ID(282))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "machine",
+    });
+    // Both wait, in the order they were done. GitHub was not asked, and the older was not
+    // dropped as replaced: done late by the laptop, it would otherwise be the last word.
+    expect([heldIds(w), labelled()]).toEqual([[ID(281), ID(282)], asked]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(281))).toMatchObject({ status: "running" });
+  });
+
+  test("a name given to a machine before its askings were counted is taken to have set off already", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // As the version before this one wrote it down: a machine's, with no count of its askings.
+    w.stored.set(`a:${ID(291)}`, { at: w.now.t, kind: "issue.comment", state: "given" });
+    // Word that this asking never arrived says nothing of the one before it.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "from before the count" }, ID(291))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "asked",
+    });
+    expect(w.stored.get(`a:${ID(291)}`)).toMatchObject({ state: "given", relays: 2 });
+    // A name new to this side, out of reach the same way, set off once: it reached nobody.
+    expect(await (await w.act("issue.comment", { issue: 8, text: "new" }, ID(292))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "either",
+    });
+    expect(w.stored.get(`a:${ID(292)}`)).toMatchObject({ state: "given", relays: 1 });
+  });
+
+  test("offered again while its first asking is still out, with something else about the same thing waiting here: it is kept as the laptop's, and nothing about the thing is done here meanwhile", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    // Turned away here, the first comment goes to the laptop, which is slow about it.
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "first, slow" }, ID(301));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    // The tunnel drops. A second comment on the issue reaches nobody, and waits here.
+    w.net.hostUp = false;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "second" }, ID(302))).json()).toMatchObject({
+      held: true,
+      waits: "either",
+    });
+    // The device gives up on the first and offers it again. It is kept, as the laptop's:
+    // its first asking may be being done.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "first, slow" }, ID(301))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "asked",
+    });
+    expect(await heldWaits(w)).toEqual([
+      [ID(302), "machine"],
+      [ID(301), "asked"],
+    ]);
+    // GitHub takes comments again and the hour passes: this side makes neither.
+    w.ghRefuses.length = 0;
+    const asked = commented(w).length;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(302), ID(301)]]);
+    // The laptop finishes the first asking: made there, once, and the name is settled.
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect([heldIds(w), w.ran.filter((r) => r.kind === "issue.comment").length]).toEqual([[ID(302)], 1]);
+    // What is left reached nobody, and is this side's again: made here, once.
+    expect(await heldWaits(w)).toEqual([[ID(302), "either"]]);
+    w.now.t += 2_000;
+    await wakeNow(w);
+    expect([commented(w).slice(asked), heldIds(w)]).toEqual([["second"], []]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("with no machine ever reporting, what only a machine can do is still dropped after a day, and said to have been", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const t0 = w.now.t;
+    expect(await (await w.act("message.send", { to: ["lane-1"], text: "nobody came" }, ID(81))).json()).toMatchObject({
+      held: true,
+    });
+    // Woken meanwhile (for the laptop gone quiet), it is still held, and not this side's to try.
+    await wake(w);
+    expect([w.now.t < t0 + 60 * 60_000, heldIds(w)]).toEqual([true, [ID(81)]]);
+    // Its next wake is the day's end of it.
+    await wake(w);
+    expect(w.now.t).toBe(t0 + 24 * 60 * 60_000 + 1_000);
+    expect(heldIds(w)).toEqual([]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(81))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/more than a day/),
+    });
   });
 });
 
@@ -5343,7 +8616,16 @@ describe("telling the owner, with no machine", () => {
     await w.edge.now.alarm();
     const limitedAt = w.now.t;
     expect(w.pushes).toHaveLength(0);
-    // Not a minute from now, when it would only be turned away again:
+    // The other list read for the owner (what needs him) was not due this time, so it is
+    // still this side's to read, and the next wake is a minute on as ever.
+    expect(w.alarm.at).toBe(limitedAt + 60_000);
+    // GitHub gave no time, so it is asked once for that list too, is told the same, and
+    // asks for none of the rest of it.
+    const asked = w.githubCalls.length;
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.githubCalls.length).toBe(asked + 1);
+    // After that, not a minute from now, when it would only be turned away again:
     // when the five minutes are up. Nobody is looking and no laptop
     // reports, so this wake is all that will notice.
     expect(w.alarm.at).toBe(limitedAt + 5 * 60_000 + 1_000);
@@ -5357,6 +8639,42 @@ describe("telling the owner, with no machine", () => {
     expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({ title: "The fleet replied on #202" });
     // And it is back to a wake a minute.
     expect(w.alarm.at).toBe(w.now.t + 60_000);
+  });
+
+  test("something new that only the owner can do is told to a subscribed device with no machine reporting", async () => {
+    const { w, phone } = await subscribed();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // A wake reads what needs him; there is nothing yet, and nothing is said.
+    w.now.t = w.alarm.at + 121_000;
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(0);
+    // An agent marks an issue as needing his hands.
+    w.ghNeeds["developing-today/code"].push({
+      number: 21,
+      title: "Hardware key",
+      labels: ["user/escalated"],
+      body: '<!-- hands:v1 kind=physical action="Plug the hardware key into the build host." -->',
+    });
+    w.now.t += 121_000;
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(1);
+    // What to do, on what, and a button that says it is done: as it
+    // reaches the phone, after the trip through the push service's own encryption.
+    expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({
+      title: "Something needs you",
+      body: "Plug the hardware key into the build host. (developing-today/code#21)",
+      actions: [
+        { action: "done", title: "I did it", kind: "hands.done", args: { ref: "developing-today/code#21" } },
+        { action: "open", title: "Open", url: "/console/#needs/hands" },
+      ],
+    });
+    // Told once: a later wake that finds the same thing says nothing more.
+    w.now.t += 121_000;
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(1);
+    expect(w.hostSaw).toEqual([]);
   });
 
   test("a look at the app starts the wakes again if the object has none asked for", async () => {

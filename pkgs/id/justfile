@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-hw-shell test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell clippy-bevy-bridge clippy-bevy-presenter web-lint test-sandbox test-native-shell test-android-remote test-tui-shell test-hw-shell test-bevy-bridge test-bevy-presenter test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -172,6 +172,16 @@ clippy-lint-fix:
 [group('lint')]
 clippy-native-shell:
     cargo clippy -p id-native-shell --all-targets
+
+# Clippy for id-bevy-bridge (#13704): non-default workspace member, so the default-member clippy-lint never sees it.
+[group('lint')]
+clippy-bevy-bridge:
+    cargo clippy -p id-bevy-bridge --all-targets
+
+# Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.
+[group('lint')]
+clippy-bevy-presenter:
+    cargo clippy -p id-bevy-presenter --all-targets
 
 # Fail when any production .rs file exceeds 2,500 production lines (#1411);
 # the companion self-test proves the guard fails, not just that it passes
@@ -309,17 +319,39 @@ test-crate-integration:
 test-native-shell:
     cargo nextest run -p id-native-shell
 
+# Run the Android remote-drive session bridge's contract and loopback tests (#1831).
+[group('test')]
+test-android-remote:
+    cargo test -p id-android-remote
+
+# Run the id-tui-shell capability-statement tests (#12818): non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-tui-shell:
+    cargo nextest run -p id-tui-shell
+
 # Run the id-hw-shell live-host behavioral tests (#10929): non-default workspace member, so the default-member test recipes never run it.
 [group('test')]
 test-hw-shell:
     cargo nextest run -p id-hw-shell
 
-# Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
+# Run the id-bevy-bridge tests, including the replay oracle that gates a bevy_ecs version bump (#13704): non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-bevy-bridge:
+    cargo nextest run -p id-bevy-bridge
+
+# Run the id-bevy-presenter tests (#13705): the 2D presenter-client app against a world hosted in a separate process; non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-bevy-presenter:
+    cargo nextest run -p id-bevy-presenter
+
+# Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells), rust-orbit (examples/rust-orbit; the #13606 Orbit Arcade guest), rust-colony (examples/rust-colony; the #13605 Colony guest) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
 [group('test')]
 test-rust-examples:
     cargo test --manifest-path examples/rust-world/Cargo.toml
     cargo test --manifest-path examples/rust-counter/Cargo.toml
     cargo test --manifest-path examples/rust-cells/Cargo.toml --locked
+    cargo test --manifest-path examples/rust-orbit/Cargo.toml --locked
+    cargo test --manifest-path examples/rust-colony/Cargo.toml --locked
     cargo test --manifest-path examples/rust-sketch/Cargo.toml
 
 # Run the Sketch host load/play fixture (#13656): the regular ID host loads the checked-in examples/rust-sketch/sketch.wasm, plays the six-step #13608 vector, and asserts snapshot/restore plus next-operation equivalence.
@@ -501,23 +533,27 @@ alias release-force := release-web-force
 [group('build')]
 release-lib-force: release-lib-cargo mark-variant-release-lib
 
-# Run cargo build with web feature (debug)
+# Run cargo build with the web variant's feature set (debug). The set
+# comes from composition/variants.toml (S2 of #14056) via
+# scripts/variant-features.sh -- minus the root defaults, which a
+# defaulted cargo build already enables.
 [group('build')]
 build-web-cargo:
-    cargo build --features web
+    cargo build --features "$(./scripts/variant-features.sh web --minus-defaults)"
 alias build-cargo := build-web-cargo
 
-# Run cargo build without web feature (debug)
+# Run cargo build with the lib variant's feature set (debug): plain
+# `cargo build`, because the lib set equals the root default set.
 [group('build')]
 build-lib-cargo:
     cargo build
 
-# Run cargo build with web feature (release)
+# Run cargo build with the web variant's feature set (release)
 [group('build')]
 release-web-cargo:
-    cargo build --release --features web
+    cargo build --release --features "$(./scripts/variant-features.sh web --minus-defaults)"
 
-# Run cargo build without web feature (release)
+# Run cargo build with the lib variant's feature set (release)
 [group('build')]
 release-lib-cargo:
     cargo build --release

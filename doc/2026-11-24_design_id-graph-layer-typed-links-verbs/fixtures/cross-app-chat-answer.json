@@ -1,0 +1,8 @@
+{
+  "author": "ed25519:cccc3333media",
+  "body": { "room": "#general", "text": "Here it is — posting the full-res in the forum thread too." },
+  "created_claim": "2026-11-24T01:52:00Z",
+  "kind": "chat-message",
+  "object_id": "msg-photo-answer",
+  "schema_version": 1
+}

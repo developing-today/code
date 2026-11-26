@@ -179,7 +179,7 @@ fn empty_match_is_one_completed_page() {
     let page = pager
         .first_page(&scope(), &query, &snapshot, 5, None)
         .unwrap();
-    assert!(page.rows().is_empty());
+    assert_eq!(page.rows(), [] as [QueryRow; 0]);
     assert!(!page.truncated());
     assert_eq!(page.terminal(), Some(TerminalReason::Completed));
     assert!(page.next_cursor().is_none());
@@ -342,7 +342,7 @@ fn cancellation_is_an_observable_terminal_page() {
     let page = pager
         .first_page(&scope(), &query, &snapshot, 3, Some(&flag))
         .unwrap();
-    assert!(page.rows().is_empty());
+    assert_eq!(page.rows(), [] as [QueryRow; 0]);
     assert_eq!(page.terminal(), Some(TerminalReason::Cancelled));
     assert!(page.truncated());
     assert!(page.next_cursor().is_none());

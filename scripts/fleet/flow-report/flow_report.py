@@ -434,7 +434,9 @@ def render_markdown(report: dict) -> str:
 def issue_fetch_started_at(rows: list[dict]) -> str | None:
     # Legacy and combined files do not have a single collection clock.
     stamp = rows[0].get("fetch_started_at")
-    if not isinstance(stamp, str) or any(row.get("fetch_started_at") != stamp for row in rows):
+    if not isinstance(stamp, str) or any(
+        row.get("fetch_started_at") != stamp for row in rows
+    ):
         return None
     try:
         parsed = parse_time(stamp)
@@ -463,7 +465,9 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             row = json.loads(line)
             row["fetch_started_at"] = started
         except (ValueError, TypeError) as error:
-            raise ToolError(f"gh api returned an invalid issue row on line {number}") from error
+            raise ToolError(
+                f"gh api returned an invalid issue row on line {number}"
+            ) from error
         lines.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"{args.out}: {len(lines)} rows from {args.repo}")

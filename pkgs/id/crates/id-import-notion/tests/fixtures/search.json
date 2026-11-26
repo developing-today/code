@@ -17,7 +17,13 @@
       "object": "page",
       "id": "page-root",
       "parent": { "type": "workspace", "workspace": true },
-      "cover": { "type": "file", "file": { "url": "https://files.notion.so/signed-secret?token=fixture-secret", "expiry_time": "2026-11-21T00:00:00Z" } },
+      "cover": {
+        "type": "file",
+        "file": {
+          "url": "https://files.notion.so/signed-secret?token=fixture-secret",
+          "expiry_time": "2026-11-21T00:00:00Z"
+        }
+      },
       "last_edited_time": "2026-11-01T10:00:00.000Z"
     }
   ],

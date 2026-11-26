@@ -1,4 +1,3 @@
-
 ## Additions after the census (2026-11-23)
 
 The census table above is a snapshot. The items below were added to

@@ -83,7 +83,19 @@ export const LEGACY_DECISION_EVENT_TYPES: readonly string[] = [
   "set-submitted",
 ];
 
-export const DECISION_EVENTS_TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+/** The fleet-platform store: the D1 database of that name, through d1-gateway. */
+export const FLEET_PLATFORM_D1_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform";
+
+/** A host process may name another https origin in FLEET_PLATFORM_URL
+ * (the Turso store, to stage or roll back the move to D1). Workers have
+ * no such variable and keep the D1 origin. */
+export function fleetPlatformUrl(): string {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  const override = env?.FLEET_PLATFORM_URL?.trim();
+  return override && /^https:\/\/[^/@\s]+(\/[^@\s]*)?$/.test(override) ? override : FLEET_PLATFORM_D1_URL;
+}
+
+export const DECISION_EVENTS_TURSO_URL = fleetPlatformUrl();
 export const DECISION_EVENTS_TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
 export const DECISION_EVENTS_WEBHOOK_SECRET_NAME = "cloudflare.decision-events.webhook-secret";
 export const DECISION_SET_EVENTS_TABLE = "decision_set_events";

@@ -27,8 +27,12 @@ from time import monotonic
 PROFILES = {
     "canonical": {
         "required": ("sessions", "messages", "chunks"),
-        "optional": ("cas_registry", "chunk_occurrences", "vec_snowflake_m_v2_768_f32",
-                     "vec_bge_small_384_f32"),
+        "optional": (
+            "cas_registry",
+            "chunk_occurrences",
+            "vec_snowflake_m_v2_768_f32",
+            "vec_bge_small_384_f32",
+        ),
     },
     "scan_shard": {
         "required": ("atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"),
@@ -39,10 +43,14 @@ PROFILES = {
         "optional": (),
     },
 }
-TABLES = tuple(dict.fromkeys(
-    table for profile in PROFILES.values()
-    for names in profile.values() for table in names
-))
+TABLES = tuple(
+    dict.fromkeys(
+        table
+        for profile in PROFILES.values()
+        for names in profile.values()
+        for table in names
+    )
+)
 
 
 def utc_now():
@@ -99,7 +107,8 @@ def inspect_store(path, seconds, role):
             if entry is None or entry[0] != "table":
                 counts[table] = None
                 dispositions[table] = (
-                    "required_table_missing" if table in profile["required"]
+                    "required_table_missing"
+                    if table in profile["required"]
                     else "optional_table_absent"
                 )
                 continue
@@ -109,7 +118,8 @@ def inspect_store(path, seconds, role):
             ).fetchone()[0]
             dispositions[table] = "counted"
         status = (
-            "ok" if all(counts[x] is not None for x in profile["required"])
+            "ok"
+            if all(counts[x] is not None for x in profile["required"])
             else "required_table_missing"
         )
         if role == "scan_shard" and status == "ok":
@@ -117,7 +127,8 @@ def inspect_store(path, seconds, role):
             matched = database.execute(
                 'SELECT COUNT(DISTINCT "key") FROM atlas_manifest '
                 'WHERE "key" IN (?, ?, ?) AND value IS NOT NULL '
-                'AND length(value) > 0', ("shard", "embedding_model", "expected_chunks")
+                "AND length(value) > 0",
+                ("shard", "embedding_model", "expected_chunks"),
             ).fetchone()[0]
             if matched != 3:
                 status = "shard_manifest_incomplete"
@@ -152,10 +163,15 @@ def count_and_send(path, seconds, role, sender):
         # SQLite codes are optional on older Python builds. Do not print exception
         # messages: they may include paths or database-specific identifiers.
         code = getattr(error, "sqlite_errorcode", 0) or 0
-        result = {"status": {
-            5: "database_busy", 6: "database_locked", 9: "interrupted",
-            14: "open_failed", 26: "unrecognized_database",
-        }.get(code & 255, "sqlite_error")}
+        result = {
+            "status": {
+                5: "database_busy",
+                6: "database_locked",
+                9: "interrupted",
+                14: "open_failed",
+                26: "unrecognized_database",
+            }.get(code & 255, "sqlite_error")
+        }
     except Exception:
         result = {"status": "unavailable"}
     try:
@@ -189,14 +205,29 @@ def bounded_count(ctx, path, seconds, role):
 
 def main():
     parser = SafeParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--canonical", type=Path,
-                        default=Path("~/atlas/turso-atlas/data/atlas.db"))
-    parser.add_argument("--shard", type=Path, action="append", default=[],
-                        help="Explicit authorized scan shard, in local ledger order")
-    parser.add_argument("--content-store", type=Path, action="append", default=[],
-                        help="Explicit authorized content store, in local ledger order")
-    parser.add_argument("--seconds-per-store", type=int, default=20,
-                        help="Maximum worker wait per store, from 1 to 120 seconds")
+    parser.add_argument(
+        "--canonical", type=Path, default=Path("~/atlas/turso-atlas/data/atlas.db")
+    )
+    parser.add_argument(
+        "--shard",
+        type=Path,
+        action="append",
+        default=[],
+        help="Explicit authorized scan shard, in local ledger order",
+    )
+    parser.add_argument(
+        "--content-store",
+        type=Path,
+        action="append",
+        default=[],
+        help="Explicit authorized content store, in local ledger order",
+    )
+    parser.add_argument(
+        "--seconds-per-store",
+        type=int,
+        default=20,
+        help="Maximum worker wait per store, from 1 to 120 seconds",
+    )
     args = parser.parse_args()
     if not 1 <= args.seconds_per_store <= 120:
         parser.error("invalid deadline")
@@ -225,11 +256,12 @@ def main():
         store["finished_at_utc"] = utc_now()
         report["stores"].append(store)
     report["finished_at_utc"] = utc_now()
-    report["complete_required_counts"] = all(s["status"] == "ok" for s in report["stores"])
+    report["complete_required_counts"] = all(
+        s["status"] == "ok" for s in report["stores"]
+    )
     print(json.dumps(report, indent=2))
     return 0 if report["complete_required_counts"] else 1
 
 
 if __name__ == "__main__":
     sys.exit(main())
-

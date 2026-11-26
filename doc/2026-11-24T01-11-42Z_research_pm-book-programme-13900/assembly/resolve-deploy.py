@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Resolve the mcpx-docs.yml merge conflict: keep origin/main's file
 (Code Book + Lab Book steps) and insert the PM steps before configure-pages."""
+
 import pathlib, subprocess
 
 root = pathlib.Path.cwd()
 p = root / ".github/workflows/mcpx-docs.yml"
 main_version = subprocess.run(
     ["git", "show", "origin/main:.github/workflows/mcpx-docs.yml"],
-    capture_output=True, text=True, check=True).stdout
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout
 assert "code-docs" in main_version and "lab-docs" in main_version
 assert "pm-docs" not in main_version
 
