@@ -103,8 +103,13 @@ import {
   type MachineCandidate,
   type MachineReport,
   type MachinesAnswer,
+  enrollRequest,
   machineCanDo,
+  machineName,
   machineReport,
+  MAX_MACHINES,
+  MAX_PENDING_MACHINES,
+  PENDING_MACHINE_MS,
   selectMachine,
   type PublicKey,
   publicKey,
@@ -218,6 +223,48 @@ interface RelayMarker {
   at: string;
   until: number;
 }
+
+/** A machine enrolled under its own key (#13492): its credential, what
+ * it says of itself, and what it last reported, kept apart from the
+ * first machine's. Its sections are kept under its own mirrors. */
+interface EnrolledMachine {
+  kid: string;
+  jwk: PublicKey;
+  name: string;
+  enrolledAt: number;
+  /** When it last reported; 0 until it first does. */
+  lastSeen: number;
+  /** The time its last report carried, which the next must exceed. */
+  seq: number;
+  version: string | null;
+  machine: MachineReport | null;
+  confirmed: Record<string, { hash: string; at: number; error: string | null }>;
+}
+
+/** A machine that has asked to be enrolled and waits for the owner. */
+interface PendingMachine {
+  kid: string;
+  jwk: PublicKey;
+  name: string;
+  machine: MachineReport | null;
+  at: number;
+}
+
+interface MachineBook {
+  enrolled: EnrolledMachine[];
+  pending: PendingMachine[];
+}
+
+/** Storage seen through one enrolled machine's own corner of it, so
+ * its copies of the sections never meet another machine's. */
+const machineKv = (kv: KV, kid: string): KV => ({
+  get: (key) => kv.get(`mm:${kid}:${key}`),
+  put: (key, value) => kv.put(`mm:${kid}:${key}`, value),
+  delete: (key) => kv.delete(`mm:${kid}:${key}`),
+});
+
+/** The largest enrollment ask that is read. */
+const ENROLL_LIMIT = 16 * 1024;
 
 export class Edge {
   private kv: KV;
@@ -342,6 +389,14 @@ export class Edge {
   private confirmed: Record<string, { hash: string; at: number; error: string | null }> = {};
   private sure = 0;
   private unsure = 0;
+  /** Machines enrolled under their own keys, and those waiting to be:
+   * kept under "machines". Null until read (#13492). */
+  private book: MachineBook | null = null;
+  /** Each enrolled machine's own copies of the sections it reports. */
+  private machineMirrors = new Map<string, Mirrors>();
+  /** Enrollment asks are counted, as phone links are: the path is
+   * reachable without sign-in. */
+  private enrollGate: Limiter | null = null;
   private hostVersion: string | null = null;
   /** What the machine that reports says of itself: its name and what
    * it can do. Null until one has said, or from a console older than
@@ -1189,6 +1244,43 @@ export class Edge {
     const told = await this.toldConfig();
     const owner = await this.ownerSettings();
     const differs = told === null ? [] : settingsDifferences(told).filter((d) => !ownerChanged(owner, d.name));
+    // Machines enrolled under their own keys, those waiting to be, and
+    // which machine each kept section came from (#13492).
+    const book = await this.machineBook();
+    const primaryKid = ((await this.kv.get("key")) as { kid: string } | undefined)?.kid ?? null;
+    const enrolledSaid = book.enrolled.map((m) => ({
+      name: m.name || m.machine?.name || "A machine",
+      seen: m.lastSeen > 0 ? m.lastSeen : null,
+      quiet: m.lastSeen === 0 || this.now() - m.lastSeen >= HOST_QUIET_MS,
+      version: m.version,
+      actions: m.machine?.actions ?? [],
+      sections: m.machine?.sections ?? [],
+      kid: m.kid,
+      enrolled: true,
+    }));
+    const pending = book.pending
+      .filter((p) => this.now() - p.at <= PENDING_MACHINE_MS)
+      .map((p) => ({ kid: p.kid, code: p.kid, name: p.machine?.name || p.name || "", at: p.at }));
+    const sectionsFrom: NonNullable<MachinesAnswer["sectionsFrom"]> = [];
+    for (const name of Object.keys(SECTIONS)) {
+      const from: { machine: string; kid: string; at: number; hash: string }[] = [];
+      if (primaryKid && this.confirmed[name]) {
+        from.push({
+          machine: this.machine?.name ?? "A machine",
+          kid: primaryKid,
+          at: this.confirmed[name].at,
+          hash: this.confirmed[name].hash,
+        });
+      }
+      for (const m of book.enrolled) {
+        if (m.confirmed[name]) {
+          from.push({ machine: m.name || "A machine", kid: m.kid, at: m.confirmed[name].at, hash: m.confirmed[name].hash });
+        }
+      }
+      if (from.length > 0) {
+        sectionsFrom.push({ name, from, showing: primaryKid && this.confirmed[name] ? primaryKid : null });
+      }
+    }
     return {
       served: "edge",
       platform: {
@@ -1207,9 +1299,10 @@ export class Edge {
         settings: settingsInForce(told, owner),
         settingsRev: owner?.rev ?? 0,
       },
-      // One machine can report today: the one whose key this side holds.
-      machines:
-        seen === null
+      // The first machine, whose key this side holds, and beside it
+      // every machine enrolled under a key of its own (#13492).
+      machines: [
+        ...(seen === null
           ? []
           : [
               {
@@ -1221,8 +1314,13 @@ export class Edge {
                 sections: this.machine?.sections ?? [],
                 ...(differs.length > 0 ? { differs } : {}),
                 settingsRev: this.hostSettingsRev,
+                ...(primaryKid ? { kid: primaryKid } : {}),
               },
-            ],
+            ]),
+        ...enrolledSaid,
+      ],
+      ...(pending.length > 0 ? { pending } : {}),
+      ...(sectionsFrom.length > 0 ? { sectionsFrom } : {}),
       held: await this.heldSaid(cfg),
     };
   }
@@ -1781,6 +1879,221 @@ export class Edge {
     }
   }
 
+  // ---- machines under their own keys (#13492) ---------------------------
+
+  private async machineBook(): Promise<MachineBook> {
+    if (this.book) return this.book;
+    let book: MachineBook = { enrolled: [], pending: [] };
+    try {
+      const parsed = (await this.kv.get("machines")) as MachineBook | undefined;
+      if (parsed && Array.isArray(parsed.enrolled) && Array.isArray(parsed.pending)) book = parsed;
+    } catch {
+      // Unread storage is no storage: no machine is enrolled.
+    }
+    this.book ??= book;
+    return this.book;
+  }
+
+  private async saveBook(): Promise<void> {
+    await this.kv.put("machines", this.book);
+  }
+
+  private mirrorsFor(entry: EnrolledMachine): Mirrors {
+    let mirrors = this.machineMirrors.get(entry.kid);
+    if (!mirrors) {
+      mirrors = new Mirrors(machineKv(this.kv, entry.kid), async () => {}, () => entry.confirmed);
+      this.machineMirrors.set(entry.kid, mirrors);
+    }
+    return mirrors;
+  }
+
+  /** A machine asks to be enrolled under its own key. The ask is
+   * signed with that key, so the asker holds the private half; nothing
+   * is taken under the key until the owner approves the code it shows
+   * (its key's short name) on the Machines screen. */
+  private async enrollMachine(req: Request): Promise<Response> {
+    const gate = (this.enrollGate ??= new Limiter(30, 60_000, this.now));
+    if (!gate.allow()) return json({ error: "too many enrollment asks; try again in a minute" }, 429);
+    if (Number(req.headers.get("content-length") ?? "0") > ENROLL_LIMIT) return json({ error: "too large" }, 413);
+    const body = new Uint8Array(await req.arrayBuffer());
+    if (body.byteLength > ENROLL_LIMIT) return json({ error: "too large" }, 413);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(body));
+    } catch {
+      return json({ error: "body: expected JSON" }, 400);
+    }
+    const ask = enrollRequest(parsed);
+    if (!ask) return json({ error: "not an enrollment ask this side understands" }, 400);
+    const now = this.now();
+    if (Math.abs(ask.at - now) > SYNC_SKEW_MS) return json({ error: "clock", now }, 409);
+    if (!(await verify(ask.key, body, req.headers.get("x-pm-signature") ?? ""))) {
+      return json({ error: "this is not signed with the key it presents" }, 401);
+    }
+    const kid = await keyId(ask.key);
+    const primary = (await this.kv.get("key")) as { kid: string } | undefined;
+    if (primary?.kid === kid) return json({ ok: true, state: "primary", code: kid });
+    const book = await this.machineBook();
+    if (book.enrolled.some((m) => m.kid === kid)) return json({ ok: true, state: "enrolled", code: kid });
+    book.pending = book.pending.filter((p) => now - p.at <= PENDING_MACHINE_MS);
+    if (!book.pending.some((p) => p.kid === kid) && book.pending.length >= MAX_PENDING_MACHINES) {
+      return json({ error: "too many machines are waiting to be enrolled: the owner must answer one first" }, 409);
+    }
+    book.pending = [
+      ...book.pending.filter((p) => p.kid !== kid),
+      { kid, jwk: ask.key, name: ask.machine?.name ?? "", machine: ask.machine ?? null, at: now },
+    ];
+    await this.saveBook();
+    return json({ ok: true, state: "pending", code: kid });
+  }
+
+  /** Sections from an enrolled machine, taken into its own copies. */
+  private async takeFor(mirrors: Mirrors, sections: unknown): Promise<void> {
+    if (!Array.isArray(sections)) return;
+    for (const raw of sections as SyncSection[]) {
+      if (!raw || typeof raw.name !== "string" || !Object.hasOwn(SECTIONS, raw.name)) continue;
+      if (typeof raw.at !== "number" || typeof raw.hash !== "string" || raw.data === undefined) continue;
+      const have = await mirrors.mirror(raw.name);
+      if (have && have.at > raw.at) continue;
+      if (have && have.hash === raw.hash) continue;
+      await mirrors.putMirror({ name: raw.name, at: Math.min(raw.at, this.now()), hash: raw.hash, data: raw.data });
+    }
+  }
+
+  /** A report from an enrolled machine. Its sections are kept apart,
+   * under its own copies, and it is handed nothing: which machine an
+   * action goes to is a later slice (#13492 slice 2), and the held
+   * actions, the config and the phones stay the first machine's. */
+  private async syncMachine(entry: EnrolledMachine, msg: SyncRequest, now: number): Promise<Response> {
+    if (msg.at <= entry.seq) return json({ error: "replay", last: entry.seq }, 409);
+    if (!edgeConfig(msg.config)) return json({ error: "config: not one this side can use" }, 400);
+    const mirrors = this.mirrorsFor(entry);
+    for (const [name, theirs] of Object.entries(msg.have ?? {})) {
+      if (!Object.hasOwn(SECTIONS, name) || typeof theirs?.hash !== "string" || typeof theirs.at !== "number") continue;
+      const error = typeof theirs.error === "string" && theirs.error !== "" ? theirs.error.slice(0, 300) : null;
+      entry.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now), error };
+    }
+    await this.takeFor(mirrors, msg.sections);
+    const said = machineReport(msg.machine);
+    if (said) {
+      entry.machine = said;
+      entry.name = said.name;
+    }
+    if (typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version)) entry.version = msg.version;
+    entry.seq = msg.at;
+    entry.lastSeen = now;
+    await this.saveBook();
+    const want: string[] = [];
+    for (const name of Object.keys(SECTIONS)) {
+      if (typeof msg.have?.[name]?.hash === "string" && !(await mirrors.mirror(name))) want.push(name);
+    }
+    const answer: SyncResponse = {
+      ok: true,
+      watching: now - this.lastDocAt < WATCHING_MS,
+      notify: false,
+      want,
+      commands: [],
+      phones: { devices: [], removed: [] },
+    };
+    return json(answer);
+  }
+
+  /** The owner approves a waiting machine: it may report under its key. */
+  private async approveMachine(args: Record<string, unknown>): Promise<{ enrolled: string }> {
+    const kid = String(args.kid ?? "");
+    const book = await this.machineBook();
+    const now = this.now();
+    book.pending = book.pending.filter((p) => now - p.at <= PENDING_MACHINE_MS);
+    const pending = book.pending.find((p) => p.kid === kid);
+    if (!pending) throw new OpError(404, "that machine is not waiting to be enrolled");
+    const name = machineName(args.name) || pending.machine?.name || pending.name || "A machine";
+    book.pending = book.pending.filter((p) => p.kid !== kid);
+    if (!book.enrolled.some((m) => m.kid === kid)) {
+      if (book.enrolled.length >= MAX_MACHINES) {
+        throw new OpError(409, `${MAX_MACHINES} machines are enrolled already: remove one first`);
+      }
+      book.enrolled.push({
+        kid,
+        jwk: pending.jwk,
+        name,
+        enrolledAt: now,
+        lastSeen: 0,
+        seq: 0,
+        version: null,
+        machine: pending.machine,
+        confirmed: {},
+      });
+    }
+    await this.saveBook();
+    return { enrolled: name };
+  }
+
+  /** The owner turns a waiting machine away. */
+  private async rejectMachine(args: Record<string, unknown>): Promise<{ rejected: string }> {
+    const kid = String(args.kid ?? "");
+    const book = await this.machineBook();
+    const pending = book.pending.find((p) => p.kid === kid);
+    if (!pending) throw new OpError(404, "that machine is not waiting to be enrolled");
+    book.pending = book.pending.filter((p) => p.kid !== kid);
+    await this.saveBook();
+    return { rejected: pending.machine?.name || pending.name || "A machine" };
+  }
+
+  /** The owner removes a machine: its key is no longer taken, and the
+   * copies of its sections kept here go with it. */
+  private async removeMachine(args: Record<string, unknown>): Promise<{ removed: string }> {
+    const kid = String(args.kid ?? "");
+    const book = await this.machineBook();
+    const enrolled = book.enrolled.find((m) => m.kid === kid);
+    const pending = book.pending.find((p) => p.kid === kid);
+    if (!enrolled && !pending) throw new OpError(404, "that machine is not enrolled");
+    book.enrolled = book.enrolled.filter((m) => m.kid !== kid);
+    book.pending = book.pending.filter((p) => p.kid !== kid);
+    await this.saveBook();
+    if (enrolled) {
+      const kv = machineKv(this.kv, kid);
+      for (const name of Object.keys(SECTIONS)) {
+        const meta = (await kv.get(`m:${name}`)) as { chunks: number } | undefined;
+        for (let i = 0; i < (meta?.chunks ?? 0); i++) await kv.delete(`m:${name}:${i}`);
+        await kv.delete(`m:${name}`);
+      }
+      this.machineMirrors.delete(kid);
+    }
+    return { removed: enrolled?.name || pending?.machine?.name || pending?.name || "A machine" };
+  }
+
+  /** A machine action this side runs itself, recorded like its own. */
+  private async ownMachine(
+    kind: string,
+    args: Record<string, unknown>,
+    by: string,
+    via: string,
+    id: string | null,
+  ): Promise<Response> {
+    const kept = {
+      kid: typeof args.kid === "string" ? args.kid : "",
+      ...(typeof args.name === "string" ? { name: args.name } : {}),
+    };
+    const base = { at: new Date(this.now()).toISOString(), who: by, via, action: kind, args: kept };
+    await this.audit({ ...base, phase: "start" });
+    const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
+    try {
+      const result =
+        kind === "machine.approve"
+          ? await this.approveMachine(args)
+          : kind === "machine.reject"
+            ? await this.rejectMachine(args)
+            : await this.removeMachine(args);
+      await this.audit({ ...base, phase: "done", ok: true });
+      await this.logAct({ ...entry, status: "done" });
+      return json({ ok: true, result });
+    } catch (error) {
+      await this.audit({ ...base, phase: "done", ok: false, error: (error as Error).message });
+      await this.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+      throw error;
+    }
+  }
+
   // ---- the host's report -------------------------------------------------
 
   /** The host's public key, given by the stateless part after it asked
@@ -1812,9 +2125,17 @@ export class Edge {
     if (kid === "" || !SIGNATURE.test(signature)) {
       return refuse({ error: "this is not signed with the host's key" }, 401);
     }
-    const key = (await this.kv.get("key")) as { kid: string; jwk: PublicKey } | undefined;
+    const first = (await this.kv.get("key")) as { kid: string; jwk: PublicKey } | undefined;
+    let key = first && first.kid === kid ? first : undefined;
+    // A machine enrolled under its own key (#13492): its reports are
+    // taken, apart from the first machine's, once its signature checks.
+    let enrolled: EnrolledMachine | null = null;
+    if (!key) {
+      enrolled = (await this.machineBook()).enrolled.find((m) => m.kid === kid) ?? null;
+      if (enrolled) key = { kid: enrolled.kid, jwk: enrolled.jwk };
+    }
     const now = this.now();
-    if (!key || key.kid !== kid) {
+    if (!key) {
       // A key this side has not seen: ask the host for its key, but not
       // on every stranger's request. Nothing has been read yet. The
       // gate is kept in storage: without it every new object would ask
@@ -1862,6 +2183,7 @@ export class Edge {
     }
     if (msg?.v !== 1 || typeof msg.at !== "number") return json({ error: "not a sync this side understands" }, 400);
     if (Math.abs(msg.at - now) > SYNC_SKEW_MS) return json({ error: "clock", now }, 409);
+    if (enrolled) return this.syncMachine(enrolled, msg, now);
     await this.ready();
     const last = this.hostSeq ?? 0;
     if (msg.at <= last) return json({ error: "replay", last }, 409);
@@ -2330,6 +2652,7 @@ export class Edge {
     if (path === "/manifest.webmanifest" && method === "GET") return manifest();
     if (ICONS.test(path) && (method === "GET" || method === "HEAD")) return next("asset", { path, type: "image/png" });
     if (path === `${BASE}/edge/sync` && method === "POST") return this.sync(req);
+    if (path === `${BASE}/edge/enroll` && method === "POST") return this.enrollMachine(req);
     // Before the host's first report this side knows no owner: it stays
     // out of the way, and the host answers as it did before.
     if (cfg === null) return next("relay", { mode: "page" });
@@ -2577,6 +2900,11 @@ export class Edge {
         (id === null || (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null) === null)
       ) {
         return json({ error: STALE_ACT_ERROR, stale: true }, 409);
+      }
+      if (kind === "machine.approve" || kind === "machine.reject" || kind === "machine.remove") {
+        // Enrolling and removing machines is this side's own business:
+        // the registry lives here, and no machine can do it for itself.
+        return this.ownMachine(kind, args as Record<string, unknown>, by, who.via, id);
       }
       if (!Object.hasOwn(this.table, kind)) {
         // One this side does itself: it runs here, through the
