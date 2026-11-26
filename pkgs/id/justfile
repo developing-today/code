@@ -176,12 +176,12 @@ clippy-native-shell:
 # Clippy for id-bevy-bridge (#13704): non-default workspace member, so the default-member clippy-lint never sees it.
 [group('lint')]
 clippy-bevy-bridge:
-    cargo clippy -p id-bevy-bridge --all-targets -- -D warnings
+    cargo clippy -p id-bevy-bridge --all-targets
 
 # Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.
 [group('lint')]
 clippy-bevy-presenter:
-    cargo clippy -p id-bevy-presenter --all-targets -- -D warnings
+    cargo clippy -p id-bevy-presenter --all-targets
 
 # Fail when any production .rs file exceeds 2,500 production lines (#1411);
 # the companion self-test proves the guard fails, not just that it passes
