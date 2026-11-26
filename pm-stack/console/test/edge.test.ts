@@ -1508,6 +1508,8 @@ describe("before the host's first report", () => {
     });
   });
 
+
+
   test("the edge says which commit the host is running, as the host last reported it", async () => {
     const w = await setup();
     const health = async () =>
@@ -1905,6 +1907,42 @@ describe("actions", () => {
     const refused = await w.act("issue.comment", { issue: 13, text: "x" });
     expect([refused.status, await refused.json()]).toEqual([404, { error: "no such issue" }]);
     expect(heldStored(w)).toEqual([]);
+  });
+
+  test("route state: the owner flips a surface at /console/api/route, and only the owner (#14944)", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    // The owner's flip, through the front door as the console sends it.
+    const flipped = await w.browse("/console/api/route", { body: { surface: "board", tier: "hosted" } });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // Flipping back is the rollback, and health says that too.
+    const back = await w.browse("/console/api/route", { body: { surface: "board", tier: "tunnel" } });
+    expect(back.status).toBe(200);
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+    // A stranger cannot flip: the edge is not sure of them, so the
+    // request goes to the host as any unverified request does, and
+    // the route state does not change.
+    await w.browse("/console/api/route", { body: { surface: "board", tier: "hosted" }, token: null });
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+    // What is not a surface and a tier is refused, as on the internal channel.
+    expect((await w.browse("/console/api/route", { body: { surface: "board", tier: "sideways" } })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
   });
 
   test("with the host out of reach, what may be done late is held, done once when it is back, and the rest is refused", async () => {
