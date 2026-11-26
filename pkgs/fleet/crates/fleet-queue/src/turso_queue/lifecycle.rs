@@ -3831,6 +3831,7 @@ mod manual_claim_override_audit_tests {
         )
         .unwrap();
         let before = get_task(&t, id).unwrap().expect("parked task");
+        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
 
         let out = verb_claim(
             &t,
@@ -3893,6 +3894,8 @@ mod manual_claim_override_audit_tests {
             ],
         )
         .unwrap();
+        let before = get_task(&t, id).unwrap().expect("parked task");
+        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
 
         let out = verb_claim(
             &t,
@@ -3959,6 +3962,8 @@ mod manual_claim_override_tests {
             ],
         )
         .unwrap();
+        let before = get_task(&t, id).unwrap().expect("parked task");
+        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
 
         let out = verb_claim(
             &t,
