@@ -618,6 +618,13 @@
                 # id-native-shell gate (#5582): the crate is a non-default
                 # workspace member, invisible to the default-member checks.
                 clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
+                # id-bevy-bridge gate (#13704): also a non-default member.
+                # test-bevy-bridge runs the replay oracle, the acceptance
+                # gate for a bump of the bridge's pinned bevy_ecs.
+                clippy-bevy-bridge = mkCheckCargoOnly "clippy-bevy-bridge" "clippy-bevy-bridge";
+                # id-bevy-presenter gate (#13705): the Bevy slice 4
+                # presenter-client app, another non-default member.
+                clippy-bevy-presenter = mkCheckCargoOnly "clippy-bevy-presenter" "clippy-bevy-presenter";
                 web-lint = mkCheckBiome "web-lint" "web-lint";
                 # test-unit plus the four shards cover the same root suite
                 # as test-sandbox, without building and running that suite twice.
@@ -633,6 +640,8 @@
                 test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
                 test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
                 test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
+                test-bevy-bridge = mkCheckCargoOnly "test-bevy-bridge" "test-bevy-bridge";
+                test-bevy-presenter = mkCheckCargoOnly "test-bevy-presenter" "test-bevy-presenter";
                 # Rust example guests (#7904): plaza-sdk (examples/rust-world)
                 # and rust-counter (examples/rust-counter) are standalone
                 # crates outside the pkgs/id workspace, so no workspace test
@@ -1155,9 +1164,13 @@
                 "cargo-check"
                 "clippy-lint"
                 "clippy-native-shell"
+                "clippy-bevy-bridge"
+                "clippy-bevy-presenter"
                 "web-lint"
                 "test"
                 "test-native-shell"
+                "test-bevy-bridge"
+                "test-bevy-presenter"
                 "test-rust-examples"
                 "test-web-unit"
                 "test-web-typecheck"

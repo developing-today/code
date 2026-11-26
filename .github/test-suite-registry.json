@@ -382,6 +382,34 @@
       "notes": "The hw-shell check runs the integration targets of this non-default workspace member, mirroring test-native-shell. live_wake is the live-host behavioral check for the hardware-shell spike (#10929); it ran nowhere until wired 2026-11-23 (#12230), verified green standalone first."
     },
     {
+      "id": "id.bevy-bridge.replay-oracle",
+      "paths": ["pkgs/id/crates/id-bevy-bridge/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-bridge runs cargo nextest -p id-bevy-bridge)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-bridge",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13702, 13703, 13704],
+      "notes": "The bevy-bridge check runs every integration target of this non-default workspace member: fixture projection (slice 1), the journal tail and intents (slice 2), and the replay oracle with its recorded corpus, soak and fault injection (slice 3). The replay oracle is the acceptance gate for a bump of the bridge's pinned bevy_ecs."
+    },
+    {
+      "id": "id.bevy-presenter.e2e",
+      "paths": ["pkgs/id/crates/id-bevy-presenter/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-presenter runs cargo nextest -p id-bevy-presenter)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-presenter",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13705, 13706],
+      "notes": "The bevy-presenter check runs the Bevy slice 4 presenter-client app headless against the demo world hosted as a separate process: projection, intents end to end, predicted presentation that reconciles or snaps back, the provider manifest and surface grants, and the replay oracle over the host's journal. It also runs slice 5, the host posture: the Bevy process hosting the world with its journal on disk, a second presenter (in process and as the app in its own process) seeing the same world as with an external host, the host's own presenter on the same path, admission by manifest up to capacity, and a reopened or killed host resuming from its last acknowledged position."
+    },
+    {
       "id": "id.bench.compare-script",
       "paths": [".github/scripts/id-bench-compare.test.sh"],
       "invocation": "bash .github/scripts/id-bench-compare.test.sh",

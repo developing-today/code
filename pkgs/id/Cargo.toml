@@ -37,6 +37,8 @@ members = [
   "crates/id-client",
   "crates/id-pg",
   "crates/id-grants",
+  "crates/id-bevy-bridge",
+  "crates/id-bevy-presenter",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
