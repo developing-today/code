@@ -87,7 +87,7 @@ class AlignmentHandlerTests(unittest.TestCase):
         self.assertEqual((result[0], result[1]), (CHANNEL, "100.001"))
         self.assertTrue(result[2].startswith("RESULT align-17"), result[2])
         self.assertIn("Owner: @drew", result[2])
-        self.assertIn("Scope: verify the staged handler", result[2])
+        self.assertIn("Scope: review the staged parser", result[2])
         self.assertEqual(self.handler.get_request(request_id)["state"], "complete")
 
     def test_missing_scope_is_blocked_and_names_the_missing_field(self):
