@@ -15,8 +15,9 @@
 //! never share a master), and `fleet ssh close` tears the master
 //! down.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use fleet_config::Config;
 
@@ -36,6 +37,7 @@ proxy CONNECT, multiplexing on a fleet-owned socket).
 
 Commands:
   health   Run `hostname` over ssh; exit 0 iff the host answers amd
+  sessions List Fleet-owned tmux sessions (`fleet-*`), read-only
   exec [--cwd D] [--timeout S] -- cmd...
            Run a command line over ssh (the remote shell parses
            it); the remote exit code propagates. --timeout is in
@@ -151,6 +153,108 @@ fn close() -> i32 {
     }
 }
 
+enum CaptureOutcome {
+    Complete { code: i32, stdout: String },
+    TimedOut,
+    Failed(String),
+}
+
+/// Capture a small remote result while keeping the same pinned SSH
+/// contract and overall deadline as `exec`. A reader thread drains
+/// stdout while ssh runs so a long session list cannot fill its pipe.
+fn capture(_config: &Config, timeout_s: u64, cmd: &[String]) -> CaptureOutcome {
+    if std::env::var_os("HTTPS_PROXY").is_none() {
+        return CaptureOutcome::Failed(
+            "HTTPS_PROXY is not set (the proxy CONNECT helper reads it)".into(),
+        );
+    }
+    let home = fleet_config::Config::home_dir();
+    let line = remote_line(&fleet_config::ctx::Ctx::from_env(), None, cmd);
+    let mut ssh = ssh_base(&home, timeout_s);
+    ssh.arg(line).stdout(Stdio::piped());
+    let mut child = match ssh.spawn() {
+        Ok(child) => child,
+        Err(e) => return CaptureOutcome::Failed(format!("spawn: {e}")),
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return CaptureOutcome::Failed("ssh stdout pipe was not created".into());
+    };
+    let reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|()| bytes)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.max(1));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return CaptureOutcome::TimedOut;
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return CaptureOutcome::Failed(format!("wait: {e}"));
+            }
+        }
+    };
+    let Some(status) = status else {
+        return CaptureOutcome::Failed("ssh exited without a status".into());
+    };
+    let bytes = match reader.join() {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => return CaptureOutcome::Failed(format!("read ssh stdout: {e}")),
+        Err(_) => return CaptureOutcome::Failed("ssh stdout reader panicked".into()),
+    };
+    CaptureOutcome::Complete {
+        code: status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&bytes).into_owned(),
+    }
+}
+
+fn sessions(config: &Config) -> i32 {
+    announce(T3);
+    let cmd = [
+        "tmux".to_string(),
+        "list-sessions".to_string(),
+        "-F".to_string(),
+        "'#{session_name}'".to_string(),
+    ];
+    match capture(config, DEFAULT_TIMEOUT_S, &cmd) {
+        CaptureOutcome::Complete { code: 0, stdout } => {
+            for name in stdout
+                .lines()
+                .map(str::trim)
+                .filter(|name| name.starts_with("fleet-"))
+            {
+                println!("{name}");
+            }
+            0
+        }
+        CaptureOutcome::Complete { code, .. } => {
+            eprintln!("ssh: sessions: tmux list-sessions exited {code}");
+            code
+        }
+        CaptureOutcome::TimedOut => {
+            eprintln!("ssh: sessions: timed out after {DEFAULT_TIMEOUT_S}s");
+            EXIT_TIMEOUT
+        }
+        CaptureOutcome::Failed(m) => {
+            eprintln!("ssh: sessions: {m}");
+            1
+        }
+    }
+}
+
 struct ExecArgs {
     cwd: Option<String>,
     timeout_s: u64,
@@ -206,6 +310,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             0
         }
         Some("health") => health(config),
+        Some("sessions") if args.len() == 1 => sessions(config),
         Some("close") => close(),
         Some("exec") => {
             let parsed = match parse_exec_args(&args[1..]) {
