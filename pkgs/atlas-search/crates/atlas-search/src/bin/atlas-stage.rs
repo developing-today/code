@@ -553,6 +553,7 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        #[cfg(feature = "lancedb")]
         Command::IngestMemoryLancedb { db, unit, store } => {
             let report =
                 atlas_core::memory::sync_lancedb_store_in_db(&store, &db, &unit, &now_utc())
@@ -566,6 +567,13 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        #[cfg(not(feature = "lancedb"))]
+        Command::IngestMemoryLancedb { .. } => Err(
+            "ingest-memory-lancedb needs atlas-stage built with the `lancedb` feature \
+             (cargo build -p atlas-search --features lancedb); \
+             `ingest-memory --export` reads the JSON export without it"
+                .to_string(),
+        ),
         Command::IngestMemoryFiles { db, unit, dir } => {
             let item_ids =
                 atlas_core::memory::scan_and_stage_memory_files_in_db(&db, &unit, &dir, &now_utc())

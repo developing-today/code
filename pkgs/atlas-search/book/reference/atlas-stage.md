@@ -81,7 +81,7 @@ Stages one code/config artifact file as an embedding entry in an already-provisi
 
 ## `ingest-memory-lancedb`
 
-This command reads the native agent-memory LanceDB store and stages its records in the specified staging unit. It is intentionally restricted to the `agent-memory` unit; other unit IDs are rejected. Source provenance and rebuild metadata are retained, and repeating an ingest updates changed records without duplicating unchanged records.
+This command reads the native agent-memory LanceDB store and stages its records in the specified staging unit. It needs `atlas-stage` built with the `lancedb` feature (`cargo build -p atlas-search --features lancedb`, which needs `protoc`); a default build reports that and points at `ingest-memory --export`, which reads the JSON export instead. It is intentionally restricted to the `agent-memory` unit; other unit IDs are rejected. Source provenance and rebuild metadata are retained, and repeating an ingest updates changed records without duplicating unchanged records.
 
 Consult `atlas-stage ingest-memory-lancedb --help` for the exact required flags and defaults; the CLI is the source of truth for the store, database and registry paths.
 

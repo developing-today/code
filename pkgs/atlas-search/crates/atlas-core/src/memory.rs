@@ -456,6 +456,7 @@ pub struct SyncReport {
 /// `id`, `text`, `agentId`, `category`, `importance` and `createdAt`
 /// columns onto [`MemoryEntry`]. The `vector` column is never read.
 /// A missing required column or an empty id/text is a loud error.
+#[cfg(feature = "lancedb")]
 pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
     use arrow::array::{Array, ArrayRef, RecordBatch};
     use arrow::compute::cast;
@@ -535,6 +536,7 @@ pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
 }
 
 /// Blocking form of [`read_lancedb_store`] for the CLI and tests.
+#[cfg(feature = "lancedb")]
 pub fn read_lancedb_store_blocking(path: &Path) -> Result<Vec<MemoryEntry>> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -545,6 +547,7 @@ pub fn read_lancedb_store_blocking(path: &Path) -> Result<Vec<MemoryEntry>> {
 
 /// Read a native memory-lancedb dataset and idempotently sync its rows
 /// into an already-provisioned Atlas staging database.
+#[cfg(feature = "lancedb")]
 pub fn sync_lancedb_store_in_db(
     store: &Path,
     db: &Path,

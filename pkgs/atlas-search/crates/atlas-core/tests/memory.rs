@@ -458,6 +458,7 @@ fn promoted_agent_memory_is_searchable_by_the_fanout() {
 
 /// Write a synthetic memory-lancedb-shaped dataset (the store's own
 /// columns, including a vector the reader must ignore) into `path`.
+#[cfg(feature = "lancedb")]
 fn write_fixture_store(path: &Path) {
     use arrow::array::{
         FixedSizeListArray, Float64Array, RecordBatch, RecordBatchIterator, StringArray,
@@ -507,6 +508,7 @@ fn write_fixture_store(path: &Path) {
 /// Oracle: the native reader maps a `.lance` dataset's columns onto
 /// the same entries the JSON export parser produces, and never reads
 /// the vector column.
+#[cfg(feature = "lancedb")]
 #[test]
 fn native_reader_reads_a_lancedb_store_without_its_vectors() {
     let dir = temp_dir("native");
@@ -523,6 +525,7 @@ fn native_reader_reads_a_lancedb_store_without_its_vectors() {
 /// Oracle: rebuild-from-sources — staging the native read into a
 /// fresh unit and promoting it yields a searchable shard with the
 /// same hits as the export path (the staged corpus is the source).
+#[cfg(feature = "lancedb")]
 #[test]
 fn native_store_rebuilds_the_index_from_sources() {
     let dir = temp_dir("rebuild");
