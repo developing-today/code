@@ -1,9 +1,12 @@
 # Collaborative ProseMirror step compatibility contract (initial)
 
-This document pins the first compatibility target for a future Rust-native
-collaboration validator. It does **not** change server behavior: `id-web`
-currently accepts and stores opaque step JSON, so the vulnerability in
-[issue #1618](https://github.com/developing-today/code/issues/1618) remains.
+This document pins the TypeScript compatibility target for the next stage of
+the Rust-native collaboration validator. The server's first validation slice
+landed in #15270: it checks recognized step shapes, schema names, bounds, and
+batch transactionality, but does not yet prove that transforms apply to the
+document tree. This document and corpus do **not** implement that missing
+application behavior or claim [issue #1618](https://github.com/developing-today/code/issues/1618)
+is fixed.
 
 ## Oracle and corpus
 
