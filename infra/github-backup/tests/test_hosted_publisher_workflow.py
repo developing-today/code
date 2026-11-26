@@ -20,6 +20,22 @@ REGISTRY = ROOT / "doc/fleet-schedule-registry.md"
 
 
 class HostedPublisherWorkflowTests(unittest.TestCase):
+    def test_each_r2_publisher_uses_bucket_scoped_remote_settings(self):
+        # Oracle: the proven laptop/probe remote contract skips HeadBucket,
+        # which the bucket-scoped R2 token cannot perform (#15511).
+        workflow = WORKFLOW.read_text()
+        steps = re.split(r"(?m)^      - name: ", workflow)
+        for name in ("Upload verified R2 bundles", "Publish verified rehost packs"):
+            with self.subTest(step=name):
+                step = next(step for step in steps if step.startswith(name + "\n"))
+                self.assertRegex(
+                    step, r"(?m)^          RCLONE_CONFIG_R2BAK_REGION: auto$"
+                )
+                self.assertRegex(
+                    step,
+                    r'(?m)^          RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET: "true"$',
+                )
+
     def test_workflow_is_dispatchable_scheduled_and_registered(self):
         workflow = WORKFLOW.read_text()
         registry = REGISTRY.read_text()
