@@ -635,7 +635,7 @@ fn fetch_raw_tree(
 /// Extract the page title from an inventoried page object: the plain
 /// text of its title property (§2.2's title-property rule, applied to
 /// pages). Pages without a title property yield an empty title.
-fn page_title(page_source: &Value) -> String {
+pub(crate) fn page_title(page_source: &Value) -> String {
     let Some(properties) = page_source.get("properties").and_then(Value::as_object) else {
         return String::new();
     };

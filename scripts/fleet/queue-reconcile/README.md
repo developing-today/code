@@ -34,6 +34,13 @@ idempotent by construction: an issue that already holds a live task is
 never uncovered, and an enqueue that races another lane's import dedupes
 onto the live row.
 
+If the canonical key belongs only to a completed task, that terminal
+row is not live coverage. The importer retries once with the queue's
+supported `:dispatch:<8-hex>` suffix, derived from the check timestamp
+and issue/PR identity. A simultaneous run with the same check timestamp
+dedupes onto that live retry; a second terminal hit is reported as an
+enqueue error rather than counted as covered.
+
 **Open-PR coverage (#4951):** the broker diff only knows tasks, so
 `check_coverage.py` additionally consults the repo's open PRs before
 declaring an issue uncovered (branch `queue/<task>-<issue>-*`, a
@@ -99,7 +106,13 @@ to `~/.config/queue-reconcile/mode` — the same two-step rollout the
 sweeper's revalidator uses, so the first cycles can be reviewed before
 anything is enqueued automatically.
 
-Install (on the laptop, once the units are reviewed):
+On the AMD NixOS host, the hourly service and timer are declared by
+`nixos/home/queue-coverage-reconcile.nix` and enabled from
+`nixos/hosts/default.nix`. The mode file remains the switch from
+observe-only to import; the default first-run behavior enqueues nothing.
+
+On a non-NixOS user system, the repo-shipped units can be installed
+manually after review:
 
 ```bash
 mkdir -p ~/.config/systemd/user

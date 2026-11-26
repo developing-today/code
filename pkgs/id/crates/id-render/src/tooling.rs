@@ -36,20 +36,30 @@
 //!   and attribute order are ignored; child order and raw content
 //!   remain significant.
 //!
-//! The remaining #5855 §4 error rule — essential content inside
-//! a conditional block — does not ship here, by §4's own gate: a
-//! lint rule that cannot be expressed over the pipeline's inputs
-//! does not ship. The #5849 v1 vocabulary has no conditional
-//! element kind, so a conditional block has no source
-//! representation to lint (the same stated boundary as stage 3;
-//! see [`crate::compose`]). The rule lands with that vocabulary
-//! addition, not before it.
+//! * `conditional-essential` (error): essential content inside a
+//!   conditional block (#5855 §4; #5854 §5: a block carries
+//!   embellishment only). Two oracles, both over pipeline inputs:
+//!   an element kind outside
+//!   [`crate::vocabulary::CONDITIONAL_EMBELLISHMENT`] anywhere in a
+//!   block, and the §5 conformance check itself — the source with
+//!   every block removed must still pass stage 2.
+//! * `unknown-predicate` (error): a predicate term that names no
+//!   target, form-factor class, or capability flag of any planned
+//!   target (#5854 §5: an unknown term is a build error, never
+//!   "treat as false"). The plan set is the build's universe of
+//!   targets, so the rule needs at least one plan.
+//! * `conditional-excluded-everywhere` (warning): a block no
+//!   planned target includes (#5855 §4), evaluated with
+//!   [`crate::compose::conditional_includes`], the function
+//!   composition uses.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use crate::assertion_vocabulary;
-use crate::compose::{ComposeData, CompositionWarning, ReportedOverride, TargetSpec};
+use crate::compose::{
+    ComposeData, CompositionWarning, ConditionalExclusion, ReportedOverride, TargetSpec,
+};
 use crate::lower::{LowerReport, WebArtefact};
 use crate::lower_gui::{GuiArtefact, GuiData, GuiReport};
 use crate::lower_native::{NativeArtefact, NativeReport};
@@ -79,6 +89,16 @@ pub const RULE_LOWERING: &str = "lowering";
 /// Rule for the same semantic source found in two target folders
 /// (#5855 §4).
 pub const RULE_DUPLICATE_SOURCE: &str = "duplicate-source";
+
+/// Lint rule name: essential content inside a conditional block
+/// (#5855 §4, #5854 §5).
+pub const RULE_CONDITIONAL_ESSENTIAL: &str = "conditional-essential";
+/// Lint rule name: a conditional predicate term no planned target
+/// declares (#5854 §5).
+pub const RULE_UNKNOWN_PREDICATE: &str = "unknown-predicate";
+/// Lint rule name: a conditional block every planned target
+/// excludes (#5855 §4).
+pub const RULE_CONDITIONAL_EXCLUDED_EVERYWHERE: &str = "conditional-excluded-everywhere";
 
 /// How serious a lint diagnostic is (#5855 §4: the lint rules
 /// split into errors and warnings; nothing else exists).
@@ -332,6 +352,8 @@ pub enum TargetOutcome {
         coverage: Coverage,
         /// Composition warnings for this target (#5854 §6).
         composition_warnings: Vec<CompositionWarning>,
+        /// Conditional blocks this target excluded (#5854 §5).
+        conditional_exclusions: Vec<ConditionalExclusion>,
     },
     /// The target did not render; these errors are its conflict
     /// record (composition ties, lowering failures).
@@ -382,6 +404,7 @@ struct TargetRun {
     artefact: Artefact,
     coverage: Coverage,
     composition_warnings: Vec<CompositionWarning>,
+    conditional_exclusions: Vec<ConditionalExclusion>,
 }
 
 /// Runs stages 3–5 for one target plan against a validated
@@ -390,6 +413,7 @@ fn run_target(doc: &Document, plan: &TargetPlan) -> Result<TargetRun, (Stage, Ve
     let composed = crate::compose_document(doc, &plan.spec, &plan.compose)
         .map_err(|errors| (Stage::Compose, errors))?;
     let warnings = composed.report.warnings.clone();
+    let exclusions = composed.report.conditional_exclusions.clone();
     let name = plan.spec.name.as_str();
     if name == "web" {
         let (artefact, report) =
@@ -398,6 +422,7 @@ fn run_target(doc: &Document, plan: &TargetPlan) -> Result<TargetRun, (Stage, Ve
             artefact: Artefact::Web(artefact),
             coverage: Coverage::from_web(&report),
             composition_warnings: warnings,
+            conditional_exclusions: exclusions,
         })
     } else if crate::native_table::is_platform(name) {
         let (artefact, report) = crate::lower_document_native(doc, &composed)
@@ -406,6 +431,7 @@ fn run_target(doc: &Document, plan: &TargetPlan) -> Result<TargetRun, (Stage, Ve
             artefact: Artefact::Native(artefact),
             coverage: Coverage::from_native(&report),
             composition_warnings: warnings,
+            conditional_exclusions: exclusions,
         })
     } else if name == "gui" {
         let (artefact, report) = crate::lower_document_gui(doc, &composed, &plan.gui)
@@ -414,6 +440,7 @@ fn run_target(doc: &Document, plan: &TargetPlan) -> Result<TargetRun, (Stage, Ve
             artefact: Artefact::Gui(artefact),
             coverage: Coverage::from_gui(&report),
             composition_warnings: warnings,
+            conditional_exclusions: exclusions,
         })
     } else {
         Err((
@@ -458,6 +485,7 @@ pub fn preview_document(doc: &Document, plans: &[TargetPlan]) -> Preview {
                     artefact: run.artefact,
                     coverage: run.coverage,
                     composition_warnings: run.composition_warnings,
+                    conditional_exclusions: run.conditional_exclusions,
                 },
                 Err((_, errors)) => TargetOutcome::Conflict {
                     target: plan.spec.name.clone(),
@@ -563,6 +591,10 @@ pub fn lint(source: &str, plans: &[TargetPlan]) -> LintReport {
         }
         return LintReport { diagnostics };
     }
+    lint_conditionals(&doc, plans, &mut diagnostics);
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return LintReport { diagnostics };
+    }
     for plan in plans {
         let target = plan.spec.name.clone();
         match run_target(&doc, plan) {
@@ -616,6 +648,178 @@ pub fn lint(source: &str, plans: &[TargetPlan]) -> LintReport {
         }
     }
     LintReport { diagnostics }
+}
+
+/// The conditional-block rules (#5855 §4, #5854 §5) over a
+/// validated document; see the module documentation.
+fn lint_conditionals(doc: &Document, plans: &[TargetPlan], diagnostics: &mut Vec<Diagnostic>) {
+    let mut blocks: Vec<(&Element, String)> = Vec::new();
+    collect_conditionals(&doc.root, "document", &mut blocks);
+    if blocks.is_empty() {
+        return;
+    }
+    for (block, path) in &blocks {
+        let mut essential: Vec<(&Element, String)> = Vec::new();
+        collect_essential(block, path, &mut essential);
+        for (el, el_path) in essential {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                rule: RULE_CONDITIONAL_ESSENTIAL,
+                message: format!(
+                    "essential content <{}> inside a conditional block ({}): a block carries embellishment only ({}); move it out of the block (#5854 §5)",
+                    el.name,
+                    crate::compose::predicate_text(block),
+                    crate::vocabulary::CONDITIONAL_EMBELLISHMENT.join(", ")
+                ),
+                line: el.span.line,
+                col: el.span.col,
+                target: None,
+                element_path: Some(el_path),
+            });
+        }
+        if !plans.is_empty() {
+            for (attr, term) in unknown_predicate_terms(block, plans) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    rule: RULE_UNKNOWN_PREDICATE,
+                    message: format!(
+                        "predicate `{attr}` names `{term}`, which no planned target declares; an unknown term is an error, never false (#5854 §5)"
+                    ),
+                    line: block.span.line,
+                    col: block.span.col,
+                    target: None,
+                    element_path: Some(path.clone()),
+                });
+            }
+            let included_somewhere = plans
+                .iter()
+                .any(|plan| crate::compose::conditional_includes(block, &plan.spec));
+            if !included_somewhere {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: RULE_CONDITIONAL_EXCLUDED_EVERYWHERE,
+                    message: format!(
+                        "conditional block ({}) is excluded on every planned target, so its content never renders (#5855 §4)",
+                        crate::compose::predicate_text(block)
+                    ),
+                    line: block.span.line,
+                    col: block.span.col,
+                    target: None,
+                    element_path: Some(path.clone()),
+                });
+            }
+        }
+    }
+    // #5854 §5 conformance: removing every block must leave a
+    // complete programme. Over source, the decidable part of that is
+    // stage 2 — the stripped document must still validate.
+    let stripped = Document {
+        root: strip_conditionals(&doc.root),
+    };
+    if let Err(errors) = crate::validate(&stripped) {
+        for error in errors {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                rule: RULE_CONDITIONAL_ESSENTIAL,
+                message: format!(
+                    "with every conditional block removed the source no longer builds: {} (#5854 §5)",
+                    error.message
+                ),
+                line: error.line,
+                col: error.col,
+                target: None,
+                element_path: None,
+            });
+        }
+    }
+}
+
+/// Every conditional block in the tree, with its document path.
+fn collect_conditionals<'a>(el: &'a Element, path: &str, out: &mut Vec<(&'a Element, String)>) {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for child in &el.children {
+        if let Node::Element(child_el) = child {
+            let index = {
+                let entry = counts.entry(child_el.name.as_str()).or_insert(0);
+                let index = *entry;
+                *entry += 1;
+                index
+            };
+            let child_path = crate::compose::element_path(path, &child_el.name, index);
+            if child_el.name == crate::vocabulary::CONDITIONAL {
+                out.push((child_el, child_path.clone()));
+            }
+            collect_conditionals(child_el, &child_path, out);
+        }
+    }
+}
+
+/// The outermost non-embellishment elements under `el` (a block's
+/// content), each with its path; an essential element's own
+/// children are not reported again.
+fn collect_essential<'a>(el: &'a Element, path: &str, out: &mut Vec<(&'a Element, String)>) {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for child in &el.children {
+        if let Node::Element(child_el) = child {
+            let index = {
+                let entry = counts.entry(child_el.name.as_str()).or_insert(0);
+                let index = *entry;
+                *entry += 1;
+                index
+            };
+            let child_path = crate::compose::element_path(path, &child_el.name, index);
+            if crate::vocabulary::is_embellishment(child_el) {
+                collect_essential(child_el, &child_path, out);
+            } else if child_el.name != crate::vocabulary::CONDITIONAL {
+                // A nested block is a stage-2 error already.
+                out.push((child_el, child_path));
+            }
+        }
+    }
+}
+
+/// Predicate terms of `block` that no planned target declares:
+/// `(attribute, term)` pairs in source order.
+fn unknown_predicate_terms<'a>(
+    block: &'a Element,
+    plans: &[TargetPlan],
+) -> Vec<(&'static str, &'a str)> {
+    let mut out = Vec::new();
+    for attr in crate::vocabulary::PREDICATE_ATTRS {
+        let Some(value) = block.attr(attr) else {
+            continue;
+        };
+        for term in value.split_whitespace() {
+            let known = plans.iter().any(|plan| match *attr {
+                "target" => plan.spec.name == term,
+                "form-factor" => plan.spec.form_factor == term,
+                _ => plan.spec.capabilities.contains(term),
+            });
+            if !known {
+                out.push((*attr, term));
+            }
+        }
+    }
+    out
+}
+
+/// `el` with every conditional block removed (the §5 stripped
+/// source).
+fn strip_conditionals(el: &Element) -> Element {
+    Element {
+        name: el.name.clone(),
+        attrs: el.attrs.clone(),
+        span: el.span,
+        children: el
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                Node::Element(child_el) if child_el.name == crate::vocabulary::CONDITIONAL => None,
+                Node::Element(child_el) => Some(Node::Element(strip_conditionals(child_el))),
+                other => Some(other.clone()),
+            })
+            .collect(),
+    }
 }
 
 /// Compare parsed documents by semantic content. Source positions are

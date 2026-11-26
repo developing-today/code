@@ -1545,6 +1545,274 @@ pub fn template_source_from_dir(
     )?)
 }
 
+/// The file in a template-created world's directory that records the
+/// program references the importer did not hold (v1 record §5: the
+/// world is created with the gap recorded). Absent when there were
+/// none.
+pub const TEMPLATE_GAPS_FILE: &str = "template-gaps.json";
+
+/// What [`create_world_from_template`] made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemplateWorld {
+    /// The new world's id.
+    pub world_id: String,
+    /// Module hashes installed from held bundles, in template order.
+    pub installed: Vec<String>,
+    /// References the importer did not hold, also written to
+    /// [`TEMPLATE_GAPS_FILE`] so a later install can finish them.
+    pub gaps: Vec<crate::program_bundle::ProgramIdentity>,
+    /// Template state keys the new world starts with.
+    pub state_keys: Vec<String>,
+}
+
+/// Create a new durable world in `dir` from a resolved template import
+/// (#8282, design D5).
+///
+/// The world gets the import's fresh id and starts with the template
+/// state as its `kv` store. Each held bundle installs through the
+/// ordinary bundle path ([`WorldService::install_bundle`]), so its hash,
+/// signature and the world's trust list (`trusted_keys`, empty for
+/// none) are checked exactly as for a sideloaded file. Unresolved
+/// references are recorded in [`TEMPLATE_GAPS_FILE`]. No network is
+/// used.
+///
+/// `dir` must be absent or empty. On any refusal the directory is left
+/// as it was found, so a failed create never leaves half a world.
+///
+/// # Errors
+///
+/// A non-empty `dir`, a template naming more than one program (a world
+/// runs one program), template state the world store refuses, a bundle
+/// the install path refuses, and I/O failures.
+#[cfg(feature = "sandbox")]
+pub async fn create_world_from_template(
+    dir: &Path,
+    import: &crate::world_template::TemplateImport,
+    trusted_keys: Vec<[u8; 32]>,
+    seed: u64,
+) -> Result<TemplateWorld> {
+    let existed = dir.exists();
+    if existed {
+        ensure!(
+            std::fs::read_dir(dir)?.next().is_none(),
+            "{} is not empty",
+            dir.display()
+        );
+    }
+    let programs = import.installs.len() + import.gaps.len();
+    ensure!(
+        programs <= 1,
+        "a world runs one program, and the template names {programs}"
+    );
+    let result = populate_template_world(dir, import, trusted_keys, seed).await;
+    if result.is_err() {
+        // The directory was absent or empty: put it back that way.
+        let _ = std::fs::remove_dir_all(dir);
+        if existed {
+            let _ = std::fs::create_dir_all(dir);
+        }
+    }
+    result
+}
+
+#[cfg(feature = "sandbox")]
+async fn populate_template_world(
+    dir: &Path,
+    import: &crate::world_template::TemplateImport,
+    trusted_keys: Vec<[u8; 32]>,
+    seed: u64,
+) -> Result<TemplateWorld> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    {
+        let (mut journal, _) = FileJournal::open(&dir.join("journal.jsonl"), &import.world_id)?;
+        for (key, value) in &import.state {
+            journal.append(&JournalEntry::KvSet {
+                key: key.clone(),
+                value: value.clone(),
+            })?;
+        }
+    }
+
+    // Opening re-checks every seeded entry against the store's bounds,
+    // so template state the world could not hold refuses here.
+    let admin = {
+        use rand::RngExt as _;
+        format!("{:032x}", rand::rng().random::<u128>())
+    };
+    let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+    let service_admin = admin.clone();
+    let (service, _) = open_world(
+        dir,
+        &import.world_id,
+        WorldLimits::default(),
+        crate::world_limits::RuntimeLimits::default(),
+        move |handle| {
+            WorldService::new(handle, Some(service_admin))
+                .with_blob_store(blobs)
+                .with_module_trust_keys(trusted_keys)
+        },
+    )
+    .await
+    .context("open the new world")?;
+
+    let mut installed = Vec::new();
+    for bundle in &import.installs {
+        let identity = bundle.identity();
+        let (hash, _) = service
+            .install_bundle(Some(&admin), &bundle.to_bytes(), seed)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "install {}/{}@{}: {error}",
+                    identity.author,
+                    identity.name,
+                    identity.version
+                )
+            })?;
+        installed.push(hash);
+    }
+    // Stop the actor rather than only dropping the service, so its
+    // journal lock is released and the world can be opened again.
+    service
+        .world()
+        .shutdown()
+        .await
+        .context("close the world")?;
+
+    if !import.gaps.is_empty() {
+        let path = dir.join(TEMPLATE_GAPS_FILE);
+        let mut text = serde_json::to_vec_pretty(&import.gaps)?;
+        text.push(b'\n');
+        std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(TemplateWorld {
+        world_id: import.world_id.clone(),
+        installed,
+        gaps: import.gaps.clone(),
+        state_keys: import.state.keys().cloned().collect(),
+    })
+}
+
+/// What [`resume_template_world`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemplateResume {
+    /// Module hashes installed from bundles that filled a gap.
+    pub installed: Vec<String>,
+    /// References still unresolved; [`TEMPLATE_GAPS_FILE`] now lists
+    /// exactly these, and is removed when none are left.
+    pub gaps: Vec<crate::program_bundle::ProgramIdentity>,
+}
+
+/// Finish a template-created world's recorded gaps from bundles the
+/// importer now holds (v1 record §5: a gap is resumable).
+///
+/// Each gap resolves exactly as at create time
+/// ([`crate::world_template::TemplateImport::resolve_gaps`]): only an
+/// exact identity match fills it, and the same version under another
+/// hash is refused as a provenance violation. Filled gaps install
+/// through [`WorldService::install_bundle`] with the world's trust list
+/// (`trusted_keys`). A world that already runs a program is refused,
+/// because an install would replace it.
+///
+/// # Errors
+///
+/// A directory with no recorded gaps, a world that already runs a
+/// program, a provenance violation, a bundle the install path refuses,
+/// and I/O failures.
+#[cfg(feature = "sandbox")]
+pub async fn resume_template_world(
+    dir: &Path,
+    held: &[crate::program_bundle::ProgramBundle],
+    trusted_keys: Vec<[u8; 32]>,
+    seed: u64,
+) -> Result<TemplateResume> {
+    let gaps_path = dir.join(TEMPLATE_GAPS_FILE);
+    let text = std::fs::read(&gaps_path)
+        .with_context(|| format!("{} records no template gaps", dir.display()))?;
+    let gaps: Vec<crate::program_bundle::ProgramIdentity> = serde_json::from_slice(&text)
+        .with_context(|| format!("{} is corrupt", gaps_path.display()))?;
+    let entries = read_journal_entries(&dir.join("journal.jsonl"))?;
+    let Some(JournalEntry::Created { world_id, .. }) = entries.first() else {
+        bail!("{} has no Created header", dir.display());
+    };
+    let mut import = crate::world_template::TemplateImport {
+        world_id: world_id.clone(),
+        roles: Vec::new(),
+        state: std::collections::BTreeMap::new(),
+        installs: Vec::new(),
+        gaps,
+    };
+    import.resolve_gaps(held)?;
+    if import.installs.is_empty() {
+        return Ok(TemplateResume {
+            installed: Vec::new(),
+            gaps: import.gaps,
+        });
+    }
+
+    let admin = {
+        use rand::RngExt as _;
+        format!("{:032x}", rand::rng().random::<u128>())
+    };
+    let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+    let service_admin = admin.clone();
+    let (service, report) = open_world(
+        dir,
+        &import.world_id,
+        WorldLimits::default(),
+        crate::world_limits::RuntimeLimits::default(),
+        move |handle| {
+            WorldService::new(handle, Some(service_admin))
+                .with_blob_store(blobs)
+                .with_module_trust_keys(trusted_keys)
+        },
+    )
+    .await
+    .context("open the world")?;
+    if let Some(active) = report.module_hash {
+        bail!("the world already runs program {active}, and installing a gap would replace it");
+    }
+    let mut installed = Vec::new();
+    for bundle in &import.installs {
+        let identity = bundle.identity();
+        let (hash, _) = service
+            .install_bundle(Some(&admin), &bundle.to_bytes(), seed)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "install {}/{}@{}: {error}",
+                    identity.author,
+                    identity.name,
+                    identity.version
+                )
+            })?;
+        installed.push(hash);
+    }
+    // Stop the actor rather than only dropping the service, so its
+    // journal lock is released and the world can be opened again.
+    service
+        .world()
+        .shutdown()
+        .await
+        .context("close the world")?;
+
+    if import.gaps.is_empty() {
+        std::fs::remove_file(&gaps_path)
+            .with_context(|| format!("remove {}", gaps_path.display()))?;
+    } else {
+        let scratch = dir.join(format!("{TEMPLATE_GAPS_FILE}.tmp"));
+        let mut text = serde_json::to_vec_pretty(&import.gaps)?;
+        text.push(b'\n');
+        std::fs::write(&scratch, text).with_context(|| format!("write {}", scratch.display()))?;
+        std::fs::rename(&scratch, &gaps_path)
+            .with_context(|| format!("replace {}", gaps_path.display()))?;
+    }
+    Ok(TemplateResume {
+        installed,
+        gaps: import.gaps,
+    })
+}
+
 #[derive(Debug, Default)]
 struct EmptyProgram;
 impl WorldProgram for EmptyProgram {}
@@ -1653,6 +1921,325 @@ mod tests {
         let mut line = serde_json::to_vec(entry).unwrap();
         line.push(b'\n');
         line
+    }
+
+    #[cfg(feature = "sandbox")]
+    mod from_template {
+        use super::*;
+        use crate::program_bundle::{ProgramBundle, ProgramSpec, export};
+        use crate::world_template::{
+            TemplateImport, TemplateSource, export_template, import_template,
+        };
+        use ed25519_dalek::SigningKey;
+        use std::collections::BTreeMap;
+
+        fn counter(author: &SigningKey) -> ProgramBundle {
+            let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
+            export(
+                wasm,
+                ProgramSpec {
+                    name: "counter",
+                    version: 1,
+                    licence: None,
+                    description: None,
+                    categories: &[],
+                },
+                author,
+            )
+            .unwrap()
+        }
+
+        fn template_import(
+            bundle: &ProgramBundle,
+            state: &[(&str, &str)],
+            held: &[ProgramBundle],
+        ) -> TemplateImport {
+            let source = TemplateSource {
+                programs: vec![bundle.identity()],
+                roles: Vec::new(),
+                credentials: Vec::new(),
+                per_user_data: Vec::new(),
+                grants: Vec::new(),
+                state: state
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                    .collect(),
+            };
+            import_template(&export_template(&source).unwrap(), "copy", held).unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_template_world_starts_with_its_state_and_installs_the_held_bundle() {
+            // Oracle: exporting the new world again yields the template's
+            // own program reference and state, so the install recorded
+            // the bundle's identity and the state survived the install.
+            let author = SigningKey::from_bytes(&[51; 32]);
+            let bundle = counter(&author);
+            let import =
+                template_import(&bundle, &[("layout", "1")], std::slice::from_ref(&bundle));
+            let dir = TempDir::new().unwrap();
+            let world = create_world_from_template(
+                dir.path(),
+                &import,
+                vec![author.verifying_key().to_bytes()],
+                5,
+            )
+            .await
+            .unwrap();
+            assert_eq!(world.installed, vec![bundle.identity().content_hash]);
+            assert!(world.gaps.is_empty());
+            assert!(!dir.path().join(TEMPLATE_GAPS_FILE).exists());
+
+            let again = template_source_from_dir(dir.path(), &["layout".to_owned()]).unwrap();
+            assert_eq!(again.programs, vec![bundle.identity()]);
+            assert_eq!(
+                again.state,
+                BTreeMap::from([("layout".to_owned(), "1".to_owned())])
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unheld_reference_creates_the_world_with_the_gap_recorded() {
+            let bundle = counter(&SigningKey::from_bytes(&[52; 32]));
+            let import = template_import(&bundle, &[("layout", "1")], &[]);
+            let dir = TempDir::new().unwrap();
+            let world = create_world_from_template(dir.path(), &import, Vec::new(), 5)
+                .await
+                .unwrap();
+            assert!(world.installed.is_empty());
+            assert_eq!(world.gaps, vec![bundle.identity()]);
+            let recorded: Vec<crate::program_bundle::ProgramIdentity> = serde_json::from_slice(
+                &std::fs::read(dir.path().join(TEMPLATE_GAPS_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(recorded, vec![bundle.identity()]);
+            let again = template_source_from_dir(dir.path(), &["layout".to_owned()]).unwrap();
+            assert!(again.programs.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_refused_create_leaves_the_directory_as_it_found_it() {
+            let author = SigningKey::from_bytes(&[53; 32]);
+            let stranger = SigningKey::from_bytes(&[54; 32]);
+            let bundle = counter(&author);
+            let held = std::slice::from_ref(&bundle);
+            let cases = [
+                // The trust list governs whose bundles install.
+                (
+                    template_import(&bundle, &[], held),
+                    vec![stranger.verifying_key().to_bytes()],
+                ),
+                // State the world store would refuse to hold.
+                (
+                    template_import(&bundle, &[("layout", "{")], held),
+                    Vec::new(),
+                ),
+            ];
+            for (import, trusted) in cases {
+                let dir = TempDir::new().unwrap();
+                assert!(
+                    create_world_from_template(dir.path(), &import, trusted, 5)
+                        .await
+                        .is_err()
+                );
+                assert!(dir.path().is_dir());
+                assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+            }
+
+            let absent = TempDir::new().unwrap();
+            let target = absent.path().join("new-world");
+            let import = template_import(&bundle, &[("layout", "{")], held);
+            assert!(
+                create_world_from_template(&target, &import, Vec::new(), 5)
+                    .await
+                    .is_err()
+            );
+            assert!(!target.exists());
+        }
+
+        #[tokio::test]
+        async fn a_non_empty_directory_or_a_second_program_is_refused() {
+            let bundle = counter(&SigningKey::from_bytes(&[55; 32]));
+            let dir = TempDir::new().unwrap();
+            std::fs::write(dir.path().join("mine"), b"x").unwrap();
+            let import = template_import(&bundle, &[], &[]);
+            assert!(
+                create_world_from_template(dir.path(), &import, Vec::new(), 5)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(dir.path().join("mine")).unwrap(), b"x");
+
+            let mut two = import.clone();
+            two.gaps.push(bundle.identity());
+            let empty = TempDir::new().unwrap();
+            let error = create_world_from_template(empty.path(), &two, Vec::new(), 5)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("one program"), "{error:#}");
+            assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
+        }
+
+        #[tokio::test]
+        async fn a_recorded_gap_resumes_once_the_bundle_is_held() {
+            let author = SigningKey::from_bytes(&[56; 32]);
+            let bundle = counter(&author);
+            let import = template_import(&bundle, &[("layout", "1")], &[]);
+            let dir = TempDir::new().unwrap();
+            create_world_from_template(dir.path(), &import, Vec::new(), 5)
+                .await
+                .unwrap();
+            let gaps_file = dir.path().join(TEMPLATE_GAPS_FILE);
+            let recorded = std::fs::read(&gaps_file).unwrap();
+
+            // Nothing held yet: the gap stays as it was.
+            let nothing = resume_template_world(dir.path(), &[], Vec::new(), 5)
+                .await
+                .unwrap();
+            assert!(nothing.installed.is_empty());
+            assert_eq!(nothing.gaps, vec![bundle.identity()]);
+            assert_eq!(std::fs::read(&gaps_file).unwrap(), recorded);
+
+            // The same version under other content is a violation, not a fill.
+            let impostor = export(
+                b"not the counter".to_vec(),
+                ProgramSpec {
+                    name: "counter",
+                    version: 1,
+                    licence: None,
+                    description: None,
+                    categories: &[],
+                },
+                &author,
+            )
+            .unwrap();
+            assert!(
+                resume_template_world(dir.path(), &[impostor], Vec::new(), 5)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(&gaps_file).unwrap(), recorded);
+
+            let resumed = resume_template_world(
+                dir.path(),
+                std::slice::from_ref(&bundle),
+                vec![author.verifying_key().to_bytes()],
+                5,
+            )
+            .await
+            .unwrap();
+            assert_eq!(resumed.installed, vec![bundle.identity().content_hash]);
+            assert!(resumed.gaps.is_empty());
+            assert!(!gaps_file.exists());
+            let again = template_source_from_dir(dir.path(), &["layout".to_owned()]).unwrap();
+            assert_eq!(again.programs, vec![bundle.identity()]);
+
+            // With the gap filled there is nothing left to resume.
+            assert!(
+                resume_template_world(dir.path(), std::slice::from_ref(&bundle), Vec::new(), 5)
+                    .await
+                    .is_err()
+            );
+        }
+
+        /// #8282 acceptance: export world W, import it as W', and W' has
+        /// the same program (hash-verified on install), the template
+        /// state and its own identity, and none of W's people or grants.
+        #[tokio::test]
+        async fn a_world_round_trips_through_a_template_without_its_people() {
+            use crate::world_limits::RuntimeLimits;
+            use iroh_blobs::store::mem::MemStore;
+
+            let author = SigningKey::from_bytes(&[57; 32]);
+            let bundle = counter(&author);
+            let source_dir = TempDir::new().unwrap();
+            {
+                let (mut journal, _) =
+                    FileJournal::open(&source_dir.path().join("journal.jsonl"), "w").unwrap();
+                for entry in [
+                    JournalEntry::KvSet {
+                        key: "layout".to_owned(),
+                        value: "1".to_owned(),
+                    },
+                    JournalEntry::KvSet {
+                        key: "scratch".to_owned(),
+                        value: "2".to_owned(),
+                    },
+                    JournalEntry::PortalGrantSet {
+                        peer: "north".to_owned(),
+                        granted: true,
+                    },
+                ] {
+                    journal.append(&entry).unwrap();
+                }
+            }
+            let blobs: iroh_blobs::api::Store = MemStore::new().into();
+            let (service, _) = open_world(
+                source_dir.path(),
+                "w",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                move |handle| {
+                    WorldService::new(handle, Some("admin".to_owned())).with_blob_store(blobs)
+                },
+            )
+            .await
+            .unwrap();
+            service
+                .install_bundle(Some("admin"), &bundle.to_bytes(), 3)
+                .await
+                .unwrap();
+            for name in ["alice", "bob"] {
+                service
+                    .world()
+                    .issue(name, WorldScopes::GUEST)
+                    .await
+                    .unwrap();
+            }
+            drop(service);
+
+            let source =
+                template_source_from_dir(source_dir.path(), &["layout".to_owned()]).unwrap();
+            let template = export_template(&source).unwrap();
+            for stripped in ["credentials:2", "grants:1"] {
+                assert!(
+                    template
+                        .manifest
+                        .stripped
+                        .iter()
+                        .any(|entry| entry == stripped),
+                    "{stripped} missing from {:?}",
+                    template.manifest.stripped
+                );
+            }
+
+            let import =
+                import_template(&template, "w-prime", std::slice::from_ref(&bundle)).unwrap();
+            let copy_dir = TempDir::new().unwrap();
+            create_world_from_template(copy_dir.path(), &import, Vec::new(), 3)
+                .await
+                .unwrap();
+
+            let entries = read_journal_entries(&copy_dir.path().join("journal.jsonl")).unwrap();
+            assert!(matches!(
+                entries.first(),
+                Some(JournalEntry::Created { world_id, .. }) if world_id == "w-prime"
+            ));
+            assert!(
+                !entries
+                    .iter()
+                    .any(|entry| matches!(entry, JournalEntry::Issued { .. })),
+                "the copy holds no capability of the source's people"
+            );
+            let text = std::fs::read_to_string(copy_dir.path().join("journal.jsonl")).unwrap();
+            for leaked in ["alice", "bob", "north", "scratch"] {
+                assert!(!text.contains(leaked), "{leaked} reached the copy");
+            }
+            let copy = template_source_from_dir(copy_dir.path(), &["layout".to_owned()]).unwrap();
+            assert_eq!(copy.programs, source.programs);
+            assert_eq!(copy.state, source.state);
+            assert!(copy.credentials.is_empty() && copy.grants.is_empty());
+        }
     }
 
     #[test]

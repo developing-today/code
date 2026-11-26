@@ -68,6 +68,7 @@ pub mod naming;
 pub mod ocsp;
 pub mod profile;
 pub mod publish;
+pub mod replace;
 pub mod timeparse;
 pub mod trust;
 pub mod trust_consumer;
