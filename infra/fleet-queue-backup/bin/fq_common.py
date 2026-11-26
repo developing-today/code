@@ -262,18 +262,22 @@ def read_table_quoted(client, table, ncols):
     if len(colnames) != ncols:
         raise RuntimeError(f"{table}: expected {ncols} columns, found {len(colnames)}")
     quoted = ", ".join(f'quote("{c}")' for c in colnames)
+    # A client may declare a smaller page (D1SourceClient does): the
+    # bound is on pages either way, so a smaller page only lowers the
+    # admitted row ceiling, never the termination guarantee.
+    page_rows = getattr(client, "page_rows", PAGE_ROWS)
     offset = 0
     for _page in range(MAX_PAGES):
         _cols, rows = client.execute(
-            f'SELECT {quoted} FROM "{table}" LIMIT {PAGE_ROWS} OFFSET {offset}'
+            f'SELECT {quoted} FROM "{table}" LIMIT {page_rows} OFFSET {offset}'
         )
         for row in rows:
             yield row
-        if len(rows) < PAGE_ROWS:
+        if len(rows) < page_rows:
             return
-        offset += PAGE_ROWS
+        offset += page_rows
     raise RuntimeError(
-        f"{table}: pagination exceeded {MAX_PAGES} pages of {PAGE_ROWS}; "
+        f"{table}: pagination exceeded {MAX_PAGES} pages of {page_rows}; "
         "refusing to page unboundedly"
     )
 
@@ -782,6 +786,13 @@ class D1SourceClient:
     renders the literal text server-side, so no binary cell ever
     crosses this adapter on the export path.
     """
+
+    # Smaller pages than the libsql path: a 500-row page of
+    # quote()-rendered queue rows runs to ~190 KB, and the sandbox
+    # seat's egress proxy truncates responses of that size mid-body
+    # on every attempt (live CF-3 runs, 2026-11-26, #14943). 100-row
+    # pages keep each response well under the observed cut.
+    page_rows = 100
 
     def __init__(self, d1, db_id):
         self.d1 = d1
