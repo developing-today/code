@@ -54,6 +54,7 @@ pub mod gallery;
 mod groups;
 mod home;
 mod identity;
+pub mod login;
 mod markdown;
 pub mod presentation;
 mod routes;
@@ -684,6 +685,8 @@ pub struct AppState {
     pub(crate) upload_name_lock: Arc<Mutex<()>>,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
+    /// OIDC authorization-start state and server-held PKCE verifiers.
+    pub oidc_login: login::OidcLoginState,
     /// Node-signed event log used to publish durable document revisions.
     pub(crate) local_events: Arc<Mutex<id_events::local_events::LocalEvents>>,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
@@ -732,6 +735,7 @@ impl std::fmt::Debug for AppState {
             .field("save_limiter", &self.save_limiter)
             .field("register_limiter", &self.register_limiter)
             .field("identity", &self.identity)
+            .field("oidc_login_configured", &self.oidc_login.is_configured())
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
             .field("publication_mounts", &self.publication_mounts)
@@ -810,6 +814,7 @@ impl AppState {
                 identity::configured_max_identities(),
             )
             .await?,
+            oidc_login: login::OidcLoginState::from_env()?,
             local_events,
             world: None,
             web_route: "/world".to_owned(),

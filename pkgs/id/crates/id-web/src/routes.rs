@@ -648,6 +648,7 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/sw.js", get(service_worker_handler))
         // Static assets
         .route("/assets/{*path}", get(assets_handler));
+    let router = router.merge(super::login::oidc_login_routes());
     // Optional authoritative in-memory world session bridge, bound
     // at the app's socket when it declares one (#2325). The shared
     // world HTTP surface (invite, metrics, directory, explore) is
@@ -2125,6 +2126,7 @@ mod identity_register_rate_limit_tests {
     use super::*;
     use id_store::tags::TagStore;
 
+    use crate::login::{OidcLoginConfig, OidcLoginState};
     use crate::{AppState, RegisterRateLimiter};
 
     async fn state_with_limit(limit: usize) -> AppState {
@@ -2177,7 +2179,8 @@ mod identity_register_rate_limit_tests {
 
     #[tokio::test]
     async fn oidc_start_route_is_registered_and_disabled_without_provider_config() {
-        let state = state_with_limit(2).await;
+        let mut state = state_with_limit(2).await;
+        state.oidc_login = OidcLoginState::disabled();
         let app = create_router(state, WebSecurity::default());
         let request = axum::http::Request::builder()
             .uri("/api/login/oidc/start")
@@ -2192,8 +2195,17 @@ mod identity_register_rate_limit_tests {
     }
 
     #[tokio::test]
-    async fn oidc_start_route_is_registered_and_disabled_without_provider_config() {
-        let state = state_with_limit(2).await;
+    async fn oidc_start_redirects_with_pkce_and_keeps_the_verifier_server_side() {
+        let mut state = state_with_limit(2).await;
+        state.oidc_login = OidcLoginState::with_config(
+            OidcLoginConfig::new(
+                "https://accounts.example/authorize",
+                "client-1",
+                "https://id.example/api/login/oidc/callback",
+            )
+            .expect("valid OIDC client config"),
+        );
+        let login = state.oidc_login.clone();
         let app = create_router(state, WebSecurity::default());
         let request = axum::http::Request::builder()
             .uri("/api/login/oidc/start")
@@ -2202,9 +2214,43 @@ mod identity_register_rate_limit_tests {
 
         let response = app.oneshot(request).await.unwrap();
 
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = response_json(response).await;
-        assert_eq!(body["error"], "oidc_login_not_configured");
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let location = response.headers()[header::LOCATION].to_str().unwrap();
+        assert!(location.starts_with("https://accounts.example/authorize?"));
+        assert!(location.contains("response_type=code"));
+        assert!(location.contains("code_challenge_method=S256"));
+        assert!(!location.contains("code_verifier"));
+
+        let query = location.split_once('?').unwrap().1;
+        let query_value = |name: &str| {
+            query
+                .split('&')
+                .find_map(|part| {
+                    let (key, value) = part.split_once('=')?;
+                    (key == name).then_some(value)
+                })
+                .unwrap()
+        };
+        let state_value = query_value("state");
+        let nonce = query_value("nonce");
+        assert_eq!(query_value("client_id"), "client-1");
+        assert_eq!(query_value("code_challenge").len(), 43);
+
+        let pending = login
+            .take_pending(state_value)
+            .expect("pending login state");
+        assert_eq!(pending.nonce(), nonce);
+        assert_eq!(pending.client_id(), "client-1");
+        assert_eq!(
+            pending.redirect_uri(),
+            "https://id.example/api/login/oidc/callback"
+        );
+        assert_eq!(pending.code_verifier().len(), 43);
+        assert!(
+            login.take_pending(state_value).is_none(),
+            "state is single-use"
+        );
     }
 
     #[tokio::test]
