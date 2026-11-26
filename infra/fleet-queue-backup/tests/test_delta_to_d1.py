@@ -155,6 +155,21 @@ class TestDelta(unittest.TestCase):
         for t in ("issues", "events", "history"):
             self.assertEqual(rows(self.dst, t), rows(self.src, t), t)
 
+    def test_lagging_table_may_trail_but_others_may_not(self):
+        orig = fq_common.count_rows
+
+        def count_rows(client, name):
+            # A writer that keeps going lands a row after the copy.
+            return orig(client, name) + (1 if name == "events" else 0)
+
+        fq_common.count_rows = count_rows
+        try:
+            with self.assertRaises(RuntimeError):
+                delta_to_d1.delta("libsql://x", "db", ["events", "history"])
+            delta_to_d1.delta("libsql://x", "db", ["events", "history"], ["events"])
+        finally:
+            fq_common.count_rows = orig
+
 
 GUARDED = """
 CREATE TABLE models (id TEXT PRIMARY KEY, name TEXT);

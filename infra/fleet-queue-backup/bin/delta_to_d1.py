@@ -2,6 +2,7 @@
 """Bring a D1 copy of a Turso store up to date for a cutover.
 
 Command line: --source-url URL --d1-name NAME [--append T1,T2,...]
+[--lagging T1,T2,...]
 
 Run it after a full export_to_d1.py copy, with the store's writers
 stopped. Append tables (the --append list, plus any table guarded by a
@@ -87,7 +88,7 @@ def _emit(lines, splits, table, colnames, pk_cols, row):
         lines.extend(fq_common._split_row_insert(table, colnames, row, pk_cols, splits))
 
 
-def delta(source_url, d1_name, append):
+def delta(source_url, d1_name, append, lagging=()):
     src = fq_common.LibsqlClient(source_url, _env("TURSO_QUEUE_TOKEN"))
     d1 = fq_common.D1Client(_env("CLOUDFLARE_API_TOKEN"), _env("CLOUDFLARE_ACCOUNT_ID"))
     db = d1.find_database(d1_name)
@@ -177,7 +178,16 @@ def delta(source_url, d1_name, append):
     names = [n for n, _ in tables]
     source_counts = {n: fq_common.count_rows(src, n) for n in names}
     d1_counts = d1.counts(db_id, names)
-    bad = {n: (source_counts[n], d1_counts.get(n)) for n in names if d1_counts.get(n) != source_counts[n]}
+    # A lagging table has a writer that cannot be held for the cutover
+    # (a Worker, another host); rows it lands during the delta are
+    # copied afterwards, so D1 may trail the source there, never lead.
+    lagging = set(lagging)
+    bad = {
+        n: (source_counts[n], d1_counts.get(n))
+        for n in names
+        if d1_counts.get(n) != source_counts[n]
+        and not (n in lagging and (d1_counts.get(n) or 0) <= source_counts[n])
+    }
     if bad:
         raise RuntimeError(f"count mismatch after delta (source, d1): {bad}")
     return report, sum(source_counts.values())
@@ -188,9 +198,15 @@ def main(argv=None):
     p.add_argument("--source-url", required=True)
     p.add_argument("--d1-name", required=True)
     p.add_argument("--append", default="", help="comma-separated append-only tables")
+    p.add_argument("--lagging", default="", help="comma-separated tables whose writers keep running; D1 may trail the source there")
     a = p.parse_args(argv)
     try:
-        report, total = delta(a.source_url, a.d1_name, [t for t in a.append.split(",") if t])
+        report, total = delta(
+            a.source_url,
+            a.d1_name,
+            [t for t in a.append.split(",") if t],
+            [t for t in a.lagging.split(",") if t],
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"delta_to_d1: failed: {exc}", file=sys.stderr)
         return 1
