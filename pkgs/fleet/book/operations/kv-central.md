@@ -77,8 +77,14 @@ fleet kv blob gc eu/standard
 - It fences the delete of each blob that stayed unreferenced for the grace,
   24 hours by default (`--grace-ms` changes it).
 - It prints `partition=… marked=N cleared=N deleted=N`, then one
-  `deleted content=DIGEST epoch=N` line per fenced delete. The object bytes
-  stay in the store; this pass only retires the central record.
+  `deleted content=DIGEST epoch=N` line per fenced delete. A fenced delete
+  retires the central record; the bytes stay in the bucket.
+- `fleet kv blob gc eu/standard --purge` then has the blob door remove the
+  bytes of every deleted blob that no published row names. It prints one
+  `purged content=DIGEST` line per removal and ends with
+  `purged=N released=N`; a released blob is retried by the next purge.
+  While a purge holds a blob, uploading the same bytes is refused with
+  `kv_blob_purge_in_progress`; upload again once it is done.
 
 ## Check readiness
 
