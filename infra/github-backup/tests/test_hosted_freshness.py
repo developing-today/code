@@ -151,6 +151,9 @@ class BundleLegTests(unittest.TestCase):
         self.assertEqual(mod, datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc))
 
 
+B = HEAD_B
+
+
 class LagTests(unittest.TestCase):
     """A copy behind the source is judged by lag when a lag fetcher exists."""
 
@@ -161,7 +164,7 @@ class LagTests(unittest.TestCase):
             return {
                 "relation": relation,
                 "behind_by": behind_by,
-                "oldest_missing_at": NOW - timedelta(hours=hours),
+                "moved_past_at": NOW - timedelta(hours=hours),
             }
 
         return lag
@@ -184,7 +187,7 @@ class LagTests(unittest.TestCase):
             self.assertEqual(entry["status"], hf.FRESH, leg)
             self.assertEqual(entry["copy_head"], HEAD_B, leg)
             self.assertEqual(entry["behind_by"], 3, leg)
-            self.assertEqual(entry["oldest_missing_at"], "2026-11-25T10:00:00Z", leg)
+            self.assertEqual(entry["moved_past_at"], "2026-11-25T10:00:00Z", leg)
         self.assertEqual(report["verdict"], "fresh")
         # One compare per distinct copy head per repo, copy...source order.
         self.assertEqual(calls, [(r, HEAD_B, HEAD_A) for r in REPOS])
@@ -245,29 +248,71 @@ class LagTests(unittest.TestCase):
             hf.fetch_lag("developing-today/code", "main", HEAD_A)
 
     def test_fetch_lag_maps_compare_answer(self):
-        answers = {
-            "ahead": '{"status":"ahead","ahead_by":4,"oldest":"2026-11-25T09:00:00Z"}',
-            "diverged": '{"status":"diverged","ahead_by":2,"oldest":"2026-11-25T09:00:00Z"}',
-        }
+        C = "c" * 40
+        D = "d" * 40
+        # Source A is a merge (first parent C) of a branch commit D that
+        # was committed long before; C is the commit that left copy B
+        # behind. The lag runs from C, not from the old branch commit.
+        listing = "\n".join(
+            [
+                f"{D}\t{B}\t2026-11-20T00:00:00Z",
+                f"{C}\t{B}\t2026-11-25T09:00:00Z",
+                f"{HEAD_A}\t{C}\t2026-11-25T11:00:00Z",
+            ]
+        )
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            if "--paginate" in args:
+                return listing
+            return '{"status":"ahead","ahead_by":3}'
+
         original = hf._gh_text
         try:
-            for status, raw in answers.items():
-                hf._gh_text = lambda args, raw=raw: raw
-                got = hf.fetch_lag("developing-today/code", HEAD_B, HEAD_A)
-                expected = "behind" if status == "ahead" else "diverged"
-                self.assertEqual(got["relation"], expected)
-            self.assertEqual(got["behind_by"], 2)
+            hf._gh_text = gh
+            got = hf.fetch_lag("developing-today/code", B, HEAD_A)
+            self.assertEqual(got["relation"], "behind")
+            self.assertEqual(got["behind_by"], 3)
             self.assertEqual(
-                got["oldest_missing_at"], datetime(2026, 11, 25, 9, tzinfo=timezone.utc)
+                got["moved_past_at"], datetime(2026, 11, 25, 9, tzinfo=timezone.utc)
             )
+
+            hf._gh_text = lambda args: '{"status":"diverged","ahead_by":2}'
+            got = hf.fetch_lag("developing-today/code", B, HEAD_A)
+            self.assertEqual(got["relation"], "diverged")
+            self.assertIsNone(got["moved_past_at"])
 
             def missing(args):
                 raise RuntimeError("gh api failed: HTTP 404 Not Found")
 
             hf._gh_text = missing
-            self.assertIsNone(hf.fetch_lag("developing-today/code", HEAD_B, HEAD_A))
+            self.assertIsNone(hf.fetch_lag("developing-today/code", B, HEAD_A))
         finally:
             hf._gh_text = original
+        self.assertTrue(any("--paginate" in args for args in calls))
+
+    def test_lag_beyond_cap_is_unmeasurable(self):
+        original = hf._gh_text
+        try:
+            hf._gh_text = lambda args: '{"status":"ahead","ahead_by":5000}'
+            got = hf.fetch_lag("developing-today/code", B, HEAD_A)
+        finally:
+            hf._gh_text = original
+        self.assertIsNone(got["moved_past_at"])
+
+    def test_first_parent_walk(self):
+        C = "c" * 40
+        t1 = datetime(2026, 11, 25, 9, tzinfo=timezone.utc)
+        t2 = datetime(2026, 11, 25, 11, tzinfo=timezone.utc)
+        rows = [(C, B, t1), (HEAD_A, C, t2)]
+        self.assertEqual(hf.first_parent_moved_at(rows, B, HEAD_A), t1)
+        # A line that leaves the rows without reaching the copy.
+        self.assertIsNone(hf.first_parent_moved_at([(HEAD_A, C, t2)], B, HEAD_A))
+        # A cycle never loops forever.
+        self.assertIsNone(
+            hf.first_parent_moved_at([(HEAD_A, C, t2), (C, HEAD_A, t1)], B, HEAD_A)
+        )
 
 
 class D1LegTests(unittest.TestCase):
