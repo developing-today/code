@@ -34,15 +34,20 @@ one of:
 Lag, not head equality, is the bar for a copy that is behind: a daily
 publisher can never hold the head of a repo that merges many times an
 hour, so head equality alone would leave such a repo stale forever.
-The lag of a copy is the committer time of the oldest source commit
-the copy does not contain (GitHub's compare API, copy head...source
-head). A copy that contains every commit older than the SLO has missed
-nothing the SLO promises. The lag is measured only when the source is
-strictly ahead of the copy: a diverged or unrelated copy, a copy head
-the source does not know, or a compare that cannot run all stay stale,
-so a lag that cannot be proven is never read as fresh. A commit whose
-committer time predates its push reads as older than it is, which can
-only make a copy look staler, never fresher.
+The lag of a copy is measured from the moment the source moved past
+it: the committer time of the first commit on the source's
+first-parent line after the copy head (GitHub's compare API, copy
+head...source head). That commit is the merge or push that left the
+copy behind, so its time is when the copy stopped being current. The
+oldest commit the copy lacks is not that moment: a long-lived branch
+merged today brings in commits committed days ago, and judging by
+those would call a copy taken an hour ago days stale. The lag is
+measured only when the source is strictly ahead of the copy: a
+diverged or unrelated copy, a copy head the source does not know, a
+first-parent line that does not lead back to the copy within the
+compare, more than MAX_LAG_COMMITS commits of lag, or a compare that
+cannot run all stay stale, so a lag that cannot be proven is never
+read as fresh.
 - stale:   a copy exists but is behind the source head by more than
            the leg's SLO, has diverged from it, or its proof is older
            than the leg's SLO.
@@ -149,22 +154,22 @@ def judge_lag(source_head, copy_head, lag, now, slo_hours, evidence):
         }.get(relation, f"compare reports {relation!r}")
         return result(STALE, f"{base}; {phrase}", **evidence)
     behind_by = lag.get("behind_by")
-    oldest = lag.get("oldest_missing_at")
-    if not isinstance(behind_by, int) or behind_by < 1 or oldest is None:
+    moved = lag.get("moved_past_at")
+    if not isinstance(behind_by, int) or behind_by < 1 or moved is None:
         return result(STALE, f"{base}; lag unmeasurable", **evidence)
-    evidence = dict(evidence, behind_by=behind_by, oldest_missing_at=iso(oldest))
-    age = now - oldest
+    evidence = dict(evidence, behind_by=behind_by, moved_past_at=iso(moved))
+    age = now - moved
     if age > timedelta(hours=slo_hours):
         return result(
             STALE,
-            f"{base}; {behind_by} commit(s) behind, oldest missing commit is "
-            f"{age} old, beyond the {slo_hours}h SLO",
+            f"{base}; {behind_by} commit(s) behind, the source moved past the "
+            f"copy {age} ago, beyond the {slo_hours}h SLO",
             **evidence,
         )
     return result(
         FRESH,
-        f"{behind_by} commit(s) behind the source head; oldest missing commit "
-        f"is {age} old, within the {slo_hours}h SLO",
+        f"{behind_by} commit(s) behind the source head; the source moved past "
+        f"the copy {age} ago, within the {slo_hours}h SLO",
         **evidence,
     )
 
@@ -350,39 +355,73 @@ def is_sha(value):
     return isinstance(value, str) and len(value) == 40 and set(value) <= SHA_CHARS
 
 
+MAX_LAG_COMMITS = 1000
+
+
+def first_parent_moved_at(rows, copy_head, source_head):
+    """When the source moved past the copy, from compare rows.
+
+    rows: (sha, first_parent_sha, committer_time) for every commit the
+    copy lacks. Walks the source's first-parent line back from the
+    source head; the last commit before reaching the copy head is the
+    one that left the copy behind, and its committer time is returned.
+    None when the line leaves the rows without reaching the copy.
+    """
+    by_sha = {sha: (parent, when) for sha, parent, when in rows}
+    current, last = source_head, None
+    for _ in range(len(by_sha) + 1):
+        if current == copy_head:
+            return by_sha[last][1] if last is not None else None
+        if current not in by_sha:
+            return None
+        last = current
+        current = by_sha[current][0]
+    return None
+
+
 def fetch_lag(repo, copy_head, source_head):
     """How far a copy head lags the source head, via GitHub compare.
 
     Returns None when the source does not know the copy head (404),
-    else {"relation", "behind_by", "oldest_missing_at"}: relation is
+    else {"relation", "behind_by", "moved_past_at"}: relation is
     "behind" when the source is strictly ahead of the copy (the copy
-    lacks behind_by commits, the oldest committed at
-    oldest_missing_at), "identical", "ahead" or "diverged" otherwise.
-    Raises on any other failure.
+    lacks behind_by commits, and the source moved past it at
+    moved_past_at, None when that cannot be measured), "identical",
+    "ahead" or "diverged" otherwise. Raises on any other failure.
     """
     if not (is_sha(copy_head) and is_sha(source_head)):
         raise RuntimeError("compare needs two full commit SHAs")
+    path = f"repos/{repo}/compare/{copy_head}...{source_head}"
     try:
-        raw = _gh_text(
-            [
-                f"repos/{repo}/compare/{copy_head}...{source_head}?per_page=1&page=1",
-                "--jq",
-                "{status, ahead_by, oldest: (.commits[0].commit.committer.date // null)}",
-            ]
-        )
+        raw = _gh_text([f"{path}?per_page=1&page=1", "--jq", "{status, ahead_by}"])
     except RuntimeError as exc:
         if "404" in str(exc):
             return None
         raise
     data = json.loads(raw)
-    relation = {"ahead": "behind", "behind": "ahead"}.get(data.get("status"), data.get("status"))
-    oldest = data.get("oldest")
-    when = freshness_readout.parse_time(oldest, "compare committer date") if oldest else None
-    return {
-        "relation": relation,
-        "behind_by": data.get("ahead_by"),
-        "oldest_missing_at": when,
-    }
+    status = data.get("status")
+    relation = {"ahead": "behind", "behind": "ahead"}.get(status, status)
+    behind_by = data.get("ahead_by")
+    moved = None
+    if relation == "behind" and isinstance(behind_by, int) and 0 < behind_by <= MAX_LAG_COMMITS:
+        listing = _gh_text(
+            [
+                "--paginate",
+                f"{path}?per_page=100",
+                "--jq",
+                ".commits[] | [.sha, (.parents[0].sha // \"\"), .commit.committer.date] | @tsv",
+            ]
+        )
+        rows = []
+        for line in listing.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            when = freshness_readout.parse_time(parts[2], "compare committer date")
+            if when is not None:
+                rows.append((parts[0], parts[1], when))
+        moved = first_parent_moved_at(rows, copy_head, source_head)
+    return {"relation": relation, "behind_by": behind_by, "moved_past_at": moved}
 
 
 def real_fetchers(bucket, rehost_base):

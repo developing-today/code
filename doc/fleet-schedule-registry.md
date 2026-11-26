@@ -24,6 +24,8 @@ specified in the #2020 Jules investigation).
   PM-stack aggregator process, live only while it runs (#9988).
 - **Surface 7 — Cloudflare Worker cron triggers:** `triggers.crons` in
   a Worker's `wrangler.jsonc`, deployed from the flake (#6369).
+- **Surface 9 — OpenClaw gateway fleet trials:** fleet-owned trial
+  automations stored in the local OpenClaw gateway.
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -423,7 +425,7 @@ states on the primary seat are unverified, and this registry does
 not carry guesses. Full reconciliation:
 `doc/2026-11-26T07-50-00Z_reconciliation_repo-queue-shift-roster/`.
 
-### 2b. Laptop systemd user timers (64 listed: 51 enabled; 4 Nix-configured pending deployment; 5 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
+### 2b. Laptop systemd user timers (64 listed: 51 enabled; 5 Nix-configured pending deployment; 4 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -490,7 +492,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `quota-weekly-review.timer` | `OnCalendar=Mon *-*-* 07:20:00` | `quota-weekly-review.service` | laptop (user systemd; code#12701; NixOS module `services.pm-stack`, package `pkgs/pm-aggregator` — Stage-3 S7 weekly forecast-accuracy review: posts the report to epic #12694, S6 proposal PRs only, never edits config; Nix-configured pending deployment) | not recorded | not recorded | 2026-11-23 | 2026-11-23 |
 | `repo-archive-backup.timer` | `OnCalendar=*-*-* 05:15:00` | `repo-archive-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `repo-universe-issue-check.timer` | `OnCalendar=*-*-* 00:00:00` | `repo-universe-issue-check.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
-| `queue-coverage-reconcile.timer` (repo-shipped, not yet installed) | `OnCalendar=*-*-* *:41:00` | `queue-coverage-reconcile.service` | laptop (user systemd; code#7016) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
+| `queue-coverage-reconcile.timer` (NixOS-configured, pending deployment) | `OnCalendar=*-*-* *:41:00` | `queue-coverage-reconcile.service` | laptop (user systemd; code#7016/#14929; Home Manager module, observe-only by default) | not recorded | not recorded | 2026-11-08 | 2026-11-26 |
 | `scheduled-history.timer` | `OnCalendar=*-*-* *:0/5:00` | `scheduled-history.service` | laptop (user systemd; code#2174) | not recorded | not recorded | 2026-11-11 | 2026-11-14 |
 | `supabase-backup.timer` | retired 2026-11-18 21:47:24Z (inactive; not loaded) | `supabase-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 | <!-- Retired live 2026-11-18 21:47:24Z: disabled/stopped, daemon reload verified not-found/inactive; scripts, dumps, mirror records and checkpoint retained. See doc/2026-11-18_supabase-turso-recovery.md. --> |
 | `supabase-turso-coord-mirror.timer` | retired 2026-11-18 21:47:24Z (inactive; not loaded) | `supabase-turso-coord-mirror.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-11 | 2026-11-11 | <!-- Retired live 2026-11-18 21:47:24Z: disabled/stopped, daemon reload verified not-found/inactive; scripts, dumps, mirror records and checkpoint retained. See doc/2026-11-18_supabase-turso-recovery.md. --> |
@@ -636,3 +638,14 @@ repository.
 | `codex-fleet-lane-b` | developing-today/code | `FREQ=HOURLY;BYMINUTE=15` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-b`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
 | `codex-fleet-lane-c` | developing-today/code | `FREQ=HOURLY;BYMINUTE=30` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-c`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
 | `codex-fleet-lane-d` | developing-today/code | `FREQ=HOURLY;BYMINUTE=45` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-d`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
+
+## Surface 9 — OpenClaw gateway fleet trials (2 jobs)
+
+Fleet-owned trial automations on the local OpenClaw gateway. Prompt bodies
+are stored inline by the gateway; UUIDs are the stable references. Other
+personal OpenClaw automations are outside this fleet-trial section.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `trial-2177-queue-health-digest` (`8f3bdee3-e366-4461-a56c-b4149c9e930f`) | developing-today/code | `interval@6h` | enabled | trial #2177; code queue health | inline OpenClaw job message; `fleet queue health --queue code` | 10m | read-only; report first error line; retry once | not recorded | 2026-11-26 |
+| `trial-2177-laptop-health-monitor` (`675459d0-542a-42a6-ab48-84badde477d7`) | developing-today/code | `0 7 * * *` (gateway timezone) | enabled | trial #2177; laptop health | inline OpenClaw job message | 10m | not recorded | not recorded | 2026-11-26 |
