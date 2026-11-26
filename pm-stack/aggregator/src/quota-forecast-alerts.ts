@@ -277,7 +277,12 @@ export function evaluateForecastAlerts(input: ForecastAlertInput): ForecastAlert
 
 // --- Tick-hook inputs: the prediction log + the persisted state ------
 
-const KINDS: readonly ForecastPredictionKind[] = ["pool_exhaustion", "downtime_window", "reset_duration", "model_plan_arrival"];
+const KINDS: readonly ForecastPredictionKind[] = [
+  "pool_exhaustion",
+  "downtime_window",
+  "reset_duration",
+  "model_plan_arrival",
+];
 const STATES: readonly ForecastPredictionState[] = [
   "predicted",
   "insufficient_history",

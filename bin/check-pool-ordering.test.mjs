@@ -387,9 +387,8 @@ test('ordered chain with the OpenAI-backed pool before a non-OpenAI pool is a fi
 });
 
 test('fallback passes are checked separately from the main chain', () => {
-  // scout's declared fallbacks are background, workhorse: the same pools
-  // that would violate in one chain pass when the fallback boundary
-  // separates them.
+  // Scout falls to background; background then falls to workhorse. Pools
+  // that would violate in one chain pass when those boundaries separate them.
   const config = configWith({
     tiers: {
       scout: {
@@ -397,12 +396,11 @@ test('fallback passes are checked separately from the main chain', () => {
           'opencode-route/spark-plan',
           'opencode-route/sol-plan#medium',
           'opencode-route/background',
-          'opencode-route/workhorse',
         ],
         selection: 'ordered',
       },
-      // The workhorse route doubles as scout's fallback target: one
-      // route serves both roles, as in the canonical config.
+      // The workhorse route is reachable through background's fallback,
+      // as in the canonical acyclic config.
       workhorse: {
         targets: ['opencode-route/haiku-plan'],
         selection: 'ordered',
@@ -410,7 +408,7 @@ test('fallback passes are checked separately from the main chain', () => {
     },
     pools: {
       background: {
-        targets: ['opencode-route/fable-plan'],
+        targets: ['opencode-route/fable-plan', 'opencode-route/workhorse'],
         selection: 'ordered',
       },
     },
@@ -433,7 +431,7 @@ test('transitive fallback boundaries split nested fallback passes', () => {
   const config = configWith({
     tiers: {
       scout: {
-        targets: ['opencode-route/background', 'opencode-route/workhorse'],
+        targets: ['opencode-route/background'],
         selection: 'ordered',
       },
       workhorse: {
@@ -474,7 +472,7 @@ test('the same pools in one chain without a nested fallback boundary are a viola
   const config = configWith({
     tiers: {
       scout: {
-        targets: ['opencode-route/background', 'opencode-route/workhorse'],
+        targets: ['opencode-route/background'],
         selection: 'ordered',
       },
       workhorse: {
@@ -706,9 +704,8 @@ function generatedCase(seed) {
   const directItems = GEN_DIRECT.map((leaf) => ({ kind: 'direct', ...leaf }));
   const refOf = (item) => (item.kind === 'pool' ? `opencode-route/${item.name}` : item.ref);
 
-  // scout: main chain + background/workhorse fallback tails. The
-  // workhorse route doubles as scout's fallback target and as the
-  // workhorse tier, as in the canonical config.
+  // scout: main chain + background fallback; background may extend its
+  // fallback pass through workhorse, matching the canonical acyclic route.
   const scoutSelection = genPick(rng, GEN_SELECTIONS);
   const backgroundSelection = genPick(rng, GEN_SELECTIONS);
   const workhorseSelection = genPick(rng, GEN_SELECTIONS);
@@ -726,7 +723,7 @@ function generatedCase(seed) {
   const config = configWith({
     tiers: {
       scout: {
-        targets: [...main.map(refOf), 'opencode-route/background', 'opencode-route/workhorse'],
+        targets: [...main.map(refOf), 'opencode-route/background'],
         selection: scoutSelection,
       },
       workhorse: { targets: wh.map(refOf), selection: workhorseSelection },
@@ -748,14 +745,12 @@ function generatedCase(seed) {
       ...(bg.length
         ? [modelPass('fallback via background', bg, [scoutSelection, backgroundSelection])]
         : []),
-      ...(wh.length
+      ...(bgHasWorkhorseTail && wh.length
         ? [
             modelPass(
-              bgHasWorkhorseTail ? 'fallback via background -> workhorse' : 'fallback via workhorse',
+              'fallback via background -> workhorse',
               wh,
-              bgHasWorkhorseTail
-                ? [scoutSelection, backgroundSelection, workhorseSelection]
-                : [scoutSelection, workhorseSelection],
+              [scoutSelection, backgroundSelection, workhorseSelection],
             ),
           ]
         : []),

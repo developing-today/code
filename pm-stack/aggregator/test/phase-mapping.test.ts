@@ -79,6 +79,52 @@ describe("parsePhaseMapping (#9923)", () => {
     // Phase 12 stays sourced from #1235, never duplicated here.
     expect(entries.some((e) => e.phase === 12)).toBe(false);
   });
+
+  test("the real table carries Phases 0-10 mirroring the plans' P-step lists (#13944)", () => {
+    const content = readFileSync(join(import.meta.dir, "../../../planning/roadmaps/id.md"), "utf8");
+    const entries = parsePhaseMapping(content);
+    const counts = new Map<number, number>();
+    for (const e of entries) counts.set(e.phase, (counts.get(e.phase) ?? 0) + 1);
+    // Step counts from plan-phases.md (Phases 0-8) and the phase-9
+    // plan's P9/P10 lists (Phases 9-10), F-numbered in order.
+    expect(Object.fromEntries(counts)).toMatchObject({
+      0: 12,
+      1: 10,
+      2: 9,
+      3: 11,
+      4: 13,
+      5: 7,
+      6: 10,
+      7: 5,
+      8: 8,
+      9: 11,
+      10: 3,
+      11: 18,
+      13: 8,
+    });
+    const byItem = new Map(entries.map((e) => [e.item, e]));
+    // Each Phase 0-10 item's ref is its phase's validation audit.
+    for (let ph = 0; ph <= 8; ph++) expect(byItem.get(`F${ph}.1`)).toMatchObject({ kind: "issue", number: 1075 });
+    expect(byItem.get("F9.1")).toMatchObject({ kind: "issue", number: 1076 });
+    expect(byItem.get("F10.1")).toMatchObject({ kind: "issue", number: 1077 });
+    expect(byItem.get("F3.2")?.title).toContain("P3.1a");
+    expect(byItem.get("F6.10")?.title).toContain("P6.8");
+  });
+
+  test("a row whose F-item prefix disagrees with its phase column is skipped (bad join)", () => {
+    const bad = `# Roadmap: id
+
+## Phase tracker — F-item mapping
+
+| Phase | Item | Ref | Title |
+| --- | --- | --- | --- |
+| 9 | F11.1 | #238 | Wrong phase for this item |
+| 9 | F9.1 | #1076 | Portable screen view (P9.1) |
+`;
+    expect(parsePhaseMapping(bad)).toEqual([
+      { phase: 9, item: "F9.1", kind: "issue", number: 1076, title: "Portable screen view (P9.1)" },
+    ]);
+  });
 });
 
 describe("deriveMappedProgress (#9923)", () => {
@@ -99,6 +145,24 @@ describe("deriveMappedProgress (#9923)", () => {
     expect(progress.get(11)).toEqual({ total: 3, done: 2, open: 0, unresolved: 1, percent: 67 });
     expect(progress.get(13)).toEqual({ total: 1, done: 0, open: 1, unresolved: 0, percent: 0 });
     expect(progress.has(12)).toBe(false);
+  });
+
+  test("Phases 0-10 derive from their audit refs: closed audit counts done, open counts open", () => {
+    const auditEntries: PhaseMappingEntry[] = [
+      { phase: 0, item: "F0.1", kind: "issue", number: 1075, title: "" },
+      { phase: 0, item: "F0.2", kind: "issue", number: 1075, title: "" },
+      { phase: 9, item: "F9.1", kind: "issue", number: 1076, title: "" },
+      { phase: 10, item: "F10.1", kind: "issue", number: 1077, title: "" },
+    ];
+    const items = new Map<string, GhItem>([
+      [`${PHASE_MAPPING_REPO}#1075`, item(1075, "closed")],
+      [`${PHASE_MAPPING_REPO}#1076`, item(1076, "open")],
+    ]);
+    const progress = deriveMappedProgress(auditEntries, items);
+    expect(progress.get(0)).toEqual({ total: 2, done: 2, open: 0, unresolved: 0, percent: 100 });
+    expect(progress.get(9)).toEqual({ total: 1, done: 0, open: 1, unresolved: 0, percent: 0 });
+    // #1077 absent from the source: unresolved, never fabricated done.
+    expect(progress.get(10)).toEqual({ total: 1, done: 0, open: 0, unresolved: 1, percent: 0 });
   });
 
   test("a kind mismatch is unresolved, never done", () => {

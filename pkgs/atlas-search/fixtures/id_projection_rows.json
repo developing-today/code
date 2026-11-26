@@ -3,7 +3,11 @@
     "file_id": "file-alpha",
     "version_seq": 1,
     "head_transition": true,
-    "file_note_binding": {"file_id":"file-alpha","note_create":{"file_id":"file-alpha","version_seq":1},"source_anchor":"native-alpha"},
+    "file_note_binding": {
+      "file_id": "file-alpha",
+      "note_create": { "file_id": "file-alpha", "version_seq": 1 },
+      "source_anchor": "native-alpha"
+    },
     "media_type": "text/markdown",
     "content": "# Atlas fixture\n",
     "path": "docs/alpha.md",
@@ -15,7 +19,14 @@
     "file_id": "file-alpha",
     "version_seq": 2,
     "head_transition": true,
-    "revision_edges": [{"newer":{"file_id":"file-alpha","version_seq":2},"prior":{"file_id":"file-alpha","version_seq":1},"edge_kind":"rename","confidence":1.0}],
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-alpha", "version_seq": 2 },
+        "prior": { "file_id": "file-alpha", "version_seq": 1 },
+        "edge_kind": "rename",
+        "confidence": 1.0
+      }
+    ],
     "media_type": "text/markdown",
     "content": "# Atlas fixture, revised\n",
     "path": "docs/renamed-alpha.md",
@@ -26,8 +37,19 @@
   {
     "file_id": "file-beta",
     "version_seq": 1,
-    "file_note_binding": {"file_id":"file-beta","note_create":{"file_id":"file-beta","version_seq":1},"source_anchor":null},
-    "revision_edges": [{"newer":{"file_id":"file-beta","version_seq":1},"prior":{"file_id":"file-alpha","version_seq":1},"edge_kind":"split","confidence":0.8}],
+    "file_note_binding": {
+      "file_id": "file-beta",
+      "note_create": { "file_id": "file-beta", "version_seq": 1 },
+      "source_anchor": null
+    },
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-beta", "version_seq": 1 },
+        "prior": { "file_id": "file-alpha", "version_seq": 1 },
+        "edge_kind": "split",
+        "confidence": 0.8
+      }
+    ],
     "head_transition": true,
     "media_type": "text/plain",
     "content": "Independent file.\n",
@@ -52,9 +74,21 @@
     "version_seq": 4,
     "head_transition": true,
     "revision_edges": [
-      {"newer":{"file_id":"file-alpha","version_seq":4},"prior":{"file_id":"file-alpha","version_seq":2},"edge_kind":"merge","confidence":0.9},
-      {"newer":{"file_id":"file-alpha","version_seq":4},"prior":{"file_id":"file-beta","version_seq":1},"edge_kind":"merge","confidence":0.7}
+      {
+        "newer": { "file_id": "file-alpha", "version_seq": 4 },
+        "prior": { "file_id": "file-alpha", "version_seq": 2 },
+        "edge_kind": "merge",
+        "confidence": 0.9
+      },
+      {
+        "newer": { "file_id": "file-alpha", "version_seq": 4 },
+        "prior": { "file_id": "file-beta", "version_seq": 1 },
+        "edge_kind": "merge",
+        "confidence": 0.7
+      }
     ],
+    "tombstone": {"file_id":"file-alpha","note_create":{"file_id":"file-alpha","version_seq":1},"prior_head":{"file_id":"file-alpha","version_seq":4},"trigger":"source_deleted","rule":"source-authoritative-v1","run_id":"atlas-run-2026-11-24"},
+    "corrections": [{"replacement":{"newer":{"file_id":"file-alpha","version_seq":4},"prior":{"file_id":"file-beta","version_seq":1},"edge_kind":"merge","confidence":0.95},"superseded_claim_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]}],
     "media_type": "text/markdown",
     "content": "# Current alpha head\n",
     "path": "docs/renamed-alpha.md",
@@ -65,7 +99,14 @@
   {
     "file_id": "file-beta",
     "version_seq": 2,
-    "revision_edges": [{"newer":{"file_id":"file-beta","version_seq":2},"prior":{"file_id":"file-beta","version_seq":1},"edge_kind":"edit","confidence":0.6}],
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-beta", "version_seq": 2 },
+        "prior": { "file_id": "file-beta", "version_seq": 1 },
+        "edge_kind": "edit",
+        "confidence": 0.6
+      }
+    ],
     "head_transition": false,
     "media_type": "text/plain",
     "content": "Beta backfill newer ingestion, not a head.\n",
@@ -77,7 +118,11 @@
   {
     "file_id": "file-backfill-only",
     "version_seq": 1,
-    "file_note_binding": {"file_id":"file-backfill-only","note_create":{"file_id":"file-backfill-only","version_seq":7},"source_anchor":"external-published-note"},
+    "file_note_binding": {
+      "file_id": "file-backfill-only",
+      "note_create": { "file_id": "file-backfill-only", "version_seq": 7 },
+      "source_anchor": "external-published-note"
+    },
     "head_transition": false,
     "media_type": "text/plain",
     "content": "Historical file without a published head.\n",

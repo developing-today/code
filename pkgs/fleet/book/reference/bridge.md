@@ -10,12 +10,12 @@ Each verb has its own help: `fleet bridge <command> --help` prints that verb's u
 
 Two token families, both resolved **by name** through fleet-secrets; values are never printed, logged, or put in argv:
 
-| Family                      | Secret name                                                               | Opens                                                                        | URL shape                    |
-| --------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------- |
-| Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `agents`, `log`                                                      | `/api/<owner-token>/fleet/…` |
-| Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack`, `work` — agent routes only; it cannot send commands | `/fleet/<fleet-token>/…`     |
-| Per-agent credential        | `bridge.<agent>-fleet-token` (the name the agent profile records)         | The same agent routes, as that one agent only; its groups are the ones bound when the owner minted its bootstrap token | `/fleet/<credential>/…` |
-| Notes token (notes family)  | `bridge.<agent>-token` (renamable via `[bridge] notes_token_name`)        | `notes send`, `notes inbox`, `notes ack` for the token's class/name identity | `Authorization: Bearer` header on `/notes/…` |
+| Family                      | Secret name                                                               | Opens                                                                                                                  | URL shape                                    |
+| --------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `agents`, `log`                                                                                                | `/api/<owner-token>/fleet/…`                 |
+| Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack`, `work` — agent routes only; it cannot send commands                                   | `/fleet/<fleet-token>/…`                     |
+| Per-agent credential        | `bridge.<agent>-fleet-token` (the name the agent profile records)         | The same agent routes, as that one agent only; its groups are the ones bound when the owner minted its bootstrap token | `/fleet/<credential>/…`                      |
+| Notes token (notes family)  | `bridge.<agent>-token` (renamable via `[bridge] notes_token_name`)        | `notes send`, `notes inbox`, `notes ack`, `notes watch` for the token's class/name identity                            | `Authorization: Bearer` header on `/notes/…` |
 
 Tokens travel **in the URL path**, so every error string is scrubbed of token values (`<token>`) before it is printed, and a 404 is reported as "a wrong token, an old bridge without fleet mailboxes, or a wrong URL". Plain `http` URLs are accepted only to this machine; anything else must be `https`, because tokens ride the path.
 
@@ -201,10 +201,10 @@ Takes back every outstanding token minted for `scout-2`.
 fleet bridge wake-hooks [--set - | --remove --address A]
 ```
 
-| Flag        | Argument | Default | Meaning                                                                            |
-| ----------- | -------- | ------- | ---------------------------------------------------------------------------------- |
-| `--set`     | `-`      | —       | Set one hook from a JSON object `{address, url, token?}` read from stdin.          |
-| `--remove`  | —        | —       | Remove the hook for `--address`; the answer is `{removed: true\|false}`.           |
+| Flag        | Argument | Default | Meaning                                                                                      |
+| ----------- | -------- | ------- | -------------------------------------------------------------------------------------------- |
+| `--set`     | `-`      | —       | Set one hook from a JSON object `{address, url, token?}` read from stdin.                    |
+| `--remove`  | —        | —       | Remove the hook for `--address`; the answer is `{removed: true\|false}`.                     |
 | `--address` | `A`      | —       | The hook's address (`channel:claude`, `channel:chatgpt` or `agent:<name>`); `--remove` only. |
 
 ### Behaviour
@@ -380,12 +380,12 @@ Marks all of `archer`'s messages up to id 412 as read.
 fleet bridge work [--agent A] --state acted|queued|done [--task ID] ID...
 ```
 
-| Flag                 | Argument              | Default                               | Meaning                                                            |
-| -------------------- | --------------------- | ------------------------------------- | ------------------------------------------------------------------ |
-| `--agent`            | `A`                   | `$FLEET_AGENT`, then `[bridge] agent` | Agent whose mailbox copy to mark.                                  |
-| `--state`            | `acted\|queued\|done` | required                              | The lifecycle state to record.                                     |
+| Flag                 | Argument              | Default                               | Meaning                                                             |
+| -------------------- | --------------------- | ------------------------------------- | ------------------------------------------------------------------- |
+| `--agent`            | `A`                   | `$FLEET_AGENT`, then `[bridge] agent` | Agent whose mailbox copy to mark.                                   |
+| `--state`            | `acted\|queued\|done` | required                              | The lifecycle state to record.                                      |
 | `--task`             | `ID`                  | —                                     | The fleet queue task the instruction became; required for `queued`. |
-| `ID...` (positional) | ids                   | required                              | The instruction rows to mark; several ids are marked one by one.   |
+| `ID...` (positional) | ids                   | required                              | The instruction rows to mark; several ids are marked one by one.    |
 
 ### Behaviour
 
@@ -406,16 +406,17 @@ $ fleet bridge work --agent archer --state queued --task 23500 412
 ```
 
 Records that archer queued instruction 412 as fleet queue task 23500.
+
 ## fleet bridge exchange
 
 ```
 fleet bridge exchange --agent A --bootstrap TOKEN
 ```
 
-| Flag          | Argument | Default                                       | Meaning                                                                 |
-| ------------- | -------- | --------------------------------------------- | ----------------------------------------------------------------------- |
-| `--agent`     | `A`      | `$FLEET_AGENT`, then `[bridge] agent`         | The agent name the bootstrap token was minted for.                      |
-| `--bootstrap` | `TOKEN`  | required                                      | The single-use bootstrap token the owner minted (console hand-off).     |
+| Flag          | Argument | Default                               | Meaning                                                             |
+| ------------- | -------- | ------------------------------------- | ------------------------------------------------------------------- |
+| `--agent`     | `A`      | `$FLEET_AGENT`, then `[bridge] agent` | The agent name the bootstrap token was minted for.                  |
+| `--bootstrap` | `TOKEN`  | required                              | The single-use bootstrap token the owner minted (console hand-off). |
 
 ### Behaviour
 
@@ -439,19 +440,28 @@ Stores `muse-9`'s credentials under `bridge.muse-9-fleet-token` and `bridge.muse
 fleet bridge notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] <text | ->
 fleet bridge notes inbox
 fleet bridge notes ack (--up-to ID | ID...)
+fleet bridge notes get CLASS/NAME
+fleet bridge notes watch [--wait SECS] [--interval SECS]
 ```
 
-| Flag                       | Argument    | Default  | Meaning                                                                                                              |
-| -------------------------- | ----------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| `--to`                     | `CLASS/NAME` | —       | Recipient identity; a `*` segment wildcards (`muse/*`, `*/archer`, `*/*`). Required unless `--reply-to` is given.   |
-| `--kind`                   | `note\|instruction` | `note` | `instruction` makes the note a work item: it lands in the recipient's inbox **without a sender** (the bridge keeps the sender store-side). |
-| `--reply-to`               | `ID`        | —        | Answer a note in your own inbox. The reply is routed store-side to that note's real sender — including an instruction whose sender you cannot see — and may replace `--to`. |
-| `--up-to` (ack)            | `ID`        | —        | Acknowledge every note up to this id. Alternative to listing ids.                                                    |
-| `ID...` (ack, positional)  | ids         | —        | Acknowledge exactly these notes.                                                                                     |
+| Flag                      | Argument            | Default | Meaning                                                                                                                                                                     |
+| ------------------------- | ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--to`                    | `CLASS/NAME`        | —       | Recipient identity; a `*` segment wildcards (`muse/*`, `*/archer`, `*/*`). Required unless `--reply-to` is given.                                                           |
+| `--kind`                  | `note\|instruction` | `note`  | `instruction` makes the note a work item: it lands in the recipient's inbox **without a sender** (the bridge keeps the sender store-side).                                  |
+| `--reply-to`              | `ID`                | —       | Answer a note in your own inbox. The reply is routed store-side to that note's real sender — including an instruction whose sender you cannot see — and may replace `--to`. |
+| `--up-to` (ack)           | `ID`                | —       | Acknowledge every note up to this id. Alternative to listing ids.                                                                                                           |
+| `ID...` (ack, positional) | ids                 | —       | Acknowledge exactly these notes.                                                                                                                                            |
+| `CLASS/NAME` (get)        | identity            | —       | The identity whose public wake signal to read. No wildcard; a reserved route (`notes`, `api`, `fleet`, …) is refused.                                                       |
+| `--wait` (watch)          | `SECS`              | `86400` | Give up after this many seconds and print the (empty) inbox answer. At most `86400`.                                                                                        |
+| `--interval` (watch)      | `SECS`              | `15`    | How often to read the public signal while waiting.                                                                                                                          |
 
 ### Behaviour
 
 The class/name notes family, authenticated by the calling identity's own notes token as a `Bearer` header (routes `POST /notes/send`, `GET /notes/inbox`, `POST /notes/ack`). Inbox rows carry `kind` and `reply_to`; a plain note names its sender in `from`, an instruction's `from` is null. Replying to an instruction therefore needs nothing but its id: the replier never learns who sent it, and the reply still reaches them.
+
+`notes get` reads a path's public wake signal (`GET /<class>/<name>`, no token): a bare UUID that changes whenever a note is delivered to that identity, and also rotates on its own every 10 to 40 minutes. A change is a reason to look, never proof of a note; the signal carries nothing else. It prints `{identity, signal}`.
+
+`notes watch` blocks until this identity has pending notes. It reads the inbox once (notes may already be waiting, and the answer names the token's identity), then polls that identity's public signal every `--interval` seconds and reads the inbox again only when the signal changes, so a quiet wait costs one unauthenticated request per interval. A change with an empty inbox is a rotation and just resets the baseline. It prints the inbox answer plus `woke` (`pending` when notes were already there, `signal` when a change brought them, `null` when `--wait` ran out) and `waited` seconds. Nothing is acknowledged; follow with `notes ack`.
 
 ### Exit codes
 

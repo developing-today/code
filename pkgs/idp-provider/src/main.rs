@@ -42,6 +42,7 @@ fn identity_cli(args: &[String]) -> i32 {
     };
     // Seed first so the CLI sees the same rows the server seeded.
     let _ = store.seed(&registry.account.account_id, &registry.account.identities);
+    let _ = store.seed_account(&registry.account);
     let audit_path = std::env::var("IDP_PROVIDER_AUDIT_DB")
         .map(std::path::PathBuf::from)
         .ok()

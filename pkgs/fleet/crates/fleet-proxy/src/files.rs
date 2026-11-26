@@ -347,6 +347,8 @@ impl FilesTransport for BrokerFilesTransport {
             trip: None,
             transport: None,
             cf_ok: None,
+            // #14188: the caller's FLEET_CTX_* record rides the frame.
+            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
             ClientError::Transport(format!("broker socket {}: {e}", self.socket.display()))
@@ -828,7 +830,7 @@ fn parse_mode(text: &str) -> Result<u32, ClientError> {
         .map_err(|_| ClientError::Usage(format!("--mode {text:?} is not an octal mode")))
 }
 
-fn parse_transfer_args(
+pub(crate) fn parse_transfer_args(
     argv: &[String],
     usage: &str,
 ) -> Result<(bool, bool, Option<u32>, Vec<String>), ClientError> {

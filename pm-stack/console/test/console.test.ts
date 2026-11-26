@@ -770,24 +770,53 @@ describe("operations", () => {
     const r = recorder((argv) => {
       if (argv[2] === "send" && argv.includes("--broaden")) {
         return JSON.stringify({
-          batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0,
+          batch: "b9",
+          messages: [],
+          unregistered: [],
+          matched: 2,
+          delivered: 1,
+          recipients: ["felix-2"],
+          remaining: 0,
         });
       }
       if (argv[2] === "send") {
         return JSON.stringify({
-          batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1,
+          batch: "b9",
+          messages: [],
+          unregistered: [],
+          matched: 2,
+          delivered: 1,
+          recipients: ["felix-1"],
+          remaining: 1,
         });
       }
       if (argv[2] === "offer") {
         return JSON.stringify({
-          offer: { id: 7, batch: "b10", body: "take the next task", kind: "command", slots: 2, state: "open", claimed: 0, remaining: 2, claims: [] },
+          offer: {
+            id: 7,
+            batch: "b10",
+            body: "take the next task",
+            kind: "command",
+            slots: 2,
+            state: "open",
+            claimed: 0,
+            remaining: 2,
+            claims: [],
+          },
         });
       }
       if (argv[2] === "offers") {
         return JSON.stringify({
           offers: [
             {
-              id: 7, batch: "b10", body: "take the next task", kind: "command", slots: 2, state: "open", claimed: 1, remaining: 1,
+              id: 7,
+              batch: "b10",
+              body: "take the next task",
+              kind: "command",
+              slots: 2,
+              state: "open",
+              claimed: 1,
+              remaining: 1,
               claims: [{ agent: "felix-1", claimed_at: "2026-11-24T02:00:00Z", message_id: 42 }],
             },
           ],
@@ -800,7 +829,12 @@ describe("operations", () => {
 
     // Acceptance 1: agent:f* with limit 1 against two matching agents
     // shows matched 2 / delivered 1 and names the recipient.
-    const report = (await table["message.send"].run({ to: ["agent:f*"], text: "do the thing", command: true, limit: 1 })) as {
+    const report = (await table["message.send"].run({
+      to: ["agent:f*"],
+      text: "do the thing",
+      command: true,
+      limit: 1,
+    })) as {
       batch: string | null;
       matched: number;
       delivered: number;
@@ -836,14 +870,31 @@ describe("operations", () => {
 
     // Acceptance 3 (console half): an offer posted from the composer,
     // and the offers list showing its claim with the claimant named.
-    const offer = (await table["message.offer"].run({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 })) as {
+    const offer = (await table["message.offer"].run({
+      to: ["agent:f*"],
+      text: "take the next task",
+      command: true,
+      slots: 2,
+    })) as {
       id: number;
       state: string;
     };
-    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "offer", "--to", "agent:f*", "--slots", "2", "--command", "-"]);
+    expect(r.calls.at(-1)?.argv).toEqual([
+      "fleet",
+      "bridge",
+      "offer",
+      "--to",
+      "agent:f*",
+      "--slots",
+      "2",
+      "--command",
+      "-",
+    ]);
     expect(r.calls.at(-1)?.stdin).toBe("take the next task");
     expect(offer).toMatchObject({ id: 7, state: "open" });
-    expect(table["message.offer"].audit({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 })).toEqual({
+    expect(
+      table["message.offer"].audit({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 }),
+    ).toEqual({
       to: ["agent:f*"],
       command: true,
       slots: 2,
@@ -1181,11 +1232,29 @@ describe("operations", () => {
     // a remove is, like a revocation.
     const r = recorder((argv) => {
       if (argv[2] === "wake-hooks" && argv[3] === "--set") {
-        return JSON.stringify({ hook: { address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" } });
+        return JSON.stringify({
+          hook: {
+            address: "agent:felix",
+            kind: "webhook",
+            host: "hooks.example",
+            has_token: true,
+            added: "2026-11-24T00:00:00.000Z",
+          },
+        });
       }
       if (argv[2] === "wake-hooks" && argv[3] === "--remove") return JSON.stringify({ removed: true });
       if (argv[2] === "wake-hooks") {
-        return JSON.stringify({ hooks: [{ address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }] });
+        return JSON.stringify({
+          hooks: [
+            {
+              address: "agent:felix",
+              kind: "webhook",
+              host: "hooks.example",
+              has_token: true,
+              added: "2026-11-24T00:00:00.000Z",
+            },
+          ],
+        });
       }
       return "";
     });
@@ -1193,7 +1262,13 @@ describe("operations", () => {
     const table = actions(ops, {} as never);
 
     expect(await ops.wakeHooks()).toEqual([
-      { address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" },
+      {
+        address: "agent:felix",
+        kind: "webhook",
+        host: "hooks.example",
+        has_token: true,
+        added: "2026-11-24T00:00:00.000Z",
+      },
     ]);
     expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks"]);
 
@@ -1209,7 +1284,13 @@ describe("operations", () => {
       url: "https://hooks.example/wake",
       token: "hook-token-fixture",
     });
-    expect(table["agent.wake-hook-set"].audit({ address: "agent:felix", url: "https://hooks.example/wake", token: "hook-token-fixture" })).toEqual({
+    expect(
+      table["agent.wake-hook-set"].audit({
+        address: "agent:felix",
+        url: "https://hooks.example/wake",
+        token: "hook-token-fixture",
+      }),
+    ).toEqual({
       address: "agent:felix",
     });
     expect(HOLDABLE.has("agent.wake-hook-set")).toBe(false);
@@ -1222,8 +1303,12 @@ describe("operations", () => {
 
     // Bad shapes are refused before anything runs.
     const calls = r.calls.length;
-    await expect(table["agent.wake-hook-set"].run({ address: "drew", url: "https://hooks.example/wake" })).rejects.toThrow(OpError);
-    await expect(table["agent.wake-hook-set"].run({ address: "agent:felix", url: "http://hooks.example/wake" })).rejects.toThrow(OpError);
+    await expect(
+      table["agent.wake-hook-set"].run({ address: "drew", url: "https://hooks.example/wake" }),
+    ).rejects.toThrow(OpError);
+    await expect(
+      table["agent.wake-hook-set"].run({ address: "agent:felix", url: "http://hooks.example/wake" }),
+    ).rejects.toThrow(OpError);
     await expect(table["agent.wake-hook-remove"].run({ address: "no way" })).rejects.toThrow(OpError);
     expect(r.calls.length).toBe(calls);
   });
@@ -2231,7 +2316,15 @@ describe("HTTP surface", () => {
         ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] })
         : argv[1] === "bridge" && argv[2] === "send"
           ? // A send's answer is its match report (#14375).
-            JSON.stringify({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 })
+            JSON.stringify({
+              batch: "b1",
+              messages: [],
+              unregistered: [],
+              matched: 1,
+              delivered: 1,
+              recipients: ["lane-1"],
+              remaining: 0,
+            })
           : "",
     );
     const d = deps("owner", r);
