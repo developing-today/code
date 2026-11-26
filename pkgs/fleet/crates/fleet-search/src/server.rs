@@ -654,6 +654,12 @@ pub trait SearchEngine: Send + Sync {
         NO_SNAPSHOT_ID.to_string()
     }
 
+    /// The effective filter-surface manifest the next search
+    /// would serve under (#6228 Phase 4): the job manager binds
+    /// every cache key to its `(version, content_hash)`, so a
+    /// surface change invalidates coalescing and result reuse
+    /// exactly like a snapshot change. Engines with no manifest
+    /// surface report the built-in manifest.
     fn surface_manifest(&self) -> Manifest {
         builtin_manifest()
     }
@@ -1050,7 +1056,16 @@ struct CacheKey {
     client: Vec<String>,
     since: Option<String>,
     until: Option<String>,
+    /// Generic dimension filters (#6228 Phase 3), in the
+    /// dimension map's sorted (BTreeMap) order: a request filtered
+    /// on a generic dimension never coalesces with one that is
+    /// not, exactly like the named filters above.
     dimensions: Vec<(String, Vec<String>)>,
+    /// The effective filter surface's identity (#6228 Phase 4,
+    /// design note §7): `(manifest_version, content_hash)` of the
+    /// manifest the serving backend loaded. Entries computed
+    /// under a different surface never coalesce or serve, even on
+    /// the same corpus snapshot.
     manifest_version: i64,
     content_hash: String,
     effective_ceiling: ProtoSensitivity,
@@ -1584,6 +1599,11 @@ impl JobManager {
         // carries the snapshot, so nothing computed under another
         // snapshot can coalesce onto or answer this request.
         let snapshot = self.engine.snapshot_id();
+        // Bind this submit to the effective filter surface too
+        // (#6228 Phase 4): the key carries the loaded manifest's
+        // (version, content_hash), so a manifest change — a new
+        // generic dimension, a changed shape — can never be
+        // answered from entries computed under the old surface.
         let surface = self.engine.surface_manifest();
         let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
@@ -3708,34 +3728,6 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_binds_manifest_surface_and_generic_dimensions() {
-        let mut request = SearchRequest::default();
-        request.query = "alpha".to_string();
-        let builtin = builtin_manifest();
-        let base = CacheKey::from_request(&request, ProtoSensitivity::Personal, "snap-1", &builtin);
-        let same = CacheKey::from_request(&request, ProtoSensitivity::Personal, "snap-1", &builtin);
-        assert_eq!(base, same);
-
-        let mut other_surface = builtin.clone();
-        other_surface.version += 1;
-        other_surface.content_hash = other_surface.compute_hash();
-        let diff_surface = CacheKey::from_request(
-            &request,
-            ProtoSensitivity::Personal,
-            "snap-1",
-            &other_surface,
-        );
-        assert_ne!(base, diff_surface);
-
-        request
-            .filters
-            .set_dimension("source-app", vec!["mail".to_string()]);
-        let diff_dimension =
-            CacheKey::from_request(&request, ProtoSensitivity::Personal, "snap-1", &builtin);
-        assert_ne!(base, diff_dimension);
-    }
-
-    #[test]
     fn search_rejects_unsupported_parameters_before_backend_work() {
         // Oracle: SearchParametersV1::validate rejects an unimplemented
         // planner stage, and the HTTP handler validates before scheduling.
@@ -3828,6 +3820,47 @@ mod tests {
             calls.lock().unwrap().len() > first_calls.len(),
             "different effective parameters must not reuse the first ranking"
         );
+    }
+
+    #[test]
+    fn cache_key_binds_manifest_surface_and_generic_dimensions() {
+        // #6228 Phase 3/4, oracle: key equality. Two submits that
+        // differ only in the effective manifest's (version,
+        // content_hash), or only in a generic dimension filter,
+        // must NOT share a cache key; identical surface + filters
+        // must share one.
+        let mut req = SearchRequest::default();
+        req.query = "alpha".to_string();
+        let builtin = builtin_manifest();
+        let base = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        let same = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_eq!(base, same);
+
+        let mut other_surface = builtin.clone();
+        other_surface.version += 1;
+        other_surface.content_hash = other_surface.compute_hash();
+        let diff_surface =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &other_surface);
+        assert_ne!(base, diff_surface);
+
+        req.filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+        let diff_dimension =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_ne!(base, diff_dimension);
+    }
+
+    #[test]
+    fn generic_dimensions_are_rejected_until_search_support_lands() {
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+
+        let error = build_filters(&request, ProtoSensitivity::Personal).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.body.error.code, "bad_request");
+        assert!(error.body.error.message.contains("not supported"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------
