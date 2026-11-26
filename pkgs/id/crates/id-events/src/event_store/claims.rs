@@ -35,6 +35,7 @@ use super::{
 };
 use crate::groups::{Projection, Role as GroupRole};
 use id_store::chain::Event;
+use id_store::event_rows::RowRead;
 use id_store::tag_claims::{Applied, Claim, TagOp, compacted_claims, is_tag_kind};
 use id_store::tag_index::TagIndex;
 
@@ -78,70 +79,8 @@ impl EventStore {
     /// serves while its fingerprint holds. Kept separate so the persisted path and the tests
     /// can hold the two side by side.
     fn fold_tag_claims(&self) -> Result<Vec<Claim>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let (stored, forks, headers) = {
-            let events = txn.open_table(EVENTS)?;
-            let actions = txn.open_table(ACTIONS)?;
-            let device_ops = txn.open_table(DEVICE_OPS)?;
-            let forks = txn.open_table(FORKS)?;
-            let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
-        };
-        let residue = super::compaction::load_residue_read(&txn)?;
-        let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
-
-        let mut parents: HashMap<Hash, Vec<Hash>> = HashMap::new();
-        let mut subject_groups = HashMap::new();
-        let mut applied = Vec::new();
-        for item in &stored {
-            let event = &item.event;
-            parents.insert(event.id, parents_of(&event));
-            if resolved.applied.contains(&event.id) {
-                if let Some(group) = event.header.extensions.group {
-                    subject_groups.insert(event.id, group);
-                }
-            }
-            if !is_tag_kind(&event.header.extensions.kind) || !resolved.applied.contains(&event.id)
-            {
-                continue;
-            }
-            let Some(op) = event.header.extensions.tag.clone() else {
-                return Err(corrupt(
-                    "a stored tag event carries no tag operation".to_owned(),
-                ));
-            };
-            applied.push(Applied {
-                id: event.id,
-                author: author_of(&event),
-                op,
-            });
-        }
-        // A fork proof header may be named by a clear and has parents, but never applies.
-        for header in &headers {
-            parents
-                .entry(header.id)
-                .or_insert_with(|| parents_of(header));
-        }
-        // P5.6 (#195): an effective removal stops new content on its document. Drop a
-        // tag set whose causal past contains an effective removal of its subject;
-        // concurrent sets and clears are kept (a clear adds no content).
-        let marks = super::documents::removal_marks(
-            &stored,
-            &resolved.applied,
-            resolved.projection.as_ref(),
-        )?;
-        let applied: Vec<Applied> = applied
-            .into_iter()
-            .filter(|event| match &event.op {
-                TagOp::Set { subject, .. } => !marks
-                    .get(subject)
-                    .is_some_and(|removals| causal_past_contains(event.id, removals, &parents)),
-                TagOp::Clear { .. } => true,
-            })
-            .collect();
-        let default_view =
-            default_view_events(&applied, &subject_groups, resolved.projection.as_ref());
-        Ok(compacted_claims(&default_view, &parents))
+        let mut txn = self.db.begin_read()?;
+        tag_claims_rows(&mut txn)
     }
 
     /// The tag index over the live claims, built from [`EventStore::tag_claims`].
@@ -234,6 +173,58 @@ impl EventStore {
         txn.commit()?;
         Ok(())
     }
+}
+
+/// Computes the default-view claims through the shared event-row interface.
+/// Both native and tenant stores use the same resolver and fold policy.
+pub(super) fn tag_claims_rows<T: RowRead + ?Sized>(rows: &mut T) -> Result<Vec<Claim>, StoreError> {
+    let (stored, forks, headers) = resolve::load(rows)?;
+    let residue = super::compaction::load_residue_rows(rows)?;
+    let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
+
+    let mut parents: HashMap<Hash, Vec<Hash>> = HashMap::new();
+    let mut subject_groups = HashMap::new();
+    let mut applied = Vec::new();
+    for item in &stored {
+        let event = &item.event;
+        parents.insert(event.id, parents_of(event));
+        if resolved.applied.contains(&event.id) {
+            if let Some(group) = event.header.extensions.group {
+                subject_groups.insert(event.id, group);
+            }
+        }
+        if !is_tag_kind(&event.header.extensions.kind) || !resolved.applied.contains(&event.id) {
+            continue;
+        }
+        let Some(op) = event.header.extensions.tag.clone() else {
+            return Err(corrupt(
+                "a stored tag event carries no tag operation".to_owned(),
+            ));
+        };
+        applied.push(Applied {
+            id: event.id,
+            author: author_of(event),
+            op,
+        });
+    }
+    for header in &headers {
+        parents
+            .entry(header.id)
+            .or_insert_with(|| parents_of(header));
+    }
+    let marks =
+        super::documents::removal_marks(&stored, &resolved.applied, resolved.projection.as_ref())?;
+    let applied: Vec<Applied> = applied
+        .into_iter()
+        .filter(|event| match &event.op {
+            TagOp::Set { subject, .. } => !marks
+                .get(subject)
+                .is_some_and(|removals| causal_past_contains(event.id, removals, &parents)),
+            TagOp::Clear { .. } => true,
+        })
+        .collect();
+    let default_view = default_view_events(&applied, &subject_groups, resolved.projection.as_ref());
+    Ok(compacted_claims(&default_view, &parents))
 }
 
 /// The one row of the `tag_fold` table: the persisted fold and its fingerprint.
