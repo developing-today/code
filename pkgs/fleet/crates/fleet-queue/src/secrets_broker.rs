@@ -74,7 +74,6 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use std::net::TcpListener;
 
 /// One cached secret: its value plus when the broker last fetched
 /// it from Bitwarden (#6767). The age is what lets a consumer (or a
@@ -1101,7 +1100,8 @@ pub fn run() -> i32 {
         });
     }
 
-    let server = match TcpListener::bind(&bind) {
+    // #15533: same tailnet-race guard as queue-broker above.
+    let server = match crate::bind_guard::tcp_bind_with_retry("secrets-broker", &bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));

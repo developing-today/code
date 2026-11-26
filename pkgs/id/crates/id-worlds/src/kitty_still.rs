@@ -25,6 +25,11 @@
 //!   [`GraphicsGate`] accepted. A session that accepted none gets no work
 //!   at all.
 //!
+//! - **Lookup by content ID.** A call site names the asset by its blake3
+//!   content ID through a [`StillSource`]; [`lookup_still`] refuses bytes
+//!   over the cap or bytes that do not hash to that ID, so a store that
+//!   returns the wrong thing never reaches the decoder.
+//!
 //! Only the PNG codec is compiled in. Other formats, animation, and the
 //! golden fixtures against icat and chafa are later slices.
 
@@ -354,6 +359,78 @@ fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, StillPrep
     Ok(out)
 }
 
+/// A content-addressed store of still assets, keyed by the blake3 hash of
+/// the asset's bytes (the same content ID iroh-blobs uses).
+///
+/// This is the presenter's only way in to an asset: a call site names the
+/// content it wants, never a path or a guest-supplied buffer, and
+/// [`lookup_still`] checks that what the source hands back really is that
+/// content before anything decodes it.
+pub trait StillSource {
+    /// The bytes stored under `content`, or `None` when the source does not
+    /// hold them.
+    fn still_asset(&self, content: &blake3::Hash) -> Option<Cow<'_, [u8]>>;
+}
+
+/// Why a content ID did not yield an asset. Every variant emits nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StillLookupError {
+    /// The source does not hold the content.
+    #[error("no still asset is stored under content {0}")]
+    Missing(blake3::Hash),
+    /// The source returned more than [`MAX_ASSET_BYTES`]; refused before
+    /// hashing.
+    #[error(
+        "the still asset under content {content} is {len} bytes, over the {MAX_ASSET_BYTES}-byte cap"
+    )]
+    TooLarge {
+        /// The content ID asked for.
+        content: blake3::Hash,
+        /// Bytes the source returned.
+        len: usize,
+    },
+    /// The source returned bytes whose hash is not the content ID asked
+    /// for.
+    #[error("the still asset under content {expected} hashes to {actual}")]
+    HashMismatch {
+        /// The content ID asked for.
+        expected: blake3::Hash,
+        /// The hash of the bytes the source returned.
+        actual: blake3::Hash,
+    },
+}
+
+/// Look up the asset stored under `content`, checking the size cap and that
+/// the bytes hash to `content`.
+///
+/// # Errors
+///
+/// [`StillLookupError`] when the source does not hold the content, returns
+/// more than [`MAX_ASSET_BYTES`], or returns bytes that hash to something
+/// else.
+pub fn lookup_still<'s, S: StillSource + ?Sized>(
+    source: &'s S,
+    content: &blake3::Hash,
+) -> Result<Cow<'s, [u8]>, StillLookupError> {
+    let asset = source
+        .still_asset(content)
+        .ok_or(StillLookupError::Missing(*content))?;
+    if asset.len() > MAX_ASSET_BYTES {
+        return Err(StillLookupError::TooLarge {
+            content: *content,
+            len: asset.len(),
+        });
+    }
+    let actual = blake3::hash(&asset);
+    if actual != *content {
+        return Err(StillLookupError::HashMismatch {
+            expected: *content,
+            actual,
+        });
+    }
+    Ok(asset)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -575,5 +652,56 @@ mod tests {
             .unwrap();
         assert!(encoded.starts_with("\x1b_Ga=T,f=32,t=d,s=100,v=100,o=z,i=9,c=10,r=5,q=2"));
         assert!(encoded.ends_with("\x1b\\"));
+    }
+
+    /// A test source: a map of content IDs to whatever bytes it was told
+    /// to return, so a lying store can be modelled.
+    struct MapSource(std::collections::HashMap<blake3::Hash, Vec<u8>>);
+
+    impl StillSource for MapSource {
+        fn still_asset(&self, content: &blake3::Hash) -> Option<Cow<'_, [u8]>> {
+            self.0
+                .get(content)
+                .map(|bytes| Cow::Borrowed(bytes.as_slice()))
+        }
+    }
+
+    #[test]
+    fn lookup_returns_only_bytes_that_hash_to_the_content_id() {
+        let asset = png(4, 4);
+        let content = blake3::hash(&asset);
+        let other = blake3::hash(b"something else");
+        let source = MapSource([(content, asset.clone()), (other, asset.clone())].into());
+
+        assert_eq!(
+            lookup_still(&source, &content).unwrap().as_ref(),
+            asset.as_slice()
+        );
+        assert_eq!(
+            lookup_still(&source, &other),
+            Err(StillLookupError::HashMismatch {
+                expected: other,
+                actual: content,
+            })
+        );
+        let absent = blake3::hash(b"absent");
+        assert_eq!(
+            lookup_still(&source, &absent),
+            Err(StillLookupError::Missing(absent))
+        );
+    }
+
+    #[test]
+    fn lookup_refuses_an_over_cap_asset_before_hashing() {
+        let huge = vec![0_u8; MAX_ASSET_BYTES + 1];
+        let content = blake3::hash(&huge);
+        let source = MapSource([(content, huge)].into());
+        assert_eq!(
+            lookup_still(&source, &content),
+            Err(StillLookupError::TooLarge {
+                content,
+                len: MAX_ASSET_BYTES + 1,
+            })
+        );
     }
 }
