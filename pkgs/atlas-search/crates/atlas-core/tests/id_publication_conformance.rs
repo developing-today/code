@@ -355,7 +355,12 @@ fn project_fixture(f: &Fixture) -> ActualProjection {
         selected: project_selected_versions(&f.rows, &f.heads).unwrap(),
         claims: project_lineage_claims(&f.rows, &f.bindings, &f.edges).unwrap(),
         corrections: project_corrections(&f.rows, &f.corrections).unwrap(),
-        tombstones: f.tombstones.iter().map(project_tombstone).collect(),
+        tombstones: f
+            .tombstones
+            .iter()
+            .map(project_tombstone)
+            .collect::<Result<_, _>>()
+            .unwrap(),
     }
 }
 
