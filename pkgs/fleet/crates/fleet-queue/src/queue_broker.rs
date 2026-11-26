@@ -28,7 +28,6 @@ use std::time::Duration;
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
-use std::net::TcpListener;
 
 struct State {
     secrets_url: String,
@@ -1417,7 +1416,10 @@ pub fn run() -> i32 {
         coord_sweep_running: Mutex::new(false),
     });
 
-    let server = match TcpListener::bind(&bind) {
+    // #15533: the tailnet address may not exist yet at boot
+    // (Tailscale assigns it after us); retry EADDRNOTAVAIL within
+    // the bind-guard budget instead of burning the restart budget.
+    let server = match crate::bind_guard::tcp_bind_with_retry("queue-broker", &bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
