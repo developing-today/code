@@ -47,5 +47,8 @@ never sends empty credentials to Cloudflare.
   Removing it there — keeping only the laptop's tunnel — happens
   after this workflow's first apply is confirmed on #13495, not
   before, so the gate is never unenforced in between.
-- The app Cloudflare screen does not say where each item was last
-  applied from and when; that display reads the confirmation above.
+- The app's Cloudflare screen says where the configuration was last
+  applied from: the latest successful dispatched run of this
+  workflow on main, with its commit, completion time and a link to
+  the run (the console's `cloudflare-apply` read). It says provenance
+  is unavailable when no successful apply is on record.

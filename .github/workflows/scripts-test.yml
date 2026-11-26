@@ -44,6 +44,10 @@ jobs:
         run: |
           test -f scripts/tests/test_fleet_binary_keeper.py
           python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v
+      - name: Run cf worker record-deploy retry tests (#15041)
+        run: |
+          test -f scripts/tests/test_record_worker_deploy.py
+          python3 -m unittest discover -s scripts/tests -p 'test_record_worker_deploy.py' -v
       - name: Run worker preflight contract tests (#4862)
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
       - name: Run Dependabot npm target regression tests (#14164)

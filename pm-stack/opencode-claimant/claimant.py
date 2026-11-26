@@ -1221,6 +1221,140 @@ def _take_prompt_wall() -> "str | None":
     return wall
 
 
+# What a coordinator does about each sink-claim failure category
+# (#6533). The categories are fixed strings so a fire log never copies
+# CLI output; the action names the next check instead of a bare
+# sink_claim_failed.
+SINK_CLAIM_ACTIONS = {
+    "no_match": (
+        "the broker had no claimable sink row for the openchamber family: "
+        "check the row is still status handed_off and its selector is not muse"
+    ),
+    "different_row": (
+        "the broker's handoff pick returned other rows: the by-id fallback "
+        "is the next step; if that also fails, read the row's status"
+    ),
+    "cli_nonzero": (
+        "repo-queue claim exited non-zero: rerun the claim by hand as "
+        "opencode-claimant and read its stderr"
+    ),
+    "invalid_json": "repo-queue claim printed non-JSON: check the installed fleet binary",
+    "missing_claim_row": (
+        "repo-queue claim exited 0 without a row or {task: null}: "
+        "check the installed fleet binary"
+    ),
+    "timeout": "repo-queue claim timed out: check broker health",
+    "spawn_error": "repo-queue could not be started: check ~/.local/bin/repo-queue",
+    "unexpected_error": "the claim call raised: read the claimant's stderr",
+    "not_attempted": "no claim was attempted",
+}
+
+
+def _classify_claim_body(data, returncode: int) -> "tuple[Dict | None, str]":
+    """Classify a parsed `repo-queue claim` answer.
+
+    cmd_claim prints the claimed row itself, or {"task": null} when
+    nothing was claimed. Returns (row, "row_returned") for a row with
+    an id, else (None, category) with a fixed category string."""
+    row = data if isinstance(data, dict) else None
+    if isinstance(row, dict) and isinstance(row.get("task"), dict):
+        # A {"task": row} wrapper (the by-id claim's shape on some
+        # client versions) is the row.
+        row = row["task"]
+    claimed_id = row.get("id") if isinstance(row, dict) else None
+    if claimed_id is not None:
+        return row, "row_returned"
+    if (
+        row is not None
+        and "task" in row
+        and row["task"] is None
+        and returncode in (0, 5)
+    ):
+        # cmd_claim's "nothing claimable" answer: a well-formed
+        # {"task": null} body with exit 5 (or 0). That is the
+        # ordinary empty result, not a CLI failure, so classify it
+        # before the non-zero-exit fallback. Any other exit code is
+        # a broker error and stays cli_nonzero.
+        return None, "no_match"
+    if returncode != 0:
+        return None, "cli_nonzero"
+    return None, "missing_claim_row"
+
+
+def _claim_sink_by_id(queue: str, task_id: int, *, diagnostic=None) -> "Dict | None":
+    """The #8097 Rule 1 exception tool, used only as a fallback: claim
+    one specific handed-off sink row by id, as the claimant, after the
+    broker-picked handoff collection did not return it (#6533). The
+    broker still decides: it hands the row over only if it is a sink
+    row the openchamber family may take. No lane is named, so a lane
+    in the caller's environment can never make the claim act as that
+    lane. Returns the claimed row or None; `diagnostic` gets a fixed
+    category and the elapsed time, never CLI output."""
+    started = time.monotonic()
+    row = None
+    outcome = "unexpected_error"
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "claim",
+                "--queue",
+                queue,
+                "--worker",
+                CLAIMANT_WORKER,
+                "--platform",
+                "openchamber",
+                "--task",
+                str(task_id),
+                "--model-provider",
+                LAUNCH_MODEL_PROVIDER,
+                "--model-id",
+                LAUNCH_MODEL_ID,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_queue_env(),
+        )
+        try:
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except ValueError:
+            outcome = "invalid_json" if result.returncode == 0 else "cli_nonzero"
+        else:
+            row, outcome = _classify_claim_body(data, result.returncode)
+            if row is not None and row.get("id") != task_id:
+                row, outcome = None, "different_row"
+    except subprocess.TimeoutExpired:
+        outcome = "timeout"
+    except OSError:
+        outcome = "spawn_error"
+    except Exception:
+        outcome = "unexpected_error"
+    if diagnostic is not None:
+        diagnostic.update(
+            category=outcome, elapsed_ms=round((time.monotonic() - started) * 1000)
+        )
+    return row
+
+
+def _queue_env() -> Dict[str, str]:
+    """The environment for a repo-queue call made as the claimant: the
+    caller's environment without REPO_QUEUE_LANE. The claimant holds
+    no lane; the client falls back to that variable for holder-checked
+    verbs (fleet-queue client `lane_arg`), so a claimant started from
+    a lane's shell would otherwise act as that lane and be refused
+    (#6533)."""
+    return {k: v for k, v in os.environ.items() if k != "REPO_QUEUE_LANE"}
+
+
+def _drop_inherited_lane(environ=None) -> "str | None":
+    """Remove REPO_QUEUE_LANE from the process environment so every
+    repo-queue child this fire spawns acts as the claimant, not as the
+    lane whose shell started it (#6533). Returns the dropped value."""
+    environ = os.environ if environ is None else environ
+    return environ.pop("REPO_QUEUE_LANE", None)
+
+
 def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int, Dict]:
     """Collect up to `want` recorded handoffs from `queue`'s
     handoff sink WITHOUT naming a task id (#8097 Rule 1): each
@@ -1284,30 +1418,10 @@ def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int,
         except Exception:
             outcome = "unexpected_error"
             break
-        # cmd_claim prints the claimed row itself ({"task": null}
-        # when nothing was claimed).
-        row = data if isinstance(data, dict) else None
-        claimed_id = row.get("id") if isinstance(row, dict) else None
-        if claimed_id is None:
-            if (
-                row is not None
-                and "task" in row
-                and row["task"] is None
-                and result.returncode in (0, 5)
-            ):
-                # cmd_claim's "nothing claimable" answer: a well-formed
-                # {"task": null} body with exit 5 (or 0). That is the
-                # ordinary empty result, not a CLI failure, so classify it
-                # before the non-zero-exit fallback. Any other exit code is
-                # a broker error and stays cli_nonzero.
-                outcome = "no_match"
-            elif result.returncode != 0:
-                outcome = "cli_nonzero"
-            else:
-                outcome = "missing_claim_row"
+        row, outcome = _classify_claim_body(data, result.returncode)
+        if row is None:
             break
-        collected[claimed_id] = row
-        outcome = "row_returned"
+        collected[row["id"]] = row
     if diagnostic is not None:
         diagnostic.update(
             category=outcome, elapsed_ms=round((time.monotonic() - started) * 1000)
@@ -1777,14 +1891,38 @@ def launch_step(
             # collection did not claim is skipped — the binding
             # is never improvised.
             if candidate.get("status") == "handed_off":
-                if task_id not in collected:
-                    skips.append(
-                        {
-                            "task_id": task_id,
-                            "reason": "sink_claim_failed",
-                            "sink_claim": sink_diagnostics[candidate["queue"]],
-                        }
+                sink_diag = sink_diagnostics[candidate["queue"]]
+                fallback_diag = None
+                if task_id not in collected and sink_diag.get("category") in (
+                    "no_match",
+                    "different_row",
+                ):
+                    # #6533: the broker's own pick did not return this
+                    # row although poll lists it as a sink row. Revive
+                    # this one handoff by id (the Rule 1 exception
+                    # tool); the broker still verifies it is a sink
+                    # row the openchamber family may take.
+                    fallback_diag = {}
+                    row = _claim_sink_by_id(
+                        candidate["queue"], task_id, diagnostic=fallback_diag
                     )
+                    if row is not None:
+                        collected[task_id] = row
+                if task_id not in collected:
+                    final = (fallback_diag or sink_diag).get(
+                        "category", "not_attempted"
+                    )
+                    skip = {
+                        "task_id": task_id,
+                        "reason": "sink_claim_failed",
+                        "sink_claim": sink_diag,
+                        "action": SINK_CLAIM_ACTIONS.get(
+                            final, SINK_CLAIM_ACTIONS["unexpected_error"]
+                        ),
+                    }
+                    if fallback_diag is not None:
+                        skip["by_id_fallback"] = fallback_diag
+                    skips.append(skip)
                     continue
                 candidate["status"] = "claimed"
                 candidate["worker_id"] = CLAIMANT_WORKER
@@ -2078,6 +2216,12 @@ def acquire_fire_lock():
 
 def main():
     """Main entry point for the claimant/executor."""
+    dropped_lane = _drop_inherited_lane()
+    if dropped_lane:
+        print(
+            "REPO_QUEUE_LANE was set in the claimant's environment; "
+            "dropped it so queue calls act as the claimant (#6533)"
+        )
     mode = read_mode()
     lock = acquire_fire_lock()
     if lock is None:

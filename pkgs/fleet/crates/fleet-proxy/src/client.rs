@@ -11,18 +11,28 @@
 //! `fleet init` is the autostart door (§8): the strict no-op when
 //! a broker already answers is the entire point — init lines run
 //! on every shell/tool start and must never disturb a live broker.
+//!
+//! A `--request` call rides the mux stream family when the
+//! session negotiated it (#5756 §7 step 3, [`mux_roundtrip`]):
+//! the client offers `proxy-mux` in its hello, and only a broker
+//! that advertises it back switches the session to streams.
+//! Every other session — legacy brokers included — keeps the
+//! pooled frame round-trip, byte-for-byte.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 use fleet_config::{Config, ConfigError, InitMode, ResolvedHost};
+use fleet_proxy_proto::mux::{CAP_PROXY_MUX, OpenIntent, RST_PROTOCOL_ERROR, RST_TIMEOUT};
 use fleet_proxy_proto::{
     Hello, HelloResponse, Request, Response, hello_frame, is_proto_too_old, read_frame,
     unwrap_hello, write_frame,
 };
 use serde::Deserialize;
 
+use crate::mux::{MuxConfig, MuxSession, StreamError, StreamHandler};
 use crate::shims;
 use crate::{EXIT_TRANSPORT, EXIT_UNAVAILABLE, EXIT_USAGE};
 
@@ -115,6 +125,204 @@ pub fn roundtrip_on(stream: &mut UnixStream, req: &Request) -> Result<Response, 
         read_frame(stream).map_err(|e| ClientError::Transport(format!("response read: {e}")))?;
     serde_json::from_value(frame)
         .map_err(|e| ClientError::Transport(format!("unreadable response: {e}")))
+}
+
+/// Whether a negotiated session speaks the mux stream family
+/// for its requests (record §5): the client offered
+/// [`CAP_PROXY_MUX`] and a fleet broker advertised it back.
+/// A legacy broker (proto 0) never does — capability absence
+/// is the fallback selection, and the pooled frame path stays
+/// in charge of those sessions, byte-for-byte.
+pub fn mux_selected(client_capabilities: &[String], negotiated: &Negotiated) -> bool {
+    match negotiated {
+        Negotiated::Fleet(resp) => {
+            fleet_proxy_proto::mux::mux_negotiated(client_capabilities, &resp.capabilities)
+        }
+        Negotiated::Legacy(_) => false,
+    }
+}
+
+/// One request over a mux session on an already-negotiated
+/// stream (#5756 §7 step 3): the client half of the stream
+/// family step 2 terminated. The session is single-use here —
+/// `fleet proxy connect` ensures a fresh broker session per
+/// invocation — so the reader thread runs for exactly this
+/// call and the session is closed at its end.
+///
+/// Failure shape (record §7 step 3): a stream that fails
+/// before any response data arrives is retried exactly once
+/// on a fresh stream; a failure after partial response data
+/// is terminal. The per-stream wait is the session ceiling —
+/// its expiry resets the stream with the record's `timeout`
+/// reason. A dead tunnel fails the attempt fast (the mux's
+/// fail-all), never after a long wait.
+pub fn mux_roundtrip(stream: UnixStream, req: &Request) -> Result<Response, ClientError> {
+    let port = req.port.unwrap_or(fleet_config::PORT_LAPTOP_AGENT);
+    let writer = stream
+        .try_clone()
+        .map_err(|e| ClientError::Transport(format!("mux writer clone: {e}")))?;
+    let hook_stream = stream
+        .try_clone()
+        .map_err(|e| ClientError::Transport(format!("mux hook clone: {e}")))?;
+    let session = MuxSession::new(
+        Box::new(writer),
+        MuxConfig::default(),
+        None,
+        Some(Arc::new(move || {
+            let _ = hook_stream.shutdown(std::net::Shutdown::Both);
+        })),
+    );
+    let reader_session = session.clone();
+    let reader = std::thread::spawn(move || {
+        // A client originates streams; it never terminates
+        // them. An inbound open violates the session's
+        // direction convention — reset it on sight.
+        let handler: StreamHandler = Arc::new(|stream, _info| {
+            stream.reset(RST_PROTOCOL_ERROR);
+        });
+        reader_session.run(stream, handler);
+    });
+    let result = mux_request(&session, req, port);
+    session.close();
+    let _ = reader.join();
+    result
+}
+
+/// The request against the session, with the record's single
+/// retry: attempt two runs only when attempt one failed
+/// before any response data arrived.
+fn mux_request(session: &MuxSession, req: &Request, port: u16) -> Result<Response, ClientError> {
+    let body = match &req.body {
+        Some(body) => Some(
+            serde_json::to_vec(body)
+                .map_err(|e| ClientError::Transport(format!("request body encode: {e}")))?,
+        ),
+        None => None,
+    };
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match mux_attempt(session, req, port, body.as_deref()) {
+            Ok(resp) => return Ok(resp),
+            Err(failure) => {
+                if failure.retryable && attempt == 1 {
+                    continue;
+                }
+                return Err(failure.error);
+            }
+        }
+    }
+}
+
+/// Why one mux attempt failed. `retryable` is the record's
+/// fresh-stream retry gate: nothing of the response arrived,
+/// so the caller saw no answer a retry could duplicate. A
+/// send-side failure is also retryable — the terminating
+/// side dispatches a request stream only after its `fin`,
+/// so a stream that never finished sending was never
+/// dispatched.
+struct AttemptFailure {
+    retryable: bool,
+    error: ClientError,
+}
+
+fn mux_attempt(
+    session: &MuxSession,
+    req: &Request,
+    port: u16,
+    body: Option<&[u8]>,
+) -> Result<Response, AttemptFailure> {
+    let fail = |retryable: bool, e: StreamError| AttemptFailure {
+        retryable,
+        error: ClientError::Transport(e.to_string()),
+    };
+    let intent = OpenIntent::Request {
+        method: req.method.clone(),
+        path: req.path.clone(),
+    };
+    // The pooled frame's per-request routing fields ride the open
+    // (#15552): without them a mux request silently lost the
+    // caller's token file, transport preference and context.
+    let meta = fleet_proxy_proto::mux::RequestMeta {
+        token_file: req.token_file.clone(),
+        transport: req.transport.clone(),
+        cf_ok: req.cf_ok,
+        ctx: req.ctx.clone(),
+    };
+    let stream = session
+        .open_stream_with(port, &intent, req.trip.clone(), meta)
+        .map_err(|e| fail(true, e))?;
+    if let Some(body) = body {
+        if !body.is_empty() {
+            stream.send_chunk(body).map_err(|e| fail(true, e))?;
+        }
+    }
+    stream.close_send().map_err(|e| fail(true, e))?;
+    // Read the response to fin, granting credit back as bytes
+    // are consumed — the same assembly as
+    // `MuxStream::read_to_fin`, spelled out so the retry gate
+    // can see whether any response data arrived before a
+    // failure.
+    let ceiling = fleet_proxy_proto::mux::StreamCeiling::default().timeout();
+    let mut data = Vec::new();
+    let mut saw_data = false;
+    loop {
+        match stream.recv_chunk(ceiling) {
+            Ok(Some(bytes)) => {
+                saw_data = true;
+                let len = bytes.len() as u64;
+                data.extend_from_slice(&bytes);
+                stream.consumed(len);
+                if data.len() > fleet_proxy_proto::MAX_FRAME_BYTES {
+                    stream.reset(RST_PROTOCOL_ERROR);
+                    return Err(AttemptFailure {
+                        retryable: false,
+                        error: ClientError::Transport(
+                            "mux response exceeds the frame bound".to_string(),
+                        ),
+                    });
+                }
+            }
+            Ok(None) => break,
+            Err(StreamError::Timeout) => {
+                stream.reset(RST_TIMEOUT);
+                return Err(fail(!saw_data, StreamError::Timeout));
+            }
+            Err(e) => return Err(fail(!saw_data, e)),
+        }
+    }
+    let status = stream.status().ok_or_else(|| AttemptFailure {
+        retryable: false,
+        error: ClientError::Transport(
+            "mux response carried no status on its first frame".to_string(),
+        ),
+    })?;
+    // Trip-id echo (#15552): a broker that echoes a trip must echo
+    // ours. A different id means the reply is not for this call —
+    // never hand it to the caller as if it were.
+    if let (Some(sent), Some(echoed)) = (req.trip.as_deref(), stream.echoed_trip()) {
+        if sent != echoed {
+            return Err(AttemptFailure {
+                retryable: false,
+                error: ClientError::Transport(format!(
+                    "mux response echoed trip {echoed:?}, not this call's {sent:?}"
+                )),
+            });
+        }
+    }
+    let body = if data.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&data).map_err(|e| AttemptFailure {
+            retryable: false,
+            error: ClientError::Transport(format!("mux response is not JSON: {e}")),
+        })?
+    };
+    Ok(Response {
+        status,
+        body,
+        transport: stream.transport(),
+    })
 }
 
 /// The built-in services table in hello-map shape — what a legacy
@@ -436,7 +644,17 @@ pub fn run_connect(
         let port = args.port.unwrap_or(22);
         return crate::stdio::relay_stdio(config, &host, port);
     }
-    let mut ensured = ensure_broker(config, client, capabilities)?;
+    // The client half of the mux landed with this code
+    // (#5756 §7 step 3): the client offers `proxy-mux` in its
+    // hello from here. The offer is not activation — a session
+    // speaks streams only when the broker advertises the
+    // capability back (see `mux_selected`), and every other
+    // session keeps the pooled frame path.
+    let mut offered = capabilities.to_vec();
+    if !offered.iter().any(|c| c == CAP_PROXY_MUX) {
+        offered.push(CAP_PROXY_MUX.to_string());
+    }
+    let mut ensured = ensure_broker(config, client, &offered)?;
     let (services, broker_desc) = match &ensured.negotiated {
         Negotiated::Fleet(resp) => (
             resp.services.clone(),
@@ -466,9 +684,14 @@ pub fn run_connect(
             // #14188: the caller's FLEET_CTX_* record rides the frame.
             ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
-        // A legacy broker already spent its first reply eating the
-        // hello; the round-trip proceeds identically from here.
-        let resp = roundtrip_on(&mut ensured.stream, &request)?;
+        let resp = if mux_selected(&offered, &ensured.negotiated) {
+            mux_roundtrip(ensured.stream, &request)?
+        } else {
+            // A legacy broker already spent its first reply eating
+            // the hello; the round-trip proceeds identically from
+            // here.
+            roundtrip_on(&mut ensured.stream, &request)?
+        };
         println!(
             "{}",
             serde_json::json!({ "status": resp.status, "body": resp.body })
@@ -881,6 +1104,38 @@ mod tests {
 
     fn strings(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn fleet_negotiated(broker_caps: &[&str]) -> Negotiated {
+        Negotiated::Fleet(Box::new(HelloResponse {
+            proto: fleet_proxy_proto::PROTO_MAJOR,
+            services: Default::default(),
+            capabilities: strings(broker_caps),
+        }))
+    }
+
+    #[test]
+    fn mux_selected_only_when_both_sides_advertise() {
+        // #5756 §5/§7 step 3: the fallback selection. Both
+        // advertisements present → streams; either side silent
+        // → the pooled frame path stays in charge.
+        let offered = strings(&["proxy-connect", CAP_PROXY_MUX]);
+        assert!(mux_selected(&offered, &fleet_negotiated(&[CAP_PROXY_MUX])));
+        assert!(!mux_selected(&offered, &fleet_negotiated(&["proxy-serve"])));
+        assert!(!mux_selected(
+            &strings(&["proxy-connect"]),
+            &fleet_negotiated(&[CAP_PROXY_MUX])
+        ));
+    }
+
+    #[test]
+    fn mux_never_selected_for_a_legacy_broker() {
+        let legacy = Negotiated::Legacy(Box::new(Response {
+            status: 200,
+            body: serde_json::Value::Null,
+            transport: None,
+        }));
+        assert!(!mux_selected(&strings(&[CAP_PROXY_MUX]), &legacy));
     }
 
     #[test]

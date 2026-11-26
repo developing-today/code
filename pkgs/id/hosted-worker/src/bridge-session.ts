@@ -297,9 +297,66 @@ export interface ServerSessionOptions {
   params?: RangeParams;
   limits?: BridgeLimits;
   now?: () => number;
-  /** Storage-ceiling guard: given the bytes a batch is about to add,
-   * return false to refuse it before anything is written. */
-  guardBatch?: (newBytes: number) => boolean;
+  /** Write guard: given the bytes a batch is about to add, return true
+   * to commit it, false to refuse it as over the storage ceiling, or a
+   * named refusal (a migration fence, #3404) to end the session with
+   * that error. Nothing is written on a refusal. */
+  guardBatch?: (newBytes: number) => boolean | { code: string; message: string };
+  /** #15484: continue a session from a snapshot instead of starting
+   * one. The CHALLENGE is not re-sent: the peer is mid-session. */
+  resume?: BridgeSessionSnapshot;
+  /** #15484: called with the session's snapshot after every message
+   * it handles, so a host that may be evicted between messages (a
+   * hibernating WebSocket) can persist it. */
+  onSettled?: (snapshot: BridgeSessionSnapshot) => void;
+}
+
+/** Everything a server session keeps between messages (#15484).
+ * Plain JSON, so a hibernating host can store it and rebuild the
+ * session after its object is evicted. */
+export interface BridgeSessionSnapshot {
+  v: 1;
+  authed: boolean;
+  announced: Head[];
+  learned: string[];
+  /** The frames of a range flight still arriving, hex-encoded. */
+  rangeFlight: string[];
+  spent: number;
+  closed: boolean;
+  tokenIssued: boolean;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || !/^[0-9a-f]*$/.test(hex)) throw new Error("not lowercase hex");
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+/** Parse a stored snapshot; throws on anything that is not exactly
+ * a version-1 snapshot, so a damaged row never half-restores. */
+export function parseSessionSnapshot(value: unknown): BridgeSessionSnapshot {
+  const s = value as Partial<BridgeSessionSnapshot> | null;
+  if (
+    !s ||
+    typeof s !== "object" ||
+    s.v !== 1 ||
+    typeof s.authed !== "boolean" ||
+    !Array.isArray(s.announced) ||
+    !Array.isArray(s.learned) ||
+    !s.learned.every((id) => typeof id === "string") ||
+    !Array.isArray(s.rangeFlight) ||
+    !s.rangeFlight.every((f) => typeof f === "string") ||
+    typeof s.spent !== "number" ||
+    !Number.isFinite(s.spent) ||
+    s.spent < 0 ||
+    typeof s.closed !== "boolean" ||
+    typeof s.tokenIssued !== "boolean"
+  ) {
+    throw new Error("not a bridge session snapshot");
+  }
+  for (const f of s.rangeFlight) hexToBytes(f);
+  return s as BridgeSessionSnapshot;
 }
 
 export class BridgeSessionServer {
@@ -315,15 +372,52 @@ export class BridgeSessionServer {
   constructor(private opts: ServerSessionOptions) {
     // Messages are handled strictly in arrival order: an async
     // handler (batch ingest verifies signatures) must not let a
-    // later message overtake an earlier one.
+    // later message overtake an earlier one. The returned promise
+    // settles once this message is handled and its snapshot taken.
     this.opts.transport.onMessage((data) => {
-      this.queue = this.queue.then(() => this.onMessage(data));
+      this.queue = this.queue.then(async () => {
+        await this.onMessage(data);
+        if (!this.opts.onSettled) return;
+        try {
+          this.opts.onSettled(this.snapshot());
+        } catch (e) {
+          // A session whose state cannot be kept cannot survive an
+          // eviction either: end it now rather than lose it later.
+          if (!this.closed) this.fail("session_error", e instanceof Error ? e.message : "session state not saved");
+        }
+      });
+      return this.queue;
     });
     this.opts.transport.onClose(() => {
       this.closed = true;
     });
+    const resume = this.opts.resume;
+    if (resume) {
+      this.authed = resume.authed;
+      this.announced = resume.announced;
+      this.learned = new Set(resume.learned);
+      this.rangeFlight = resume.rangeFlight.map(hexToBytes);
+      this.spent = resume.spent;
+      this.closed = resume.closed;
+      this.tokenIssued = resume.tokenIssued;
+      return;
+    }
     const { nonce } = issueNonce(this.opts.store, this.now());
     this.send(frame(TAG.challenge, new TextEncoder().encode(nonce)));
+  }
+
+  /** The session's state between messages (#15484). */
+  snapshot(): BridgeSessionSnapshot {
+    return {
+      v: 1,
+      authed: this.authed,
+      announced: this.announced,
+      learned: [...this.learned],
+      rangeFlight: this.rangeFlight.map((f) => bytesToHex(f)),
+      spent: this.spent,
+      closed: this.closed,
+      tokenIssued: this.tokenIssued,
+    };
   }
 
   private get params(): RangeParams {
@@ -492,9 +586,11 @@ export class BridgeSessionServer {
         if ("malformed" in entry) continue;
         if (!this.opts.store.heldEvent(entry.id)) newBytes += entry.bytes.length;
       }
-      if (!this.opts.guardBatch(newBytes)) {
+      const verdict = this.opts.guardBatch(newBytes);
+      if (verdict === false) {
         return this.fail("storage_ceiling", "the batch would exceed the storage ceiling");
       }
+      if (verdict !== true) return this.fail(verdict.code, verdict.message);
     }
     const outcomes = this.opts.store.ingestBatch(entries, this.now());
     this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));

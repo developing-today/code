@@ -15,13 +15,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
-import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
+import { Edge, type KV, ownerSettingsRecord, SILENT_MS } from "../edge/src/edge.ts";
 import { AUDIT_KEPT } from "../edge/src/edge-shared.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { platformSettings } from "../src/settings.ts";
+import { ownerSettingsAdopted, PLATFORM_SETTING_NAMES, platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { NEEDS_LABELS } from "../src/needs.ts";
@@ -34,6 +34,7 @@ import {
   machineReport,
   newKeyPair,
   sign,
+  STALE_ACT_ERROR,
 } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
@@ -1243,6 +1244,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const done = memoryStore();
   /** What the machine says of itself in each report; null for a console
    * older than the saying, which says nothing. */
+  /** How the machine takes the owner's changed settings, when it does:
+   * a console older than that has none. */
+  const adopts: { now: ((said: unknown) => number | null) | null } = { now: null };
   const machineSays: { now: { name: string; actions: string[] } | null } = {
     now: { name: "nixos", actions: Object.keys(table).sort() },
   };
@@ -1250,6 +1254,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     new EdgeLink({
       version: "0123abcd4567",
       ...(machineSays.now ? { machine: () => machineSays.now as { name: string; actions: string[] } } : {}),
+      ...(adopts.now ? { adopt: adopts.now } : {}),
       apk: async () => {
         if (!build.bytes) return null;
         const bytes = build.bytes;
@@ -1367,6 +1372,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     link,
     makeLink,
     machineSays,
+    adopts,
     later,
     token,
     browse,
@@ -1445,6 +1451,7 @@ describe("before the host's first report", () => {
       hostVersion: null,
       listening: 0,
       machineSettingsDiffer: null,
+      settingsInForce: PLATFORM_SETTING_NAMES.map((name) => ({ name, source: "repository", since: null })),
       androidBuild: null,
       androidRelease: null,
       androidReleaseTrouble: null,
@@ -1454,6 +1461,7 @@ describe("before the host's first report", () => {
       woke: w.now.t,
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
+      routes: {},
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1464,6 +1472,43 @@ describe("before the host's first report", () => {
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
   });
+
+  test("route state: a flip on the internal channel is what health says, and it is kept (#14944)", async () => {
+    const w = await setup();
+    const flip = (body: unknown) =>
+      w.edge.now.fetch(
+        new Request("https://pm.internal/internal/route", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    const flipped = await flip({ surface: "board", tier: "hosted" });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // It is remembered across the edge's own restarts: it is kept in
+    // this object's storage, not in memory.
+    w.edge.now = w.makeEdge();
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // A flip that is not a surface and a tier is refused and changes nothing.
+    expect((await flip({ surface: "board", tier: "sideways" })).status).toBe(400);
+    expect((await flip({ tier: "tunnel" })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+  });
+
+
 
   test("the edge says which commit the host is running, as the host last reported it", async () => {
     const w = await setup();
@@ -1864,6 +1909,42 @@ describe("actions", () => {
     expect(heldStored(w)).toEqual([]);
   });
 
+  test("route state: the owner flips a surface at /console/api/route, and only the owner (#14944)", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    // The owner's flip, through the front door as the console sends it.
+    const flipped = await w.browse("/console/api/route", { body: { surface: "board", tier: "hosted" } });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // Flipping back is the rollback, and health says that too.
+    const back = await w.browse("/console/api/route", { body: { surface: "board", tier: "tunnel" } });
+    expect(back.status).toBe(200);
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+    // A stranger cannot flip: the edge is not sure of them, so the
+    // request goes to the host as any unverified request does, and
+    // the route state does not change.
+    await w.browse("/console/api/route", { body: { surface: "board", tier: "hosted" }, token: null });
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+    // What is not a surface and a tier is refused, as on the internal channel.
+    expect((await w.browse("/console/api/route", { body: { surface: "board", tier: "sideways" } })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "tunnel", degraded: false, fellAt: null, serving: "tunnel" },
+    });
+  });
+
   test("with the host out of reach, what may be done late is held, done once when it is back, and the rest is refused", async () => {
     const w = await setup();
     await w.hostReads();
@@ -2157,9 +2238,13 @@ describe("actions", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
       ],
       sections: [],
       refused: [],
+      settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines).toEqual([
       {
@@ -2181,6 +2266,8 @@ describe("actions", () => {
           "triage.enqueue",
         ],
         sections: [...SECTION_NAMES].sort(),
+        // A console that does not take the owner's settings says no revision.
+        settingsRev: null,
       },
     ]);
     // The machine goes away. What the owner does that may wait, waits; the list says what.
@@ -2255,7 +2342,15 @@ describe("actions", () => {
     await w.link.now.once();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
     expect((await machines()).machines).toEqual([
-      { name: "A machine", seen: w.now.t, quiet: false, version: "0123abcd4567", actions: [], sections: [] },
+      {
+        name: "A machine",
+        seen: w.now.t,
+        quiet: false,
+        version: "0123abcd4567",
+        actions: [],
+        sections: [],
+        settingsRev: null,
+      },
     ]);
     // A name that is not one, or a list that is not a list of kinds.
     for (const says of [
@@ -3868,6 +3963,507 @@ describe("the platform goes by its own settings, whatever a machine says", () =>
   });
 });
 
+// The settings the owner changes from the app are kept at the edge
+// under their own key, beside a machine's word and never in it, and
+// are gone by above both the repository and a machine (#14954, S2 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md). The
+// oracle is the precedence table of that design (§3), which
+// effectiveSettings() in src/settings.ts carries.
+describe("the owner's changed settings are kept at the edge and gone by", () => {
+  const labelCalls = (w: Awaited<ReturnType<typeof setup>>, label: string) =>
+    w.githubCalls.filter((call) => call.url.includes(`labels=${encodeURIComponent(label)}`));
+  /** Look again once what was read has gone stale, and wait for what
+   * that look started reading behind its answer. */
+  const lookAgain = async (w: Awaited<ReturnType<typeof setup>>) => {
+    w.githubCalls.length = 0;
+    for (let i = 0; i < 2; i++) {
+      w.now.t += 150_000;
+      await w.core();
+      await Promise.all(w.behind.splice(0));
+    }
+  };
+
+  test("an owner's label is read by, above main's, and above a machine that says another", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    const kept = await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    expect(kept).toMatchObject({
+      rev: 1,
+      by: OWNER,
+      values: { promptLabel: "owner/label" },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    const { res } = await w.core();
+    expect(res.status).toBe(200);
+    expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
+    expect(labelCalls(w, platformSettings().promptLabel)).toEqual([]);
+    expect(labelCalls(w, "machine/label")).toEqual([]);
+  });
+
+  test("an owner's list of repositories is read by, above the list a machine tells", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.needsRepos = ["developing-today/code", "developing-today/opencode"];
+    w.ghNeeds["developing-today/opencode"] = [
+      {
+        number: 5,
+        title: "Only on the machine's list",
+        labels: ["user/review"],
+      },
+    ];
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    await w.hostReads();
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    const lists = w.githubCalls.filter((call) => /labels=user%2F/.test(call.url)).map((call) => call.url);
+    expect(lists.some((url) => url.includes("/repos/developing-today/code/"))).toBe(true);
+    expect(lists.filter((url) => url.includes("/repos/developing-today/opencode/"))).toEqual([]);
+    expect(doc.census.reviews.map((item: { ref: string }) => item.ref)).not.toContain("developing-today/opencode#5");
+  });
+
+  test("kept beside what a machine told, not in it: a machine's next report and a restart leave it as the owner set it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    const kept = JSON.stringify(w.stored.get("ownerSettings"));
+    expect(JSON.stringify(w.stored.get("cfg"))).not.toContain("owner/label");
+    // The machine reports on other settings; its word is kept, the owner's stays.
+    w.edgeConfig.promptLabel = "machine/label";
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((w.stored.get("cfg") as { promptLabel: string }).promptLabel).toBe("machine/label");
+    expect(JSON.stringify(w.stored.get("ownerSettings"))).toBe(kept);
+    // A new object reads it back and goes by it.
+    w.edge.now = w.makeEdge(true);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    await lookAgain(w);
+    expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
+    expect(labelCalls(w, "machine/label")).toEqual([]);
+  });
+
+  test("a machine's report carrying what looks like the owner's settings changes nothing", async () => {
+    const w = await setup({ direct: true });
+    Object.assign(w.edgeConfig, {
+      ownerSettings: {
+        rev: 9,
+        at: START,
+        by: OWNER,
+        values: { promptLabel: "forged/label" },
+      },
+      values: { promptLabel: "forged/label" },
+      rev: 9,
+      by: OWNER,
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(w.stored.has("ownerSettings")).toBe(false);
+    expect(Object.keys(w.stored.get("cfg") as object)).not.toContain("ownerSettings");
+    expect(Object.keys(w.stored.get("cfg") as object)).not.toContain("values");
+    expect(labelCalls(w, "forged/label")).toEqual([]);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+    expect(auditStored(w).filter((e) => String((e as { kind?: string }).kind).startsWith("setting."))).toEqual([]);
+  });
+
+  test("each set and clear is a new revision and an audit entry that names the setting, never its value", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const t0 = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code", "developing-today/code"]);
+    expect(w.stored.get("ownerSettings")).toEqual({
+      rev: 2,
+      at: w.now.t,
+      by: OWNER,
+      values: {
+        promptLabel: "owner/label",
+        needsRepos: ["developing-today/code"],
+      },
+    });
+    w.now.t += 1_000;
+    const one = await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(one).toMatchObject({
+      rev: 3,
+      values: { needsRepos: ["developing-today/code"] },
+    });
+    // Clearing what is not changed changes nothing.
+    expect(await w.edge.now.clearOwnerSetting(OWNER, "promptLabel")).toEqual(one);
+    w.now.t += 1_000;
+    expect(await w.edge.now.clearOwnerSetting(OWNER)).toMatchObject({
+      rev: 4,
+      values: {},
+    });
+    const settings = auditStored(w).filter((e) => String((e as { kind?: string }).kind).startsWith("setting."));
+    expect(settings).toEqual([
+      {
+        kind: "setting.set",
+        name: "promptLabel",
+        rev: 1,
+        at: new Date(t0).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.set",
+        name: "needsRepos",
+        rev: 2,
+        at: new Date(t0 + 1_000).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.clear",
+        name: "promptLabel",
+        rev: 3,
+        at: new Date(t0 + 2_000).toISOString(),
+        by: OWNER,
+      },
+      {
+        kind: "setting.clear",
+        name: "needsRepos",
+        rev: 4,
+        at: new Date(t0 + 3_000).toISOString(),
+        by: OWNER,
+      },
+    ]);
+    expect(JSON.stringify(settings)).not.toContain("owner/label");
+    // Cleared, the repository speaks again at once.
+    await lookAgain(w);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+    expect(labelCalls(w, "owner/label")).toEqual([]);
+  });
+
+  test("a value not in the setting's shape is refused whole, and nothing is kept", async () => {
+    const w = await setup({ direct: true });
+    await expect(w.edge.now.setOwnerSetting(OWNER, "promptLabel", "")).rejects.toBeInstanceOf(OpError);
+    await expect(w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["not a repository"])).rejects.toBeInstanceOf(OpError);
+    expect(w.stored.has("ownerSettings")).toBe(false);
+    expect(auditStored(w)).toEqual([]);
+  });
+
+  test("a kept record that does not read as one is no record: the repository speaks", async () => {
+    for (const bad of [
+      null,
+      { rev: 0, at: START, by: OWNER, values: {} },
+      { rev: 1, at: START, by: "", values: {} },
+      { rev: 1, at: START, by: OWNER, values: { repo: "someone/else" } },
+      { rev: 1, at: START, by: OWNER, values: { promptLabel: 7 } },
+      { rev: 1, at: START, by: OWNER, values: { needsRepos: ["no-slash"] } },
+    ]) {
+      expect(ownerSettingsRecord(bad)).toBeNull();
+    }
+    expect(
+      ownerSettingsRecord({
+        rev: 2,
+        at: START,
+        by: OWNER,
+        values: { needsRepos: ["a/b", "a/b"] },
+        extra: 1,
+      }),
+    ).toEqual({
+      rev: 2,
+      at: START,
+      by: OWNER,
+      values: { needsRepos: ["a/b"] },
+    });
+    // Kept that way, the edge goes by the repository.
+    const w = await setup({ direct: true });
+    w.stored.set("ownerSettings", {
+      rev: 1,
+      at: START,
+      by: OWNER,
+      values: { promptLabel: "owner/label", repo: "x/y" },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(labelCalls(w, "owner/label")).toEqual([]);
+    expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
+  });
+});
+
+// Which settings are in force, from where and since when, is said in
+// one place on two surfaces: by name and source on the public health
+// answer, and with values, main's value beside an owner's, who and at
+// which revision on the owner's Machines answer (#14955, S3 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md §4).
+describe("which settings are in force is said, and since when", () => {
+  const health = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/health", { token: null })).json()) as {
+      settingsInForce: { name: string; source: string; since: number | null }[];
+    };
+  const machines = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+  const source = (list: { name: string; source: string }[], name: string) =>
+    list.find((entry) => entry.name === name)?.source;
+
+  test("health says each setting's source and since when, and no value and nobody", async () => {
+    const w = await setup({ direct: true });
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.needsRepos = theirs;
+    await w.hostReads();
+    await w.link.now.once();
+    // A machine's list is in force for the list; main's for the rest.
+    let said = (await health(w)).settingsInForce;
+    expect(said.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(said.filter((entry) => entry.source !== "repository")).toEqual([
+      { name: "needsRepos", source: "machine", since: null },
+    ]);
+    // The owner changes the label: it is the owner's from then.
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    said = (await health(w)).settingsInForce;
+    expect(said.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // Nothing of what the value is, or who changed it, is in the public answer.
+    const text = JSON.stringify(await health(w));
+    expect(text).not.toContain("owner/label");
+    expect(text).not.toContain(OWNER);
+    expect(text).not.toContain("developing-today/opencode");
+    for (const entry of said) expect(Object.keys(entry).sort()).toEqual(["name", "since", "source"]);
+    // And cleared, main's is in force again.
+    w.now.t += 60_000;
+    await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+  });
+
+  test("the owner's Machines answer has the values, main's beside an owner's change, who and the revision", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    await w.hostReads();
+    await w.link.now.once();
+    const before = (await machines(w)).platform?.settings ?? [];
+    expect(before.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(before.find((entry) => entry.name === "queue")).toEqual({
+      name: "queue",
+      source: "repository",
+      since: null,
+      value: mains.queue,
+      repository: mains.queue,
+    });
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    const after = (await machines(w)).platform?.settings ?? [];
+    expect(after.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at + 1_000,
+      value: "owner/label",
+      repository: mains.promptLabel,
+      by: OWNER,
+      rev: 2,
+    });
+    expect(after.find((entry) => entry.name === "needsRepos")).toMatchObject({
+      source: "owner",
+      value: ["developing-today/code"],
+      repository: mains.needsRepos,
+      rev: 2,
+    });
+    // The two surfaces say the same sources.
+    const said = (await health(w)).settingsInForce;
+    expect(after.map(({ name, source, since }) => ({ name, source, since })) as unknown).toEqual(said);
+    // Nobody not signed in is told the values.
+    expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
+  });
+
+  test("the owner changes a setting from the app and puts it back: the edge does it, keeps it and goes by it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    const at = w.now.t;
+    const set = await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    expect([set.status, await set.json()]).toEqual([200, { ok: true, result: { rev: 1 } }]);
+    // Done here: no machine was asked, and none is handed it to do later.
+    expect(w.hostSaw.filter((call) => call.includes("/api/act"))).toEqual([]);
+    const answer = await machines(w);
+    expect(answer.held).toEqual([]);
+    expect(answer.platform?.settingsRev).toBe(1);
+    expect(answer.platform?.settings?.find((entry) => entry.name === "promptLabel")).toMatchObject({
+      source: "owner",
+      since: at,
+      value: "owner/label",
+      by: OWNER,
+      rev: 1,
+    });
+    // The public answer names it the owner's, from when it was changed.
+    expect((await health(w)).settingsInForce.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // A list of repositories is kept once each, in the order given.
+    w.now.t += 1_000;
+    const repos = await w.act("settings.set", {
+      name: "needsRepos",
+      value: ["developing-today/code", "developing-today/opencode", "developing-today/code"],
+      baseRev: 1,
+    });
+    expect(await repos.json()).toEqual({ ok: true, result: { rev: 2 } });
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "needsRepos")?.value).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+    ]);
+    // Put back, main's is in force again.
+    w.now.t += 1_000;
+    const cleared = await w.act("settings.clear", { name: "promptLabel", baseRev: 2 });
+    expect(await cleared.json()).toEqual({ ok: true, result: { rev: 3 } });
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+    expect(source((await health(w)).settingsInForce, "needsRepos")).toBe("owner");
+    // With no name, every one the owner changed is put back.
+    const all = await w.act("settings.clear", {});
+    expect(await all.json()).toEqual({ ok: true, result: { rev: 4 } });
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+    // The log says what was changed by name and by whom, never the value.
+    const log = JSON.stringify(auditStored(w));
+    expect(log).toContain("settings.set");
+    expect(log).toContain("setting.clear");
+    expect(log).not.toContain("owner/label");
+    expect(log).not.toContain("developing-today/opencode");
+  });
+
+  test("a change is checked whole: a name the owner may not change, or a value not the setting's shape, changes nothing", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const refused = async (kind: string, args: Record<string, unknown>) => {
+      const res = await w.act(kind, args);
+      return [res.status, ((await res.json()) as { error: string }).error.split(":")[0]];
+    };
+    expect(await refused("settings.set", { name: "queue", value: "another-queue" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: " padded" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "a,b" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "x".repeat(51) })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: [] })).toEqual([400, "needsRepos"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: ["not a repository"] })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.set", { name: "needsRepos", value: "developing-today/code" })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.clear", { name: "repo" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "ok", baseRev: -1 })).toEqual([400, "baseRev"]);
+    // Nothing was kept.
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+  });
+
+  test("a change made from an older look is refused with the settings as they are now", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Two tabs both see revision 0; the first one's change is made.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "first/label", baseRev: 0 })).status).toBe(200);
+    // The second, from the same look, is refused and told what is there now.
+    const late = await w.act("settings.set", { name: "promptLabel", value: "second/label", baseRev: 0 });
+    const body = (await late.json()) as { error: string; settings: { rev: number; values: Record<string, unknown> } };
+    expect(late.status).toBe(409);
+    expect(body.settings).toMatchObject({ rev: 1, values: { promptLabel: "first/label" }, by: OWNER });
+    const clear = await w.act("settings.clear", { name: "promptLabel", baseRev: 0 });
+    expect(clear.status).toBe(409);
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "promptLabel")?.value).toBe(
+      "first/label",
+    );
+    // Without a revision it is made over whatever is there.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "third/label" })).status).toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(2);
+  });
+
+  test("only someone the edge is sure is the owner changes a setting", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const res = await w.browse("/console/api/act", {
+      body: { kind: "settings.set", args: { name: "promptLabel", value: "stranger/label" } },
+      token: null,
+    });
+    expect(res.status).not.toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+  });
+
+  test("a machine is told the owner's changes, runs with them, and says so; until then the screen says it has not", async () => {
+    const w = await setup({ direct: true });
+    // The machine's own: main's label and its own list.
+    const own = { promptLabel: w.edgeConfig.promptLabel, needsRepos: [...w.edgeConfig.needsRepos] };
+    const runs = { ...own, rev: 0 };
+    const said: unknown[] = [];
+    w.adopts.now = (settings) => {
+      said.push(settings);
+      const adopted = ownerSettingsAdopted(own, settings);
+      if (adopted === null) return null;
+      Object.assign(runs, adopted.values, { rev: adopted.rev });
+      // It reports what it runs with, as a console does.
+      w.edgeConfig.promptLabel = adopted.values.promptLabel;
+      w.edgeConfig.needsRepos = adopted.values.needsRepos;
+      return adopted.rev;
+    };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    // Before the owner changes anything, nothing is said, and it runs with its own.
+    expect(said).toEqual([undefined]);
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(0);
+    let answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([0, 0]);
+    // The owner changes the label from the app: Cloudflare goes by it at
+    // once, and the machine has not taken it yet.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([1, 0]);
+    // With its next report it is told, runs with it and says so.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 1, values: { promptLabel: "owner/label" } });
+    expect(runs).toMatchObject({ promptLabel: "owner/label", needsRepos: own.needsRepos, rev: 1 });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(1);
+    answer = await machines(w);
+    expect(answer.machines[0].settingsRev).toBe(1);
+    // Running with the owner's label is not a difference from main.
+    expect(answer.machines[0].differs ?? []).toEqual([]);
+    const differ = (
+      (await (await w.browse("/console/health", { token: null })).json()) as { machineSettingsDiffer: string[] }
+    ).machineSettingsDiffer;
+    expect(differ).toEqual([]);
+    // Put back, the machine is told the record with nothing in it and runs with its own again.
+    await w.act("settings.clear", { name: "promptLabel" });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 2, values: {} });
+    expect(runs).toMatchObject({ ...own, rev: 2 });
+    // The machine's word survives the object being put away.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.edge.now = w.makeEdge();
+    expect((await machines(w)).machines[0].settingsRev).toBe(2);
+  });
+
+  test("a machine's own label, other than main's, is still said as one where the owner has not changed it", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await machines(w)).machines[0].differs?.map((d) => d.name)).toEqual(["promptLabel"]);
+    // Once the owner has changed it, the machine is compared with the change by its revision instead.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label" });
+    expect((await machines(w)).machines[0].differs ?? []).toEqual([]);
+    // A console older than taking the owner's settings says no revision.
+    expect((await machines(w)).machines[0].settingsRev).toBeNull();
+  });
+});
+
 describe("the edge does the core itself", () => {
   type World = Awaited<ReturnType<typeof setup>>;
   /** The switch is on, the tokens are there, and a machine has said
@@ -4654,6 +5250,60 @@ describe("the edge does the core itself", () => {
     expect(w.ghMerged).toHaveLength(1);
   });
 
+  test("a timely action more than ten minutes old is not done unasked, by this side's clock or the device's (#13501)", async () => {
+    const w = await primary();
+    const MIN = 60_000;
+    const send = (body: Record<string, unknown>) => w.browse("/console/api/act", { body });
+    const refused = { error: STALE_ACT_ERROR, stale: true };
+    const t = w.now.t;
+    // Done eleven minutes ago by this side's clock: a device whose
+    // clock runs slow cannot talk it round by saying it sent it at once.
+    const slow = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000101",
+      at: t - 11 * MIN,
+      sent: t - 11 * MIN,
+    });
+    expect([slow.status, await slow.json()]).toEqual([409, refused]);
+    // Recent by this side's clock, old by the device's own: a clock
+    // that runs fast cannot hide that it waited.
+    const fast = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000102",
+      at: t + 60 * MIN,
+      sent: t + 72 * MIN,
+    });
+    expect([fast.status, await fast.json()]).toEqual([409, refused]);
+    // Neither was done, and neither name was written down: the owner
+    // may look again and send either under it.
+    expect(w.ghMerged).toEqual([]);
+    expect(w.stored.has("a:0b000000-0000-4000-8000-000000000101")).toBe(false);
+    // What the owner says of what is late is never held to it.
+    const comment = await send({
+      kind: "issue.comment",
+      args: { issue: 301, text: "Late, and still meant." },
+      at: t - 60 * MIN,
+      sent: t,
+    });
+    expect(comment.status).toBe(200);
+    // Looked at again and sent anyway: done.
+    const id = "0b000000-0000-4000-8000-000000000101";
+    const sure = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: t, sure: true });
+    expect(sure.status).toBe(200);
+    expect(w.ghMerged).toHaveLength(1);
+    // A name met before is answered as it was, however late it is
+    // asked about again: its answer may only have been lost on the way.
+    w.now.t += 30 * MIN;
+    const again = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: w.now.t });
+    expect([again.status, await again.json()]).toEqual([
+      200,
+      { ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" }, again: true },
+    ]);
+    expect(w.ghMerged).toHaveLength(1);
+  });
+
   test("machines: doing the core itself, the edge says which kinds it does and which sections it reads, less what it was turned away for", async () => {
     const w = await primary();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
@@ -4669,6 +5319,8 @@ describe("the edge does the core itself", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
         "ask.send",
         "ask.reply",
         "ask.close",
@@ -4683,6 +5335,8 @@ describe("the edge does the core itself", () => {
       ],
       sections: ["board", "prs", "priorities", "asks", "census", "done"],
       refused: [],
+      settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
     // Turned away for merging: that is a machine's for the hour, and said so.

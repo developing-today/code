@@ -179,7 +179,11 @@ f5d5b0692b8f4835167807827afde7debcb88433cf7fd7c3443ed72b79940389  /home/hatch/ha
 ],
 "dependencies": [],
 "issues": [
-"https://github.com/developing-today/code/issues/3235"
+{
+"concept": "C001",
+"number": 3235,
+"url": "https://github.com/developing-today/code/issues/3235"
+}
 ],
 "prs": [],
 "tasks": [],

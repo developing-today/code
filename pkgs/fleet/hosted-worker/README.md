@@ -205,6 +205,16 @@ session_closed`, malformed ids `400 invalid_session_id`. An agent
   available only when its filling issue landed: so far the
   hosted-transformed `gh` domain, via the stamping and query doors,
   and the `queue` domain, via the queue door.
+- **Kv door** (#13316, `src/kv-door.ts`, `src/routes/kv.ts`):
+  `POST /v1/kv/v2/pipeline` is the `fleet kv` central plane. A host
+  posts the Hrana transaction its client crate builds; the door
+  forwards only statements in `src/kv-catalog.json` (generated from
+  `pkgs/fleet/crates/fleet-kv/src/catalog.rs`), binds owner, writer
+  and private scope to the caller, checks the scope against the
+  namespace, gates namespace and grant changes on `kv-admin`, and runs
+  the schema migrations itself. Primary: `KV_LIBSQL_URL` +
+  `KV_LIBSQL_AUTH_TOKEN`; unset → 503. Runbook:
+  `pkgs/fleet/book/operations/kv-central.md`.
 
 ## What is a stub
 

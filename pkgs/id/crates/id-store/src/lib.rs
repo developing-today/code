@@ -38,6 +38,7 @@ pub mod grant_authority;
 pub mod graph_index;
 pub mod identity;
 pub mod issuer_rotation;
+pub mod login_binding;
 pub mod media;
 pub mod namespace_registry;
 pub mod note_blocks;
@@ -58,5 +59,6 @@ pub mod tag_index;
 pub mod tags;
 pub mod talk_page;
 pub mod thread_resolution;
+pub mod thread_text;
 
 pub use store::STORE_PATH;

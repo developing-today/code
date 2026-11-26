@@ -469,7 +469,7 @@ fn test_a_rule_refusal_gives_the_voided_reason() {
         ),
         add("a0", 2, g, 4, Role::Read, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
     assert_eq!(outcome(&p, "a0").reason(), Some(Reason::Voided));
 }
 
@@ -529,8 +529,41 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
         add("a0", 2, g, 4, Role::Read, &["g"]),
         remove("x0", 2, g, 3, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
-    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_delegated_manage_can_add_and_remove_members() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 3, Role::Read, &["g", "d0"]),
+        remove("r0", 2, g, 3, &["a0"]),
+    ];
+    let projection = project(&events);
+    assert_eq!(outcome(&projection, "a0"), Outcome::Applied);
+    assert_eq!(outcome(&projection, "r0"), Outcome::Applied);
+    assert_eq!(role_of(&projection, g, 3), None);
+}
+
+#[test]
+fn test_a_cut_delegated_manage_chain_refuses_membership_changes() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        veto("v0", 1, g, "d0", &["d0"]),
+        add("a0", 2, g, 3, Role::Read, &["g", "d0", "v0"]),
+    ];
+    let projection = project(&events);
+    assert_eq!(outcome(&projection, "v0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&projection, "a0"),
+        Outcome::Refused(Refusal::NoChain)
+    );
+    assert_eq!(role_of(&projection, g, 3), None);
 }
 
 #[test]
@@ -1327,8 +1360,9 @@ fn test_reassign_to_group_keeps_the_grant_as_a_group_root_without_manage_authori
         Outcome::Applied,
         "the group root reaches 3"
     );
-    assert_eq!(outcome(&p, "x1"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "x1"), Outcome::Applied);
     assert_eq!(p.group(&g).unwrap().members.get(&key(3)), Some(&Role::Read));
+    assert_eq!(p.group(&g).unwrap().members.get(&key(4)), None);
     assert!(!p.group(&g).unwrap().members.contains_key(&key(5)));
     let reassigned = p
         .grants_in_force()

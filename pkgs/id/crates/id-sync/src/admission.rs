@@ -310,6 +310,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(&key, 0, None, None, ext).unwrap()
     }

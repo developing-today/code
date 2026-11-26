@@ -2,8 +2,8 @@
 //!
 //! - [`scheme`]: the adapter. One [`Session`] per device and group, with create, add, remove,
 //!   update, recover, send and process. Membership comes from the group model: the caller passes
-//!   the [`crate::groups::GroupView`] the fold gives after the event, and the adapter takes its
-//!   members from that view.
+//!   the [`crate::groups::GroupView`] the fold gives after the event and each member's folded
+//!   keyset device set ([`DeviceSets`]); the roster is the members' active device keys.
 //! - [`roster`]: the membership the crate keeps. The adapter checks it against the model after each
 //!   local membership change.
 //! - [`ordering`]: causal delivery, and the [`Envelope`] messages travel in.
@@ -33,8 +33,9 @@ pub use history::{HistoryMode, HistoryModeError};
 pub use ordering::{Envelope, Orderer, OrdererError};
 pub use roster::Roster;
 pub use scheme::{
-    DATASCHEME, MAX_HELD_BYTES, MAX_HELD_MESSAGES, RECOVERY_STEPS, Received, Recovery, SCHEME_V1,
-    SchemeError, Session, StalledDelivery, key_bundle, key_of, negotiate, new_keys, registry,
+    DATASCHEME, DeviceSets, MAX_HELD_BYTES, MAX_HELD_MESSAGES, RECOVERY_STEPS, Received, Recovery,
+    SCHEME_V1, SchemeError, Session, StalledDelivery, key_bundle, key_of, negotiate, new_keys,
+    registry,
 };
 
 #[cfg(test)]
