@@ -87,6 +87,7 @@ import {
   insertHeld,
 } from "./edge-shared.ts";
 import { Builds } from "./release.ts";
+import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -533,6 +534,34 @@ export class Edge {
   private async toldConfig(): Promise<EdgeConfig | null> {
     if (this.told === undefined) this.told = edgeConfig(await this.kv.get("cfg"));
     return this.told;
+  }
+
+  /** The per-surface route state (#14944, CF-4), kept under its own
+   * key in this object's storage: rebuildable front-door data, read
+   * as route state or as none. */
+  private async routes(): Promise<RouteState> {
+    return routeState(await this.kv.get("routes"));
+  }
+
+  /** A flip of one surface's declared tier, on the trusted internal
+   * channel only (the stateless Worker's own calls, like
+   * /internal/key): the operator / deploy-pipeline operation of the
+   * design (§5.1). The flip is kept whole and said back as health
+   * will say it. Anything that is not a surface name and a tier is
+   * refused and changes nothing. */
+  private async routeFlip(req: Request): Promise<Response> {
+    const body = (await req.json().catch(() => null)) as { surface?: unknown; tier?: unknown } | null;
+    try {
+      const next = flipRoute(
+        await this.routes(),
+        body?.surface as string,
+        body?.tier as "hosted" | "tunnel",
+      );
+      await this.kv.put("routes", next);
+      return json({ ok: true, routes: healthRoutes(next) });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 400);
+    }
   }
 
   /** What this side goes by; null until a machine has said who may
@@ -2110,6 +2139,7 @@ export class Edge {
       if (path === "/internal/key") return this.enroll(req);
       if (path === "/internal/hold") return this.hold(req);
       if (path === "/internal/relayed") return this.relayed(req);
+      if (path === "/internal/route") return this.routeFlip(req);
       return json({ error: "not found" }, 404);
     }
 
@@ -2173,6 +2203,11 @@ export class Edge {
         // only; or a machine that was given it or may have got it.
         // Counts, and nothing of what they are.
         held: await this.heldCounts(cfg),
+        // Per-surface route state (#14944, CF-4): each surface's
+        // declared tier, the tier actually serving it, and any
+        // automatic fall — the front door's flips are visible here,
+        // never a silent setting. Empty until a surface is flipped.
+        routes: healthRoutes(await this.routes()),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
