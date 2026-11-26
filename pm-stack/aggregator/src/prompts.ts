@@ -28,7 +28,18 @@ import { normalizeAttachments, type PromptAttachment } from "./prompt-attachment
 export type { PromptAttachment } from "./prompt-attachments.ts";
 
 export const PROMPT_SCOPES = ["section", "page", "stack", "agent"] as const;
-export const PROMPT_TARGETS = ["claude", "muse", "pool:auto", "decision"] as const;
+// #10038 S2 (design §3.3) adds the pool tiers next to pool:auto.
+export const PROMPT_TARGETS = [
+  "claude",
+  "muse",
+  "pool:auto",
+  "pool:low",
+  "pool:medium",
+  "pool:high",
+  "decision",
+] as const;
+/** #10038 S2: the effort override; absent means the target picks (auto). */
+export const PROMPT_EFFORTS = ["low", "medium", "high"] as const;
 export const PROMPT_MODES = ["async", "sync-block", "sync-ws"] as const;
 export const PROMPT_STATUSES = ["queued", "running", "answered", "failed"] as const;
 export const PROMPT_DECISION_CONTEXT_LEVELS = ["low", "medium", "high"] as const;
@@ -45,6 +56,7 @@ export const PROMPT_VARIANTS = [
 export type PromptScope = (typeof PROMPT_SCOPES)[number];
 export type PromptTarget = (typeof PROMPT_TARGETS)[number];
 export type PromptMode = (typeof PROMPT_MODES)[number];
+export type PromptEffort = (typeof PROMPT_EFFORTS)[number];
 export type PromptStatus = (typeof PROMPT_STATUSES)[number];
 export type PromptDecisionContextLevel = (typeof PROMPT_DECISION_CONTEXT_LEVELS)[number];
 export type PromptVariant = (typeof PROMPT_VARIANTS)[number];
@@ -123,6 +135,8 @@ export interface NewPrompt {
   decision?: PromptDecisionSpec;
   /** #10037 S5: the variant the submission came from; absent means free. */
   variant?: PromptVariant;
+  /** #10038 S2: effort override; absent means auto. */
+  effort?: PromptEffort;
 }
 
 export interface PromptRecord extends NewPrompt {
@@ -164,6 +178,7 @@ function normalizeRecord(raw: Partial<PromptRecord> & Record<string, unknown>): 
     attachments: normalizeAttachments(raw.attachments),
     ...(raw.decision && typeof raw.decision === "object" ? { decision: raw.decision as PromptDecisionSpec } : {}),
     ...(PROMPT_VARIANTS.includes(raw.variant as PromptVariant) ? { variant: raw.variant as PromptVariant } : {}),
+    ...(PROMPT_EFFORTS.includes(raw.effort as PromptEffort) ? { effort: raw.effort as PromptEffort } : {}),
     id: typeof raw.id === "string" ? raw.id : `prompt:${randomUUID()}`,
     threadId:
       typeof raw.threadId === "string" ? raw.threadId : typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`,
@@ -194,7 +209,15 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (!PROMPT_SCOPES.includes(b.scope as PromptScope))
     return { ok: false, error: "scope must be section, page, stack or agent" };
   if (!PROMPT_TARGETS.includes(b.target as PromptTarget))
-    return { ok: false, error: "target must be claude, muse, pool:auto or decision" };
+    return { ok: false, error: `target must be one of ${PROMPT_TARGETS.join(", ")}` };
+  // #10038 S2: an empty effort (the form's "auto" option) or null means auto.
+  if (
+    b.effort !== undefined &&
+    b.effort !== null &&
+    b.effort !== "" &&
+    !PROMPT_EFFORTS.includes(b.effort as PromptEffort)
+  )
+    return { ok: false, error: "effort must be low, medium, high or left out for auto" };
   if (!PROMPT_MODES.includes(b.mode as PromptMode))
     return { ok: false, error: "mode must be async, sync-block or sync-ws" };
   if (typeof b.page !== "string" || !PAGE_ID.test(b.page)) return { ok: false, error: "page must be a page id" };
@@ -246,6 +269,7 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (refs !== undefined) value.refs = refs;
   if (notify !== undefined) value.notify = notify;
   if (b.variant !== undefined) value.variant = b.variant as PromptVariant;
+  if (PROMPT_EFFORTS.includes(b.effort as PromptEffort)) value.effort = b.effort as PromptEffort;
   if (b.target === "decision") {
     const decision = validateDecisionSpec(b.decision);
     if (!decision.ok) return decision;
@@ -332,6 +356,7 @@ export class PromptsStore {
       attachments: normalizeAttachments(input.attachments),
       ...(input.decision ? { decision: input.decision } : {}),
       ...(input.variant ? { variant: input.variant } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
       id: `prompt:${randomUUID()}`,
       threadId,
       status: "queued",

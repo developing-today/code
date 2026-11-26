@@ -274,6 +274,7 @@ pub fn queued_session_record(
     reasoning: &[String],
     coverage: Value,
     submitted_by: &str,
+    actor: &str,
     created_at: &str,
 ) -> Value {
     let mut rec = Map::new();
@@ -288,10 +289,7 @@ pub fn queued_session_record(
     rec.insert("run_url".into(), Value::Null);
     rec.insert("state".into(), json!("queued"));
     rec.insert("submitted_by".into(), json!(submitted_by));
-    rec.insert(
-        "actor".into(),
-        json!("developing-today[bot] (GitHub App dispatch)"),
-    );
+    rec.insert("actor".into(), json!(actor));
     rec.insert("created_at".into(), json!(created_at));
     rec.insert("updated_at".into(), json!(created_at));
     Value::Object(rec)
@@ -436,12 +434,14 @@ mod tests {
             &["tier 1 saturated; coordinator queued at position 1".to_string()],
             json!({}),
             "archer@test",
+            "user token (dispatch_as: user)",
             "2026-11-24T00:00:00Z",
         );
         assert_eq!(rec["state"], "queued");
         assert_eq!(rec["surface"], "fleet-org");
         assert_eq!(rec["claim_handle"], "fp_x");
         assert_eq!(rec["placement_path"], "coordinator");
+        assert_eq!(rec["actor"], "user token (dispatch_as: user)");
         // No dispatch leg ran: no confirm, no release, no GitHub call.
         assert!(remote.confirms.borrow().is_empty());
         assert!(remote.releases.borrow().is_empty());

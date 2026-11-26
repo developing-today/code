@@ -329,6 +329,30 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
                 "the holding task is in a different queue ({q} != requested {queue})"
             ));
         }
+    } else if let Some(m) = resp.get("dedupe_match") {
+        // #10627: the broker absorbed the filing into the task that
+        // already holds this dedupe key and filed nothing. A
+        // terminal match is the dangerous one — the key's work is
+        // complete, so the caller must suffix the key to file the
+        // work again; say that instead of the generic dedupe line
+        // the timestamp heuristics below would produce.
+        if m.get("rule").and_then(|v| v.as_str()) == Some("dedupe_key_terminal") {
+            line = format!(
+                "not filed: dedupe key already belongs to completed task {} (queue {q}, status {s}); \
+                 suffix the dedupe key to file this work again, or set payload.dedupe_override for a deliberate parallel",
+                fmt_cell(Some(&tid)),
+            );
+        } else {
+            line = format!(
+                "dedupe hit: existing task {} (queue {q}, status {s}) already holds this dedupe key; nothing filed",
+                fmt_cell(Some(&tid)),
+            );
+        }
+        if q != queue {
+            warnings.push(format!(
+                "the holding task is in a different queue ({q} != requested {queue})"
+            ));
+        }
     } else if let Some(pred) = resp.get("revived_from") {
         // Broker-side revive (#6838): the key's prior task was
         // terminal, so this enqueue created a fresh task linked to
@@ -371,7 +395,18 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
     for w in &warnings {
         println!("warning: {w}");
     }
-    print_json(&row);
+    // #10627: carry the broker's absorption report into the printed
+    // JSON — the bare row alone reads as a fresh filing to a machine
+    // consumer, which is how terminal dedupe returns stranded work.
+    let mut printed = row;
+    if let Some(o) = printed.as_object_mut() {
+        for key in ["dedupe_match", "work_identity_collision"] {
+            if let Some(v) = resp.get(key) {
+                o.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    print_json(&printed);
     0
 }
 
@@ -590,6 +625,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let response = call(
             "/events-list",
@@ -1174,6 +1210,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let resp = call(
             "/events-list",

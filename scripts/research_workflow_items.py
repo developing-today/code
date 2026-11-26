@@ -456,8 +456,7 @@ def check_state(state):
             for entry in concept.get(key, []):
                 if not isinstance(entry, dict):
                     fail(
-                        f"{concept['id']}: {key} entries must be objects, "
-                        f"not {entry!r}"
+                        f"{concept['id']}: {key} entries must be objects, not {entry!r}"
                     )
     ids = set(concept_ids(state))
     for task in state.get("tasks", []):

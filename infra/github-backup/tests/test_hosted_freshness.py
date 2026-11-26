@@ -49,7 +49,13 @@ class AllFreshTests(unittest.TestCase):
     def test_all_legs_fresh_verdict_fresh(self):
         report = hf.build_report(REPOS, fetchers(), NOW, "run-1")
         self.assertEqual(report["verdict"], "fresh")
-        for leg in ("source", "plain_mirror", "r2_bundles", "cloudflare_rehost", "d1_export"):
+        for leg in (
+            "source",
+            "plain_mirror",
+            "r2_bundles",
+            "cloudflare_rehost",
+            "d1_export",
+        ):
             self.assertEqual(leg_status(report, leg), hf.FRESH, leg)
         self.assertEqual(report["probe"], "hosted-freshness:v1")
         self.assertEqual(report["run_id"], "run-1")
@@ -114,17 +120,31 @@ class BundleLegTests(unittest.TestCase):
         self.assertEqual(leg_status(report, "r2_bundles", REPOS[0]), hf.STALE)
 
     def test_no_bundle_is_missing(self):
-        report = hf.build_report(
-            REPOS, fetchers(bundle=lambda repo: None), NOW, "r"
-        )
+        report = hf.build_report(REPOS, fetchers(bundle=lambda repo: None), NOW, "r")
         self.assertEqual(leg_status(report, "r2_bundles"), hf.MISSING)
 
     def test_newest_bundle_picks_latest_valid_object(self):
         entries = [
-            {"Name": f"{HEAD_B}-{'c' * 64}.bundle", "ModTime": "2026-11-25T08:00:00Z", "IsDir": False},
-            {"Name": f"{HEAD_A}-{'d' * 64}.bundle", "ModTime": "2026-11-25T10:00:00Z", "IsDir": False},
-            {"Name": "not-a-bundle.txt", "ModTime": "2026-11-25T11:00:00Z", "IsDir": False},
-            {"Name": f"{HEAD_B}-{'e' * 64}.bundle", "ModTime": "2026-11-25T11:30:00Z", "IsDir": True},
+            {
+                "Name": f"{HEAD_B}-{'c' * 64}.bundle",
+                "ModTime": "2026-11-25T08:00:00Z",
+                "IsDir": False,
+            },
+            {
+                "Name": f"{HEAD_A}-{'d' * 64}.bundle",
+                "ModTime": "2026-11-25T10:00:00Z",
+                "IsDir": False,
+            },
+            {
+                "Name": "not-a-bundle.txt",
+                "ModTime": "2026-11-25T11:00:00Z",
+                "IsDir": False,
+            },
+            {
+                "Name": f"{HEAD_B}-{'e' * 64}.bundle",
+                "ModTime": "2026-11-25T11:30:00Z",
+                "IsDir": True,
+            },
         ]
         head, mod = hf.newest_bundle(entries)
         self.assertEqual(head, HEAD_A)
@@ -135,7 +155,9 @@ class D1LegTests(unittest.TestCase):
     def test_recent_export_is_fresh(self):
         report = hf.build_report(REPOS, fetchers(), NOW, "r")
         self.assertEqual(leg_status(report, "d1_export"), hf.FRESH)
-        self.assertEqual(report["legs"]["d1_export"]["exported_at"], "2026-11-25T10:00:00Z")
+        self.assertEqual(
+            report["legs"]["d1_export"]["exported_at"], "2026-11-25T10:00:00Z"
+        )
 
     def test_old_export_is_stale(self):
         meta = lambda: {"exported_at": "2026-11-23T10:00:00Z"}

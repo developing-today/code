@@ -14,7 +14,9 @@ import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts"
 
 type Args = Record<string, unknown>;
 export interface Action {
-  run: (args: Args) => Promise<unknown>;
+  /** `by` is who asked, where the side running it knows (the edge's
+   * own actions that record who changed something need it). */
+  run: (args: Args, by?: string) => Promise<unknown>;
   /** Sections to read again afterwards. */
   touch: string[];
   /** What the audit log keeps of the arguments. */

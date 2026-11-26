@@ -105,7 +105,10 @@ describe("seen-event store", () => {
     const obj = makeObject(storage);
     // Fill the seen set to the 1,000-id cap in batches of 100.
     for (let base = 0; base < 1000; base += 100) {
-      await ingest(obj, Array.from({ length: 100 }, (_, i) => ev(`seed-${base + i}`)));
+      await ingest(
+        obj,
+        Array.from({ length: 100 }, (_, i) => ev(`seed-${base + i}`)),
+      );
     }
     expect(storage.seenCount()).toBe(1000);
     storage.puts = [];

@@ -53,8 +53,6 @@ mod gh;
 
 #[cfg(feature = "actions")]
 mod actions;
-#[cfg(feature = "kv")]
-mod kv;
 #[cfg(feature = "commander")]
 mod commander;
 #[cfg(any(
@@ -76,7 +74,13 @@ mod gh_metadata;
 mod gh_sync;
 #[cfg(feature = "http")]
 mod http;
+#[cfg(feature = "id")]
+mod id_key;
+#[cfg(feature = "id")]
+mod id_proxy;
 mod invocation_ledger;
+#[cfg(feature = "kv")]
+mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
 mod session_state;
@@ -916,7 +920,7 @@ fn run_domain_with_initializer(
         return fleet_agent::run_shell(&surface.config, args);
     }
     // The kv domain's own parser answers `fleet kv --help`, usage
-    // errors and the --global refusal before session resolution, so
+    // errors and the --force-blob refusal before session resolution, so
     // a malformed command line touches nothing (code#13314) — the
     // same carve-out the actions domain gets above.
     #[cfg(feature = "kv")]
@@ -1093,6 +1097,13 @@ fn run_domain_with_initializer(
             #[cfg(feature = "kv")]
             if d.name == "kv" {
                 return kv::run(args);
+            }
+            // code#15430 (design #10391 §4.1): the id domain runs
+            // for real — session key lifecycle + stamping. Later
+            // slices add the proxy/initiator/serve-ws verbs.
+            #[cfg(feature = "id")]
+            if d.name == "id" {
+                return id_key::run(args);
             }
             // The bridge domain runs for real: fleet mailboxes on the
             // message bridge (central send/agents/log/pipeline/

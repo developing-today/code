@@ -484,7 +484,7 @@ fn refused_queries_send_nothing() {
     )
     .unwrap_err();
     assert_eq!(err.code(), "not_available");
-    assert!(transport.sent.is_empty());
+    assert_eq!(transport.sent, [] as [id_pg::PostgrestRequest; 0]);
 }
 
 // ---- materialized snapshots (§5.3) ----

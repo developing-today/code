@@ -350,6 +350,26 @@ describe("end-to-end webhook + read model", () => {
     expect(audit.rows).toEqual([{ outcome: "error", detail: "invalid_json" }]);
   });
 
+  test("a signed non-object payload is a 400 invalid_payload with an audit row (#7983 item 4)", async () => {
+    const env: ServerEnv = {
+      GITHUB_WEBHOOK_SECRET: SECRET,
+      PM_PROJECTOR_API_TOKEN: TOKEN,
+      PM_REPOS: "developing-today/code,developing-today/openchamber",
+    };
+    for (const [i, body] of ["null", "[]", '"x"', "7"].entries()) {
+      const delivery = `delivery-non-object-${i}`;
+      const signature = await hmacSha256Hex(new TextEncoder().encode(body), SECRET);
+      const res = await handleRequest(webhookReq(body, "issues", signature, delivery), db, env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "invalid_payload" });
+      const audit = await db.execute({
+        sql: "SELECT outcome, detail FROM pmp_delivery_errors WHERE delivery_id = ?",
+        args: [delivery],
+      });
+      expect(audit.rows).toEqual([{ outcome: "error", detail: "invalid_payload" }]);
+    }
+  });
+
   test("migration backfills existing failed delivery rows into the error audit", async () => {
     const delivery = "delivery-legacy-error-backfill";
     await db.execute({

@@ -13,19 +13,49 @@
 //! `clear-override`, masking `delete` and history `revert` are the three
 //! delete-related states from the fleet-kv design (D005) and stay distinct.
 
+pub mod archive;
 pub mod backup;
+pub mod blob;
+pub mod blob_central;
+pub mod blob_read;
+pub mod catalog;
+pub mod central;
 pub mod cli;
+pub mod grants;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod launch;
+#[cfg(test)]
+mod load_probe;
+pub mod plane;
+pub mod read;
+pub mod sweep;
+pub mod sync;
+pub mod working;
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
-const SCHEMA_VERSION: i64 = 3;
+use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
+
+const SCHEMA_VERSION: i64 = 10;
+
+/// The outbox op of an ordinary set.
+pub const OP_SET: &str = "set";
+/// The outbox op of a set made with `--force-blob`: the sweep places it in a
+/// blob at or below the inline threshold too (design §8, D009).
+pub const OP_SET_BLOB: &str = "set-blob";
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
 pub enum KvError {
     MalformedKey,
     MalformedNamespace,
+    /// This host has pulled the central namespace definitions and the
+    /// namespace is not among them.
+    UnknownNamespace(String),
     /// `revert --to` named a version that is not in this tuple's history.
     UnknownVersion,
     /// `revert --to` named a masking tombstone; `delete` is the masking verb.
@@ -33,6 +63,12 @@ pub enum KvError {
     /// `clear-override` could not take the per-key lock within the bounded
     /// wait; the fence was not touched.
     ClearBusyTryAgain,
+    /// A row refers to a working file that is not beside the store.
+    WorkingFileMissing(String),
+    /// A working file's length or hash does not match its row.
+    WorkingFileCorrupt(String),
+    /// Reading the value, or writing it out or to a working file, failed.
+    Io(std::io::Error),
     Sql(rusqlite::Error),
 }
 
@@ -42,9 +78,13 @@ impl KvError {
         match self {
             Self::MalformedKey => "malformed_key",
             Self::MalformedNamespace => "malformed_namespace",
+            Self::UnknownNamespace(_) => "unknown_namespace",
             Self::UnknownVersion => "unknown_version",
             Self::RevertTargetIsTombstone => "revert_target_is_tombstone",
             Self::ClearBusyTryAgain => "clear_busy_try_again",
+            Self::WorkingFileMissing(_) => "working_file_missing",
+            Self::WorkingFileCorrupt(_) => "working_file_corrupt",
+            Self::Io(_) => "io_error",
             Self::Sql(_) => "store_error",
         }
     }
@@ -59,6 +99,10 @@ impl std::fmt::Display for KvError {
             Self::MalformedNamespace => f.write_str(
                 "namespaces start with a letter, then letters, digits or hyphens, at most 63 bytes",
             ),
+            Self::UnknownNamespace(namespace) => write!(
+                f,
+                "`{namespace}` is not defined in fleet-kv-central as of this host's last `fleet kv sync`"
+            ),
             Self::UnknownVersion => f.write_str("no such version in this key's local history"),
             Self::RevertTargetIsTombstone => {
                 f.write_str("that version is a masking tombstone; use `delete` to mask the key")
@@ -66,6 +110,14 @@ impl std::fmt::Display for KvError {
             Self::ClearBusyTryAgain => {
                 f.write_str("another writer holds this key's lock; nothing was changed, try again")
             }
+            Self::WorkingFileMissing(id) => {
+                write!(f, "the working file {id} for this value is missing")
+            }
+            Self::WorkingFileCorrupt(id) => write!(
+                f,
+                "the working file {id} for this value does not match its length or hash"
+            ),
+            Self::Io(error) => write!(f, "{error}"),
             Self::Sql(error) => write!(f, "local store error: {error}"),
         }
     }
@@ -75,6 +127,22 @@ impl std::error::Error for KvError {}
 
 fn sql(error: rusqlite::Error) -> KvError {
     KvError::Sql(error)
+}
+
+impl From<WorkingError> for KvError {
+    fn from(error: WorkingError) -> Self {
+        match error {
+            WorkingError::Missing(id) => Self::WorkingFileMissing(id),
+            WorkingError::Corrupt(id) => Self::WorkingFileCorrupt(id),
+            WorkingError::Io(error) => Self::Io(error),
+        }
+    }
+}
+
+/// A version's bytes: inline in the row, or a working file beside the store.
+pub(crate) enum Body<'a> {
+    Inline(&'a [u8]),
+    Working(&'a WorkingRef),
 }
 
 pub struct Identity<'a> {
@@ -130,6 +198,9 @@ pub struct OutboxIntent {
 
 pub struct LocalStore {
     pub(crate) connection: Connection,
+    /// Where working files live (`<store path>.working`). An in-memory
+    /// store has none and keeps every value inline.
+    pub(crate) working_dir: Option<PathBuf>,
 }
 
 impl LocalStore {
@@ -140,11 +211,14 @@ impl LocalStore {
 
     /// Open (or create) the durable host-local SQLite database.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, KvError> {
+        let path = path.as_ref();
         let connection = Connection::open(path).map_err(sql)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(sql)?;
-        Self::from_connection(connection)
+        let mut store = Self::from_connection(connection)?;
+        store.working_dir = Some(working_dir_for(path));
+        Ok(store)
     }
 
     fn from_connection(connection: Connection) -> Result<Self, KvError> {
@@ -164,7 +238,10 @@ impl LocalStore {
             )
             .map_err(sql)?;
         migrate(&connection)?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            working_dir: None,
+        })
     }
 
     /// Store arbitrary bytes under the caller's complete identity tuple.
@@ -177,27 +254,139 @@ impl LocalStore {
         key: &str,
         value: &[u8],
     ) -> Result<u64, KvError> {
+        self.set_as(identity, namespace, key, value, OP_SET)
+    }
+
+    /// [`LocalStore::set`], marking the intent `--force-blob` (code#13318):
+    /// the sweep places it in a blob whatever its size. It changes nothing
+    /// about the local row.
+    pub fn set_forcing_blob(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<u64, KvError> {
+        self.set_as(identity, namespace, key, value, OP_SET_BLOB)
+    }
+
+    fn set_as(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        value: &[u8],
+        op: &str,
+    ) -> Result<u64, KvError> {
+        if value.len() > INLINE_LIMIT && self.working_dir.is_some() {
+            return self.set_reader_as(identity, namespace, key, &mut &value[..], op);
+        }
         validate_namespace(namespace)?;
         validate_key(key)?;
+        self.commit_head(identity, namespace, key, Body::Inline(value), op)
+    }
+
+    /// Store the bytes `reader` yields, streaming them. Up to
+    /// [`INLINE_LIMIT`] bytes are stored inline; anything larger streams into
+    /// a working file beside the store and is never buffered whole. Nothing
+    /// is rejected for size. Returns the new version number.
+    pub fn set_reader(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+    ) -> Result<u64, KvError> {
+        self.set_reader_as(identity, namespace, key, reader, OP_SET)
+    }
+
+    /// [`LocalStore::set_reader`], marking the intent `--force-blob`.
+    pub fn set_reader_forcing_blob(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+    ) -> Result<u64, KvError> {
+        self.set_reader_as(identity, namespace, key, reader, OP_SET_BLOB)
+    }
+
+    fn set_reader_as(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+        op: &str,
+    ) -> Result<u64, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        let mut head = Vec::new();
+        // Reborrow so the rest of `reader` can still stream after the head.
+        (&mut *reader)
+            .take(INLINE_LIMIT as u64 + 1)
+            .read_to_end(&mut head)
+            .map_err(KvError::Io)?;
+        if head.len() <= INLINE_LIMIT {
+            return self.commit_head(identity, namespace, key, Body::Inline(&head), op);
+        }
+        let Some(dir) = &self.working_dir else {
+            // An in-memory store has nowhere to stream to.
+            reader.read_to_end(&mut head).map_err(KvError::Io)?;
+            return self.commit_head(identity, namespace, key, Body::Inline(&head), op);
+        };
+        let reference = working::stage(dir, &head, reader).map_err(KvError::Io)?;
+        drop(head);
+        self.commit_head(identity, namespace, key, Body::Working(&reference), op)
+    }
+
+    fn commit_head(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        body: Body<'_>,
+        op: &str,
+    ) -> Result<u64, KvError> {
         let tx = self.connection.unchecked_transaction().map_err(sql)?;
-        let version = append_head(&tx, identity, namespace, key, value, STATE_LIVE, "set")?;
+        let version = append_head(&tx, identity, namespace, key, body, STATE_LIVE, op)?;
         tx.commit().map_err(sql)?;
         Ok(version)
     }
 
     /// Read only a row owned by the caller's complete identity tuple. A
-    /// masking tombstone reads as absent.
+    /// masking tombstone reads as absent. A working-file value is read whole
+    /// into memory here; use [`LocalStore::get_to`] to stream it.
     pub fn get(
         &self,
         identity: &Identity<'_>,
         namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, KvError> {
+        let mut value = Vec::new();
+        Ok(self
+            .get_to(identity, namespace, key, &mut value)?
+            .then_some(value))
+    }
+
+    /// Stream the caller's live value to `out`. Returns `false` (writing
+    /// nothing) when the key is missing or masked. A working file is checked
+    /// for length before any byte is written and for its hash at the end; on
+    /// a hash mismatch the bytes are already out and the read fails with
+    /// [`KvError::WorkingFileCorrupt`].
+    pub fn get_to(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        out: &mut dyn Write,
+    ) -> Result<bool, KvError> {
         validate_namespace(namespace)?;
         validate_key(key)?;
-        self.connection
+        let row: Option<(Vec<u8>, Option<WorkingRef>)> = self
+            .connection
             .query_row(
-                "SELECT value FROM kv_local
+                "SELECT value, working_id, working_len FROM kv_local
              WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
                AND state='live'",
                 params![
@@ -207,9 +396,52 @@ impl LocalStore {
                     namespace,
                     key
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, working_ref(row.get(1)?, row.get(2)?))),
             )
             .optional()
+            .map_err(sql)?;
+        match row {
+            None => Ok(false),
+            Some((value, None)) => {
+                out.write_all(&value).map_err(KvError::Io)?;
+                Ok(true)
+            }
+            Some((_, Some(reference))) => {
+                let dir = self
+                    .working_dir
+                    .as_deref()
+                    .ok_or_else(|| KvError::WorkingFileMissing(reference.id.clone()))?;
+                working::stream(dir, &reference, out)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Whether the caller's overlay holds a masking tombstone for the key.
+    /// A masked key reads absent and is never filled in from central.
+    pub fn is_masked(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+    ) -> Result<bool, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        self.connection
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM kv_local
+                 WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3
+                   AND namespace=?4 AND key=?5 AND state=?6)",
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    namespace,
+                    key,
+                    STATE_TOMBSTONE
+                ],
+                |row| row.get(0),
+            )
             .map_err(sql)
     }
 
@@ -273,7 +505,7 @@ impl LocalStore {
             identity,
             namespace,
             key,
-            &[],
+            Body::Inline(&[]),
             STATE_TOMBSTONE,
             "tombstone",
         )?;
@@ -344,9 +576,9 @@ impl LocalStore {
         validate_namespace(namespace)?;
         validate_key(key)?;
         let tx = self.connection.unchecked_transaction().map_err(sql)?;
-        let target: Option<(Vec<u8>, String)> = tx
+        let target: Option<(Vec<u8>, String, Option<WorkingRef>)> = tx
             .query_row(
-                "SELECT value, state FROM kv_versions_local
+                "SELECT value, state, working_id, working_len FROM kv_versions_local
              WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
                AND version=?6",
                 params![
@@ -357,17 +589,29 @@ impl LocalStore {
                     key,
                     signed(to)
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        working_ref(row.get(2)?, row.get(3)?),
+                    ))
+                },
             )
             .optional()
             .map_err(sql)?;
-        let Some((value, state)) = target else {
+        let Some((value, state, reference)) = target else {
             return Err(KvError::UnknownVersion);
         };
         if state == STATE_TOMBSTONE {
             return Err(KvError::RevertTargetIsTombstone);
         }
-        let version = append_head(&tx, identity, namespace, key, &value, STATE_LIVE, "revert")?;
+        // A working file is content-addressed and never rewritten, so the
+        // new version shares it by reference.
+        let body = match &reference {
+            Some(reference) => Body::Working(reference),
+            None => Body::Inline(&value),
+        };
+        let version = append_head(&tx, identity, namespace, key, body, STATE_LIVE, "revert")?;
         tx.commit().map_err(sql)?;
         Ok(version)
     }
@@ -427,7 +671,14 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 /// Schema migration keyed on `PRAGMA user_version`. Version 1 is the
 /// original value-only `kv_local`; version 2 adds versions, tombstones, the
 /// outbox and the generation fence (existing overlay rows become version 1);
-/// version 3 adds the backup manifest and its working-file pins.
+/// version 3 adds the backup manifest and its working-file pins; version 4
+/// lets rows refer to working files; version 5 adds the host incarnation, the
+/// per-key central base and local copies of sweep receipts; version 6 adds
+/// the cached namespace definitions pulled by `fleet kv sync`; version 7 adds
+/// the short-lived cache of central heads read through a local miss; version
+/// 8 records each partition's last survival-archive checkpoint; version 9
+/// caches each namespace's blob placement; version 10 keeps each cached
+/// central head's row envelope.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -440,9 +691,37 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
         migrate_to_v2(&tx)?;
     }
     backup::migrate_to_v3(&tx)?;
+    migrate_to_v4(&tx)?;
+    sweep::migrate_to_v5(&tx)?;
+    sync::migrate_to_v6(&tx)?;
+    read::migrate_to_v7(&tx)?;
+    archive::migrate_to_v8(&tx)?;
+    sync::migrate_to_v9(&tx)?;
+    read::migrate_to_v10(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql)?;
     tx.commit().map_err(sql)
+}
+
+/// Version 4 lets a row refer to a working file instead of inline bytes.
+fn migrate_to_v4(tx: &Transaction<'_>) -> Result<(), KvError> {
+    for table in ["kv_local", "kv_versions_local"] {
+        let present: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='working_id'",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if present == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN working_id TEXT;
+                 ALTER TABLE {table} ADD COLUMN working_len INTEGER;"
+            ))
+            .map_err(sql)?;
+        }
+    }
+    Ok(())
 }
 
 fn migrate_to_v2(tx: &Transaction<'_>) -> Result<(), KvError> {
@@ -516,10 +795,18 @@ fn append_head(
     identity: &Identity<'_>,
     namespace: &str,
     key: &str,
-    value: &[u8],
+    body: Body<'_>,
     state: &str,
     op: &str,
 ) -> Result<u64, KvError> {
+    let (value, working_id, working_len): (&[u8], Option<&str>, Option<i64>) = match body {
+        Body::Inline(value) => (value, None, None),
+        Body::Working(reference) => (
+            &[],
+            Some(reference.id.as_str()),
+            Some(signed(reference.len)),
+        ),
+    };
     let tuple = params![
         identity.owner_user_id,
         identity.context_id,
@@ -559,8 +846,9 @@ fn append_head(
     tx.execute(
         "INSERT INTO kv_versions_local(
              owner_user_id, context_id, partition_id, namespace, key,
-             version, parent_version, value, state, op, written_at_ms)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             version, parent_version, value, state, op, written_at_ms,
+             working_id, working_len)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![
             ids.0,
             ids.1,
@@ -572,16 +860,31 @@ fn append_head(
             value,
             state,
             op,
-            written_at_ms
+            written_at_ms,
+            working_id,
+            working_len
         ],
     )
     .map_err(sql)?;
     tx.execute(
-        "INSERT INTO kv_local(owner_user_id,context_id,partition_id,namespace,key,value,version,state)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+        "INSERT INTO kv_local(owner_user_id,context_id,partition_id,namespace,key,value,version,state,
+                              working_id,working_len)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
          ON CONFLICT(owner_user_id,context_id,partition_id,namespace,key)
-         DO UPDATE SET value=excluded.value, version=excluded.version, state=excluded.state",
-        params![ids.0, ids.1, ids.2, namespace, key, value, version, state],
+         DO UPDATE SET value=excluded.value, version=excluded.version, state=excluded.state,
+                       working_id=excluded.working_id, working_len=excluded.working_len",
+        params![
+            ids.0,
+            ids.1,
+            ids.2,
+            namespace,
+            key,
+            value,
+            version,
+            state,
+            working_id,
+            working_len
+        ],
     )
     .map_err(sql)?;
     tx.execute(
@@ -601,6 +904,20 @@ fn unsigned(value: i64) -> u64 {
 
 fn signed(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn working_ref(id: Option<String>, len: Option<i64>) -> Option<WorkingRef> {
+    id.map(|id| WorkingRef {
+        id,
+        len: len.map_or(0, unsigned),
+    })
+}
+
+/// Working files live beside the store: `<store path>.working/`.
+pub(crate) fn working_dir_for(store: &Path) -> PathBuf {
+    let mut name = store.as_os_str().to_owned();
+    name.push(".working");
+    PathBuf::from(name)
 }
 
 fn validate_namespace(namespace: &str) -> Result<(), KvError> {

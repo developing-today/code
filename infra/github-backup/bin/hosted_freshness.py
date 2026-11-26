@@ -152,9 +152,7 @@ def judge_d1_meta(meta, now, slo_hours):
     raw = meta.get("exported_at")
     when = freshness_readout.parse_time(raw, "D1 meta exported_at") if raw else None
     if when is None:
-        return result(
-            FAILED, f"D1 export meta has no usable exported_at: {raw!r}"
-        )
+        return result(FAILED, f"D1 export meta has no usable exported_at: {raw!r}")
     if when > now + timedelta(minutes=5):
         return result(FAILED, f"D1 export meta exported_at is in the future: {raw}")
     age = now - when
@@ -243,9 +241,7 @@ def newest_bundle(entries):
 
 def fetch_bundle(repo, bucket):
     owner, name = repo.split("/")
-    listing = _run(
-        ["rclone", "lsjson", f"r2bak:{bucket}/{R2_PREFIX}/{owner}/{name}/"]
-    )
+    listing = _run(["rclone", "lsjson", f"r2bak:{bucket}/{R2_PREFIX}/{owner}/{name}/"])
     return newest_bundle(json.loads(listing))
 
 
@@ -325,9 +321,7 @@ def evaluate(repos, fetchers, now):
 
     legs_report = {
         "source": {
-            "status": rollup(
-                FRESH if source_heads[repo] else FAILED for repo in repos
-            ),
+            "status": rollup(FRESH if source_heads[repo] else FAILED for repo in repos),
             "repos": {
                 repo: (
                     result(FRESH, "source head observed", copy_head=source_heads[repo])
@@ -362,9 +356,7 @@ def evaluate(repos, fetchers, now):
 def build_report(repos, fetchers, now, run_id):
     legs = evaluate(repos, fetchers, now)
     verdict = (
-        FRESH
-        if all(leg["status"] == FRESH for leg in legs.values())
-        else "attention"
+        FRESH if all(leg["status"] == FRESH for leg in legs.values()) else "attention"
     )
     return {
         "probe": PROBE_ID,

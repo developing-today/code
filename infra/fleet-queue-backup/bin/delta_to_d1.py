@@ -6,10 +6,12 @@ Command line: --source-url URL --d1-name NAME [--append T1,T2,...]
 Run it after a full export_to_d1.py copy, with the store's writers
 stopped. Append tables (the --append list, plus any table guarded by a
 <table>_no_delete trigger) get only the rows past D1's max(rowid);
-every other table is replaced whole (DELETE then INSERT), so updates
-made since the bulk copy land too. Tables new since the bulk copy are
-created. Turso's own __turso_internal_* tables are skipped. Row counts
-are read back from D1 and must match the source.
+every other table is dropped and recreated from the source's current
+CREATE, then refilled, so updates and schema changes made since the
+bulk copy land too. An append table whose columns changed since the
+bulk copy is recreated the same way. Tables new since the bulk copy
+are created. Turso's own __turso_internal_* tables are skipped. Row
+counts are read back from D1 and must match the source.
 
 Credentials come from the environment: TURSO_QUEUE_TOKEN (the source
 database's token), CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
@@ -74,20 +76,42 @@ def delta(source_url, d1_name, append):
         if kind == "trigger" and name.endswith("_no_delete")
     }
     append = set(append) | guarded
-    existing = {
-        r["name"]
-        for r in d1.query(db_id, "SELECT name FROM sqlite_master WHERE type = 'table'")
+    d1_tables = {
+        r["name"]: r["sql"]
+        for r in d1.query(db_id, "SELECT name, sql FROM sqlite_master WHERE type = 'table'")
     }
+    # An append table keeps its D1 rows only while its columns still
+    # match the source; any drift sends it down the full-copy path.
+    keep = set()
+    for name, sql in tables:
+        if name in append and name in d1_tables:
+            src_cols, _ = src.execute(f'SELECT * FROM "{name}" LIMIT 0')
+            if fq_common.table_columns(d1_tables[name] or "") == list(src_cols):
+                keep.add(name)
+    recreate = {name for name, _sql in tables if name not in keep}
     # D1 enforces foreign keys; check them at the end of the import.
+    # UNIQUE indexes go in before any row, because a child insert whose
+    # parent key has no unique index fails as a "foreign key mismatch"
+    # even with checks deferred.
     lines, splits, report = ["PRAGMA defer_foreign_keys = true;"], [], {}
     for name, sql in tables:
-        if name not in existing:
+        if name in recreate:
+            if name in d1_tables:
+                lines.append(f'DROP TABLE IF EXISTS "{name}";')
             lines.append(sql.rstrip().rstrip(";") + ";")
+    deferred_schema = []
+    for kind, name, tbl, sql in schema:
+        if kind not in ("index", "trigger") or tbl not in recreate:
+            continue
+        if kind == "index" and fq_common._is_unique_index(sql):
+            lines.append(sql.rstrip().rstrip(";") + ";")
+        else:
+            deferred_schema.append(sql.rstrip().rstrip(";") + ";")
     for name, sql in tables:
         colnames, _ = src.execute(f'SELECT * FROM "{name}" LIMIT 0')
         pk_cols = fq_common._pk_columns(sql)
         n = 0
-        if name in append and name in existing:
+        if name in keep:
             m = d1.query(db_id, f'SELECT coalesce(max(rowid), 0) AS m FROM "{name}"')
             after = m[0]["m"] if m else 0
             for row in _rows_after(src, name, colnames, after):
@@ -95,15 +119,11 @@ def delta(source_url, d1_name, append):
                 n += 1
             report[name] = f"+{n}"
         else:
-            if name in existing:
-                lines.append(f'DELETE FROM "{name}";')
             for row in fq_common.read_table_quoted(src, name, len(colnames)):
                 _emit(lines, splits, name, colnames, pk_cols, row)
                 n += 1
             report[name] = f"={n}"
-    for kind, name, tbl, sql in schema:
-        if kind in ("index", "trigger") and tbl not in existing and not tbl.startswith("__turso_internal"):
-            lines.append(sql.rstrip().rstrip(";") + ";")
+    lines.extend(deferred_schema)
     if len(lines) > 1:
         d1.import_sql(db_id, "\n".join(lines) + "\n")
     for table, col, where, expected in splits:

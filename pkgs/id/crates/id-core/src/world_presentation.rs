@@ -2082,10 +2082,7 @@ fn paint_primary_logical(previous: &[Vec<LogicalCell>], next: &[Vec<LogicalCell>
     let mut run_start = (0usize, 0usize);
     for y in 0..height {
         for x in 0..union_width {
-            let before = previous
-                .get(y)
-                .and_then(|row| row.get(x))
-                .unwrap_or(&blank);
+            let before = previous.get(y).and_then(|row| row.get(x)).unwrap_or(&blank);
             let after = next.get(y).and_then(|row| row.get(x)).unwrap_or(&blank);
             if before == after {
                 continue;
@@ -2524,10 +2521,9 @@ mod tests {
         for row in &logical {
             let mut stored = Vec::new();
             for logical_cell in row {
-                let columns =
-                    u8::try_from(UnicodeWidthStr::width(logical_cell.symbol.as_str()))
-                        .unwrap_or(1)
-                        .max(1);
+                let columns = u8::try_from(UnicodeWidthStr::width(logical_cell.symbol.as_str()))
+                    .unwrap_or(1)
+                    .max(1);
                 stored.push(ScreenCell {
                     symbol: logical_cell.symbol.clone(),
                     fg: logical_cell.fg,

@@ -143,6 +143,13 @@ pub struct Job {
     pub actions_cache: Option<String>,
     pub actions_cache_restore_keys: Vec<String>,
     pub allow_paid_blacksmith: f64,
+    /// Workflow job timeout (`--timeout-minutes`, 5–120). None leaves
+    /// the workflow's own default (60) in force (#13178).
+    pub timeout_minutes: Option<u32>,
+    /// The placement session handle this dispatch belongs to. Not part
+    /// of the stored job: it travels as the `dispatch_id` input so the
+    /// run's display title names the session (#13178).
+    pub session_handle: Option<String>,
 }
 
 impl Job {
@@ -162,6 +169,7 @@ impl Job {
             "actions_cache": self.actions_cache,
             "actions_cache_restore_keys": self.actions_cache_restore_keys,
             "allow_paid_blacksmith": self.allow_paid_blacksmith,
+            "timeout_minutes": self.timeout_minutes,
         })
     }
 
@@ -219,9 +227,18 @@ impl Job {
                 .get("allow_paid_blacksmith")
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0),
+            timeout_minutes: v
+                .get("timeout_minutes")
+                .and_then(|x| x.as_u64())
+                .and_then(|t| u32::try_from(t).ok())
+                .filter(|t| TIMEOUT_MINUTES_RANGE.contains(t)),
+            session_handle: None,
         })
     }
 }
+
+/// The range fleet-command.yml accepts for its `timeout_minutes` input.
+pub const TIMEOUT_MINUTES_RANGE: std::ops::RangeInclusive<u32> = 5..=120;
 
 // ----------------------------------------------------------------- context
 
@@ -611,6 +628,23 @@ fn surf_str<'a>(surface: &'a Value, key: &str) -> &'a str {
 /// the App's installation token (registry field `dispatch_as`).
 fn dispatches_as_user(surface: &Value) -> bool {
     surf_str(surface, "dispatch_as") == "user"
+}
+
+/// The identity a surface dispatches as, for a session record's
+/// `actor` (#13178): the user's own credentials for a `dispatch_as:
+/// user` surface or a codespace, no remote identity for a laptop
+/// handoff, else the GitHub App installation. `None` (nothing chosen)
+/// records that no dispatch happened.
+pub(crate) fn dispatch_actor(surface: Option<&Value>) -> &'static str {
+    let Some(surface) = surface else {
+        return "none (no surface dispatched)";
+    };
+    match surf_str(surface, "kind") {
+        "laptop" => "laptop handoff (no remote dispatch)",
+        "codespace" => "user gh CLI credentials (codespace)",
+        _ if dispatches_as_user(surface) => "user token (dispatch_as: user)",
+        _ => "developing-today[bot] (GitHub App dispatch)",
+    }
 }
 
 /// The token a surface's API calls use, when one is available: the
@@ -1471,9 +1505,10 @@ fn complete_queued_session(
     if claim.get("state").and_then(Value::as_str) != Some("granted") {
         return;
     }
-    let Some(job) = rec.get("job").and_then(Job::from_json) else {
+    let Some(mut job) = rec.get("job").and_then(Job::from_json) else {
         return;
     };
+    job.session_handle = Some(handle.to_string());
     let Some(sid) = claim
         .get("surface")
         .and_then(Value::as_str)
@@ -1497,6 +1532,7 @@ fn complete_queued_session(
         }
         Ok(result) => {
             let _ = coord.confirm(&claim_handle, result.run_id);
+            rec["actor"] = json!(dispatch_actor(Some(surface)));
             rec["surface"] = json!(sid);
             rec["surface_kind"] = json!(kind);
             if !runner_repo.is_empty() {
@@ -1850,7 +1886,7 @@ const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --c
 [--ref REF] [--runner auto|github|blacksmith] [--platform linux|macos] [--container IMAGE] \
 [--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
 [--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
-[--allow-paid-blacksmith MINUTES] \
+[--allow-paid-blacksmith MINUTES] [--timeout-minutes 5-120] \
 [--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
@@ -1867,6 +1903,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     let mut actions_cache: Option<String> = None;
     let mut actions_cache_restore_keys: Vec<String> = Vec::new();
     let mut allow_paid: f64 = 0.0;
+    let mut timeout_minutes: Option<u32> = None;
     let mut laptop_busy_flag = false;
     let mut assume_owner_load = String::new();
     let mut assume_blacksmith_used: Option<f64> = None;
@@ -1951,6 +1988,16 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     .parse::<f64>()
                     .map_err(|_| Die(format!("--allow-paid-blacksmith: not a number: {v}")))?;
             }
+            "--timeout-minutes" => {
+                i += 1;
+                let v = need(&rest, i, "--timeout-minutes")?;
+                let t = v
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|t| TIMEOUT_MINUTES_RANGE.contains(t))
+                    .ok_or_else(|| Die(format!("--timeout-minutes must be 5..=120, got {v}")))?;
+                timeout_minutes = Some(t);
+            }
             "--laptop-busy" => laptop_busy_flag = true,
             "--assume-owner-load" => {
                 i += 1;
@@ -1997,6 +2044,8 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         actions_cache,
         actions_cache_restore_keys,
         allow_paid_blacksmith: allow_paid,
+        timeout_minutes,
+        session_handle: None,
     };
     let registry = registry_value(&cli)?;
     let gh = RealGh::new();
@@ -2173,6 +2222,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         return Ok(0);
     }
     let handle = new_handle(&rand_source::URandom);
+    job.session_handle = Some(handle.clone());
     let coord = coordinator::coordinator();
     let seat = coordinator::seat_name();
     let mut chosen = adapter;
@@ -2233,7 +2283,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     rec.insert("submitted_by".into(), json!(submitted_by()));
     rec.insert(
         "actor".into(),
-        json!("developing-today[bot] (GitHub App dispatch)"),
+        json!(dispatch_actor(chosen.as_ref().map(|ad| ad.surface()))),
     );
     rec.insert("created_at".into(), json!(now_iso()));
     rec.insert("updated_at".into(), json!(now_iso()));
@@ -2252,6 +2302,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 &reasoning,
                 owner_load_coverage_json(&ctx),
                 &submitted_by(),
+                dispatch_actor(Some(ad.surface())),
                 &now_iso(),
             );
             if let Some(obj) = queued.as_object_mut() {
@@ -2791,6 +2842,8 @@ mod tests {
             actions_cache: None,
             actions_cache_restore_keys: vec![],
             allow_paid_blacksmith: 0.0,
+            timeout_minutes: None,
+            session_handle: None,
         }
     }
 
@@ -3836,6 +3889,87 @@ mod tests {
         );
         assert_eq!(jobs[0]["cache"]["actions_restore_keys"][1], "rust-code-");
         assert_eq!(inputs["dispatch_id"], "fp_test");
+    }
+
+    /// #13178: fleet-command.yml dispatches send `timeout_minutes`
+    /// only when the job sets one, as the string GitHub expects.
+    #[test]
+    fn fleet_command_sends_timeout_minutes_only_when_set_13178() {
+        let adapter = GithubActionsAdapter {
+            surface: json!({
+                "id": "fleet-org",
+                "kind": "github-actions",
+                "repo": "developing-today/fleet",
+                "workflow": "fleet-command.yml",
+            }),
+            force_runner: "github",
+        };
+        let inputs = adapter.workflow_inputs(&job(), None);
+        assert!(inputs.get("timeout_minutes").is_none());
+        let mut j = job();
+        j.timeout_minutes = Some(90);
+        let inputs = adapter.workflow_inputs(&j, None);
+        assert_eq!(inputs["timeout_minutes"], "90");
+    }
+
+    /// #13178: the stored job keeps `timeout_minutes` so a queued
+    /// session re-dispatches with it; out-of-range values are dropped
+    /// rather than sent to a workflow that would reject them.
+    #[test]
+    fn job_round_trips_timeout_minutes_13178() {
+        let mut j = job();
+        j.timeout_minutes = Some(30);
+        j.session_handle = Some("fp_sess".to_string());
+        let stored = j.to_json();
+        assert_eq!(stored["timeout_minutes"], 30);
+        assert!(stored.get("session_handle").is_none());
+        let back = Job::from_json(&stored).unwrap();
+        assert_eq!(back.timeout_minutes, Some(30));
+        assert_eq!(back.session_handle, None);
+        let mut bad = stored.clone();
+        bad["timeout_minutes"] = json!(500);
+        assert_eq!(Job::from_json(&bad).unwrap().timeout_minutes, None);
+        assert!(job().to_json_compact().get("timeout_minutes").is_none());
+    }
+
+    /// #13178: a surface whose workflow declares `dispatch_id` gets
+    /// the placement session handle, so the run title names the
+    /// session; without one a fresh handle is minted as before.
+    #[test]
+    fn dispatch_id_is_the_session_handle_13178() {
+        let surface = json!({"dispatch_id_input": true});
+        let mut j = job();
+        j.session_handle = Some("fp_session".to_string());
+        assert_eq!(
+            super::adapters::dispatch_id_for(&surface, &j).as_deref(),
+            Some("fp_session")
+        );
+        let fresh = super::adapters::dispatch_id_for(&surface, &job()).unwrap();
+        assert!(fresh.starts_with("fp_") && fresh != "fp_session");
+        assert_eq!(super::adapters::dispatch_id_for(&json!({}), &j), None);
+    }
+
+    /// #13178: the session record names who actually dispatched.
+    #[test]
+    fn dispatch_actor_follows_the_surface_auth_route_13178() {
+        let reg: Value = serde_json::from_str(EMBEDDED_REGISTRY).unwrap();
+        let actor = |id: &str| dispatch_actor(find_surface(&reg, id));
+        assert_eq!(
+            actor("fleet-personal"),
+            "developing-today[bot] (GitHub App dispatch)"
+        );
+        assert_eq!(actor("fleet-org"), "user token (dispatch_as: user)");
+        assert_eq!(actor("fleet-forks"), "user token (dispatch_as: user)");
+        assert_eq!(
+            actor("fleet-org-blacksmith"),
+            "user token (dispatch_as: user)"
+        );
+        assert_eq!(
+            actor("codespace-overflow"),
+            "user gh CLI credentials (codespace)"
+        );
+        assert_eq!(actor("laptop"), "laptop handoff (no remote dispatch)");
+        assert_eq!(dispatch_actor(None), "none (no surface dispatched)");
     }
 
     /// #13175 oracle: a help flag after a session subcommand is a
