@@ -253,6 +253,13 @@ reported.
   refuses calls outside the filter, for example a separate URL whose filter
   parameters the server applies on `tools/call`. Otherwise it is `false`,
   and docs, listings and the inspector print it as "view only".
+- mcpx already has one enforcing filter: a server's `tools` and
+  `excludeTools` (also on an `aliasOf` entry) hide a tool from every
+  listing and refuse a call to it by name with 400
+  (`pkgs/mcpx/docs/configuration.md`, "Hiding tools"). Such an entry is
+  `enforced: true` at that mcpx endpoint only. It binds a caller whose
+  every route to the upstream goes through that mcpx, and nobody who can
+  reach the upstream another way.
 - A view with `enforced: false` must never be granted to a group as a
   narrower permission. The grant path refuses it.
 - An **aggregate** of read-only commands from many worlds counts as
