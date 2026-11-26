@@ -264,7 +264,6 @@ describe("world page offline read model (#10927)", () => {
     expect(q("[data-world-records]").textContent).not.toContain("hello");
     expect(loadWorldSnapshot(localStorage, window.location.host, null)?.sequence).toBe(4);
   });
-  });
 
   it("treats a notification as a hint and rebuilds from a fresh catch-up snapshot", async () => {
     // Oracle: the #10930 binding constraint says a sequence alone cannot
