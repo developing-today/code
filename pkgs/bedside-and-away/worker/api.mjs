@@ -1,4 +1,5 @@
 import {historyTransition} from './history.mjs';
+import {buildExport} from './surfaces.mjs';
 import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,validateAccessConfig,hasScopedAccess,assertPolicyWrite,queryScope} from './access.mjs';
 import {transitionSteering,assertSteeringUnchanged} from './steering.mjs';
 import {validateVariantGraph,assertVariantMetadataUnchanged} from './variant-graph.mjs';
@@ -194,6 +195,11 @@ export async function api(request,env){
    const rows=s.is_open&&!s.member_role?{results:[]}:await db.prepare('SELECT payload_json FROM events WHERE store_id=? ORDER BY version').bind(sid).all();
    const source=parse(s.state_json),context={principal:user,role:s.role,openVisitor:!!(s.is_open&&!s.member_role)};
    return json({snapshotWritable:!hasScopedAccess(source)&&['editor','admin'].includes(s.role)&&!s.archived,store:storeData(s),state:projectSnapshot(source,context),version:s.version,events:projectEvents(rows.results.map(x=>publicEvent(parse(x.payload_json))),source,context)});
+  }
+  if(sub==='export'&&path.length===4&&method==='GET'){
+   // Export builder (BA-W01 L7, contract §5): only readable rows, with the source revision stated.
+   const s=await access(db,sid,user);
+   return json(buildExport(parse(s.state_json),{principal:user,role:s.role,openVisitor:!!(s.is_open&&!s.member_role)},{storeId:s.id,sourceRevision:s.version}));
   }
   if(sub==='policy'&&method==='GET'){
    const s=await access(db,sid,user,'admin');
