@@ -1505,7 +1505,7 @@ mod tests {
         assert_eq!(interleaved.tier(), PresentationTier::Tier3);
         assert_eq!(interleaved.replay, b"x\x1b[A");
         assert_eq!(late.tier(), PresentationTier::Tier3);
-        assert!(late.replay.is_empty());
+        assert_eq!(late.replay, [] as [u8; 0]);
     }
 
     #[test]

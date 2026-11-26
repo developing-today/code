@@ -1499,8 +1499,8 @@ mod tests {
         // unset and empty HOME both yield no probe candidate (never a
         // root-anchored "" or a hardcoded user), and a set HOME yields
         // exactly itself, so the pinned-roc path is unchanged.
-        assert!(roc_home_candidates(None).is_empty());
-        assert!(roc_home_candidates(Some(String::new())).is_empty());
+        assert_eq!(roc_home_candidates(None), [] as [String; 0]);
+        assert_eq!(roc_home_candidates(Some(String::new())), [] as [String; 0]);
         assert_eq!(
             roc_home_candidates(Some("/home/someone".to_owned())),
             vec!["/home/someone".to_owned()]
@@ -1796,7 +1796,10 @@ mod tests {
             b"error: nope\n"
         );
         let mut empty = std::io::Cursor::new(Vec::new());
-        assert!(read_capture_tail(&mut empty, MAX_CAPTURE_BYTES).is_empty());
+        assert_eq!(
+            read_capture_tail(&mut empty, MAX_CAPTURE_BYTES),
+            [] as [u8; 0]
+        );
     }
 
     /// A reader whose first read fails with `Interrupted`, then yields
@@ -3056,7 +3059,7 @@ restore = |text| text
             .await
             .unwrap();
         assert_eq!(artifact.function, "echo");
-        assert!(!artifact.module.is_empty());
+        assert_ne!(artifact.module, [] as [u8; 0]);
         assert_eq!(
             artifact.module_hash,
             crate::world_cache::artifact_hash(&artifact.module)

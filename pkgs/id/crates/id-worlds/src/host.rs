@@ -1640,7 +1640,7 @@ mod tests {
     async fn supervisor_replays_live_worlds_on_open() {
         let root = data_root_with(&["alpha", "beta"]);
         let mut sup = Supervisor::open(root.path()).await.unwrap();
-        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.live_names(), [] as [String; 0]);
 
         // Append a durable entry to alpha, then stop: the journal now
         // proves replay on the next open.
@@ -1653,7 +1653,7 @@ mod tests {
         let before = sup.live_report("alpha").unwrap().journal_entries;
         assert_eq!(before, 1);
         sup.stop_all(actor()).await.unwrap();
-        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.live_names(), [] as [String; 0]);
         drop(sup);
 
         // Clean restart: nothing is live, so nothing replays, and the
@@ -1661,7 +1661,7 @@ mod tests {
         let journal_before =
             std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         let sup2 = Supervisor::open(root.path()).await.unwrap();
-        assert!(sup2.live_names().is_empty());
+        assert_eq!(sup2.live_names(), [] as [String; 0]);
         assert_eq!(sup2.file().worlds["alpha"].last_recovery, None);
         drop(sup2);
         assert_eq!(
@@ -1870,7 +1870,7 @@ mod tests {
         let file_before = sup.file().clone();
         let journal_before =
             std::fs::read(root.path().join("live-one").join("journal.jsonl")).unwrap();
-        assert!(!journal_before.is_empty());
+        assert_ne!(journal_before, [] as [u8; 0]);
 
         sup.shutdown().await.unwrap();
 
@@ -1978,7 +1978,7 @@ mod tests {
         host.undo_wake("w", admission).unwrap();
         let saved = HostFile::load(root.path()).unwrap();
         assert_eq!(saved.worlds["w"].state, LifecycleState::Asleep);
-        assert!(saved.worlds["w"].history.is_empty());
+        assert_eq!(saved.worlds["w"].history, [] as [StateChange; 0]);
 
         host.admit_wake("w").unwrap();
         host.undo_wake("w", Admission::AlreadyLive).unwrap();
@@ -2020,7 +2020,7 @@ mod tests {
         let saved = HostFile::load(root.path()).unwrap();
         assert!(saved.worlds["kept"].pinned);
         assert_eq!(saved.worlds["kept"].wake, WakeMode::Operator);
-        assert!(saved.worlds["kept"].history.is_empty());
+        assert_eq!(saved.worlds["kept"].history, [] as [StateChange; 0]);
         let seen = inspect_world(root.path(), &saved, "kept").unwrap();
         assert!(seen.pinned);
         assert_eq!(seen.wake, WakeMode::Operator);
@@ -2270,7 +2270,7 @@ mod tests {
         std::fs::write(HostFile::path_for(root.path()), &stale).unwrap();
 
         let mut sup = Supervisor::open(root.path()).await.unwrap();
-        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.live_names(), [] as [String; 0]);
         assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Asleep);
         let got = sup.start("alpha", actor()).await.unwrap();
         assert!(got.journal_entries >= want.journal_entries);
