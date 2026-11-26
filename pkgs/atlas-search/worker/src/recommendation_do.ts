@@ -43,6 +43,7 @@ import {
   type PageEnvelope,
   type ParentEnvelope,
 } from "./recommendation_state";
+import { recordRecommendation } from "./recommendation_history";
 
 const LEGACY_STORE_KEY = "recommendation-accumulator-v1";
 const META_KEY = "recommendation-accumulator-v2:meta";
@@ -118,6 +119,11 @@ interface PageSignerBinding {
 
 interface RecommendationEnv {
   PAGE_SIGNER: PageSignerBinding;
+  /**
+   * Where recomputes are retained as `recommendation` versions (#9140).
+   * Optional: without it, or while the class is disabled, nothing is kept.
+   */
+  RETAINED?: D1Database;
 }
 
 export class RecommendationPartitionError extends Error {
@@ -335,7 +341,18 @@ export class RecommendationAccumulator {
       [CURSOR_KEY]: { cursor_position: 0, retained_pages: [] } satisfies StoredCursor,
     });
     if (stalePageKeys.length > 0) await this.state.storage.delete(stalePageKeys);
+    // The snapshot is committed; keeping its history is best effort and
+    // never fails the start. A retried start of the same parent returns
+    // above, so one recompute is recorded once.
+    let retained: number | undefined;
+    try {
+      const outcome = await recordRecommendation(this.env.RETAINED, snapshot, body.tenant, body.subject);
+      if (outcome.recorded) retained = outcome.version;
+    } catch (error) {
+      console.warn(`recommendation history not recorded: ${(error as Error).message}`);
+    }
     return {
+      ...(retained === undefined ? {} : { retained_version: retained }),
       started: true,
       tenant: body.tenant,
       subject: body.subject,
