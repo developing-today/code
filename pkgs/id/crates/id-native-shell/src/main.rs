@@ -39,9 +39,9 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
+use bevy::clipboard::Clipboard;
 use bevy::input::ButtonInput;
 use bevy::input::ButtonState;
-use bevy::clipboard::Clipboard;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::{
     App, DefaultPlugins, IntoScheduleConfigs, KeyCode, MessageReader, Res, ResMut, Resource,
