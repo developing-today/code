@@ -232,7 +232,7 @@
 //!     subject_annotations: Vec<String>,
 //! }
 //!
-//! let doc: Doc = kdl::de::from_str("(object)(predicate#knows)triple (person)alice\n").unwrap();
+//! let doc: Doc = kdl::de::from_str("(object)(\"predicate#knows\")triple (person)alice\n").unwrap();
 //! assert_eq!(doc.triple.annotations, vec!["object", "predicate#knows"]);
 //! assert_eq!(doc.triple.subject, "alice");
 //! assert_eq!(doc.triple.subject_annotations, vec!["person"]);
