@@ -309,6 +309,23 @@ fn broker_host(hostport: &str) -> &str {
         .unwrap_or(host)
 }
 
+/// One direct broker request head. `trust_bundle_version` is the
+/// client-side trust-store acknowledgement BT-2 needs the broker to see
+/// on its health surface; `None` means this request used plaintext,
+/// UDS, or the named break-glass posture and must not claim validation.
+fn direct_request_head(
+    path: &str,
+    host: &str,
+    token: &str,
+    ctx: &str,
+    content_length: usize,
+    _trust_bundle_version: Option<u32>,
+) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+    )
+}
+
 pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
     let rest = url
         .strip_prefix("http://")
@@ -326,12 +343,17 @@ pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Resul
     // BT-3 (#14401): with a trust store configured the leg is
     // TLS and the broker leaf is validated, fail closed; with
     // neither knob set this is the Phase 0 plaintext stream.
-    let mut s = crate::broker_tls::BrokerTlsClient::from_env()
-        .and_then(|mode| mode.wrap(s, broker_host(hostport)))?;
+    let mode = crate::broker_tls::BrokerTlsClient::from_env()?;
+    let trust_bundle_version = mode.bundle_version();
+    let mut s = mode.wrap(s, broker_host(hostport))?;
     let ctx = ctx_header_lines();
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        payload.len()
+    let head = direct_request_head(
+        path,
+        hostport,
+        &token,
+        &ctx,
+        payload.len(),
+        trust_bundle_version,
     );
     s.write_all(head.as_bytes())
         .and_then(|_| s.write_all(&payload))
@@ -362,10 +384,7 @@ pub(super) fn direct_uds_roundtrip(
     s.set_read_timeout(Some(Duration::from_secs(300))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
     let ctx = ctx_header_lines();
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        payload.len()
-    );
+    let head = direct_request_head(path, "localhost", &token, &ctx, payload.len(), None);
     s.write_all(head.as_bytes())
         .and_then(|_| s.write_all(&payload))
         .map_err(|e| format!("queue-broker write failed: {e}"))?;
@@ -484,14 +503,17 @@ fn bounded_direct_exchange<S: Read + Write>(
     path: &str,
     body: &Value,
     token: &str,
+    trust_bundle_version: Option<u32>,
 ) -> Result<Value, String> {
     let payload = serde_json::to_vec(body).unwrap();
     let ctx = ctx_header_lines();
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n{ctx}\
-         Content-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n",
-        payload.len()
+    let head = direct_request_head(
+        path,
+        host,
+        token,
+        &ctx,
+        payload.len(),
+        trust_bundle_version,
     );
     s.write_all(head.as_bytes())
         .and_then(|_| s.write_all(&payload))
@@ -547,9 +569,10 @@ fn bounded_tcp_roundtrip(
     s.set_read_timeout(Some(budget)).ok();
     s.set_write_timeout(Some(budget)).ok();
     // BT-3 (#14401): same TLS posture as the unbounded leg.
-    let s = crate::broker_tls::BrokerTlsClient::from_env()
-        .and_then(|mode| mode.wrap(s, broker_host(hostport)))?;
-    bounded_direct_exchange(s, hostport, path, body, &token)
+    let mode = crate::broker_tls::BrokerTlsClient::from_env()?;
+    let trust_bundle_version = mode.bundle_version();
+    let s = mode.wrap(s, broker_host(hostport))?;
+    bounded_direct_exchange(s, hostport, path, body, &token, trust_bundle_version)
 }
 
 fn bounded_uds_roundtrip(
@@ -567,7 +590,7 @@ fn bounded_uds_roundtrip(
     })?;
     s.set_read_timeout(Some(budget)).ok();
     s.set_write_timeout(Some(budget)).ok();
-    bounded_direct_exchange(&mut s, "localhost", path, body, &token)
+    bounded_direct_exchange(&mut s, "localhost", path, body, &token, None)
 }
 
 /// The session-proxy leg, bounded: one attempt, no broker spawn,
@@ -878,6 +901,7 @@ mod bounded_tests {
             "/placement-get",
             &json!({"handle": "fp_x"}),
             "test-token",
+            None,
         );
         assert!(out.is_err(), "{out:?}");
         assert!(
@@ -899,5 +923,39 @@ mod bounded_tests {
                     Content-Length: 7\r\n\r\n{\"a\":1}";
         let out = finish_bounded_response(raw).unwrap();
         assert_eq!(out, json!({"a": 1}));
+    }
+
+    #[test]
+    fn direct_request_presents_the_validated_trust_bundle_version() {
+        // Oracle: the serialized request carries exactly the verified
+        // trust-bundle version the broker must acknowledge for BT-2.
+        let head = direct_request_head(
+            "/placement-get",
+            "queue-broker.internal:4801",
+            "test-token",
+            "",
+            0,
+            Some(17),
+        );
+        let versions: Vec<_> = head
+            .lines()
+            .filter(|line| line.starts_with("X-Fleet-Trust-Bundle-Version:"))
+            .collect();
+        assert_eq!(versions, vec!["X-Fleet-Trust-Bundle-Version: 17"]);
+    }
+
+    #[test]
+    fn direct_request_without_a_trust_store_makes_no_version_claim() {
+        // Oracle: plaintext, UDS and break-glass requests have no
+        // validated trust bundle and therefore emit no version header.
+        let head = direct_request_head(
+            "/placement-get",
+            "queue-broker.internal:4801",
+            "test-token",
+            "",
+            0,
+            None,
+        );
+        assert!(!head.contains("X-Fleet-Trust-Bundle-Version:"));
     }
 }
