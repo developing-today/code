@@ -614,6 +614,8 @@ fn rotate_request(issuer: &Path, root: &Path) -> IssuerRotateRequest {
         not_after: ts("2032-01-01T00:00:00Z"),
         allow_legacy_root_strength: false,
         private_store: None,
+        overlap_root_bundle: None,
+        overlap_root_signer: None,
     }
 }
 
@@ -1169,4 +1171,207 @@ fn root_rotation_makes_new_keys_in_the_next_generation() {
     )
     .unwrap();
     assert!(!report.valid);
+}
+
+fn leaf_2027(issuer: &Path, out: &Path, algo: AlgorithmId) -> Bundle {
+    engine::issue_leaf(
+        &LeafIssueRequest {
+            issuer_bundle: issuer.to_path_buf(),
+            issuer_signer: SignerSource {
+                key_dir: issuer.join("private/keys"),
+            },
+            profile: "server".into(),
+            name: "svc".into(),
+            common_name: None,
+            dns_names: vec!["www.example.test".into()],
+            ip_addresses: vec![],
+            csr: None,
+            key_algorithm: Some(algo),
+            issuer_algorithm: Some(algo),
+            issuer_partition: None,
+            not_before: ts("2027-02-01T00:00:00Z"),
+            not_after: ts("2027-05-01T00:00:00Z"),
+            private_store: None,
+        },
+        out,
+    )
+    .unwrap();
+    load_bundle(out).unwrap()
+}
+
+fn valid_at_2027(leaf: &Bundle, pool: &[&Bundle], trust: TrustSelection) -> bool {
+    engine::validate_leaf(leaf, pool, trust, ts("2027-03-01T00:00:00Z"))
+        .unwrap()
+        .valid
+}
+
+#[test]
+fn a_full_rotation_validates_across_the_overlap() {
+    let tmp = TempDir::new("overlap");
+    let old_roots_dir = tmp.path().join("roots-g1");
+    let new_roots_dir = tmp.path().join("roots-g2");
+    let old_web_dir = tmp.path().join("web-g1");
+    let new_web_dir = tmp.path().join("web-g2");
+    make_roots(&old_roots_dir);
+    make_issuers(&old_roots_dir, &old_web_dir);
+    engine::rotate_root_set(&root_rotate_request(&old_roots_dir), &new_roots_dir).unwrap();
+
+    // Overlap misuse is refused before anything is written.
+    let mut req = rotate_request(&old_web_dir, &old_roots_dir);
+    req.overlap_root_bundle = Some(old_roots_dir.clone());
+    req.overlap_root_signer = Some(SignerSource {
+        key_dir: old_roots_dir.join("private/keys"),
+    });
+    let err = engine::rotate_issuer_set(&req, &tmp.path().join("bad-1"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("rotation of its root set"), "{err}");
+    let mut req = rotate_request(&old_web_dir, &new_roots_dir);
+    req.overlap_root_bundle = Some(old_roots_dir.clone());
+    let err = engine::rotate_issuer_set(&req, &tmp.path().join("bad-2"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("signer source"), "{err}");
+    req.overlap_root_bundle = Some(new_roots_dir.clone());
+    req.overlap_root_signer = Some(SignerSource {
+        key_dir: new_roots_dir.join("private/keys"),
+    });
+    let err = engine::rotate_issuer_set(&req, &tmp.path().join("bad-3"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not the root set"), "{err}");
+    for bad in ["bad-1", "bad-2", "bad-3"] {
+        assert!(!tmp.path().join(bad).exists());
+    }
+
+    // Move the issuer set onto the new roots, with the overlap.
+    req.overlap_root_bundle = Some(old_roots_dir.clone());
+    req.overlap_root_signer = Some(SignerSource {
+        key_dir: old_roots_dir.join("private/keys"),
+    });
+    let manifest = engine::rotate_issuer_set(&req, &new_web_dir).unwrap();
+    let old_roots = load_bundle(&old_roots_dir).unwrap();
+    let new_roots = load_bundle(&new_roots_dir).unwrap();
+    let old_web = load_bundle(&old_web_dir).unwrap();
+    let new_web = load_bundle(&new_web_dir).unwrap();
+    assert_eq!(
+        manifest.parent.as_ref().unwrap().bundle_id,
+        new_roots.manifest.bundle_id
+    );
+    assert_eq!(
+        manifest.predecessor.as_deref(),
+        Some(old_web.manifest.bundle_id.as_str())
+    );
+    let overlaps: Vec<_> = new_web
+        .manifest
+        .certificates
+        .iter()
+        .filter(|r| r.role == "issuer-overlap")
+        .collect();
+    assert_eq!(overlaps.len(), 2 * ALGOS.len(), "one per slot");
+    for rec in &overlaps {
+        let primary = new_web
+            .manifest
+            .certificates
+            .iter()
+            .find(|r| {
+                r.role == "issuer"
+                    && r.primary
+                    && r.algorithm == rec.algorithm
+                    && r.partition == rec.partition
+            })
+            .unwrap();
+        assert!(!rec.primary);
+        assert_eq!(rec.subject_dn, primary.subject_dn);
+        assert_eq!(rec.ski_hex, primary.ski_hex, "the same issuer key");
+        let old_root = old_roots
+            .manifest
+            .certificates
+            .iter()
+            .find(|r| r.role == "root" && r.algorithm == rec.algorithm)
+            .unwrap();
+        assert_eq!(rec.aki_hex, old_root.ski_hex, "certified by the old root");
+    }
+
+    for algo in ALGOS {
+        let old_leaf = leaf_2027(
+            &old_web_dir,
+            &tmp.path().join(format!("old-{}", algo.name())),
+            algo,
+        );
+        let new_leaf = leaf_2027(
+            &new_web_dir,
+            &tmp.path().join(format!("new-{}", algo.name())),
+            algo,
+        );
+        // Relying parties on the old roots: both leaves validate.
+        assert!(valid_at_2027(
+            &old_leaf,
+            &[&old_web, &old_roots],
+            TrustSelection::All
+        ));
+        assert!(
+            valid_at_2027(&new_leaf, &[&new_web, &old_roots], TrustSelection::All),
+            "{}: the new leaf must validate on the old roots through the overlap",
+            algo.name()
+        );
+        // Relying parties already on the new roots.
+        assert!(valid_at_2027(
+            &new_leaf,
+            &[&new_web, &new_roots],
+            TrustSelection::All
+        ));
+        // The old hierarchy does not reach the new roots.
+        assert!(!valid_at_2027(
+            &old_leaf,
+            &[&old_web, &new_roots],
+            TrustSelection::All
+        ));
+    }
+    // The PQ-only verifier on the old ML-DSA root accepts the new
+    // ML-DSA leaf: the overlap path is all ML-DSA.
+    let pq_leaf = load_bundle(&tmp.path().join("new-ml-dsa-44")).unwrap();
+    assert!(valid_at_2027(
+        &pq_leaf,
+        &[&new_web, &old_roots],
+        TrustSelection::Pq
+    ));
+
+    // Without the overlap, the old roots do not anchor new leaves.
+    let plain_dir = tmp.path().join("web-g2-plain");
+    let plain =
+        engine::rotate_issuer_set(&rotate_request(&old_web_dir, &new_roots_dir), &plain_dir)
+            .unwrap();
+    assert!(plain.certificates.iter().all(|r| r.role == "issuer"));
+    let plain_leaf = leaf_2027(
+        &plain_dir,
+        &tmp.path().join("plain-leaf"),
+        AlgorithmId::P256,
+    );
+    assert!(!valid_at_2027(
+        &plain_leaf,
+        &[&load_bundle(&plain_dir).unwrap(), &old_roots],
+        TrustSelection::All
+    ));
+
+    // Renewing the overlap issuer set from the new roots keeps the
+    // overlap certificates as they are.
+    let renewed = engine::renew_issuer_set(
+        &renew_request(&new_web_dir, &new_roots_dir, true),
+        &tmp.path().join("web-g2-r2"),
+    )
+    .unwrap();
+    let mut before: Vec<_> = overlaps
+        .iter()
+        .map(|r| r.fingerprint_sha256.clone())
+        .collect();
+    let mut after: Vec<_> = renewed
+        .certificates
+        .iter()
+        .filter(|r| r.role == "issuer-overlap")
+        .map(|r| r.fingerprint_sha256.clone())
+        .collect();
+    before.sort();
+    after.sort();
+    assert_eq!(before, after);
 }

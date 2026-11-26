@@ -912,7 +912,15 @@ fn issuer_cmd(args: &[String], json_out: bool) -> Result<i32> {
             ))
         }
         "rotate" => {
-            let mut flags = vec!["issuer", "root", "root-key-dir", "out", "private-store"];
+            let mut flags = vec![
+                "issuer",
+                "root",
+                "root-key-dir",
+                "out",
+                "private-store",
+                "overlap-root",
+                "overlap-root-key-dir",
+            ];
             flags.extend(TIME_FLAGS);
             let p = parse_args(rest, &flags, &["allow-legacy-root-strength", "json"])?;
             let issuer = p
@@ -936,6 +944,10 @@ fn issuer_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 not_after: na,
                 allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
                 private_store: p.get("private-store").map(PathBuf::from),
+                overlap_root_bundle: p.get("overlap-root").map(PathBuf::from),
+                overlap_root_signer: p.get("overlap-root-key-dir").map(|dir| SignerSource {
+                    key_dir: PathBuf::from(dir),
+                }),
             };
             let out = p.require("out", "issuer rotate")?;
             let manifest = engine::rotate_issuer_set(&req, &PathBuf::from(&out))?;

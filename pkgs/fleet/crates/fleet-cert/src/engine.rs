@@ -1000,7 +1000,7 @@ pub fn rotate_root_set(
 /// root plus the direct cross-sign variants the policy realizes.
 /// Root signing keys come only from `req.root_signer` (§24.3).
 pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<BundleManifest> {
-    create_issuer_set_at(req, out_dir, None, None)
+    create_issuer_set_at(req, out_dir, None, None, None)
 }
 
 /// [`create_issuer_set`] with the issuer key generation set
@@ -1013,6 +1013,7 @@ fn create_issuer_set_at(
     out_dir: &Path,
     generation: Option<u32>,
     predecessor: Option<String>,
+    overlap: Option<(&Bundle, &crate::model::SignerSource)>,
 ) -> Result<BundleManifest> {
     let slot_algos: Vec<AlgorithmId> = req.slots.iter().map(|(a, _)| *a).collect();
     check_ca_policy(&slot_algos, req.allow_legacy_root_strength)?;
@@ -1075,6 +1076,35 @@ fn create_issuer_set_at(
             1,
         )?;
         root_handles.insert(record.algorithm, handle);
+    }
+
+    // Overlap signers: the predecessor root set's roots, by algorithm.
+    let mut overlap_handles: BTreeMap<AlgorithmId, CaHandle> = BTreeMap::new();
+    if let Some((overlap_bundle, overlap_signer)) = overlap {
+        for record in overlap_bundle
+            .manifest
+            .certificates
+            .iter()
+            .filter(|r| r.role == "root")
+        {
+            let root_cn = extract_cn(&record.subject_dn).ok_or_else(|| {
+                CertError::manifest(format!(
+                    "root record for {} has no CN in its subject DN",
+                    record.algorithm.name()
+                ))
+            })?;
+            let handle = load_ca(
+                overlap_bundle,
+                record,
+                overlap_signer,
+                &overlap_bundle.manifest.organization,
+                &overlap_bundle.manifest.country,
+                None,
+                &root_cn,
+                1,
+            )?;
+            overlap_handles.insert(record.algorithm, handle);
+        }
     }
 
     let mut artifacts: Vec<Artifact> = Vec::new();
@@ -1164,6 +1194,52 @@ fn create_issuer_set_at(
             let mut rec =
                 record_from_der(&der, "issuer", partition, i == 0, rel, key_path.clone())?;
             rec.signer_algorithm = Some(*signer_algo);
+            records.push(rec);
+        }
+        // The overlap: the predecessor root of the same algorithm
+        // certifies the new key too, inside its own window.
+        if overlap.is_some() {
+            let Some(old_root) = overlap_handles.get(algo) else {
+                warnings.push(format!(
+                    "{cn}: the predecessor root set has no {} root, so this slot has no overlap",
+                    algo.name()
+                ));
+                continue;
+            };
+            let (onb, ona) = clamp_window(
+                nb,
+                na,
+                old_root.cert.not_before,
+                old_root.cert.not_after,
+                &cn,
+                &mut warnings,
+            )?;
+            let mut overlap_params = params.clone();
+            overlap_params.not_before = onb.0;
+            overlap_params.not_after = ona.0;
+            overlap_params.serial_number = Some(random_serial());
+            let der = old_root.sign(&overlap_params, &key)?.der().to_vec();
+            let rel = format!(
+                "public/certs/{}/{}/overlap-signed-by-{}.crt.pem",
+                algo.name(),
+                partition,
+                algo.name()
+            );
+            artifacts.push(Artifact {
+                rel_path: rel.clone(),
+                kind: "certificate-pem".into(),
+                visibility: "public".into(),
+                bytes: pem_encode("CERTIFICATE", &der).into_bytes(),
+            });
+            let mut rec = record_from_der(
+                &der,
+                "issuer-overlap",
+                partition,
+                false,
+                rel,
+                key_path.clone(),
+            )?;
+            rec.signer_algorithm = Some(*algo);
             records.push(rec);
         }
     }
@@ -1524,6 +1600,31 @@ pub fn renew_issuer_set(
         rec.signer_algorithm = record.signer_algorithm;
         records.push(rec);
     }
+    // Overlap certificates come from the predecessor root set, which
+    // this renewal does not sign with: they are carried over as they
+    // are and stay valid until their own expiry.
+    for record in old
+        .manifest
+        .certificates
+        .iter()
+        .filter(|r| r.role == "issuer-overlap")
+    {
+        artifacts.push(Artifact {
+            rel_path: record.cert_path.clone(),
+            kind: "certificate-pem".into(),
+            visibility: "public".into(),
+            bytes: read_artifact(&old, &record.cert_path)?,
+        });
+        let mut rec = record.clone();
+        if !bundle_private {
+            rec.key_path = None;
+        }
+        warnings.push(format!(
+            "{}: overlap certificate carried over unchanged (valid until {})",
+            record.cert_path, record.not_after
+        ));
+        records.push(rec);
+    }
 
     let parent = ParentRef {
         bundle_type: BundleType::RootSet,
@@ -1590,7 +1691,43 @@ pub fn rotate_issuer_set(
         )));
     }
     let root_bundle = load_bundle(&req.root_bundle)?;
-    check_root_parent(&old, &root_bundle, &req.root_bundle)?;
+    // Either the same root set (or a renewal of it), or a rotation of
+    // it: a root set whose recorded predecessor is the issuer set's
+    // parent and whose keys are new (revision 1).
+    let same_roots = check_root_parent(&old, &root_bundle, &req.root_bundle);
+    let parent_id = old.manifest.parent.as_ref().map(|p| p.bundle_id.clone());
+    let rotated_roots = root_bundle.manifest.bundle_type == BundleType::RootSet
+        && root_bundle.manifest.revision == 1
+        && root_bundle.manifest.predecessor.is_some()
+        && root_bundle.manifest.predecessor == parent_id;
+    if !rotated_roots {
+        same_roots?;
+    }
+    let overlap_bundle = match (&req.overlap_root_bundle, &req.overlap_root_signer) {
+        (None, None) => None,
+        (Some(path), Some(_)) => {
+            if !rotated_roots {
+                return Err(CertError::usage(
+                    "an overlap applies only when the issuer set moves onto a rotation of its \
+                     root set; the root set given is the one it already chains to",
+                ));
+            }
+            let bundle = load_bundle(path)?;
+            check_root_parent(&old, &bundle, path)?;
+            Some(bundle)
+        }
+        (Some(_), None) => {
+            return Err(CertError::policy(
+                "an overlap needs the predecessor root keys through an explicit signer source \
+                 (spec §24.3)",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(CertError::usage(
+                "an overlap root signer was given without the overlap root set",
+            ));
+        }
+    };
     let primaries: Vec<&CertRecord> = old
         .manifest
         .certificates
@@ -1631,11 +1768,16 @@ pub fn rotate_issuer_set(
         permitted_dns,
         private_store: req.private_store.clone(),
     };
+    let overlap = match (&overlap_bundle, &req.overlap_root_signer) {
+        (Some(bundle), Some(signer)) => Some((bundle, signer)),
+        _ => None,
+    };
     create_issuer_set_at(
         &create,
         out_dir,
         Some(old.manifest.generation + 1),
         Some(old.manifest.bundle_id.clone()),
+        overlap,
     )
 }
 
