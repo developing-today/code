@@ -140,7 +140,7 @@ smoke.sh                    per-variant smoke suite (post-build)
 
 ## Session identity in worktrees (#9075)
 
-`fleet session bind [--session-id ID]` is the explicit, validated boundary for
+`fleet session bind [--session-id ID] [--force]` is the explicit, validated boundary for
 binding an identity. It resolves the explicit value, then `FLEET_SESSION_ID`,
 then `OPENCODE_SESSION_ID`, then the worktree's plain-text `.fleet-session-id`.
 The OpenCode session plugin exports its session ID as `FLEET_SESSION_ID` to
@@ -154,7 +154,10 @@ runtime marker. A recovered marker is accepted only when the local OpenCode
 server returns a matching, non-archived session record; the check uses
 `OPENCODE_URL`, then `OPENCODE_SERVER_URL`, and the OpenCode Basic-auth password
 from `OPENCODE_AUTH_FILE` or `~/.local/state/opencode/service-prod.json`. An
-ended or unverifiable marker fails closed. A malformed nonempty session ID in
+ended or unverifiable marker fails closed. `fleet session bind --force` removes
+the marker without validating it, so a dead binding can be replaced in place
+from inside the worktree (#14454); a supplied or inherited identity is then
+persisted by the normal path. A malformed nonempty session ID in
 either environment variable also fails closed for supported Fleet invocations;
 clear or correct that variable to resume unrelated commands.
 `fleet init` validates help and extra arguments before session resolution, and
@@ -307,7 +310,7 @@ build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
 `fleet shell`, `fleet search`, `fleet laptop-agent`, `fleet cert`,
-`fleet actions` and `fleet orgs`, and the
+`fleet actions`, `fleet host`, `fleet orgs`, `fleet kv` and `fleet id`, and the
 laptop route forms (#13717): `fleet laptop` (tier T0, the generic
 tiered command), `fleet commander` (T1), `fleet http` (T2) and
 `fleet ssh` (T3), plus the

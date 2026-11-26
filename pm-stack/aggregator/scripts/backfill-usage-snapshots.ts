@@ -27,7 +27,6 @@
 // Usage: bun run scripts/backfill-usage-snapshots.ts [--dir <storeDir>]
 // Env: PM_AGG_SNAPSHOTS_DIR, QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH.
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sectionOf } from "../src/quota-extract.ts";
@@ -35,9 +34,10 @@ import { defaultHiddenDir, defaultQuotaViewPath } from "../src/default-paths.ts"
 import { recordsFromDeepseekBalance } from "../src/snapshot-records.ts";
 import { SnapshotStore } from "../src/snapshots.ts";
 import type { SnapshotRecord } from "../src/model.ts";
+import { requireHome } from "../src/home.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = homedir();
+const HOME = requireHome("the backfill-usage-snapshots paths");
 // Strict operator-argument contract (#6973): the only accepted forms are
 // no arguments or one documented separated `--dir <storeDir>`. Every other
 // token - an unknown or misspelled flag, a positional, the joined

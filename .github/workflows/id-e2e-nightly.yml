@@ -118,6 +118,18 @@ jobs:
       - name: Disk space after reclaim (before check)
         run: df -h
 
+      # Diagnostic snapshot only: no evaluation or build.
+      - name: Record Nix runner configuration
+        run: |
+          nix --version
+          nix show-config --json | jq '{
+            max_jobs: ."max-jobs".value,
+            cores: .cores.value,
+            substituters: .substituters.value
+          }'
+          nproc
+          df -h / /nix/store
+
       # Watchdog + log capture (#1372, see header): heartbeat every
       # 5 minutes naming the phase, output tee'd to flake-check.log
       # (uploaded below even when the job is cancelled), step timeout
@@ -132,6 +144,7 @@ jobs:
         run: |
           set -uo pipefail
           set +e
+          START_EPOCH=$(date +%s)
           PHASE_FILE="$RUNNER_TEMP/nightly-phase"
           echo "full flake check" > "$PHASE_FILE"
           # setsid + process-group kill: a plain kill of the loop would
@@ -144,7 +157,13 @@ jobs:
             done
           ' _ "$PHASE_FILE" &
           WATCHDOG=$!
-          trap 'kill -TERM -"$WATCHDOG" 2>/dev/null || true' EXIT
+          cleanup() {
+            local rc=$?
+            kill -TERM -"$WATCHDOG" 2>/dev/null || true
+            echo "Elapsed check seconds: $(($(date +%s) - START_EPOCH))" >> "$GITHUB_STEP_SUMMARY"
+            return "$rc"
+          }
+          trap cleanup EXIT
 
           budget_for() {
             # Build + test bounds (see header): the test phase itself

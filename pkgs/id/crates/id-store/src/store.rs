@@ -92,6 +92,15 @@ pub const STORE_PATH: &str = ".iroh-store";
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(not(unix))]
+pub async fn load_or_create_keypair(_path: &str) -> Result<SecretKey> {
+    anyhow::bail!(
+        "private key custody is only enforced on Unix (owner-only 0600 files); \
+         refusing to load or create a key file on this platform"
+    )
+}
+
+#[cfg(unix)]
 pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
     match afs::read(path).await {
         Ok(bytes) => {
@@ -103,7 +112,7 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
                     read_key_after_creation_race(path).await?
                 }
             };
-            restrict_key_permissions(path).await;
+            restrict_key_permissions(path).await?;
             Ok(SecretKey::from(bytes))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -117,7 +126,7 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
                         .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
                 {
                     let bytes = read_key_after_creation_race(path).await?;
-                    restrict_key_permissions(path).await;
+                    restrict_key_permissions(path).await?;
                     Ok(SecretKey::from(bytes))
                 }
                 Err(e) => Err(e),
@@ -217,23 +226,28 @@ fn write_private_file_sync(
 /// Tighten an existing key file that is group- or world-accessible.
 ///
 /// Keys written by older versions used the process umask (typically `0644`).
-/// Best effort: failure is logged, not fatal.
-async fn restrict_key_permissions(path: &str) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        if let Ok(meta) = afs::metadata(path).await
-            && meta.permissions().mode() & 0o077 != 0
-        {
-            tracing::warn!("tightening permissions on private key file {path} to 0600");
-            if let Err(e) = afs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await
-            {
-                tracing::warn!("could not tighten permissions on {path}: {e}");
-            }
-        }
+/// Failure refuses the key: a key we cannot make owner-only is not used.
+#[cfg(unix)]
+async fn restrict_key_permissions(path: &str) -> Result<()> {
+    restrict_key_permissions_with(path, |path, mode| std::fs::set_permissions(path, mode)).await
+}
+
+#[cfg(unix)]
+async fn restrict_key_permissions_with(
+    path: &str,
+    set_permissions: impl FnOnce(&str, std::fs::Permissions) -> std::io::Result<()>,
+) -> Result<()> {
+    use anyhow::Context as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let meta = afs::metadata(path)
+        .await
+        .with_context(|| format!("could not read metadata of private key file {path}"))?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        tracing::warn!("tightening permissions on private key file {path} to 0600");
+        set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("could not tighten permissions on private key file {path}"))?;
     }
-    #[cfg(not(unix))]
-    let _ = path;
+    Ok(())
 }
 
 /// Wrapper enum for persistent vs ephemeral blob stores.
@@ -656,6 +670,42 @@ mod tests {
         assert_eq!(loaded.public(), key.public(), "the key itself is unchanged");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn test_non_unix_key_custody_refuses_the_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        assert!(
+            load_or_create_keypair(path.to_str().unwrap())
+                .await
+                .is_err()
+        );
+        assert!(
+            !path.exists(),
+            "no key file may be written without enforced custody"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_key_tightening_failure_refuses_the_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        let key = SecretKey::generate();
+        std::fs::write(&path, key.to_bytes()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = restrict_key_permissions_with(path.to_str().unwrap(), |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .await;
+        assert!(
+            result.is_err(),
+            "a key that cannot be made owner-only must be refused"
+        );
     }
 
     #[tokio::test]

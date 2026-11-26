@@ -30,5 +30,10 @@
     "@parcel/transformer-sass": ">=2.11.0",
     "parcel": ">=2.11.0",
     "prettier": ">=3.2.5"
+  },
+  "overrides": {
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "6.1.5"
+    }
   }
 }

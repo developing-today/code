@@ -2,8 +2,9 @@
 // of its text, the room around things, how round the corners are, and
 // whether anything moves.
 //
-// Each choice is one attribute on the page's root element (data-theme,
-// data-font, data-size, data-space, data-corners, data-motion) and the
+// Each choice is one attribute on the page's root element (data-theme
+// and with it data-scheme, data-font, data-size, data-space,
+// data-corners, data-motion) and the
 // style sheets do the rest: themes.css has a block of colours for each
 // theme, look.css a rule for each of the others. Nothing here writes a
 // style, so the page's content policy stays as strict as it is.
@@ -180,8 +181,12 @@
    * device. */
   function attrs(settings, systemDark) {
     const s = normal(settings);
+    const theme = themeFor(s, systemDark);
     return {
-      "data-theme": themeFor(s, systemDark),
+      "data-theme": theme,
+      // Whether that theme is a dark or a light one: what is drawn in
+      // colours of its own (the charts' series) has a set for each.
+      "data-scheme": schemeOf(theme),
       "data-font": s.font,
       "data-size": s.size,
       "data-space": s.space,

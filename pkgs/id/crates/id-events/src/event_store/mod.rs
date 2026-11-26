@@ -61,6 +61,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use p2panda_core::{Hash, SeqNum};
 use redb::{
@@ -80,6 +81,7 @@ mod ingest;
 pub mod range;
 mod resolve;
 pub mod sync;
+mod threads;
 mod validity;
 mod waiting_rows;
 mod writer_set;
@@ -87,6 +89,14 @@ mod writer_set;
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
 pub use compaction::CompactionPolicy;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+
+/// Maximum number of group rosters retained by the per-generation memo.
+pub const MAX_ROSTER_CACHE_ENTRIES: usize = 128;
+/// Roster results larger than this are returned but are not memoized.
+pub const MAX_CACHED_ROSTER_AUTHORS: usize = 128;
+/// Maximum key and author payload bytes retained by the roster memo.
+pub const MAX_ROSTER_CACHE_PAYLOAD_BYTES: usize = MAX_ROSTER_CACHE_ENTRIES
+    * (std::mem::size_of::<Hash>() + MAX_CACHED_ROSTER_AUTHORS * std::mem::size_of::<AuthorKey>());
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
@@ -408,6 +418,32 @@ pub struct EventStore {
     next_arrival: u64,
     /// Set when a write failed and the pool could not be rebuilt. Calls fail until reopen.
     unusable: bool,
+    /// The stored-state generation: bumped on every committed change to
+    /// the stored event set (an ingest that stored or applied an event,
+    /// or a prune). Memoized reads key their entries on it, so any
+    /// committed change invalidates them (#13043).
+    generation: u64,
+    /// Group rosters memoized at a store generation (#13043).
+    roster_cache: Mutex<RosterCache>,
+}
+
+/// Group rosters memoized by [`EventStore::roster`]: resolving a roster
+/// folds the whole store, so a read-heavy caller (the relay gate asks
+/// once per message) is served from here until the store's generation
+/// moves (#13043).
+#[derive(Debug, Default)]
+struct RosterCache {
+    /// The store generation `entries` were resolved at. Entries from
+    /// any other generation are dropped on sight.
+    generation: u64,
+    /// The resolved roster of each group read at `generation`.
+    entries: HashMap<Hash, Vec<AuthorKey>>,
+    /// FIFO insertion order, kept in sync with `entries` for bounded eviction.
+    order: VecDeque<Hash>,
+    /// How many full load-and-resolve runs roster reads have performed.
+    /// A diagnostic: it grows only when a roster is read at a generation
+    /// no entry covers, never per cached read.
+    resolutions: u64,
 }
 
 impl BlockList for EventStore {
@@ -493,6 +529,8 @@ impl EventStore {
             waiting: WaitingPool::new(limits),
             next_arrival: 0,
             unusable: false,
+            generation: 0,
+            roster_cache: Mutex::new(RosterCache::default()),
         };
         store.reload(now_ms)?;
         Ok(store)
@@ -563,10 +601,25 @@ impl EventStore {
     /// The keys that are members of `group` in the resolved state, sorted. A member with access
     /// at the end of the causal history is listed, and a removed member is not.
     ///
+    /// Resolving a roster folds the whole store, so the answer is
+    /// memoized per group at the store's current generation (#13043):
+    /// repeated reads — the relay gate asks once per message — are
+    /// served from the memo until the next committed ingest or prune
+    /// moves the generation, and only the first read at a new
+    /// generation pays the fold. A membership change therefore takes
+    /// effect on the first read after it is ingested, exactly as it
+    /// did when every read resolved the store. The memo retains at
+    /// most [`MAX_ROSTER_CACHE_ENTRIES`] results and skips rosters
+    /// larger than [`MAX_CACHED_ROSTER_AUTHORS`], bounding attacker-
+    /// selected negative entries and cached roster payload.
+    ///
     /// # Errors
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn roster(&self, group: &Hash) -> Result<Vec<AuthorKey>, StoreError> {
+        if let Some(roster) = self.cached_roster(group) {
+            return Ok(roster);
+        }
         let txn = self.db.begin_read()?;
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
@@ -578,7 +631,70 @@ impl EventStore {
         };
         let residue = compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
-        Ok(resolve::roster_of(&resolved, group))
+        let roster = resolve::roster_of(&resolved, group);
+        let mut cache = self.lock_roster_cache();
+        if cache.generation != self.generation {
+            cache.entries.clear();
+            cache.order.clear();
+            cache.generation = self.generation;
+        }
+        if roster.len() <= MAX_CACHED_ROSTER_AUTHORS && !cache.entries.contains_key(group) {
+            while cache.entries.len() >= MAX_ROSTER_CACHE_ENTRIES {
+                if let Some(oldest) = cache.order.pop_front() {
+                    cache.entries.remove(&oldest);
+                }
+            }
+            cache.order.push_back(*group);
+            cache.entries.insert(*group, roster.clone());
+        }
+        cache.resolutions = cache.resolutions.saturating_add(1);
+        Ok(roster)
+    }
+
+    /// The roster of `group` memoized at the store's current
+    /// generation, if a read already resolved it there (#13043).
+    fn cached_roster(&self, group: &Hash) -> Option<Vec<AuthorKey>> {
+        let cache = self.lock_roster_cache();
+        if cache.generation != self.generation {
+            return None;
+        }
+        cache.entries.get(group).cloned()
+    }
+
+    /// The roster cache, recovering a poisoned lock: the cache is a
+    /// memo over the store's own reads, so entries written before a
+    /// panic are still answers the store itself produced, and the
+    /// generation keying drops them at the next committed change.
+    fn lock_roster_cache(&self) -> std::sync::MutexGuard<'_, RosterCache> {
+        self.roster_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// How many full load-and-resolve runs roster reads have performed
+    /// (#13043). Before the roster memo this grew with every read; it
+    /// now grows only on the first roster read at a new store
+    /// generation, so a caller can check that its read rate is not
+    /// turning into whole-store folds.
+    pub fn roster_resolutions(&self) -> u64 {
+        self.lock_roster_cache().resolutions
+    }
+
+    /// Number of roster results retained by the memo at the current generation.
+    pub fn roster_cache_entries(&self) -> usize {
+        self.lock_roster_cache().entries.len()
+    }
+
+    /// Key and author payload bytes retained by the memo. Allocator bookkeeping is excluded;
+    /// both the number of entries and authors per entry have fixed limits.
+    pub fn roster_cache_payload_bytes(&self) -> usize {
+        let cache = self.lock_roster_cache();
+        cache.entries.len() * std::mem::size_of::<Hash>()
+            + cache
+                .entries
+                .values()
+                .map(|roster| roster.len() * std::mem::size_of::<AuthorKey>())
+                .sum::<usize>()
     }
 
     /// The stored event at `(author, seq)`, applied or not.
@@ -674,16 +790,20 @@ impl EventStore {
     /// Pruned events are removed from event storage (events, hashes, groups, actions, applied)
     /// while keeping chain and index consistency and avoiding corrupting active backlink walks.
     ///
-    /// A store that holds compacted residue (#3797) is refused, changing nothing:
-    /// prune erases presence and compaction preserves it, and the two are not
-    /// composed yet (#13401). The walks and the chain rewrite below are built
-    /// from stored events only, so over residue a prune would silently
-    /// under-erase and drop chain rows below live residue positions.
+    /// Compacted residue (#3797) takes part like a stored event (#13401,
+    /// Option A). A residue position is a node of the causal graph with the
+    /// edges its residue row records (its backlink and its `after`
+    /// frontier), so the walks see the same graph they would have seen
+    /// before compaction. A residue behind the cut that nothing protects is
+    /// erased with its `compacted`, `hashes` and `applied` rows; the
+    /// presence compaction preserved goes exactly where a stored event's
+    /// would. The chain rewrite counts surviving residue positions as
+    /// applied, so a chain whose surviving prefix ends at a residue keeps
+    /// that residue as its head.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::PruneOverResidue`] if the store holds any compacted
-    /// residue, a redb error if the write transaction fails, or
+    /// Returns a redb error if the write transaction fails, or
     /// [`StoreError::Corrupt`].
     pub fn prune_behind_cut(
         &mut self,
@@ -697,15 +817,13 @@ impl EventStore {
             return Ok(0);
         }
 
-        // The composition guard (#13401): refuse a store that holds any
-        // compacted residue, before anything is written. See the doc above.
-        {
+        // Residue rows are read before the write transaction: a store that
+        // was never compacted may not have the table, and opening it for
+        // write would create it (#13401).
+        let residue = {
             let read = self.db.begin_read()?;
-            let residue = compaction::load_residue_read(&read)?;
-            if !residue.is_empty() {
-                return Err(StoreError::PruneOverResidue(residue.len()));
-            }
-        }
+            compaction::load_residue_read(&read)?
+        };
 
         let txn = self.db.begin_write()?;
         let (events_by_id, to_prune) = {
@@ -718,6 +836,7 @@ impl EventStore {
                 parents: Vec<Hash>,
                 group: Option<Hash>,
                 has_action: bool,
+                compacted: bool,
                 position: [u8; POSITION_LEN],
             }
 
@@ -774,7 +893,30 @@ impl EventStore {
                         parents,
                         group: event.header.extensions.group,
                         has_action,
+                        compacted: false,
                         position,
+                    },
+                );
+            }
+            // A compacted event is still a node of the causal graph: its
+            // residue keeps its backlink and `after` edges. Compaction only
+            // compacts events with no group row, membership action or
+            // device operation, so a residue has none to erase (#13401).
+            for item in &residue {
+                let mut parents = item.after.clone();
+                if let Some(backlink) = item.backlink {
+                    parents.push(backlink);
+                }
+                events_by_id.insert(
+                    item.id,
+                    StoredMeta {
+                        author: item.author,
+                        seq: item.seq,
+                        parents,
+                        group: None,
+                        has_action: false,
+                        compacted: true,
+                        position: position_key(&item.author, item.seq),
                     },
                 );
             }
@@ -847,10 +989,25 @@ impl EventStore {
             let mut actions_table = txn.open_table(ACTIONS)?;
             let mut device_ops_table = txn.open_table(DEVICE_OPS)?;
             let mut applied_table = txn.open_table(APPLIED)?;
+            let mut compacted_table = if residue.is_empty() {
+                None
+            } else {
+                Some(txn.open_table(COMPACTED)?)
+            };
 
             for id in &to_prune {
                 if let Some(meta) = events_by_id.get(id) {
                     affected_authors.insert(meta.author);
+                    if meta.compacted {
+                        // A residue's bytes are already gone; its presence
+                        // rows go now (#13401).
+                        if let Some(table) = compacted_table.as_mut() {
+                            table.remove(meta.position.as_slice())?;
+                        }
+                        hashes_table.remove(id.as_bytes().as_slice())?;
+                        applied_table.remove(id.as_bytes().as_slice())?;
+                        continue;
+                    }
                     events_table.remove(meta.position.as_slice())?;
                     hashes_table.remove(id.as_bytes().as_slice())?;
                     if let Some(group) = meta.group {
@@ -906,6 +1063,9 @@ impl EventStore {
         }
 
         txn.commit()?;
+        // Pruned events leave the stored set, so memoized reads (the
+        // roster cache, #13043) must re-resolve on their next read.
+        self.generation = self.generation.wrapping_add(1);
         Ok(count)
     }
 
@@ -1216,6 +1376,10 @@ impl EventStore {
         };
         if changed {
             txn.commit()?;
+            // A committed change moves the stored-state generation, so
+            // memoized reads (the roster cache, #13043) re-resolve on
+            // their next read instead of serving a stale snapshot.
+            self.generation = self.generation.wrapping_add(1);
         } else {
             txn.abort()?;
         }
@@ -1668,6 +1832,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
@@ -1686,6 +1851,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn unknown_group_rosters_stay_empty_and_cache_is_bounded() {
+        // Oracle: unknown group hashes have empty rosters, and querying
+        // more distinct hashes than the memo capacity cannot increase
+        // retained cache payload beyond its declared bound.
+        let (_dir, store) = open_temp();
+        for n in 0u64..(MAX_ROSTER_CACHE_ENTRIES as u64 + 64) {
+            let group = Hash::digest(n.to_be_bytes());
+            assert_eq!(store.roster(&group).unwrap(), [] as [[u8; 32]; 0]);
+            assert!(store.roster_cache_entries() <= MAX_ROSTER_CACHE_ENTRIES);
+            assert!(store.roster_cache_payload_bytes() <= MAX_ROSTER_CACHE_PAYLOAD_BYTES);
+        }
+        assert_eq!(store.roster_cache_entries(), MAX_ROSTER_CACHE_ENTRIES);
+        assert_eq!(
+            store.roster_cache_payload_bytes(),
+            MAX_ROSTER_CACHE_ENTRIES * std::mem::size_of::<Hash>()
+        );
+        let last_group = Hash::digest((MAX_ROSTER_CACHE_ENTRIES as u64 + 63).to_be_bytes());
+        let resolutions = store.roster_resolutions();
+        assert_eq!(store.roster(&last_group).unwrap(), [] as [[u8; 32]; 0]);
+        assert_eq!(
+            store.roster_resolutions(),
+            resolutions,
+            "a retained negative result must remain a cache hit"
+        );
     }
 
     #[test]
@@ -1760,11 +1952,9 @@ mod tests {
         assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
         assert_eq!(store.event_by_id(&event.id).unwrap(), Some(event.clone()));
         assert_eq!(store.group_members(&group).unwrap(), vec![(who, 0)]);
-        assert!(
-            store
-                .group_members(&Hash::digest(b"other"))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.group_members(&Hash::digest(b"other")).unwrap(),
+            [] as [([u8; 32], p2panda_core::SeqNum); 0]
         );
         store.check_invariants().unwrap();
     }
@@ -1881,17 +2071,15 @@ mod tests {
             seqs(store.applied_events(&who, None, None, 2).unwrap()),
             vec![0, 1]
         );
-        assert!(
-            store
-                .applied_events(&who, Some(3), None, 10)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.applied_events(&who, Some(3), None, 10).unwrap(),
+            [] as [Event; 0]
         );
-        assert!(
+        assert_eq!(
             store
                 .applied_events(&author(&key(17)), None, None, 10)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [Event; 0]
         );
         // A fork at seq 2 leaves seq 0 and 1 applied. Seq 3 stays stored, but it is not returned.
         let rival = sign(&signer, 2, Some(events[1].id), None, ext("rival", None)).unwrap();
@@ -2196,7 +2384,7 @@ mod tests {
             !store.remove_block(BlockKind::Ip, b"198.51.100.7").unwrap(),
             "removing an absent block is false, not an error"
         );
-        assert!(store.blocks().unwrap().is_empty());
+        assert_eq!(store.blocks().unwrap(), [] as [Block; 0]);
     }
 }
 

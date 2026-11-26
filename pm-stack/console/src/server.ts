@@ -15,7 +15,7 @@ import { appendFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held, type MachinesAnswer, machineName } from "./edge-proto.ts";
+import { HOLDABLE, type Held, type MachinesAnswer, machineName, STALE_ACT_ERROR, staleAct } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -38,10 +38,12 @@ import {
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
 import { Plan } from "./plan.ts";
+import { ownerSettingsAdopted } from "./settings.ts";
 import { platformRead } from "./reads.ts";
 import { contact, Push } from "./push.ts";
 import { Named } from "./named.ts";
 import { EdgeLink } from "./sync.ts";
+import { memoryShelf, Trends } from "./trends.ts";
 import { Work } from "./work.ts";
 import appFiles from "../public/files.json";
 
@@ -105,6 +107,18 @@ function file(req: Request, name: string, type: string): Response {
 }
 
 export { assetLinks, type Phones };
+
+/** The history behind the Trends screen, for these dependencies: made
+ * once and kept (in memory: a machine reads it again when it starts). */
+const trendsKept = new WeakMap<Deps, Trends>();
+function trendsOf(deps: Deps): Trends {
+  let trends = trendsKept.get(deps);
+  if (!trends) {
+    trends = new Trends(deps.ops, memoryShelf());
+    trendsKept.set(deps, trends);
+  }
+  return trends;
+}
 
 /** The plan's reader for these dependencies: the one given, or one made
  * from the same `ops` and `work` and kept. */
@@ -313,11 +327,16 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.messages(query.get("limit")));
           case "services":
             return json(await ops.services());
+          // When the store tokens run out (#14255). A machine's to
+          // read: only a machine can fetch every token by name, so the
+          // edge passes this on to one.
+          case "tokens":
+            return json(await ops.tokenExpiries());
         }
       }
       // What needs only GitHub and the queue store: the same code
       // answers these at the edge without this machine.
-      const read = await platformRead(seg, query, ops, planOf(deps));
+      const read = await platformRead(seg, query, ops, planOf(deps), trendsOf(deps));
       if (read !== undefined) return json(read);
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
         return docResponse(req, await deps.docs.doc(seg[1] as DocName), gzipped);
@@ -467,6 +486,13 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
             : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
         }
+        // Something that may have changed is not done unasked once it
+        // is more than ten minutes old (#13501), sent straight here or
+        // relayed by the edge (which passes the device's body on as it
+        // came, and holds the device to the same rule first).
+        if (before === null && staleAct(kind, body, Date.now())) {
+          return json({ error: STALE_ACT_ERROR, stale: true }, 409);
+        }
         return await act(
           kind || "unknown",
           kept,
@@ -554,6 +580,9 @@ export function loaders(
     priorities: { ttlMs: 120_000, load: () => ops.priorities() },
     done: { ttlMs: 60_000, load: () => work.done() },
     agents: { ttlMs: 30_000, load: () => ops.agents() },
+    // The pipeline counted down to its unread instructions (#14377):
+    // all the phone's summary takes from the feed.
+    pipeline: { ttlMs: 30_000, load: () => ops.unreadInstructions() },
     services: { ttlMs: 20_000, load: () => ops.services() },
     more: { ttlMs: 3_600_000, load: async () => more },
   };
@@ -710,7 +739,13 @@ if (import.meta.main) {
   const docs = new Docs(loaders(ops, work, await morePages()));
   const state = dirname(cfg.auditFile);
   const push = new Push(fileStore(join(state, "push.json")), contact(cfg.repo));
-  const notifier = new Notifier(docs, push, fileStore(join(state, "notified.json")));
+  const notifier = new Notifier(
+    docs,
+    push,
+    fileStore(join(state, "notified.json")),
+    Date.now,
+    async () => (await ops.tokenExpiries()).tokens,
+  );
   const devices = new Devices(fileStore(cfg.devicesFile));
   const deps: Deps = {
     cfg,
@@ -733,6 +768,9 @@ if (import.meta.main) {
   // What this machine is called: what it was told to be, or its own name.
   const self = { name: cfg.machineName || machineName(hostname()) || "machine", version };
   deps.self = self;
+  // What this machine runs with of the settings the owner may change,
+  // before the owner's changes: its environment's, or main's.
+  const ownSettings = { promptLabel: cfg.promptLabel, needsRepos: [...cfg.needsRepos] };
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
@@ -744,6 +782,16 @@ if (import.meta.main) {
         named,
         docs,
         phones: devices,
+        // The owner's changes to the settings the owner may change, as
+        // the edge says them, run with in place of this machine's own;
+        // its own again once they are put back (#14957).
+        adopt: (said) => {
+          const adopted = ownerSettingsAdopted(ownSettings, said);
+          if (adopted === null) return null;
+          cfg.promptLabel = adopted.values.promptLabel;
+          cfg.needsRepos = adopted.values.needsRepos;
+          return adopted.rev;
+        },
         config: async () => ({
           owners: cfg.owners,
           certNames: cfg.certNames,

@@ -51,9 +51,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -149,6 +151,176 @@ def clean_workspace_artifacts(target_dir: Path, cwd: Path) -> None:
     ) as exc:
         message = f"could not safely clean pooled workspace artifacts: {exc}"
         raise RuntimeError(message) from exc
+
+
+@dataclass
+class SccacheClient:
+    pid: int
+    age_secs: float
+    cpu_secs: float
+    cmdline: list[str]
+
+    @property
+    def crate_name(self) -> str:
+        args = self.cmdline[1:]
+        for i, arg in enumerate(args):
+            if arg == "--crate-name" and i + 1 < len(args):
+                return args[i + 1]
+            if arg.startswith("--crate-name="):
+                return arg.split("=", 1)[1]
+        return "?"
+
+
+def sccache_watchdog_enabled(env: dict[str, str]) -> bool:
+    """False when the lane opted out or already bypassed the wrapper."""
+    if env.get("CARGO_BROKER_NO_SCCACHE_WATCHDOG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    if env.get("RUSTC_WRAPPER", "sccache") == "":
+        return False
+    if env.get("CARGO_BUILD_RUSTC_WRAPPER", "sccache") == "":
+        return False
+    return True
+
+
+def sccache_watchdog_config(env: dict[str, str]) -> tuple[float, float, float]:
+    """(stall_secs, max_cpu_secs, poll_secs) from env with safe defaults."""
+
+    def num(name: str, default: float) -> float:
+        try:
+            value = float(env.get(name, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    return (
+        num("CARGO_BROKER_SCCACHE_STALL_SECS", 900.0),
+        num("CARGO_BROKER_SCCACHE_MAX_CPU_SECS", 5.0),
+        num("CARGO_BROKER_SCCACHE_POLL_SECS", 30.0),
+    )
+
+
+def _boot_time() -> float:
+    with open("/proc/stat") as handle:
+        for line in handle:
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    raise RuntimeError("btime not found in /proc/stat")
+
+
+def iter_sccache_clients(pattern: str = "sccache") -> list[SccacheClient]:
+    """Snapshot live sccache client processes (code#13367).
+
+    A client is a process whose argv[0] basename is `pattern` (default
+    "sccache") invoked as a compiler wrapper, e.g. `sccache rustc
+    --crate-name foo ...`. Unreadable / vanished processes are skipped;
+    this never raises for per-process noise.
+    """
+    try:
+        hertz = os.sysconf("SC_CLK_TCK")
+    except (AttributeError, OSError, ValueError):
+        hertz = 100
+    try:
+        boot = _boot_time()
+        now = time.time()
+    except OSError:
+        return []
+    clients: list[SccacheClient] = []
+    proc_root = Path("/proc")
+    try:
+        pids = [p for p in proc_root.iterdir() if p.name.isdigit()]
+    except OSError:
+        return []
+    for pid_dir in pids:
+        try:
+            raw = (pid_dir / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        args = [a.decode("utf-8", "replace") for a in raw if a]
+        if len(args) < 2 or Path(args[0]).name != pattern:
+            continue
+        try:
+            fields = (pid_dir / "stat").read_text().rsplit(")", 1)[1].split()
+            utime, stime, starttime = (
+                float(fields[11]),
+                float(fields[12]),
+                float(fields[19]),
+            )
+        except (OSError, IndexError, ValueError):
+            continue
+        age = now - (boot + starttime / hertz)
+        if age < 0:
+            continue
+        clients.append(
+            SccacheClient(
+                pid=int(pid_dir.name),
+                age_secs=age,
+                cpu_secs=(utime + stime) / hertz,
+                cmdline=args,
+            )
+        )
+    return clients
+
+
+def find_wedged_sccache_clients(
+    clients: list[SccacheClient], stall_secs: float, max_cpu_secs: float
+) -> list[SccacheClient]:
+    """Clients older than `stall_secs` that burned almost no CPU (code#13367).
+
+    A compiling rustc accrues CPU; a wedged client parks at ~0% CPU
+    waiting on a daemon reply that never arrives, so age + idle is the
+    wedge signature. Young idlers are cargo jobslot waiters, not wedges.
+    """
+    return [
+        c for c in clients if c.age_secs >= stall_secs and c.cpu_secs <= max_cpu_secs
+    ]
+
+
+def sccache_wedge_report(client: SccacheClient, stall_secs: float) -> str:
+    return (
+        f"target-broker: WEDGED sccache client: pid {client.pid} "
+        f"crate {client.crate_name} parked {client.age_secs:.0f}s "
+        f"(> {stall_secs:.0f}s bound) with {client.cpu_secs:.1f}s CPU -- "
+        f"the daemon never replied (code#13367). Failing it loudly instead "
+        f"of parking the build: SIGTERM to pid {client.pid} so cargo "
+        f"reports the unit failed. If the wedge recurs, retry with the "
+        f"wrapper bypassed: RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= <cmd>."
+    )
+
+
+def watch_sccache_clients(
+    stop: "threading.Event",
+    stall_secs: float = 900.0,
+    max_cpu_secs: float = 5.0,
+    poll_secs: float = 30.0,
+    pattern: str = "sccache",
+) -> list[int]:
+    """Poll until `stop` is set; SIGTERM wedged clients once each.
+
+    Returns the pids it terminated.
+    """
+    terminated: list[int] = []
+    reported: set[int] = set()
+    while not stop.wait(poll_secs):
+        try:
+            clients = iter_sccache_clients(pattern)
+        except OSError:
+            continue
+        for client in find_wedged_sccache_clients(clients, stall_secs, max_cpu_secs):
+            if client.pid in reported:
+                continue
+            reported.add(client.pid)
+            eprint(sccache_wedge_report(client, stall_secs))
+            try:
+                os.kill(client.pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                continue
+            terminated.append(client.pid)
+    return terminated
 
 
 @dataclass
@@ -688,10 +860,29 @@ def main(argv: list[str] | None = None) -> int:
             f"target-broker: lease {lease_id} on {row.path}"
             f" ({'warm' if warm else 'cold'}); running {cmd}"
         )
+        stop = threading.Event()
+        watchdog: threading.Thread | None = None
+        if sccache_watchdog_enabled(env):
+            stall_secs, max_cpu_secs, poll_secs = sccache_watchdog_config(env)
+            eprint(
+                "target-broker: sccache watchdog on: failing clients parked"
+                f" >{stall_secs:.0f}s at <={max_cpu_secs:.1f}s CPU"
+                f" (poll {poll_secs:.0f}s; code#13367)"
+            )
+            watchdog = threading.Thread(
+                target=watch_sccache_clients,
+                args=(stop, stall_secs, max_cpu_secs, poll_secs),
+                name="sccache-watchdog",
+                daemon=True,
+            )
+            watchdog.start()
         try:
             proc = subprocess.run(cmd, env=env)
             rc = proc.returncode
         finally:
+            stop.set()
+            if watchdog is not None:
+                watchdog.join(timeout=poll_secs + 5.0)
             with broker:
                 broker.checkin(lease_id, None)
         return rc

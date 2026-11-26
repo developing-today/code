@@ -59,7 +59,6 @@
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -269,6 +268,19 @@ async function httpJson(url) {
   return res.json();
 }
 
+/** CDP's /json/list answers an array of targets (#7983 item 9). Anything
+ * else is a broken endpoint, not "no tabs": checked here so callers get
+ * a named error (cdp-unavailable) instead of a TypeError from .find. */
+async function listTargets(cdpBase) {
+  const url = `${cdpBase}/json/list`;
+  const body = await httpJson(url);
+  if (!Array.isArray(body)) {
+    const kind = body === null ? "null" : typeof body;
+    throw new Error(`${url} answered ${kind}, expected a JSON array of targets`);
+  }
+  return body;
+}
+
 function connectWs(wsUrl) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
@@ -364,7 +376,7 @@ async function fetchQuotaPayloads(client, teamId) {
  * Absence is reported as null, never invented. */
 async function fetchPaygBalance(cdpBase) {
   try {
-    const targets = await httpJson(`${cdpBase}/json/list`);
+    const targets = await listTargets(cdpBase);
     const frame = targets.find(
       (t) => t.type === "iframe" && typeof t.url === "string" && t.url.includes("billing.dev.meta.ai"),
     );
@@ -560,7 +572,7 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
   const cdpBase = `http://127.0.0.1:${cdpPort}`;
   let targets;
   try {
-    targets = await httpJson(`${cdpBase}/json/list`);
+    targets = await listTargets(cdpBase);
   } catch (e) {
     throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable: ${e.message}`);
   }
@@ -588,7 +600,7 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
       // PR #6333): its dev.meta.ai entry carries the old debugger URL.
       // Re-fetch before selecting or creating the console page.
       try {
-        targets = await httpJson(`${cdpBase}/json/list`);
+        targets = await listTargets(cdpBase);
       } catch (e) {
         throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable after restart: ${e.message}`, recovery);
       }
@@ -691,6 +703,20 @@ function parseCdpPort(raw) {
   return port;
 }
 
+/** HOME for the default --out-dir, per the #5762 home-resolution contract
+ * (#8220): an unset or empty HOME is a usage error (nothing is written),
+ * never os.homedir's silent passwd fallback; a set HOME is unchanged. */
+function requireHome() {
+  const home = process.env.HOME;
+  if (home === undefined || home.trim() === "") {
+    usageError(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so the default --out-dir cannot be derived; ` +
+        "set HOME or pass --out-dir (home-resolution contract #5762: no passwd fallback)",
+    );
+  }
+  return home;
+}
+
 export function parseArgs(argv) {
   const values = {};
   for (let i = 0; i < argv.length; i++) {
@@ -709,7 +735,7 @@ export function parseArgs(argv) {
     i++; // consume the value: no token is read twice
   }
   return {
-    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "meta-quota-export"),
+    outDir: values["--out-dir"] ?? join(requireHome(), "atlas", "meta-quota-export"),
     cdpPort: parseCdpPort(values["--cdp-port"] ?? "19222"),
     teamId: values["--team-id"] ?? process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID,
   };

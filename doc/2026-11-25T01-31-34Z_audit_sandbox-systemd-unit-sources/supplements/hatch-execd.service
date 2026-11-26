@@ -1,0 +1,17 @@
+[Unit]
+Description=hatch-execd
+DefaultDependencies=no
+StartLimitIntervalSec=0
+After=hatch-execd.socket
+Requires=hatch-execd.socket
+
+[Service]
+Type=simple
+UMask=0007
+ExecStartPre=/bin/sh -c 'test -f /opt/hatch/runtime-cell/runtime-cell.ready'
+ExecStart=/opt/hatch/runtime-cell/run-execd.sh --socket /run/hatch/execd/execd.sock
+WorkingDirectory=/home/hatch
+Restart=always
+RestartSec=1
+LimitNOFILE=65535
+SyslogIdentifier=hatch-execd

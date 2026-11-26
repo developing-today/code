@@ -10,6 +10,8 @@
 //! shell over the public API in this crate —
 //!
 //! - [`algorithm`] — the algorithm registry (§§3.1, 6.3, 24.1);
+//! - [`algorithm_lab`] — per-algorithm benchmarks and environment
+//!   probes behind `algorithms benchmark | doctor` (§6.1, #13729);
 //! - [`timeparse`] — the §5.4 time grammar (RFC3339 + Gregorian
 //!   calendar durations);
 //! - [`naming`] — generation/partition coordinates and slugs (§5.2);
@@ -24,6 +26,17 @@
 //!   validation over rcgen + aws-lc-rs;
 //! - [`bundle`] — bundle directories: manifest load/save, artifact
 //!   index, checksum verification.
+//! - [`inventory`] — read-only cross-bundle inventory: `inventory
+//!   list|show|search|audit` over bundle directories (spec §6.1).
+//! - [`batch`] — `batch validate | plan | apply | status`: a
+//!   reviewed multi-step plan (issuer + leaf sets) applied
+//!   all-or-nothing over bundle directories (§6.5, #13730).
+//! - [`dns`] — offline CAA and TLSA/DANE change-sets: `dns plan |
+//!   render | verify` against the #13724 contract (no live DNS).
+//! - [`trust`] — §3.5 trust-bundle export and the broker-client
+//!   trust store: two-phase rollover (stage → acknowledge →
+//!   activate → retire) with last-known-good retention (BT-2,
+//!   #14400; spec §27.3 item 9 in its minimal broker form).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -35,18 +48,24 @@
 //!   chain validator (§3.2).
 
 pub mod algorithm;
+pub mod algorithm_lab;
+pub mod batch;
 pub mod bundle;
 pub mod chain;
 pub mod cli;
+pub mod dns;
 pub mod engine;
 pub mod error;
 pub mod format;
 pub mod graph;
+pub mod inventory;
 pub mod model;
 pub mod naming;
 pub mod ocsp;
 pub mod profile;
+pub mod publish;
 pub mod timeparse;
+pub mod trust;
 
 pub use error::{CertError, Result};
 

@@ -66,23 +66,23 @@ Non-goals:
 ## 3. Alternatives
 
 A. **Do nothing.** Keep the register as the only record. Cost: rulings keep going missing and P2.3 grows
-   stale. Rejected, because the register already shows the loss.
+stale. Rejected, because the register already shows the loss.
 
 B. **One GitHub issue per open ruling.** Each P2.3 item becomes an issue. Strength: visible,
-   assignable. Weakness: about 20 issues for short questions, and the queue would need claim rules for
-   them. Chosen only for rulings that need implementation work.
+assignable. Weakness: about 20 issues for short questions, and the queue would need claim rules for
+them. Chosen only for rulings that need implementation work.
 
 C. **Single living ledger file plus FDR records (chosen).** The ledger lists open rulings with state
-   and decider. Each answer produces an FDR, or an amendment to an FDR. Strength: keeps the answer
-   trail and the open list apart. Weakness: two places to keep in sync; the design needs a rule for
-   that (slice 2).
+and decider. Each answer produces an FDR, or an amendment to an FDR. Strength: keeps the answer
+trail and the open list apart. Weakness: two places to keep in sync; the design needs a rule for
+that (slice 2).
 
 D. **Put everything in the decisions page.** The page becomes the ledger. Strength: one UI. Weakness:
-   the page is for batched answers, and it is not a durable record; it would need to carry FDR
-   semantics it was not built for.
+the page is for batched answers, and it is not a durable record; it would need to carry FDR
+semantics it was not built for.
 
 E. **Decision models as a single fixed model.** One System 1 model, no pools. Simple, but it drops
-   the cost and availability goals of the brief. Kept as the fallback if pools prove too complex.
+the cost and availability goals of the brief. Kept as the fallback if pools prove too complex.
 
 ## 4. Chosen approach
 
@@ -126,15 +126,15 @@ E. **Decision models as a single fixed model.** One System 1 model, no pools. Si
 
 Each slice has its own acceptance criteria and should fit one lane session.
 
-| # | Slice | Depends on | Acceptance |
-|---|-------|------------|------------|
-| S1 | This design, indexed from #12951 | none | This doc passes the 9-point check; #12951 links it |
-| S2 | Create `pm-stack/decisions-ledger.md` from the P2.3 table; add the sync rule to the hourly job | S1 | Every P2.3 item has a row with decider and state; job reads only `open` rows |
-| S3 | Decisions-page crash fix (#8777): self-heal on SIGTERM for aggregator and dispatch | S1 | Kill test: SIGTERM both units; both restart within 30 s; no draft lost |
-| S4 | FDR for each answered ruling in S2 that governs fleet behaviour | S2 | Each such ruling has an FDR or an amendment; index updated in `doc/decisions/README.md` |
-| S5 | Decision-model research: cost and capability per provider | S1 | Table with cost per decision, capability notes, source link per row |
-| S6 | System 1 endpoint and pool order, behind a flag | S5 | Contract test passes for one provider; cap test: calls stop at the included amount |
-| S7 | Retire the register's P2 table in favour of the ledger and this index | S2, S4 | Register links to ledger; no P2.3 item lacks a row |
+| #   | Slice                                                                                          | Depends on | Acceptance                                                                              |
+| --- | ---------------------------------------------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------- |
+| S1  | This design, indexed from #12951                                                               | none       | This doc passes the 9-point check; #12951 links it                                      |
+| S2  | Create `pm-stack/decisions-ledger.md` from the P2.3 table; add the sync rule to the hourly job | S1         | Every P2.3 item has a row with decider and state; job reads only `open` rows            |
+| S3  | Decisions-page crash fix (#8777): self-heal on SIGTERM for aggregator and dispatch             | S1         | Kill test: SIGTERM both units; both restart within 30 s; no draft lost                  |
+| S4  | FDR for each answered ruling in S2 that governs fleet behaviour                                | S2         | Each such ruling has an FDR or an amendment; index updated in `doc/decisions/README.md` |
+| S5  | Decision-model research: cost and capability per provider                                      | S1         | Table with cost per decision, capability notes, source link per row                     |
+| S6  | System 1 endpoint and pool order, behind a flag                                                | S5         | Contract test passes for one provider; cap test: calls stop at the included amount      |
+| S7  | Retire the register's P2 table in favour of the ledger and this index                          | S2, S4     | Register links to ledger; no P2.3 item lacks a row                                      |
 
 ## 6. Rollout and rollback
 

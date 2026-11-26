@@ -1,5 +1,5 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { requireHome } from "./home.ts";
 
 // C3 health hook (#9571): fire-and-forget opencode-working from a caller
 // that found OpenCode unreachable. One hook process at a time per
@@ -9,7 +9,14 @@ let running: { exitCode: number | null } | null = null;
 
 export function fireOpenCodeWorkingHook(caller: string, detail: string): boolean {
   if (running && running.exitCode === null) return false;
-  const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", "opencode-working.sh");
+  const hookPath = join(
+    requireHome("the opencode-working health hook"),
+    "git",
+    "code",
+    "pm-stack",
+    "health-hooks",
+    "opencode-working.sh",
+  );
   try {
     running = Bun.spawn([hookPath, "--caller", caller, "--detail", detail], {
       stdout: "ignore",
