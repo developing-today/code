@@ -889,6 +889,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1179,6 +1180,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             }
         }
         let create_body = encode_body(&GroupAction::Create {
@@ -1542,6 +1544,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(

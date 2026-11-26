@@ -675,6 +675,7 @@ impl NoteCheckpoints {
             note,
             content,
             parents,
+            proposal: None,
         };
         check_note_op(REVISE_KIND, &op)?;
         self.append(AppliedNote {

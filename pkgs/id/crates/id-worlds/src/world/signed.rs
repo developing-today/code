@@ -103,6 +103,7 @@ pub fn sign_move(
 
             chat: None,
             anchor: None,
+            thread: None,
         },
     )
 }

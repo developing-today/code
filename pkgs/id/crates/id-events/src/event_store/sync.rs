@@ -1007,6 +1007,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -1356,6 +1357,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1412,6 +1414,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1460,6 +1463,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1513,6 +1517,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1584,6 +1589,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             }
         }
         // The group create, by A, listing A, B and C as managers. The group is

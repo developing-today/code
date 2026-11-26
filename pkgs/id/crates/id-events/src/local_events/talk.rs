@@ -255,6 +255,7 @@ impl LocalEvents {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, Some(body), ext)?;
         match self.store.ingest(&event.bytes, Some(body), now_ms())? {
@@ -297,6 +298,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 

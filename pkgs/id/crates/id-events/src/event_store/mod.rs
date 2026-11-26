@@ -81,6 +81,7 @@ mod ingest;
 pub mod range;
 mod resolve;
 pub mod sync;
+mod threads;
 mod validity;
 mod waiting_rows;
 mod writer_set;
@@ -1831,6 +1832,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
