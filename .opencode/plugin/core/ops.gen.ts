@@ -20,7 +20,7 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-export const OPERATION_FINGERPRINT = "da584569030ee496cfdaba3e7bb83a68741d79c2278e7e137e0db3e622e7d008"
+export const OPERATION_FINGERPRINT = "a250450dab7cf505555e10a0f2e546f29c477a1f3bcb68074aac7d8be6bd3d77"
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
@@ -756,6 +756,14 @@ export const OPS: Record<string, OpSpec> = {
     params: {
       name: { in: "path", required: true },
       scope: { in: "query" },
+    },
+    response: "json",
+  },
+  session_kill: {
+    method: "POST",
+    path: "/v1/session/kill",
+    params: {
+      session: { in: "body", required: true },
     },
     response: "json",
   },
@@ -1578,6 +1586,15 @@ export class DaemonOps {
    */
   serversRemove(args: { name: string; scope?: "project" | "user" }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("servers_remove", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * End the instances a session created, even when busy. `POST /v1/session/kill`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  sessionKill(args: { session: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("session_kill", args, opts) as Promise<unknown>
   }
 
   /**
