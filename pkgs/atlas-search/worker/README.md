@@ -133,6 +133,13 @@ table's CHECKs both refuse it. Every class starts disabled, so nothing is
 written until a family's writer lands and its class is enabled.
 Search-history query text is dropped unless the class allows it.
 
+Slice 2 (`src/recommendation_history.ts`): when the recommendation
+accumulator has a `RETAINED` D1 binding and the `recommendation` class is
+enabled, each new pinned snapshot is kept as one `recommendation` version
+whose inputs name the parent snapshot and whose payload (rule id, input
+digest, ordered items with scores) the same parent reproduces. Keeping it
+is best effort and never fails a start.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client
