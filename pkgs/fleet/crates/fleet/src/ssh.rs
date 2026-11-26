@@ -188,7 +188,7 @@ fn capture(_config: &Config, timeout_s: u64, cmd: &[String]) -> CaptureOutcome {
     let reader = std::thread::spawn(move || {
         let mut stdout = stdout;
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|()| bytes)
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.max(1));
     let status = loop {
@@ -370,7 +370,7 @@ fn list_session_activity(config: &Config) -> CaptureOutcome {
         "tmux".to_string(),
         "list-sessions".to_string(),
         "-F".to_string(),
-        "'#{session_name}\\t#{session_activity}\\t#{session_attached}'".to_string(),
+        "'#{session_name}\t#{session_activity}\t#{session_attached}'".to_string(),
     ];
     capture(config, 30, &cmd)
 }
