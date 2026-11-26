@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "cf": "1.0.0-rc.1",
-    "wrangler": "4.163.0"
+    "cf": "1.0.0-rc.2",
+    "wrangler": "4.166.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
