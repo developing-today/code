@@ -61,6 +61,7 @@ import secrets
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -102,6 +103,62 @@ BIND_PORT = _parse_startup_int(
     1,
     65535,
 )
+
+
+def _tls_context_from_env():
+    """Broker TLS Phase 1 for the daemon endpoint (BT-4, #14402).
+
+    Design of record: doc/2026-11-24T13-59-26Z_design_broker-tls
+    §§4-6, mirroring the queue broker's BT-3. Additive and default
+    off (rule M1): with neither variable set the daemon serves
+    plaintext exactly as before. Both set: the endpoint presents the
+    `broker-server` leaf chain (leaf first, then issuers) and its
+    on-host key. Exactly one set, an unreadable file or an unusable
+    pair exits 3 naming the variable, so a half-configured daemon
+    never starts and silently serves plaintext. Token auth is
+    unchanged: the certificate is identity, the token is still the
+    authorisation.
+    """
+    cert = (os.environ.get("LAPTOP_AGENT_TLS_CERT_FILE") or "").strip()
+    key = (os.environ.get("LAPTOP_AGENT_TLS_KEY_FILE") or "").strip()
+    if not cert and not key:
+        return None
+    if not cert or not key:
+        have, missing = (
+            ("LAPTOP_AGENT_TLS_CERT_FILE", "LAPTOP_AGENT_TLS_KEY_FILE")
+            if cert
+            else ("LAPTOP_AGENT_TLS_KEY_FILE", "LAPTOP_AGENT_TLS_CERT_FILE")
+        )
+        print(
+            f"laptop-agent: {have} is set but {missing} is not; "
+            "endpoint TLS needs the leaf chain and its on-host key together",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(3)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        ctx.load_cert_chain(certfile=cert, keyfile=key)
+    except (OSError, ssl.SSLError) as e:
+        print(
+            "laptop-agent: endpoint TLS config "
+            f"(LAPTOP_AGENT_TLS_CERT_FILE={cert!r}, "
+            f"LAPTOP_AGENT_TLS_KEY_FILE={key!r}) is unusable: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(3)
+    return ctx
+
+
+TLS_CONTEXT = _tls_context_from_env()
+# A TLS handshake must finish within this many seconds of the first
+# byte, so a stalled peer cannot hold a handler thread.
+TLS_HANDSHAKE_TIMEOUT = 10.0
+# A TLS ClientHello opens with a handshake record: content type 0x16.
+_TLS_HANDSHAKE_RECORD = 0x16
+
 # Absolute interpreter for `shell` requests: NixOS has no /bin/bash, and
 # the package wrapper sets this to the store path. The live lineage's
 # resolution chain is the fallback when the wrapper did not set it
@@ -1041,6 +1098,8 @@ class Handler(BaseHTTPRequestHandler):
         for grandchildren. Closing the write side makes the peer see
         FIN at once; the handler thread then re-checks between drain
         slices. Used as run_one's disconnect watchdog trigger."""
+        if isinstance(self.connection, ssl.SSLSocket):
+            return _raw_peer_gone(self.connection)
         try:
             self.connection.setblocking(False)
             try:
@@ -1692,14 +1751,94 @@ def _reaper_loop():
             )
 
 
+def _raw_peer_gone(tls_sock):
+    """Has the peer under a TLS socket closed the TCP connection?
+
+    SSLSocket refuses recv flags, so peek the TCP stream through a
+    duplicate of the descriptor: EOF there means the client is gone;
+    pending bytes (TLS records, an alert) or nothing yet do not."""
+    try:
+        raw = socket.socket(fileno=os.dup(tls_sock.fileno()))
+    except OSError:
+        return True
+    try:
+        raw.setblocking(False)
+        try:
+            return raw.recv(1, socket.MSG_PEEK) == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+    finally:
+        raw.close()
+
+
+class AgentServer(ThreadingHTTPServer):
+    """The daemon's HTTP server, with the BT-4 Phase 1 accept path.
+
+    With no TLS context it is ThreadingHTTPServer unchanged. With one,
+    each connection is sniffed in its own handler thread (so a slow
+    peer never stalls accept): a first byte of 0x16 takes the TLS
+    path, anything else is served as plaintext Phase 0 on the same
+    port (rule M2) and logged, so adoption is visible before a later
+    phase makes TLS mandatory. A failed handshake is logged and the
+    connection dropped; it never falls back to plaintext."""
+
+    def __init__(self, address, handler, tls_context=None):
+        self.tls_context = tls_context
+        super().__init__(address, handler)
+
+    def finish_request(self, request, client_address):
+        if self.tls_context is None:
+            return super().finish_request(request, client_address)
+        try:
+            request.settimeout(TLS_HANDSHAKE_TIMEOUT)
+            first = request.recv(1, socket.MSG_PEEK)
+        except OSError as e:
+            print(
+                f"laptop-agent: TLS accept from {client_address[0]}: peek failed: {e}",
+                flush=True,
+            )
+            return None
+        if not first:
+            return None
+        if first[0] != _TLS_HANDSHAKE_RECORD:
+            request.settimeout(None)
+            print(
+                f"laptop-agent: plaintext Phase 0 accept from {client_address[0]} "
+                "on a TLS-configured endpoint",
+                flush=True,
+            )
+            return super().finish_request(request, client_address)
+        try:
+            tls = self.tls_context.wrap_socket(request, server_side=True)
+        except (OSError, ssl.SSLError) as e:
+            print(
+                f"laptop-agent: TLS handshake from {client_address[0]} failed: {e}",
+                flush=True,
+            )
+            return None
+        try:
+            tls.settimeout(None)
+            return super().finish_request(tls, client_address)
+        finally:
+            # Send close_notify, but never wait long for the peer's.
+            try:
+                tls.settimeout(2.0)
+                tls.unwrap().close()
+            except (OSError, ValueError, ssl.SSLError):
+                tls.close()
+
+
 def main():
     (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "exec").mkdir(parents=True, exist_ok=True)
     load_persisted_jobs()
     reap_old_jobs()
     threading.Thread(target=_reaper_loop, daemon=True).start()
-    srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
-    print(f"laptop-agent listening on {BIND_HOST}:{BIND_PORT}", flush=True)
+    srv = AgentServer((BIND_HOST, BIND_PORT), Handler, tls_context=TLS_CONTEXT)
+    mode = "TLS (dual-accept, Phase 1)" if TLS_CONTEXT is not None else "plaintext"
+    print(f"laptop-agent listening on {BIND_HOST}:{BIND_PORT} ({mode})", flush=True)
     srv.serve_forever()
 
 
