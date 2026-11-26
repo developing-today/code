@@ -14,10 +14,30 @@
   --bad: #f85149;
   /* Text on that red: white on it was 3.4 to 1. */
   --bad-ink: #1a0405;
+  /* What a chart tells its series apart by (public/charts.js): a fixed
+     order of colours, chosen so that neighbours in it can be told apart
+     by people who see colour differently, and stepped for a dark page.
+     The light page's steps are below. They are not the status colours
+     above and are never used for them. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
   --tab-h: 62px;
   --top-h: 52px;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 16px;
+  /* How it looks beyond its colours, each set by an attribute on this
+     element (look.js puts them there; look.css has the steps): the
+     typeface, the size of the text, the room around things, how round
+     the corners are, and how heavy an edge is. */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --scale: 1;
+  --space: 1;
+  --round: 1;
+  --edge: 1px;
+  font-family: var(--font);
+  font-size: calc(16px * var(--scale));
   line-height: 1.4;
 }
 @media (prefers-color-scheme: light) {
@@ -40,6 +60,12 @@
     --warn: #8a5a00;
     --bad: #c5222c;
     --bad-ink: #ffffff;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
   }
 }
 * {
@@ -77,12 +103,12 @@ a.button {
   position: fixed;
   inset: 0 0 auto 0;
   height: calc(var(--top-h) + env(safe-area-inset-top));
-  padding: env(safe-area-inset-top) 12px 0 16px;
+  padding: env(safe-area-inset-top) calc(12px * var(--space)) 0 calc(16px * var(--space));
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(8px * var(--space));
   background: var(--bg);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--edge) solid var(--line);
   z-index: 5;
 }
 .top h1 {
@@ -110,9 +136,9 @@ a.button {
   max-width: 760px;
   min-height: 44px;
   margin: 0 auto;
-  padding: 10px 16px;
+  padding: calc(10px * var(--space)) calc(16px * var(--space));
   border: 0;
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--edge) solid var(--line);
   border-radius: 0;
   background: var(--panel-2);
   color: var(--text);
@@ -126,7 +152,7 @@ a.button {
 main {
   max-width: 760px;
   margin: 0 auto;
-  padding: 12px;
+  padding: calc(12px * var(--space));
   outline: none;
 }
 .tabs {
@@ -136,7 +162,7 @@ main {
   padding-bottom: env(safe-area-inset-bottom);
   display: flex;
   background: var(--panel);
-  border-top: 1px solid var(--line);
+  border-top: var(--edge) solid var(--line);
   z-index: 5;
 }
 .tabs button {
@@ -151,7 +177,7 @@ main {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: calc(3px * var(--space));
   min-height: 0;
   padding: 0;
   position: relative;
@@ -174,11 +200,11 @@ main {
   left: calc(50% + 6px);
   min-width: 18px;
   padding: 0 5px;
-  border-radius: 9px;
-  /* White on the theme's own red is too faint in either theme; this
-     red carries white at 5.4 to 1. */
-  background: #cf222e;
-  color: #fff;
+  border-radius: calc(9px * var(--round));
+  /* The theme's own red and the ink made for it: every theme is held
+     to 4.5 to 1 between the two. */
+  background: var(--bad);
+  color: var(--bad-ink);
   font-size: 0.68rem;
   font-weight: 700;
   line-height: 18px;
@@ -199,7 +225,7 @@ main {
     justify-content: flex-start;
     padding-top: 12px;
     border-top: 0;
-    border-right: 1px solid var(--line);
+    border-right: var(--edge) solid var(--line);
   }
   .tabs button {
     flex: 0 0 72px;
@@ -208,7 +234,7 @@ main {
 
 /* ---- pieces --------------------------------------------------------- */
 h2 {
-  margin: 20px 4px 8px;
+  margin: calc(20px * var(--space)) calc(4px * var(--space)) calc(8px * var(--space));
   font-size: 0.8rem;
   font-weight: 650;
   letter-spacing: 0.04em;
@@ -216,24 +242,24 @@ h2 {
   color: var(--quiet);
 }
 h2:first-child {
-  margin-top: 4px;
+  margin-top: calc(4px * var(--space));
 }
 h3 {
-  margin: 0 0 4px;
+  margin: 0 0 calc(4px * var(--space));
   font-size: 1rem;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 p {
-  margin: 4px 0;
+  margin: calc(4px * var(--space)) 0;
   overflow-wrap: anywhere;
 }
 .card {
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  padding: calc(12px * var(--space)) calc(14px * var(--space));
+  margin-bottom: calc(10px * var(--space));
 }
 .card.flag {
   border-left: 4px solid var(--warn);
@@ -246,10 +272,10 @@ p {
   font-size: 0.82rem;
 }
 .step {
-  margin-top: 8px;
-  padding: 8px 10px;
+  margin-top: calc(8px * var(--space));
+  padding: calc(8px * var(--space)) calc(10px * var(--space));
   background: var(--panel-2);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--round));
   font-size: 0.9rem;
 }
 .step b {
@@ -258,7 +284,7 @@ p {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--quiet);
-  margin-bottom: 2px;
+  margin-bottom: calc(2px * var(--space));
 }
 .why {
   color: var(--warn);
@@ -267,26 +293,26 @@ p {
   color: var(--bad);
 }
 .empty {
-  padding: 28px 16px;
+  padding: calc(28px * var(--space)) calc(16px * var(--space));
   text-align: center;
   color: var(--quiet);
 }
 .row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: calc(8px * var(--space));
   align-items: center;
 }
 .row.end {
   justify-content: flex-end;
-  margin-top: 10px;
+  margin-top: calc(10px * var(--space));
 }
 .chip {
   display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
+  padding: 1px calc(8px * var(--space));
+  border-radius: calc(999px * var(--round));
   background: var(--panel-2);
-  border: 1px solid var(--line);
+  border: var(--edge) solid var(--line);
   font-size: 0.74rem;
   color: var(--quiet);
   white-space: nowrap;
@@ -306,14 +332,14 @@ p {
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: calc(8px * var(--space));
+  margin-bottom: calc(4px * var(--space));
 }
 .stat {
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 2px;
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  padding: calc(10px * var(--space)) calc(2px * var(--space));
   text-align: center;
   color: var(--text);
   min-height: 0;
@@ -330,7 +356,7 @@ p {
 .num {
   flex: 0 0 26px;
   height: 26px;
-  border-radius: 13px;
+  border-radius: calc(13px * var(--round));
   background: var(--panel-2);
   color: var(--quiet);
   font-size: 0.8rem;
@@ -341,7 +367,7 @@ p {
 }
 .lead {
   display: flex;
-  gap: 10px;
+  gap: calc(10px * var(--space));
   align-items: flex-start;
 }
 .lead > div {
@@ -359,9 +385,9 @@ textarea {
 }
 button {
   min-height: 42px;
-  padding: 8px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--accent);
+  padding: calc(8px * var(--space)) calc(14px * var(--space));
+  border-radius: calc(10px * var(--round));
+  border: var(--edge) solid var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
   font-weight: 600;
@@ -372,8 +398,8 @@ a.button {
   display: inline-flex;
   align-items: center;
   min-height: 42px;
-  padding: 8px 14px;
-  border-radius: 10px;
+  padding: calc(8px * var(--space)) calc(14px * var(--space));
+  border-radius: calc(10px * var(--round));
   background: var(--accent);
   color: var(--accent-ink);
   font-weight: 600;
@@ -385,7 +411,7 @@ ul.plain {
   list-style: none;
 }
 ul.plain li {
-  padding: 6px 0;
+  padding: calc(6px * var(--space)) 0;
   color: var(--quiet);
 }
 ul.plain li b {
@@ -404,7 +430,7 @@ button.danger {
 }
 button.small {
   min-height: 34px;
-  padding: 4px 10px;
+  padding: calc(4px * var(--space)) calc(10px * var(--space));
   font-size: 0.85rem;
 }
 button.icon {
@@ -425,9 +451,9 @@ input,
 textarea {
   width: 100%;
   min-height: 42px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
+  padding: calc(8px * var(--space)) calc(10px * var(--space));
+  border-radius: calc(10px * var(--round));
+  border: var(--edge) solid var(--line);
   background: var(--panel-2);
 }
 select.narrow {
@@ -442,16 +468,16 @@ textarea {
 }
 .seg {
   display: flex;
-  gap: 6px;
+  gap: calc(6px * var(--space));
   overflow-x: auto;
-  padding-bottom: 6px;
-  margin-bottom: 6px;
+  padding-bottom: calc(6px * var(--space));
+  margin-bottom: calc(6px * var(--space));
 }
 .seg button {
   flex: 0 0 auto;
   min-height: 36px;
-  padding: 4px 12px;
-  border-radius: 999px;
+  padding: calc(4px * var(--space)) calc(12px * var(--space));
+  border-radius: calc(999px * var(--round));
   background: var(--panel);
   border-color: var(--line);
   color: var(--text);
@@ -463,12 +489,18 @@ textarea {
   border-color: var(--accent);
   color: var(--accent-ink);
 }
+/* A row of choices that are all to be seen at once (the steps of a
+   setting): it wraps instead of scrolling off the side. */
+.seg.wrap {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
 
 /* ---- questions ------------------------------------------------------ */
 .options {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
+  gap: calc(8px * var(--space));
+  margin-top: calc(10px * var(--space));
 }
 .option {
   text-align: left;
@@ -493,19 +525,19 @@ textarea {
   text-transform: uppercase;
 }
 details {
-  margin-top: 6px;
+  margin-top: calc(6px * var(--space));
 }
 summary {
   cursor: pointer;
   color: var(--accent);
   font-size: 0.86rem;
-  padding: 6px 0;
+  padding: calc(6px * var(--space)) 0;
 }
 .set {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 18px 4px 8px;
+  gap: calc(8px * var(--space));
+  margin: calc(18px * var(--space)) calc(4px * var(--space)) calc(8px * var(--space));
 }
 .set h2 {
   margin: 0;
@@ -519,9 +551,9 @@ summary {
   z-index: 2;
 }
 .bubble {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  margin-top: calc(8px * var(--space));
+  padding: calc(8px * var(--space)) calc(10px * var(--space));
+  border-radius: calc(10px * var(--round));
   background: var(--panel-2);
   font-size: 0.92rem;
   white-space: pre-wrap;
@@ -529,7 +561,7 @@ summary {
 }
 .bubble.you {
   background: transparent;
-  border: 1px solid var(--line);
+  border: var(--edge) solid var(--line);
 }
 .bubble b {
   display: block;
@@ -547,33 +579,33 @@ summary {
 .tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
+  gap: calc(10px * var(--space));
 }
 .tile {
   display: block;
   text-align: left;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 12px;
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  padding: calc(12px * var(--space));
   color: var(--text);
   font-weight: 600;
   min-height: 74px;
 }
 .tile span {
   display: block;
-  margin-top: 4px;
+  margin-top: calc(4px * var(--space));
   font-weight: 400;
   font-size: 0.8rem;
   color: var(--quiet);
 }
 .link {
   display: block;
-  padding: 12px 14px;
+  padding: calc(12px * var(--space)) calc(14px * var(--space));
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  margin-bottom: 8px;
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  margin-bottom: calc(8px * var(--space));
   color: var(--text);
 }
 .link span {
@@ -584,18 +616,18 @@ summary {
 /* A form in a dialog: a note, a change, a new item. */
 dialog.sheet {
   width: min(560px, calc(100vw - 24px));
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  border: var(--edge) solid var(--line);
+  border-radius: calc(14px * var(--round));
   background: var(--panel);
   color: var(--text);
-  padding: 16px;
+  padding: calc(16px * var(--space));
 }
 dialog.sheet::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 dialog.sheet label {
   display: block;
-  margin: 10px 0 4px;
+  margin: calc(10px * var(--space)) 0 calc(4px * var(--space));
   font-size: 0.86rem;
   color: var(--quiet);
 }
@@ -609,19 +641,19 @@ dialog.sheet input[type="text"] {
   width: 100%;
 }
 .chip + .chip {
-  margin-left: 6px;
+  margin-left: calc(6px * var(--space));
 }
 /* A list of runs, each a link to its page: a line tall enough to tap. */
 .runs a {
   display: block;
-  padding: 6px 0;
+  padding: calc(6px * var(--space)) 0;
   font-size: 0.88rem;
 }
 pre {
-  margin: 8px 0 0;
-  padding: 10px;
+  margin: calc(8px * var(--space)) 0 0;
+  padding: calc(10px * var(--space));
   background: var(--panel-2);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--round));
   font-size: 0.74rem;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -636,8 +668,8 @@ pre {
   bottom: calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px);
   max-width: 560px;
   margin: 0 auto;
-  padding: 12px 14px;
-  border-radius: 12px;
+  padding: calc(12px * var(--space)) calc(14px * var(--space));
+  border-radius: calc(12px * var(--round));
   background: var(--good);
   color: var(--good-ink);
   font-weight: 600;
@@ -655,17 +687,17 @@ pre {
 }
 dialog {
   width: min(92vw, 520px);
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  border: var(--edge) solid var(--line);
+  border-radius: calc(14px * var(--round));
   background: var(--panel);
   color: var(--text);
-  padding: 16px;
+  padding: calc(16px * var(--space));
 }
 dialog::backdrop {
   background: rgb(0 0 0 / 0.6);
 }
 dialog h2 {
-  margin: 0 0 6px;
+  margin: 0 0 calc(6px * var(--space));
   font-size: 1.05rem;
   text-transform: none;
   letter-spacing: 0;
@@ -673,13 +705,13 @@ dialog h2 {
 }
 dialog label {
   display: block;
-  margin: 10px 0 4px;
+  margin: calc(10px * var(--space)) 0 calc(4px * var(--space));
   font-size: 0.85rem;
   color: var(--quiet);
 }
 
 .check {
-  padding: 8px 0;
+  padding: calc(8px * var(--space)) 0;
   flex-wrap: nowrap;
 }
 .check input {
@@ -716,4 +748,346 @@ input[type="radio"] {
   min-height: 22px;
   height: 22px;
   padding: 0;
+}
+
+/* ---- appearance ----------------------------------------------------- */
+/* Choosing a theme: each choice is drawn in its own colours (the inner
+   swatch carries the theme's name, so themes.css colours just it), and
+   the button around it in the page's, so the chosen one is marked in a
+   colour that shows on the page whatever the choice looks like. */
+.picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: calc(8px * var(--space));
+}
+.pick {
+  display: block;
+  padding: calc(6px * var(--space));
+  text-align: left;
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  color: var(--text);
+  font-weight: 500;
+}
+.pick[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.pick-name {
+  display: block;
+  margin-top: calc(6px * var(--space));
+  font-size: 0.85rem;
+}
+.pick[aria-pressed="true"] .pick-name::before {
+  content: "✓ ";
+  color: var(--accent);
+  font-weight: 700;
+}
+.swatch {
+  display: block;
+  padding: calc(8px * var(--space));
+  background: var(--bg);
+  color: var(--text);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(8px * var(--round));
+}
+.swatch-card {
+  display: flex;
+  align-items: baseline;
+  gap: calc(6px * var(--space));
+  padding: calc(4px * var(--space)) calc(8px * var(--space));
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(6px * var(--round));
+}
+.swatch-card b {
+  font-size: 1.05rem;
+}
+.swatch-card i {
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--quiet);
+}
+.dots {
+  display: flex;
+  gap: calc(6px * var(--space));
+  margin-top: calc(8px * var(--space));
+}
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--quiet);
+}
+.dot.accent {
+  background: var(--accent);
+}
+.dot.good {
+  background: var(--good);
+}
+.dot.warn {
+  background: var(--warn);
+}
+.dot.bad {
+  background: var(--bad);
+}
+/* Choosing a typeface: each choice is set in itself. */
+.option.face {
+  font-family: var(--font);
+}
+.option.face b {
+  display: block;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.option.face span {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--quiet);
+}
+/* The sample the choices are seen on: its rows keep apart. */
+.sample .row {
+  margin-top: calc(10px * var(--space));
+  flex-wrap: wrap;
+}
+
+/* ---- charts --------------------------------------------------------- */
+/* Drawn by public/charts.js, which says the rules. A mark takes its
+   series' colour from its class; words and numbers stay in the text's. */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: calc(10px * var(--space));
+  margin-bottom: calc(10px * var(--space));
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2px * var(--space));
+  padding: calc(12px * var(--space));
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+}
+.kpi-label,
+.kpi-delta {
+  font-size: 0.78rem;
+  color: var(--quiet);
+}
+.kpi-value {
+  font-size: 1.6rem;
+  font-weight: 650;
+  line-height: 1.15;
+}
+.kpi-delta.up {
+  color: var(--good);
+}
+.kpi-delta.down {
+  color: var(--warn);
+}
+.spark {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: calc(4px * var(--space));
+}
+.spark .ln {
+  fill: none;
+  stroke: var(--quiet);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.spark .dot {
+  fill: var(--accent);
+}
+figure.chart {
+  margin: 0 0 calc(10px * var(--space));
+}
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(2px * var(--space)) calc(12px * var(--space));
+  min-height: 1.4em;
+  font-size: 0.85rem;
+  color: var(--quiet);
+}
+.readout b,
+.legend b {
+  color: var(--text);
+  font-weight: 650;
+}
+.plot {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  /* A finger moving across it reads the days; up and down still scrolls. */
+  touch-action: pan-y;
+  outline: none;
+}
+.plot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.plot .grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.plot .hair {
+  stroke: var(--quiet);
+  stroke-width: 1;
+}
+.plot .tick {
+  fill: var(--quiet);
+  font-size: 9.5px;
+}
+.plot .ln {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.plot .wash {
+  opacity: 0.1;
+}
+.plot .dot.ring {
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+/* Today is not over. */
+.plot .col.partial {
+  opacity: 0.55;
+}
+.plot.choosing .col {
+  opacity: 0.4;
+}
+.plot.choosing .col.on {
+  opacity: 1;
+}
+.s1 {
+  fill: var(--series-1);
+}
+.s2 {
+  fill: var(--series-2);
+}
+.s3 {
+  fill: var(--series-3);
+}
+.s4 {
+  fill: var(--series-4);
+}
+.s5 {
+  fill: var(--series-5);
+}
+.s6 {
+  fill: var(--series-6);
+}
+.so {
+  fill: var(--quiet);
+}
+.ln.s1 {
+  stroke: var(--series-1);
+}
+.ln.s2 {
+  stroke: var(--series-2);
+}
+.ln.s3 {
+  stroke: var(--series-3);
+}
+.ln.s4 {
+  stroke: var(--series-4);
+}
+.ln.s5 {
+  stroke: var(--series-5);
+}
+.ln.s6 {
+  stroke: var(--series-6);
+}
+.ln.so {
+  stroke: var(--quiet);
+}
+/* The mark of a series beside its name: a block for columns, a stroke
+   for lines. */
+.sw {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: calc(5px * var(--space));
+  border-radius: calc(2px * var(--round));
+  background: var(--quiet);
+}
+.sw.ln {
+  width: 14px;
+  height: 3px;
+  vertical-align: middle;
+}
+.sw.s1 {
+  background: var(--series-1);
+}
+.sw.s2 {
+  background: var(--series-2);
+}
+.sw.s3 {
+  background: var(--series-3);
+}
+.sw.s4 {
+  background: var(--series-4);
+}
+.sw.s5 {
+  background: var(--series-5);
+}
+.sw.s6 {
+  background: var(--series-6);
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--space)) calc(14px * var(--space));
+  margin: calc(6px * var(--space)) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--quiet);
+}
+.figures summary,
+.fold summary {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--space));
+  min-height: 36px;
+  cursor: pointer;
+}
+.figures summary {
+  font-size: 0.8rem;
+  color: var(--quiet);
+}
+.figures .scroll {
+  max-height: 260px;
+  overflow: auto;
+}
+.figures table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.figures th,
+.figures td {
+  padding: calc(3px * var(--space)) calc(12px * var(--space)) calc(3px * var(--space)) 0;
+  border-bottom: var(--edge) solid var(--line);
+  text-align: right;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.figures thead th {
+  color: var(--quiet);
+}
+.figures th:first-child {
+  text-align: left;
+}
+/* A card that opens: a project and the features it merged. */
+.fold .link {
+  margin-top: calc(6px * var(--space));
 }

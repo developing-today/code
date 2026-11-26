@@ -15,6 +15,28 @@ mcpx ls
 mcpx tui
 ```
 
+### Fleet laptop to the VM
+
+From the fleet NixOS laptop, set the endpoint for just one command:
+
+```sh
+MCPX_DAEMON_ENDPOINT=ssh://user@100.99.113.103 mcpx ls
+```
+
+This discovers the VM's MCP servers through its existing mcpx daemon. To make
+a real MCP call, use the same endpoint with `mcpx exec`, for example:
+
+```sh
+MCPX_DAEMON_ENDPOINT=ssh://user@100.99.113.103 \
+  mcpx exec 'console.log(await tools.codedb.status({}))'
+```
+
+The laptop must already have `mcpx` installed and an SSH identity authorized
+for the VM's `user` account; no mcpx token, new credential, port opening or
+daemon reconfiguration is involved. `ssh -T -o BatchMode=yes
+user@100.99.113.103 mcpx stdio-proxy --help` is a useful transport preflight.
+The daemon stays on its Unix socket, and SSH provides the access boundary.
+
 The client runs your own `ssh` binary (`ssh -T -o BatchMode=yes buildbox
 mcpx stdio-proxy`) and speaks the daemon's HTTP API through it. Your ssh
 agent, `ssh_config`, `known_hosts`, jump hosts and `Match` rules are the

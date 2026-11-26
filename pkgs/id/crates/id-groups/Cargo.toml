@@ -25,8 +25,8 @@ id-core = { path = "../id-core", default-features = false }
 id-events = { path = "../id-events", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh-base = "1"
-iroh-blobs = "0.105"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+iroh-blobs = "0.103"
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 p2panda-encryption = { path = "../../vendor/p2panda-encryption", default-features = false, features = [
   "data_scheme",
 ] }
@@ -127,8 +127,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

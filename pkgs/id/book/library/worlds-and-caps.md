@@ -47,7 +47,7 @@ instance.restore(&genesis_bytes)?;
 
 Purpose (from its `Cargo.toml`): "Capability catalog, execution limits and world manifest of the id crate (pkgs/id crate split step 1, #4403)". Its `lib.rs` describes the crate as the capability data model of `id`: the capability catalog, execution limits, and the declarative world manifest. It depends on `id-core` for `id_core::json_unique` only.
 
-The `lib.rs` doc header is stale in the same pattern as the facade's: it describes only the original three moved modules — `world_caps` and `world_limits` from `id-core`, `world_manifest` from the facade package. The crate publishes 18 public modules, not three (disagreement LIB-14).
+The `lib.rs` doc header is stale in the same pattern as the facade's: it describes only the original three moved modules — `world_caps` and `world_limits` from `id-core`, `world_manifest` from the facade package. The crate publishes 22 public modules, not three (disagreement LIB-14).
 
 ### Public modules
 

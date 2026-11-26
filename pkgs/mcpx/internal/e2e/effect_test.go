@@ -148,6 +148,7 @@ var implementedEffectProbes = map[string]string{
 	"embeddings.apiKey":                  "TestEmbeddingsAPIKeyIsSentAsABearerToken",
 	"embeddings.model":                   "TestEmbeddingsModelNamesTheRequestedModel",
 	"embeddings.backend":                 "TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint",
+	"embeddings.wasmPath":                "TestEmbeddingsWasmPathLoadsTheModel",
 	"proto.samplingPerMinute":            "TestSamplingPerMinuteRefusesAServersSecondSampling",
 	"proto.samplingSessionPerMinute":     "TestSamplingSessionPerMinuteRefusesASessionsSecondSampling",
 	"proto.elicitationPerMinute":         "TestElicitationPerMinuteRefusesAServersSecondQuestion",
@@ -392,6 +393,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestEmbeddingsAPIKeyIsSentAsABearerToken":                                       TestEmbeddingsAPIKeyIsSentAsABearerToken,
 	"TestEmbeddingsModelNamesTheRequestedModel":                                      TestEmbeddingsModelNamesTheRequestedModel,
 	"TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint":                               TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint,
+	"TestEmbeddingsWasmPathLoadsTheModel":                                            TestEmbeddingsWasmPathLoadsTheModel,
 	"TestSamplingPerMinuteRefusesAServersSecondSampling":                             TestSamplingPerMinuteRefusesAServersSecondSampling,
 	"TestSamplingSessionPerMinuteRefusesASessionsSecondSampling":                     TestSamplingSessionPerMinuteRefusesASessionsSecondSampling,
 	"TestElicitationPerMinuteRefusesAServersSecondQuestion":                          TestElicitationPerMinuteRefusesAServersSecondQuestion,
@@ -441,7 +443,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment":                  TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment,
 	"TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment":                        TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment,
 	"TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment":          TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment,
-	"TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment":              TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment,
+	"TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment":             TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment,
 	"TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment": TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment,
 	"TestDaemonWarmTimeoutBoundsTheStartupWarm":                                      TestDaemonWarmTimeoutBoundsTheStartupWarm,
 	"TestAutostartConnectTimeoutBoundsTheWaitForADaemon":                             TestAutostartConnectTimeoutBoundsTheWaitForADaemon,
@@ -1292,17 +1294,27 @@ func TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment(t *testing.T) {
 
 // protoMessages.taskAfter is how long a tools/call runs in line before a
 // 2026-07-28 client that declared the tasks extension is handed a task.
-// The client runs a script that takes one second.
-// Oracle: at the default (2s) the call is answered directly with
-// resultType complete; with MCPX_PROTO_MESSAGES_TASK_AFTER=200ms it comes
-// back as a task (resultType task with a taskId).
+// Oracle: at the default (2s) a call that finishes well within it is
+// answered directly with resultType complete; with
+// MCPX_PROTO_MESSAGES_TASK_AFTER=200ms a one-second call comes back as a
+// task (resultType task with a taskId).
+// The in-line case sleeps 200ms, not one second: the assertion is which
+// side of the threshold the call lands on, and a one-second sleep sits
+// only 2x under the default, so under build load (runtime startup plus a
+// stretched sleep) it crossed the 2s threshold and came back as a task
+// (#15237, the same load sensitivity b3e622316 widened waits for). 200ms
+// keeps a 10x margin; the task case keeps its one-second sleep, 5x over
+// its 200ms threshold.
 func TestTaskAfterHandsASlowCallATaskFromTheEnvironment(t *testing.T) {
-	call := func(env ...string) map[string]any { t.Helper(); return slowTaskCall(t, env...) }
-
-	if got := call(); got["resultType"] != "complete" || !strings.Contains(dumpJSON(t, got), "slept") {
-		t.Fatalf("at the default protoMessages.taskAfter a one-second call should be answered in line, got %s", dumpJSON(t, got))
+	call := func(sleepMs int, env ...string) map[string]any {
+		t.Helper()
+		return slowTaskCall(t, sleepMs, env...)
 	}
-	if got := call("MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"); got["resultType"] != "task" || got["taskId"] == nil {
+
+	if got := call(200); got["resultType"] != "complete" || !strings.Contains(dumpJSON(t, got), "slept") {
+		t.Fatalf("at the default protoMessages.taskAfter a 200ms call should be answered in line, got %s", dumpJSON(t, got))
+	}
+	if got := call(1000, "MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"); got["resultType"] != "task" || got["taskId"] == nil {
 		t.Fatalf("protoMessages.taskAfter=200ms should hand a one-second call a task, got %s", dumpJSON(t, got))
 	}
 }
@@ -1314,7 +1326,7 @@ func TestTaskAfterHandsASlowCallATaskFromTheEnvironment(t *testing.T) {
 func TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment(t *testing.T) {
 	poll := func(env ...string) any {
 		t.Helper()
-		got := slowTaskCall(t, append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"}, env...)...)
+		got := slowTaskCall(t, 1000, append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"}, env...)...)
 		if got["resultType"] != "task" {
 			t.Fatalf("a one-second call past a 200ms threshold should be a task, got %s", dumpJSON(t, got))
 		}
@@ -1330,8 +1342,8 @@ func TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment(t *testing.T) {
 }
 
 // slowTaskCall has a 2026-07-28 client that declared the tasks extension
-// run a script that takes one second, and returns the tools/call result.
-func slowTaskCall(t *testing.T, env ...string) map[string]any {
+// run a script that sleeps for sleepMs, and returns the tools/call result.
+func slowTaskCall(t *testing.T, sleepMs int, env ...string) map[string]any {
 	t.Helper()
 	e := newEnv(t, oneServer)
 	e.setenv(env...)
@@ -1339,7 +1351,7 @@ func slowTaskCall(t *testing.T, env ...string) map[string]any {
 	ep := e.endpoint(t)
 	resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
 		"name":      "mcpx_exec",
-		"arguments": map[string]any{"source": "await new Promise((r) => setTimeout(r, 1000)); console.log(\"slept\")"},
+		"arguments": map[string]any{"source": fmt.Sprintf("await new Promise((r) => setTimeout(r, %d)); console.log(\"slept\")", sleepMs)},
 		"_meta": map[string]any{
 			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
 			"io.modelcontextprotocol/clientCapabilities": map[string]any{
@@ -1952,6 +1964,8 @@ func TestEventsHistoryBoundsTheReplay(t *testing.T) {
 // restart or a network service.
 func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	const delay = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	recordSettingProbes(t)
 	t.Setenv("MCPX_EVENTS_RECONNECT", delay.String())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1961,6 +1975,7 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	t.Cleanup(func() { _ = ln.Close() })
 	accepted := make(chan time.Time, 2)
 	serveErr := make(chan error, 1)
+	firstDelivered := make(chan struct{}, 1)
 	go func() {
 		for attempt := 0; attempt < 2; attempt++ {
 			conn, err := ln.Accept()
@@ -1969,12 +1984,27 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 				return
 			}
 			accepted <- time.Now()
-			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
-			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
-			_ = conn.Close()
+			// Bound reads as well as delivery waits on assertion failures.
+			_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+			err = serveReconnectEvent(conn, attempt)
 			if err != nil {
+				_ = conn.Close()
 				serveErr <- err
+				return
 			}
+			if attempt == 0 {
+				// Do not drop the first stream until the client has parsed
+				// its event. Otherwise the transport can observe a close
+				// before the callback runs, making the reconnect test depend
+				// on when the goroutine gets scheduled.
+				select {
+				case <-firstDelivered:
+				case <-ctx.Done():
+					_ = conn.Close()
+					return
+				}
+			}
+			_ = conn.Close()
 		}
 	}()
 
@@ -1993,13 +2023,14 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 		t.Fatalf("resolved events.reconnect = %s, want environment value %s", got, delay)
 	}
 	c := cli.NewClientAt(paths, configPath, "http://"+ln.Addr().String())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	eventsSeen := make(chan events.Event, 1)
 	streamDone := make(chan error, 1)
 	go func() {
 		streamDone <- c.Stream(ctx, events.Filter{}, func(event events.Event) {
 			eventsSeen <- event
+			if event.Seq == 1 {
+				firstDelivered <- struct{}{}
+			}
 			if event.Seq == 2 {
 				cancel()
 			}
@@ -2047,6 +2078,48 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("event stream did not stop after cancellation")
+	}
+}
+
+// serveReconnectEvent must consume the request before sending response bytes.
+// Otherwise net/http can reject the response as unsolicited on an idle channel
+// before its roundTrip has registered the request (observed on macOS).
+func serveReconnectEvent(conn io.ReadWriter, attempt int) error {
+	req, err := http.ReadRequest(bufio.NewReader(conn))
+	if err != nil {
+		return err
+	}
+	_ = req.Body.Close()
+	wantSince := ""
+	if attempt > 0 {
+		wantSince = strconv.Itoa(attempt)
+	}
+	if req.Method != http.MethodGet || req.URL.Path != "/v1/events" ||
+		req.Header.Get("Accept") != "text/event-stream" || req.URL.Query().Get("since") != wantSince {
+		return fmt.Errorf("unexpected event request on attempt %d: %s %s Accept=%q", attempt, req.Method, req.URL, req.Header.Get("Accept"))
+	}
+	body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
+	_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+	return err
+}
+
+// Oracle: an incomplete HTTP request must never receive response bytes, even
+// if the reader ends before the request line or headers have been completed.
+func TestReconnectFixtureRequiresCompleteRequest(t *testing.T) {
+	for _, request := range []string{"", "GET /v1/events", "GET /v1/events HTTP/1.1\r\nAccept: text/event-stream\r\n"} {
+		t.Run(fmt.Sprintf("bytes=%d", len(request)), func(t *testing.T) {
+			var response strings.Builder
+			conn := struct {
+				io.Reader
+				io.Writer
+			}{strings.NewReader(request), &response}
+			if err := serveReconnectEvent(conn, 0); err == nil {
+				t.Fatal("incomplete request accepted")
+			}
+			if response.Len() != 0 {
+				t.Fatalf("response written before receiving a complete request: %q", response.String())
+			}
+		})
 	}
 }
 
@@ -2675,7 +2748,12 @@ func TestHooksRunOnTheirEvent(t *testing.T) {
 	e2 := newEnv(t, oneServer)
 	e2.setenv(touchHook(mark))
 	e2.run("call", "demo.echo", `{"message":"x"}`)
-	if !appears(mark, 10*time.Second) {
+	// The hook itself sleeps one second; the wait is for the daemon to
+	// dispatch it, which under build load can lag far past 10s (the
+	// darwin-nix pinned build that filed #15237 ran this suite ~5x slow
+	// and the mark had not appeared in 10s). The assertion is that the
+	// hook runs at all, so the wait is 60s, as in b3e622316's probes.
+	if !appears(mark, 60*time.Second) {
 		t.Error("a declared call.finished hook should run after the call")
 	}
 }
@@ -4995,6 +5073,50 @@ func TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint(t *testing.T) {
 	before, _, _ := f.seen()
 	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_EMBEDDINGS_BACKEND=local"); n != before {
 		t.Fatalf("with embeddings.backend=local the remote endpoint should not be asked (%d -> %d)", before, n)
+	}
+}
+
+// wasmEmbedding asks the daemon for the embedding of a fixed input with the
+// wasm backend selected and env on top, and returns the sample values the
+// CLI prints.
+func wasmEmbedding(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_EMBEDDINGS_BACKEND=wasm"}, env...)...)
+	out := e.run("embeddings", "test", "same input")
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "Sample Values:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Sample Values:"))
+		}
+	}
+	t.Fatalf("no sample values in `mcpx embeddings test` output:\n%s", out)
+	return ""
+}
+
+// TestEmbeddingsWasmPathLoadsTheModel is the effect probe for
+// embeddings.wasmPath (#13575). The committed fixture models give sparse,
+// distinguishable vectors: model A starts [1, 0.25], model B [0.25, 1].
+// Oracle: with no wasm path the daemon answers with neither; with the path
+// set it answers with the named model's vector, and naming the other model
+// changes the answer.
+func TestEmbeddingsWasmPathLoadsTheModel(t *testing.T) {
+	fixture := func(name string) string {
+		p, err := filepath.Abs(filepath.Join("..", "catalog", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const modelA = "[1.0000, 0.2500, 0.0000, 0.0000, 0.0000...]"
+	const modelB = "[0.2500, 1.0000, 0.0000, 0.0000, 0.0000...]"
+	if got := wasmEmbedding(t); got == modelA || got == modelB {
+		t.Fatalf("oracle: with no embeddings.wasmPath no fixture model should answer, got %s", got)
+	}
+	if got := wasmEmbedding(t, "MCPX_EMBEDDINGS_WASM_PATH="+fixture("embed_a.wasm")); got != modelA {
+		t.Fatalf("with embeddings.wasmPath naming model A the vector should be %s, got %s", modelA, got)
+	}
+	if got := wasmEmbedding(t, "MCPX_EMBEDDINGS_WASM_PATH="+fixture("embed_b.wasm")); got != modelB {
+		t.Fatalf("with embeddings.wasmPath naming model B the vector should be %s, got %s", modelB, got)
 	}
 }
 

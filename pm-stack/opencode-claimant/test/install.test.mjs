@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT, CRON, MODEL_ID, PROVIDER_ID, TASK_ID,
-  buildTask, mergeTasks, parseArgs,
+  buildTask, defaultStore, mergeTasks, parseArgs,
 } from "../install.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -232,6 +232,37 @@ describe("installer CLI argument validation", () => {
       await expectNoWrites(stores);
     } finally {
       await rm(stores.home, { recursive: true, force: true });
+    }
+  });
+});
+
+// #8220: the home-resolution contract (#5762). The default store needs HOME;
+// an unset or empty HOME is a usage error naming --store, never the passwd
+// fallback, and an explicit --store needs no HOME.
+describe("default store home resolution (#8220)", () => {
+  const STORE_TAIL = join(".config", "openchamber", "projects", "path_L2hvbWUvdXNlci9naXQvY29kZQ.json");
+
+  test("a set HOME gives the same default store path", () => {
+    expect(defaultStore({ HOME: "/home/probe" })).toBe(join("/home/probe", STORE_TAIL));
+  });
+
+  for (const home of [undefined, "", "  "]) {
+    test(`HOME ${home === undefined ? "unset" : JSON.stringify(home)} is a usage error naming --store`, () => {
+      expect(() => defaultStore(home === undefined ? {} : { HOME: home })).toThrow(
+        home === undefined ? "HOME is unset" : "HOME is empty",
+      );
+      expect(() => defaultStore({})).toThrow("set HOME or pass --store");
+    });
+  }
+
+  test("an explicit --store needs no HOME", () => {
+    const saved = process.env.HOME;
+    delete process.env.HOME;
+    try {
+      expect(parseArgs(["--store", "/tmp/store"]).storePath).toBe("/tmp/store");
+      expect(() => parseArgs([])).toThrow("set HOME or pass --store");
+    } finally {
+      if (saved !== undefined) process.env.HOME = saved;
     }
   });
 });

@@ -917,6 +917,7 @@ pub(crate) fn mint_currency_id(issuer: &str, op: &RegisterCurrency) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::currency::gateway::{
