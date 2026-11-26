@@ -356,6 +356,27 @@ pub struct LeafRenewRequest {
     pub allow_key_reuse: bool,
 }
 
+/// `cert leaf rotate` (§5.2): a new key for a leaf, in the next key
+/// generation, with the same profile, subject, names and issuer slot
+/// (algorithm and partition). The issuer set may be the original, a
+/// renewal or a rotation of it.
+#[derive(Debug, Clone)]
+pub struct LeafRotateRequest {
+    /// The leaf bundle whose key is replaced.
+    pub leaf_bundle: PathBuf,
+    /// The issuer set that signs the new leaf.
+    pub issuer_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the issuer key (§24.3).
+    pub issuer_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// A CSR carrying the new key generated on the subject's host;
+    /// required for leaves issued from a CSR (the broker profiles).
+    pub csr: Option<PathBuf>,
+    /// Where a generated key goes, as for leaf issue.
+    pub private_store: Option<PathBuf>,
+}
+
 /// `cert publish plan` (§4.4): read-only publication rendering.
 /// Never touches live endpoints; `host` is the proposed
 /// distribution host (§4.1) and `dns_target` the optional operator

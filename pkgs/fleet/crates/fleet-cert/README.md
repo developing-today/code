@@ -53,6 +53,13 @@ Implements the fleet architecture spec v0.3
   `--algorithm`, then writes a fresh key of that algorithm to a new
   owner-only `--out` file and reports both public-key fingerprints;
   the old key is kept, and retiring it is a separate step.
+- `fleet cert issuer renew|rotate` and `leaf renew|rotate` — the
+  §5.2 lifecycle verbs. `renew` reissues on the same key (only with
+  `--allow-key-reuse`), keeps the generation and bumps the revision
+  (`r2`); `rotate` makes new keys in the next generation (`g2`) with
+  the same names, slots and policy. Each new bundle records the one
+  it follows (`predecessor`). A CSR-issued leaf rotates from a new
+  CSR (`--csr`).
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - `fleet cert inventory list|show|search|audit` — read-only
@@ -65,7 +72,7 @@ Implements the fleet architecture spec v0.3
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
 `dns`, `key` escrow/restore/rotate and private export,
 `format`, profile validate/scaffold, algorithm benchmark/doctor,
-`batch`, renew/rotate verbs, bundle pack/unpack/diff/migrate,
+`batch`, root renew/rotate and the replace verbs, bundle pack/unpack/diff/migrate,
 publish apply/status (production-gated; slice 1 ships plan +
 verify read-only).
 

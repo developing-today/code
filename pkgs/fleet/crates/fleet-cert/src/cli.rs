@@ -34,7 +34,7 @@ Usage: fleet cert <group> <verb> [options]
 Groups and verbs (spec §6.1 tree; status as built):
   root     create | inspect | list | validate
   issuer   create | renew | rotate | inspect | list
-  leaf     issue | renew | inspect | list
+  leaf     issue | renew | rotate | inspect | list
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
@@ -993,10 +993,51 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "rotate" => {
+            let mut flags = vec![
+                "leaf",
+                "issuer",
+                "issuer-key-dir",
+                "out",
+                "csr",
+                "private-store",
+            ];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["json"])?;
+            let leaf = p
+                .get("leaf")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("leaf rotate requires --leaf <leaf-dir>"))?;
+            let issuer = p.require("issuer", "leaf rotate")?;
+            let signer = signer_source(&p, "issuer-key-dir", "leaf rotate")?;
+            let old = load_bundle(&PathBuf::from(&leaf))?;
+            let prof =
+                profile::resolve_profile(old.manifest.purpose.as_deref().ok_or_else(|| {
+                    CertError::manifest("the leaf bundle records no profile to rotate under")
+                })?)?;
+            let (nb, na) = validity(&p, prof.default_validity)?;
+            let req = crate::model::LeafRotateRequest {
+                leaf_bundle: PathBuf::from(&leaf),
+                issuer_bundle: PathBuf::from(&issuer),
+                issuer_signer: signer,
+                not_before: nb,
+                not_after: na,
+                csr: p.get("csr").map(PathBuf::from),
+                private_store: p.get("private-store").map(PathBuf::from),
+            };
+            let out = p.require("out", "leaf rotate")?;
+            let manifest = engine::rotate_leaf(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Leaf rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::Leaf)),
         "list" => list_cmd(rest, json_out, BundleType::Leaf),
         other => Err(CertError::usage(format!(
-            "unknown leaf verb '{other}' (issue | renew | inspect | list)"
+            "unknown leaf verb '{other}' (issue | renew | rotate | inspect | list)"
         ))),
     }
 }
@@ -2412,8 +2453,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
     (
-        "root renew/rotate, root/issuer replace, leaf rotate",
-        "remaining lifecycle verbs (spec §5.2); issuer renew/rotate and leaf renew are built",
+        "root renew/rotate, root/issuer replace",
+        "remaining lifecycle verbs (spec §5.2); issuer renew/rotate and leaf renew/rotate are built",
     ),
     (
         "bundle pack/unpack/diff/migrate",
@@ -2545,7 +2586,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "issuer", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);

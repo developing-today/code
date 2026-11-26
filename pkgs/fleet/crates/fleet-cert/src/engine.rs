@@ -1363,6 +1363,17 @@ fn clamp_window(
 /// `cert leaf issue`: issue one leaf from an issuer bundle, signed
 /// by the selected issuer key loaded from `req.issuer_signer`.
 pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManifest> {
+    issue_leaf_at(req, out_dir, None, None)
+}
+
+/// [`issue_leaf`] with the key generation and predecessor a rotation
+/// sets; `None` = the issuer set's generation and no predecessor.
+fn issue_leaf_at(
+    req: &LeafIssueRequest,
+    out_dir: &Path,
+    generation: Option<u32>,
+    predecessor: Option<String>,
+) -> Result<BundleManifest> {
     let profile = resolve_profile(&req.profile)?;
     // Request-level policy first: nothing is loaded or signed for a
     // request the profile refuses.
@@ -1613,12 +1624,13 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         &issuer_bundle.manifest.organization,
         &issuer_bundle.manifest.country,
         Some(req.profile.clone()),
-        issuer_bundle.manifest.generation,
+        generation.unwrap_or(issuer_bundle.manifest.generation),
         Some(parent),
         key_location,
         None,
         warnings,
     )?;
+    manifest.predecessor = predecessor;
     manifest.bundle_id = format!("leaf-{}-{}", manifest.slug, &rec.fingerprint_sha256[..12]);
     manifest.certificates = vec![rec];
     let manifest = write_bundle(out_dir, manifest, &artifacts)?;
@@ -1894,6 +1906,78 @@ pub fn renew_leaf(req: &crate::model::LeafRenewRequest, out_dir: &Path) -> Resul
     manifest.certificates = vec![rec];
     let manifest = write_bundle(out_dir, manifest, &artifacts)?;
     Ok(manifest)
+}
+
+/// `cert leaf rotate` (§5.2): issue the leaf again on a new key, in
+/// the next key generation, keeping its profile, subject, names and
+/// issuer slot. A CSR-issued leaf needs a CSR for the new key, and
+/// that key must not be the one being replaced.
+pub fn rotate_leaf(
+    req: &crate::model::LeafRotateRequest,
+    out_dir: &Path,
+) -> Result<BundleManifest> {
+    let old = load_bundle(&req.leaf_bundle)?;
+    if old.manifest.bundle_type != BundleType::Leaf {
+        return Err(CertError::usage(format!(
+            "{} is a {} bundle, not a leaf",
+            req.leaf_bundle.display(),
+            old.manifest.bundle_type.as_str()
+        )));
+    }
+    let old_rec = old
+        .manifest
+        .certificates
+        .iter()
+        .find(|r| r.role == "leaf")
+        .ok_or_else(|| CertError::manifest("the leaf bundle has no leaf record"))?;
+    let profile_name =
+        old.manifest.purpose.clone().ok_or_else(|| {
+            CertError::manifest("the leaf bundle records no profile to rotate under")
+        })?;
+    let what = format!("{} ({})", old_rec.subject_dn, req.leaf_bundle.display());
+    let old_der = first_certificate_der(&old, &old_rec.cert_path)?;
+    let (dns_names, ip_addresses) = issued_sans(&old_der, &what)?;
+    let cn = extract_cn(&old_rec.subject_dn)
+        .ok_or_else(|| CertError::manifest(format!("{what} has no CN in its subject DN")))?;
+    if let Some(csr) = &req.csr {
+        let (key, _) = read_csr(csr)?;
+        let old_key = issued_facts(&old_der, &what)?.public_key;
+        if rcgen::PublicKeyData::der_bytes(&key) == old_key.as_slice() {
+            return Err(CertError::policy(format!(
+                "{} carries the key {what} already has; rotation needs a new key \
+                 (leaf renew reissues on the same key)",
+                csr.display()
+            )));
+        }
+    }
+    let issue = LeafIssueRequest {
+        issuer_bundle: req.issuer_bundle.clone(),
+        issuer_signer: req.issuer_signer.clone(),
+        profile: profile_name,
+        name: old.manifest.name.clone(),
+        common_name: Some(cn),
+        dns_names,
+        ip_addresses,
+        csr: req.csr.clone(),
+        key_algorithm: if req.csr.is_some() {
+            None
+        } else {
+            Some(old_rec.algorithm)
+        },
+        issuer_algorithm: Some(old_rec.signer_algorithm.unwrap_or(old_rec.algorithm)),
+        issuer_partition: Some(old_rec.partition.clone()),
+        not_before: req.not_before,
+        not_after: req.not_after,
+        private_store: req.private_store.clone(),
+    };
+    let issuer_generation = load_bundle(&req.issuer_bundle)?.manifest.generation;
+    let generation = (old.manifest.generation + 1).max(issuer_generation);
+    issue_leaf_at(
+        &issue,
+        out_dir,
+        Some(generation),
+        Some(old.manifest.bundle_id.clone()),
+    )
 }
 
 /// Read a PKCS#10 CSR (PEM or DER), verify its self-signature, and
