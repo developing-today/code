@@ -401,6 +401,50 @@
       "owner": null,
       "writer": null,
       "sql": "SELECT epoch, deleted_at_ms FROM kv_blob_deletions\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND attempt = ?6"
+    },
+    {
+      "args": 2,
+      "class": "admin",
+      "name": "blob.candidates_clear",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "DELETE FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2\n        AND (EXISTS (SELECT 1 FROM kv_blob_refs AS root\n                WHERE root.jurisdiction = ?1 AND root.tier = ?2\n                    AND root.content_id = kv_blob_candidates.content_id)\n            OR NOT EXISTS (SELECT 1 FROM kv_blobs AS blob\n                WHERE blob.jurisdiction = ?1 AND blob.tier = ?2\n                    AND blob.content_id = kv_blob_candidates.content_id))\n    RETURNING content_id",
+      "writer": null
+    },
+    {
+      "args": 3,
+      "class": "admin",
+      "name": "blob.candidates_mark",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "INSERT OR IGNORE INTO kv_blob_candidates (\n        jurisdiction, tier, content_id, since_ms)\n    SELECT blob.jurisdiction, blob.tier, blob.content_id, ?3\n    FROM kv_blobs AS blob\n    WHERE blob.jurisdiction = ?1 AND blob.tier = ?2\n        AND NOT EXISTS (SELECT 1 FROM kv_blob_refs AS root\n            WHERE root.jurisdiction = ?1 AND root.tier = ?2\n                AND root.content_id = blob.content_id)\n    RETURNING content_id",
+      "writer": null
+    },
+    {
+      "args": 3,
+      "class": "admin",
+      "name": "blob.candidates_due",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "SELECT content_id, since_ms FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2 AND since_ms <= ?3 ORDER BY content_id",
+      "writer": null
+    },
+    {
+      "args": 6,
+      "class": "admin",
+      "name": "blob.candidate_drop",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "DELETE FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3\n        AND EXISTS (SELECT 1 FROM kv_blob_deletions AS fence\n            WHERE fence.jurisdiction = ?1 AND fence.tier = ?2\n                AND fence.content_id = ?3 AND fence.attempt = ?6)",
+      "writer": null
     }
   ],
   "migrations": {
@@ -447,6 +491,12 @@
           "ALTER TABLE kv_conflicts ADD COLUMN proposed_envelope TEXT NOT NULL DEFAULT 'kv:raw-v1'"
         ],
         "version": 5
+      },
+      {
+        "statements": [
+          "CREATE TABLE IF NOT EXISTS kv_blob_candidates (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    since_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id)\n) WITHOUT ROWID"
+        ],
+        "version": 6
       }
     ]
   }
