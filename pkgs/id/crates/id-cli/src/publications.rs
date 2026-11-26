@@ -673,7 +673,10 @@ mod tests {
         registry
             .publish(mount("/arena", false), KNOWN_EXPLORER_ROUTES)
             .unwrap();
-        assert_eq!(registry.boot_warnings(KNOWN_EXPLORER_ROUTES), [] as [String; 0]);
+        assert_eq!(
+            registry.boot_warnings(KNOWN_EXPLORER_ROUTES),
+            [] as [String; 0]
+        );
 
         // A record persisted outside publish() (hand-edited, or routes
         // changed since) still warns at boot.

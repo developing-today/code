@@ -941,7 +941,10 @@ mod tests {
     #[test]
     fn test_parse_bootstrap_ids_all_invalid_yields_empty() {
         let entries = vec!["nope".to_string(), "123".to_string(), String::new()];
-        assert_eq!(parse_bootstrap_ids(&entries), [] as [iroh_base::PublicKey; 0]);
+        assert_eq!(
+            parse_bootstrap_ids(&entries),
+            [] as [iroh_base::PublicKey; 0]
+        );
     }
 
     #[test]
