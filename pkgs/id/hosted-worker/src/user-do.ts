@@ -579,7 +579,7 @@ export class UserDO {
     if (url.pathname === "/v1/migration/snapshot") {
       // Export waits for the freeze acknowledgement: only a fence for
       // this migration, at this epoch, makes the snapshot final.
-      if (current === null || current.migration_id !== request.migration_id || current.routing_epoch !== request.routing_epoch) {
+      if (current === null || current.migration_id !== request.migrationId || current.routing_epoch !== request.routingEpoch) {
         throw new FailClosed(409, "freeze_not_acknowledged", "the source is not frozen for this migration at this epoch");
       }
       if (this.mutationSeq() !== current.watermark) {
@@ -588,8 +588,8 @@ export class UserDO {
       const tables = readMigratedTables(this.state.storage.sql);
       const snapshot: MigrationSnapshot = {
         v: 1,
-        migration_id: request.migration_id,
-        routing_epoch: request.routing_epoch,
+        migration_id: request.migrationId,
+        routing_epoch: request.routingEpoch,
         binding_id: identity.bindingId,
         client_side_encryption: identity.clientSideEncryption,
         schema_version: SCHEMA_VERSION,
@@ -603,15 +603,15 @@ export class UserDO {
       const staged = this.stagedTarget();
       if (staged === null) {
         const done = this.meta("migration_activated");
-        if (done !== null && (JSON.parse(done) as { migration_id?: string }).migration_id === request.migration_id) {
+        if (done !== null && (JSON.parse(done) as { migration_id?: string }).migration_id === request.migrationId) {
           return json({ activated: JSON.parse(done), idempotent: true });
         }
         throw new FailClosed(409, "not_staged", "this object is not a staged migration target");
       }
-      if (staged.migration_id !== request.migration_id) {
+      if (staged.migration_id !== request.migrationId) {
         throw new FailClosed(409, "target_staged_other", "this object is staged for a different migration");
       }
-      if (request.routing_epoch <= staged.routing_epoch) {
+      if (request.routingEpoch <= staged.routing_epoch) {
         throw new FailClosed(409, "stale_epoch", "activation needs the switch epoch, newer than the import");
       }
       // Blob bytes are copied by the coordinator; the target serves
@@ -639,14 +639,14 @@ export class UserDO {
       if (now !== staged.digest) {
         throw new FailClosed(500, "staged_target_changed", "the staged data changed before activation; failing closed");
       }
-      const activated = { migration_id: staged.migration_id, routing_epoch: request.routing_epoch };
+      const activated = { migration_id: staged.migration_id, routing_epoch: request.routingEpoch };
       setMeta("migration_activated", JSON.stringify(activated));
       this.state.storage.sql.exec("DELETE FROM meta WHERE key = 'migration_target'");
       return json({ activated, idempotent: false });
     }
     if (url.pathname === "/v1/migration/discard") {
       const staged = this.stagedTarget();
-      if (staged === null || staged.migration_id !== request.migration_id) {
+      if (staged === null || staged.migration_id !== request.migrationId) {
         throw new FailClosed(409, "not_staged", "this object is not staged for this migration");
       }
       clearMigratedTables(this.state.storage.sql);
