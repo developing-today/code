@@ -45,7 +45,12 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             workflow,
         )
-        self.assertIn('app-id: "5612056"', workflow)
+        self.assertIn('app-id: "5562183"', workflow)
+        self.assertIn("secrets.BACKUP_APP_PRIVATE_KEY", workflow)
+        self.assertIn(
+            "if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'",
+            workflow,
+        )
         self.assertIn("owner: developing-today", workflow)
         self.assertIn("permission-contents: write", workflow)
         for repo in (
