@@ -2216,7 +2216,7 @@ mod save_publication_tests {
     use serde_json::json;
 
     use super::*;
-    use id_events::local_events::Entry;
+    use id_events::local_events::{Entry, Head};
     use id_store::tags::TagStore;
 
     use crate::{AppState, SaveRateLimiter};
@@ -2610,14 +2610,9 @@ mod save_publication_tests {
         let (state, _endpoint, _docs) = state().await;
         let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(
-            state
-                .local_events
-                .lock()
-                .await
-                .frontier()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            state.local_events.lock().await.frontier().unwrap(),
+            [] as [Head; 0]
         );
     }
 }
@@ -4747,7 +4742,7 @@ mod upload_router_tests {
             body.contains("do not match the declared image type"),
             "body: {body}"
         );
-        assert!(list_images(router).await.is_empty());
+        assert_eq!(list_images(router).await, [] as [serde_json::Value; 0]);
     }
 
     #[tokio::test]
@@ -4774,7 +4769,7 @@ mod upload_router_tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{content_type}: {body}");
         }
-        assert!(list_images(router).await.is_empty());
+        assert_eq!(list_images(router).await, [] as [serde_json::Value; 0]);
     }
 
     #[tokio::test]
