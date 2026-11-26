@@ -812,13 +812,13 @@ mod tests {
         let directory = directory_root_node();
         let session = crate::render::screen_root_node(true);
         let percent = |value: Val| match value {
-            Val::Percent(value) => value,
-            other => panic!("expected percentage layout value, got {other:?}"),
+            Val::Percent(value) => Some(value),
+            _ => None,
         };
-        let directory_left_percent = percent(directory.left);
-        let directory_width_percent = percent(directory.width);
-        let session_left_percent = percent(session.left);
-        let session_width_percent = percent(session.width);
+        let directory_left_percent = percent(directory.left).unwrap();
+        let directory_width_percent = percent(directory.width).unwrap();
+        let session_left_percent = percent(session.left).unwrap();
+        let session_width_percent = percent(session.width).unwrap();
 
         for width in [640.0, 1280.0] {
             let directory_right =
@@ -828,16 +828,19 @@ mod tests {
             // Oracle: actual Bevy root-node styles stay in the viewport,
             // share one edge, and have no positive-area overlap.
             assert_eq!(directory_left_percent, 0.0);
-            assert_eq!(percent(directory.top), 0.0);
-            assert_eq!(percent(directory.height), 100.0);
+            assert_eq!(percent(directory.top).unwrap(), 0.0);
+            assert_eq!(percent(directory.height).unwrap(), 100.0);
             assert_eq!(directory_right, session_left);
             assert_eq!(session_right, width);
-            assert_eq!(percent(session.top), 0.0);
-            assert_eq!(percent(session.height), 100.0);
+            assert_eq!(percent(session.top).unwrap(), 0.0);
+            assert_eq!(percent(session.height).unwrap(), 100.0);
             assert!(directory_right > 0.0);
             assert!(session_right > session_left);
         }
-        assert_eq!(percent(crate::render::screen_root_node(false).width), 100.0);
+        assert_eq!(
+            percent(crate::render::screen_root_node(false).width).unwrap(),
+            100.0
+        );
 
         let mut registry = SessionRegistry::default();
         assert!(registry.enter("lobby"));
