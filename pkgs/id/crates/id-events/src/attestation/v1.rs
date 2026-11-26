@@ -15,6 +15,8 @@ pub const OBJECTION_KIND: &str = "attestation.objection";
 
 /// The frozen audit-report object schema and its honest-scope rules.
 pub mod audit;
+/// Witness fallback terms, independent receipts and closure (#2039 phase 5).
+pub mod receipt;
 /// The v1 reducer: claim, concession, witness and dispute states with
 /// evidence-dependency and fork recomputation.
 pub mod reducer;
@@ -81,7 +83,9 @@ impl Objection {
 }
 
 /// Signs a witness decision, refusing witness-shopping and stale agreement
-/// or logic references before creating the signed event.
+/// or logic references before creating the signed event. The signer must be
+/// the genesis-named witness or, under valid [`receipt::WitnessTerms`], the
+/// pre-named fallback.
 pub fn sign_witness_decision(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -90,7 +94,12 @@ pub fn sign_witness_decision(
     decision: &WitnessDecision,
     after: Vec<Hash>,
 ) -> Result<Event, V1SignError> {
-    if agreement.witness != Some(player_id(key)) {
+    if let Some(terms) = &agreement.witness_terms {
+        terms
+            .validate(agreement)
+            .map_err(V1SignError::InvalidTerms)?;
+    }
+    if !receipt::WitnessTerms::may_decide(agreement, &player_id(key)) {
         return Err(V1SignError::NotNamedWitness);
     }
     if decision.version != VERSION || decision.agreement != agreement.agreement_hash()? {
@@ -170,9 +179,9 @@ fn sign_body(
 /// A reducer result ([`reducer::reduce`]). `Agreed` is a mutual concession,
 /// `Witnessed` is witnessed-unopposed, `Disputed` holds any contradiction or
 /// objection, and `Void` means the evidence graph references forked history.
-/// `Final` is reserved for the receipt/closure flow (#2039 phase 5): without
-/// independent receipt evidence no state is protocol-final, so the phase-4
-/// reducer never emits it.
+/// `Final` is a witnessed result whose objection window an independent
+/// receipt issuer has provably closed (#2039 phase 5): without that receipt
+/// evidence no state is protocol-final.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum V1MatchState {
@@ -213,6 +222,8 @@ pub enum V1SignError {
     NotPlayer,
     WrongAgreement,
     WrongLogic,
+    NotReceiptIssuer,
+    InvalidTerms(receipt::TermsError),
 }
 
 impl From<SignError> for V1SignError {
@@ -233,7 +244,10 @@ impl std::fmt::Display for V1SignError {
             Self::Sign(error) => write!(f, "{error}"),
             Self::Json(error) => write!(f, "attestation v1 object would not serialize: {error}"),
             Self::NotNamedWitness => {
-                write!(f, "only the witness named in genesis may issue a decision")
+                write!(
+                    f,
+                    "only the witness or fallback named in genesis may issue a decision"
+                )
             }
             Self::NotPlayer => write!(f, "only a seated player may object"),
             Self::WrongAgreement => write!(
@@ -244,6 +258,11 @@ impl std::fmt::Display for V1SignError {
                 f,
                 "witness decision names logic other than the genesis-pinned logic"
             ),
+            Self::NotReceiptIssuer => write!(
+                f,
+                "only the receipt issuer named in genesis may sign receipts and closures"
+            ),
+            Self::InvalidTerms(error) => write!(f, "unusable witness terms: {error}"),
         }
     }
 }

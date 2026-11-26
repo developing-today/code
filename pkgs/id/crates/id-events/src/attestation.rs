@@ -9,7 +9,8 @@
 //!
 //! - **Genesis agreement** (kind `attestation.genesis`): one event per
 //!   player, both signing the identical agreement body
-//!   `{game_id, logic_hash, players, witness, objection_window_secs}`.
+//!   `{game_id, logic_hash, players, witness, objection_window_secs}`,
+//!   plus the optional v1 `witness_terms` (omitted when unset).
 //!   The witness slot is present and unused in this PoC; the objection
 //!   window is a parameter only (objection handling is #2038/#2039).
 //! - **Result claim** (kind `attestation.claim`): one event per player
@@ -80,6 +81,11 @@ pub struct GenesisAgreement {
     /// The objection window parameter, in seconds. Present per #2037;
     /// objection handling itself is out of scope (#2038/#2039).
     pub objection_window_secs: u64,
+    /// The v1 witness fallback and receipt terms (#2039 phase 5), pinned
+    /// before play. Absent from the signed body when `None`, so agreements
+    /// signed before phase 5 keep their bytes and their agreement hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_terms: Option<v1::receipt::WitnessTerms>,
 }
 
 impl GenesisAgreement {
@@ -459,6 +465,7 @@ mod tests {
             players: [[1; 32], [2; 32]],
             witness: None,
             objection_window_secs: 60,
+            witness_terms: None,
         };
         let body = agreement.body().unwrap();
         assert_eq!(GenesisAgreement::from_body(&body).unwrap(), agreement);
