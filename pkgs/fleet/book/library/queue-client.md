@@ -61,7 +61,7 @@ pub fn run(args: &[String]) -> i32   // fleet_queue::client::run
 
 `args` is the argument vector _after_ the domain name (`fleet queue
 <args…>` / `repo-queue <args…>`), and the return is the process exit
-code. Inside, `run` is one match over 32 verb names — the same 32 names
+code. Inside, `run` is one match over 40 verb names — the same 40 names
 the registry lists as the queue domain's subcommands — dispatching to a
 `cmd_<verb>` handler in the client modules (`commands_lifecycle.rs` for
 lifecycle verbs, `commands_query.rs` for query verbs, `fallback_stack.rs`
