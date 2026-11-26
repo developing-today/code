@@ -192,7 +192,7 @@ fn sync_world_sizes(
         return;
     };
     let grid = resize_dimensions_logical(
-        window.width() * (100.0 - crate::directory::DIRECTORY_PANEL_PERCENT) / 100.0,
+        window.width() * (100.0 - id_native_shell::directory::DIRECTORY_PANEL_PERCENT) / 100.0,
         window.height(),
         CELL_WIDTH_PX,
         CELL_HEIGHT_PX,

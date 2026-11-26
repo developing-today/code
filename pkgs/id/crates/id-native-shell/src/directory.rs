@@ -688,10 +688,10 @@ pub const fn key_code_to_directory_key(code: KeyCode) -> Option<DirectoryKey> {
 pub struct DirectoryInputSystems;
 
 /// Share of the window reserved for the accessible world directory.
-pub(crate) const DIRECTORY_PANEL_PERCENT: f32 = 28.0;
+pub const DIRECTORY_PANEL_PERCENT: f32 = 28.0;
 
 #[derive(Resource)]
-pub(crate) struct DirectoryPanelLayout;
+pub struct DirectoryPanelLayout;
 
 /// Marker for the root UI node the directory presenter owns.
 #[derive(Component)]
