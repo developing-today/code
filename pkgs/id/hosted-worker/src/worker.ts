@@ -13,7 +13,8 @@
 
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
-import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import { FENCE_RETRY_AFTER_SECONDS, HDR_MIGRATION } from "./migration-fence.ts";
 
 export { UserDO } from "./user-do.ts";
 // The tenancy control plane's per-tenant operations object (E2 of
@@ -30,10 +31,10 @@ interface Env {
   USER_CEILING_BYTES?: string;
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extra },
   });
 }
 
@@ -44,7 +45,8 @@ export default {
       const jurisdiction = parseJurisdiction(req.headers.get("x-jurisdiction"));
       if (env.HOSTED_DIRECTORY) {
         // Read-only routing guard (#3399): resolve the binding to a
-        // validated stable record. Never signup, inventory, provision,
+        // validated record. A migrating record (#3404) still routes to
+        // its active jurisdiction until the switch. Never signup, inventory, provision,
         // enable, or migrate here — reads only. Missing, legacy-only,
         // mismatched, and corrupt records all fail closed before any
         // namespace access.
@@ -81,6 +83,16 @@ export default {
           if (error instanceof FailClosed) throw error;
           throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
         }
+        if (record.phase === "switched") {
+          // The directory names the target as authoritative but the
+          // target is not serving yet (#3404): neither side may take the
+          // request, so refuse it as retryable instead of routing.
+          return json(
+            { error: "migration_switching", message: "account is switching jurisdiction; retry shortly" },
+            503,
+            { "retry-after": String(FENCE_RETRY_AFTER_SECONDS) },
+          );
+        }
         if (record.jurisdiction !== jurisdiction) {
           throw new FailClosed(403, "directory_jurisdiction_mismatch", "request jurisdiction does not match the persisted account; failing closed");
         }
@@ -107,6 +119,19 @@ export default {
       headers.delete("x-iroh-id");
       headers.delete(HDR_IROH);
       if (irohId !== null) headers.set(HDR_IROH, irohId);
+      // The binding's client-side-encryption choice (§7 of the
+      // #2258 spec): consumed from the internal caller like the
+      // ID key — the binding record is its source — stripped of
+      // any client-supplied copy under either name, and re-set
+      // as an internal header. Absent stays absent; the DO binds
+      // its persisted default and fails closed on disagreement.
+      const cse = req.headers.get("x-client-side-encryption");
+      headers.delete("x-client-side-encryption");
+      headers.delete(HDR_CSE);
+      if (cse !== null) headers.set(HDR_CSE, cse);
+      // The migration principal (#3404) is set only by the migration
+      // coordinator on its own stub calls, never through this door.
+      headers.delete(HDR_MIGRATION);
       headers.set(HDR_BINDING, bindingId);
       headers.set(HDR_JURISDICTION, jurisdiction);
       headers.set(HDR_ROUTED, "restricted");

@@ -1354,7 +1354,7 @@ mod tests {
             &ViewRequest::new(T0),
         );
         assert_eq!(view.totals, Totals::default());
-        assert!(view.groups.is_empty());
+        assert_eq!(view.groups, [] as [ProgramGroup; 0]);
         let text = view.to_text();
         assert!(text.contains("0 worlds, 0 program versions"));
         assert!(text.contains("Worlds\n  none\n"));

@@ -52,13 +52,13 @@ export const TOOLS = [
         body: { type: "string", description: "Message text.", maxLength: MAX_BODY },
         to: {
           anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, maxItems: 200 }],
-          description: `Recipients: ${ADDRESS_HELP}; a list or comma-separated. Default drew.`,
+          description: `Recipients: ${ADDRESS_HELP}; a list or comma-separated. Default owner.`,
         },
         kind: {
           type: "string",
           enum: ["message", "instruction"],
           default: "message",
-          description: "instruction: something for the recipient to act on (not for drew).",
+          description: "instruction: something for the recipient to act on (not for the owner).",
         },
         reply_to: { type: "integer", minimum: 1, description: "Id of an inbound message this answers." },
         sender: { type: "string", description: "Optional label for who is sending, e.g. 'claude' or 'chatgpt'." },

@@ -110,6 +110,56 @@ pub fn inspect_key(algo: AlgorithmId, pkcs8: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+/// DER-encode the X.509 SubjectPublicKeyInfo (RFC 5280 §4.1.2.7) for a
+/// public key as [`inspect_key`] returns it: the raw Ed25519 point, the
+/// uncompressed P-256 point, the PKCS#1 `RSAPublicKey`, or the FIPS 204
+/// ML-DSA-44 public key. The algorithm identifiers are the registry's
+/// SPKI OIDs: `rsaEncryption` carries a NULL parameter, P-256 carries
+/// the `prime256v1` named curve, and Ed25519 / ML-DSA-44 (RFC 8410,
+/// RFC 9881) carry none.
+pub fn public_key_spki_der(algo: AlgorithmId, public_key: &[u8]) -> Vec<u8> {
+    const ED25519: &[u8] = &[0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70];
+    const P256: &[u8] = &[
+        0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86,
+        0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+    ];
+    const RSA: &[u8] = &[
+        0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+    ];
+    const ML_DSA_44: &[u8] = &[
+        0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11,
+    ];
+    let algorithm_identifier = match algo {
+        AlgorithmId::Ed25519 => ED25519,
+        AlgorithmId::P256 => P256,
+        AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => RSA,
+        AlgorithmId::MlDsa44 => ML_DSA_44,
+    };
+    let mut bit_string = Vec::with_capacity(public_key.len() + 1);
+    bit_string.push(0); // no unused bits
+    bit_string.extend_from_slice(public_key);
+    let mut body = algorithm_identifier.to_vec();
+    der_push(&mut body, 0x03, &bit_string);
+    let mut spki = Vec::with_capacity(body.len() + 4);
+    der_push(&mut spki, 0x30, &body);
+    spki
+}
+
+/// Append one DER TLV (definite-length encoding) to `out`.
+fn der_push(out: &mut Vec<u8>, tag: u8, content: &[u8]) {
+    out.push(tag);
+    let len = content.len();
+    if len < 0x80 {
+        out.push(len as u8);
+    } else {
+        let bytes = len.to_be_bytes();
+        let skip = bytes.iter().take_while(|b| **b == 0).count();
+        out.push(0x80 | (bytes.len() - skip) as u8);
+        out.extend_from_slice(&bytes[skip..]);
+    }
+    out.extend_from_slice(content);
+}
+
 impl rcgen::PublicKeyData for MlDsa44Signer {
     fn der_bytes(&self) -> &[u8] {
         &self.public_key

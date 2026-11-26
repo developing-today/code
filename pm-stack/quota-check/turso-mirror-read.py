@@ -115,6 +115,8 @@ def pipeline(base_url, token, sql):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+            "User-Agent": "fleet-d1-client/1",
         },
     )
     try:

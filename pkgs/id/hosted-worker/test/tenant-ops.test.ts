@@ -249,6 +249,22 @@ test("the §4 lifecycle, end to end, with two-phase deletion", async () => {
   ]);
 });
 
+test("tenant requests require an active account in the tenancy registry", async () => {
+  // Oracle: the authoritative account.state and binding.status rows in
+  // the real tenancy migration jointly decide whether provisioning may start.
+  const db = freshTenancyDb();
+  seedBinding(db);
+  db.prepare("UPDATE account SET state = 'suspended' WHERE account_id = ?").run(ACCOUNT);
+  const ops = makeOps(db);
+
+  const res = await post(ops, "/v1/tenant/request", OWNER, { jurisdiction: "us", at: T0 });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.state, "failed");
+  const events = db.prepare("SELECT detail FROM ops_journal WHERE event = 'failed'").all() as { detail: string }[];
+  assert.equal(JSON.parse(events[0].detail).reason, "account_not_active");
+});
+
 test("concurrent sign-ups create exactly one database (§11 item 2)", async () => {
   const db = freshTenancyDb();
   seedBinding(db);
@@ -501,6 +517,45 @@ test("deletion refuses before export-only and inside the cooling-off window", as
   assert.equal(res.body.error, "cooling_off");
   assert.deepEqual(provider.dropCalls, [], "the drop waits for the window");
   assert.equal(tenantRow(db)?.state, "deleting");
+});
+
+test("deletion refuses when the recorded request time is missing or unreadable (#15028)", async () => {
+  for (const corrupt of ["not-a-date", null]) {
+    const db = freshTenancyDb();
+    seedBinding(db);
+    const provider = new FakeProvider();
+    const ops = makeOps(db, { TENANT_DB_PROVIDER: provider, TENANT_DELETION_COOLING_OFF_MS: "60000" });
+    await provisionedToActive(db, ops);
+    await post(ops, "/v1/tenant/export-only", OWNER);
+    let res = await post(ops, "/v1/tenant/delete", OWNER, { at: "2026-11-25T00:00:00.000Z" });
+    assert.equal(res.body.state, "deleting");
+    if (corrupt === null) {
+      db.exec("DELETE FROM ops_meta WHERE name = 'deletion_requested_at'");
+    } else {
+      db.prepare("UPDATE ops_meta SET value = ? WHERE name = 'deletion_requested_at'").run(corrupt);
+    }
+    // Well past the window by the clock, but the start cannot be proven.
+    res = await post(ops, "/v1/tenant/delete", PLATFORM, { at: "2026-11-26T00:00:00.000Z" });
+    assert.equal(res.status, 409, `refuses with ${String(corrupt)} as the request time`);
+    assert.equal(res.body.error, "cooling_off_unproven");
+    assert.deepEqual(provider.dropCalls, [], "nothing is dropped without a provable window");
+    assert.equal(tenantRow(db)?.state, "deleting");
+  }
+});
+
+test("deletion completes once a valid request time is past the window", async () => {
+  const db = freshTenancyDb();
+  seedBinding(db);
+  const provider = new FakeProvider();
+  const ops = makeOps(db, { TENANT_DB_PROVIDER: provider, TENANT_DELETION_COOLING_OFF_MS: "60000" });
+  await provisionedToActive(db, ops);
+  await post(ops, "/v1/tenant/export-only", OWNER);
+  await post(ops, "/v1/tenant/delete", OWNER, { at: "2026-11-25T00:00:00.000Z" });
+  let res = await post(ops, "/v1/tenant/delete", PLATFORM, { at: "2026-11-25T00:00:59.999Z" });
+  assert.equal(res.body.error, "cooling_off", "one millisecond short still refuses");
+  res = await post(ops, "/v1/tenant/delete", PLATFORM, { at: "2026-11-25T00:01:00.000Z" });
+  assert.equal(res.body.state, "deleted");
+  assert.equal(provider.dropCalls.length, 1);
 });
 
 test("transitions from the wrong state refuse, and repeats are idempotent", async () => {

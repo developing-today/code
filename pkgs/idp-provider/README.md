@@ -31,16 +31,21 @@ SSO never rebinds an id key (#2060).
 - ID token claims carry the account's **#1253 role set** (owner /
   orchestrator / agent / read-only) from the account row, so
   consumers check roles server-side.
-- One account row (the owner) with linked external identities;
-  roles live on the account, not the door. The stand-up door is the
-  design's _devtoday local_ identity: `GET /authorize` with valid
-  client parameters serves a login form that POSTs back to
-  `/authorize`; the presented credential is verified against a
-  PBKDF2-HMAC-SHA256 hash held in the **on-host** provider config
-  (never in the repo — generate it on-host with
-  `IDP_LOCAL_CREDENTIAL=... idp-provider hash-credential`).
-- **Deny-by-default allowlist** holding only the owner's identity
-  keys, enforced in the provider before the credential is checked.
+- One config account row (the owner) with its declared linked
+  external identities; roles live on the account, not the door.
+  Any other allowlisted identity enrolls at first door login into
+  its own account holding only `read-only` (#15249, design #9086
+  §4.4); enrolled accounts live in the identity store, and grants
+  beyond read-only are explicit operator actions afterwards. The
+  stand-up door is the design's _devtoday local_ identity:
+  `GET /authorize` with valid client parameters serves a login
+  form that POSTs back to `/authorize`; the presented credential
+  is verified against a PBKDF2-HMAC-SHA256 hash held in the
+  **on-host** provider config (never in the repo — generate it
+  on-host with `IDP_LOCAL_CREDENTIAL=... idp-provider hash-credential`).
+- **Deny-by-default allowlist** of identity keys permitted to
+  sign in or enroll, enforced in the provider before the
+  credential is checked.
   **Every** authorize/token attempt — allowed, denied, or login-form
   challenge — is appended to an append-only audit record (SQLite;
   UPDATE/DELETE are blocked by triggers, and a failed audit write
@@ -142,9 +147,12 @@ upstream code, and verifies the upstream identity:
 
 The deny-by-default allowlist is then enforced in the provider,
 exactly as for the local door, and a code of _our own_ is minted
-into the same code store — a door login's tokens are
-indistinguishable from a local login's (same account `sub`, same
-role claims). Door client secrets are never in the config file:
+into the same code store, bound to the account the identity
+resolved to — the config account for its declared identities, the
+identity's own enrolled read-only account otherwise (#15249) —
+so a door login's tokens carry that account's `sub` and role
+claims in the same shape as a local login's. Door client secrets
+are never in the config file:
 each door names an environment variable (`client_secret_env`) the
 launcher fills from the vault by name (`idp.github.client-secret`
 → `IDP_GITHUB_CLIENT_SECRET`, `idp.google.client-secret` →
@@ -164,14 +172,19 @@ an append-only event history (`seed` / `link` / `relink` /
 `unlink`, trigger-protected like the audit table). Rows are never
 hard-deleted while the account lives.
 
-- An allowlisted identity arriving at a door for the first time is
-  **linked by that login** (actor `door-login`); the event lands in
-  the identity history _and_ the audit record.
+- An allowlisted identity arriving at a door for the first time
+  **enrolls by that login** (actor `door-login`): unless it is one
+  of the config account's declared identities (seeded), it is
+  linked to a fresh account of its own holding only `read-only`
+  (#15249); the event lands in the identity history _and_ the
+  audit record.
 - An operator unlinks with `idp-provider unlink <provider>
-<subject>` (relink: `link`; inspect: `links`). An unlinked
-  identity's door login is denied (`identity_unlinked`, audited) —
-  a login never silently undoes an unlink — while the account
-  stays reachable via the other doors.
+<subject>` (relink: `link`, which also moves the identity onto
+  the config account — the explicit grant path for an enrolled
+  identity; inspect: `links`). An unlinked identity's door login
+  is denied (`identity_unlinked`, audited) — a login never
+  silently undoes an unlink — while the account stays reachable
+  via the other doors.
 
 ## Key rollover (Slice 5)
 

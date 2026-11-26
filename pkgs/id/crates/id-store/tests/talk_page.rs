@@ -11,7 +11,7 @@
 use ed25519_dalek::SigningKey;
 use id_core::id_shape::{ContentId, HashProfile};
 use id_store::talk_page::{
-    ChainError, ChangeKind, ChangelogEntry, EntryDraft, EntryRef, PostDraft, Redaction,
+    ChainError, ChangeKind, ChangelogEntry, EntryDraft, EntryRef, OpLogRange, PostDraft, Redaction,
     RedactionReason, RedactionTarget, Rendered, SignedEntry, TalkPageError, TalkPost, render_post,
     render_summary, verify_chain, verify_chain_bytes, verify_chain_to_head,
 };
@@ -665,4 +665,83 @@ fn redact_entries_round_trip_through_storage() {
             reason: RedactionReason::AuthorRequest,
         })
     );
+}
+
+#[test]
+fn a_session_entry_names_its_op_log_range_and_chains() {
+    // A multiplayer session that produced three operations ends with one
+    // `session` entry naming that run, chained after the earlier history.
+    let range = OpLogRange::single([1; 32])
+        .extended([2; 32])
+        .extended([3; 32]);
+    assert_eq!(
+        range,
+        OpLogRange {
+            first: [1; 32],
+            last: [3; 32],
+            count: 3,
+        }
+    );
+    let mut entries = chain(2);
+    let session = SignedEntry::sign(
+        EntryDraft::after(&entries[1], ChangeKind::Session, 30)
+            .unwrap()
+            .with_op_log(range),
+        &key(9),
+    )
+    .unwrap()
+    .receive(31);
+    assert_eq!(session.signed().op_log(), Some(range));
+    entries.push(session.clone());
+    assert!(verify_chain(OBJECT, None, &entries).is_ok());
+
+    // It survives storage, op-log range included.
+    let decoded =
+        ChangelogEntry::from_canonical_bytes(&session.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(decoded, session);
+    assert_eq!(decoded.signed().op_log(), Some(range));
+    assert_eq!(decoded.signed().refs(), &[EntryRef::OpLog(range)]);
+}
+
+#[test]
+fn op_log_rules_are_enforced() {
+    let actor = key(9);
+    let entries = chain(1);
+    let range = OpLogRange::single([4; 32]);
+
+    // Only a session entry names an op-log range.
+    let smuggled = EntryDraft::after(&entries[0], ChangeKind::Edit, 1)
+        .unwrap()
+        .with_op_log(range);
+    assert!(SignedEntry::sign(smuggled, &actor).is_err());
+
+    // A session entry names at most one.
+    let twice = EntryDraft::after(&entries[0], ChangeKind::Session, 1)
+        .unwrap()
+        .with_op_log(range)
+        .with_op_log(range);
+    assert!(SignedEntry::sign(twice, &actor).is_err());
+
+    // A range covers at least one operation, and a one-operation range
+    // starts and ends at it.
+    let empty = EntryDraft::after(&entries[0], ChangeKind::Session, 1)
+        .unwrap()
+        .with_op_log(OpLogRange {
+            first: [4; 32],
+            last: [4; 32],
+            count: 0,
+        });
+    assert!(SignedEntry::sign(empty, &actor).is_err());
+    let split = EntryDraft::after(&entries[0], ChangeKind::Session, 1)
+        .unwrap()
+        .with_op_log(OpLogRange {
+            first: [4; 32],
+            last: [5; 32],
+            count: 1,
+        });
+    assert!(SignedEntry::sign(split, &actor).is_err());
+
+    // A session entry that names no range stays valid, as before.
+    let plain = EntryDraft::after(&entries[0], ChangeKind::Session, 1).unwrap();
+    assert!(SignedEntry::sign(plain, &actor).is_ok());
 }

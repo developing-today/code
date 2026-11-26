@@ -322,6 +322,10 @@ export const SUBROUTE_PARENTS: { name: string; prefix: string; parent: string }[
   // #1497: Projects merged into Program — /projects redirects to the
   // pool section of /program, which is its manifest parent.
   { name: "projects-merge", prefix: "/projects", parent: "/program" },
+  // #15019: C6 incident pages are reached from the incident cards
+  // on /alerts (threshold-meeting health-hook incidents link there);
+  // the pages also cross-link each other from Related incidents.
+  { name: "reports-incident", prefix: "/reports/incident/", parent: "/alerts" },
 ];
 
 /**

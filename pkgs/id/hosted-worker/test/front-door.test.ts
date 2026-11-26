@@ -205,7 +205,7 @@ for (const scenario of [
     ["pending jurisdiction", "jurisdiction_pending", "eu"],
     ["migration id", "migration_id", "migration-1"],
     ["migration phase", "phase", "moving"],
-    ["routing epoch", "routing_epoch", 1],
+    ["routing epoch", "routing_epoch", -1],
     ["corrupt subject", "subject_key", "   "],
     ["corrupt jurisdiction", "jurisdiction", "unknown"],
   ].map(([name, column, value]) => ({ name, column, value, status: 503, error: "invalid_directory_record" })),
@@ -245,3 +245,59 @@ for (const scenario of [
     } finally { db.close(); }
   });
 }
+
+test("a client cannot reach migration control: the front door strips the principal header (#3404)", async () => {
+  const { env } = makeEnv();
+  const r = await worker.fetch(
+    front("/v1/migration/freeze", {
+      method: "POST",
+      headers: { "x-hosted-migration-principal": "1", "content-type": "application/json" },
+      body: JSON.stringify({ migration_id: "m-1", routing_epoch: 1 }),
+    }),
+    env,
+  );
+  assert.equal(r.status, 403);
+  assert.equal(((await r.json()) as { error: string }).error, "migration_principal_required");
+  const write = await worker.fetch(front("/v1/kv/note", { method: "PUT", body: "still open" }), env);
+  assert.equal(write.status, 200, "nothing was frozen");
+});
+
+test("directory guard routes a migrating account to its source until the switch, then refuses as retryable (#3404)", async () => {
+  const { db, adapter, directory } = directoryFixture();
+  try {
+    let record = await directory.signup({ subjectKey: "subject", bindingId: A, jurisdiction: "us" });
+    record = await directory.transition(record, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
+    record = await directory.transition(record, { type: "freeze-acknowledged", migrationId: "m-1" });
+    record = await directory.transition(record, { type: "snapshot-verified", migrationId: "m-1" });
+    {
+      const { env, calls } = makeEnv();
+      const response = await worker.fetch(front("/v1/state"), { ...env, HOSTED_DIRECTORY: adapter });
+      assert.equal(response.status, 200, "a verified migration still routes to the source");
+      assert.deepEqual(calls.jurisdiction, ["us"]);
+    }
+
+    record = await directory.transition(record, { type: "switch", migrationId: "m-1" });
+    for (const j of ["us", "eu"]) {
+      const { env, calls } = makeEnv();
+      const req = front("/v1/state");
+      req.headers.set("x-jurisdiction", j);
+      const response = await worker.fetch(req, { ...env, HOSTED_DIRECTORY: adapter });
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("retry-after"), "30");
+      assert.equal(((await response.json()) as { error: string }).error, "migration_switching");
+      assert.equal(calls.stub, 0, "neither side serves during the switch");
+    }
+
+    await directory.transition(record, { type: "complete", migrationId: "m-1" });
+    {
+      const { env, calls } = makeEnv();
+      const req = front("/v1/state");
+      req.headers.set("x-jurisdiction", "eu");
+      const response = await worker.fetch(req, { ...env, HOSTED_DIRECTORY: adapter });
+      assert.equal(response.status, 200, "a completed migration routes to the target");
+      assert.deepEqual(calls.jurisdiction, ["eu"]);
+      const stale = await worker.fetch(front("/v1/state"), { ...makeEnv().env, HOSTED_DIRECTORY: adapter });
+      assert.equal(stale.status, 403, "the old jurisdiction no longer routes");
+    }
+  } finally { db.close(); }
+});
