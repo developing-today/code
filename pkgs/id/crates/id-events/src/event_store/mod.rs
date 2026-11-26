@@ -61,6 +61,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use p2panda_core::{Hash, SeqNum};
 use redb::{
@@ -69,9 +70,12 @@ use redb::{
 };
 
 use id_store::chain::{self, Event};
+use id_store::event_rows::{RowRead, RowWrite, with_write_transaction};
+use id_store::turso::PipelineTransport;
 
 mod anchors;
 mod author_events;
+mod backend;
 mod chat;
 mod claims;
 mod compaction;
@@ -80,13 +84,32 @@ mod ingest;
 pub mod range;
 mod resolve;
 pub mod sync;
+mod threads;
 mod validity;
 mod waiting_rows;
 mod writer_set;
 
+#[cfg(test)]
+mod persistence_tests;
+
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
+pub use backend::{EventStoreStorage, TenantBackend};
 pub use compaction::CompactionPolicy;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+
+/// Maximum number of group rosters retained by the per-generation memo.
+pub const MAX_ROSTER_CACHE_ENTRIES: usize = 128;
+/// Roster results larger than this are returned but are not memoized.
+pub const MAX_CACHED_ROSTER_AUTHORS: usize = 128;
+/// Maximum key and author payload bytes retained by the roster memo.
+pub const MAX_ROSTER_CACHE_PAYLOAD_BYTES: usize = MAX_ROSTER_CACHE_ENTRIES
+    * (std::mem::size_of::<Hash>() + MAX_CACHED_ROSTER_AUTHORS * std::mem::size_of::<AuthorKey>());
+/// Maximum stored-event decodes retained by the per-generation memo.
+const MAX_STORED_EVENT_CACHE_ENTRIES: usize = 256;
+/// Maximum encoded event bytes retained by the stored-event memo.
+const MAX_STORED_EVENT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+/// Larger events are verified on every read and are never memoized.
+const MAX_CACHED_STORED_EVENT_BYTES: usize = 64 * 1024;
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
@@ -96,7 +119,65 @@ pub use validity::Validity;
 use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
-impl EventStore {
+impl<B: EventStoreStorage> EventStore<B> {
+    /// Decode a store row through a bounded, generation-aware memo. The
+    /// digest is always recomputed from the bytes read, so a rewritten row
+    /// misses the memo and still takes the full verified decode path.
+    fn decode_stored_event(&self, bytes: &[u8]) -> Result<Event, StoreError> {
+        let digest = Hash::digest(bytes);
+        {
+            let mut cache = self.lock_stored_event_cache();
+            if cache.generation != self.generation {
+                cache.entries.clear();
+                cache.order.clear();
+                cache.encoded_bytes = 0;
+                cache.generation = self.generation;
+            }
+            if let Some(event) = cache.entries.get(&digest).map(|(event, _)| event.clone()) {
+                cache.cache_hits = cache.cache_hits.saturating_add(1);
+                return Ok(event);
+            }
+        }
+
+        let event = decode_stored(bytes)?;
+        let encoded_len = bytes.len();
+        let mut cache = self.lock_stored_event_cache();
+        if cache.generation != self.generation {
+            cache.entries.clear();
+            cache.order.clear();
+            cache.encoded_bytes = 0;
+            cache.generation = self.generation;
+        }
+        cache.verified_decodes = cache.verified_decodes.saturating_add(1);
+        if let Some(cached) = cache.entries.get(&digest).map(|(event, _)| event.clone()) {
+            // A concurrent reader verified and inserted the same bytes while
+            // this reader was decoding. Prefer the cache for all future reads.
+            cache.cache_hits = cache.cache_hits.saturating_add(1);
+            return Ok(cached);
+        }
+        if encoded_len <= MAX_CACHED_STORED_EVENT_BYTES {
+            while cache.entries.len() >= MAX_STORED_EVENT_CACHE_ENTRIES
+                || cache.encoded_bytes.saturating_add(encoded_len) > MAX_STORED_EVENT_CACHE_BYTES
+            {
+                let Some(oldest) = cache.order.pop_front() else {
+                    break;
+                };
+                if let Some((_, old_len)) = cache.entries.remove(&oldest) {
+                    cache.encoded_bytes = cache.encoded_bytes.saturating_sub(old_len);
+                }
+            }
+            cache.order.push_back(digest);
+            cache.entries.insert(digest, (event.clone(), encoded_len));
+            cache.encoded_bytes = cache.encoded_bytes.saturating_add(encoded_len);
+        }
+        Ok(event)
+    }
+
+    fn lock_stored_event_cache(&self) -> std::sync::MutexGuard<'_, StoredEventCache> {
+        self.stored_event_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
     /// Adds `block` to the operator block list, replacing any row that names
     /// the same kind and value.
     ///
@@ -104,13 +185,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the write fails.
     pub fn add_block(&self, block: &Block) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut blocks = txn.open_table(BLOCKS)?;
-            blocks.insert(block.key().as_slice(), block.encode().as_slice())?;
-        }
-        txn.commit()?;
-        Ok(())
+        let key = block.key();
+        let value = block.encode();
+        self.db.with_write(|rows| {
+            rows.put("blocks", &key, &value)?;
+            Ok(((), true))
+        })
     }
 
     /// Removes the block naming (`kind`, `value`), returning whether a row
@@ -123,13 +203,13 @@ impl EventStore {
         let mut key = Vec::with_capacity(1 + value.len());
         key.push(kind.tag());
         key.extend_from_slice(value);
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut blocks = txn.open_table(BLOCKS)?;
-            blocks.remove(key.as_slice())?.is_some()
-        };
-        txn.commit()?;
-        Ok(removed)
+        self.db.with_write(|rows| {
+            let removed = rows.get("blocks", &key)?.is_some();
+            if removed {
+                rows.remove("blocks", &key)?;
+            }
+            Ok((removed, removed))
+        })
     }
 
     /// Every block on the list, expired ones included, in (kind, value)
@@ -139,14 +219,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
     pub fn blocks(&self) -> Result<Vec<Block>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let blocks = txn.open_table(BLOCKS)?;
-        let mut found = Vec::new();
-        for row in blocks.iter()? {
-            let (key, value) = row?;
-            found.push(Block::decode(key.value(), value.value())?);
-        }
-        Ok(found)
+        self.db.with_read(|rows| {
+            rows.scan_all("blocks")?
+                .into_iter()
+                .map(|(key, value)| Block::decode(&key, &value))
+                .collect()
+        })
     }
 
     /// The block naming (`kind`, `value`) if one is on the list and still
@@ -164,13 +242,13 @@ impl EventStore {
         let mut key = Vec::with_capacity(1 + value.len());
         key.push(kind.tag());
         key.extend_from_slice(value);
-        let txn = self.db.begin_read()?;
-        let blocks = txn.open_table(BLOCKS)?;
-        let Some(row) = blocks.get(key.as_slice())? else {
-            return Ok(None);
-        };
-        let block = Block::decode(&key, row.value())?;
-        Ok(block.is_active(now_ms).then_some(block))
+        self.db.with_read(|rows| {
+            let Some(row) = rows.get("blocks", &key)? else {
+                return Ok(None);
+            };
+            let block = Block::decode(&key, &row)?;
+            Ok(block.is_active(now_ms).then_some(block))
+        })
     }
 
     /// Whether (`kind`, `value`) is blocked at `now_ms`.
@@ -196,6 +274,9 @@ pub const TEMP_NAME: &str = "events.redb.tmp";
 /// The format row in `meta`. A store with another format is refused.
 const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
+/// The row store's `format` key belongs to `TenantStore`; keep the shared
+/// event-store version in a separate metadata slot on that backend.
+const TENANT_EVENT_FORMAT_KEY: &[u8] = b"event_format";
 /// The format before the `bodies` table (#4837). A v8 store is a v9 store
 /// with no `bodies` table and nothing else different, and v9 allows an event
 /// with no body row. So a v8 store is upgraded in place when it is opened:
@@ -398,8 +479,8 @@ pub struct ForkProof {
 
 /// The event store. One redb file, opened by one process at a time.
 #[derive(Debug)]
-pub struct EventStore {
-    db: Database,
+pub struct EventStore<B = Database> {
+    db: B,
     /// The caps the pool enforces. Kept, so the pool can be rebuilt from its rows.
     limits: WaitingLimits,
     /// The events held waiting or parked. The `waiting` rows mirror them.
@@ -408,6 +489,183 @@ pub struct EventStore {
     next_arrival: u64,
     /// Set when a write failed and the pool could not be rebuilt. Calls fail until reopen.
     unusable: bool,
+    /// The stored-state generation: bumped on every committed change to
+    /// the stored event set (an ingest that stored or applied an event,
+    /// or a prune). Memoized reads key their entries on it, so any
+    /// committed change invalidates them (#13043).
+    generation: u64,
+    /// Group rosters memoized at a store generation (#13043).
+    roster_cache: Mutex<RosterCache>,
+    /// Full verified stored-event decodes memoized by byte digest and generation (#15328).
+    stored_event_cache: Mutex<StoredEventCache>,
+}
+
+/// Event-store semantics over a tenant-backed row transaction driver.
+pub type TenantEventStore<T> = EventStore<TenantBackend<T>>;
+
+impl<T: PipelineTransport> EventStore<TenantBackend<T>> {
+    /// Opens a TenantStore-backed event store. The tenant row schema is owned
+    /// by `TenantStore`; the event format marker and the event semantics stay
+    /// in the shared id-events layer.
+    pub fn open_tenant(
+        transport: T,
+        limits: WaitingLimits,
+        now_ms: u64,
+    ) -> Result<Self, StoreError> {
+        let backend = TenantBackend::open(transport)?;
+        backend.with_write(|rows| {
+            let mut txn = &mut *rows;
+            match txn.get("meta", TENANT_EVENT_FORMAT_KEY)? {
+                None => {
+                    if !txn.scan_page("events", None, 1)?.is_empty() {
+                        return Err(StoreError::NotAStore(
+                            "event rows exist without a format marker".to_owned(),
+                        ));
+                    }
+                    txn.put("meta", TENANT_EVENT_FORMAT_KEY, FORMAT)?;
+                    Ok(((), true))
+                }
+                Some(found) if found == FORMAT => Ok(((), false)),
+                Some(found) if found == FORMAT_V8 => {
+                    txn.put("meta", TENANT_EVENT_FORMAT_KEY, FORMAT)?;
+                    Ok(((), true))
+                }
+                Some(found) => Err(StoreError::NotAStore(format!(
+                    "unexpected event-store format {}",
+                    String::from_utf8_lossy(&found)
+                ))),
+            }
+        })?;
+        Self::from_backend(backend, limits, now_ms)
+    }
+}
+
+impl<B: EventStoreStorage> EventStore<B> {
+    /// Builds the shared event-store logic over a backend whose event tables
+    /// are already initialized. Both native and tenant stores use this path
+    /// for device-operation recovery and waiting-pool reconstruction.
+    pub fn from_backend(db: B, limits: WaitingLimits, now_ms: u64) -> Result<Self, StoreError> {
+        let (recovered, recovery_incomplete) = db.with_write(|rows| {
+            let mut txn = &mut *rows;
+            let needs_recovery = txn.get("meta", DEVICE_OPS_RECOVERED_KEY)?.is_none();
+            let recovery = ingest::recover_device_ops_rows(&mut txn)?;
+            Ok((recovery, needs_recovery))
+        })?;
+        if recovery_incomplete {
+            tracing::warn!(
+                recovered,
+                "device-operation recovery may be incomplete: some stored or held group-event bodies were unavailable"
+            );
+        }
+        let mut store = Self {
+            db,
+            limits,
+            waiting: WaitingPool::new(limits),
+            next_arrival: 0,
+            unusable: false,
+            generation: 0,
+            roster_cache: Mutex::new(RosterCache::default()),
+            stored_event_cache: Mutex::new(StoredEventCache::default()),
+        };
+        store.reload(now_ms)?;
+        Ok(store)
+    }
+
+    /// Rebuilds the waiting pool from the rows, in arrival order, using one
+    /// backend-owned write transaction. Expired or already-decided rows are
+    /// dropped in the same transaction as the rebuilt pool state.
+    fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
+        let limits = self.limits;
+        let mut pool = WaitingPool::new(limits);
+        let mut next_arrival = 0;
+
+        self.db.with_write(|rows| {
+            let mut txn = &mut *rows;
+            let mut dropped = false;
+            for row in waiting_rows::all(&mut txn)? {
+                next_arrival = next_arrival.max(row.arrival.saturating_add(1));
+                if limits.is_due(row.arrived_at, now_ms) {
+                    waiting_rows::drop_held(&mut txn, &row.id)?;
+                    dropped = true;
+                    continue;
+                }
+                let event = row_event(&row)?;
+                if ingest::is_proof_header_rows(&mut txn, &row.author, &row.id)? {
+                    match pool.restore_held_for_good(row.author, row.id, event, row.arrived_at) {
+                        Ok(()) => {
+                            if !row.deps.is_empty() {
+                                let parked = Row {
+                                    deps: Vec::new(),
+                                    ..row
+                                };
+                                waiting_rows::put(&mut txn, &parked)?;
+                                dropped = true;
+                            }
+                        }
+                        Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
+                            waiting_rows::drop_held(&mut txn, &row.id)?;
+                            dropped = true;
+                        }
+                    }
+                    continue;
+                }
+                if ingest::is_present_rows(&mut txn, &row.id)? {
+                    waiting_rows::delete(&mut txn, &row.id)?;
+                    dropped = true;
+                    continue;
+                }
+                for dep in &row.deps {
+                    if ingest::is_present_rows(&mut txn, dep)? {
+                        return Err(corrupt(
+                            "a waiting event waits for a dependency that is present",
+                        ));
+                    }
+                }
+                match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
+                    Ok(()) if pool.contains(&row.id) => {}
+                    Ok(()) | Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
+                        waiting_rows::drop_held(&mut txn, &row.id)?;
+                        dropped = true;
+                    }
+                }
+            }
+            Ok(((), dropped))
+        })?;
+
+        self.waiting = pool;
+        self.next_arrival = next_arrival;
+        Ok(())
+    }
+}
+
+/// Group rosters memoized by [`EventStore::roster`]: resolving a roster
+/// folds the whole store, so a read-heavy caller (the relay gate asks
+/// once per message) is served from here until the store's generation
+/// moves (#13043).
+#[derive(Debug, Default)]
+struct RosterCache {
+    /// The store generation `entries` were resolved at. Entries from
+    /// any other generation are dropped on sight.
+    generation: u64,
+    /// The resolved roster of each group read at `generation`.
+    entries: HashMap<Hash, Vec<AuthorKey>>,
+    /// FIFO insertion order, kept in sync with `entries` for bounded eviction.
+    order: VecDeque<Hash>,
+    /// How many full load-and-resolve runs roster reads have performed.
+    /// A diagnostic: it grows only when a roster is read at a generation
+    /// no entry covers, never per cached read.
+    resolutions: u64,
+}
+
+/// Full verified event decodes memoized by the digest of the bytes actually read.
+#[derive(Debug, Default)]
+struct StoredEventCache {
+    generation: u64,
+    entries: HashMap<Hash, (Event, usize)>,
+    order: VecDeque<Hash>,
+    encoded_bytes: usize,
+    verified_decodes: u64,
+    cache_hits: u64,
 }
 
 impl BlockList for EventStore {
@@ -439,7 +697,7 @@ impl BlockList for EventStore {
     }
 }
 
-impl EventStore {
+impl EventStore<Database> {
     /// Opens the store in `dir`, creating it if the directory has none. `limits` are the caps
     /// on waiting events, and `now_ms` is the clock: the waiting events due at it are dropped.
     ///
@@ -493,6 +751,9 @@ impl EventStore {
             waiting: WaitingPool::new(limits),
             next_arrival: 0,
             unusable: false,
+            generation: 0,
+            roster_cache: Mutex::new(RosterCache::default()),
+            stored_event_cache: Mutex::new(StoredEventCache::default()),
         };
         store.reload(now_ms)?;
         Ok(store)
@@ -514,17 +775,20 @@ impl EventStore {
         txn.commit()?;
         Ok(value)
     }
+}
 
+impl<B: EventStoreStorage> EventStore<B> {
     /// The applied state of `author`'s chain, or `None` if the author has no events.
     ///
     /// # Errors
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn chain(&self, author: &AuthorKey) -> Result<Option<Chain>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let chains = txn.open_table(CHAINS)?;
-        let row = chains.get(author.as_slice())?;
-        row.map(|row| Chain::decode(row.value())).transpose()
+        self.db.with_read(|rows| {
+            rows.get("chains", author.as_slice())?
+                .map(|row| Chain::decode(&row))
+                .transpose()
+        })
     }
 
     /// The applied state of every author's chain, in author order. An author with no applied event
@@ -534,18 +798,17 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn chains(&self) -> Result<Vec<(AuthorKey, Chain)>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let chains = txn.open_table(CHAINS)?;
-        let mut found = Vec::new();
-        for row in chains.iter()? {
-            let (author, state) = row?;
-            let author: AuthorKey = author
-                .value()
-                .try_into()
-                .map_err(|_err| corrupt("a chain row has the wrong author length"))?;
-            found.push((author, Chain::decode(state.value())?));
-        }
-        Ok(found)
+        self.db.with_read(|rows| {
+            rows.scan_all("chains")?
+                .into_iter()
+                .map(|(author, state)| {
+                    let author: AuthorKey = author
+                        .try_into()
+                        .map_err(|_err| corrupt("a chain row has the wrong author length"))?;
+                    Ok((author, Chain::decode(&state)?))
+                })
+                .collect()
+        })
     }
 
     /// Whether the event with this ID applies, in the resolved state.
@@ -554,31 +817,102 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails.
     pub fn event_applied(&self, id: &Hash) -> Result<bool, StoreError> {
-        let txn = self.db.begin_read()?;
-        let applied = txn.open_table(APPLIED)?;
-        let found = applied.get(id.as_bytes().as_slice())?.is_some();
-        Ok(found)
+        self.db
+            .with_read(|rows| Ok(rows.get("applied", id.as_bytes())?.is_some()))
     }
 
     /// The keys that are members of `group` in the resolved state, sorted. A member with access
     /// at the end of the causal history is listed, and a removed member is not.
     ///
+    /// Resolving a roster folds the whole store, so the answer is
+    /// memoized per group at the store's current generation (#13043):
+    /// repeated reads — the relay gate asks once per message — are
+    /// served from the memo until the next committed ingest or prune
+    /// moves the generation, and only the first read at a new
+    /// generation pays the fold. A membership change therefore takes
+    /// effect on the first read after it is ingested, exactly as it
+    /// did when every read resolved the store. The memo retains at
+    /// most [`MAX_ROSTER_CACHE_ENTRIES`] results and skips rosters
+    /// larger than [`MAX_CACHED_ROSTER_AUTHORS`], bounding attacker-
+    /// selected negative entries and cached roster payload.
+    ///
     /// # Errors
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn roster(&self, group: &Hash) -> Result<Vec<AuthorKey>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let (stored, forks, headers) = {
-            let events = txn.open_table(EVENTS)?;
-            let actions = txn.open_table(ACTIONS)?;
-            let device_ops = txn.open_table(DEVICE_OPS)?;
-            let forks = txn.open_table(FORKS)?;
-            let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
-        };
-        let residue = compaction::load_residue_read(&txn)?;
-        let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
-        Ok(resolve::roster_of(&resolved, group))
+        if let Some(roster) = self.cached_roster(group) {
+            return Ok(roster);
+        }
+        let resolved = self.db.with_read(|rows| {
+            let mut txn = &mut *rows;
+            let (stored, forks, headers) = resolve::load(&mut txn)?;
+            let residue = compaction::load_residue_rows(&mut txn)?;
+            resolve::resolve(&stored, &forks, &headers, &residue)
+        })?;
+        let roster = resolve::roster_of(&resolved, group);
+        let mut cache = self.lock_roster_cache();
+        if cache.generation != self.generation {
+            cache.entries.clear();
+            cache.order.clear();
+            cache.generation = self.generation;
+        }
+        if roster.len() <= MAX_CACHED_ROSTER_AUTHORS && !cache.entries.contains_key(group) {
+            while cache.entries.len() >= MAX_ROSTER_CACHE_ENTRIES {
+                if let Some(oldest) = cache.order.pop_front() {
+                    cache.entries.remove(&oldest);
+                }
+            }
+            cache.order.push_back(*group);
+            cache.entries.insert(*group, roster.clone());
+        }
+        cache.resolutions = cache.resolutions.saturating_add(1);
+        Ok(roster)
+    }
+
+    /// The roster of `group` memoized at the store's current
+    /// generation, if a read already resolved it there (#13043).
+    fn cached_roster(&self, group: &Hash) -> Option<Vec<AuthorKey>> {
+        let cache = self.lock_roster_cache();
+        if cache.generation != self.generation {
+            return None;
+        }
+        cache.entries.get(group).cloned()
+    }
+
+    /// The roster cache, recovering a poisoned lock: the cache is a
+    /// memo over the store's own reads, so entries written before a
+    /// panic are still answers the store itself produced, and the
+    /// generation keying drops them at the next committed change.
+    fn lock_roster_cache(&self) -> std::sync::MutexGuard<'_, RosterCache> {
+        self.roster_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// How many full load-and-resolve runs roster reads have performed
+    /// (#13043). Before the roster memo this grew with every read; it
+    /// now grows only on the first roster read at a new store
+    /// generation, so a caller can check that its read rate is not
+    /// turning into whole-store folds.
+    pub fn roster_resolutions(&self) -> u64 {
+        self.lock_roster_cache().resolutions
+    }
+
+    /// Number of roster results retained by the memo at the current generation.
+    pub fn roster_cache_entries(&self) -> usize {
+        self.lock_roster_cache().entries.len()
+    }
+
+    /// Key and author payload bytes retained by the memo. Allocator bookkeeping is excluded;
+    /// both the number of entries and authors per entry have fixed limits.
+    pub fn roster_cache_payload_bytes(&self) -> usize {
+        let cache = self.lock_roster_cache();
+        cache.entries.len() * std::mem::size_of::<Hash>()
+            + cache
+                .entries
+                .values()
+                .map(|roster| roster.len() * std::mem::size_of::<AuthorKey>())
+                .sum::<usize>()
     }
 
     /// The stored event at `(author, seq)`, applied or not.
@@ -587,10 +921,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn event(&self, author: &AuthorKey, seq: SeqNum) -> Result<Option<Event>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let events = txn.open_table(EVENTS)?;
-        let stored = events.get(position_key(author, seq).as_slice())?;
-        stored.map(|bytes| decode_stored(bytes.value())).transpose()
+        let key = position_key(author, seq);
+        self.db.with_read(|rows| {
+            rows.get("events", &key)?
+                .map(|bytes| self.decode_stored_event(&bytes))
+                .transpose()
+        })
     }
 
     /// The stored event with this ID, applied or not.
@@ -599,14 +935,14 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn event_by_id(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let hashes = txn.open_table(HASHES)?;
-        let events = txn.open_table(EVENTS)?;
-        let Some(position) = hashes.get(id.as_bytes().as_slice())? else {
-            return Ok(None);
-        };
-        let stored = events.get(position.value())?;
-        stored.map(|bytes| decode_stored(bytes.value())).transpose()
+        self.db.with_read(|rows| {
+            let Some(position) = rows.get("hashes", id.as_bytes())? else {
+                return Ok(None);
+            };
+            rows.get("events", &position)?
+                .map(|bytes| self.decode_stored_event(&bytes))
+                .transpose()
+        })
     }
 
     /// The stored body of the event with this ID, byte-identical to the body the author's
@@ -618,22 +954,18 @@ impl EventStore {
     /// Returns [`StoreError::MissingBody`] when the event is header-only, its body never
     /// arrived, or no event with this ID is stored; a redb error if the read fails.
     pub fn event_body(&self, id: &Hash) -> Result<Vec<u8>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let bodies = txn.open_table(BODIES)?;
-        match bodies.get(id.as_bytes().as_slice())? {
-            Some(body) => Ok(body.value().to_vec()),
-            None => Err(StoreError::MissingBody { id: *id }),
-        }
+        self.db
+            .with_read(|rows| match rows.get("bodies", id.as_bytes())? {
+                Some(body) => Ok(body),
+                None => Err(StoreError::MissingBody { id: *id }),
+            })
     }
 
     /// The stored body of the event with this ID, or `None` when there is none. The range
     /// sync sender's view of [`EventStore::event_body`]: a missing body is not an error
     /// there, the event simply travels without one, as it did before bodies were carried.
     pub(crate) fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let bodies = txn.open_table(BODIES)?;
-        let stored = bodies.get(id.as_bytes().as_slice())?;
-        Ok(stored.map(|body| body.value().to_vec()))
+        self.db.with_read(|rows| rows.get("bodies", id.as_bytes()))
     }
 
     /// The fork proof that freezes `author`'s chain: the one at the author's lowest fork point, if
@@ -644,9 +976,10 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn fork_proof(&self, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let forks = txn.open_table(FORKS)?;
-        lowest_proof(&forks, author)
+        self.db.with_read(|rows| {
+            let mut txn = &mut *rows;
+            lowest_proof_rows(&mut txn, author)
+        })
     }
 
     /// The positions, as `(author, seq)`, of the stored events in `group`.
@@ -655,15 +988,231 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn group_members(&self, group: &Hash) -> Result<Vec<(AuthorKey, SeqNum)>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let groups = txn.open_multimap_table(GROUPS)?;
-        let mut members = Vec::new();
-        for position in groups.get(group.as_bytes().as_slice())? {
-            members.push(split_position(position?.value())?);
-        }
-        Ok(members)
+        self.db.with_read(|rows| {
+            let mut members = rows
+                .multi_values("groups", group.as_bytes())?
+                .iter()
+                .map(|position| split_position(position))
+                .collect::<Result<Vec<_>, _>>()?;
+            members.sort_unstable();
+            Ok(members)
+        })
     }
 
+    /// Checks the persisted indexes and waiting rows through the selected
+    /// backend. Used by the generic store-traits surface for both native and
+    /// tenant stores.
+    pub(crate) fn check_invariants_backend(&self) -> Result<(), StoreError> {
+        self.db
+            .with_read(|rows| check_invariants_rows(rows, &self.waiting, self.limits))
+    }
+
+    /// Runs one ingest operation inside the backend's owned write transaction.
+    /// On an error the in-memory waiting pool may have moved ahead of storage,
+    /// so rebuild it from the committed rows before allowing another call.
+    fn transact_shared<T>(
+        &mut self,
+        now_ms: u64,
+        op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
+    ) -> Result<T, StoreError> {
+        if self.unusable {
+            return Err(StoreError::Unusable);
+        }
+        let mut changed = false;
+        let result = self.db.with_write(|txn| {
+            let mut mirror = Mirror {
+                txn: &mut *txn,
+                pool: &mut self.waiting,
+                arrivals: &mut self.next_arrival,
+            };
+            let (value, did_change) = op(&mut mirror)?;
+            changed = did_change;
+            Ok((value, did_change))
+        });
+        if result.is_err() && self.reload(now_ms).is_err() {
+            self.unusable = true;
+        }
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        result
+    }
+}
+
+fn check_invariants_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    waiting: &WaitingPool<Hash, Event>,
+    limits: WaitingLimits,
+) -> Result<(), StoreError> {
+    let events: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("events")?.into_iter().collect();
+    let hashes: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("hashes")?.into_iter().collect();
+    let chains: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("chains")?.into_iter().collect();
+    let proof_ids: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("proof_ids")?.into_iter().collect();
+    let proof_headers: HashMap<Vec<u8>, Vec<u8>> =
+        rows.scan_all("proof_headers")?.into_iter().collect();
+    let compacted_rows = compaction::load_residue_rows(rows)?;
+    let compacted: HashMap<Vec<u8>, compaction::Residue> = compacted_rows
+        .into_iter()
+        .map(|item| (position_key(&item.author, item.seq).to_vec(), item))
+        .collect();
+    let mut fork_points = HashMap::<AuthorKey, SeqNum>::new();
+    let mut forks = Vec::new();
+    for (position, bytes) in rows.scan_all("forks")? {
+        let (author, seq) = split_position(&position)?;
+        let proof = decode_proof(&bytes)?;
+        if proof.seq != seq {
+            return Err(corrupt("a fork proof is stored at another fork point"));
+        }
+        fork_points
+            .entry(author)
+            .and_modify(|point| *point = (*point).min(seq))
+            .or_insert(seq);
+        forks.push((author, proof));
+    }
+
+    for (position, bytes) in &events {
+        let (author, seq) = split_position(position)?;
+        let event = decode_stored(bytes)?;
+        if *event.header.verifying_key.as_bytes() != author || event.header.seq_num != seq {
+            return Err(corrupt("an event is stored under another position"));
+        }
+        if hashes.get(event.id.as_bytes().as_slice()) != Some(position) {
+            return Err(corrupt("an event is not indexed under its ID"));
+        }
+        if let Some(group) = event.header.extensions.group
+            && !rows
+                .multi_values("groups", group.as_bytes())?
+                .iter()
+                .any(|member| member == position)
+        {
+            return Err(corrupt("an event is missing from its group index"));
+        }
+    }
+
+    for (id, position) in &hashes {
+        let id_hash = hash_of(id)?;
+        if let Some(bytes) = events.get(position) {
+            if Hash::digest(bytes) != id_hash {
+                return Err(corrupt("an ID does not match the event it points at"));
+            }
+        } else if !compacted
+            .get(position)
+            .is_some_and(|residue| residue.id == id_hash)
+        {
+            return Err(corrupt("an ID points at no stored event"));
+        }
+    }
+
+    for (author_bytes, chain_bytes) in &chains {
+        let author: AuthorKey = author_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_err| corrupt("a chain row has a short author key"))?;
+        let chain = Chain::decode(chain_bytes)?;
+        if chain.next_seq == 0 && !chain.frozen {
+            return Err(corrupt(
+                "a chain with no applied event and no fork has a row",
+            ));
+        }
+        for seq in 0..chain.next_seq {
+            let position = position_key(&author, seq).to_vec();
+            if !events.contains_key(&position) && !compacted.contains_key(&position) {
+                return Err(corrupt(format!("applied sequence {seq} is not stored")));
+            }
+        }
+        if let Some(head) = chain.head {
+            let position = position_key(&author, chain.next_seq.saturating_sub(1)).to_vec();
+            let matches = events
+                .get(&position)
+                .is_some_and(|bytes| Hash::digest(bytes) == head)
+                || compacted
+                    .get(&position)
+                    .is_some_and(|residue| residue.id == head);
+            if !matches {
+                return Err(corrupt("the head of a chain does not match its event"));
+            }
+        }
+        match (chain.frozen, fork_points.get(&author)) {
+            (false, None) => {}
+            (true, Some(point)) if *point >= chain.next_seq => {}
+            _ => return Err(corrupt("a frozen chain and its fork proof disagree")),
+        }
+    }
+
+    for (author, proof) in &forks {
+        let chain = chains
+            .get(author.as_slice())
+            .map(|bytes| Chain::decode(bytes))
+            .transpose()?;
+        if !chain.is_some_and(|chain| chain.frozen) {
+            return Err(corrupt(
+                "a fork proof belongs to a chain that is not frozen",
+            ));
+        }
+        for header in [&proof.first, &proof.second] {
+            if proof_ids
+                .get(header.id.as_bytes().as_slice())
+                .map(Vec::as_slice)
+                != Some(author.as_slice())
+                || proof_headers
+                    .get(header.id.as_bytes().as_slice())
+                    .map(Vec::as_slice)
+                    != Some(header.bytes.as_slice())
+            {
+                return Err(corrupt("a fork proof header is not indexed with its bytes"));
+            }
+        }
+    }
+
+    for (position, residue) in &compacted {
+        if events.contains_key(position)
+            || hashes.get(residue.id.as_bytes().as_slice()) != Some(position)
+        {
+            return Err(corrupt("a compacted position and its ID index disagree"));
+        }
+    }
+
+    let mut total = 0;
+    let mut per_author = BTreeMap::<AuthorKey, usize>::new();
+    for (id_bytes, value) in rows.scan_all("waiting")? {
+        let id = hash_of(&id_bytes)?;
+        let row = Row::decode(id, &value)?;
+        row_event(&row)?;
+        if hashes.contains_key(id.as_bytes().as_slice()) || !waiting.contains(&id) {
+            return Err(corrupt("a waiting row and the in-memory pool disagree"));
+        }
+        for dep in &row.deps {
+            if hashes.contains_key(dep.as_bytes().as_slice())
+                || proof_ids.contains_key(dep.as_bytes().as_slice())
+            {
+                return Err(corrupt(
+                    "a waiting event waits for a dependency that is present",
+                ));
+            }
+            if !rows
+                .multi_values("waiting_by_dep", dep.as_bytes())?
+                .iter()
+                .any(|waiter| waiter.as_slice() == id.as_bytes())
+            {
+                return Err(corrupt(
+                    "a waiting event is missing from its dependency index",
+                ));
+            }
+        }
+        *per_author.entry(row.author).or_default() += 1;
+        total += 1;
+    }
+    if total != waiting.len()
+        || per_author.iter().any(|(author, count)| {
+            *count > limits.per_author() || waiting.waiting_count(*author) != *count
+        })
+    {
+        return Err(corrupt("the waiting pool and persisted rows disagree"));
+    }
+    Ok(())
+}
+
+impl EventStore<Database> {
     /// Prunes events behind a causal cut that are not in the protected causal past.
     ///
     /// What must survive:
@@ -674,16 +1223,20 @@ impl EventStore {
     /// Pruned events are removed from event storage (events, hashes, groups, actions, applied)
     /// while keeping chain and index consistency and avoiding corrupting active backlink walks.
     ///
-    /// A store that holds compacted residue (#3797) is refused, changing nothing:
-    /// prune erases presence and compaction preserves it, and the two are not
-    /// composed yet (#13401). The walks and the chain rewrite below are built
-    /// from stored events only, so over residue a prune would silently
-    /// under-erase and drop chain rows below live residue positions.
+    /// Compacted residue (#3797) takes part like a stored event (#13401,
+    /// Option A). A residue position is a node of the causal graph with the
+    /// edges its residue row records (its backlink and its `after`
+    /// frontier), so the walks see the same graph they would have seen
+    /// before compaction. A residue behind the cut that nothing protects is
+    /// erased with its `compacted`, `hashes` and `applied` rows; the
+    /// presence compaction preserved goes exactly where a stored event's
+    /// would. The chain rewrite counts surviving residue positions as
+    /// applied, so a chain whose surviving prefix ends at a residue keeps
+    /// that residue as its head.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::PruneOverResidue`] if the store holds any compacted
-    /// residue, a redb error if the write transaction fails, or
+    /// Returns a redb error if the write transaction fails, or
     /// [`StoreError::Corrupt`].
     pub fn prune_behind_cut(
         &mut self,
@@ -697,15 +1250,13 @@ impl EventStore {
             return Ok(0);
         }
 
-        // The composition guard (#13401): refuse a store that holds any
-        // compacted residue, before anything is written. See the doc above.
-        {
+        // Residue rows are read before the write transaction: a store that
+        // was never compacted may not have the table, and opening it for
+        // write would create it (#13401).
+        let residue = {
             let read = self.db.begin_read()?;
-            let residue = compaction::load_residue_read(&read)?;
-            if !residue.is_empty() {
-                return Err(StoreError::PruneOverResidue(residue.len()));
-            }
-        }
+            compaction::load_residue_read(&read)?
+        };
 
         let txn = self.db.begin_write()?;
         let (events_by_id, to_prune) = {
@@ -718,13 +1269,14 @@ impl EventStore {
                 parents: Vec<Hash>,
                 group: Option<Hash>,
                 has_action: bool,
+                compacted: bool,
                 position: [u8; POSITION_LEN],
             }
 
             let mut events_by_id: HashMap<Hash, StoredMeta> = HashMap::new();
             for row in events_table.iter()? {
                 let (pos_bytes, event_bytes) = row?;
-                let event = decode_stored(event_bytes.value())?;
+                let event = self.decode_stored_event(event_bytes.value())?;
                 let (author, seq) = split_position(pos_bytes.value())?;
                 let mut position = [0u8; POSITION_LEN];
                 position.copy_from_slice(pos_bytes.value());
@@ -774,7 +1326,30 @@ impl EventStore {
                         parents,
                         group: event.header.extensions.group,
                         has_action,
+                        compacted: false,
                         position,
+                    },
+                );
+            }
+            // A compacted event is still a node of the causal graph: its
+            // residue keeps its backlink and `after` edges. Compaction only
+            // compacts events with no group row, membership action or
+            // device operation, so a residue has none to erase (#13401).
+            for item in &residue {
+                let mut parents = item.after.clone();
+                if let Some(backlink) = item.backlink {
+                    parents.push(backlink);
+                }
+                events_by_id.insert(
+                    item.id,
+                    StoredMeta {
+                        author: item.author,
+                        seq: item.seq,
+                        parents,
+                        group: None,
+                        has_action: false,
+                        compacted: true,
+                        position: position_key(&item.author, item.seq),
                     },
                 );
             }
@@ -847,10 +1422,25 @@ impl EventStore {
             let mut actions_table = txn.open_table(ACTIONS)?;
             let mut device_ops_table = txn.open_table(DEVICE_OPS)?;
             let mut applied_table = txn.open_table(APPLIED)?;
+            let mut compacted_table = if residue.is_empty() {
+                None
+            } else {
+                Some(txn.open_table(COMPACTED)?)
+            };
 
             for id in &to_prune {
                 if let Some(meta) = events_by_id.get(id) {
                     affected_authors.insert(meta.author);
+                    if meta.compacted {
+                        // A residue's bytes are already gone; its presence
+                        // rows go now (#13401).
+                        if let Some(table) = compacted_table.as_mut() {
+                            table.remove(meta.position.as_slice())?;
+                        }
+                        hashes_table.remove(id.as_bytes().as_slice())?;
+                        applied_table.remove(id.as_bytes().as_slice())?;
+                        continue;
+                    }
                     events_table.remove(meta.position.as_slice())?;
                     hashes_table.remove(id.as_bytes().as_slice())?;
                     if let Some(group) = meta.group {
@@ -906,6 +1496,9 @@ impl EventStore {
         }
 
         txn.commit()?;
+        // Pruned events leave the stored set, so memoized reads (the
+        // roster cache, #13043, and stored decodes, #15328) must re-resolve.
+        self.generation = self.generation.wrapping_add(1);
         Ok(count)
     }
 
@@ -923,6 +1516,7 @@ impl EventStore {
         let txn = self.db.begin_read()?;
         let events = txn.open_table(EVENTS)?;
         let hashes = txn.open_table(HASHES)?;
+        let applied = txn.open_table(APPLIED)?;
         let chains = txn.open_table(CHAINS)?;
         let forks = txn.open_table(FORKS)?;
         let groups = txn.open_multimap_table(GROUPS)?;
@@ -933,11 +1527,17 @@ impl EventStore {
             .iter()
             .map(|item| (position_key(&item.author, item.seq).to_vec(), item))
             .collect();
+        let mut after_by_position: HashMap<[u8; POSITION_LEN], Vec<Hash>> = HashMap::new();
 
         for row in events.iter()? {
             let (position, bytes) = row?;
             let (author, seq) = split_position(position.value())?;
             let event = decode_stored(bytes.value())?;
+            let mut position_key = [0; POSITION_LEN];
+            position_key.copy_from_slice(position.value());
+            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
+                after_by_position.insert(position_key, event.header.extensions.after.clone());
+            }
             if *event.header.verifying_key.as_bytes() != author || event.header.seq_num != seq {
                 return Err(corrupt("an event is stored under another position"));
             }
@@ -993,8 +1593,13 @@ impl EventStore {
             for seq in 0..chain.next_seq {
                 let key = position_key(&author, seq);
                 if let Some(stored) = events.get(key.as_slice())? {
-                    for dep in decode_stored(stored.value())?.header.extensions.after {
-                        if !present_in(&hashes, &proof_ids, &dep)? {
+                    // The first pass decoded and verified the same row in this
+                    // read transaction. Reuse just its dependency list here.
+                    let Some(deps) = after_by_position.get(&key) else {
+                        return Err(corrupt("an applied event was not decoded"));
+                    };
+                    for dep in deps {
+                        if !present_in(&hashes, &proof_ids, dep)? {
                             return Err(corrupt(
                                 "an applied event rests on an event that is not present",
                             ));
@@ -1206,101 +1811,21 @@ impl EventStore {
         op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
     ) -> Result<T, StoreError> {
         let txn = self.db.begin_write()?;
-        let (value, changed) = {
+        let (value, changed) = with_write_transaction(txn, |rows| {
             let mut mirror = Mirror {
-                txn: &txn,
+                txn: &mut **rows,
                 pool: &mut self.waiting,
                 arrivals: &mut self.next_arrival,
             };
-            op(&mut mirror)?
-        };
+            op(&mut mirror)
+        })?;
         if changed {
-            txn.commit()?;
-        } else {
-            txn.abort()?;
+            // A committed change moves the stored-state generation, so
+            // memoized reads (the roster cache, #13043, and stored decodes,
+            // #15328) re-resolve on the next read.
+            self.generation = self.generation.wrapping_add(1);
         }
         Ok(value)
-    }
-
-    /// Rebuilds the waiting pool from the rows, in arrival order. A row due at `now_ms` is
-    /// dropped, and so is a row past its author's cap. A row whose event is already present --
-    /// stored, applied, or voided -- is stale, so it is dropped too: restoring it would hold an
-    /// already-decided event again. A row for a fork proof header is instead re-held through
-    /// the explicit held-for-good route, even though the header is present. Every drop commits
-    /// with the rebuild. A row that waits for a present event means the rows and the store
-    /// disagree, so the rebuild fails as corruption and the pool is left as it was.
-    fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        let mut pool = WaitingPool::new(self.limits);
-        let mut next_arrival = 0;
-        let mut dropped = false;
-        for row in waiting_rows::all(&txn)? {
-            next_arrival = next_arrival.max(row.arrival.saturating_add(1));
-            if self.limits.is_due(row.arrived_at, now_ms) {
-                waiting_rows::drop_held(&txn, &row.id)?;
-                dropped = true;
-                continue;
-            }
-            let event = row_event(&row)?;
-            if is_proof_header(&txn, &row.author, &row.id)? {
-                // A proof header is present but never applied: it stays held for good through
-                // the explicit route, which the ordinary restore's arrived guard would refuse.
-                match pool.restore_held_for_good(row.author, row.id, event, row.arrived_at) {
-                    Ok(()) => {
-                        if !row.deps.is_empty() {
-                            let parked = Row {
-                                deps: Vec::new(),
-                                ..row
-                            };
-                            waiting_rows::put(&txn, &parked)?;
-                            dropped = true;
-                        }
-                    }
-                    Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                        waiting_rows::drop_held(&txn, &row.id)?;
-                        dropped = true;
-                    }
-                }
-                continue;
-            }
-            if is_present(&txn, &row.id)? {
-                // The event is already stored, applied, or voided: the row is stale, so it
-                // goes rather than holding an already-decided event again. Its device
-                // operation stays: a stored event's operation is kept, only a held one's is
-                // dropped with its row (#8160).
-                waiting_rows::delete(&txn, &row.id)?;
-                dropped = true;
-                continue;
-            }
-            for dep in &row.deps {
-                if is_present(&txn, dep)? {
-                    return Err(corrupt(
-                        "a waiting event waits for a dependency that is present",
-                    ));
-                }
-            }
-            match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
-                Ok(()) if pool.contains(&row.id) => {}
-                Ok(()) => {
-                    // Skipped by an arrived, ready, or duplicate guard: the row names an
-                    // event the rebuilt pool does not hold, so the row goes with the rebuild.
-                    waiting_rows::drop_held(&txn, &row.id)?;
-                    dropped = true;
-                }
-                Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                    waiting_rows::drop_held(&txn, &row.id)?;
-                    dropped = true;
-                }
-            }
-        }
-        if dropped {
-            txn.commit()?;
-        } else {
-            txn.abort()?;
-        }
-        self.waiting = pool;
-        self.next_arrival = next_arrival;
-        Ok(())
     }
 
     /// Runs redb's own integrity check on the file.
@@ -1503,22 +2028,17 @@ fn decode_proof(bytes: &[u8]) -> Result<ForkProof, StoreError> {
 
 /// Stores an accepted event at its position, and indexes it by ID and group.
 /// A position that is already stored is refused, inside the same transaction.
-pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> {
+pub fn store_event(mut txn: impl RowWrite, event: &Event) -> Result<(), StoreError> {
     let author = *event.header.verifying_key.as_bytes();
     let seq = event.header.seq_num;
     let key = position_key(&author, seq);
-    let mut events = txn.open_table(EVENTS)?;
-    if events.get(key.as_slice())?.is_some() {
+    if txn.get("events", key.as_slice())?.is_some() {
         return Err(StoreError::Occupied { seq });
     }
-    events.insert(key.as_slice(), event.bytes.as_slice())?;
-    drop(events);
-    let mut hashes = txn.open_table(HASHES)?;
-    hashes.insert(event.id.as_bytes().as_slice(), key.as_slice())?;
-    drop(hashes);
+    txn.put("events", key.as_slice(), event.bytes.as_slice())?;
+    txn.put("hashes", event.id.as_bytes().as_slice(), key.as_slice())?;
     if let Some(group) = event.header.extensions.group {
-        let mut groups = txn.open_multimap_table(GROUPS)?;
-        groups.insert(group.as_bytes().as_slice(), key.as_slice())?;
+        txn.multi_put("groups", group.as_bytes().as_slice(), key.as_slice())?;
     }
     Ok(())
 }
@@ -1526,41 +2046,45 @@ pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), S
 /// Stores the verified body of an event, by event ID. The caller has checked the body
 /// against the header's commitment (hash and size); a body already stored is replaced by
 /// the same bytes, because only the committed body ever passes that check.
-pub(crate) fn store_body(txn: &WriteTransaction, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
-    let mut bodies = txn.open_table(BODIES)?;
-    bodies.insert(id.as_bytes().as_slice(), body)?;
-    Ok(())
+pub fn store_body(mut txn: impl RowWrite, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
+    txn.put("bodies", id.as_bytes().as_slice(), body)
 }
 
 /// Writes an author's chain row.
-pub(crate) fn store_chain(
-    txn: &WriteTransaction,
+pub fn store_chain(
+    mut txn: impl RowWrite,
     author: &AuthorKey,
     chain: Chain,
 ) -> Result<(), StoreError> {
-    let mut chains = txn.open_table(CHAINS)?;
-    chains.insert(author.as_slice(), chain.encode().as_slice())?;
-    Ok(())
+    txn.put("chains", author.as_slice(), chain.encode().as_slice())
 }
 
 /// Writes the fork proof at `seq`, replacing the proof at that point only. Both headers become
 /// present, and their bytes are kept. A proof at a lower point later does not remove them.
-pub(crate) fn store_fork(
-    txn: &WriteTransaction,
+pub fn store_fork(
+    mut txn: impl RowWrite,
     author: &AuthorKey,
     seq: SeqNum,
     a: &Event,
     b: &Event,
 ) -> Result<(), StoreError> {
     let proof = encode_proof(seq, a, b)?;
-    let mut forks = txn.open_table(FORKS)?;
-    forks.insert(position_key(author, seq).as_slice(), proof.as_slice())?;
-    drop(forks);
-    let mut proof_ids = txn.open_table(PROOF_IDS)?;
-    let mut headers = txn.open_table(PROOF_HEADERS)?;
+    txn.put(
+        "forks",
+        position_key(author, seq).as_slice(),
+        proof.as_slice(),
+    )?;
     for header in [a, b] {
-        proof_ids.insert(header.id.as_bytes().as_slice(), author.as_slice())?;
-        headers.insert(header.id.as_bytes().as_slice(), header.bytes.as_slice())?;
+        txn.put(
+            "proof_ids",
+            header.id.as_bytes().as_slice(),
+            author.as_slice(),
+        )?;
+        txn.put(
+            "proof_headers",
+            header.id.as_bytes().as_slice(),
+            header.bytes.as_slice(),
+        )?;
     }
     Ok(())
 }
@@ -1593,7 +2117,33 @@ pub(super) fn lowest_proof(
     }
 }
 
-impl EventStore {
+/// The fork proof at `(author, seq)`, through the shared event-row interface.
+pub(super) fn proof_at_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<ForkProof>, StoreError> {
+    let key = position_key(author, seq);
+    rows.get("forks", &key)?
+        .map(|bytes| decode_proof(&bytes))
+        .transpose()
+}
+
+/// The lowest fork proof for `author`, through the shared event-row interface.
+pub(super) fn lowest_proof_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    author: &AuthorKey,
+) -> Result<Option<ForkProof>, StoreError> {
+    for (key, bytes) in rows.scan_all("forks")? {
+        let (found_author, _seq) = split_position(&key)?;
+        if &found_author == author {
+            return Ok(Some(decode_proof(&bytes)?));
+        }
+    }
+    Ok(None)
+}
+
+impl<B: EventStoreStorage> EventStore<B> {
     /// The applied events of `author` with sequence numbers in `(after, until]`, in sequence
     /// order, at most `limit` of them. `after` is exclusive and `until` is inclusive. `None`
     /// leaves that side open. Events past a fork point are stored but not applied, so they are
@@ -1609,7 +2159,6 @@ impl EventStore {
         until: Option<SeqNum>,
         limit: usize,
     ) -> Result<Vec<Event>, StoreError> {
-        let txn = self.db.begin_read()?;
         let first = match after {
             Some(after) => after.checked_add(1),
             None => Some(0),
@@ -1617,25 +2166,35 @@ impl EventStore {
         let Some(first) = first else {
             return Ok(Vec::new());
         };
-        let last = until.unwrap_or(SeqNum::MAX);
-        if first > last {
-            return Ok(Vec::new());
-        }
-        let applied = txn.open_table(APPLIED)?;
-        let events = txn.open_table(EVENTS)?;
-        let (start, end) = (position_key(author, first), position_key(author, last));
-        let mut found = Vec::new();
-        for row in events.range(start.as_slice()..=end.as_slice())? {
-            if found.len() >= limit {
-                break;
+        self.db.with_read(|rows| {
+            let Some(chain_bytes) = rows.get("chains", author.as_slice())? else {
+                return Ok(Vec::new());
+            };
+            let chain = Chain::decode(&chain_bytes)?;
+            let Some(chain_last) = chain.next_seq.checked_sub(1) else {
+                return Ok(Vec::new());
+            };
+            let last = until.unwrap_or(SeqNum::MAX).min(chain_last);
+            if first > last {
+                return Ok(Vec::new());
             }
-            let (_position, bytes) = row?;
-            let event = decode_stored(bytes.value())?;
-            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
-                found.push(event);
+            let mut found = Vec::new();
+            let mut seq = first;
+            while seq <= last && found.len() < limit {
+                let key = position_key(author, seq);
+                if let Some(bytes) = rows.get("events", &key)? {
+                    let event = self.decode_stored_event(&bytes)?;
+                    if rows.get("applied", event.id.as_bytes())?.is_some() {
+                        found.push(event);
+                    }
+                }
+                seq = match seq.checked_add(1) {
+                    Some(next) => next,
+                    None => break,
+                };
             }
-        }
-        Ok(found)
+            Ok(found)
+        })
     }
 }
 
@@ -1668,6 +2227,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
@@ -1686,6 +2246,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn unknown_group_rosters_stay_empty_and_cache_is_bounded() {
+        // Oracle: unknown group hashes have empty rosters, and querying
+        // more distinct hashes than the memo capacity cannot increase
+        // retained cache payload beyond its declared bound.
+        let (_dir, store) = open_temp();
+        for n in 0u64..(MAX_ROSTER_CACHE_ENTRIES as u64 + 64) {
+            let group = Hash::digest(n.to_be_bytes());
+            assert_eq!(store.roster(&group).unwrap(), [] as [[u8; 32]; 0]);
+            assert!(store.roster_cache_entries() <= MAX_ROSTER_CACHE_ENTRIES);
+            assert!(store.roster_cache_payload_bytes() <= MAX_ROSTER_CACHE_PAYLOAD_BYTES);
+        }
+        assert_eq!(store.roster_cache_entries(), MAX_ROSTER_CACHE_ENTRIES);
+        assert_eq!(
+            store.roster_cache_payload_bytes(),
+            MAX_ROSTER_CACHE_ENTRIES * std::mem::size_of::<Hash>()
+        );
+        let last_group = Hash::digest((MAX_ROSTER_CACHE_ENTRIES as u64 + 63).to_be_bytes());
+        let resolutions = store.roster_resolutions();
+        assert_eq!(store.roster(&last_group).unwrap(), [] as [[u8; 32]; 0]);
+        assert_eq!(
+            store.roster_resolutions(),
+            resolutions,
+            "a retained negative result must remain a cache hit"
+        );
     }
 
     #[test]
@@ -1760,13 +2347,111 @@ mod tests {
         assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
         assert_eq!(store.event_by_id(&event.id).unwrap(), Some(event.clone()));
         assert_eq!(store.group_members(&group).unwrap(), vec![(who, 0)]);
-        assert!(
-            store
-                .group_members(&Hash::digest(b"other"))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.group_members(&Hash::digest(b"other")).unwrap(),
+            [] as [([u8; 32], p2panda_core::SeqNum); 0]
         );
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_stored_event_decode_is_memoized_for_unchanged_bytes_15328() {
+        // Oracle: byte-identical reads in one store generation reuse the prior
+        // full verified decode instead of verifying and canonicalizing again.
+        let (_dir, store) = open_temp();
+        let signer = key(38);
+        let event = chain_of(&signer, 1).remove(0);
+        store.write(|txn| store_event(txn, &event)).unwrap();
+        let who = author(&signer);
+
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
+        {
+            let cache = store.stored_event_cache.lock().unwrap();
+            assert_eq!(cache.entries.len(), 1);
+            assert_eq!(cache.verified_decodes, 1);
+            assert_eq!(cache.cache_hits, 0);
+        }
+
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.verified_decodes, 1);
+        assert_eq!(cache.cache_hits, 1);
+    }
+
+    #[test]
+    fn test_stored_event_decode_cache_resets_after_ingest_15328() {
+        // Oracle: a committed ingest advances the store generation, so a
+        // subsequent read verifies bytes again instead of using stale memo data.
+        let (_dir, mut store) = open_temp();
+        let signer = key(39);
+        let events = chain_of(&signer, 2);
+        let who = author(&signer);
+        store.ingest(&events[0].bytes, 0).unwrap();
+        assert_eq!(store.event(&who, 0).unwrap(), Some(events[0].clone()));
+        assert_eq!(store.event(&who, 0).unwrap(), Some(events[0].clone()));
+        {
+            let cache = store.stored_event_cache.lock().unwrap();
+            assert_eq!(cache.verified_decodes, 1);
+            assert_eq!(cache.cache_hits, 1);
+        }
+
+        store.ingest(&events[1].bytes, 0).unwrap();
+        assert_eq!(store.event(&who, 0).unwrap(), Some(events[0].clone()));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.verified_decodes, 2);
+        assert_eq!(cache.cache_hits, 1);
+    }
+
+    #[test]
+    fn test_applied_event_reads_reuse_verified_stored_decode_15328() {
+        // Oracle: repeated reads of the same applied row in one generation
+        // reuse the full verified decode.
+        let (_dir, mut store) = open_temp();
+        let signer = key(41);
+        let event = chain_of(&signer, 1).remove(0);
+        store.ingest(&event.bytes, 0).unwrap();
+
+        assert_eq!(
+            store
+                .applied_events(&author(&signer), None, None, 10)
+                .unwrap(),
+            vec![event.clone()]
+        );
+        assert_eq!(
+            store
+                .applied_events(&author(&signer), None, None, 10)
+                .unwrap(),
+            vec![event]
+        );
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.verified_decodes, 1);
+        assert_eq!(cache.cache_hits, 1);
+    }
+
+    #[test]
+    fn test_stored_event_decode_cache_does_not_hide_rewritten_bytes_15328() {
+        // Oracle: the digest is recomputed from actual row bytes; tampering
+        // changes the key, misses the memo, and still fails full verification.
+        let (_dir, store) = open_temp();
+        let signer = key(40);
+        let event = chain_of(&signer, 1).remove(0);
+        store.write(|txn| store_event(txn, &event)).unwrap();
+        let who = author(&signer);
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event));
+
+        store
+            .write(|txn| {
+                let mut events = txn.open_table(EVENTS)?;
+                events.insert(position_key(&who, 0).as_slice(), b"tampered".as_slice())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(store.event(&who, 0), Err(StoreError::Corrupt(_))));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.cache_hits, 0);
+        assert_eq!(cache.verified_decodes, 1);
     }
 
     #[test]
@@ -1881,17 +2566,15 @@ mod tests {
             seqs(store.applied_events(&who, None, None, 2).unwrap()),
             vec![0, 1]
         );
-        assert!(
-            store
-                .applied_events(&who, Some(3), None, 10)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.applied_events(&who, Some(3), None, 10).unwrap(),
+            [] as [Event; 0]
         );
-        assert!(
+        assert_eq!(
             store
                 .applied_events(&author(&key(17)), None, None, 10)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [Event; 0]
         );
         // A fork at seq 2 leaves seq 0 and 1 applied. Seq 3 stays stored, but it is not returned.
         let rival = sign(&signer, 2, Some(events[1].id), None, ext("rival", None)).unwrap();
@@ -2196,7 +2879,7 @@ mod tests {
             !store.remove_block(BlockKind::Ip, b"198.51.100.7").unwrap(),
             "removing an absent block is false, not an error"
         );
-        assert!(store.blocks().unwrap().is_empty());
+        assert_eq!(store.blocks().unwrap(), [] as [Block; 0]);
     }
 }
 
@@ -2204,7 +2887,7 @@ mod tests {
 // generic over this backend surface (seam 3 — the traits crate holds
 // traits only and cannot name the concrete store above it). Each method
 // delegates to the inherent method of the same name above.
-impl id_store::store_traits::EventStoreBackend for EventStore {
+impl<B: EventStoreStorage> id_store::store_traits::EventStoreBackend for EventStore<B> {
     fn ingest_with_body(
         &mut self,
         bytes: &[u8],
@@ -2247,7 +2930,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
     }
 
     fn check_invariants(&self) -> Result<(), StoreError> {
-        self.check_invariants()
+        self.check_invariants_backend()
     }
 
     fn event(&self, author: &AuthorKey, seq: SeqNum) -> Result<Option<Event>, StoreError> {
@@ -2282,7 +2965,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
     }
 
     fn tag_claims(&self) -> Result<Vec<id_store::tag_claims::Claim>, StoreError> {
-        self.tag_claims()
+        self.db.with_read(|rows| claims::tag_claims_rows(rows))
     }
 
     fn event_by_id(&self, id: &Hash) -> Result<Option<Event>, StoreError> {

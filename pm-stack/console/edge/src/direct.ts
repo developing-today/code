@@ -240,6 +240,11 @@ interface Entry {
   size: number;
   at: number;
 }
+/** One line of the index as it is kept: the entry, and the address it
+ * belongs to, under its place's own key (`gh:index:<place>`). */
+interface EntryRecord extends Entry {
+  u: string;
+}
 interface Index {
   entries: Record<string, Entry>;
 }
@@ -258,12 +263,16 @@ interface Count {
 /** GitHub's answers, its waits and its count, kept in `store`.
  *
  * An answer is kept as pieces in a place of its own, each piece marked
- * with the address and tag it belongs to, under an entry in one index.
- * The pieces are written first and the index last, so what was started
- * and not finished (the object was put away part-way, or the store
- * failed) is never taken for an answer: its pieces do not carry what
- * the index names, and it reads as nothing kept. One change is made at
- * a time.
+ * with the address and tag it belongs to, under a line of the index
+ * kept in a place of its own too, named by a short list of the places
+ * in use. The pieces are written first and the line last, so what was
+ * started and not finished (the object was put away part-way, or the
+ * store failed) is never taken for an answer: its pieces do not carry
+ * what the index names, and it reads as nothing kept. One change is
+ * made at a time. (The index was once one value, rewritten whole at
+ * every change — and at every stale read, to mark one answer as still
+ * wanted. A store still holding it is read from it once, and its
+ * lines are written out in the new shape in its place.)
  *
  * When there are more than `most` answers, or more than `room`
  * characters in them, the one longest unmarked goes. One too big for
@@ -289,12 +298,20 @@ export function githubMemory(
   /** The most pieces an answer that is kept can have. */
   const longest = Math.max(1, Math.ceil(one / pieceSize));
   const place = (id: number, n: number) => `gh:a:${id}:${n}`;
+  /** One line of the index, under its place's own key. */
+  const line = (id: number) => `gh:index:${id}`;
+  /** The places in use, and nothing else about them: the list a
+   * starting object reads to know which lines there are. */
+  const LINES = "gh:index:ids";
 
   interface State {
     index: Index;
     count: Count;
     /** Whether the store could be read. */
     read: boolean;
+    /** The places the store's list names, as last read or written:
+     * the list is rewritten only when this set changes. */
+    ids: Set<number>;
   }
   /** GitHub's waits, as this object knows them: what the store held
    * when it was read, and what has been said since. Kept here as well
@@ -314,37 +331,121 @@ export function githubMemory(
           return otherwise;
         }
       };
-      const index = await take<Index>(
-        "gh:index",
-        (value) => {
-          const v = value as Partial<Index> | undefined;
-          if (!v || typeof v.entries !== "object" || v.entries === null) return null;
-          const entries: Record<string, Entry> = {};
-          const places = new Set<number>();
-          for (const [url, e] of Object.entries(v.entries)) {
-            if (
-              e &&
-              Number.isInteger(e.id) &&
-              !places.has(e.id) &&
-              typeof e.etag === "string" &&
-              Number.isInteger(e.pieces) &&
-              e.pieces >= 1 &&
-              // (No more than an answer kept here can have: what is
-              // read back says how many pieces to clear.)
-              e.pieces <= longest &&
-              Number.isInteger(e.size) &&
-              e.size >= 0 &&
-              e.size <= one &&
-              typeof e.at === "number"
-            ) {
-              places.add(e.id);
-              entries[url] = { id: e.id, etag: e.etag, pieces: e.pieces, size: e.size, at: e.at };
-            }
+      /** One line as read back: nothing that does not hold together
+       * is a line at all. (No more pieces than an answer kept here
+       * can have: what is read back says how many pieces to clear.) */
+      const fitLine = (value: unknown): Entry | null => {
+        const e = value as Partial<Entry> | undefined;
+        if (
+          !e ||
+          !Number.isInteger(e.id) ||
+          typeof e.etag !== "string" ||
+          !Number.isInteger(e.pieces) ||
+          (e.pieces as number) < 1 ||
+          (e.pieces as number) > longest ||
+          !Number.isInteger(e.size) ||
+          (e.size as number) < 0 ||
+          (e.size as number) > one ||
+          typeof e.at !== "number"
+        ) {
+          return null;
+        }
+        return { id: e.id as number, etag: e.etag, pieces: e.pieces as number, size: e.size as number, at: e.at };
+      };
+      /** The index as it was once kept, in one value: its lines held
+       * to the same measure, and one place given to one address (the
+       * first that names it). */
+      const fitWhole = (value: unknown): Index => {
+        const v = value as Partial<Index> | undefined;
+        if (!v || typeof v.entries !== "object" || v.entries === null) return { entries: {} };
+        const entries: Record<string, Entry> = {};
+        const places = new Set<number>();
+        for (const [url, raw] of Object.entries(v.entries)) {
+          const entry = fitLine(raw);
+          if (entry && !places.has(entry.id)) {
+            places.add(entry.id);
+            entries[url] = entry;
           }
-          return { entries };
-        },
-        { entries: {} },
-      );
+        }
+        return { entries };
+      };
+      let whole: Index | null = null;
+      try {
+        const held = await store.get("gh:index");
+        if (held !== undefined) whole = fitWhole(held);
+      } catch {
+        read = false;
+      }
+      let listed: number[] | null = null;
+      try {
+        const held = await store.get(LINES);
+        if (Array.isArray(held)) {
+          listed = [...new Set(held.filter((id) => Number.isInteger(id) && (id as number) >= 0))].sort(
+            (a, b) => (a as number) - (b as number),
+          ) as number[];
+        }
+      } catch {
+        read = false;
+      }
+      let index: Index;
+      let ids: Set<number>;
+      if (listed !== null) {
+        // The list names the places; each line is read from its own
+        // key. A line that is not there, or does not hold together,
+        // or names a place other than its own, or an address a
+        // nearer place already named, is nothing kept.
+        const entries: Record<string, Entry> = {};
+        for (const id of listed) {
+          let raw: unknown;
+          try {
+            raw = await store.get(line(id));
+          } catch {
+            read = false;
+          }
+          const record = raw as Partial<EntryRecord> | undefined;
+          const entry = record && typeof record.u === "string" && record.u !== "" ? fitLine(record) : null;
+          if (entry && entry.id === id && !((record!.u as string) in entries)) {
+            entries[record!.u as string] = entry;
+          }
+        }
+        index = { entries };
+        ids = new Set(Object.values(entries).map((e) => e.id));
+        if (whole !== null && read) {
+          // The one value is baggage once the list is written: let
+          // it go. If that fails it is left for the next to start,
+          // and read by no one meanwhile.
+          try {
+            await store.delete("gh:index");
+          } catch {
+            // As said: baggage, left for the next to start.
+          }
+        }
+      } else if (whole !== null) {
+        // A store still holding the index in one value: read from
+        // it, and write its lines out in the new shape — the lines
+        // first, the list after them, the one value let go last, so
+        // a store stopped part-way is read the same by the next to
+        // start, which tries again.
+        index = whole;
+        ids = new Set(Object.values(index.entries).map((e) => e.id));
+        if (read) {
+          try {
+            for (const [url, entry] of Object.entries(index.entries)) {
+              await store.put(line(entry.id), { u: url, ...entry });
+            }
+            await store.put(
+              LINES,
+              [...ids].sort((a, b) => a - b),
+            );
+            await store.delete("gh:index");
+          } catch {
+            // Stopped part-way, as said: the next to start tries again.
+          }
+        }
+      } else {
+        index = { entries: {} };
+        ids = new Set();
+      }
       const stored = await take<Partial<Record<Allowance, Quiet>>>(
         "gh:quiet",
         (value) => {
@@ -382,7 +483,7 @@ export function githubMemory(
         },
         { answers: 0, unchanged: 0, since: now() },
       );
-      return { index, count, read };
+      return { index, count, read, ids };
     })();
     loaded = mine;
     void mine.then((state) => {
@@ -417,11 +518,30 @@ export function githubMemory(
     while ((await store.get(place(id, end))) !== undefined) end++;
     for (let n = end - 1; n >= from; n--) await store.delete(place(id, n));
   };
-  const forget = async (index: Index, url: string) => {
-    const entry = index.entries[url];
+  const forget = async (state: State, url: string) => {
+    const entry = state.index.entries[url];
     if (!entry) return;
-    delete index.entries[url];
+    delete state.index.entries[url];
     await clear(entry.id, 0, entry.pieces);
+    await store.delete(line(entry.id));
+  };
+  /** One line of the index, written on its own: all of the index a
+   * change to one answer ever writes, besides the list of places when
+   * the places themselves change. */
+  const putLine = async (url: string, entry: Entry) => {
+    const record: EntryRecord = { u: url, ...entry };
+    await store.put(line(entry.id), record);
+  };
+  /** The list of places in use, rewritten only when the set of places
+   * changes: a place number each, where the one value it replaced
+   * carried every address and tag at every change. */
+  const syncLines = async (state: State) => {
+    const ids = Object.values(state.index.entries)
+      .map((e) => e.id)
+      .sort((a, b) => a - b);
+    if (ids.length === state.ids.size && ids.every((id) => state.ids.has(id))) return;
+    await store.put(LINES, ids);
+    state.ids = new Set(ids);
   };
   const freePlace = (index: Index) => {
     const taken = new Set(Object.values(index.entries).map((e) => e.id));
@@ -450,7 +570,7 @@ export function githubMemory(
           await inTurn(() =>
             write(state, async () => {
               entry.at = now();
-              await store.put("gh:index", state.index);
+              await putLine(url, entry);
             }),
           );
         }
@@ -466,15 +586,15 @@ export function githubMemory(
         write(state, async () => {
           if (answer.text.length > one) {
             if (!index.entries[url]) return;
-            await forget(index, url);
-            await store.put("gh:index", index);
+            await forget(state, url);
+            await syncLines(state);
             return;
           }
           const before = index.entries[url];
           const id = before?.id ?? freePlace(index);
           const pieces = Math.max(1, Math.ceil(answer.text.length / pieceSize));
           // The pieces first, each marked as this answer's; then what
-          // else is in the place; the index last.
+          // else is in the place; the line of the index last.
           for (let n = 0; n < pieces; n++) {
             const piece: Piece = {
               u: url,
@@ -492,9 +612,10 @@ export function githubMemory(
               .filter(([other]) => other !== url)
               .sort(([, a], [, b]) => a.at - b.at || a.id - b.id)[0];
             if (!oldest) break;
-            await forget(index, oldest[0]);
+            await forget(state, oldest[0]);
           }
-          await store.put("gh:index", index);
+          await putLine(url, index.entries[url]);
+          await syncLines(state);
         }),
       );
     },
@@ -504,8 +625,8 @@ export function githubMemory(
       await inTurn(() =>
         write(state, async () => {
           if (!index.entries[url]) return;
-          await forget(index, url);
-          await store.put("gh:index", index);
+          await forget(state, url);
+          await syncLines(state);
         }),
       );
     },
@@ -835,6 +956,14 @@ async function bridgeCall(
   } else if (what === "enroll-tokens") {
     if (rest.length > 0) throw new OpError(502, "fleet bridge enroll-tokens takes no arguments here");
     path = `/fleet/${token}/enroll-tokens`;
+  } else if (what === "wake-hooks") {
+    // The wake hooks' list is a read of the same binding (#14544),
+    // through the bridge's read-scope view. Setting and removing are
+    // owner-token acts, never translated: a set asked at the edge is
+    // refused (its token must not be held, edge-proto.ts), a remove
+    // is held for a machine.
+    if (rest.length > 0) throw new OpError(502, "needs a machine");
+    path = `/fleet/${token}/wake-hooks`;
   } else if (what === "send") {
     const to: string[] = [];
     let kind = "message";

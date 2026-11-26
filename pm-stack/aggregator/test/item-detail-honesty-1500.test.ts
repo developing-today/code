@@ -188,12 +188,14 @@ describe("items facet state classification (#1500)", () => {
     return loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_PROJECTOR_URL: "off" });
   }
 
-  test("mixed pool + fixture fallback pass classifies items facet as partial-fixtures", async () => {
+  test("mixed pool + unresolved outside refs classifies items facet as partial-unavailable (#14065)", async () => {
     const src = liveSource(await liveCfg());
-    await src.items(["dezren39/nix#508", "developing-today/code#752"]);
+    const items = await src.items(["dezren39/nix#508", "developing-today/code#752"]);
+    expect(items.has("developing-today/code#752")).toBe(false);
     const detail = src.provenanceDetail?.();
-    expect(detail?.items.text).toContain("+ fixtures for 1 ref(s) outside the pool");
-    expect(detail?.items.state).toBe("partial-fixtures");
+    expect(detail?.items.text).toContain("+ unavailable for 1 ref(s) outside the pool");
+    expect(detail?.items.text).toContain("fixtures withheld in live mode");
+    expect(detail?.items.state).toBe("partial-unavailable");
   });
 
   test("pool-only pass classifies items facet as live", async () => {

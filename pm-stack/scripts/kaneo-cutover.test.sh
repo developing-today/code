@@ -87,8 +87,8 @@ printf 'pg_restore:%s\n' "$role" >>"$CUTOVER_FIXTURE_DIR/log"
 STUB
 chmod +x "$TMP/bin/psql" "$TMP/bin/pg_dump" "$TMP/bin/pg_restore"
 
-printf 'source-db dsn\n' >"$TMP/source.dsn"
-printf 'target-db dsn\n' >"$TMP/target.dsn"
+printf 'postgresql://source-user:password@source-db:5432/kaneo\n' >"$TMP/source.dsn"
+printf 'postgresql://target-user:password@target-db:5432/kaneo\n' >"$TMP/target.dsn"
 python3 -I - "$TMP/backup.json" <<'PY'
 import json, sys
 from datetime import datetime, timezone, timedelta
@@ -100,6 +100,14 @@ json.dump({
     "archiveSha256": "a" * 64,
     "destinations": {"local": "ok", "r2": "ok", "drive": "ok"},
 }, open(sys.argv[1], "w"))
+PY
+cp "$TMP/backup.json" "$TMP/kaneo-recovery.json"
+python3 -I - "$TMP/kaneo-recovery.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f: record = json.load(f)
+record["source"] = {"host": "source-db", "port": 5432, "database": "kaneo"}
+record["recoveryPointAt"] = record["finishedAt"]
+with open(sys.argv[1], "w") as f: json.dump(record, f)
 PY
 
 # Fence fixtures: all writers stopped/inactive.
@@ -119,8 +127,8 @@ log_is_empty() { [ ! -s "$TMP/fx/log" ]; }
 
 run() { "$BASH_BIN" "$DRIVER" "$@" 2>&1; }
 
-common=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn")
-promote=(--backup-record-file "$TMP/backup.json")
+common=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" --target-home cluster-postgres --target-host target-db)
+promote=(--backup-record-file "$TMP/backup.json" --kaneo-recovery-record-file "$TMP/kaneo-recovery.json")
 
 # 1. presync dumps then restores, and passes on schema parity.
 set_counts '45 90139' '45 0'
@@ -187,7 +195,7 @@ if out="$(run --mode promote --receipt "$TMP/r5.md" --units-dir "$TMP/units" --c
   *'PROMOTE OK'*FENCED*) pass 'promote passes when fenced and parity holds' ;;
   *) fail "promote passes when fenced and parity holds (got: $out)" ;;
   esac
-  if grep -q 'Fence: FENCED' "$TMP/r5.md" && grep -q '45 90139' "$TMP/r5.md" && grep -q 'RESTORE POINT OK' "$TMP/r5.md"; then
+  if grep -q 'Fence: FENCED' "$TMP/r5.md" && grep -q '45 90139' "$TMP/r5.md" && grep -q 'RESTORE POINT OK' "$TMP/r5.md" && grep -q 'Kaneo recovery point OK' "$TMP/r5.md"; then
     pass 'promote receipt records the fence, backup restore point, and counts'
   else
     fail 'promote receipt records the fence, backup restore point, and counts'
@@ -240,6 +248,46 @@ with open(sys.argv[1]) as f: record = json.load(f)
 record["finishedAt"] = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
 with open(sys.argv[1], "w") as f: json.dump(record, f)
 PY
+
+# Oracle: plan §2/§4 requires a verified Kaneo recovery point <=1 hour old,
+# independently of the dashboard archive's configurable 36-hour bound.
+# Mutate each evidence prerequisite; every refusal must precede PG access.
+cp "$TMP/kaneo-recovery.json" "$TMP/kaneo-valid.json"
+for mutation in stale future capture-after-finish wrong-host wrong-port wrong-db missing-time unverified malformed; do
+  python3 -I - "$TMP/kaneo-valid.json" "$TMP/kaneo-recovery.json" "$mutation" <<'PY'
+import json, sys
+from datetime import datetime, timedelta, timezone
+with open(sys.argv[1]) as f: record = json.load(f)
+mutation = sys.argv[3]
+if mutation == "stale": record["recoveryPointAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+if mutation == "future": record["recoveryPointAt"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+if mutation == "capture-after-finish": record["recoveryPointAt"] = datetime.now(timezone.utc).isoformat()
+if mutation == "wrong-host": record["source"]["host"] = "other-db"
+if mutation == "wrong-port": record["source"]["port"] = 5433
+if mutation == "wrong-db": record["source"]["database"] = "other"
+if mutation == "missing-time": del record["recoveryPointAt"]
+if mutation == "unverified": record["destinations"]["drive"] = "failed"
+with open(sys.argv[2], "w") as f:
+    f.write("not json") if mutation == "malformed" else json.dump(record, f)
+PY
+  reset_log
+  status=0
+  out="$(run --mode promote --receipt "$TMP/rpo.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" --max-backup-age-hours 72 "${promote[@]}" "${common[@]}")" || status=$?
+  if [ "$status" -eq 3 ] && log_is_empty && grep -q 'Kaneo recovery point' "$TMP/rpo.md"; then
+    pass "promote refuses $mutation Kaneo recovery evidence before database access"
+  else
+    fail "promote refuses $mutation Kaneo recovery evidence (exit $status, got: $out)"
+  fi
+done
+cp "$TMP/kaneo-valid.json" "$TMP/kaneo-recovery.json"
+reset_log
+status=0
+out="$(run --mode promote --receipt "$TMP/missing-rpo.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" --backup-record-file "$TMP/backup.json" "${common[@]}")" || status=$?
+if [ "$status" -eq 3 ] && log_is_empty && grep -q 'Kaneo recovery point' "$TMP/missing-rpo.md"; then
+  pass 'promote refuses absent independent Kaneo recovery evidence'
+else
+  fail "promote refuses absent independent Kaneo recovery evidence (exit $status, got: $out)"
+fi
 
 # 8. rollback refuses while a writer is running — and touches nothing.
 set_counts '45 90139' '45 90500'
@@ -326,6 +374,76 @@ else
   [ "$?" -eq 2 ] && pass 'unreadable source DSN exits 2' || fail 'unreadable source DSN exits 2'
 fi
 log_is_empty && pass 'usage errors ran no subprocess' || fail 'usage errors ran no subprocess'
+
+# Oracle (#6816): target identity rejection in EVERY mode happens before any
+# PG/fence process or dump/receipt write. Valid offline preflight does too.
+cat >"$TMP/bin/fence-spy" <<'STUB'
+#!/usr/bin/env bash
+printf 'fence\n' >>"$CUTOVER_FIXTURE_DIR/log"
+echo 'FENCED: fixture'
+STUB
+chmod +x "$TMP/bin/fence-spy"
+safe=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" --fence-check "$TMP/bin/fence-spy" --dump-file "$TMP/safety.dump" --receipt "$TMP/safety.md" --backup-record-file "$TMP/backup.json")
+reject_identity() {
+  local label="$1" mode status
+  shift
+  for mode in preflight presync promote rollback; do
+    reset_log
+    args=(--target-home cluster-postgres --target-host target-db)
+    [ "$#" -eq 0 ] || args=("$@")
+    status=0
+    run --mode "$mode" "${safe[@]}" "${args[@]}" >"$TMP/out" 2>&1 || status=$?
+    if [ "$status" -eq 2 ] && log_is_empty && [ ! -e "$TMP/safety.dump" ] && [ ! -e "$TMP/safety.md" ]; then
+      pass "$mode rejects $label without effects"
+    else
+      fail "$mode rejects $label without effects (exit $status: $(cat "$TMP/out"))"
+    fi
+    rm -f "$TMP/safety.dump" "$TMP/safety.md"
+  done
+}
+for syntax in split equals; do
+  reset_log
+  identity=(--target-home cluster-postgres --target-host target-db)
+  [ "$syntax" = split ] || identity=(--target-home=cluster-postgres --target-host=target-db)
+  if run --mode preflight --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" "${identity[@]}" --fence-check "$TMP/absent" --dump-file "$TMP/safety.dump" --receipt "$TMP/safety.md" >"$TMP/out" 2>&1 && log_is_empty && [ ! -e "$TMP/safety.dump" ] && [ ! -e "$TMP/safety.md" ] && grep -q 'PREFLIGHT OK' "$TMP/out"; then
+    pass "offline preflight ($syntax) needs no backup/fence and has no effects"
+  else
+    fail "offline preflight ($syntax) (got: $(cat "$TMP/out"))"
+  fi
+done
+reject_identity 'missing identity' --target-home cluster-postgres --target-host other-db
+reject_identity 'wrong home' --target-home supabase --target-host target-db
+reject_identity 'mismatched host' --target-home cluster-postgres --target-host other-db
+reject_identity 'empty host' --target-home=cluster-postgres --target-host=
+for dsn in \
+  'postgresql://target@db.SuPaBaSe.Co/kaneo' \
+  'postgresql://target@db.%73upabase.com/kaneo' \
+  'postgresql://target@db.supabase.co./kaneo' \
+  'postgresql://target@MUSE-%64EV2/kaneo' \
+  'postgresql://target@target-db/muse-%64ev2' \
+  'postgresql://muse-dev2:pw@target-db/kaneo' \
+  'host=target-db dbname=kaneo' \
+  'postgresql://target@target-db/kaneo?host=other' \
+  'postgresql://target@target-db/kaneo?%68ostaddr=1.2.3.4' \
+  'postgresql://target@target-db/kaneo?service=retired' \
+  'postgresql://target@target-db,other/kaneo' \
+  'postgresql://target@%2Ftmp/kaneo' \
+  'postgresql:///kaneo' \
+  'postgresql://target@target-db/' \
+  'postgresql://target@target-db/kaneo#ignored' \
+  'postgresql://target@target-db:bad/kaneo' \
+  'postgresql://target@target-db/kaneo?dbname=other' \
+  'postgresql://target@target-db/kaneo?options=-c%20search_path=public' \
+  'postgresql://target@target-db/kaneo?sslmode=require&sslmode=disable'; do
+  printf '%s\n' "$dsn" >"$TMP/target.dsn"
+  reject_identity 'forbidden/ambiguous URI' --target-home cluster-postgres --target-host target-db
+done
+printf 'postgresql://source@SOURCE-db:5432/kan%%65o\n' >"$TMP/source.dsn"
+printf 'postgres://different:credentials@source-db/kaneo\n' >"$TMP/target.dsn"
+reject_identity 'same database with different credentials' --target-home cluster-postgres --target-host source-db
+printf 'postgresql://source@source-db/kaneo?host=other\n' >"$TMP/source.dsn"
+printf 'postgresql://target@target-db/kaneo\n' >"$TMP/target.dsn"
+reject_identity 'ambiguous source' --target-home cluster-postgres --target-host target-db
 
 if ((FAILURES)); then
   printf 'kaneo-cutover.test.sh: %d check(s) failed\n' "$FAILURES"

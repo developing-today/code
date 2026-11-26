@@ -17,6 +17,41 @@ pub struct Board {
     /// as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme_ref: Option<ArtifactHash>,
+    /// How this board treats post themes in the render cascade (#5858
+    /// Decision 4). Older v1 board bodies written before this field
+    /// existed decode as `None`, which means
+    /// [`ForeignThemeMode::Honor`] — the pre-split behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_theme_mode: Option<ForeignThemeMode>,
+}
+
+impl Board {
+    /// Effective foreign-theme mode: the stored value, or `Honor` for
+    /// older bodies that predate the field.
+    #[must_use]
+    pub const fn foreign_mode(&self) -> ForeignThemeMode {
+        match self.foreign_theme_mode {
+            Some(mode) => mode,
+            None => ForeignThemeMode::Honor,
+        }
+    }
+}
+
+/// How a receiving board treats post themes (#5858 Decision 4).
+/// Stored on the board root as [`Board::foreign_theme_mode`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForeignThemeMode {
+    /// Post themes enter the cascade at layer 3 in full (tokens;
+    /// layout still follows the scoping rule).
+    #[default]
+    Honor,
+    /// Post themes contribute only non-colour roles (type, spacing,
+    /// density); colour roles resolve from the board layer down.
+    TokensOnly,
+    /// Post themes do not enter the cascade; every post renders in
+    /// the board theme.
+    Flatten,
 }
 
 /// Versioned board rules. A revision is a new immutable object.
@@ -387,6 +422,13 @@ pub struct Post {
     /// Optional signed default for displaying an attached note; absent means live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_view: Option<NoteEmbedView>,
+    /// Theme this post carries by reference, if any, offered to the
+    /// receiving board's cascade at layer 3 under that board's
+    /// [`Board::foreign_theme_mode`]. The named [`Theme`] object must
+    /// already be in the graph when the post is accepted. Older v1 post
+    /// bodies written before this field existed decode as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_ref: Option<ArtifactHash>,
 }
 
 /// Metadata-only reference to a content-addressed attachment blob.
@@ -1040,5 +1082,91 @@ mod note_projection_properties {
             };
             prop_assert_eq!(shown_heads, heads);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod theme_schema_split_tests {
+    //! Split 1 of #5858: `Post::theme_ref` and
+    //! `Board::foreign_theme_mode` land with legacy decode (older
+    //! bodies predate the fields) and exact round-trips.
+
+    use super::*;
+
+    fn hash(ch: char) -> ArtifactHash {
+        ArtifactHash::new(ch.to_string().repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn post_theme_ref_round_trips_and_legacy_absence_means_none() {
+        let legacy = serde_json::json!({
+            "board": "a".repeat(64),
+            "thread": "b".repeat(64),
+            "parent_post": null,
+            "body": "themed",
+            "attachments": [],
+            "embed_ref": null,
+            "note_ref": null,
+            "note_anchor": null,
+            "note_view": null
+        });
+        let decoded: Post = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.theme_ref, None);
+
+        let themed = Post {
+            board: hash('a'),
+            thread: hash('b'),
+            parent_post: None,
+            body: "themed".to_owned(),
+            attachments: Vec::new(),
+            embed_ref: None,
+            note_ref: None,
+            note_anchor: None,
+            note_view: None,
+            theme_ref: Some(hash('c')),
+        };
+        let encoded = serde_json::to_string(&themed).unwrap();
+        assert_eq!(serde_json::from_str::<Post>(&encoded).unwrap(), themed);
+        assert!(encoded.contains("\"theme_ref\""));
+
+        let plain = Post {
+            theme_ref: None,
+            ..themed
+        };
+        let encoded_plain = serde_json::to_string(&plain).unwrap();
+        assert!(!encoded_plain.contains("theme_ref"));
+        assert_eq!(serde_json::from_str::<Post>(&encoded_plain).unwrap(), plain);
+    }
+
+    #[test]
+    fn board_foreign_theme_mode_round_trips_and_legacy_absence_means_honor() {
+        let legacy = serde_json::json!({
+            "board_id": "club",
+            "forked_from": null,
+            "theme_ref": null
+        });
+        let decoded: Board = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.foreign_theme_mode, None);
+        assert_eq!(decoded.foreign_mode(), ForeignThemeMode::Honor);
+
+        for mode in [
+            ForeignThemeMode::Honor,
+            ForeignThemeMode::TokensOnly,
+            ForeignThemeMode::Flatten,
+        ] {
+            let board = Board {
+                board_id: "club".to_owned(),
+                forked_from: None,
+                theme_ref: None,
+                foreign_theme_mode: Some(mode),
+            };
+            let encoded = serde_json::to_string(&board).unwrap();
+            assert_eq!(serde_json::from_str::<Board>(&encoded).unwrap(), board);
+            assert_eq!(board.foreign_mode(), mode);
+        }
+
+        let encoded = serde_json::to_string(&ForeignThemeMode::TokensOnly).unwrap();
+        assert_eq!(encoded, "\"tokens_only\"");
     }
 }

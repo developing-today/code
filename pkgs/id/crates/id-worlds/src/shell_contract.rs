@@ -749,7 +749,8 @@ pub struct CapabilityStatement {
 /// One shell's entry in the suite manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SuiteShell {
-    /// The shell's name (`terminal`, `browser`, `native`, `hardware`).
+    /// The shell's name (`terminal`, `browser`, `native`, `hardware`,
+    /// `tui`).
     pub name: String,
     /// Its capability statement; a shell without one fails the suite.
     pub statement: Option<CapabilityStatement>,
@@ -759,7 +760,8 @@ pub struct SuiteShell {
 }
 
 /// The parsed suite manifest (`contract/shell-suite.v1.json`): every
-/// v1 shell, its capability statement, and its recorded session. The
+/// shell on the v1 contract (the v1 shells and, from shells v2, the
+/// TUI), its capability statement, and its recorded session. The
 /// suite is the product (core topic #6279): slices add their shell's
 /// session path here and the whole suite gates on it, with no code
 /// change.
