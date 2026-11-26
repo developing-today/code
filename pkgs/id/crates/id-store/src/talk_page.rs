@@ -39,6 +39,10 @@ use id_core::id_shape::{ContentId, DIGEST_BYTES, HashProfile, IdShapeError};
 
 /// Versioned signing domain for talk-page posts.
 pub const TALK_POST_DOMAIN: &str = "id.talk-post/v1";
+/// Event kind that carries one post, as its canonical bytes, in the event
+/// store (slice 2, #14270). The event is content: its signer is the post's
+/// author, and a group-scoped object's posts carry the object's group.
+pub const TALK_POST_KIND: &str = "talk.post.v1";
 /// Versioned signing domain for changelog entries.
 pub const CHANGELOG_ENTRY_DOMAIN: &str = "id.changelog-entry/v1";
 /// Record version written by this module.

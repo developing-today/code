@@ -52,10 +52,7 @@ pub struct DatabaseConversion {
 /// with no assigned note ID fails rather than minting identity
 /// mid-content. Conversion is safe to re-run: identities already
 /// recorded are kept, and progress never rewinds (§6.3).
-pub fn convert_database(
-    manifest: &mut Manifest,
-    database_id: &str,
-) -> Result<DatabaseConversion> {
+pub fn convert_database(manifest: &mut Manifest, database_id: &str) -> Result<DatabaseConversion> {
     let object = manifest
         .inventory
         .objects
@@ -99,7 +96,10 @@ pub fn convert_database(
                 .get("id")
                 .and_then(Value::as_str)
                 .with_context(|| {
-                    format!("data source {} property {name} is missing its id", source.id)
+                    format!(
+                        "data source {} property {name} is missing its id",
+                        source.id
+                    )
                 })?
                 .to_owned();
             let property_type = definition
@@ -240,10 +240,7 @@ mod tests {
 
     #[test]
     fn property_without_type_fails_closed() {
-        let mut manifest = manifest_for(vec![source(
-            "ds-1",
-            json!({"Name": {"id": "title"}}),
-        )]);
+        let mut manifest = manifest_for(vec![source("ds-1", json!({"Name": {"id": "title"}}))]);
         manifest
             .assign_database_identities(&mut |id| Ok(format!("note-{id}")))
             .unwrap();
@@ -260,10 +257,7 @@ mod tests {
             .assign_database_identities(&mut |id| Ok(format!("note-{id}")))
             .unwrap();
         let err = convert_database(&mut manifest, "db-1").unwrap_err();
-        assert!(
-            err.to_string().contains("no properties object"),
-            "{err:#}"
-        );
+        assert!(err.to_string().contains("no properties object"), "{err:#}");
     }
 
     #[test]

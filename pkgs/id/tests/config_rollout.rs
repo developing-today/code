@@ -44,6 +44,10 @@ fn document(revision: u64) -> ConfigDocument {
         extensions: BTreeMap::new(),
         fanout: Fanout::default(),
         peers: Vec::new(),
+        storage: id_config::Storage::default(),
+        tiers: BTreeMap::new(),
+        links: id_config::Links::default(),
+        namespaces: id_config::Namespaces::default(),
     }
 }
 
