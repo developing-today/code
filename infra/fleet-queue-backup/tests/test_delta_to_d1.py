@@ -36,10 +36,15 @@ class Source:
 
 
 class FakeD1:
-    def __init__(self, conn):
+    def __init__(self, conn, per_statement=False):
         self.conn = conn
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.imports = []
+        # per_statement: each statement commits on its own, so a deferred
+        # foreign-key check never spans two statements. D1's import behaved
+        # this way on 2026-11-26 (a parent dropped under kept children
+        # failed), so the delta must hold up under it.
+        self.per_statement = per_statement
 
     def find_database(self, name):
         return {"uuid": "db-1", "name": name}
@@ -54,6 +59,14 @@ class FakeD1:
         body = "\n".join(
             line for line in sql_text.splitlines() if not line.startswith("PRAGMA defer_foreign_keys")
         )
+        if self.per_statement:
+            stmt = ""
+            for line in body.splitlines():
+                stmt += line + "\n"
+                if sqlite3.complete_statement(stmt):
+                    self.conn.execute(stmt)
+                    stmt = ""
+            return
         try:
             self.conn.executescript("BEGIN;\nPRAGMA defer_foreign_keys = true;\n" + body + "\nCOMMIT;")
         except Exception:
@@ -141,6 +154,55 @@ class TestDelta(unittest.TestCase):
         self.assertEqual(report["history"], "+0")
         for t in ("issues", "events", "history"):
             self.assertEqual(rows(self.dst, t), rows(self.src, t), t)
+
+
+GUARDED = """
+CREATE TABLE models (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE notes (id INTEGER PRIMARY KEY, model_id TEXT REFERENCES models(id), body TEXT);
+CREATE TRIGGER notes_no_delete BEFORE DELETE ON notes BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+"""
+
+
+class TestKeptChildOfRecreatedParent(unittest.TestCase):
+    """ainventory_notes (append-only, kept) under ainventory_models (recreated)."""
+
+    def setUp(self):
+        self.src = sqlite3.connect(":memory:", isolation_level=None)
+        self.dst = sqlite3.connect(":memory:", isolation_level=None)
+        for c in (self.src, self.dst):
+            c.executescript(GUARDED)
+            c.executescript("INSERT INTO models VALUES ('m1', 'one'); INSERT INTO notes VALUES (1, 'm1', 'n1');")
+        self.src.executescript(
+            "UPDATE models SET name = 'one!' WHERE id = 'm1';"
+            "INSERT INTO models VALUES ('m2', 'two'); INSERT INTO notes VALUES (2, 'm2', 'n2');"
+        )
+        self.d1 = FakeD1(self.dst, per_statement=True)
+        self._orig = (fq_common.LibsqlClient, fq_common.D1Client)
+        fq_common.LibsqlClient = lambda url, token: Source(self.src)
+        fq_common.D1Client = lambda token, account: self.d1
+        for k in ("TURSO_QUEUE_TOKEN", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+            os.environ[k] = "test"
+
+    def tearDown(self):
+        fq_common.LibsqlClient, fq_common.D1Client = self._orig
+
+    def test_child_is_recreated_with_its_parent_in_fk_order(self):
+        report, _ = delta_to_d1.delta("libsql://x", "db", [])
+        self.assertEqual(report["notes"], "=2")
+        for t in ("models", "notes"):
+            self.assertEqual(rows(self.dst, t), rows(self.src, t), t)
+        sql = self.d1.imports[-1]
+        self.assertLess(sql.index('DROP TABLE IF EXISTS "notes"'), sql.index('DROP TABLE IF EXISTS "models"'))
+        self.assertLess(sql.index('INSERT INTO "models"'), sql.index('INSERT INTO "notes"'))
+        self.assertEqual(self.dst.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+
+class TestPerStatementImport(TestDelta):
+    """The whole-store cases again, with no deferral across statements."""
+
+    def setUp(self):
+        super().setUp()
+        self.d1.per_statement = True
 
 
 if __name__ == "__main__":

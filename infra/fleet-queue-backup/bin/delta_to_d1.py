@@ -49,6 +49,36 @@ def _rows_after(client, table, colnames, after):
     raise RuntimeError(f"{table}: rowid paging exceeded its bound")
 
 
+_REFERENCES = re.compile(r'REFERENCES\s+["`\[]?([A-Za-z_][A-Za-z0-9_]*)', re.IGNORECASE)
+
+
+def _parents(sql):
+    """Tables a CREATE TABLE's foreign keys point at."""
+    return set(_REFERENCES.findall(sql or ""))
+
+
+def _parents_first(tables):
+    """Table names ordered so every FK parent comes before its children.
+
+    D1 does not hold a deferred foreign-key check across a whole import
+    (a delta with a parent dropped under kept children failed with
+    FOREIGN KEY constraint failed on 2026-11-26), so the import must
+    never leave a child pointing at a missing parent between statements.
+    Self references and cycles keep source order.
+    """
+    names = [n for n, _ in tables]
+    deps = {n: _parents(sql) & set(names) - {n} for n, sql in tables}
+    out, done = [], set()
+    while len(out) < len(names):
+        ready = [n for n in names if n not in done and deps[n] <= done]
+        if not ready:
+            ready = [next(n for n in names if n not in done)]
+        for n in ready:
+            out.append(n)
+            done.add(n)
+    return out
+
+
 def _emit(lines, splits, table, colnames, pk_cols, row):
     stmt = f'INSERT INTO "{table}" VALUES (' + ", ".join(row) + ");"
     if len(stmt.encode("utf-8")) <= fq_common.MAX_IMPORT_STATEMENT_BYTES:
@@ -88,17 +118,30 @@ def delta(source_url, d1_name, append):
             src_cols, _ = src.execute(f'SELECT * FROM "{name}" LIMIT 0')
             if fq_common.table_columns(d1_tables[name] or "") == list(src_cols):
                 keep.add(name)
+    # A kept table whose parent is recreated would point at missing
+    # rows between the parent's drop and its refill; recreate it too.
+    sql_of = dict(tables)
+    changed = True
+    while changed:
+        changed = False
+        for name in sorted(keep):
+            if _parents(sql_of[name]) - keep - {name}:
+                keep.discard(name)
+                changed = True
     recreate = {name for name, _sql in tables if name not in keep}
+    order = _parents_first(tables)
     # D1 enforces foreign keys; check them at the end of the import.
     # UNIQUE indexes go in before any row, because a child insert whose
     # parent key has no unique index fails as a "foreign key mismatch"
     # even with checks deferred.
     lines, splits, report = ["PRAGMA defer_foreign_keys = true;"], [], {}
-    for name, sql in tables:
+    # Children are dropped before their parents and created after them.
+    for name in reversed(order):
+        if name in recreate and name in d1_tables:
+            lines.append(f'DROP TABLE IF EXISTS "{name}";')
+    for name in order:
         if name in recreate:
-            if name in d1_tables:
-                lines.append(f'DROP TABLE IF EXISTS "{name}";')
-            lines.append(sql.rstrip().rstrip(";") + ";")
+            lines.append(sql_of[name].rstrip().rstrip(";") + ";")
     deferred_schema = []
     for kind, name, tbl, sql in schema:
         if kind not in ("index", "trigger") or tbl not in recreate:
@@ -107,7 +150,8 @@ def delta(source_url, d1_name, append):
             lines.append(sql.rstrip().rstrip(";") + ";")
         else:
             deferred_schema.append(sql.rstrip().rstrip(";") + ";")
-    for name, sql in tables:
+    for name in order:
+        sql = sql_of[name]
         colnames, _ = src.execute(f'SELECT * FROM "{name}" LIMIT 0')
         pk_cols = fq_common._pk_columns(sql)
         n = 0
