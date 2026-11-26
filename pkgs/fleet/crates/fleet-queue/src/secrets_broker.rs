@@ -1363,12 +1363,12 @@ mod tests {
         assert_eq!(secrets_list_prefix("/secrets"), Ok(None));
         assert_eq!(secrets_list_prefix("/secrets?x=1"), Ok(None));
         assert_eq!(
-            secrets_list_prefix("/secrets?prefix=42").as_deref(),
-            Ok(Some("42"))
+            secrets_list_prefix("/secrets?prefix=42"),
+            Ok(Some("42".to_string()))
         );
         assert_eq!(
-            secrets_list_prefix("/secrets?x=1&prefix=a%26b").as_deref(),
-            Ok(Some("a&b"))
+            secrets_list_prefix("/secrets?x=1&prefix=a%26b"),
+            Ok(Some("a&b".to_string()))
         );
         assert_eq!(secrets_list_prefix("/secrets?prefix="), Err("empty prefix"));
         assert_eq!(secrets_list_prefix("/secrets?prefix"), Err("empty prefix"));
