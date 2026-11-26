@@ -80,7 +80,9 @@ export interface CostAnomalyProducerDeps {
   /** Monthly matched-charge totals from the charges pipeline. */
   monthlyCharges?: () => Promise<readonly MonthlyChargeTotal[]> | readonly MonthlyChargeTotal[];
   /** Certified per-service activity; absent/null = uncertified. */
-  serviceActivity?: (charge: MonthlyChargeTotal) => Promise<ServiceActivityRecord | null> | ServiceActivityRecord | null;
+  serviceActivity?: (
+    charge: MonthlyChargeTotal,
+  ) => Promise<ServiceActivityRecord | null> | ServiceActivityRecord | null;
 }
 
 /**
@@ -118,7 +120,9 @@ export async function loadCostAnomalyEvidence(deps: CostAnomalyProducerDeps): Pr
   const byWindowEnd = new Map<string, SpendRollup>();
   for (const r of unattributed) byWindowEnd.set([r.windowKind, r.windowEnd, r.scopeId, r.pool].join("|"), r);
   for (const current of unattributed) {
-    const previous = byWindowEnd.get([current.windowKind, current.windowStart, current.scopeId, current.pool].join("|"));
+    const previous = byWindowEnd.get(
+      [current.windowKind, current.windowStart, current.scopeId, current.pool].join("|"),
+    );
     if (!previous) continue;
     evidence.push({
       kind: "unattributed-growth",

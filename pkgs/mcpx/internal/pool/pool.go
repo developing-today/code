@@ -676,7 +676,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 	}
 	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dialMode(sctx, eff, rs.Root, kind)
+	tr, err := p.dialMode(sctx, eff, rs.Root, kind, rs.Key)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -720,7 +720,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
+		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind, rs.Key); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -765,7 +765,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
+		if tr, err = p.dialMode(sctx, eff, rs.Root, kind, rs.Key); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -1043,14 +1043,18 @@ const (
 // eff is the instance's effective (substituted) spawn definition; for
 // callers with no instance being spawned (HTTP session adoption) it is
 // simply the pool's stored config.
-func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
-	return p.dialMode(ctx, eff, root, dialSpawn)
+func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string, scopeKey string) (mcpclient.Transport, error) {
+	return p.dialMode(ctx, eff, root, dialSpawn, scopeKey)
 }
 
 // dialMode is dial with the supervised variation selected by kind:
 // dialAttachOnly never spawns a supervisor, dialRestart restarts the
 // child through its supervisor. Unsupervised paths ignore the kind.
-func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind) (mcpclient.Transport, error) {
+// scopeKey is the spawning instance's scope key: it keys the
+// supervisor socket per instance (#9963), so two scoped instances of
+// one server never share a supervisor. Callers with no instance being
+// spawned (HTTP session adoption) pass "" — the primary instance.
+func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind, scopeKey string) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
@@ -1059,6 +1063,7 @@ func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, 
 	if eff.Stdio() && eff.Mcpx.SupervisedEnabled() {
 		opts := mcpclient.SupervisedOptions{
 			Name:       eff.Name,
+			Instance:   scopeKey,
 			Command:    eff.Command,
 			Args:       eff.Args,
 			Env:        overlay(overlay(eff.Env, p.runtimeEnv()), auth.Env),

@@ -23,6 +23,10 @@ fleet-search = { workspace = true, optional = true }
 # half (fleet-proxy's `serve` feature) is variant-gated, through
 # the proxy-serve feature below.
 fleet-proxy = { workspace = true, default-features = false }
+# The pooling primitive (design #13752, crate #14721): the laptop
+# route-form walker (#14722) selects through it. Linked only by the
+# laptop feature, so the connect variant does not carry it.
+fleet-pool = { workspace = true, optional = true }
 # fleet-secrets is linked only by builds whose domains resolve secrets;
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
@@ -40,9 +44,9 @@ fleet-agent = { workspace = true, optional = true }
 # chains and bundles over the fleet-cert library crate.
 fleet-cert = { workspace = true, optional = true }
 fleet-orgs = { workspace = true, optional = true }
-# The host domain (#14716): selection over the #13717 forms is a
-# fleet-pool decision, never a hand-written per-host ladder.
-fleet-pool = { workspace = true, optional = true }
+# The kv domain (code#13314): identity-scoped local key/value bytes over
+# the fleet-kv crate; a working-seat client, so full only.
+fleet-kv = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The OpenCode session liveness probe (session_state.rs) only;
 # optional so the connect variant stays under the D7 size gate.
@@ -102,6 +106,7 @@ full = [
   "cert",
   "actions",
   "orgs",
+  "kv",
   "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
@@ -155,7 +160,7 @@ laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
 commander = ["dep:fleet-secrets", "dep:ureq"]
 http = ["dep:fleet-laptop-agent"]
 ssh = []
-laptop = ["commander", "http", "ssh"]
+laptop = ["commander", "http", "ssh", "dep:fleet-pool"]
 # The host domain (#14716): registry-driven host resolution and
 # selection through fleet-pool. Full only (a working-seat client).
 host = ["dep:fleet-pool"]
@@ -187,6 +192,7 @@ agent = ["dep:fleet-agent"]
 # never in serve (no daemon role) or connect (size gate).
 cert = ["dep:fleet-cert"]
 orgs = ["dep:fleet-orgs"]
+kv = ["dep:fleet-kv"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

@@ -219,14 +219,9 @@ export function computeCoverage(
 }
 
 export type RepoCoverageDelta = {
-  [K in
-    | "openIssues"
-    | "gateNow"
-    | "gateNext"
-    | "poolItems"
-    | "poolUnsetStatus"
-    | "poolUnsetArea"
-    | "staleOpenIssues"]: number | null;
+  [K in "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues"]:
+    | number
+    | null;
 };
 
 const deltaOrNull = (a: number | null, b: number | null | undefined): number | null =>

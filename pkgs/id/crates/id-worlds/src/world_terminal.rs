@@ -650,7 +650,10 @@ impl TierPresenter {
             // carries the new dimensions, so the presenter sees every
             // resize here.
             let dims = (screen.width, screen.height);
-            if self.previous_text_dims.is_some_and(|previous| previous != dims) {
+            if self
+                .previous_text_dims
+                .is_some_and(|previous| previous != dims)
+            {
                 self.previous_text.clear();
             }
             self.previous_text_dims = Some(dims);
@@ -809,7 +812,7 @@ pub fn encode_sixel(rgb: &[u8], width: usize, height: usize) -> Option<String> {
     }
     let mut colors: Vec<(u8, u8, u8)> = Vec::new();
     let mut index = vec![0_usize; pixels];
-    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+    for (i, pixel) in rgb.as_chunks::<3>().0.iter().enumerate() {
         let key = (pixel[0], pixel[1], pixel[2]);
         index[i] = match colors.iter().position(|color| *color == key) {
             Some(position) => position,
@@ -1166,7 +1169,9 @@ fn decode_hex(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;
@@ -1396,14 +1401,16 @@ mod tests {
     fn text_mode_presenter_output_never_contains_an_escape_byte() {
         // Oracle: design D2 — in text mode no escape sequence is ever
         // written, even for the first (full) frame.
-        let mut presenter =
-            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
         let first = presenter.render_screen(&screen(&["hello", "world"]));
         let second = presenter.render_screen(&screen(&["hello", "there"]));
 
         assert!(!first.contains('\x1b'), "first frame escaped: {first:?}");
         assert!(!second.contains('\x1b'), "delta frame escaped: {second:?}");
-        assert!(first.contains("hello"), "first frame lost its text: {first:?}");
+        assert!(
+            first.contains("hello"),
+            "first frame lost its text: {first:?}"
+        );
     }
 
     #[test]
@@ -1414,8 +1421,7 @@ mod tests {
         // is exactly the changed-lines form computed against nothing,
         // so applying it over any prior frame state yields the new
         // frame (TextDelta::apply parity).
-        let mut presenter =
-            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
 
         let joined = presenter.render_screen(&screen(&["alpha", "beta"]));
         assert_eq!(joined, "alpha\r\nbeta\r\n", "join is a full frame");

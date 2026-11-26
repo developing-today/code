@@ -12,10 +12,11 @@
 //     in-session mcpx subset: session_v2 + session_message in the
 //     OpenCode database. Direct daemon calls come from mcpx's separate,
 //     payload-free rotated call ledger (PM_AGG_MCPX_CALL_LEDGER_DIR).
-//   - Fleet binary use per subcommand: INFERRED — counted by
-//     scanning shell tool-call inputs for `fleet <subcommand>`.
-//     There is no fleet invocation ledger; the UI labels this
-//     "inferred" and the gap is filed as an issue.
+//   - Fleet binary use per subcommand: RECORDED from the fleet CLI's
+//     own append-only invocation ledger (fleet-invocation/v1 JSONL,
+//     #9373) when it is readable. Without it, the counts fall back to
+//     scanning shell tool-call inputs for `fleet <subcommand>`, and
+//     the UI labels them "inferred".
 //   - Pool percent history (for projections + week-over-week):
 //     the aggregator's own usage-snapshot store, via UsageView
 //     .history — dated quota reads, never a model.

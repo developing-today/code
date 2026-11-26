@@ -101,10 +101,7 @@ export function libsqlHttpDb(options: LibsqlHttpOptions): AsyncSqlDb {
           ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
         },
         body: JSON.stringify({
-          requests: [
-            { type: "execute", stmt: { sql, args: params.map(encodeValue) } },
-            { type: "close" },
-          ],
+          requests: [{ type: "execute", stmt: { sql, args: params.map(encodeValue) } }, { type: "close" }],
         }),
       });
       if (!res.ok) throw new Error(`libsql http ${res.status}: ${await res.text()}`);

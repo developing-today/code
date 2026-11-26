@@ -305,6 +305,7 @@ These CLI defaults are configuration in effect; the flags themselves are specifi
 | `--world-max-open`                       | `256`                        |
 | `--world-max-sessions`                   | `1024`                       |
 | `--world-idle-secs`                      | `600`                        |
+| `--world-host`                           | `false`                      |
 | `--world-boot-window-secs`               | `600`                        |
 | `--world-cap-policy`                     | `deny`                       |
 | Gossip topic (hardcoded fallback)        | `id-peer-discovery-v1`       |

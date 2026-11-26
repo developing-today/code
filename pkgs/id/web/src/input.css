@@ -17,7 +17,7 @@
 @plugin "daisyui";
 
 /* Scan Rust templates and TypeScript for Tailwind class usage */
-@source "../../src/web/templates.rs";
+@source "../../crates/id-web/src/templates.rs";
 @source "./main.ts";
 @source "./world.ts";
 @source "./editor.ts";

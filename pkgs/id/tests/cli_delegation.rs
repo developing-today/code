@@ -220,10 +220,7 @@ fn test_a_refused_grant_with_a_mode_change_records_neither_event() {
         "--mode",
         "keep_prior",
     ]);
-    assert!(
-        !refused.status.success(),
-        "a grant to oneself was accepted"
-    );
+    assert!(!refused.status.success(), "a grant to oneself was accepted");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("BadGrantee"), "{stderr}");
     assert!(

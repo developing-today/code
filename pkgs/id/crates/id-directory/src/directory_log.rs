@@ -536,7 +536,7 @@ mod tests {
         let log = log_of(&records(&mut rng));
         let text = to_jsonl(&log).unwrap();
         let loaded = load(&text);
-        assert!(loaded.skipped.is_empty());
+        assert_eq!(loaded.skipped, [] as [Skipped; 0]);
         assert_eq!(loaded.log, log);
     }
 
@@ -582,7 +582,7 @@ mod tests {
     fn empty_text_loads_an_empty_log() {
         let loaded = load("");
         assert_eq!(loaded.log, Log::default());
-        assert!(loaded.skipped.is_empty());
+        assert_eq!(loaded.skipped, [] as [Skipped; 0]);
     }
 
     #[test]

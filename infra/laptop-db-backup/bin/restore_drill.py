@@ -61,9 +61,7 @@ def run_drill(home, out_path):
                     )
                     batch = []
             if batch:
-                dst.executemany(
-                    f'INSERT INTO "{name}" VALUES ({placeholders})', batch
-                )
+                dst.executemany(f'INSERT INTO "{name}" VALUES ({placeholders})', batch)
             restored[name] = loaded
         for kind, _name, _tbl, sql in schema:
             if kind in ("index", "view", "trigger"):

@@ -64,6 +64,7 @@ use std::{
 };
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+use super::collab_steps::{StepRefusal, StepSchema, check_steps, document_content_size};
 use super::content_mode::{ContentMode, detect_mode_with_content};
 use super::identity::{sanitize_name, short_id};
 use super::markdown::{
@@ -238,6 +239,10 @@ pub struct Document {
     pub mode: ContentMode,
     /// History of all applied steps (step data, client ID as JSON value).
     pub steps: RwLock<Vec<(Step, serde_json::Value)>>,
+    /// Content size (`doc.content.size`) of the base document after
+    /// every accepted step (#1618). Changed only under the `steps`
+    /// write lock, alongside the history it describes.
+    pub content_size: AtomicU64,
     /// Active cursor positions by client ID.
     pub cursors: RwLock<HashMap<String, CursorPosition>>,
     /// Broadcast channel for sending updates to clients.
@@ -265,12 +270,14 @@ impl Document {
     /// Create a document with a `ProseMirror` document and content mode.
     pub fn with_doc_and_mode(doc: serde_json::Value, mode: ContentMode) -> Self {
         let (tx, _) = broadcast::channel(256);
+        let content_size = document_content_size(&doc, mode);
 
         Self {
             version: AtomicU64::new(0),
             doc: RwLock::new(doc),
             mode,
             steps: RwLock::new(Vec::new()),
+            content_size: AtomicU64::new(content_size),
             cursors: RwLock::new(HashMap::new()),
             broadcast: tx,
             client_count: AtomicUsize::new(0),
@@ -295,33 +302,52 @@ impl Document {
     /// Atomically accept a batch of steps submitted at `base_version`
     /// (#2968).
     ///
-    /// Holds the steps write lock across the version check, the append,
-    /// and the version bump, so two sockets submitting at the same base
-    /// version cannot both pass the check: exactly one is accepted and
-    /// the other observes the winner's bumped version. Returns the new
-    /// version on success, or the current version on mismatch. Broadcast
-    /// and Ack stay with the caller, after this lock has been released.
+    /// Holds the steps write lock across the version check, the step
+    /// checks, the append, and the version bump, so two sockets
+    /// submitting at the same base version cannot both pass the check:
+    /// exactly one is accepted and the other observes the winner's
+    /// bumped version. Returns the new version on success. Broadcast and
+    /// Ack stay with the caller, after this lock has been released.
+    ///
+    /// # Errors
+    ///
+    /// [`StepsRejected::VersionMismatch`] with the current version when
+    /// `base_version` is stale, and [`StepsRejected::Invalid`] when a step
+    /// breaks the step contract (#1618): an unknown step type, a node or
+    /// mark outside the document's schema, or a position outside the
+    /// document. A rejected batch stores nothing and leaves the version
+    /// and content size unchanged.
     pub async fn try_apply_steps(
         &self,
         base_version: u64,
         steps: &[serde_json::Value],
         client_id: u64,
-    ) -> Result<u64, u64> {
+    ) -> Result<u64, StepsRejected> {
+        use std::sync::atomic::Ordering;
         let mut doc_steps = self.steps.write().await;
         let current_version = self.version();
         if base_version != current_version {
-            return Err(current_version);
+            return Err(StepsRejected::VersionMismatch {
+                current: current_version,
+            });
         }
+        let Some(schema) = StepSchema::for_mode(self.mode) else {
+            return Err(StepsRejected::Invalid(StepRefusal {
+                index: 0,
+                reason: format!("a {} document does not take edits", self.mode.as_str()),
+            }));
+        };
+        let new_size = check_steps(schema, self.content_size.load(Ordering::SeqCst), steps)
+            .map_err(StepsRejected::Invalid)?;
+        self.content_size.store(new_size, Ordering::SeqCst);
         for step in steps {
             doc_steps.push((
                 Step { data: step.clone() },
                 serde_json::Value::Number(client_id.into()),
             ));
         }
-        let new_version = self
-            .version
-            .fetch_add(steps.len() as u64, std::sync::atomic::Ordering::SeqCst)
-            + steps.len() as u64;
+        let new_version =
+            self.version.fetch_add(steps.len() as u64, Ordering::SeqCst) + steps.len() as u64;
         drop(doc_steps);
         Ok(new_version)
     }
@@ -352,6 +378,19 @@ impl Default for Document {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Why [`Document::try_apply_steps`] refused a batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepsRejected {
+    /// The batch was built on a stale version; `current` is the
+    /// document's version now.
+    VersionMismatch {
+        /// The document's current version.
+        current: u64,
+    },
+    /// A step breaks the step contract (#1618).
+    Invalid(StepRefusal),
 }
 
 /// Why publishing a note checkpoint from a live session was refused
@@ -1337,8 +1376,13 @@ async fn apply_steps(
     let new_version = doc
         .try_apply_steps(version, steps, client_id)
         .await
-        .map_err(|current_version| {
-            format!("Version mismatch: expected {current_version}, got {version}")
+        .map_err(|rejected| match rejected {
+            StepsRejected::VersionMismatch {
+                current: current_version,
+            } => format!("Version mismatch: expected {current_version}, got {version}"),
+            // Not a "Version mismatch" or "desynchronized" error: the
+            // client must not reconnect and resend the same bad step.
+            StepsRejected::Invalid(refusal) => refusal.to_string(),
         })?;
 
     let update = CollabMessage::Update {
@@ -2056,6 +2100,8 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let steps = vec![serde_json::json!({
                     "stepType": "replace",
+                    "from": 0,
+                    "to": 0,
                     "marker": client_id,
                 })];
                 (client_id, doc.try_apply_steps(0, &steps, client_id).await)
@@ -2069,9 +2115,9 @@ mod tests {
             let (client_id, result) = handle.await.unwrap();
             match result {
                 Ok(1) => winners.push(client_id),
-                Err(1) => {}
+                Err(StepsRejected::VersionMismatch { current: 1 }) => {}
                 other => panic!(
-                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and Err(1) for every loser are possible"
+                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and a mismatch at 1 for every loser are possible"
                 ),
             }
         }
@@ -2090,9 +2136,12 @@ mod tests {
         // version is rejected; the next submission at the new version
         // succeeds.
         let doc = Document::new();
-        let step = vec![serde_json::json!({ "stepType": "replace" })];
+        let step = vec![serde_json::json!({ "stepType": "replace", "from": 0, "to": 0 })];
         assert_eq!(doc.try_apply_steps(0, &step, 7).await, Ok(1));
-        assert_eq!(doc.try_apply_steps(0, &step, 7).await, Err(1));
+        assert_eq!(
+            doc.try_apply_steps(0, &step, 7).await,
+            Err(StepsRejected::VersionMismatch { current: 1 })
+        );
         assert_eq!(doc.try_apply_steps(1, &step, 7).await, Ok(2));
         assert_eq!(doc.version(), 2);
         assert_eq!(doc.steps.read().await.len(), 2);
@@ -2161,10 +2210,58 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_refuses_unappliable_steps_without_mutation() {
+        // #1618: the issue's probe steps are refused before storage —
+        // nothing stored, no version bump, nothing broadcast — and the
+        // error is not one the client treats as "reconnect and resend".
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+        let probes = [
+            serde_json::json!({"stepType": "bogusType", "from": 1, "to": 2}),
+            serde_json::json!({"stepType": "replace", "from": 1, "to": 999_999}),
+            serde_json::json!({"stepType": "replace", "from": 1, "to": 1,
+                "slice": {"content": [{"type": "no_such_node"}]}}),
+            serde_json::json!(42),
+            serde_json::json!(null),
+            serde_json::json!("hi"),
+        ];
+        for probe in probes {
+            // A valid step ahead of the bad one does not get through
+            // either: the batch is refused whole.
+            let batch = vec![
+                serde_json::json!({"stepType": "replace", "from": 1, "to": 1,
+                    "slice": {"content": [{"type": "text", "text": "ok"}]}}),
+                probe.clone(),
+            ];
+            let error = apply_steps(&doc, 0, &batch, 123).await.unwrap_err();
+            assert!(error.starts_with("Invalid step 1:"), "{probe}: {error}");
+            assert!(!error.contains("Version mismatch") && !error.contains("desynchronized"));
+        }
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert!(updates.try_recv().is_err());
+
+        // The tracked size moves with accepted steps: after typing two
+        // characters, the old end of the paragraph is still in range and
+        // the new end is too, but one past it is not.
+        let typed = vec![
+            serde_json::json!({"stepType": "replace", "from": 1, "to": 1,
+            "slice": {"content": [{"type": "text", "text": "ok"}]}}),
+        ];
+        assert_eq!(apply_steps(&doc, 0, &typed, 123).await.unwrap(), 1);
+        let at_end = vec![serde_json::json!({"stepType": "replace", "from": 4, "to": 4})];
+        assert_eq!(apply_steps(&doc, 1, &at_end, 123).await.unwrap(), 2);
+        let past_end = vec![serde_json::json!({"stepType": "replace", "from": 5, "to": 5})];
+        assert!(apply_steps(&doc, 2, &past_end, 123).await.is_err());
+        assert_eq!(doc.version(), 2);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
         let doc = Document::new();
         let mut updates = doc.broadcast.subscribe();
-        let steps = vec![serde_json::json!({"stepType": "replace", "from": 0})];
+        let steps = vec![serde_json::json!({"stepType": "replace", "from": 0, "to": 0})];
 
         let ack_version = apply_steps(&doc, 0, &steps, 123).await.unwrap();
 
@@ -3621,7 +3718,7 @@ mod tests {
         // step batch is buffered and acked after Init.
         let steps = CollabMessage::Steps {
             version: 0,
-            steps: vec![serde_json::json!({"stepType": "replace"})],
+            steps: vec![serde_json::json!({"stepType": "replace", "from": 0, "to": 0})],
             client_id: 1,
         };
         client

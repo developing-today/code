@@ -1,0 +1,90 @@
+name: github-backup hosted freshness
+
+# Hosted five-leg freshness comparison for #15001 (slice of #14964).
+#
+# Runs infra/github-backup/bin/hosted_freshness.py on a GitHub-hosted
+# runner and publishes its JSON report as an artifact. The probe's
+# reference point is the source repos' own GitHub refs — no laptop
+# state is consulted, which is the point: the laptop leg dying must
+# not blind the freshness check.
+#
+# Trigger policy: workflow_dispatch ONLY for now. A cron schedule is
+# a live schedule change and lands — together with its
+# doc/fleet-schedule-registry.md entry — in the #15001 slice that
+# wires deduplicated alert issues and the external missed-run
+# watchdog; a scheduled probe with no alerting behind it would be a
+# new silent failure domain of its own. CI tier policy: see
+# .github/ci-policy.md.
+#
+# A leg whose credentials are not yet provisioned reports "failed"
+# with the reason in the report — that is the probe working as
+# designed, not a workflow error. The job itself fails whenever the
+# verdict is not "fresh" so a dispatch run is an honest signal; the
+# report artifact carries the per-leg evidence either way.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: "github-backup: hosted freshness probe"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install rclone (R2 bundle leg)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+
+      - name: Run the hosted freshness probe
+        id: probe
+        env:
+          # D1 export leg (values arrive via environment only; the
+          # probe never reads credential files).
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # rclone's r2bak remote, configured purely from the
+          # environment (no config file is written).
+          RCLONE_CONFIG_R2BAK_TYPE: s3
+          RCLONE_CONFIG_R2BAK_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          set +e
+          python3 infra/github-backup/bin/hosted_freshness.py \
+            --run-id "${{ github.run_id }}" \
+            > hosted-freshness-report.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat hosted-freshness-report.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the freshness report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-freshness-${{ github.run_id }}
+          path: hosted-freshness-report.json
+
+      - name: Verdict gate
+        if: always()
+        run: |
+          if [ "${{ steps.probe.outputs.exit_code }}" != "0" ]; then
+            echo "::error::hosted freshness verdict is not fresh (probe exit ${{ steps.probe.outputs.exit_code }}); see the report artifact."
+            exit 1
+          fi
+          echo "hosted freshness: all five legs fresh."
