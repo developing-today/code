@@ -44,6 +44,7 @@ import {
   type ParentEnvelope,
 } from "./recommendation_state";
 import { recordRecommendation } from "./recommendation_history";
+import { recordHotSnapshot } from "./hot_snapshot";
 
 const LEGACY_STORE_KEY = "recommendation-accumulator-v1";
 const META_KEY = "recommendation-accumulator-v2:meta";
@@ -120,7 +121,8 @@ interface PageSignerBinding {
 interface RecommendationEnv {
   PAGE_SIGNER: PageSignerBinding;
   /**
-   * Where recomputes are retained as `recommendation` versions (#9140).
+   * Where recomputes are retained as `recommendation` versions and the
+   * hot window as `hot_snapshot` versions (#9140).
    * Optional: without it, or while the class is disabled, nothing is kept.
    */
   RETAINED?: D1Database;
@@ -351,8 +353,17 @@ export class RecommendationAccumulator {
     } catch (error) {
       console.warn(`recommendation history not recorded: ${(error as Error).message}`);
     }
+    // The same cadence captures the hot window under the short class.
+    let hot: number | undefined;
+    try {
+      const outcome = await recordHotSnapshot(this.env.RETAINED, snapshot, body.tenant, body.subject);
+      if (outcome.recorded) hot = outcome.version;
+    } catch (error) {
+      console.warn(`hot snapshot not recorded: ${(error as Error).message}`);
+    }
     return {
       ...(retained === undefined ? {} : { retained_version: retained }),
+      ...(hot === undefined ? {} : { hot_version: hot }),
       started: true,
       tenant: body.tenant,
       subject: body.subject,

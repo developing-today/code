@@ -337,6 +337,53 @@ export class RetainedObjectStore {
     return row ? fromObjectRow(row) : undefined;
   }
 
+  /**
+   * Mark retired every version of `objectId` that its class rule lets go
+   * (design §5.3): older than the class window and outside the class's
+   * keep-newest floor, counted over the object's versions. Retiring is the
+   * cold step; nothing is deleted. Returns the versions retired by this
+   * call, oldest first.
+   */
+  async retireExpired(objectId: string): Promise<number[]> {
+    const at = this.now();
+    const { results } = await this.db
+      .prepare(
+        `UPDATE atlas_retained_objects AS o
+           SET retired_at_ms = ?2
+         WHERE o.object_id = ?1
+           AND o.retired_at_ms IS NULL
+           AND o.version <= (SELECT MAX(version) FROM atlas_retained_objects WHERE object_id = ?1)
+                            - (SELECT c.keep_newest FROM atlas_retention_classes AS c WHERE c.class = o.class)
+           AND o.written_at_ms <= ?2 - (SELECT c.window_ms FROM atlas_retention_classes AS c WHERE c.class = o.class)
+         RETURNING version`,
+      )
+      .bind(objectId, at)
+      .all<{ version: number }>();
+    return results.map((row) => row.version).sort((a, b) => a - b);
+  }
+
+  /** The versions of one object that are not retired, oldest first. */
+  async live(objectId: string): Promise<Envelope[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT object_id, version, family, class, captured_at, inputs_ref, payload FROM atlas_retained_objects WHERE object_id = ? AND retired_at_ms IS NULL ORDER BY version",
+      )
+      .bind(objectId)
+      .all<ObjectRow>();
+    return results.map(fromObjectRow);
+  }
+
+  /** The retired versions of one object, oldest first. */
+  async retired(objectId: string): Promise<number[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT version FROM atlas_retained_objects WHERE object_id = ? AND retired_at_ms IS NOT NULL ORDER BY version",
+      )
+      .bind(objectId)
+      .all<{ version: number }>();
+    return results.map((row) => row.version);
+  }
+
   /** Every stored version of one object, oldest first. */
   async history(objectId: string): Promise<Envelope[]> {
     const { results } = await this.db
