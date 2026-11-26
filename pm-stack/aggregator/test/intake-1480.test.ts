@@ -2,7 +2,7 @@
 // skip new issues and the watermark must advance only after a successful
 // pass — forward only, never backward, never from a corrupt state.
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,8 +17,15 @@ import {
 
 const script = join(import.meta.dir, "../scripts/gh-intake-poll.ts");
 
-async function runScript(args: string[]): Promise<{ code: number; stderr: string; stdout: string }> {
-  const proc = Bun.spawn([process.execPath, script, ...args], { stdout: "pipe", stderr: "pipe" });
+async function runScript(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<{ code: number; stderr: string; stdout: string }> {
+  const proc = Bun.spawn([process.execPath, script, ...args], {
+    env: { ...process.env, ...env } as Record<string, string>,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: await proc.exited, stdout, stderr };
 }
@@ -28,6 +35,7 @@ describe("intake watermark guards (#1480)", () => {
     expect(() => loadState("not json")).toThrow();
     expect(() => loadState("{}")).toThrow();
     expect(() => loadState('{"watermark":"yesterday"}')).toThrow();
+    expect(() => loadState('{"watermark":"2026-11-24"}')).toThrow();
     expect(loadState('{"watermark":"2026-11-24T00:00:00Z"}')).toEqual({ watermark: "2026-11-24T00:00:00Z" });
   });
 
@@ -85,6 +93,51 @@ describe("gh-intake-poll CLI guards (#1480)", () => {
       const r = await runScript(["poll", "--state", join(dir, "missing.json")]);
       expect(r.code).toBe(2);
       expect(r.stderr).toContain("--since");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("poll parses every option before state reads or API calls", async () => {
+    for (const args of [
+      ["--bogus"],
+      ["--since", ""],
+      ["--since", "2026-11-24", "--state", "missing.json"],
+      ["--state", "one.json", "--state", "two.json"],
+      ["--repos", "developing-today/code,"],
+    ]) {
+      const r = await runScript(["poll", ...args]);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("usage:");
+    }
+  });
+
+  test("poll refuses to return a partial window after its pagination limit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "intake-1480-pages-"));
+    try {
+      const bin = join(dir, "bin");
+      await mkdir(bin);
+      const page = join(dir, "page.json");
+      await writeFile(
+        page,
+        JSON.stringify(
+          Array.from({ length: 100 }, (_, index) => ({
+            number: index + 1,
+            created_at: "2026-11-24T11:00:00Z",
+          })),
+        ),
+      );
+      const gh = join(bin, "gh");
+      await writeFile(gh, `#!/usr/bin/env bash\ncat ${JSON.stringify(page)}\n`);
+      await chmod(gh, 0o755);
+
+      const r = await runScript(
+        ["poll", "--since", "2026-11-24T10:00:00Z", "--repos", "developing-today/code"],
+        { PATH: `${bin}:${process.env.PATH ?? ""}` },
+      );
+      expect(r.code).toBe(1);
+      const output = JSON.parse(r.stdout);
+      expect(output.errors[0].error).toContain("exceeded 1000 issue results");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

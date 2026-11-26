@@ -46,8 +46,13 @@ export interface IntakeItem {
   bodyExcerpt: string;
 }
 
-function isValidIso(ts: string): boolean {
-  if (typeof ts !== "string" || ts.length === 0) return false;
+export function isValidIsoTimestamp(ts: unknown): ts is string {
+  if (
+    typeof ts !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(ts)
+  ) {
+    return false;
+  }
   const ms = Date.parse(ts);
   return Number.isFinite(ms);
 }
@@ -61,7 +66,7 @@ export function loadState(text: string): IntakeState {
     throw new Error("intake state is not valid JSON");
   }
   const watermark = (parsed as { watermark?: unknown })?.watermark;
-  if (typeof watermark !== "string" || !isValidIso(watermark)) {
+  if (!isValidIsoTimestamp(watermark)) {
     throw new Error("intake state has no valid ISO watermark");
   }
   return { watermark };
@@ -78,7 +83,7 @@ export function saveState(state: IntakeState): string {
  * re-intake or, worse, a clobbered state would silently drop intake).
  */
 export function advanceWatermark(current: IntakeState, to: string): IntakeState {
-  if (!isValidIso(to)) throw new Error(`refusing to advance intake watermark to invalid timestamp: ${to}`);
+  if (!isValidIsoTimestamp(to)) throw new Error(`refusing to advance intake watermark to invalid timestamp: ${to}`);
   if (Date.parse(to) <= Date.parse(current.watermark)) {
     throw new Error(
       `refusing to move intake watermark backward or sideways (current ${current.watermark}, requested ${to})`,
@@ -91,7 +96,7 @@ export function advanceWatermark(current: IntakeState, to: string): IntakeState 
 export function isIntakeIssue(obj: RawIssue): boolean {
   if (obj == null || typeof obj !== "object") return false;
   if ((obj as { pull_request?: unknown }).pull_request != null) return false;
-  return typeof obj.number === "number" && typeof obj.created_at === "string" && isValidIso(obj.created_at as string);
+  return typeof obj.number === "number" && isValidIsoTimestamp(obj.created_at);
 }
 
 function labelNames(labels: unknown): string[] {
