@@ -741,7 +741,8 @@ let
         name: recipe: !(recipe.private or false) && name != "default"
       ) justRecipes.recipes;
 
-      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      # The standalone flake package is the explicit checked build target.
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { doCheck = true; };
       mcpxContainerBinary = pkgs.callPackage ../pkgs/mcpx/package.nix {
         wrapWithRuntimes = false;
         doCheck = false;
@@ -1884,11 +1885,12 @@ let
 
   make-mcpx-overlay = {
     overlays = {
+      # Consumer overlays skip the standalone suite; CI checks that target.
       default = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
       mcpx = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
     };
   };

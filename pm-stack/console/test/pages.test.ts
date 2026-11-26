@@ -456,7 +456,7 @@ test("components page (#14433): the census names every shared element, and the p
   expect(ELEMENTS.filter((e: { home: string }) => e.home === "charts.js").length).toBeGreaterThanOrEqual(3);
   expect(components.route).toBe("more/components");
   domPage();
-  const out = (await components.view("", {})) as unknown as El[];
+  const out = (await components.view()) as unknown as El[];
   const all: El[] = out.flatMap((el) => el.all(() => true));
   const classes = new Set(all.flatMap((el) => el.className.split(/\s+/).filter(Boolean)));
   for (const cls of ["card", "chip", "row", "tile", "link", "option", "seg", "stat", "fold", "empty", "kpis"])

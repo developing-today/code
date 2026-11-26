@@ -265,3 +265,19 @@ rehome slice.
 _Design record for #15482 (gap 4 of #9080, component B of #9078).
 Relates to #5681, #5863, #5869, #9079, #9083, #12797, #12798,
 #12801, #14866, #15483._
+
+---
+
+## 2026-11-26T21-45-52Z Decision: amend #9083 §7 for per-tenant D1
+
+**Source and scope.** The owner ruling on [#14866, comment 7189808145](https://github.com/developing-today/code/issues/14866#issuecomment-7189808145) moves tenant state to Cloudflare with D1. This later ruling supersedes this record's §4 rejection of per-tenant D1 and the §6 statement that #9083 §7's credential model is unchanged. It amends only that credential mechanism; #15538 is the implementation slice and remains the source for the full tenant-data placement and migration requirements.
+
+**Tenant D1 access is binding-scoped, not token-scoped.** Provisioning creates one D1 database per tenant and records `backend = d1` plus its `database_id` in the tenant registry. Workers for Platforms injects the tenant's D1 custom binding. The hosted path chooses that binding from the authoritative tenant record, and the Platform Worker enforces the binding boundary; user-controlled `props` cannot select another tenant's database. There is no per-tenant D1 API token, connection string, or database password.
+
+**The account credential stays in the control plane.** The Cloudflare account-level API token is held only by the tenancy/provisioning plane for D1 create/delete operations. It is never used as a tenant data-path credential, and the D1 REST API with that broad token is not an alternate tenant data path.
+
+**The §7 guarantees are preserved by different mechanisms.** Provisioning and dispatch still refuse unless account, binding, and `tenant_db` state are active, checked before dispatch. Missing, unknown, or mismatched bindings are errors with no fallback. Suspension refuses at the tenancy front door before dispatch and unbinds the tenant worker. Deletion refuses first and then drops the database; there is no half-deleted tenant whose data path still works. There is no per-tenant token or `jti` deny list to revoke. Native peers reach tenant data only through Worker routes carrying signed LogSync envelopes; direct D1 endpoint access is not provided.
+
+**Other #9083 boundaries are unchanged.** The shared tenancy D1 contains only the platform directory, account/binding state, roles, credential metadata, and metering rollups, never tenant content, keys, or per-object counts. KV, metering detail, and export state remain in UserDO SQLite. Movement of existing data still uses #5869 snapshot plus delta export/replay, one write path, registry flip, then drain after one retention interval; this amendment authorizes no migration or data movement.
+
+This dated amendment records the #9083 §7 credential-model change in the #15482 design lineage for the explicit acceptance criterion on [#15538](https://github.com/developing-today/code/issues/15538). The earlier sections remain the historical decision made before the 2026-11-26 ruling.

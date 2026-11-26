@@ -94,7 +94,7 @@ Restoring a single world journal backup made by `id world journal backup <DIR> <
 A world host (`id host`) can write one world to a single signed file and restore that file into another host root. This is the one restore path for a world journal that the code ships. It covers one world at a time, not a whole node.
 
 1. On the source host, print the host's signing key with `id host key <ROOT>`. The key is created on first use as `<ROOT>/host.key`, readable by its owner only. Keep the printed hex: the restore checks every file against it.
-2. With the host running (`id host run <ROOT>`), start the world, because only a world the host holds live can be exported: `id host start <ROOT> <WORLD>`.
+2. With the host running (`id host run <ROOT>`, or a node serving the root with `id serve --world-host`, whose root is `.id-worlds` under its data directory), start the world, because only a world the host holds live can be exported: `id host start <ROOT> <WORLD>`.
 3. Write the export: `id host export <ROOT> <WORLD> <FILE>`. The command refuses a `<FILE>` that already exists, writes to a hidden partial file first and renames it into place only when the whole export is on disk.
 4. Copy `<FILE>` to the machine that will host the world.
 5. Restore it: `id host import <NEW_ROOT> <FILE> --source <KEY_HEX>`, with the hex from step 1. The import refuses a file signed by another key, a file with a changed or missing byte, a cut file, and a world name already recorded in `<NEW_ROOT>`. Nothing is written into the root unless every check passes; a failed import leaves no world directory behind.
