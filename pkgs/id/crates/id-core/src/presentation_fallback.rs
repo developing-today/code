@@ -244,7 +244,7 @@ mod tests {
                 &[],
             )),
             tileset: Some(art_asset(
-                "tiles/blue-cape@1",
+                "tiles.blue-cape@1",
                 &["sys.color.blue", "world.appearance.cape"],
                 &[],
             )),
@@ -273,13 +273,27 @@ mod tests {
         for (start_at, expected_rung) in expected {
             let resolved = plan.resolve(start_at, &tags, &source_filters).unwrap();
             assert_eq!(resolved.rung, expected_rung);
-            if start_at == Rung::Glyph {
-                assert_eq!(
-                    resolved.dropped_tags,
-                    tags.iter().cloned().collect::<Vec<_>>()
-                );
-                assert_eq!(resolved.dropped_filters, source_filters);
-                assert_eq!(resolved.art, RenderedArt::Glyph(Glyph::new("C").unwrap()));
+            match start_at {
+                Rung::Rich => {
+                    assert!(resolved.dropped_tags.is_empty());
+                    assert!(resolved.dropped_filters.is_empty());
+                }
+                Rung::Static => {
+                    assert!(resolved.dropped_tags.is_empty());
+                    assert_eq!(resolved.dropped_filters, source_filters);
+                }
+                Rung::Tileset => {
+                    assert_eq!(resolved.dropped_tags, vec!["sys.effect.sparkle"]);
+                    assert_eq!(resolved.dropped_filters, source_filters);
+                }
+                Rung::Glyph => {
+                    assert_eq!(
+                        resolved.dropped_tags,
+                        tags.iter().cloned().collect::<Vec<_>>()
+                    );
+                    assert_eq!(resolved.dropped_filters, source_filters);
+                    assert_eq!(resolved.art, RenderedArt::Glyph(Glyph::new("C").unwrap()));
+                }
             }
         }
     }
@@ -296,5 +310,36 @@ mod tests {
         assert_eq!(resolved.rung, Rung::Glyph);
         assert!(FallbackCandidate::glyph("", BTreeSet::new(), vec![]).is_err());
         assert!(FallbackCandidate::glyph("?", BTreeSet::new(), vec![]).is_err());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn resolution_is_total_and_selects_first_available_rung(
+            start_idx in 0u8..4,
+            available in 0u8..8,
+        ) {
+            let rungs = [Rung::Rich, Rung::Static, Rung::Tileset, Rung::Glyph];
+            let has = |idx: usize| available & (1 << idx) != 0;
+            let plan = FallbackPlan {
+                rich: has(0).then(|| art_asset("rich@1", &[], &[])),
+                static_substitute: has(1).then(|| art_asset("static@1", &[], &[])),
+                tileset: has(2).then(|| art_asset("tiles@1", &[], &[])),
+                glyph: FallbackCandidate::glyph("C", BTreeSet::new(), vec![]).unwrap(),
+            };
+            let start_at = rungs[usize::from(start_idx)];
+            let expected = (usize::from(start_idx)..rungs.len())
+                .find(|idx| *idx == 3 || has(*idx))
+                .map(|idx| rungs[idx])
+                .unwrap_or(Rung::Glyph);
+            let expected_art = match expected {
+                Rung::Rich => RenderedArt::Asset(asset("rich@1")),
+                Rung::Static => RenderedArt::Asset(asset("static@1")),
+                Rung::Tileset => RenderedArt::Asset(asset("tiles@1")),
+                Rung::Glyph => RenderedArt::Glyph(Glyph::new("C").unwrap()),
+            };
+            let resolved = plan.resolve(start_at, &BTreeSet::new(), &[]).unwrap();
+            prop_assert_eq!(resolved.rung, expected);
+            prop_assert_eq!(resolved.art, expected_art);
+        }
     }
 }
