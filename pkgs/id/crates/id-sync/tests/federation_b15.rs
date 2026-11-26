@@ -32,8 +32,8 @@ mod b15_peer_priority;
 use std::collections::{BTreeMap, BTreeSet};
 
 use b15_peer_priority::{
-    Answer, Next, Plan, RemoteEntry, ResultId, RoutingAdvice, Search, SearchError, SkipReason,
-    Source, StopReason, plan,
+    Answer, Next, PeerId, Plan, RemoteEntry, ResultId, RoutingAdvice, Search, SearchError,
+    SkipReason, Source, StopReason, plan,
 };
 use b20_request_identity::RequestId;
 use b31_peer_classes::{Operation, PeerClass, PeerPolicy};

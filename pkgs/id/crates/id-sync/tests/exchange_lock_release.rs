@@ -39,10 +39,10 @@ use id_core::graph::term::{Term, Triple};
 use id_core::signed_envelope::LogicalGraphId;
 use id_sync::federation::exchange_net::{
     ClientTransfer, EXCHANGE_ALPN, ExchangeProtocol, Hello, HelloReply, ServerTransfer,
-    reconcile_remote,
+    WireEnvelope, reconcile_remote,
 };
 use id_sync::federation::slices::b07_conflict_report::{
-    ConflictStore, IngestOutcome, ObjectId, RetentionPolicy, VersionHeader,
+    ConflictStore, Digest32, IngestOutcome, ObjectId, RetentionPolicy, VersionHeader,
 };
 use id_sync::federation::slices::b08_sync_scope::SyncScopeConfig;
 use id_sync::federation::slices::b09_anti_entropy::Replica;
