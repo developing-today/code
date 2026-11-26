@@ -54,6 +54,8 @@ central namespaces (operators, need kv-admin):
   namespace define NS (--shared SCOPE | --private)
                                                define or update NS on central
   namespace list                               print every central namespace
+  blob gc        JUR/TIER [--grace-ms MS]      collect unreferenced blobs in a
+                                               partition after their grace
 
 Values of any size are accepted: up to 1 MiB they are stored inline, and
 larger values stream into a content-addressed working file beside the
@@ -98,6 +100,7 @@ const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\n
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
 const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES] [--blob-partition JUR/TIER]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). --blob-partition JUR/TIER places NS's blobs in that\njurisdiction and sensitivity tier; with none, values over the threshold wait\n(no_blob_placement) and the upload door refuses them. Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-<TAB>JUR/TIER|-,\nwhere SCOPE is shared:ID or private.\n";
+const BLOB_USAGE: &str = "usage: fleet kv blob gc JURISDICTION/TIER [--grace-ms MS]\n\nRun one garbage-collection pass over a central blob partition. Needs the\ncentral store and an admin credential (the hosted door's kv-admin role); the\nlocal store is not opened. The pass marks published blobs that no key\nreferences as candidates, clears candidates that gained a reference or lost\ntheir object, then fences the delete of every candidate unreferenced for at\nleast the grace (--grace-ms, default 24 hours). A reference that lands during\nthe grace keeps the blob. The object bytes are not removed from the store by\nthis verb.\n\nPrints `partition=JUR/TIER marked=N cleared=N deleted=N`, then\n`deleted content=DIGEST epoch=N` for each fenced delete.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +117,7 @@ enum Verb {
     Snapshot,
     Restore,
     Namespace,
+    Blob,
 }
 
 impl Verb {
@@ -131,6 +135,7 @@ impl Verb {
             "snapshot" => Self::Snapshot,
             "restore" => Self::Restore,
             "namespace" => Self::Namespace,
+            "blob" => Self::Blob,
             _ => return None,
         })
     }
@@ -149,6 +154,7 @@ impl Verb {
             Self::Snapshot => SNAPSHOT_USAGE,
             Self::Restore => RESTORE_USAGE,
             Self::Namespace => NAMESPACE_USAGE,
+            Self::Blob => BLOB_USAGE,
         }
     }
 
@@ -251,6 +257,11 @@ enum Command {
     },
     /// `namespace list`: print every central namespace definition.
     NamespaceList,
+    /// `blob gc`: one central GC pass over a blob partition.
+    BlobGc {
+        partition: crate::blob::Partition,
+        grace_ms: i64,
+    },
 }
 
 impl Command {
@@ -271,6 +282,7 @@ impl Command {
             Self::Restore { .. } => "restore",
             Self::NamespaceDefine { .. } => "namespace-define",
             Self::NamespaceList => "namespace-list",
+            Self::BlobGc { .. } => "blob-gc",
         })
     }
 
@@ -280,14 +292,17 @@ impl Command {
             Self::Get { global, .. } | Self::List { global, .. } => *global,
             Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
             Self::Sync { .. } | Self::RestoreArchive | Self::Rebase { .. } => true,
-            Self::NamespaceDefine { .. } | Self::NamespaceList => true,
+            Self::NamespaceDefine { .. } | Self::NamespaceList | Self::BlobGc { .. } => true,
             _ => false,
         }
     }
 
     /// Central admin commands: they never open the local store.
     fn is_admin(&self) -> bool {
-        matches!(self, Self::NamespaceDefine { .. } | Self::NamespaceList)
+        matches!(
+            self,
+            Self::NamespaceDefine { .. } | Self::NamespaceList | Self::BlobGc { .. }
+        )
     }
 }
 
@@ -326,6 +341,14 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             ));
         }
         return parse_namespace(&args[skip..]);
+    }
+    if verb == Verb::Blob {
+        if global {
+            return Err(usage(
+                "--global applies to get, set, list and delete, not `kv blob`",
+            ));
+        }
+        return parse_blob(&args[skip..]);
     }
 
     let mut namespace: Option<String> = None;
@@ -539,14 +562,96 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 to,
             }
         }
-        Verb::Sync | Verb::Backup | Verb::Snapshot | Verb::Restore | Verb::Namespace => {
-            unreachable!("sync, host and namespace verbs returned above")
+        Verb::Sync
+        | Verb::Backup
+        | Verb::Snapshot
+        | Verb::Restore
+        | Verb::Namespace
+        | Verb::Blob => {
+            unreachable!("sync, host, namespace and blob verbs returned above")
         }
     })
 }
 
 /// The largest `--blob-threshold`: the local inline ceiling.
 const MAX_BLOB_THRESHOLD: u64 = crate::working::INLINE_LIMIT as u64;
+
+/// `JURISDICTION/TIER`, each a blob label.
+fn parse_partition(what: &str, raw: &str) -> Result<crate::blob::Partition, ParseError> {
+    raw.split_once('/')
+        .filter(|(jurisdiction, tier)| {
+            crate::blob::valid_label(jurisdiction) && crate::blob::valid_label(tier)
+        })
+        .map(|(jurisdiction, tier)| crate::blob::Partition::new(jurisdiction, tier))
+        .ok_or_else(|| {
+            usage(format!(
+                "{what} needs JURISDICTION/TIER in lower-case letters, digits and `-`, got `{raw}`"
+            ))
+        })
+}
+
+/// `blob gc JUR/TIER [--grace-ms MS]`.
+fn parse_blob(args: &[String]) -> Result<Command, ParseError> {
+    let Some(action) = args.first() else {
+        return Err(usage("`kv blob` needs `gc`"));
+    };
+    if matches!(action.as_str(), "-h" | "--help" | "help") {
+        return Ok(Command::Help(BLOB_USAGE));
+    }
+    if action != "gc" {
+        return Err(usage(format!(
+            "unknown `kv blob` action `{action}`: use gc"
+        )));
+    }
+    let mut grace_ms = crate::plane::GRACE_MS;
+    let mut positionals: Vec<String> = Vec::new();
+    let mut rest = args[1..].iter();
+    let mut only_positionals = false;
+    while let Some(arg) = rest.next() {
+        if only_positionals || !arg.starts_with("--") {
+            positionals.push(arg.clone());
+            continue;
+        }
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
+            "--" if inline.is_none() => only_positionals = true,
+            "--help" | "-h" => return Ok(Command::Help(BLOB_USAGE)),
+            "--grace-ms" => {
+                let raw = match inline {
+                    Some(value) => value,
+                    None => rest
+                        .next()
+                        .cloned()
+                        .ok_or_else(|| usage("--grace-ms needs a value"))?,
+                };
+                grace_ms = raw
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|grace| *grace >= 0)
+                    .ok_or_else(|| {
+                        usage(format!(
+                            "--grace-ms needs a non-negative count of milliseconds, got `{raw}`"
+                        ))
+                    })?;
+            }
+            _ => return Err(usage(format!("unknown argument `{arg}` for `kv blob gc`"))),
+        }
+    }
+    if positionals.len() != 1 {
+        return Err(usage(format!(
+            "`kv blob gc` takes 1 argument (JURISDICTION/TIER), got {}",
+            positionals.len()
+        )));
+    }
+    let partition = parse_partition("`kv blob gc`", &positionals[0])?;
+    Ok(Command::BlobGc {
+        partition,
+        grace_ms,
+    })
+}
 
 /// `namespace define NS (--shared SCOPE | --private) [...]` and
 /// `namespace list`.
@@ -620,18 +725,7 @@ fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
             }
             "--blob-partition" if define => {
                 let raw = take_value("--blob-partition")?;
-                let partition = raw
-                    .split_once('/')
-                    .filter(|(jurisdiction, tier)| {
-                        crate::blob::valid_label(jurisdiction) && crate::blob::valid_label(tier)
-                    })
-                    .map(|(jurisdiction, tier)| crate::blob::Partition::new(jurisdiction, tier))
-                    .ok_or_else(|| {
-                        usage(format!(
-                            "--blob-partition needs JURISDICTION/TIER in lower-case letters, digits and `-`, got `{raw}`"
-                        ))
-                    })?;
-                blob_partition = Some(partition);
+                blob_partition = Some(parse_partition("--blob-partition", &raw)?);
             }
             _ => {
                 return Err(usage(format!(
@@ -1202,7 +1296,9 @@ fn execute_central(
             Ok(restored) => write_restored(out, &restored),
             Err(error) => return refuse_archive(err, &error),
         },
-        command @ (Command::NamespaceDefine { .. } | Command::NamespaceList) => {
+        command @ (Command::NamespaceDefine { .. }
+        | Command::NamespaceList
+        | Command::BlobGc { .. }) => {
             return execute_admin(command, primary, out, err);
         }
         _ => {
@@ -1214,6 +1310,30 @@ fn execute_central(
         }
     };
     finish(written, err)
+}
+
+/// One line for the pass, then one per fenced deletion.
+fn write_sweep(
+    out: &mut dyn Write,
+    partition: &crate::blob::Partition,
+    sweep: &crate::plane::Sweep,
+) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "partition={}/{} marked={} cleared={} deleted={}",
+        partition.jurisdiction,
+        partition.tier,
+        sweep.marked,
+        sweep.cleared,
+        sweep.deleted.len()
+    )?;
+    sweep.deleted.iter().try_for_each(|deletion| {
+        writeln!(
+            out,
+            "deleted content={} epoch={}",
+            deletion.digest, deletion.epoch
+        )
+    })
 }
 
 /// The central admin verbs, against an opened central plane.
@@ -1304,6 +1424,13 @@ fn execute_admin(
                     )
                 )
             }),
+            Err(error) => return refuse_central(err, &error),
+        },
+        Command::BlobGc {
+            partition,
+            grace_ms,
+        } => match crate::blob_central::gc_pass(primary, &partition, central::now_ms(), grace_ms) {
+            Ok(sweep) => write_sweep(out, &partition, &sweep),
             Err(error) => return refuse_central(err, &error),
         },
         _ => {
@@ -1560,7 +1687,8 @@ fn execute(
         | Command::RestoreArchive
         | Command::Rebase { .. }
         | Command::NamespaceDefine { .. }
-        | Command::NamespaceList => {
+        | Command::NamespaceList
+        | Command::BlobGc { .. } => {
             let _ = writeln!(err, "error: usage: this verb needs the central store");
             return EXIT_USAGE;
         }
@@ -2201,6 +2329,70 @@ mod tests {
             text(&listed),
             "status\tshared:fleet-status\t3\t262144\tglobal\teu/standard\n"
         );
+    }
+
+    #[test]
+    fn central_cli_blob_gc_marks_then_fences_after_grace() {
+        let central = Central::new();
+        crate::central::migrate(&*central.primary).expect("migrate");
+        let store = LocalStore::in_memory().expect("store");
+        let bytes = b"an unreferenced blob";
+        let digest = crate::blob::digest(&mut &bytes[..]).expect("digest");
+        let reference = crate::blob::KvBlobRefV1 {
+            digest: digest.digest.clone(),
+            bytes_len: digest.bytes_len,
+            partition: crate::blob::Partition::new("eu", "standard"),
+            locator: "r2:eu/standard/orphan".into(),
+        };
+        crate::blob_central::mark_published(&*central.primary, &reference).expect("publish");
+
+        // The default grace marks the orphan but deletes nothing yet.
+        let marked = central.invoke(&store, "admin", &["blob", "gc", "eu/standard"], b"");
+        assert_eq!(marked.code, EXIT_OK, "{}", marked.err);
+        assert_eq!(
+            text(&marked),
+            "partition=eu/standard marked=1 cleared=0 deleted=0\n"
+        );
+
+        // With no grace the candidate is due, and the delete is fenced.
+        let swept = central.invoke(
+            &store,
+            "admin",
+            &["blob", "gc", "eu/standard", "--grace-ms", "0"],
+            b"",
+        );
+        assert_eq!(swept.code, EXIT_OK, "{}", swept.err);
+        assert_eq!(
+            text(&swept),
+            format!(
+                "partition=eu/standard marked=0 cleared=0 deleted=1\ndeleted content={} epoch=1\n",
+                digest.digest
+            )
+        );
+        let again = central.invoke(&store, "admin", &["blob", "gc", "eu/standard"], b"");
+        assert_eq!(
+            text(&again),
+            "partition=eu/standard marked=0 cleared=0 deleted=0\n"
+        );
+
+        for (words, message) in [
+            (&["blob"][..], "`kv blob` needs `gc`"),
+            (&["blob", "gc"][..], "takes 1 argument"),
+            (&["blob", "gc", "EU"][..], "needs JURISDICTION/TIER"),
+            (
+                &["blob", "gc", "eu/standard", "--grace-ms", "-1"][..],
+                "non-negative",
+            ),
+            (&["blob", "purge", "eu/standard"][..], "use gc"),
+            (
+                &["--global", "blob", "gc", "eu/standard"][..],
+                "not `kv blob`",
+            ),
+        ] {
+            let refused = central.invoke(&store, "admin", words, b"");
+            assert_eq!(refused.code, EXIT_USAGE, "{words:?}");
+            assert!(refused.err.contains(message), "{words:?}: {}", refused.err);
+        }
     }
 
     #[test]
