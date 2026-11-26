@@ -139,6 +139,7 @@ async function cmdPoll(options: Map<string, string>): Promise<void> {
 
 async function cmdAdvance(options: Map<string, string>): Promise<void> {
   const to = options.get("--to") ?? usageError("advance needs --to <iso>");
+  if (!isValidIsoTimestamp(to)) usageError(`--to is not a valid timestamp: ${to}`);
   const stateFile = resolveStateFile(options);
   let text: string;
   try {

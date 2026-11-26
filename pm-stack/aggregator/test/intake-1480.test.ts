@@ -159,6 +159,17 @@ describe("gh-intake-poll CLI guards (#1480)", () => {
     }
   });
 
+  test("advance rejects invalid timestamps before reading state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "intake-1480-invalid-advance-"));
+    try {
+      const r = await runScript(["advance", "--to", "2026-11-24", "--state", join(dir, "missing.json")]);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("--to is not a valid timestamp");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("the four repos are exactly the intake universe", () => {
     expect([...INTAKE_REPOS]).toEqual([
       "developing-today/code",
