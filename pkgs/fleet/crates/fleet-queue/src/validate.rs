@@ -600,6 +600,43 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false) => {}
         _ => errs.push("payload.required_budget_minutes: must be a positive integer".to_string()),
     }
+    // #15070: the optional structured route declaration. Absent/null
+    // means unrouted (legacy behavior — claimable by any family);
+    // when present it must be exactly {platform, reason}: platform
+    // one of the platform families (the same vocabulary parse_platform
+    // enforces broker-side), reason a non-blank string — a route is
+    // a platform limitation, and a limitation exists only with its
+    // reason recorded beside it (#8210). verb_enqueue translates a
+    // valid declaration into the task's lane-ledger platform
+    // limitation at creation.
+    match get("route") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(route)) => {
+            match route.get("platform") {
+                Some(Value::String(p)) if ["openchamber", "muse"].contains(&p.as_str()) => {}
+                _ => errs.push(
+                    "payload.route.platform: must be \"openchamber\" or \"muse\"".to_string(),
+                ),
+            }
+            match route.get("reason") {
+                Some(Value::String(s)) if !s.trim().is_empty() => {}
+                _ => errs.push(
+                    "payload.route.reason: must be a non-empty string (a route declaration \
+                     requires its recorded reason)"
+                        .to_string(),
+                ),
+            }
+            if route.keys().any(|k| k != "platform" && k != "reason") {
+                errs.push(
+                    "payload.route: unknown field(s) (only platform and reason are declared)"
+                        .to_string(),
+                );
+            }
+        }
+        Some(_) => errs.push(
+            "payload.route: must be an object {platform, reason}".to_string(),
+        ),
+    }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
             errs.push(format!(
@@ -1624,6 +1661,24 @@ pub(crate) fn label_band_priority(payload: &Value) -> Option<i64> {
     }
 }
 
+/// The payload's structured route declaration (#15070), as the
+/// (platform, reason) pair verb_enqueue stamps onto the new task's
+/// lane ledger. None when the payload carries no route, or when the
+/// declaration is not in its valid shape — validate_packet has
+/// already refused an invalid declaration at the boundary, so a
+/// malformed stored copy reads as unrouted here rather than as a
+/// half-applied limitation (mirroring platform_limit_invalid: a
+/// reason-less limitation is never enforced).
+pub fn route_declaration(payload: &Value) -> Option<(String, String)> {
+    let route = payload.get("route")?.as_object()?;
+    let platform = route.get("platform")?.as_str()?.trim();
+    let reason = route.get("reason")?.as_str()?.trim();
+    if platform.is_empty() || reason.is_empty() {
+        return None;
+    }
+    Some((platform.to_string(), reason.to_string()))
+}
+
 /// task_from_packet: the agent.tasks row shape the enqueue RPC takes.
 pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     let mut payload = packet.get("payload").cloned().unwrap_or(json!({}));
@@ -2376,6 +2431,52 @@ mod tests {
             }
         }
         payload
+    }
+
+    #[test]
+    fn route_declaration_validation_15070() {
+        // #15070 oracle: absent/null route validates (unrouted,
+        // legacy behavior); a well-formed {platform, reason} pair
+        // validates and route_declaration returns it; every malformed
+        // shape errors naming payload.route and reads as unrouted.
+        for absent in [json!({}), json!({"route": null})] {
+            let payload = payload_with(absent);
+            assert!(
+                !manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("payload.route")),
+                "{payload}"
+            );
+            assert_eq!(route_declaration(&payload), None);
+        }
+        let payload = payload_with(json!({
+            "route": {"platform": "muse", "reason": "needs the muse seat's checkout"}
+        }));
+        assert!(
+            !manual_schema_errors(&payload)
+                .iter()
+                .any(|e| e.contains("payload.route")),
+            "{payload}"
+        );
+        assert_eq!(
+            route_declaration(&payload),
+            Some(("muse".to_string(), "needs the muse seat's checkout".to_string()))
+        );
+        for bad in [
+            json!({"route": {"platform": "laptop", "reason": "r"}}),
+            json!({"route": {"platform": "muse", "reason": ""}}),
+            json!({"route": {"reason": "r"}}),
+            json!({"route": {"platform": "muse", "reason": "r", "extra": 1}}),
+            json!({"route": "muse"}),
+        ] {
+            let payload = payload_with(bad);
+            assert!(
+                manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("payload.route")),
+                "{payload}"
+            );
+        }
     }
 
     fn identity_errors(payload: &Value) -> Vec<String> {

@@ -1,0 +1,290 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Brokers, remote builds and the release train - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="brokers-remote-builds-and-the-release-train"><a class="header" href="#brokers-remote-builds-and-the-release-train">Brokers, remote builds and the release train</a></h1>
+<h2 id="d-secrets-broker-and-credential-distribution"><a class="header" href="#d-secrets-broker-and-credential-distribution">D. Secrets broker and credential distribution</a></h2>
+<p>At the November 23 review, #13081 was open and Xaltha owned the active correction. PR #13125 remained unmerged. The implicated heal script repeatedly restarted a cold broker before its first refresh completed. Xaltha’s later two successful heal invocations used an already-warm broker. The recorded sandbox change still permits restarting a refresh after its progress counter stalls. Its propagation and a cold activation need separate evidence. <a href="https://github.com/developing-today/code/issues/13081">Incident and ownership</a> · <a href="https://github.com/developing-today/code/pull/13125">PR #13125</a></p>
+<p>The inspected broker serializes refreshes, bounds each provider child to 60 seconds, and performs a list followed by eight-way parallel gets. Its default full-refresh interval is 900 seconds. Its health handler derives serving readiness from a previous successful refresh. At 221 entries a full sweep therefore models 222 child starts, or 2,211 at 2,210 entries, excluding retries and read-through misses. These are subprocess counts. Provider request counts and elapsed times require separate measurement. <a href="https://github.com/developing-today/code/blob/1f9bc15391ca1c2efa639463a6369392456c27e5/pkgs/fleet/crates/fleet-queue/src/secrets_broker.rs">Broker source</a></p>
+<p><strong>Proposed refresh experiment.</strong> Use synthetic projects of those two sizes and revisions changing 0%, 1% and 100% of entries. Verify which fields a project-scoped list returns in the installed CLI. If it supplies complete values and revisions, parse once in memory. Otherwise reuse unchanged entries by immutable item ID and revision, and fetch changed entries only. Instrument child starts, provider calls, peak memory, throttles and p95 cold/warm duration. Partial or unauthorized enumeration must never implicitly delete the cache. An authoritative scope revocation must prevent serving its entries. Tag writes by refresh epoch so a late response cannot reinstate an older value. Choose freshness by the consuming service’s revocation requirement. <a href="https://bitwarden.com/help/secrets-manager-cli/">Provider CLI contract</a></p>
+<p><strong>Proposed distribution contract.</strong> A manifest binds a provider project and immutable item ID to a specific service principal, audience, seat capability, destination and file mode. Existing daemon/client token names that look similar cannot substitute for each other. Install atomically with the intended owner and mode 0600. Require an encrypted private local copy for approved credentials and verify it with revision metadata and an isolated restore canary. Report only the outcome. Privileged issuance and deployment require current authorization. Designated continuity credentials may serve a prior value only within an explicit audience, expiry and maximum stale age. Denial or known revocation ends every fallback; a transport error is a separate outcome. <a href="https://github.com/developing-today/code/issues/12898">Enrolment precedent</a> · <a href="https://github.com/developing-today/code/issues/10358">Scoping work</a></p>
+<h2 id="e-channel-recovery-and-broker-generations"><a class="header" href="#e-channel-recovery-and-broker-generations">E. Channel recovery and broker generations</a></h2>
+<p>Proposed health reports expose liveness, readiness, observation time, dependency status, serving generation and operation progress. A dependency failure should never fan out into a series of downstream restarts.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Leg</th><th>Discriminating observation</th><th>Recovery owner</th></tr>
+</thead>
+<tbody>
+<tr><td>Tailnet</td><td>Local daemon available; expected peer reachable</td><td>Host service manager handles absent daemon. A peer outage has its own disposition.</td></tr>
+<tr><td>Relay</td><td>Listener accepts and completes its upstream handshake</td><td>Relay supervisor reconnects once transport is ready.</td></tr>
+<tr><td>Session broker</td><td>Expected protocol version and framed health response</td><td>Broker supervisor repairs a failed listener or handshake.</td></tr>
+<tr><td>Secrets broker</td><td>First successful refresh, current activity and scoped canary</td><td>Refresh worker times out provider calls and retries. While <code>refreshing:true</code>, heal reports slowness and leaves the process running.</td></tr>
+<tr><td>GitHub</td><td>Authenticated read succeeds for the intended repository</td><td>Credential owner handles denial; rate limits get bounded backoff.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Cutover contract.</strong> Size each gate from the slowest supported legitimate cold operation including allowed retries and probe delay. A child timeout bounds one fetch, not the entire inventory. Deploy through the registered per-service generation path. Proposed hardening serializes deploy and heal per service, journals the candidate and prior closure before switching, then records the serving executable digest after readiness. Reconcile interrupted switches at both journal boundaries. A test with two generations on the same port must demonstrate that rollback restores the former listener’s executable identity, the pointer and journal, and a successful authenticated canary. <a href="https://github.com/developing-today/code/blob/1f9bc15391ca1c2efa639463a6369392456c27e5/pkgs/deploy/deploy.py">Generation machinery</a></p>
+<p><strong>Cold-recovery oracle.</strong> In a disposable stack, pause the second synthetic fetch across two normal heal decisions. The broker PID must survive both, finish the sweep and serve the delayed entry. Test two concurrent healers and verify at most one recovery. Place an executable with an incompatible loader before a working binary; the version/protocol test-exec must select the latter. Terminate all five disposable legs, restore them from their registered inputs, then invoke recovery again and require zero restarts. The production cutover needs the measured window and an available rollback generation. <a href="https://github.com/developing-today/code/issues/13081">Cold-start incident</a></p>
+<h2 id="f-remote-verification-and-caching"><a class="header" href="#f-remote-verification-and-caching">F. Remote verification and caching</a></h2>
+<p>The executor image, run environment and workload have separate acceptance records. Upstream #105 added root-compatible runtime preparation. Publication attempt 45193636584 built the images and passed all five warm exports; its <a href="https://github.com/dezren39/fleet/actions/runs/45193636584/job/137773195524">smoke job, step 8</a> failed the offline root warmed-shell check at 14:50:01 UTC. The preceding vscode step owned the flake tree. #106 restored root ownership before that check. The fix-branch publication passed. A subsequent main publication, run 45228189518 at merge SHA <code>95d6c5da7c9e</code>, completed successfully at 17:58:39 UTC on November 23. All eight jobs passed, including the five warm exports, full build and smoke. At 18:05:33 UTC a Linux <a href="https://github.com/developing-today/fleet/actions/runs/45234407250/job/137902261255">org executor job</a> reported Docker pull digest <code>sha256:c8cd18402be2b3b5cb54e0275fde5903c847d3ed5373726560e30fedb38f96a5</code>. This matched the digest observed at 17:56:11 UTC by the <a href="https://github.com/dezren39/fleet/actions/runs/45228189518/job/137895425045">publication smoke job</a>. The <a href="https://github.com/dezren39/fleet/actions/runs/45228189518/job/137892163174">publisher log</a> identifies that value as the manifest-list digest for both the mutable and revision-tagged full image. It also records a separate image manifest and attestation. Other consumers require their own pull receipt. #88 separately tracks the gated full build, whose <a href="https://github.com/dezren39/fleet/actions/runs/45161352548/job/137655694944">build job, step 8</a> failed writing a registry layer blob because of insufficient token scope. <a href="https://github.com/dezren39/fleet/pull/106">Root smoke correction</a> · <a href="https://github.com/dezren39/fleet/actions/runs/45206234560">Fix-branch publication</a> · <a href="https://github.com/dezren39/fleet/actions/runs/45228189518">Main publication</a> · <a href="https://api.github.com/repos/dezren39/fleet/check-runs/137655694944/annotations">Gated annotation</a></p>
+<p><strong>Proposed acceptance and drift checks.</strong> For each runner surface record the workflow, referenced action and prep script at immutable SHAs, declared platform and actual image digest. Report missing, pending propagation, or diverged. Run the cold and offline warmed shell with the workflow’s actual UID, HOME, effective Nix configuration, build-user model and required cargo/bun binaries. Preserve the workload’s named oracle separately. A job that mounts the host’s configuration cannot prove that a fresh NixOS host has the right accounts, systemd units or store layout. Use an isolated NixOS VM for those proofs and an authorized laptop activation only for machine-specific behavior. The #13159 evidence family retains its item-specific hold. <a href="https://github.com/developing-today/code/issues/13159">Executor acceptance</a></p>
+<p>For cached verification, bind the target checkout tree, task and oracle version, lockfile, toolchain, effective image, platform, flags and repository audience. Reauthorize artifact reads and verify their digests. Commands with external effects receive fresh execution. For R2, count eligible store paths, fulfilled paths by substituter, upload bytes, and wall minutes saved across comparable cold and warm cohorts. Track provider queueing separately. Treat each organization’s measured occupancy and reservations as part of one pool with per-org and nested macOS limits. A private job requires an authorized surface. Use included capacity only; a shared budget needs a bounded reservation or preallocated allowance to remain safe during a broker outage. <a href="https://github.com/developing-today/code/issues/13146">Placement contract</a></p>
+<h2 id="g-fork-convergence-and-release-identity"><a class="header" href="#g-fork-convergence-and-release-identity">G. Fork convergence and release identity</a></h2>
+<p>The original 102-target failure inventory records 100 missing-workflow-scope failures, one ruleset refusal and one merge conflict. The follow-up retained the latter two. The sync run at <code>95d6c5da7c9e</code> succeeded; a later fork-local commit can legitimately put a fork ahead. Proposed verification records one target/upstream-SHA/attempt tuple per sync and checks upstream ancestry of the target head. Retry transient failures within plan limits. Permission or policy failures need the relevant owner; merge conflicts need a content-preserving merge. Roll up unresolved failures into one continuing source issue with per-fork dispositions. <a href="https://github.com/developing-today/code/issues/12484">Original tally</a> · <a href="https://github.com/developing-today/code/issues/12490">Follow-up</a> · <a href="https://github.com/dezren39/fleet/actions/runs/45208876246">Successful sync</a></p>
+<p>The inspected upstream main tree contains 22 gitlinks. The upstream README roster and its distinction between membership and workflow grants were corrected in <a href="https://github.com/dezren39/fleet/pull/108">upstream PR #108</a>, merged at 18:13 UTC on November 23. Record owner, purpose, consumer, visibility, update source and removal order in a membership manifest. Compare it against both the tree’s mode-160000 entries and <code>.gitmodules</code>; private members remain gitlink-only on public surfaces. Five members (nix, opencode, code, zettel and openchamber) have explicit warm-export receipts. All passed in gated run 45161352548, where the subsequent full build failed. Retain #35–39 as per-leg trackers and adjudicate each from its own job. <a href="https://api.github.com/repos/dezren39/fleet/git/trees/95d6c5da7c9ed89f2edbeac1fbb9c5ec15472f1d">Member tree</a> · <a href="https://api.github.com/repos/dezren39/fleet/actions/runs/45161352548/jobs?per_page=100">Per-job results</a></p>
+<p><strong>Decision reserved to Drew.</strong> #87 concerns an independent pull backstop for additional forks. The two existing App-backed mirrors and central upstream push already provide distinct routes. Keep present coverage unless a recovery-time objective requires independent pull. A single selected-fork pilot could measure recovery time, permission scope, ruleset compatibility and reversal cost. The closed #6645 had a different original installation scope. <a href="https://github.com/dezren39/fleet/issues/87">App decision</a> · <a href="https://github.com/developing-today/code/issues/6645">Prior scope</a></p>
+<p><strong>Proposed release train.</strong> Name the intended Fleet source and command-surface digest. Resolve the asset digest, pinned bootstrap pair, serving identity per registered service, and Pages build’s book surface independently. Report observed time and <code>unknown</code> per unreadable stage. Publish an immutable artifact once, update the pin and matching book changes, canary the registered service with a verified rollback target, and test cross-seat behavior. Unrelated main commits need not invalidate a Fleet artifact. A pin-health check should identify the affected dependency, intended revision and verification date; an old date warrants investigation rather than automatic advancement. <a href="https://github.com/developing-today/code/pull/13307">Bootstrap rollout</a> · <a href="https://github.com/developing-today/code/issues/13146#issuecomment-7103726386">Cross-seat receipt</a></p>
+<h3 id="membership-evidence-at-22-gitlinks"><a class="header" href="#membership-evidence-at-22-gitlinks">Membership evidence at 22 gitlinks</a></h3>
+<p>Git anchoring, repo-health membership, Codespaces initialization and organization-wide discovery are independent properties. The adopted membership tiers live in upstream <code>FLEET.md</code>. Join those records to the immutable tree and <code>.gitmodules</code> before updating operator instructions. An access grant in a devcontainer declaration is a request; it cannot establish that the user’s effective token has it. <a href="https://github.com/dezren39/fleet/blob/45ad3e42cc09167eca5173359698f05a2927f078/FLEET.md">Adopted tiers</a> · <a href="https://github.com/dezren39/fleet/blob/45ad3e42cc09167eca5173359698f05a2927f078/.devcontainer/devcontainer.json">Devcontainer</a> · <a href="https://github.com/developing-today/code/issues/2017">Source census</a></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Paths</th><th>Documented consumer or use</th></tr>
+</thead>
+<tbody>
+<tr><td><code>code</code>, <code>nix</code>, <code>openchamber</code>, <code>opencode</code>, <code>zettel</code></td><td>Each is a named warm-export input. <code>code</code> contains the Fleet implementation; <code>nix</code> tracks darwin-nix. OpenChamber and OpenCode are separate forked consumers. <code>zettel</code> is the organization Zettel copy.</td></tr>
+<tr><td><code>dezren39-zettel</code>, <code>cairn</code></td><td>Separate personal Zettel pin and research corpus. Their FULL-lite membership does not combine them into one build.</td></tr>
+<tr><td><code>kaneo</code>, <code>nix-cache</code></td><td>PM board integration and the R2 cache service, respectively. Verify Kaneo’s immutable repository ID against migration records before editing its slug. The cache is consumed as a service.</td></tr>
+<tr><td><code>hatch</code>, <code>hatch-personal</code>, <code>hatch-drawer</code>, <code>hatch-personal-drawer</code></td><td>Hatch tools and configuration, conditional personal checkout, bulk overflow and an additional managed pin. Effective users of the personal drawer remain unverified.</td></tr>
+<tr><td><code>hardware-doc</code>, <code>zulip-archive</code></td><td>Explicit Codespaces checkouts. Additional runtime integration is unverified.</td></tr>
+<tr><td><code>org-readme</code>, <code>dezren39</code></td><td>Organization and account profile repositories.</td></tr>
+<tr><td><code>cairn-private</code>, <code>openclaw-personal</code></td><td>Managed pins. No additional product-consumer claim follows from their names.</td></tr>
+<tr><td><code>muse-esp32-screen</code>, <code>opencode-auto-continue</code>, <code>opencode-muse</code></td><td>Display/browser twin, OpenCode continuation plugin and Muse provider plugin. A Fleet protocol consumer or effective plugin installation requires separate evidence.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The pinned README still described twelve members. Its seven requested write grants also differed from the devcontainer’s eleven. Use a manifest-to-table comparison for membership and a separate declaration-to-permission comparison for Codespaces. Neither comparison authorizes changing the grants. Resolve the member’s actual identity and check consumers before removing a gitlink. <a href="https://github.com/dezren39/fleet/blob/45ad3e42cc09167eca5173359698f05a2927f078/README.md">Upstream README</a> · <a href="https://github.com/developing-today/code/issues/2230">Execution record</a> · <a href="https://github.com/developing-today/code/pull/5454">Migration record</a></p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/queue-placement-seats.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../development/quota-status-integrations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/queue-placement-seats.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../development/quota-status-integrations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

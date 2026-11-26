@@ -23,6 +23,11 @@ export interface Action {
   audit: (args: Args) => Args;
 }
 
+/** How a queue packet is handed over. Given by whoever runs these
+ * actions, so that the edge can file it without a machine's fleet
+ * binary while a machine goes on running `fleet queue enqueue`. */
+export type Enqueue = (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }>;
+
 const ids =
   (...keys: string[]) =>
   (args: Args) =>
@@ -72,6 +77,7 @@ export function actions(
   push?: Push,
   devices?: Devices,
   plan: Plan = new Plan(ops, work),
+  enqueue: Enqueue = (packet) => ops.enqueue(packet),
 ): Record<string, Action> {
   return {
     ...ownActions(push, devices),
@@ -134,7 +140,7 @@ export function actions(
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(
+        const queued = await enqueue(
           promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
         );
         if (queued.code !== 0) {
@@ -196,6 +202,14 @@ export function actions(
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
     "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
+    // Start a Turso management operation (create-db / mint-token) in
+    // its workflow (#14257). The audit keeps names only — the operation,
+    // the database and the secret's name — never a token value.
+    "store.admin": {
+      run: (a) => ops.tursoAdmin(a),
+      touch: [],
+      audit: ids("operation", "database", "secret_name"),
+    },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],

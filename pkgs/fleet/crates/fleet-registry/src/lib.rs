@@ -335,7 +335,7 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
+        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put/copy).",
         capabilities: &[
             Capability::ProxyServe,
             Capability::ProxyConnect,
@@ -343,7 +343,9 @@ pub const DOMAINS: &[Domain] = &[
         ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init", "ssh", "splice", "get", "put"],
+        subcommands: &[
+            "serve", "connect", "init", "ssh", "splice", "get", "put", "copy",
+        ],
     },
     Domain {
         name: "dispatch",
@@ -505,7 +507,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopSsh],
         primary: Capability::LaptopSsh,
         aliases: &[],
-        subcommands: &["health", "exec", "close"],
+        subcommands: &["health", "sessions", "sweep", "exec", "close"],
     },
     Domain {
         name: "laptop",
@@ -514,6 +516,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Laptop,
         aliases: &[],
         subcommands: &["tiers", "exec"],
+    },
+    Domain {
+        name: "host",
+        summary: "Resolve a host name through the machine registry and select a transport offer × invocation form with fleet-pool (#14716); `fleet host laptop` resolves the amd record.",
+        capabilities: &[Capability::Laptop],
+        primary: Capability::Laptop,
+        aliases: &[],
+        subcommands: &[],
     },
     Domain {
         name: "actions",

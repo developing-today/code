@@ -87,6 +87,8 @@ export interface Config {
   nixCheckout: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
+  /** Per-class trust rulings for the source-conflict inbox (#1282 slice 2). */
+  conflictRulingsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
@@ -275,6 +277,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, fromHome("PM_AGG_CODE_CHECKOUT", "git", "code")),
     nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, fromHome("PM_AGG_NIX_CHECKOUT", "code", "dezren39-nix")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
+    conflictRulingsFile: s(env.PM_AGG_CONFLICT_RULINGS_FILE, join(process.cwd(), "conflict-rulings.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
     identityRegistryFile: s(

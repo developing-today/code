@@ -87,7 +87,7 @@ adds = "Axum web UI (id-web): gallery hosting, world serving over WS."
 requires = ["serve", "world-state"]
 roles = ["host"]
 forwards = ["dep:id-web", "id-core/web", "id-cli/web"]
-known_gap = "Root `web` does not forward `id-web/sandbox`, yet id-web/src/world_ws.rs keys code on id-web's own `sandbox` feature (§2.1). Decided and fixed in S2; until then a root-`web` build and an `--all-features` build differ in world-WS behaviour."
+known_gap = "Resolved in S2: id-web's sandbox feature only gated test helpers; production code has no such cfg, and its tests obtain sandbox support from the id-worlds dev-dependency. The dead feature and cfg gates were removed."
 
 [[feature]]
 name = "ssh-serve"

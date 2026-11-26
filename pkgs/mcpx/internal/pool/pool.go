@@ -25,6 +25,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -555,6 +556,31 @@ func (p *Pool) ReleaseKey(key string) int {
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	p.stopped(in, "released")
+	p.forgetUpstreamSession(in)
+	_ = in.Client.Close()
+	return 1
+}
+
+// KillKey ends the instance serving a key even when it is in use (#1931).
+// ReleaseKey detaches an idle instance and leaves a busy one alone; KillKey
+// is the force path: the instance is removed, its client is closed (ending
+// its streams and subscriptions with it), and a later call starts a fresh
+// one. Used by session kill, which addresses the caller session and ends
+// what it created rather than waiting for it to go idle.
+func (p *Pool) KillKey(key string) int {
+	if key == "" {
+		return 0
+	}
+	p.mu.Lock()
+	in := p.findLocked(key)
+	if in == nil {
+		p.mu.Unlock()
+		return 0
+	}
+	p.removeLocked(in)
+	p.cond.Broadcast()
+	p.mu.Unlock()
+	p.stopped(in, "killed")
 	p.forgetUpstreamSession(in)
 	_ = in.Client.Close()
 	return 1
@@ -1176,6 +1202,27 @@ func (p *Pool) httpOptions() (mcpclient.HTTPOptions, error) {
 		return mcpclient.HTTPOptions{}, err
 	}
 	u := p.cfg.URL
+	socket := ""
+	if p.cfg.Transport == "unix" || strings.HasPrefix(u, "unix://") {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			return mcpclient.HTTPOptions{}, fmt.Errorf("%s: unix url: %w", p.cfg.Name, err)
+		}
+		if parsed.Scheme == "unix" {
+			socket = parsed.Path
+			if socket == "" && parsed.Host != "" {
+				socket = "/" + parsed.Host
+			}
+		} else {
+			socket = u
+		}
+		if socket == "" || !filepath.IsAbs(socket) {
+			return mcpclient.HTTPOptions{}, fmt.Errorf("%s: unix transport requires an absolute socket path", p.cfg.Name)
+		}
+		// net/http requires an HTTP origin; all network connections are
+		// redirected by the transport's private DialContext to the socket.
+		u = "http://mcpx-unix.invalid/mcp"
+	}
 	if len(auth.Query) > 0 {
 		parsed, err := url.Parse(u)
 		if err != nil {
@@ -1188,7 +1235,7 @@ func (p *Pool) httpOptions() (mcpclient.HTTPOptions, error) {
 		parsed.RawQuery = q.Encode()
 		u = parsed.String()
 	}
-	return mcpclient.HTTPOptions{URL: u, Headers: overlay(p.cfg.Headers, auth.Headers)}, nil
+	return mcpclient.HTTPOptions{URL: u, UnixSocket: socket, Headers: overlay(p.cfg.Headers, auth.Headers)}, nil
 }
 
 // overlay returns base with over applied on top, without mutating either.

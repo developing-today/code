@@ -676,6 +676,15 @@ function viewNow() {
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
       stat(finished ? finished.tiles[0].n : "–", "done in 24h", "now/done"),
     ),
+    h("p", { class: "meta" }, NOW_COUNTS_SOURCE, " ", h("a", { href: "/queue" }, "Aggregator /queue — what its counts mean"), "."),
+    h(
+      "p",
+      { class: "meta" },
+      NEEDS_SET_SOURCE,
+      " ",
+      h("a", { href: "/attention" }, "Aggregator Needs you — what its count means"),
+      ".",
+    ),
     ...notices(c),
     h("h2", {}, "In progress"),
     ...(sharedNow ? [h("p", { class: "meta" }, sharedGoalSaid(sharedNow, b.now.length))] : []),
@@ -1070,6 +1079,16 @@ export function recommendedSets(open) {
   return { sets, questions };
 }
 
+// Source definitions for the Now and Needs screens (#14063): what each
+// count on this page counts, and how it differs from the aggregator's
+// counts of the same name. Exported so tests pin the wording.
+export const NOW_COUNTS_SOURCE =
+  "Fleet queue tasks (queue-broker state): claimed is in progress, queued is next, blocked is blocked. " +
+  "Same words as the aggregator's board-derived work-item counts, different source.";
+export const NEEDS_SET_SOURCE =
+  "The console's need-you set: open decision questions plus hands, reviews, and escalated items from the needs-Drew census and waiting sessions. " +
+  "Different from the aggregator's NEEDS USER intake queue.";
+
 function needCounts() {
   const c = docs.core || {};
   const census = c.census || { hands: [], reviews: [], other: [] };
@@ -1420,6 +1439,14 @@ function viewNeeds(sub) {
       seg("reviews", "Reviews", counts.reviews),
       seg("questions", "Questions", counts.questions),
       seg("other", "Escalated", counts.other),
+    ),
+    h(
+      "p",
+      { class: "meta" },
+      NEEDS_SET_SOURCE,
+      " ",
+      h("a", { href: "/attention" }, "Aggregator Needs you — what its count means"),
+      ".",
     ),
     ...notices(docs.core).slice(0, 2),
   ];
@@ -3196,6 +3223,31 @@ export function tokenSaid(t, now = Date.now()) {
   }
 }
 
+/** One store's line on the Platform screen (#14254): whether it
+ * answered this asking, and what it said — its size, the rows in the
+ * tables the app reads, and its schema version. A store that did not
+ * answer is said as that, with the error plainly; nothing of an
+ * earlier asking is shown for it. */
+export function storeSaid(s) {
+  if (!s.answers) return { text: `Not answering: ${s.error || "the store could not be asked"}.`, tone: "warn", lines: [] };
+  const size =
+    typeof s.sizeBytes === "number"
+      ? s.sizeBytes < 1024
+        ? `${s.sizeBytes} B`
+        : s.sizeBytes < 1024 * 1024
+          ? `${(s.sizeBytes / 1024).toFixed(1)} KiB`
+          : `${(s.sizeBytes / (1024 * 1024)).toFixed(1)} MiB`
+      : "not said";
+  const lines = Object.entries(s.rows || {}).map(
+    ([table, n]) => `${table}: ${typeof n === "number" ? n.toLocaleString("en-US") : "not counted"}`,
+  );
+  return {
+    text: `Answers. Size ${size}. Schema version ${s.liveSchemaVersion ?? "not recorded"}.`,
+    tone: "good",
+    lines,
+  };
+}
+
 /** The counts the Platform screen opens with. */
 export function platformCounts(workers) {
   const live = workers.filter((w) => w.state === "in service");
@@ -3215,9 +3267,10 @@ export function platformCounts(workers) {
 async function viewPlatform() {
   // When the store tokens run out is a machine's to read; with none
   // reporting, the Workers still show.
-  const [p, held] = await Promise.all([
+  const [p, held, live] = await Promise.all([
     api(freshly("platform")),
     api("tokens").catch((error) => ({ error: error.message })),
+    api(freshly("stores")).catch((error) => ({ error: error.message })),
   ]);
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
@@ -3239,6 +3292,34 @@ async function viewPlatform() {
       p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
     ),
   ];
+  const stores = Array.isArray(live?.stores) ? live.stores : [];
+  out.push(h("h2", {}, `Stores${stores.length ? ` (${stores.length})` : ""}`));
+  if (live?.error) out.push(card(h("p", { class: "why" }, `The stores could not be asked: ${live.error}`)));
+  if (!live?.error && stores.length === 0) out.push(card(h("p", { class: "meta" }, "The list of stores names none.")));
+  if (live?.malformed) {
+    out.push(
+      card(
+        h(
+          "p",
+          { class: "why" },
+          `${live.malformed} entr${live.malformed === 1 ? "y" : "ies"} in the list of stores could not be read and ${live.malformed === 1 ? "is" : "are"} not shown.`,
+        ),
+      ),
+    );
+  }
+  for (const s of stores) {
+    const said = storeSaid(s);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(s.answers ? "answers" : "not answering", said.tone)),
+        h("h3", {}, s.title),
+        h("p", {}, s.does),
+        h("p", { class: said.tone === "warn" ? "why" : "meta" }, said.text),
+        ...said.lines.map((line) => h("p", { class: "meta" }, line)),
+        h("p", { class: "meta" }, `Used by ${(s.usedBy || []).join(", ")}.`),
+      ),
+    );
+  }
   const tokens = Array.isArray(held?.tokens) ? held.tokens : [];
   out.push(h("h2", {}, `Store tokens${tokens.length ? ` (${tokens.length})` : ""}`));
   if (held?.error) out.push(card(h("p", { class: "why" }, `When the store tokens run out could not be read: ${held.error}`)));

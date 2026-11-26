@@ -209,6 +209,7 @@ pub use id_core::admission_gate;
 pub mod artifact;
 pub use id_events::attestation;
 pub mod backup;
+pub mod bench_ack_mode;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
@@ -286,6 +287,7 @@ pub use id_store::search;
 #[cfg(feature = "world")]
 pub use id_store::session_checkpoint;
 pub use id_store::store;
+pub use id_store::turso;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::guest_burn;
 #[cfg(feature = "sandbox")]

@@ -168,3 +168,78 @@ fn mux_roundtrip_empty_response_body_is_null() {
     assert_eq!(resp.body, serde_json::Value::Null);
     teardown(kill, thread);
 }
+
+/// #15552 (record §7 step 4): the pooled frame's per-request
+/// routing fields ride the open as `meta`, and the terminating
+/// side's response head — transport and the trip echo — comes
+/// back onto the caller's `Response`.
+#[test]
+fn mux_roundtrip_carries_request_meta_and_reads_the_echoed_head_15552() {
+    use fleet_proxy::mux::ResponseHead;
+    use fleet_proxy_proto::mux::RequestMeta;
+    let seen: Arc<Mutex<Vec<RequestMeta>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = seen.clone();
+    let handler: StreamHandler = Arc::new(move |stream: MuxStream, info: OpenInfo| {
+        let _ = stream.read_to_fin(MAX_FRAME_BYTES).unwrap();
+        record.lock().unwrap().push(info.meta.clone());
+        stream
+            .respond_with(
+                ResponseHead {
+                    status: Some(201),
+                    transport: Some("ts".to_string()),
+                    trip: info.trip.clone(),
+                },
+                br#"{"ok":true}"#,
+            )
+            .unwrap();
+    });
+    let (stream, kill, thread) = broker(handler);
+    let mut ctx = std::collections::BTreeMap::new();
+    ctx.insert("FLEET_CTX_ID".to_string(), "ctx-15552".to_string());
+    let mut req = request(None);
+    req.token_file = Some("/run/fleet/secrets.token".to_string());
+    req.transport = Some("ts".to_string());
+    req.cf_ok = Some(false);
+    req.ctx = Some(ctx.clone());
+    let resp = mux_roundtrip(stream, &req).expect("mux roundtrip");
+    assert_eq!(resp.status, 201);
+    assert_eq!(resp.transport.as_deref(), Some("ts"));
+    assert_eq!(resp.body, serde_json::json!({"ok": true}));
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.as_slice(),
+        &[RequestMeta {
+            token_file: Some("/run/fleet/secrets.token".to_string()),
+            transport: Some("ts".to_string()),
+            cf_ok: Some(false),
+            ctx: Some(ctx),
+        }]
+    );
+    teardown(kill, thread);
+}
+
+/// #15552: a reply whose echoed trip is not this call's is never
+/// handed to the caller.
+#[test]
+fn mux_roundtrip_refuses_a_reply_echoing_another_trip_15552() {
+    use fleet_proxy::mux::ResponseHead;
+    let handler: StreamHandler = Arc::new(move |stream: MuxStream, _info: OpenInfo| {
+        let _ = stream.read_to_fin(MAX_FRAME_BYTES).unwrap();
+        stream
+            .respond_with(
+                ResponseHead {
+                    status: Some(200),
+                    transport: None,
+                    trip: Some("someone-elses-trip".to_string()),
+                },
+                br#"{"ok":true}"#,
+            )
+            .unwrap();
+    });
+    let (stream, kill, thread) = broker(handler);
+    let err = mux_roundtrip(stream, &request(None)).expect_err("mismatched trip echo");
+    let text = err.to_string();
+    assert!(text.contains("someone-elses-trip"), "{text}");
+    assert!(text.contains("trip-step3"), "{text}");
+    teardown(kill, thread);
+}

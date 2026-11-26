@@ -308,15 +308,25 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return paths.Socket, nil
 	})
 	deadline := time.Now().Add(a.Settings().Duration("daemon.inlineStartTimeout"))
+	poll := a.Settings().Duration("daemon.inlineStartPoll")
+	probes := 0
 	for time.Now().Before(deadline) {
+		probes++
 		if inlineDaemonPing(c, ctx) {
 			return c, nil
+		}
+		// Bound the last wait to the remaining start budget: a poll
+		// interval longer than the time left must not sleep past the
+		// deadline (#13595).
+		wait := poll
+		if remaining := time.Until(deadline); wait > remaining {
+			wait = remaining
 		}
 		select {
 		case <-ctx.Done():
 			a.inlineStop()
 			return nil, ctx.Err()
-		case <-time.After(a.Settings().Duration("daemon.inlineStartPoll")):
+		case <-time.After(wait):
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -324,7 +334,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	a.inlineStop()
-	return nil, fmt.Errorf("the in-process daemon did not answer")
+	return nil, fmt.Errorf("the in-process daemon did not answer after %d readiness probes", probes)
 }
 
 // inProcessTransport carries HTTP requests to a handler hosted in this

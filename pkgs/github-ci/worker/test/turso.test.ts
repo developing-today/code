@@ -79,3 +79,21 @@ describe("Turso pipeline response envelope", () => {
     );
   });
 });
+
+describe("d1gw:// URLs (Turso -> D1 move)", () => {
+  it("sends the pipeline through the D1GW binding", async () => {
+    const { Turso: T, configureTursoGateway } = await import("../src/turso");
+    const seen: { db: string; body: any }[] = [];
+    configureTursoGateway({
+      async pipeline(db: string, body: unknown) {
+        seen.push({ db, body });
+        return { results: [{ type: "ok", response: { type: "execute", result: { rows: [[{ type: "text", value: "v" }]] } } }, { type: "ok" }] };
+      },
+    });
+    const t = new T("d1gw://fleet-queue", "");
+    expect(await t.queryText("SELECT 'v'")).toBe("v");
+    expect(seen[0].db).toBe("fleet-queue");
+    expect(seen[0].body.requests[0].stmt.sql).toBe("SELECT 'v'");
+    configureTursoGateway(undefined);
+  });
+});

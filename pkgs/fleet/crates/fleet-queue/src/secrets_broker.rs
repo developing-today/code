@@ -14,6 +14,9 @@
 //!                          flight, refresh_progress is {started_unix,
 //!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
+//!   GET /secrets?prefix=P -> {names: [...]} holding only names that
+//!                          start with `P.` (#10358 D6); an empty
+//!                          `prefix=` is refused (400)
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
 //!
@@ -102,7 +105,13 @@ struct RefreshProgress {
 
 struct State {
     secrets: RwLock<HashMap<String, CachedSecret>>,
+    /// The durable watermark of the last successful refresh (#13948
+    /// S2). Also the `last_upstream_refresh_at` peers see (S3).
     last_refresh: RwLock<Option<u64>>,
+    /// Whether the peer verbs are served (#13948 S3, §8). Off by
+    /// default: with it off, /peer/status is an unknown route and the
+    /// broker behaves as it did before S3.
+    peer_status_enabled: bool,
     /// The most recent vault-refresh failure, cleared by the next
     /// successful refresh. Served on the not-loaded 503 so a client
     /// can see WHY the broker has no secrets (#10743) instead of
@@ -738,6 +747,51 @@ fn fetch_through_with(
     result
 }
 
+/// HMAC-SHA256 (RFC 2104) over sha2, which fleet-queue already
+/// depends on; no extra crate for one keyed hash.
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > block.len() {
+        let mut h = Sha256::new();
+        h.update(key);
+        block[..32].copy_from_slice(&h.finalize());
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = block.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = block.iter().map(|b| b ^ 0x5c).collect();
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(msg);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(&inner);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&outer.finalize());
+    out
+}
+
+/// Keyed whole-set hash (#13948 §5.3): names sorted, each (name,
+/// value) pair HMAC'd under the peer token, the pair hashes
+/// concatenated in name order and HMAC'd again. Keyed, so a leaked
+/// set hash does not let an attacker test low-entropy values offline.
+/// Returns the hex digest and the number of secrets it covers.
+fn keyed_set_hash(token: &str, secrets: &HashMap<String, CachedSecret>) -> (String, usize) {
+    let mut names: Vec<&String> = secrets.keys().collect();
+    names.sort();
+    let mut pairs = Vec::with_capacity(names.len() * 32);
+    for name in &names {
+        let mut msg = name.as_bytes().to_vec();
+        msg.push(0);
+        msg.extend_from_slice(secrets[*name].value.as_bytes());
+        pairs.extend_from_slice(&hmac_sha256(token.as_bytes(), &msg));
+    }
+    let set = hmac_sha256(token.as_bytes(), &pairs);
+    let hex: String = set.iter().map(|b| format!("{b:02x}")).collect();
+    (hex, names.len())
+}
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
@@ -826,9 +880,34 @@ fn handle_request(
     } else if !token_matches(provided_token, token) {
         (401, json!({"error": "unauthorized"}))
     } else if method == "GET" && path == "/secrets" {
-        let mut names: Vec<String> = state.secrets.read().unwrap().keys().cloned().collect();
+        // #10358 D6: a scoped caller sends `?prefix=P` and is answered
+        // only the cached names under `P.`, so unscoped names never
+        // cross the socket to it. The cache itself is unchanged.
+        let lead = match secrets_list_prefix(url) {
+            Ok(None) => None,
+            Ok(Some(prefix)) => Some(format!("{prefix}.")),
+            Err(message) => return (400, json!({"error": message})),
+        };
+        let mut names: Vec<String> = state
+            .secrets
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|name| lead.as_deref().is_none_or(|l| name.starts_with(l)))
+            .cloned()
+            .collect();
         names.sort();
         (200, json!({"names": names}))
+    } else if method == "GET" && path == "/peer/status" && state.peer_status_enabled {
+        let (set_hash, count) = keyed_set_hash(token, &state.secrets.read().unwrap());
+        (
+            200,
+            json!({
+                "set_hash": set_hash,
+                "last_upstream_refresh_at": *state.last_refresh.read().unwrap(),
+                "count": count,
+            }),
+        )
     } else if method == "POST" && path == "/refresh" {
         let st = Arc::clone(state);
         std::thread::spawn(move || {
@@ -993,9 +1072,13 @@ pub fn run() -> i32 {
     if loaded_watermark.is_some() {
         crate::log::info("secrets-broker", "loaded durable watermark from disk");
     }
+    let peer_status_enabled = std::env::var("SECRETS_BROKER_PEER_STATUS")
+        .map(|v| matches!(v.as_str(), "1" | "true"))
+        .unwrap_or(false);
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
         last_refresh: RwLock::new(loaded_watermark),
+        peer_status_enabled,
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
         refresh_progress: RwLock::new(None),
@@ -1131,6 +1214,26 @@ pub fn run() -> i32 {
     0
 }
 
+/// The `prefix` query parameter of a `GET /secrets` target (#10358
+/// D6): `Ok(None)` when absent, `Err` when present but empty. Only
+/// `%XX` decodes, as in a path segment.
+fn secrets_list_prefix(url: &str) -> Result<Option<String>, &'static str> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Ok(None);
+    };
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "prefix" {
+            let prefix = url_decode(value);
+            if prefix.is_empty() {
+                return Err("empty prefix");
+            }
+            return Ok(Some(prefix));
+        }
+    }
+    Ok(None)
+}
+
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1158,11 +1261,13 @@ mod tests {
     use super::{
         CachedSecret, DEFAULT_TTL_S, DeltaOutcome, MIN_TTL_S, State, WATERMARK_SKEW_S,
         apply_delta_refresh, apply_list_refresh, begin_refresh_progress, end_refresh_progress,
-        entry_revision_unix, fetch_through_with, handle_request, install_list_refresh,
-        load_watermark, note_refresh_fetch, now_unix, parse_delta_entries, parse_list_entries,
+        entry_revision_unix, fetch_through_with, handle_request, hmac_sha256, install_list_refresh,
+        keyed_set_hash, load_watermark, note_refresh_fetch, now_unix, parse_delta_entries,
+        parse_list_entries,
         parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
-        url_decode,
+        secrets_list_prefix, url_decode,
     };
+    use serde_json::json;
     use std::time::Duration;
 
     #[test]
@@ -1193,9 +1298,14 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     fn empty_state() -> Arc<State> {
+        empty_state_with_peer_status_enabled(true)
+    }
+
+    fn empty_state_with_peer_status_enabled(enabled: bool) -> Arc<State> {
         Arc::new(State {
             secrets: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(Some(1)),
+            peer_status_enabled: enabled,
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
             refresh_progress: RwLock::new(None),
@@ -1279,6 +1389,61 @@ mod tests {
         assert_eq!(body["fetched_at_unix"], 7);
         let (status, _) = handle_request(&state, "tok", "GET", "/secret/beta", Some("tok"));
         assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn secrets_list_answers_a_prefix_with_only_its_names() {
+        // #10358 S2 (D6): scoped list, refused empty prefix, unscoped
+        // list unchanged.
+        let state = empty_state();
+        install_list_refresh(
+            &state,
+            &[
+                ("1".to_string(), "alpha".to_string(), "v".to_string()),
+                ("2".to_string(), "42.alpha".to_string(), "v".to_string()),
+                ("3".to_string(), "42.42.x".to_string(), "v".to_string()),
+                ("4".to_string(), "420.y".to_string(), "v".to_string()),
+                ("5".to_string(), "43.z".to_string(), "v".to_string()),
+            ],
+            7,
+        );
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x", "42.alpha"]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets?prefix=", Some("tok"));
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "empty prefix");
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(
+            body["names"],
+            json!(["42.42.x", "42.alpha", "420.y", "43.z", "alpha"])
+        );
+        // A dotted prefix matches as a whole, and the token still gates
+        // the scoped form.
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42.42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x"]));
+        let (status, _) = handle_request(&state, "tok", "GET", "/secrets?prefix=42", None);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn secrets_list_prefix_parses_the_query() {
+        assert_eq!(secrets_list_prefix("/secrets"), Ok(None));
+        assert_eq!(secrets_list_prefix("/secrets?x=1"), Ok(None));
+        assert_eq!(
+            secrets_list_prefix("/secrets?prefix=42"),
+            Ok(Some("42".to_string()))
+        );
+        assert_eq!(
+            secrets_list_prefix("/secrets?x=1&prefix=a%26b"),
+            Ok(Some("a&b".to_string()))
+        );
+        assert_eq!(secrets_list_prefix("/secrets?prefix="), Err("empty prefix"));
+        assert_eq!(secrets_list_prefix("/secrets?prefix"), Err("empty prefix"));
     }
 
     #[test]
@@ -2007,5 +2172,91 @@ mod tests {
             );
             assert!(warning.contains(raw), "warning: {warning}");
         }
+    }
+
+    fn set_of(pairs: &[(&str, &str)]) -> HashMap<String, CachedSecret> {
+        pairs
+            .iter()
+            .map(|(n, v)| {
+                (
+                    n.to_string(),
+                    CachedSecret {
+                        id: format!("id-{n}"),
+                        value: v.to_string(),
+                        fetched_at_unix: 0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn peer_set_hash_is_equal_for_equal_sets_regardless_of_insertion_order() {
+        let a = set_of(&[("alpha", "1"), ("beta", "2")]);
+        let b = set_of(&[("beta", "2"), ("alpha", "1")]);
+        assert_eq!(keyed_set_hash("tok", &a), keyed_set_hash("tok", &b));
+        assert_eq!(keyed_set_hash("tok", &a).1, 2);
+    }
+
+    #[test]
+    fn peer_set_hash_changes_when_one_value_flips() {
+        let a = set_of(&[("alpha", "1"), ("beta", "2")]);
+        let b = set_of(&[("alpha", "1"), ("beta", "3")]);
+        assert_ne!(keyed_set_hash("tok", &a).0, keyed_set_hash("tok", &b).0);
+    }
+
+    #[test]
+    fn peer_set_hash_is_keyed_by_the_peer_token() {
+        let a = set_of(&[("alpha", "1")]);
+        assert_ne!(keyed_set_hash("tok", &a).0, keyed_set_hash("other", &a).0);
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc4231_case_1() {
+        let key = [0x0bu8; 20];
+        let out: String = hmac_sha256(&key, b"Hi There")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            out,
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+    }
+
+    #[test]
+    fn peer_status_returns_keyed_set_metadata_to_an_authenticated_peer() {
+        let state = empty_state();
+        let secrets = set_of(&[("alpha", "1"), ("beta", "2")]);
+        *state.secrets.write().unwrap() = secrets.clone();
+        *state.last_refresh.write().unwrap() = Some(42);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+
+        assert_eq!(status, 200);
+        assert_eq!(body["set_hash"], keyed_set_hash("tok", &secrets).0);
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["last_upstream_refresh_at"], 42);
+    }
+
+    #[test]
+    fn peer_status_refuses_missing_or_wrong_peer_tokens() {
+        let state = empty_state();
+
+        for provided in [None, Some("wrong")] {
+            let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", provided);
+            assert_eq!(status, 401);
+            assert_eq!(body["error"], "unauthorized");
+        }
+    }
+
+    #[test]
+    fn peer_status_is_not_routed_when_the_feature_is_disabled() {
+        let state = empty_state_with_peer_status_enabled(false);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+
+        assert_eq!(status, 404);
+        assert_eq!(body["error"], "not found");
     }
 }

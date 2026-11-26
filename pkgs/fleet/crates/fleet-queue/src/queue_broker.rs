@@ -13,7 +13,9 @@
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
 //!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800,
 //!      or unix://<path> for the secrets broker's socket, #6218),
-//!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
+//!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
+//!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
+//!      read-only hosted-door probe at POST /door-health).
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -32,6 +34,10 @@ struct State {
     secrets_url: String,
     secrets_token: String,
     agent: ureq::Agent,
+    /// Optional, read-only hosted-door probe (#14987). Queue traffic
+    /// continues to use Turso until a later cutover explicitly routes
+    /// verbs through this client.
+    hosted_door: Option<HostedQueueDoor>,
     /// Filled by the startup thread once the Turso token resolves and
     /// the schema is ensured (#12247); until then queue verbs answer
     /// exit 3 with `turso_pending`.
@@ -42,6 +48,57 @@ struct State {
     /// slow GitHub pass skips instead of piling a second grant loop
     /// onto the same counters.
     coord_sweep_running: Mutex<bool>,
+}
+
+/// Authenticated client for the hosted queue door. This first slice
+/// exposes only a diagnostic probe; it deliberately does not switch
+/// the broker's authoritative store or forward queue writes.
+struct HostedQueueDoor {
+    base_url: String,
+    token: String,
+    agent: ureq::Agent,
+}
+
+impl HostedQueueDoor {
+    fn from_env(agent: ureq::Agent) -> Result<Option<Self>, String> {
+        let url = std::env::var("QUEUE_BROKER_DOOR_URL").ok();
+        let token_file = std::env::var("QUEUE_BROKER_DOOR_TOKEN_FILE").ok();
+        match (url, token_file) {
+            (None, None) => Ok(None),
+            (Some(url), Some(token_file)) => {
+                let url = url.trim().trim_end_matches('/');
+                if !url.starts_with("https://") || url.len() <= "https://".len() {
+                    return Err("QUEUE_BROKER_DOOR_URL must be an HTTPS origin".into());
+                }
+                let token = crate::token_file::load_token_file(&token_file)?;
+                Ok(Some(Self {
+                    base_url: url.to_string(),
+                    token,
+                    agent,
+                }))
+            }
+            (Some(_), None) => {
+                Err("QUEUE_BROKER_DOOR_URL requires QUEUE_BROKER_DOOR_TOKEN_FILE".into())
+            }
+            (None, Some(_)) => {
+                Err("QUEUE_BROKER_DOOR_TOKEN_FILE requires QUEUE_BROKER_DOOR_URL".into())
+            }
+        }
+    }
+
+    fn health(&self, request: &Value) -> Result<Value, String> {
+        let url = format!("{}/v1/queue/health", self.base_url);
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .send_json(request.clone())
+            .map_err(|e| format!("hosted queue door health request failed: {e}"))?;
+        response
+            .body_mut()
+            .read_json::<Value>()
+            .map_err(|e| format!("hosted queue door health response was invalid JSON: {e}"))
+    }
 }
 
 /// The queue broker's secrets-by-name source: a direct HTTP call to
@@ -1112,6 +1169,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             ok(json!({"errors": errors, "warnings": warnings}))
         }
         "/healthz" => ok(json!({"service": "queue-broker"})),
+        "/door-health" => match &st.hosted_door {
+            Some(door) => door.health(req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
         _ => {
             let Some(turso) = st.turso.get() else {
                 let why = st
@@ -1310,6 +1371,13 @@ pub fn run() -> i32 {
         )
         .build()
         .into();
+    let hosted_door = match HostedQueueDoor::from_env(agent.clone()) {
+        Ok(door) => door,
+        Err(error) => {
+            crate::log::info("queue-broker", &error);
+            return 3;
+        }
+    };
     // Turso is the only queue backend: QUEUE_BROKER_BACKEND unset
     // (or empty) means turso; any other value is a config error.
     if let Ok(v) = std::env::var("QUEUE_BROKER_BACKEND") {
@@ -1343,6 +1411,7 @@ pub fn run() -> i32 {
         secrets_url,
         secrets_token,
         agent,
+        hosted_door,
         turso: std::sync::OnceLock::new(),
         turso_pending: Mutex::new("starting".to_string()),
         coord_sweep_running: Mutex::new(false),
@@ -1562,6 +1631,74 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn door_health_uses_authenticated_hosted_queue_contract() {
+        // Oracle: the hosted queue door contract is POST
+        // /v1/queue/health with a Bearer service token and the original
+        // JSON request; its broker-envelope response is returned intact.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 21\r\nconnection: close\r\n\r\n{\"ok\":true,\"rows\":[]}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door
+            .health(&json!({"queue": "repo-health-code-pilot"}))
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/health HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("repo-health-code-pilot"),
+            "hosted request includes the requested queue: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "rows": []}));
+    }
 
     #[test]
     fn landing_from_json_10626() {

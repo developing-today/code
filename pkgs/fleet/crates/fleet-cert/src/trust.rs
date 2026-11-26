@@ -298,6 +298,8 @@ pub fn export_trust_bundle(req: &TrustExportRequest, out_dir: &Path) -> Result<B
         country,
         purpose: Some("trust-distribution".to_string()),
         generation,
+        revision: 1,
+        predecessor: None,
         created_at: req.at,
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
         parent: None,
