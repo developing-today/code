@@ -158,7 +158,10 @@ fn batches_are_atomic_and_idempotent_and_replicas_are_local() {
     );
     assert_eq!(one.evidence().len(), evidence_count);
     assert_eq!(two.state(), &DeletionState::Available);
-    assert!(two.evidence().is_empty());
+    assert_eq!(
+        two.evidence(),
+        [] as [id_core::graph::deletion::DeletionEvidence; 0]
+    );
 
     let other = key(3);
     two.apply("bob", DeletionAction::Request { request_id: 2 }, &other)
