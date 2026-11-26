@@ -46,6 +46,17 @@ import {
 } from "./bridge-session.ts";
 import type { IngestOutcome } from "./bridge-store.ts";
 import { ExportProductionError, exportSetsToWire, produceExportSets } from "./export.ts";
+import {
+  FENCE_RETRY_AFTER_SECONDS,
+  HDR_MIGRATION,
+  parseFenceRequest,
+  planFreeze,
+  planSeal,
+  planUnfreeze,
+  readEpochFloor,
+  readFence,
+  type SourceFence,
+} from "./migration-fence.ts";
 
 export const SCHEMA_VERSION = 3;
 
@@ -94,6 +105,9 @@ interface DOState {
    * socket and may evict the object between messages, waking it
    * through webSocketMessage / webSocketClose. */
   acceptWebSocket?(ws: WsSocketLike): void;
+  /** Every socket this object accepted, so a migration freeze can
+   * close live bridge sessions (#3404). */
+  getWebSockets?(): WsSocketLike[];
 }
 interface Env {
   BLOBS?: R2BucketLike;
@@ -354,6 +368,7 @@ export class UserDO {
    * the object is read-only + exportable, and deletes are how a
    * user recovers headroom. */
   private assertWritable(deltaBytes: number) {
+    this.assertNotFenced();
     const ceiling = this.ceilingBytes();
     if (ceiling === null) return;
     const after = this.usage().storage_bytes + deltaBytes;
@@ -363,6 +378,116 @@ export class UserDO {
         "ceiling_exceeded",
         `storage ceiling exceeded: ${after} bytes would exceed the ${ceiling}-byte ceiling; reads and export remain available`,
       );
+    }
+  }
+
+  /** The persisted migration fence (#3404); null when none stands. */
+  private sourceFence(): SourceFence | null {
+    return readFence(this.meta("migration_fence"));
+  }
+
+  /** Refuse a mutation while a migration fence stands. The refusal is
+   * retryable: after the switch the route reaches the target, and
+   * after an abort the source reopens. */
+  private assertNotFenced(): void {
+    const fence = this.sourceFence();
+    if (fence === null) return;
+    throw new RetryableRefusal(
+      503,
+      fence.state === "sealed" ? "source_sealed" : "source_frozen",
+      fence.state === "sealed"
+        ? "this store moved in a migration; retry so the route reaches its new home"
+        : "this store is frozen for a migration; reads and export remain available",
+      FENCE_RETRY_AFTER_SECONDS,
+    );
+  }
+
+  /** The commit point of a mutation: check the fence, then count the
+   * mutation. Call it with no await between it and the write, so a
+   * freeze cannot land between the check and the commit. */
+  private commitPoint(): void {
+    this.assertNotFenced();
+    this.state.storage.sql.exec(
+      "INSERT INTO meta (key, value) VALUES ('mutation_seq', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+    );
+  }
+
+  private mutationSeq(): number {
+    return Number(this.meta("mutation_seq") ?? "0");
+  }
+
+  /** The migration control routes (#3404 slice 1). Only the migration
+   * principal reaches them; the front door strips its header. */
+  private async migrationControl(req: Request, url: URL): Promise<Response> {
+    if (req.headers.get(HDR_MIGRATION) !== "1") {
+      throw new FailClosed(403, "migration_principal_required", "migration control is for the migration principal only");
+    }
+    const status = () => {
+      const fence = this.sourceFence();
+      return {
+        fence,
+        epoch_floor: readEpochFloor(this.meta("fence_epoch_floor")),
+        mutation_seq: this.mutationSeq(),
+      };
+    };
+    if (url.pathname === "/v1/migration/fence" && req.method === "GET") return json(status());
+    if (req.method !== "POST") throw new FailClosed(405, "method_not_allowed", "migration control takes POST");
+    const text = await readTextUpTo(req, 4 * 1024);
+    if (text === null) throw bodyTooLarge(4 * 1024);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new FailClosed(400, "invalid_body", "migration control bodies are JSON");
+    }
+    const request = parseFenceRequest(body);
+    const current = this.sourceFence();
+    const floor = readEpochFloor(this.meta("fence_epoch_floor"));
+    const setMeta = (key: string, value: string) =>
+      this.state.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        key,
+        value,
+      );
+    if (url.pathname === "/v1/migration/freeze") {
+      // The DO runs this route to completion with no await before the
+      // writes below, so no mutation interleaves: the watermark is the
+      // last committed mutation, and none can commit after it.
+      const { fence, changed } = planFreeze(current, floor, request, this.mutationSeq(), Date.now());
+      if (changed) {
+        setMeta("migration_fence", JSON.stringify(fence));
+        setMeta("fence_epoch_floor", String(Math.max(floor, fence.routing_epoch)));
+        this.closeBridgeSockets("source_frozen", "this store is frozen for a migration; reconnect later");
+      }
+      return json({ acknowledged: true, ...status() });
+    }
+    if (url.pathname === "/v1/migration/unfreeze") {
+      const nextFloor = planUnfreeze(current, request);
+      this.state.storage.sql.exec("DELETE FROM meta WHERE key = 'migration_fence'");
+      setMeta("fence_epoch_floor", String(Math.max(floor, nextFloor)));
+      return json(status());
+    }
+    if (url.pathname === "/v1/migration/seal") {
+      const { fence, changed } = planSeal(current, request);
+      if (changed) {
+        setMeta("migration_fence", JSON.stringify(fence));
+        setMeta("fence_epoch_floor", String(Math.max(floor, fence.routing_epoch)));
+      }
+      return json(status());
+    }
+    throw new FailClosed(404, "not_found", "no such migration control route");
+  }
+
+  /** End every live bridge session with a named error frame. */
+  private closeBridgeSockets(code: string, message: string): void {
+    for (const ws of this.state.getWebSockets?.() ?? []) {
+      try {
+        ws.send(sessionErrorFrame(code, message));
+      } catch {
+        // The socket may already be gone; closing below is enough.
+      }
+      this.endBridgeSocket(ws);
+      closeQuietly(ws, 1013, code);
     }
   }
 
@@ -538,8 +663,13 @@ export class UserDO {
       guardBatch: (newBytes) => {
         try {
           this.assertWritable(newBytes);
+          // ingestBatch follows synchronously: this is the commit point.
+          this.commitPoint();
           return true;
-        } catch {
+        } catch (e) {
+          if (e instanceof FailClosed && (e.code === "source_frozen" || e.code === "source_sealed")) {
+            return { code: e.code, message: e.message };
+          }
           return false;
         }
       },
@@ -646,6 +776,10 @@ export class UserDO {
       );
       const url = new URL(req.url);
       const isUsage = url.pathname === "/v1/usage" && req.method === "GET";
+      // Migration control is never capped: a capped tenant must still
+      // be able to move (#3404).
+      const isMigration = url.pathname.startsWith("/v1/migration/");
+      if (isMigration) return await this.migrationControl(req, url);
       const requestCap = this.requestCap();
       // The usage read is exempt so a capped caller can still see
       // where it stands and when the window resets (#15485).
@@ -736,6 +870,7 @@ export class UserDO {
           if (!store.heldEvent(entry.id)) newBytes += entry.bytes.length;
         }
         this.assertWritable(newBytes);
+        this.commitPoint();
         const outcomes = store.ingestBatch(entries, Date.now());
         return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads() });
       }
@@ -836,6 +971,9 @@ export class UserDO {
         if ((req.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
           throw new FailClosed(400, "websocket_required", "the bridge session leg requires a WebSocket upgrade");
         }
+        // A frozen store takes no new bridge sessions (#3404); the
+        // HTTPS read legs stay open.
+        this.assertNotFenced();
         if (!this.state.acceptWebSocket) {
           throw new FailClosed(500, "websocket_hibernation_unavailable", "the runtime offers no hibernating WebSockets");
         }
@@ -873,6 +1011,10 @@ export class UserDO {
         const key = blobObjectKey(bindingId, hash, clientSideEncryption);
         const existing = await bucket.head(key);
         if (!existing) await bucket.put(key, bytes);
+        // Re-checked after the R2 awaits: a freeze may have landed
+        // while they ran. Bytes put above with no reference row stay
+        // invisible to this user and are left to the safe GC.
+        this.commitPoint();
         this.state.storage.sql.exec(
           "INSERT INTO blobs (hash, size, owner, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING",
           hash,
@@ -902,6 +1044,7 @@ export class UserDO {
         const hash = blobHashMatch[1];
         const rows = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
+        this.commitPoint();
         this.state.storage.sql.exec("DELETE FROM blobs WHERE hash = ?", hash);
         // The reference is gone, so this user can no longer reach
         // the bytes. The R2 object itself is deliberately NOT
@@ -933,6 +1076,7 @@ export class UserDO {
           if (value === null) throw ceilingExceeded(headroom);
         }
         this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
+        this.commitPoint();
         this.state.storage.sql.exec(
           "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
           kvMatch[1],
@@ -950,6 +1094,7 @@ export class UserDO {
         // cap — they are how a capped user recovers headroom.
         const rows = this.state.storage.sql.exec("SELECT key FROM kv WHERE key = ?", kvMatch[1]).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
+        this.commitPoint();
         this.state.storage.sql.exec("DELETE FROM kv WHERE key = ?", kvMatch[1]);
         return json({ key: kvMatch[1], deleted: true });
       }

@@ -38,6 +38,18 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   in a `USER_REQUEST_WINDOW_SECONDS` window (default one day) get a
   retryable 429 with `Retry-After`; `GET /v1/usage` stays available
   and reports the window. A malformed value fails requests closed.
+- The durable source fence for jurisdiction migration (#3404,
+  `src/migration-fence.ts`): the migration principal (an internal
+  header the front door strips) can `POST /v1/migration/freeze`,
+  `/seal` and `/unfreeze` with `{migration_id, routing_epoch}`, and
+  `GET /v1/migration/fence`. While frozen or sealed, every mutation
+  (bridge push and WebSocket batches, blob and KV writes and deletes,
+  new bridge sessions) gets a retryable 503 `source_frozen` or
+  `source_sealed`, checked at its commit point; reads and export stay
+  open. A freeze closes live bridge sessions and acknowledges the
+  mutation watermark. Unfreeze (abort) needs a newer epoch, a sealed
+  source never unfreezes, and a replayed freeze at an old epoch is
+  refused. The directory CAS, lease and coordinator are later slices.
 
 ## Tenancy control plane (component E, #9083)
 
