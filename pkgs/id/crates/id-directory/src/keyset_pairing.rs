@@ -671,7 +671,7 @@ mod tests {
                 "unknown",
             )
             .unwrap_err();
-        assert!(error.to_string().contains("unknown"), "{error:#}");
+        assert!(format!("{error:#}").contains("unknown"), "{error:#}");
         assert_eq!(file.records().count(), count);
     }
 
