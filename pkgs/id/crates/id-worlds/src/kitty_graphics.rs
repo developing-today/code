@@ -46,16 +46,6 @@ pub const MAX_PNG_BYTES: usize = 8 * 1024 * 1024;
 /// The eight-byte PNG signature.
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
-/// A valid 1 × 1 PNG, base64, sent as the PNG class's query payload.
-const PNG_QUERY_PAYLOAD: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-
-/// One transparent RGBA pixel, base64, sent as the raw RGBA query payload.
-const RGBA_QUERY_PAYLOAD: &str = "AAAAAA==";
-
-/// One transparent RGBA pixel, zlib-compressed then base64, sent as the
-/// compressed RGBA query payload.
-const RGBA_ZLIB_QUERY_PAYLOAD: &str = "eJxjYGBgAAAABAAB";
-
 /// Why a transmission could not be encoded. Every variant emits nothing.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KittyGraphicsError {
@@ -374,10 +364,12 @@ pub const RGBA_QUERY: &str = "\x1b_Ga=q,t=d,f=32,s=1,v=1,i=42;AAAAAA==\x1b\\";
 /// query ID 43.
 pub const RGBA_ZLIB_QUERY: &str = "\x1b_Ga=q,t=d,f=32,s=1,v=1,o=z,i=43;eJxjYGBgAAAABAAB\x1b\\";
 
-/// The `a=q` query asking whether this terminal accepts `class`: a 1 × 1
-/// payload of exactly that class, under the class's query ID. The query
-/// is not quiet, because its reply is the whole point. The startup probe
-/// sends all three in its one burst (`world_terminal::PROBE_QUERIES`).
+/// The `a=q` query asking whether this terminal accepts `class`.
+///
+/// It carries a 1 × 1 payload of exactly that class, under the class's
+/// query ID. The query is not quiet, because its reply is the whole
+/// point. The startup probe sends all three in its one burst
+/// (`world_terminal::PROBE_QUERIES`).
 #[must_use]
 pub const fn encode_query(class: PayloadClass) -> &'static str {
     match class {
@@ -479,6 +471,16 @@ impl GraphicsGate {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::io::Read as _;
+
+    /// A valid 1 × 1 PNG, base64, sent as the PNG class's query payload.
+    const PNG_QUERY_PAYLOAD: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    /// One transparent RGBA pixel, base64, sent as the raw RGBA query payload.
+    const RGBA_QUERY_PAYLOAD: &str = "AAAAAA==";
+
+    /// One transparent RGBA pixel, zlib-compressed then base64, sent as the
+    /// compressed RGBA query payload.
+    const RGBA_ZLIB_QUERY_PAYLOAD: &str = "eJxjYGBgAAAABAAB";
 
     use super::*;
 
