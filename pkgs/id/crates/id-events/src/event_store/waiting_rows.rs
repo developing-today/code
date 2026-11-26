@@ -86,7 +86,7 @@ impl Row {
             .as_chunks::<32>()
             .0
             .iter()
-            .map(hash_of)
+            .map(|chunk| hash_of(chunk))
             .collect::<Result<Vec<Hash>, StoreError>>()?;
         Ok(Self {
             id,
