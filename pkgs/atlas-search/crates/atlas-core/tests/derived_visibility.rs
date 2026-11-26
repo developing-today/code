@@ -114,7 +114,9 @@ fn run(con: &Connection, stmt: &Stmt) -> Vec<i64> {
     let mut prepared = con.prepare(&stmt.sql).expect("prepare FTS statement");
     let args: Vec<RValue> = stmt.args.iter().map(rvalue).collect();
     prepared
-        .query_map(rusqlite::params_from_iter(args.iter()), |r| r.get::<_, i64>(0))
+        .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            r.get::<_, i64>(0)
+        })
         .expect("run FTS statement")
         .map(|r| r.expect("row"))
         .collect()
@@ -187,13 +189,25 @@ fn shared_lexical_statistics_can_reorder_visible_rows() {
     // Store A: "gamma" is in 1 of 8 rows and "alpha" in 2 of 8, so
     // gamma is the rarer term and row 2 outranks rows 1 and 3.
     let in_a = search(&a, "personal", 50);
-    assert!(position(&in_a, 2) < position(&in_a, 1), "store A order {in_a:?}");
-    assert!(position(&in_a, 2) < position(&in_a, 3), "store A order {in_a:?}");
+    assert!(
+        position(&in_a, 2) < position(&in_a, 1),
+        "store A order {in_a:?}"
+    );
+    assert!(
+        position(&in_a, 2) < position(&in_a, 3),
+        "store A order {in_a:?}"
+    );
     // Store B: the three hidden rows put "gamma" in 4 of 11 rows,
     // making it the commoner term, so rows 1 and 3 now outrank row 2.
     let in_b = search(&b, "personal", 50);
-    assert!(position(&in_b, 1) < position(&in_b, 2), "store B order {in_b:?}");
-    assert!(position(&in_b, 3) < position(&in_b, 2), "store B order {in_b:?}");
+    assert!(
+        position(&in_b, 1) < position(&in_b, 2),
+        "store B order {in_b:?}"
+    );
+    assert!(
+        position(&in_b, 3) < position(&in_b, 2),
+        "store B order {in_b:?}"
+    );
     // At a cut of two, the rows inside the pool differ as well: this
     // is the observable the looser contract admits.
     assert!(search(&a, "personal", 2).contains(&2));
@@ -215,7 +229,10 @@ fn partitioned_index_gives_identical_order_at_the_same_visible_cut() {
         }
         // The partition of store A is store A itself (it has no hidden
         // rows), so the strict order is the order store A already gives.
-        assert_eq!(search(&a, ceiling, 50), search(&store(SHARED, None), ceiling, 50));
+        assert_eq!(
+            search(&a, ceiling, 50),
+            search(&store(SHARED, None), ceiling, 50)
+        );
     }
 }
 
