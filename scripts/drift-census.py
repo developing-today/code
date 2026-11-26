@@ -253,7 +253,9 @@ def build(planes: list[str], root: Path, fixture: dict | None, now: datetime,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Drift census v1 (#14134 U1): pinned vs running, three planes, read-only.")
+        description="Drift census v1 (#14134 U1): pinned vs running, three planes, read-only.",
+        allow_abbrev=False,
+    )
     parser.add_argument("--plane", action="append", choices=PLANES,
                         help="plane to census (repeatable; default all three)")
     parser.add_argument("--fixture", type=Path, default=None,
