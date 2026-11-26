@@ -66,6 +66,7 @@ type Defaults struct {
 		DaemonConnectTimeout string `json:"daemonConnectTimeout"`
 		DaemonPollInterval   string `json:"daemonPollInterval"`
 		DaemonRestartSettle  string `json:"daemonRestartSettle"`
+		SupervisorReapRetry  string `json:"supervisorReapRetry"`
 		HTTPIdleTimeout      string `json:"httpIdleTimeout"`
 		HTTPRequestTimeout   string `json:"httpRequestTimeout"`
 		FollowPollInterval   string `json:"followPollInterval"`
@@ -602,6 +603,7 @@ var (
 	DaemonConnectTimeout = mustDur(builtin.Plumbing.DaemonConnectTimeout, "plumbing.daemonConnectTimeout")
 	DaemonPollInterval   = mustDur(builtin.Plumbing.DaemonPollInterval, "plumbing.daemonPollInterval")
 	DaemonRestartSettle  = mustDur(builtin.Plumbing.DaemonRestartSettle, "plumbing.daemonRestartSettle")
+	SupervisorReapRetry  = mustDur(builtin.Plumbing.SupervisorReapRetry, "plumbing.supervisorReapRetry")
 	HTTPIdleTimeout      = mustDur(builtin.Plumbing.HTTPIdleTimeout, "plumbing.httpIdleTimeout")
 	HTTPRequestTimeout   = mustDur(builtin.Plumbing.HTTPRequestTimeout, "plumbing.httpRequestTimeout")
 	FollowPollInterval   = mustDur(builtin.Plumbing.FollowPollInterval, "plumbing.followPollInterval")
