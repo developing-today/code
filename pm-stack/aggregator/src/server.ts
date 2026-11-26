@@ -1433,13 +1433,17 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
   }
-  if (path === "/api/needs-drew.json") {
-    // #1226: the Needs-Drew label census as data — open user/review +
+  if (path === "/api/needs-user.json" || path === "/api/needs-drew.json") {
+    // #1226: the Needs User label census as data — open user/review +
     // user/escalated items across the four repos with per-source
-    // status and freshness. 503 when this source cannot census, so a
-    // consumer never mistakes "unavailable" for "nothing waiting".
+    // status and freshness. Keep the old path as an alias for deployed
+    // clients; both names return the same response shape.
+    const legacyPath = path === "/api/needs-drew.json";
     const census = (await source.needsDrew?.().catch(() => null)) ?? null;
-    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    if (!census) {
+      const name = legacyPath ? "needs-drew" : "needs-user";
+      return json({ error: `${name} census unavailable from this source` }, 503);
+    }
     return json(census);
   }
   if (path === "/api/attention.json") {

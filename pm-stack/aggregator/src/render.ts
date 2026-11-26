@@ -3488,7 +3488,7 @@ ${sections.header}${sections.queues}${sections.sessions}${questionsHtml}`,
 export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
   if (census === undefined) return "";
   if (census === null) {
-    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+    return `<h2 id="needs-user-census">Needs User — GitHub label census</h2><a id="needs-drew-census"></a><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
   }
   const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
   const failureNote = failed.length
@@ -3538,7 +3538,7 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
         .join("")}</ul>`
     : `<p class="muted">Nothing is parked on the owner by an agent${answered}.</p>`;
   const rows = `<h3 id="needs-drew-hands">Needs a person's hands (${hands.length})</h3>${handsRows}<h3 id="needs-drew-review">Review requested (${review.length})</h3>${reviewRows}<h3 id="needs-drew-parked">Parked on the owner by an agent — fleet work (${parked.length})</h3>${parkedRows}`;
-  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${hands.length + review.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
+  return `<h2 id="needs-user-census">Needs User — GitHub label census (${hands.length + review.length})</h2><a id="needs-drew-census"></a><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-user.json">/api/needs-user.json</a> (legacy: <a href="/api/needs-drew.json">/api/needs-drew.json</a>).</p>${failureNote}${rows}`;
 }
 
 /**
