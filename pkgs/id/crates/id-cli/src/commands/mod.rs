@@ -70,6 +70,7 @@ pub mod keyset_recovery;
 pub mod list;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
+pub mod nav;
 pub mod peers;
 pub mod petname;
 pub mod publish;
@@ -103,6 +104,7 @@ pub use keyset::cmd_keyset;
 pub use list::{cmd_list, cmd_list_remote};
 #[cfg(feature = "sandbox")]
 pub use match_audit::cmd_match_audit;
+pub use nav::cmd_nav;
 pub use peers::{PeersOptions, cmd_peers};
 pub use petname::cmd_petname;
 pub use publish::{cmd_publications, cmd_publish, cmd_unpublish};
