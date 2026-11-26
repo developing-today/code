@@ -13,7 +13,7 @@ The deployment frame names four units declared in the NixOS module `nixos/servic
 | `pm-dispatch`   | The dispatch intake service (`pm-stack/dispatch/`)                | 4879, public as `dispatch.security.cab` |
 | `pm-tunnel`     | The Cloudflare Tunnel unit (`pm-stack/systemd/pm-tunnel.service`) | —                                       |
 
-The console runs as unit `pm-console` on port 4872 (`pm-stack/console/`). It has no `pkgs/pm-console` package; its deploy runs through `console/install.sh` and `console/redeploy.sh` and the edge release path. Whether the NixOS module builds the console another way is UNVERIFIED from the surveys.
+The console runs as unit `pm-console` on port 4872 (`pm-stack/console/`). It has no `pkgs/pm-console` package; its deploy runs through `console/install.sh` and `console/redeploy.sh` and the edge release path. `nixos/services/pm-stack` declares no console unit: `pm-stack/console/install.sh` copies `pm-console.service` and the `pm-console-expose`, `pm-console-redeploy` and `pm-console-android-release` timers from `pm-stack/systemd/` into `~/.config/systemd/user/` and enables them, and `redeploy.sh` runs that installer for each release (D16, settled in source).
 
 ready-for-agent runs as a systemd user unit from `pm-stack/ready-for-agent/systemd/`, serving its UI and GraphQL on port 6056.
 

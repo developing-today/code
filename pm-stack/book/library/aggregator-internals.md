@@ -35,7 +35,7 @@ The aggregator holds no planning data of its own as a source of truth. Its state
 Two manifest facts belong with state handling, because a reader of `pages.ts` alone gets them wrong:
 
 - The `decisions` manifest entry declares no API twin. The server implements the decisions API regardless: submit, defer, request-info, and events per set, plus the decision-sets list and submit routes (D7).
-- The single-question answer store is named two ways in code comments, and the exact file a single-question answer writes is UNVERIFIED (D9). The endpoint and the ledger application are the documented facts.
+- A single-question answer is written by `recordAnswer` in `pm-stack/aggregator/src/needs-drew.ts` writes it to the needs-Drew question store, the file at `cfg.needsDrewFile`. That path is `PM_AGG_NEEDS_USER_FILE`, else the legacy `PM_AGG_NEEDS_DREW_FILE`, else `needs-user.json` (or the legacy `needs-drew.json` where only that exists) under `~/.local/state/pm-aggregator/`, resolved by `needs-user-state-path.ts`. Decision sets keep their own store, `decisions.json` (D9, settled in source). The first answer wins.
 
 ## Ingest families
 

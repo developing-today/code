@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
@@ -21,10 +21,10 @@ use crate::cli::KeysetCommand;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::hex::hex_encode;
 use id_directory::keyset::{AdminKeyState, KeysetEntry, KeysetState};
-use id_directory::keyset_file::{KeysetFile, CLIENT_KEYSET_FILE, KEYSET_FILE};
+use id_directory::keyset_file::{CLIENT_KEYSET_FILE, KEYSET_FILE, KeysetFile};
 use id_directory::keyset_pairing::{DeviceQr, EnrolAccept, EnrolOffer};
 use id_directory::restored_key::{
-    self, RestoreStatus, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE,
+    self, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE, RestoreStatus,
 };
 use id_events::groups::Key;
 use id_groups::encryption::DeviceSets;
