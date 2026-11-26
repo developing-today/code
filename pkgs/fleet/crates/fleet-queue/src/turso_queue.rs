@@ -41,7 +41,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::validate::{task_from_packet, validate_packet};
+use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
@@ -49,6 +49,8 @@ mod claim;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
+#[cfg(all(test, feature = "queue-broker"))]
+mod hrana_double;
 mod label_enrich;
 mod lifecycle;
 mod links;
@@ -300,6 +302,122 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn enqueue_route_declaration_15070() {
+        // #15070 oracle (validation + dry-run halves): a packet whose
+        // payload carries a valid structured route declaration
+        // enqueues (dry-run) with the declaration intact on the row
+        // shape; packets with a malformed declaration — unknown
+        // family, blank reason, unknown field, non-object — are
+        // refused at validation, naming payload.route. A packet
+        // without a route is untouched by all of this.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let base = packet_12744(15070, 30);
+        let mut routed = base.clone();
+        routed["payload"]["route"] = json!({
+            "platform": "openchamber",
+            "reason": "works in the laptop checkout of openchamber"
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": routed,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["route"]["platform"], "openchamber",
+            "{out}"
+        );
+        assert_eq!(
+            crate::validate::route_declaration(&out["task"]["payload"]),
+            Some((
+                "openchamber".to_string(),
+                "works in the laptop checkout of openchamber".to_string()
+            )),
+            "{out}"
+        );
+        for bad in [
+            json!({"platform": "code-a", "reason": "r"}),
+            json!({"platform": "muse", "reason": "  "}),
+            json!({"platform": "muse"}),
+            json!({"platform": "muse", "reason": "r", "lane": "xaltha"}),
+            json!("openchamber"),
+        ] {
+            let mut packet = base.clone();
+            packet["payload"]["route"] = bad.clone();
+            let req = json!({
+                "queue": "repo-health-code-pilot",
+                "packet": packet,
+                "dry_run": true
+            });
+            let out = verb_enqueue(&backend, &req);
+            assert_eq!(out["ok"], false, "route {bad} must be refused: {out}");
+            assert!(
+                out["errors"]
+                    .as_array()
+                    .map(|errs| {
+                        errs.iter()
+                            .any(|e| e.as_str().unwrap_or("").contains("payload.route"))
+                    })
+                    .unwrap_or(false),
+                "route {bad} refusal names payload.route: {out}"
+            );
+        }
+        // No route: route_declaration reads None (unrouted, legacy).
+        assert_eq!(
+            crate::validate::route_declaration(&base["payload"]),
+            None
+        );
+    }
+
+    #[test]
+    fn enqueue_translates_route_to_ledger_platform_limit_15070() {
+        // #15070 oracle (broker half): verb_enqueue translates the
+        // declaration into the lane ledger's platform limitation at
+        // creation — the INSERT names platform_limit and
+        // platform_limit_reason and sits in verb_enqueue's own
+        // segment, after the task INSERT (the row it limits must
+        // exist first), and the translation is gated on the parsed
+        // declaration so unrouted packets create no ledger row.
+        let src = &test_source();
+        let seg = src
+            .split("pub(crate) fn verb_enqueue(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\npub(crate) fn ")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("route_declaration"),
+            "verb_enqueue parses the route declaration"
+        );
+        assert!(
+            seg.contains("platform_limit_error("),
+            "verb_enqueue rechecks the declaration as a platform limitation"
+        );
+        let task_insert = seg
+            .find("INSERT INTO tasks")
+            .expect("verb_enqueue inserts the task row");
+        let ledger_insert = seg
+            .find("INSERT INTO repo_task_lane_ledger")
+            .expect("verb_enqueue inserts the ledger limitation row");
+        assert!(
+            task_insert < ledger_insert,
+            "the ledger limitation is stamped after the task row exists"
+        );
+        let ledger_seg = &seg[ledger_insert..];
+        assert!(ledger_seg.contains("platform_limit, platform_limit_reason"));
+        assert!(
+            seg.contains("\"route_declared\""),
+            "the translation leaves a route_declared audit event"
+        );
     }
 
     /// A one-shot stub of the Turso pipeline endpoint for the
@@ -858,6 +976,111 @@ mod tests {
             bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
             "a failed predecessor must still revive: {bodies:?}"
         );
+    }
+
+    #[test]
+    fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
+        // The fleet monitor's 2026-11-25 finding on #10627: a fresh
+        // filing under a standard key whose task already completed
+        // got the DONE row back with no signal it was a terminal
+        // return rather than a creation, so `queue/queued` issues
+        // silently held no live task. The absorption stands
+        // (#13091); the envelope must now name it.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![done]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "done", "{out}");
+        assert_eq!(
+            out["dedupe_match"]["dedupe_key"],
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_live_key_match_reports_dedupe_match_10627() {
+        // The live half of the same report: a filing absorbed by a
+        // live holder of the key names the match as live, so a
+        // caller can tell "attach to the holder" apart from both a
+        // creation and a terminal return.
+        let live = task_row_13091(
+            4242,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![live]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_live", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "queued", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_fresh_filing_carries_no_dedupe_match_10627() {
+        // Negative space: a filing that creates its row (here the
+        // revive-on-enqueue path over a failed predecessor) must
+        // NOT carry the absorption report — the field means
+        // "absorbed", never "filed".
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, _captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
     }
 
     #[test]
@@ -3626,6 +3849,71 @@ mod tests {
     }
 
     #[test]
+    fn suspect_completion_stamp_14268() {
+        // #14268 ask 2 oracle: the stamp fires exactly on the
+        // false-completion signature — the completion carries no
+        // result and no worker activity was recorded since the
+        // claim. Any result content, or any recorded activity,
+        // clears it.
+        let stamp = suspect_completion_stamp(&json!({}), 0)
+            .expect("empty result + no activity is the suspect shape");
+        assert_eq!(
+            stamp["reason"],
+            "done_with_no_result_and_no_activity_history"
+        );
+        assert!(suspect_completion_stamp(&json!(null), 0).is_some());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 0).is_none());
+        assert!(suspect_completion_stamp(&json!({}), 1).is_none());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 3).is_none());
+        // A non-object result is content, never the empty shape.
+        assert!(suspect_completion_stamp(&json!("done"), 0).is_none());
+    }
+
+    #[test]
+    fn verb_complete_surfaces_suspect_completions_14268() {
+        // #14268 ask 2, source oracle: verb_complete counts the
+        // task's activity, stamps the stored result with the
+        // verdict, flags the completed event and writes the
+        // dedicated suspect_completion event. The activity count
+        // excludes the claim ceremony's own writes, so a bare
+        // claim can never clear the shape by itself.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_complete(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("activity_event_count(t, task_id)"),
+            "verb_complete counts prior activity before mutating"
+        );
+        assert!(
+            seg.contains("suspect_completion_stamp(&result, n)"),
+            "verb_complete stamps the suspect shape on the result"
+        );
+        assert!(
+            seg.contains("\"suspect_completion\""),
+            "verb_complete writes the suspect_completion event"
+        );
+        let counter = src
+            .split("fn activity_event_count(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        for kind in [
+            "'claimed'",
+            "'session_bound'",
+            "'lane_session_bound'",
+            "'model_stamp'",
+        ] {
+            assert!(
+                counter.contains(kind),
+                "activity count excludes claim-ceremony kind {kind}"
+            );
+        }
+    }
+
+    #[test]
     fn completion_gate_rejects_disposition_for_another_issue() {
         // #10611: the readback must describe the packet's issue — a
         // stale readback for a sibling issue is not closure evidence.
@@ -4908,7 +5196,12 @@ mod tests {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
         // session binding cleared and a `released` audit event;
-        // attempts are NOT handed back.
+        // attempts are NOT handed back. #12901 exception: a
+        // release whose claim consumed the last attempt fails the
+        // row at the cap instead (the #6463 expiry_disposition
+        // oracle, sink rows exempt), with the reason in last_error
+        // and a `failed` audit event — a queued return there is
+        // the unclaimable churn zombie.
         let src = &test_source();
         let seg = seg8217(
             src,
@@ -4922,6 +5215,11 @@ mod tests {
             "DELETE FROM leases",
             "attempt change",
             "SET status = 'queued'",
+            "expiry_disposition(attempts, max_attempts)",
+            "expired_claim_returns_to_sink(&progress)",
+            "SET status = 'failed'",
+            "released at attempt cap",
+            "\"released_at_cap\": true",
         ] {
             assert!(seg.contains(needle), "verb_release misses {needle}");
         }

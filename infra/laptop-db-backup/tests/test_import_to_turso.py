@@ -14,7 +14,9 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
+)
 import import_to_turso as imp
 
 
@@ -45,14 +47,21 @@ def make_source(path, events_rows, with_extra=True):
     # mode, and its -wal/-shm sidecars must not break the run's
     # staging cleanup (the first live run failed exactly there).
     db.execute("PRAGMA journal_mode=WAL")
-    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT, payload BLOB, score REAL)")
+    db.execute(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT, payload BLOB, score REAL)"
+    )
     db.execute("CREATE INDEX events_kind ON events (kind)")
     db.execute("CREATE TABLE snapshots (id INTEGER PRIMARY KEY, note TEXT)")
     db.execute("CREATE VIEW event_kinds AS SELECT DISTINCT kind FROM events")
     for i in range(events_rows):
         db.execute(
             "INSERT INTO events VALUES (?, ?, ?, ?)",
-            (i + 1, f"k{i % 3}", b"\x00\x01" if i % 2 else None, i * 0.5 if i % 5 else None),
+            (
+                i + 1,
+                f"k{i % 3}",
+                b"\x00\x01" if i % 2 else None,
+                i * 0.5 if i % 5 else None,
+            ),
         )
     if with_extra:
         db.execute("INSERT INTO snapshots VALUES (1, 'first')")
@@ -78,9 +87,15 @@ def test_first_import_lands_verified_copy():
         record = imp.read_import_record(home)
         assert record["import_id"] == receipt["import_id"]
         assert imp._read_swap_marker(home) is None
-        names = {r[0] for r in home.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")[1]}
-        assert not any(n.startswith((imp.STAGE_PREFIX, imp.RETIRE_PREFIX)) for n in names), names
+        names = {
+            r[0]
+            for r in home.execute("SELECT name FROM sqlite_master WHERE type='table'")[
+                1
+            ]
+        }
+        assert not any(
+            n.startswith((imp.STAGE_PREFIX, imp.RETIRE_PREFIX)) for n in names
+        ), names
 
 
 def test_second_import_wholesale_replaces():
@@ -109,7 +124,9 @@ def test_uncommitted_swap_rolls_back():
         # Simulate a swap that renamed the live set aside, renamed a
         # partial new set in, and died before the record landed.
         home.execute('ALTER TABLE "events" RENAME TO "_ldbretire_events"')
-        home.execute('CREATE TABLE "events" (id INTEGER PRIMARY KEY, kind TEXT, payload BLOB, score REAL)')
+        home.execute(
+            'CREATE TABLE "events" (id INTEGER PRIMARY KEY, kind TEXT, payload BLOB, score REAL)'
+        )
         home.execute("INSERT INTO events VALUES (99, 'partial', NULL, NULL)")
         marker = dict(first)
         marker["import_id"] = "different-import"
@@ -136,8 +153,12 @@ def test_committed_swap_cleanup_is_finished_by_recovery():
         imp._write_meta(home, "swap", marker)
         rolled = imp.recover_interrupted_swap(home)
         assert rolled is False
-        names = {r[0] for r in home.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")[1]}
+        names = {
+            r[0]
+            for r in home.execute("SELECT name FROM sqlite_master WHERE type='table'")[
+                1
+            ]
+        }
         assert "_ldbretire_events" not in names, names
         assert len(live_rows(home, "events")) == 2
         assert imp._read_swap_marker(home) is None

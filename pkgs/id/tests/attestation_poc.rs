@@ -66,6 +66,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
         players: [player_id(&x), player_id(&o)],
         witness: None,
         objection_window_secs: 3600,
+        witness_terms: None,
     };
     let genesis_x = sign_genesis(&x, 0, None, &agreement, vec![]).unwrap();
     let genesis_o = sign_genesis(&o, 0, None, &agreement, vec![]).unwrap();
@@ -270,6 +271,7 @@ fn viewer_match(
         players: [player_id(&x), player_id(&o)],
         witness: None,
         objection_window_secs: 3600,
+        witness_terms: None,
     };
     let genesis = vec![
         (player_id(&x), agreement.clone()),
@@ -392,6 +394,7 @@ fn duplicate_seat_agreement() -> (SigningKey, GenesisAgreement) {
         players: [player_id(&a), player_id(&a)],
         witness: None,
         objection_window_secs: 3600,
+        witness_terms: None,
     };
     (a, agreement)
 }
@@ -514,6 +517,7 @@ fn v1_witness_decision_is_versioned_signed_and_bound_to_named_witness() {
         players: [player_id(&x), player_id(&o)],
         witness: Some(player_id(&witness)),
         objection_window_secs: 3600,
+        witness_terms: None,
     };
     let decision = WitnessDecision {
         version: VERSION,
@@ -564,6 +568,7 @@ fn v1_objection_is_append_only_and_only_seated_players_may_sign() {
         players: [player_id(&x), player_id(&o)],
         witness: None,
         objection_window_secs: 3600,
+        witness_terms: None,
     };
     let objection = Objection {
         version: VERSION,
@@ -598,6 +603,7 @@ fn counting_policy_is_registry_local_and_names_accepted_witnesses_and_logic() {
         players: [player_id(&x), player_id(&o)],
         witness: Some(player_id(&witness)),
         objection_window_secs: 3600,
+        witness_terms: None,
     };
     let policy = CountingPolicy {
         accepted_states: vec![V1MatchState::Final],

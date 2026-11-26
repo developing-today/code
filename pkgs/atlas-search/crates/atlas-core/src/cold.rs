@@ -3,11 +3,16 @@
 //!
 //! Design: `doc/2026-11-10T20-06-24Z_design_atlas_cold_tier_shard_format/`
 //! (§2 container layout, §3 manifest schema, §6 restore procedure).
-//! Issue #8228 (follow-on 2 of #6042). This module is §6 steps 2–3:
-//! verify a fetched shard end to end, then reconstruct version bytes
-//! from the manifest's occurrence lists. Catalog resolution (§6
-//! step 1) belongs to follow-on 3 (#8229); the hot write (§6 steps
-//! 4–7) lands with the hot versioning store it writes into.
+//! Issue #8228 (follow-on 2 of #6042). This module is §6 steps 2–4:
+//! verify a fetched shard end to end, reconstruct version bytes
+//! from the manifest's occurrence lists, and verify the
+//! reconstruction against the version's `content_hash` before
+//! anything hot is written. Cross-shard resolution (§6 step 1's
+//! resolve-to-shard mechanics) and the idempotent restore decision
+//! (§6's no-op/conflict rules) are pure functions here; the
+//! persistent cold catalog and fan-out addressing belong to
+//! follow-on 3 (#8229), and the hot write (§6 steps 5–7) lands with
+//! the hot versioning store it writes into.
 //!
 //! ## Byte layout (format_version 1)
 //!
@@ -486,6 +491,108 @@ impl ColdShard {
     pub fn vector_model_mismatch(&self, current_model: &str) -> bool {
         self.manifest.vector_model != current_model
     }
+
+    /// Verify a reconstruction against the version's `content_hash`
+    /// (§6 step 4): the gate before anything hot is written.
+    /// Reconstructs the version, hashes the bytes, and compares
+    /// against the hash carried verbatim from hot metadata. The
+    /// reference reading (§3.1, #6026 §2.1): `content_hash` names
+    /// the version's bytes as SHA-256 hex — the codebase's
+    /// canonical content-hash spelling (`classify::sha256_hex`;
+    /// chunk rows store the same form) — with an optional
+    /// `sha256:` prefix accepted because hot metadata carries both
+    /// spellings. A mismatch aborts that version and names it;
+    /// other versions in the shard are unaffected. Returns the
+    /// verified bytes on success, so the hot write can only ever
+    /// receive bytes that passed this gate.
+    pub fn verify_content_hash(&self, file_id: &str, version_seq: u64) -> Result<Vec<u8>> {
+        let version = self.version(file_id, version_seq).ok_or_else(|| {
+            corrupt(format!(
+                "version ({file_id}, {version_seq}) is not in shard {}",
+                self.manifest.shard_id
+            ))
+        })?;
+        let bytes = self.reconstruct_version(file_id, version_seq)?;
+        let actual = crate::classify::sha256_hex(&bytes);
+        if normalise_content_hash(&version.content_hash) != actual {
+            return Err(corrupt(format!(
+                "version ({file_id}, {version_seq}) reconstructs to bytes whose SHA-256 \
+                 does not match its content_hash; restore of this version aborted, \
+                 nothing written"
+            )));
+        }
+        Ok(bytes)
+    }
+}
+
+/// Strip the optional `sha256:` prefix hot metadata sometimes
+/// carries, and lowercase, so both hot spellings compare equal to
+/// the canonical digest.
+fn normalise_content_hash(hash: &str) -> String {
+    hash.strip_prefix("sha256:")
+        .unwrap_or(hash)
+        .to_ascii_lowercase()
+}
+
+/// Resolve `(file_id, version_seq)` to the shard that holds it
+/// (§6 step 1's resolve-to-shard mechanics, without the
+/// persistent catalog — the catalog's rows and fan-out addressing
+/// belong to #8229). The caller supplies the candidate shards the
+/// catalog named (explicit addressing names exactly one; a
+/// shard-addressed search names the set it fans out to). No holder
+/// is a not-found error; more than one is an ambiguity error —
+/// the catalog must never map one version to two shards, so the
+/// importer reports the conflict rather than silently picking one.
+pub fn resolve_version<'s>(
+    shards: &'s [ColdShard],
+    file_id: &str,
+    version_seq: u64,
+) -> Result<&'s ColdShard> {
+    let mut holders = shards
+        .iter()
+        .filter(|s| s.version(file_id, version_seq).is_some());
+    match (holders.next(), holders.next()) {
+        (None, _) => Err(corrupt(format!(
+            "version ({file_id}, {version_seq}) is in none of the {} candidate shards",
+            shards.len()
+        ))),
+        (Some(only), None) => Ok(only),
+        (Some(first), Some(_)) => Err(corrupt(format!(
+            "version ({file_id}, {version_seq}) is claimed by more than one candidate \
+             shard ({} first); the cold catalog must map a version to exactly one shard",
+            first.manifest.shard_id
+        ))),
+    }
+}
+
+/// The §6 idempotence rule as a pure decision over hashes: the
+/// importer computes this before any hot write. Restoring a
+/// version that is already hot with the same content hash is a
+/// no-op success; one whose hot copy differs is a reported
+/// conflict and is never overwritten; an absent hot copy
+/// proceeds. The hot write itself (§6 steps 5–7) lands with the
+/// hot versioning store; this decision is what keeps that write
+/// from ever overwriting a differing hot copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreDecision {
+    Proceed,
+    NoopSuccess,
+    Conflict { hot_content_hash: String },
+}
+
+pub fn restore_decision(
+    cold_content_hash: &str,
+    hot_content_hash: Option<&str>,
+) -> RestoreDecision {
+    match hot_content_hash {
+        None => RestoreDecision::Proceed,
+        Some(hot) if normalise_content_hash(hot) == normalise_content_hash(cold_content_hash) => {
+            RestoreDecision::NoopSuccess
+        }
+        Some(hot) => RestoreDecision::Conflict {
+            hot_content_hash: hot.to_string(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -793,6 +900,149 @@ mod tests {
                 .expect("read")
                 .expect("present"),
             vec![1.0, -2.5]
+        );
+    }
+
+    /// Fixture whose `content_hash` values are the real SHA-256 of
+    /// the reconstructed bytes (§6 step 4's ground truth): v1 is
+    /// `hello world`, v2 is `hello !`.
+    fn hashed_fixture() -> Fixture {
+        let mut manifest = standard_manifest();
+        manifest["versions"][0]["content_hash"] =
+            json!(crate::classify::sha256_hex(b"hello world"));
+        manifest["versions"][1]["content_hash"] = json!(crate::classify::sha256_hex(b"hello !"));
+        build(manifest, b"hello world!", &f32le(&[1.0, -2.5, 0.5, 3.25]))
+    }
+
+    #[test]
+    fn content_hash_verification_accepts_matching_reconstruction() {
+        let shard = ColdShard::open(&hashed_fixture().bytes).expect("opens");
+        assert_eq!(
+            shard
+                .verify_content_hash("file-1", 1)
+                .expect("v1 hash verifies"),
+            b"hello world"
+        );
+        assert_eq!(
+            shard
+                .verify_content_hash("file-1", 2)
+                .expect("v2 hash verifies"),
+            b"hello !"
+        );
+    }
+
+    #[test]
+    fn content_hash_verification_accepts_sha256_prefixed_spelling() {
+        let mut manifest = standard_manifest();
+        manifest["versions"][0]["content_hash"] = json!(format!(
+            "sha256:{}",
+            crate::classify::sha256_hex(b"hello world")
+        ));
+        manifest["versions"][1]["content_hash"] = json!(crate::classify::sha256_hex(b"hello !"));
+        let fixture = build(manifest, b"hello world!", &f32le(&[1.0, -2.5, 0.5, 3.25]));
+        let shard = ColdShard::open(&fixture.bytes).expect("opens");
+        assert_eq!(
+            shard
+                .verify_content_hash("file-1", 1)
+                .expect("prefixed v1 hash verifies"),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn content_hash_mismatch_aborts_that_version_only() {
+        let mut manifest = standard_manifest();
+        manifest["versions"][0]["content_hash"] =
+            json!(crate::classify::sha256_hex(b"hello world"));
+        manifest["versions"][1]["content_hash"] = json!("0".repeat(64));
+        let fixture = build(manifest, b"hello world!", &f32le(&[1.0, -2.5, 0.5, 3.25]));
+        let shard = ColdShard::open(&fixture.bytes).expect("shard itself still opens");
+        let err = shard
+            .verify_content_hash("file-1", 2)
+            .expect_err("wrong hash aborts that version");
+        assert!(
+            err.to_string().contains("file-1") && err.to_string().contains('2'),
+            "error names the aborted version: {err}"
+        );
+        // The abort is per-version: the sibling still verifies.
+        assert_eq!(
+            shard
+                .verify_content_hash("file-1", 1)
+                .expect("sibling unaffected"),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn resolve_version_finds_the_holding_shard() {
+        let shard = ColdShard::open(&standard_fixture().bytes).expect("opens");
+        let mut other_manifest = standard_manifest();
+        other_manifest["shard_id"] = json!("shard-test-2");
+        other_manifest["versions"] = json!([{
+            "file_id": "file-9",
+            "version_seq": 1,
+            "path_at_version": "z.txt",
+            "content_hash": "hash-of-z",
+            "ingested_at": "2026-11-01T00:00:00Z",
+            "occurrences": [{"span_ref": "span-a", "span_start": 0, "span_len": 6}]
+        }]);
+        let other = ColdShard::open(
+            &build(
+                other_manifest,
+                b"hello world!",
+                &f32le(&[1.0, -2.5, 0.5, 3.25]),
+            )
+            .bytes,
+        )
+        .expect("second shard opens");
+        let shards = vec![shard, other];
+        assert_eq!(
+            resolve_version(&shards, "file-1", 2)
+                .expect("resolves")
+                .manifest()
+                .shard_id,
+            "shard-test-1"
+        );
+        assert_eq!(
+            resolve_version(&shards, "file-9", 1)
+                .expect("resolves")
+                .manifest()
+                .shard_id,
+            "shard-test-2"
+        );
+        let err = resolve_version(&shards, "file-1", 99).expect_err("no holder errors");
+        assert!(err.to_string().contains("none"), "error: {err}");
+    }
+
+    #[test]
+    fn resolve_version_reports_a_version_claimed_twice() {
+        let a = ColdShard::open(&standard_fixture().bytes).expect("opens");
+        let b = ColdShard::open(&standard_fixture().bytes).expect("opens");
+        let err = resolve_version(&[a, b], "file-1", 1).expect_err("double claim errors");
+        assert!(
+            err.to_string().contains("more than one"),
+            "error reports the ambiguity: {err}"
+        );
+    }
+
+    #[test]
+    fn restore_decision_is_idempotent_and_never_overwrites() {
+        let cold = "abc123";
+        assert_eq!(restore_decision(cold, None), RestoreDecision::Proceed);
+        assert_eq!(
+            restore_decision(cold, Some("abc123")),
+            RestoreDecision::NoopSuccess
+        );
+        // The prefixed hot spelling is the same hash.
+        assert_eq!(
+            restore_decision(cold, Some("sha256:ABC123")),
+            RestoreDecision::NoopSuccess
+        );
+        assert_eq!(
+            restore_decision(cold, Some("different")),
+            RestoreDecision::Conflict {
+                hot_content_hash: "different".to_string()
+            }
         );
     }
 }

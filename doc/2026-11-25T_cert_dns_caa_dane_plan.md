@@ -18,7 +18,7 @@ builds against.
   `fleet-cert-manifest/v1`, core verbs). The publication half already
   implements this contract's shape for artifacts: schema
   `fleet.pki.publish/v1`, a `DnsRecord { type, name, ttl, value,
-  action }` record type, and read-only `plan`/`verify` with `apply`
+action }` record type, and read-only `plan`/`verify` with `apply`
   explicitly deferred (`pkgs/fleet/crates/fleet-cert/src/publish.rs`).
   The `dns` verb group reuses that record shape and that posture; it
   does not invent a parallel one.
@@ -30,7 +30,7 @@ set". That is wrong, and this contract corrects it (spec §24.8):
 
 - **CAA governs publicly trusted CA issuance** (WebPKI / public ACME —
   e.g. Let's Encrypt, ZeroSSL). A public CA checks CAA before issuing;
-  the records authorize or forbid *public* issuers by domain name.
+  the records authorize or forbid _public_ issuers by domain name.
 - **CAA does not constrain the private Fleet CA.** A private CA
   installed as a trust anchor is not a CAA checker and is not bound by
   CAA; a CAA record naming the Fleet CA authorizes nothing and forbids
@@ -39,7 +39,7 @@ set". That is wrong, and this contract corrects it (spec §24.8):
   an explanation, not a rendered record.
 - A public DNS name under the private CA does not become
   browser-trusted because CAA (or CT) records exist for it (§24.8).
-- What CAA planning is *for* in this program: the fleet's public names
+- What CAA planning is _for_ in this program: the fleet's public names
   that also get public ACME certificates (the §24.8 public-ACME
   subsystem) get CAA records that pin issuance to the intended public
   issuers — and nothing else.
@@ -98,16 +98,16 @@ record fields it shares).
 
 ```yaml
 schema: fleet.pki.dns/v1
-zone: developing.today            # apex the records belong to
+zone: developing.today # apex the records belong to
 generated_at: <RFC 3339>
 source_bundles: [<bundle ids the TLSA associations derive from>]
 records:
-  - type: CAA | TLSA              # v1 scope; A/AAAA/CNAME stay with publish (§4.4)
-    name: <FQDN, trailing dot>    # owner name
+  - type: CAA | TLSA # v1 scope; A/AAAA/CNAME stay with publish (§4.4)
+    name: <FQDN, trailing dot> # owner name
     ttl: 3600
     value: <record rdata, presentation format>
     action: create | conditional-create | no-op | delete
-    requires: [dnssec]            # optional gates, see §4
+    requires: [dnssec] # optional gates, see §4
     note: <why this record exists>
 prerequisites: [<strings, §4.4 style>]
 ```
@@ -148,7 +148,7 @@ Rules:
   rewrite. Therefore: every TLSA record in a change-set carries
   `requires: [dnssec]`; `plan` lists "zone is DNSSEC-signed and the
   signing is maintained" in `prerequisites`; and `verify` reports the
-  record as *proposed*, never *proven*, until a post-gate live check
+  record as _proposed_, never _proven_, until a post-gate live check
   validates the chain from a DNSSEC-validating resolver (§5). The
   planner does not plan DNSSEC signing itself (no DS/DNSKEY records
   in v1) — it states the requirement and stops.
@@ -213,7 +213,7 @@ The implementation slice proves the contract against fixtures only:
 
 - **Fold CAA/TLSA into `publish plan` only.** The publish plan already
   carries A/AAAA/CNAME records for the distribution host. Rejected as
-  the *sole* surface: §6.1 gives `dns` its own verb group, DANE
+  the _sole_ surface: §6.1 gives `dns` its own verb group, DANE
   applies to service endpoints beyond the publish host, and the
   change-set needs its own review/verify lifecycle. The two compose
   instead (shared record shape, embeddable change-set).

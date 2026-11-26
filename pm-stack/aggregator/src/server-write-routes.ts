@@ -7,7 +7,12 @@ import { validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, findTierItem, questionIdForOption } from "./tier-items.ts";
 import { authorizeCommentAuthor, validateNewComment } from "./comments.ts";
 import { PROMPT_STATUSES, syncBlockHttpResult, validateNewPrompt, type PromptStatus } from "./prompts.ts";
-import { readMultipartForm, submissionFieldsFromForm, uploadedFilesFromForm, type PromptAttachment } from "./prompt-attachments.ts";
+import {
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
 import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
 import { getAlertsStore } from "./alerts.ts";
 import { confirmOutageWrite, rejectOutageWrite } from "./outage-queue.ts";
@@ -15,14 +20,42 @@ import { validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import { authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
+import { RULING_CLASS_ID, validateRulingInput } from "./conflict-rulings.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { resolveBwsSecretLookup } from "./secrets.ts";
 import { readJsonBody } from "./request-body.ts";
-import { appendReportBlockConflictResolution, appendReportLateUpdate, compareReportBlock, ReportRecordConflictError, readReportRecords, readReportSnapshots, selectCurrentReportRecords, type ReportLateUpdateOperation, type ReportRecordSource } from "./report-records.ts";
+import {
+  appendReportBlockConflictResolution,
+  appendReportLateUpdate,
+  compareReportBlock,
+  ReportRecordConflictError,
+  readReportRecords,
+  readReportSnapshots,
+  selectCurrentReportRecords,
+  type ReportLateUpdateOperation,
+  type ReportRecordSource,
+} from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
-import { capUnits, cfg, promptsStore, promptAttachmentsStore, tryQueueOutageAction, roadmapAnnotationsStore, actionsStore, commentsStore, eventsStore, reportRecordsLocation, identityRegistryStore, breakGlassTokenStore, recordStreamEvent, outageQueueStore, source } from "./server-wiring.ts";
+import {
+  capUnits,
+  cfg,
+  promptsStore,
+  promptAttachmentsStore,
+  tryQueueOutageAction,
+  roadmapAnnotationsStore,
+  actionsStore,
+  commentsStore,
+  eventsStore,
+  reportRecordsLocation,
+  identityRegistryStore,
+  breakGlassTokenStore,
+  recordStreamEvent,
+  outageQueueStore,
+  conflictRulingsStore,
+  source,
+} from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
-import { applyViewAction } from "./server-contexts.ts";
+import { applyViewAction, invalidateConflictRulingViews } from "./server-contexts.ts";
 
 export async function handleReportsRead(req: Request, path: string): Promise<Response> {
   try {
@@ -346,7 +379,41 @@ export async function handleIdentityRoutes(req: Request, path: string): Promise<
   return null;
 }
 
-export async function handleWriteRoutes(req: Request, url: URL, path: string, remoteAddress?: string): Promise<Response | null> {
+export async function handleWriteRoutes(
+  req: Request,
+  url: URL,
+  path: string,
+  remoteAddress?: string,
+): Promise<Response | null> {
+  if (req.method === "POST" && path === "/api/conflicts/rulings") {
+    try {
+      const parsed = validateRulingInput(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+      if (!access.ok) return json({ error: access.error }, access.status);
+      const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+      const ruling = await conflictRulingsStore.set(parsed.value, `drew:${auditActor}`);
+      invalidateConflictRulingViews();
+      return json({ ruling }, 201);
+    } catch (err) {
+      return json({ error: `invalid ruling: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "DELETE" && path === "/api/conflicts/rulings") {
+    try {
+      const body = (await readJsonBody(req)) as { classId?: unknown };
+      if (body.classId !== RULING_CLASS_ID) return json({ error: "classId required" }, 400);
+      const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+      if (!access.ok) return json({ error: access.error }, access.status);
+      const revoked = await conflictRulingsStore.revoke(body.classId);
+      if (!revoked) return json({ error: "no such ruling" }, 404);
+      invalidateConflictRulingViews();
+      return json({ revoked: body.classId });
+    } catch (err) {
+      return json({ error: `invalid revocation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/roadmap/annotations") {
     try {

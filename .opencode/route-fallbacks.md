@@ -1,4 +1,4 @@
-# Route fallback layout (Drew, 2026-11-13)
+# Route fallback layout (route-pool decision #14432, 2026-11-26)
 
 The complete fallback layout for every route in `.opencode/opencode.jsonc`.
 The class edges are wired as the FINAL targets of each class route and are
@@ -21,30 +21,32 @@ match this table and the config; the guard fails on drift).
    exhausts — subject to a per-call visited set: a class already tried in
    this call is skipped, never re-entered. The class set is finite and each
    escalation consumes one, so every walk terminates at **specialist**, the
-   sink. (Mechanism: the fork's route expander carries the expansion path
-   and prunes re-entry into a route already on it, so the legal pairs
-   workhorse → scout / scout → workhorse cannot loop.)
+   sink. The current fallback graph is acyclic: workhorse ends at specialist,
+   while scout reaches workhorse through background.
 
-## Class routes (all confirmed by Drew; scout and background edges ruled 2026-11-14)
+## Class routes
 
 | Route | Regular chain (in order) | Class fallback | Why |
 | --- | --- | --- | --- |
 | small | limited (the per-member pool) | → speed | Light tier escalates to the latency tier. |
-| speed | Spark #xhigh → deepseek-flash-plan #high → gemini-hydrogen-plan #high → haiku-plan #high | → workhorse → summit → specialist | Cheaper / more-available first, quality next, sink last. |
-| workhorse | workhorse-ordered → workhorse-primary (empty stage) → workhorse-weighted → workhorse-last-resort | → scout → specialist | Workhorse's failure mode is quota exhaustion; scout diversifies onto different doors (free Beam via CommandCode, DeepSeek #low, Haiku #low). Scout-first was main's recommendation, wired 2026-11-13 pending Drew's pick. |
+| speed | deepseek-flash-plan #high → gemini-hydrogen-plan #high → haiku-plan #high | → workhorse-last-resort → specialist | Keep the last resort on two lower-cost provider doors; skip the workhorse/summit detour for latency-bound small work. |
+| workhorse | workhorse-ordered → workhorse-weighted → workhorse-last-resort | → specialist | Remove the empty stage and the edge into scout; the direct edge created a workhorse/scout loop. |
 | summit | fable-plan #medium → opus-plan #high → argon-plan #high → Hydrogen #high (direct) → Wonder #xhigh (direct) → sol-plan #xhigh | → specialist | Confirmed: the deliberate tier falls back to the hard-work tier. |
 | specialist | fable-plan #low → sonnet-plan #high → argon-plan #high → spark-plan #xhigh → sol-plan #medium | — (SINK) | No class fallback out of specialist; if every leg is down the call errors. |
-| scout | beam-plan → longcat-plan → iceman-plan → deepseek-flash-plan #low → haiku-plan #low → inkling-plan | → background → workhorse | Ruled by Drew 2026-11-14: routine work that exhausts the free/cheap seats escalates to the patient tier first, then the standard tier. |
-| background | MiMo Flash / DeepSeek Flash #high, peak-window aware (see config) → Zen free shelf: flash-free-plan → minimax-flash-plan → glm-5-3-flash-zen-plan → flint-plan → big-pickle-plan → nemotron-vl-plan → nemotron-lightning-plan | → workhorse | Ruled by Drew 2026-11-14: patient queue work escalates to the standard tier. |
+| scout | beam-plan → longcat-plan → iceman-plan → deepseek-flash-plan #low → haiku-plan #low → inkling-plan | → background | Routine work that exhausts the free/cheap seats escalates to the patient tier, then to workhorse through background. |
+| background | MiMo Flash / DeepSeek Flash #high, peak-window aware (see config) → Zen free shelf: flash-free-plan → minimax-flash-plan → glm-5-3-flash-zen-plan → flint-plan → big-pickle-plan → nemotron-vl-plan → nemotron-lightning-plan | → workhorse | Patient queue work escalates to the standard tier. |
 
 ## Workhorse stages and trial routes (no own class edges — escalation is workhorse's)
+
+`workhorse-primary` is retained as an unreferenced empty route so its prior
+decision history stays available; the live workhorse chain no longer includes
+it.
 
 | Route | Targets | Fallback |
 | --- | --- | --- |
 | workhorse-ordered | deepseek-effort-rr | Inherits workhorse (stage 1 of its chain). |
-| workhorse-primary | — (deliberately empty; contributes nothing) | Inherits workhorse (stage 2). |
-| workhorse-weighted | luna-effort-rr w10, Spark contributor #high w10, Hydrogen #low w10, Sonnet 5.5 #medium (direct _antigravity) w10 | Inherits workhorse (stage 3). |
-| workhorse-last-resort | Sonnet 5.5 #medium (direct _claude) → fable-plan #low | Inherits workhorse (stage 4, last before the class fallback). |
+| workhorse-weighted | luna-effort-rr w10, Spark contributor #high w10, Hydrogen #low w10, Sonnet 5.5 #medium (direct _antigravity) w10 | Inherits workhorse (stage 2). |
+| workhorse-last-resort | Haiku 5.5 #high (direct _claude) → Sonnet 5.5 #low (direct _antigravity) | Inherits workhorse (stage 3, last before specialist). |
 | deepseek-effort-rr | deepseek-flash-plan #high w3 / #low w1 (weighted trial, PR #9381) | Inherits workhorse via workhorse-ordered. |
 | luna-effort-rr | openai-plan Luna #medium / #high (round-robin trial, PR #9018) | Inherits its consumers (workhorse-weighted). |
 | limited | Luna @100k #medium → Terra @388k #low → MiMo/DeepSeek-small peak-aware → Haiku @388k #medium | Inherits small. |

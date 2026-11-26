@@ -386,10 +386,9 @@ mod feed_tests {
             1
         );
         assert!(store.unfollow(&viewer, &board));
-        assert!(
-            build_feed(&viewer, &store, &[], &arrivals, &authority)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            build_feed(&viewer, &store, &[], &arrivals, &authority).unwrap(),
+            [] as [FeedItem; 0]
         );
     }
 

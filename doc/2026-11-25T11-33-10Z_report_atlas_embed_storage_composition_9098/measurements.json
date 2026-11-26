@@ -99,16 +99,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22228992,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3866,
         "bytes": 11876352,
@@ -136,16 +128,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22765568,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3801,
         "bytes": 11676672,
@@ -173,16 +157,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 23248896,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3738,
         "bytes": 11483136,
@@ -210,16 +186,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 19804160,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3458,
         "bytes": 10622976,
@@ -247,16 +215,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22671360,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3866,
         "bytes": 11876352,
@@ -284,16 +244,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 7872512,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 1250,
         "bytes": 3840000,
@@ -321,16 +273,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22085632,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3457,
         "bytes": 10619904,
@@ -358,16 +302,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22515712,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4070,
         "bytes": 12503040,
@@ -395,16 +331,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22749184,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3457,
         "bytes": 10619904,
@@ -432,16 +360,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 21184512,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4069,
         "bytes": 12499968,
@@ -469,16 +389,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 24936448,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4094,
         "bytes": 12576768,
@@ -506,16 +418,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 26095616,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4094,
         "bytes": 12576768,
@@ -543,16 +447,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 12414976,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 1607,
         "bytes": 4936704,
@@ -580,16 +476,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 5255168,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 841,
         "bytes": 2583552,
@@ -617,16 +505,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 26480640,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4551,
         "bytes": 13980672,
@@ -654,16 +534,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 33587200,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4551,
         "bytes": 13980672,
@@ -691,16 +563,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 37236736,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4502,
         "bytes": 13830144,
@@ -728,16 +592,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 29929472,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4357,
         "bytes": 13384704,
@@ -765,16 +621,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 35045376,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4360,
         "bytes": 13393920,
@@ -802,16 +650,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 35201024,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4360,
         "bytes": 13393920,
@@ -839,16 +679,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 35061760,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4359,
         "bytes": 13390848,
@@ -876,16 +708,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22155264,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 3486,
         "bytes": 10708992,
@@ -913,16 +737,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 22224896,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4435,
         "bytes": 13624320,
@@ -950,16 +766,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 23580672,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4434,
         "bytes": 13621248,
@@ -987,16 +795,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 23351296,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4435,
         "bytes": 13624320,
@@ -1024,16 +824,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 23126016,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4435,
         "bytes": 13624320,
@@ -1061,16 +853,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 23285760,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4434,
         "bytes": 13621248,
@@ -1098,16 +882,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 4616192,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 838,
         "bytes": 2574336,
@@ -1135,16 +911,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 23470080,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_chunks_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "chunks",
-        "vec_snowflake_m_v2_768_f32"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_chunks_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "chunks", "vec_snowflake_m_v2_768_f32"],
       "vectors": {
         "rows": 4434,
         "bytes": 13621248,
@@ -1172,17 +940,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 1626112,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_messages_1",
-        "sqlite_autoindex_sessions_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "messages",
-        "sessions"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_messages_1", "sqlite_autoindex_sessions_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "messages", "sessions"],
       "messages": {
         "rows": 573,
         "bytes": 1399999,
@@ -1203,17 +962,8 @@
       "page_size": 4096,
       "freelist_pages": 0,
       "page_bytes": 508764160,
-      "indexes": [
-        "sqlite_autoindex_atlas_manifest_1",
-        "sqlite_autoindex_messages_1",
-        "sqlite_autoindex_sessions_1"
-      ],
-      "tables": [
-        "__turso_internal_mvcc_meta",
-        "atlas_manifest",
-        "messages",
-        "sessions"
-      ],
+      "indexes": ["sqlite_autoindex_atlas_manifest_1", "sqlite_autoindex_messages_1", "sqlite_autoindex_sessions_1"],
+      "tables": ["__turso_internal_mvcc_meta", "atlas_manifest", "messages", "sessions"],
       "messages": {
         "rows": 70978,
         "bytes": 463559915,

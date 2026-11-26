@@ -160,10 +160,47 @@ test("missing bucket fails closed", () => {
   );
 });
 
+test("bucket binding must match the authoritative jurisdiction", () => {
+  // Oracle: #3401's jurisdiction-to-binding contract, enumerated independently.
+  const cases = [
+    { jurisdiction: "us", binding: "BLOBS_US", bucketName: "user-blobs-us" },
+    { jurisdiction: "eu", binding: "BLOBS_EU", bucketName: "user-blobs-eu" },
+    { jurisdiction: "fedramp", binding: "BLOBS_FEDRAMP", bucketName: "user-blobs-fedramp" },
+  ] as const;
+  for (const { jurisdiction, binding, bucketName } of cases) {
+    const bucket = { binding, bucketName, declaredJurisdiction: jurisdiction };
+    const config: EnablementConfig = {
+      jurisdiction,
+      restrictedNamespace: true,
+      durableObjectBinding: "USERS",
+      bucket,
+    };
+    const matchingEvidence: AccountEvidence = {
+      jurisdictions: { [jurisdiction]: { durableObjects: "supported", runtimeTypes: "supported" } },
+      buckets: [{ bucketName, actualJurisdiction: jurisdiction }],
+    };
+    assert.equal(validateEnablement(config, matchingEvidence).bucket.binding, binding);
+
+    const invalidBindings: unknown[] = [
+      ...cases.map((c) => c.binding).filter((candidate) => candidate !== binding),
+      "", "BLOBS", "UNKNOWN", undefined, null,
+    ];
+    for (const invalidBinding of invalidBindings) {
+      // Runtime configuration can omit a required TypeScript field.
+      const invalidConfig = { ...config, bucket: { ...bucket, binding: invalidBinding } } as EnablementConfig;
+      assert.equal(
+        refusalCode(() => validateEnablement(invalidConfig, matchingEvidence)),
+        "bucket_binding_mismatch",
+        `${jurisdiction} must reject ${String(invalidBinding)}`,
+      );
+    }
+  }
+});
+
 test("bucket whose declared jurisdiction disagrees with the configuration fails closed", () => {
   const config: EnablementConfig = {
     ...US_CONFIG,
-    bucket: { binding: "BLOBS_EU", bucketName: "user-blobs-eu", declaredJurisdiction: "eu" },
+    bucket: { binding: "BLOBS_US", bucketName: "user-blobs-us", declaredJurisdiction: "eu" },
   };
   assert.equal(
     refusalCode(() => validateEnablement(config, US_EVIDENCE)),

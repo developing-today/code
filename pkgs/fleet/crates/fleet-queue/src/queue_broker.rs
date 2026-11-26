@@ -13,7 +13,9 @@
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
 //!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800,
 //!      or unix://<path> for the secrets broker's socket, #6218),
-//!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
+//!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
+//!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
+//!      read-only hosted-door probe at POST /door-health).
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -32,6 +34,10 @@ struct State {
     secrets_url: String,
     secrets_token: String,
     agent: ureq::Agent,
+    /// Optional, read-only hosted-door probe (#14987). Queue traffic
+    /// continues to use Turso until a later cutover explicitly routes
+    /// verbs through this client.
+    hosted_door: Option<HostedQueueDoor>,
     /// Filled by the startup thread once the Turso token resolves and
     /// the schema is ensured (#12247); until then queue verbs answer
     /// exit 3 with `turso_pending`.
@@ -42,6 +48,57 @@ struct State {
     /// slow GitHub pass skips instead of piling a second grant loop
     /// onto the same counters.
     coord_sweep_running: Mutex<bool>,
+}
+
+/// Authenticated client for the hosted queue door. This first slice
+/// exposes only a diagnostic probe; it deliberately does not switch
+/// the broker's authoritative store or forward queue writes.
+struct HostedQueueDoor {
+    base_url: String,
+    token: String,
+    agent: ureq::Agent,
+}
+
+impl HostedQueueDoor {
+    fn from_env(agent: ureq::Agent) -> Result<Option<Self>, String> {
+        let url = std::env::var("QUEUE_BROKER_DOOR_URL").ok();
+        let token_file = std::env::var("QUEUE_BROKER_DOOR_TOKEN_FILE").ok();
+        match (url, token_file) {
+            (None, None) => Ok(None),
+            (Some(url), Some(token_file)) => {
+                let url = url.trim().trim_end_matches('/');
+                if !url.starts_with("https://") || url.len() <= "https://".len() {
+                    return Err("QUEUE_BROKER_DOOR_URL must be an HTTPS origin".into());
+                }
+                let token = crate::token_file::load_token_file(&token_file)?;
+                Ok(Some(Self {
+                    base_url: url.to_string(),
+                    token,
+                    agent,
+                }))
+            }
+            (Some(_), None) => {
+                Err("QUEUE_BROKER_DOOR_URL requires QUEUE_BROKER_DOOR_TOKEN_FILE".into())
+            }
+            (None, Some(_)) => {
+                Err("QUEUE_BROKER_DOOR_TOKEN_FILE requires QUEUE_BROKER_DOOR_URL".into())
+            }
+        }
+    }
+
+    fn health(&self, request: &Value) -> Result<Value, String> {
+        let url = format!("{}/v1/queue/health", self.base_url);
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .send_json(request.clone())
+            .map_err(|e| format!("hosted queue door health request failed: {e}"))?;
+        response
+            .body_mut()
+            .read_json::<Value>()
+            .map_err(|e| format!("hosted queue door health response was invalid JSON: {e}"))
+    }
 }
 
 /// The queue broker's secrets-by-name source: a direct HTTP call to
@@ -474,6 +531,20 @@ struct BrokerCoordGh {
     secrets_token: String,
     agent: ureq::Agent,
     token: Mutex<Option<(String, std::time::Instant)>>,
+    /// One sweep pass's responses by path: the run counts and the
+    /// live run ids come from the same per_page=100 list read, so a
+    /// pass costs 2 reads per repo instead of 4.
+    pass: Mutex<std::collections::HashMap<String, Value>>,
+}
+
+/// ETag cache for the coordinator's GitHub reads, kept across sweep
+/// passes: a repeat read sends If-None-Match, and GitHub's 304 answer
+/// does not count against the token's hourly REST limit. Without it
+/// the 20-second sweep spent ~2,900 of the shared 5,000 calls an hour.
+fn coord_etag_cache() -> &'static Mutex<std::collections::HashMap<String, (String, Value)>> {
+    static CACHE: std::sync::OnceLock<Mutex<std::collections::HashMap<String, (String, Value)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 impl BrokerCoordGh {
@@ -498,9 +569,31 @@ impl BrokerCoordGh {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, String> {
+        if let Some(v) = self
+            .pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+        {
+            return Ok(v.clone());
+        }
+        let v = self.fetch_json(path)?;
+        self.pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(path.to_string(), v.clone());
+        Ok(v)
+    }
+
+    fn fetch_json(&self, path: &str) -> Result<Value, String> {
         use std::time::Duration as D;
         let tok = self.token()?;
         let url = format!("https://api.github.com{path}");
+        let cached = coord_etag_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+            .cloned();
         let req = self
             .agent
             .get(&url)
@@ -509,29 +602,57 @@ impl BrokerCoordGh {
                 crate::turso_queue::STALENESS_LOOKUP_TIMEOUT.max(D::from_secs(2)),
             ))
             .build();
-        let mut resp = req
+        let mut req = req
             .header("Authorization", &format!("Bearer {tok}"))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "fleet-queue-broker")
+            .header("User-Agent", "fleet-queue-broker");
+        if let Some((etag, _)) = &cached {
+            req = req.header("If-None-Match", etag);
+        }
+        let mut resp = req
             .call()
             .map_err(|e| format!("github request failed for {path}: {e}"))?;
         let status = resp.status().as_u16();
+        if status == 304 {
+            if let Some((_, body)) = cached {
+                return Ok(body);
+            }
+            return Err(format!("github 304 without a cached body for {path}"));
+        }
         if status == 404 {
             return Err(format!("github 404 for {path}"));
         }
         if !(200..300).contains(&status) {
             return Err(format!("github http {status} for {path}"));
         }
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
         let text = resp
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("github response unreadable: {e}"))?;
-        serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))?;
+        if let Some(etag) = etag {
+            let mut cache = coord_etag_cache().lock().unwrap_or_else(|p| p.into_inner());
+            // Bounded: run-detail paths come and go; the list reads
+            // are a fixed handful per runner repo.
+            if cache.len() > 512 {
+                cache.clear();
+            }
+            cache.insert(path.to_string(), (etag, v.clone()));
+        }
+        Ok(v)
     }
 
     fn total_for(&self, repo: &str, status: &str) -> Result<i64, String> {
+        // Same path as ids_for: total_count rides on the per_page=100
+        // list, so this is answered from the pass cache.
         let v = self.get_json(&format!(
-            "/repos/{repo}/actions/runs?status={status}&per_page=1"
+            "/repos/{repo}/actions/runs?status={status}&per_page=100"
         ))?;
         v.get("total_count")
             .and_then(|t| t.as_i64())
@@ -640,7 +761,7 @@ pub(crate) fn landing_from_json(
 /// half posting for the same block is safe. This half goes live
 /// only when the broker binary is replaced (the coordinated
 /// switch); until then the CLI half is the live path.
-fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+fn maybe_raise_needs_user(st: &State, req: &Value, resp: &Value) {
     if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return;
     }
@@ -648,7 +769,7 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
         return;
     }
     let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
-    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+    let Some(nd) = crate::needs_user::from_block_request(req, blocker) else {
         return;
     };
     let secrets_url = st.secrets_url.clone();
@@ -661,9 +782,9 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
-            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+            .and_then(|token| crate::needs_user::post_needs_user(token.expose(), &nd));
         match raised {
             Ok(_) => crate::log::info(
                 "queue-broker",
@@ -736,7 +857,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             .to_string()
     };
     let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
-    let info = crate::needs_drew::ExtensionAlert {
+    let info = crate::needs_user::ExtensionAlert {
         key: s("alert_key"),
         handle: handle.to_string(),
         context: resp
@@ -764,7 +885,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
         grace_until: s("grace_until"),
         reason: s("reason"),
     };
-    let body = crate::needs_drew::build_extension_alert_body(&info);
+    let body = crate::needs_user::build_extension_alert_body(&info);
     let secrets_url = st.secrets_url.clone();
     let secrets_token = st.secrets_token.clone();
     let agent = st.agent.clone();
@@ -775,11 +896,11 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
             .and_then(|token| {
-                crate::needs_drew::post_plain_alert_to(
-                    &crate::needs_drew::alerts_url(),
+                crate::needs_user::post_plain_alert_to(
+                    &crate::needs_user::alerts_url(),
                     token.expose(),
                     &body,
                 )
@@ -1048,6 +1169,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             ok(json!({"errors": errors, "warnings": warnings}))
         }
         "/healthz" => ok(json!({"service": "queue-broker"})),
+        "/door-health" => match &st.hosted_door {
+            Some(door) => door.health(req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
         _ => {
             let Some(turso) = st.turso.get() else {
                 let why = st
@@ -1093,7 +1218,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
-                maybe_raise_needs_drew(st, req, &resp);
+                maybe_raise_needs_user(st, req, &resp);
             }
             // #13774: the emergency-extension needs-drew raise.
             if path == "/actions-exec-extend-request" {
@@ -1246,6 +1371,13 @@ pub fn run() -> i32 {
         )
         .build()
         .into();
+    let hosted_door = match HostedQueueDoor::from_env(agent.clone()) {
+        Ok(door) => door,
+        Err(error) => {
+            crate::log::info("queue-broker", &error);
+            return 3;
+        }
+    };
     // Turso is the only queue backend: QUEUE_BROKER_BACKEND unset
     // (or empty) means turso; any other value is a config error.
     if let Ok(v) = std::env::var("QUEUE_BROKER_BACKEND") {
@@ -1279,6 +1411,7 @@ pub fn run() -> i32 {
         secrets_url,
         secrets_token,
         agent,
+        hosted_door,
         turso: std::sync::OnceLock::new(),
         turso_pending: Mutex::new("starting".to_string()),
         coord_sweep_running: Mutex::new(false),
@@ -1354,6 +1487,7 @@ pub fn run() -> i32 {
                     secrets_token: st.secrets_token.clone(),
                     agent: st.agent.clone(),
                     token: Mutex::new(None),
+                    pass: Mutex::new(std::collections::HashMap::new()),
                 };
                 let now = crate::turso_queue::now_iso();
                 let sum = crate::turso_queue::coordinator_sweep(turso, &gh, &now);
@@ -1497,6 +1631,74 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn door_health_uses_authenticated_hosted_queue_contract() {
+        // Oracle: the hosted queue door contract is POST
+        // /v1/queue/health with a Bearer service token and the original
+        // JSON request; its broker-envelope response is returned intact.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 21\r\nconnection: close\r\n\r\n{\"ok\":true,\"rows\":[]}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door
+            .health(&json!({"queue": "repo-health-code-pilot"}))
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/health HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("repo-health-code-pilot"),
+            "hosted request includes the requested queue: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "rows": []}));
+    }
 
     #[test]
     fn landing_from_json_10626() {

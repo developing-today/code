@@ -31,9 +31,94 @@
 //! exactly once. Every refusal — unauthenticated, residency, or the
 //! actor's own admission check — sends **no bytes at all**.
 
+use std::collections::BTreeMap;
+
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use id_core::residency::{Decision, DenyReason, EvidenceVerifier, Hop, Scope, evaluate};
 
 use super::WorldHandle;
+
+/// Domain separator bound into every spill-cursor signature, so a
+/// cursor proof can never be reinterpreted by another protocol in
+/// this crate (the domain-separation rule `admission_lease` applies).
+pub const SPILL_CURSOR_DOMAIN: &[u8] = b"developing-today/id/spill-cursor/v1\0";
+
+/// Canonical bytes a cursor signature binds: the domain tag and the
+/// exact `(holder, epoch, replayed_position)` triple. Any change to
+/// any field after signing invalidates the proof.
+fn cursor_signing_bytes(holder: &str, epoch: u64, replayed_position: u64) -> Option<Vec<u8>> {
+    postcard::to_allocvec(&(SPILL_CURSOR_DOMAIN, holder, epoch, replayed_position)).ok()
+}
+
+/// Mint the transport proof for one cursor triple: an Ed25519
+/// signature by the holder's own key over [`cursor_signing_bytes`].
+/// This is the holder side of [`SignedCursorAuthenticator`]; a
+/// deployment's transport carries the returned 64 bytes as the proof.
+#[must_use]
+pub fn sign_cursor_proof(
+    key: &SigningKey,
+    holder: &str,
+    epoch: u64,
+    replayed_position: u64,
+) -> Vec<u8> {
+    match cursor_signing_bytes(holder, epoch, replayed_position) {
+        Some(bytes) => key.sign(&bytes).to_bytes().to_vec(),
+        None => Vec::new(),
+    }
+}
+
+/// Concrete [`CursorAuthenticator`] for a real deployment (#7572):
+/// the roster pins each holder's Ed25519 verifying key, and a proof
+/// authenticates only when it is a valid signature by the pinned key
+/// for the presented holder over the exact cursor triple. An
+/// unpinned holder, a malformed proof, a signature by any other key,
+/// and a proof minted for another epoch or position all refuse.
+#[derive(Clone, Debug, Default)]
+pub struct SignedCursorAuthenticator {
+    pinned: BTreeMap<String, VerifyingKey>,
+}
+
+impl SignedCursorAuthenticator {
+    /// An authenticator with no pinned holders (refuses everything).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pin `key` as the authenticating key for `holder` (builder form
+    /// of [`SignedCursorAuthenticator::pin`]).
+    #[must_use]
+    pub fn with_pinned(mut self, holder: impl Into<String>, key: VerifyingKey) -> Self {
+        self.pin(holder, key);
+        self
+    }
+
+    /// Pin `key` as the authenticating key for `holder`.
+    pub fn pin(&mut self, holder: impl Into<String>, key: VerifyingKey) {
+        self.pinned.insert(holder.into(), key);
+    }
+}
+
+impl CursorAuthenticator for SignedCursorAuthenticator {
+    fn authenticate_cursor(
+        &self,
+        holder: &str,
+        epoch: u64,
+        replayed_position: u64,
+        proof: &[u8],
+    ) -> bool {
+        let Some(key) = self.pinned.get(holder) else {
+            return false;
+        };
+        let Ok(signature) = Signature::from_slice(proof) else {
+            return false;
+        };
+        let Some(bytes) = cursor_signing_bytes(holder, epoch, replayed_position) else {
+            return false;
+        };
+        key.verify_strict(&bytes, &signature).is_ok()
+    }
+}
 
 /// Host-adapter authentication for a presented replay cursor.
 ///
@@ -277,6 +362,48 @@ mod tests {
         ) -> bool {
             proof == minted_proof(holder, epoch, replayed_position).as_slice()
         }
+    }
+
+    fn holder_key() -> SigningKey {
+        SigningKey::from_bytes(&[11_u8; 32])
+    }
+
+    fn signed_auth() -> SignedCursorAuthenticator {
+        SignedCursorAuthenticator::new().with_pinned("native-2", holder_key().verifying_key())
+    }
+
+    // Oracle: #7572's remaining item — a concrete transport
+    // authenticator for a real deployment. A holder-signed proof for
+    // the exact triple authenticates through the controller seam.
+    #[test]
+    fn a_holder_signed_proof_authenticates_the_exact_triple() {
+        let proof = sign_cursor_proof(&holder_key(), "native-2", 3, 7);
+        let cursor =
+            AuthenticatedReplayCursor::authenticate(&signed_auth(), "native-2", 3, 7, &proof)
+                .unwrap();
+        assert_eq!(cursor.holder(), "native-2");
+        assert_eq!(cursor.epoch(), 3);
+        assert_eq!(cursor.replayed_position(), 7);
+    }
+
+    // Oracle: the signature binds every field — a proof minted for
+    // one triple, key, or holder authenticates no other.
+    #[test]
+    fn a_signed_proof_never_rebinds_or_transfers() {
+        let auth = signed_auth();
+        let proof = sign_cursor_proof(&holder_key(), "native-2", 3, 7);
+        // Wrong epoch / stale position / different holder.
+        assert!(AuthenticatedReplayCursor::authenticate(&auth, "native-2", 4, 7, &proof).is_err());
+        assert!(AuthenticatedReplayCursor::authenticate(&auth, "native-2", 3, 2, &proof).is_err());
+        assert!(AuthenticatedReplayCursor::authenticate(&auth, "native-9", 3, 7, &proof).is_err());
+        // A signature by an unpinned key for the same triple.
+        let stranger = SigningKey::from_bytes(&[13_u8; 32]);
+        let forged = sign_cursor_proof(&stranger, "native-2", 3, 7);
+        assert!(AuthenticatedReplayCursor::authenticate(&auth, "native-2", 3, 7, &forged).is_err());
+        // Malformed (non-signature) proof bytes.
+        assert!(
+            AuthenticatedReplayCursor::authenticate(&auth, "native-2", 3, 7, b"proof").is_err()
+        );
     }
 
     #[test]

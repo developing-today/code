@@ -23,8 +23,9 @@ are journaled like any other world input, the AI replies inside the
 same `update` that completes the human's turn, and its randomness
 comes from a xorshift PRNG carried in the model, so the journal
 replays a game exactly. `update` routes host events by their JSON
-`cap` field and everything else through `Key.parse`. The game is
-turn-based and subscribes to nothing: `wants` is `{}`.
+`cap` field and everything else through `Key.parse`. The game
+is turn-based and subscribes only to `players`: `wants` is
+`{"v":1,"subscribe":["players"],"requests":[]}`.
 
 Controls: arrow keys or WASD move the cursor (brackets; green marks
 the selected piece, yellow the cursor). Enter or Space selects a
@@ -44,18 +45,45 @@ the low-write text mode from the #14861 harness slices. The game
 never changes when the mode does.
 
 Records are published as JSON: `{"red": 11, "black": 12,
-"phase": "playing", "plies": 7}`, so `id world records` and
+"phase": "playing", "plies": 7, "turn": "black", "red_player": "ann",
+"black_player": "AI"}`, so `id world records` and
 `id world mirror` show the game state and can replicate it
 peer-to-peer. Snapshots are the whole model as one JSON object;
 `restore` reads it back with per-field defaults and clamps, and a
 board that is not exactly 64 board bytes falls back to the opening
 position instead of trapping.
 
-Later slices of #14862 build on this one: chess on the same harness,
-id-network multiplayer (one binary hosts and the other joins, or a
-centrally started server both players join), and the three-machine
-demonstration (GitHub Actions serves, Blacksmith plays red, the
-laptop plays black, one compiled artifact shared by all three).
+## Two players
+
+The world holds two seats, red and black. A participant's first
+key takes the first open seat, red before black; with both seats
+held, a third participant only watches. Turn order is enforced by the
+world program, not the screen: keys from the side not to move, from a
+watcher, or from the host change nothing, and a key that ends a turn
+ends that player's input, so the rest of one event cannot move for the
+opponent. An open seat is played by the weak AI, so one player alone
+gets the single-player game above unchanged. When a seated player
+leaves (a `players` presence event from the host), their seat opens,
+the board says so, and the AI moves for that side at once if it was
+their turn. The bottom row names who plays each side (`R:ann  B:AI`).
+
+Two separate id processes play a whole game over the id network
+with `pkgs/id/scripts/board-games-two-player.py` (#15111). It runs
+both topologies, a host whose own player joins from the host's data
+directory and a central server that two players join, and plays
+checkers and chess to the end. After every move both players must
+read the same records (seats, turn, board, plies). It also checks
+that out-of-turn and watcher keys change nothing, that a player who
+leaves hands the seat to the AI, and that a restarted host restores
+the same records from its journal:
+
+```sh
+cd pkgs/id && python3 scripts/board-games-two-player.py --id-bin target/debug/id \
+  --checkers-wasm apps/checkers/program/checkers.wasm \
+  --chess-wasm apps/chess/program/chess.wasm
+```
+
+A later slice of #14862 adds the three-machine demonstration.
 
 ## Build
 

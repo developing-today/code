@@ -29,18 +29,18 @@ import check_tip  # noqa: E402
 
 # Hand-classified fixture. Class per entry, per the header definitions:
 FIXTURE_ENTRIES = [
-    {"path": "src/main.rs", "size": 1000},            # content
-    {"path": "doc/big.pdf", "size": 20_000_000},      # content, large
-    {"path": "target/debug/app.o", "size": 500},      # build-output
+    {"path": "src/main.rs", "size": 1000},  # content
+    {"path": "doc/big.pdf", "size": 20_000_000},  # content, large
+    {"path": "target/debug/app.o", "size": 500},  # build-output
     {"path": "pkgs/x/target/lib.rlib", "size": 700},  # build-output
-    {"path": "logs/run.log", "size": 300},            # log
-    {"path": "data/app.db", "size": 4000},            # database
-    {"path": "scratch/notes.txt", "size": 50},        # scratch
-    {"path": "bin/tool.exe", "size": 2000},           # binary
-    {"path": "lib/libfoo.so", "size": 1500},          # binary
-    {"path": "vendor/host.rh", "size": 250},          # binary
-    {"path": "dump/state.sqlite3", "size": 800},      # scratch (path wins over .sqlite3)
-    {"path": "README.md", "size": 100},               # content
+    {"path": "logs/run.log", "size": 300},  # log
+    {"path": "data/app.db", "size": 4000},  # database
+    {"path": "scratch/notes.txt", "size": 50},  # scratch
+    {"path": "bin/tool.exe", "size": 2000},  # binary
+    {"path": "lib/libfoo.so", "size": 1500},  # binary
+    {"path": "vendor/host.rh", "size": 250},  # binary
+    {"path": "dump/state.sqlite3", "size": 800},  # scratch (path wins over .sqlite3)
+    {"path": "README.md", "size": 100},  # content
 ]
 
 EXPECTED_CLASSES = {
@@ -95,14 +95,30 @@ class PartitionInvariantTest(unittest.TestCase):
     def test_classes_partition_any_entry_list(self):
         rng = random.Random(3205)
         fragments = [
-            "src", "doc", "target", "scratch", "dump", "logs", "data",
-            "a.rs", "b.o", "c.log", "d.db", "e.so", "f.md", "g.sqlite",
-            "h.rlib", "i.txt", "j.exe",
+            "src",
+            "doc",
+            "target",
+            "scratch",
+            "dump",
+            "logs",
+            "data",
+            "a.rs",
+            "b.o",
+            "c.log",
+            "d.db",
+            "e.so",
+            "f.md",
+            "g.sqlite",
+            "h.rlib",
+            "i.txt",
+            "j.exe",
         ]
         for _ in range(50):
             entries = [
                 {
-                    "path": "/".join(rng.choice(fragments) for _ in range(rng.randint(1, 3))),
+                    "path": "/".join(
+                        rng.choice(fragments) for _ in range(rng.randint(1, 3))
+                    ),
                     "size": rng.randint(0, 5000),
                 }
                 for _ in range(rng.randint(0, 30))
@@ -117,9 +133,7 @@ class PartitionInvariantTest(unittest.TestCase):
                 report["total_bytes"],
             )
             self.assertEqual(report["blob_count"], len(entries))
-            self.assertEqual(
-                report["total_bytes"], sum(e["size"] for e in entries)
-            )
+            self.assertEqual(report["total_bytes"], sum(e["size"] for e in entries))
 
 
 class ArgumentContractTest(unittest.TestCase):
