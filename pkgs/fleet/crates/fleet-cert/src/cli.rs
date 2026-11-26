@@ -43,7 +43,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   publish  plan | verify (apply | status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
-  trust    export | stage | ack | activate | retire | status
+  trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
   profile  list | show | validate | scaffold
   algorithms list | describe | benchmark | doctor
   explain  [topic]
@@ -54,6 +54,14 @@ Common options:
   --not-before <rfc3339>  Validity start (default: now).
   --not-after <rfc3339>   Exact validity end (mutually exclusive with --valid-for).
   --valid-for <duration>  Lifetime from not-before: 20y, 90d, '15 years 7 days'.
+
+Trust over a root set (documentation/output only; nothing installs trust):
+  trust inspect --root <root-set-dir> [--trust all|classical|pq]
+  trust pin --root <root-set-dir> [--trust ...] --out <pinset.json>
+  trust verify --root <root-set-dir> [--trust ...] --pins <pinset.json> [--store <pem-or-dir>]
+  trust export --root <root-set-dir> --target <consumer> [--trust ...] --out <dir>
+  trust install-plan --target <consumer>
+See `fleet cert explain trust` for the safety model.
 
 Signing operations never discover keys ambiently: issuer/leaf
 creation requires the signer's key directory as an explicit
@@ -1854,7 +1862,20 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     match verb {
         "export" => {
-            let p = parse_args(rest, &["root", "out", "version", "name", "at"], &[])?;
+            let p = parse_args(
+                rest,
+                &["root", "out", "version", "name", "at", "target", "trust"],
+                &["json"],
+            )?;
+            if p.has("target") {
+                return trust_consumer_export(&p, json_out);
+            }
+            if p.has("trust") {
+                return Err(CertError::usage(
+                    "trust export --trust applies to a consumer export (--target <consumer>); \
+                     the versioned trust bundle always carries every §3.5 file",
+                ));
+            }
             let root_bundles: Vec<PathBuf> = p.all("root").into_iter().map(PathBuf::from).collect();
             if root_bundles.is_empty() {
                 return Err(CertError::usage(
@@ -1905,7 +1926,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, value))
         }
         "stage" => {
-            let p = parse_args(rest, &["bundle", "store"], &[])?;
+            let p = parse_args(rest, &["bundle", "store"], &["json"])?;
             let bundle = p.require("bundle", "trust stage")?;
             let store = p.require("store", "trust stage")?;
             let vref = crate::trust::stage_bundle(&PathBuf::from(&store), &PathBuf::from(&bundle))?;
@@ -1916,7 +1937,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, serde_json::to_value(&vref)?))
         }
         "ack" => {
-            let p = parse_args(rest, &["store", "version", "at"], &[])?;
+            let p = parse_args(rest, &["store", "version", "at"], &["json"])?;
             let store = p.require("store", "trust ack")?;
             let version = p
                 .get("version")
@@ -1941,7 +1962,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, serde_json::to_value(&ack)?))
         }
         "activate" => {
-            let p = parse_args(rest, &["store", "version"], &[])?;
+            let p = parse_args(rest, &["store", "version"], &["json"])?;
             let store = p.require("store", "trust activate")?;
             let version = p
                 .get("version")
@@ -1961,7 +1982,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, serde_json::to_value(&vref)?))
         }
         "retire" => {
-            let p = parse_args(rest, &["store", "version"], &[])?;
+            let p = parse_args(rest, &["store", "version"], &["json"])?;
             let store = p.require("store", "trust retire")?;
             let version_raw = p.require("version", "trust retire")?;
             let version: u32 = version_raw.parse().map_err(|_| {
@@ -1974,7 +1995,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, json!({"retired": version})))
         }
         "status" => {
-            let p = parse_args(rest, &["store"], &[])?;
+            let p = parse_args(rest, &["store"], &["json"])?;
             let store = p.require("store", "trust status")?;
             let status = crate::trust::store_status(&PathBuf::from(&store))?;
             let fmt_ref = |r: &Option<crate::trust::VersionRef>| match r {
@@ -2002,10 +2023,207 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
             Ok(emit(json_out, text, serde_json::to_value(&status)?))
         }
+        "inspect" => {
+            let p = parse_args(rest, &["root", "trust"], &["json"])?;
+            let root_dir = p.require("root", "trust inspect")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+            let mut text = format!(
+                "Trust selection {} ({}) from {}: {} anchor(s)\n",
+                crate::trust_consumer::bundle_file_name(kind),
+                kind.as_str(),
+                bundle.manifest.name,
+                assembled.certificates.len()
+            );
+            for c in &assembled.certificates {
+                text.push_str(&format!(
+                    "  {} {} {}\n",
+                    &c.fingerprint_sha256[..12.min(c.fingerprint_sha256.len())],
+                    c.subject_algorithm.map(|a| a.name()).unwrap_or("unknown"),
+                    c.subject_dn
+                ));
+            }
+            text.push_str(&format!("  sha256: {}\n", assembled.sha256));
+            let anchors: Vec<Value> = assembled
+                .certificates
+                .iter()
+                .map(|c| {
+                    json!({
+                        "subject_dn": c.subject_dn,
+                        "algorithm": c.subject_algorithm.map(|a| a.name()),
+                        "fingerprint_sha256": c.fingerprint_sha256,
+                    })
+                })
+                .collect();
+            let value = json!({
+                "trust": kind.as_str(),
+                "bundle": bundle.manifest.name,
+                "bundle_id": bundle.manifest.bundle_id,
+                "anchors": anchors,
+                "bundle_sha256": assembled.sha256,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "pin" => {
+            let p = parse_args(rest, &["root", "trust", "out"], &["json"])?;
+            let root_dir = p.require("root", "trust pin")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let out = p.require("out", "trust pin")?;
+            if Path::new(&out).exists() {
+                return Err(CertError::policy(format!(
+                    "pinset already exists at {out}; remove it explicitly before re-pinning"
+                )));
+            }
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let pins = crate::trust_consumer::create_pins(&bundle, kind)?;
+            std::fs::write(&out, serde_json::to_string_pretty(&pins)? + "\n")?;
+            let text = format!(
+                "Pinned {} {} anchor(s) -> {out}\n",
+                pins.pins.len(),
+                kind.as_str()
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&pins)?))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["root", "trust", "pins", "store"], &["json"])?;
+            let root_dir = p.require("root", "trust verify")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let pins_path = p.get("pins");
+            let store_path = p.get("store");
+            if pins_path.is_none() && store_path.is_none() {
+                return Err(CertError::usage(
+                    "trust verify requires --pins <pinset.json> and/or --store <pem-or-dir>",
+                ));
+            }
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let mut checks = Vec::new();
+            if let Some(path) = pins_path {
+                let pins: crate::trust_consumer::TrustPins =
+                    serde_json::from_str(&std::fs::read_to_string(path)?)?;
+                checks.extend(crate::trust_consumer::check_pins(&bundle, kind, &pins));
+            }
+            if let Some(path) = store_path {
+                let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+                let store = crate::trust_consumer::read_store_certs(Path::new(path))?;
+                checks.extend(crate::trust_consumer::check_store(&assembled, &store));
+            }
+            let ok = checks.iter().all(|c| c.ok);
+            let mut text = format!(
+                "Trust verify ({}): {}\n",
+                kind.as_str(),
+                if ok { "OK" } else { "DRIFT" }
+            );
+            for c in &checks {
+                text.push_str(&format!(
+                    "  [{}] {}: {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            let code = emit(
+                json_out,
+                text,
+                json!({"trust": kind.as_str(), "ok": ok, "checks": checks}),
+            );
+            Ok(if ok { code } else { 1 })
+        }
+        "install-plan" => {
+            let p = parse_args(rest, &["target"], &["json"])?;
+            let name = p.require("target", "trust install-plan")?;
+            let target = trust_target(&name)?;
+            let text = format!(
+                "Install plan for {} ({} trust; documentation only, nothing installed):\n  install: {}\n  verify: {}\n  remove: {}\n  note: {}\n",
+                target.name,
+                target.kind.as_str(),
+                target.install,
+                target.verify,
+                target.remove,
+                target.note
+            );
+            let value = json!({
+                "consumer": target.name,
+                "trust": target.kind.as_str(),
+                "bundle_file": crate::trust_consumer::bundle_file_name(target.kind),
+                "install": target.install,
+                "verify": target.verify,
+                "remove": target.remove,
+                "note": target.note,
+            });
+            Ok(emit(json_out, text, value))
+        }
         other => Err(CertError::usage(format!(
-            "unknown trust verb '{other}' (export | stage | ack | activate | retire | status)"
+            "unknown trust verb '{other}' (export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan)"
         ))),
     }
+}
+
+/// Resolve a `--target` consumer, refusing `ssh` (not X.509, §44).
+fn trust_target(name: &str) -> Result<&'static crate::trust_consumer::ConsumerTarget> {
+    if name.trim().eq_ignore_ascii_case("ssh") {
+        return Err(crate::trust_consumer::refuse_ssh());
+    }
+    crate::trust_consumer::consumer_target(name).ok_or_else(|| {
+        CertError::usage(format!(
+            "unknown trust target '{name}' ({} | ssh is refused)",
+            crate::trust_consumer::consumer_names().join(" | ")
+        ))
+    })
+}
+
+/// `trust export --target <consumer>`: PEM files plus per-consumer
+/// install/verify/remove guidance from one root set. Writes files
+/// only; never touches a consumer's store.
+fn trust_consumer_export(p: &Parsed, json_out: bool) -> Result<i32> {
+    for flag in ["version", "name", "at"] {
+        if p.has(flag) {
+            return Err(CertError::usage(format!(
+                "trust export --target writes a consumer export from one root set; \
+                 --{flag} applies to the versioned trust bundle (omit --target)"
+            )));
+        }
+    }
+    let roots = p.all("root");
+    let [root_dir] = roots.as_slice() else {
+        return Err(CertError::usage(
+            "trust export --target requires exactly one --root <root-set-bundle-dir>",
+        ));
+    };
+    let target_name = p.require("target", "trust export")?;
+    let out_dir = p.require("out", "trust export")?;
+    let target = trust_target(&target_name)?;
+    let kind = match p.get("trust") {
+        Some(flag) => {
+            let want = TrustSelection::parse(flag)?;
+            if want != target.kind {
+                return Err(CertError::usage(format!(
+                    "target {} takes the {} bundle, not {}",
+                    target.name,
+                    target.kind.as_str(),
+                    want.as_str()
+                )));
+            }
+            want
+        }
+        None => target.kind,
+    };
+    let bundle = load_bundle(&PathBuf::from(root_dir))?;
+    let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+    let manifest = crate::trust_consumer::write_export(
+        &PathBuf::from(&out_dir),
+        &bundle,
+        target.name,
+        target,
+        &assembled,
+    )?;
+    let text = format!(
+        "Trust export for {} ({}): {} anchor(s) -> {out_dir}\n  manifest: {out_dir}/export.json\n",
+        target.name,
+        kind.as_str(),
+        assembled.certificates.len(),
+    );
+    Ok(emit(json_out, text, serde_json::to_value(&manifest)?))
 }
 
 // ---------------------------------------------------------------- explain / doctor
@@ -2095,9 +2313,20 @@ at least one --dns name under .internal and a tailnet --ip (100.64.0.0/10 or \
 fd7a:115c:a1e0::/48); wildcards, public names and other IPs are refused. Revocation \
 is CRL-only: no OCSP URL or AIA is embedded. See `fleet cert profile list`."
             .to_string(),
+        "trust" => "Two trust surfaces share one rule: only signature-proven \
+self-signed roots become anchors (the record's role label alone never admits one). \
+The versioned trust bundle (`trust export --root ... --version N`) feeds the \
+broker-client store's stage -> ack -> activate -> retire rollover. The root-set verbs \
+work on one root set directly: `trust inspect` lists the anchors a selection admits, \
+`trust pin` records approved fingerprints, `trust verify --pins/--store` reports \
+rotation, new anchors and consumer-store drift, and `trust export --target <consumer>` \
+writes PEM files plus that consumer's install/verify/remove guidance. None of them \
+installs trust: live trust-store mutation is production-gated (#9155, spec §44). \
+`ssh` is refused because native OpenSSH CA trust is not X.509."
+            .to_string(),
         other => {
             return Err(CertError::usage(format!(
-                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | profiles)"
+                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | trust | profiles)"
             )));
         }
     };
@@ -2139,7 +2368,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2147,7 +2376,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
