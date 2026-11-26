@@ -1294,3 +1294,79 @@ fn notes_watch_gives_up_empty_after_wait() {
     let got = execute(&mut ctx, &sv(&["notes", "watch", "--wait", "0"])).unwrap();
     assert_eq!(got["woke"], Value::Null);
 }
+
+// ---- ScopedSecrets (#10358 S1, design record §6 and D11) ----
+
+/// A store that records every name it is asked for and serves what was
+/// written to it.
+#[derive(Default)]
+struct RecordingSecrets {
+    asked: std::cell::RefCell<Vec<String>>,
+    stored: std::cell::RefCell<HashMap<String, String>>,
+}
+
+impl Secrets for RecordingSecrets {
+    fn resolve(&self, name: &str) -> Result<String, String> {
+        self.asked.borrow_mut().push(name.to_string());
+        self.stored
+            .borrow()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("no secret named {name}"))
+    }
+
+    fn store(&self, name: &str, value: &str) -> Result<(), String> {
+        self.asked.borrow_mut().push(name.to_string());
+        self.stored
+            .borrow_mut()
+            .insert(name.to_string(), value.to_string());
+        Ok(())
+    }
+}
+
+const SCOPE_MATRIX: [(&str, Option<&str>, Option<&str>); 9] = [
+    ("alpha", None, Some("alpha")),
+    ("42.alpha", None, Some("42.alpha")),
+    ("alpha", Some("42"), Some("42.alpha")),
+    ("42.alpha", Some("42"), Some("42.alpha")),
+    ("42.x", Some("42"), Some("42.x")),
+    ("42.42.x", Some("42"), Some("42.42.x")),
+    ("42", Some("42"), Some("42.42")),
+    ("42.", Some("42"), None),
+    ("420.x", Some("42"), Some("42.420.x")),
+];
+
+fn scope_for(prefix: Option<&str>) -> fleet_secrets::Scope {
+    match prefix {
+        Some(p) => fleet_secrets::Scope::prefixed(p).unwrap(),
+        None => fleet_secrets::Scope::none(),
+    }
+}
+
+#[test]
+fn scoped_secrets_store_and_resolve_the_full_name() {
+    for (row, (name, prefix, stored)) in SCOPE_MATRIX.iter().enumerate() {
+        let scoped = ScopedSecrets::new(scope_for(*prefix), RecordingSecrets::default());
+        let wrote = scoped.store(name, "fixture-value-not-a-secret");
+        let read = scoped.resolve(name);
+        let asked = scoped.inner.asked.borrow().clone();
+        match stored {
+            Some(want) => {
+                assert_eq!(wrote, Ok(()), "row {}", row + 1);
+                // A scoped bridge reads what it wrote.
+                assert_eq!(
+                    read.as_deref(),
+                    Ok("fixture-value-not-a-secret"),
+                    "row {}",
+                    row + 1
+                );
+                assert_eq!(asked, [*want, *want], "row {}", row + 1);
+            }
+            None => {
+                assert!(wrote.is_err(), "row {}", row + 1);
+                assert!(read.is_err(), "row {}", row + 1);
+                assert!(asked.is_empty(), "row {}: inner never asked", row + 1);
+            }
+        }
+    }
+}
