@@ -108,7 +108,7 @@ describe("agent credential issuance (H4 §4.5)", () => {
   test("SQL central store round-trips metadata + digest and revokes live", async () => {
     const { sql } = openTenantDb();
     const store = new SqlAgentCredentialStore(sql);
-    const sqlResult = await issueAgentCredential(ownerSession, { tenantId: BINDING, audience: AUDIENCE, ttlSec: 60 }, { store, now: () => NOW, generateJti: () => "sql-credential-1", generateSecret: () => "sql-fixture-secret" });
+    const sqlResult = await issueAgentCredential(ownerSession, { tenantId: BINDING, audience: AUDIENCE, ttlSec: 60 }, { store, now: () => NOW, generateJti: () => "sql-credential-1", generateSecret: () => "sql-fixture-secret", auditLifecycle: async () => {} });
     expect(sqlResult.ok).toBe(true);
     const rows = sql.all<Record<string, unknown>>("SELECT * FROM agent_credential");
     expect(JSON.stringify(rows)).not.toContain("sql-fixture-secret");
