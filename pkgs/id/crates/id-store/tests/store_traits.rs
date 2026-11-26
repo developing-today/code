@@ -298,6 +298,7 @@ fn event(
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     };
     sign(signer, seq, backlink, body, ext).unwrap()
 }

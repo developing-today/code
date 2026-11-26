@@ -137,7 +137,7 @@ async function fire(env, hook, address, rows) {
       address,
       message_ids: rows.map((r) => r.id),
       kind: rows.some(isInstruction) ? "instruction" : "message",
-      from: [...new Set(rows.map((r) => shownFrom(r) ?? "drew"))],
+      from: [...new Set(rows.map((r) => shownFrom(r) ?? "owner"))],
       text,
     };
   }

@@ -273,7 +273,9 @@ class TransportOfferTests(unittest.TestCase):
             rec = with_offers()
             rec["transports"][0]["credentials"] = [value]
             errors = self.errors(rec)
-            self.assertTrue(any("credential name" in e for e in errors), (value, errors))
+            self.assertTrue(
+                any("credential name" in e for e in errors), (value, errors)
+            )
 
     def test_credential_mapping_fails(self):
         rec = with_offers()

@@ -1,0 +1,25 @@
+=== stress_mem rep=1 started=2026-11-25T03:19:05-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_mem
+profile stress_mem_compact events=2000 recovered_entries=2002 spike_bytes=5402624 spike_mib=5.15 elapsed_us=24729
+profile stress_mem_compact events=100000 recovered_entries=100002 spike_bytes=93458432 spike_mib=89.13 elapsed_us=351737
+profile stress_mem tier=10x seed=22673 worlds_held=11001 idle_held=10000 active_held=1000 hot_held=1 rss_start_bytes=19189760 rss_after_idle_bytes=99581952 rss_after_active_bytes=187056128 rss_final_bytes=207872000 peak_rss_bytes=271474688 rss_per_world_bytes=17151 rss_per_idle_world_bytes=8039 rss_per_active_world_bytes=87474 rss_hot_delta_bytes=20815872 walls=0 elapsed_secs=0.426
+=== stress_mem rep=2 started=2026-11-25T03:19:06-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_mem
+profile stress_mem_compact events=2000 recovered_entries=2002 spike_bytes=5640192 spike_mib=5.38 elapsed_us=25210
+profile stress_mem_compact events=100000 recovered_entries=100002 spike_bytes=93818880 spike_mib=89.47 elapsed_us=372287
+profile stress_mem tier=10x seed=22673 worlds_held=11001 idle_held=10000 active_held=1000 hot_held=1 rss_start_bytes=19206144 rss_after_idle_bytes=99598336 rss_after_active_bytes=187072512 rss_final_bytes=207888384 peak_rss_bytes=271740928 rss_per_world_bytes=17151 rss_per_idle_world_bytes=8039 rss_per_active_world_bytes=87474 rss_hot_delta_bytes=20815872 walls=0 elapsed_secs=0.440
+=== stress_mem rep=3 started=2026-11-25T03:19:07-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_mem
+profile stress_mem_compact events=2000 recovered_entries=2002 spike_bytes=5419008 spike_mib=5.17 elapsed_us=25089
+profile stress_mem_compact events=100000 recovered_entries=100002 spike_bytes=93753344 spike_mib=89.41 elapsed_us=378309
+profile stress_mem tier=10x seed=22673 worlds_held=11001 idle_held=10000 active_held=1000 hot_held=1 rss_start_bytes=19341312 rss_after_idle_bytes=99733504 rss_after_active_bytes=187207680 rss_final_bytes=208023552 peak_rss_bytes=271589376 rss_per_world_bytes=17151 rss_per_idle_world_bytes=8039 rss_per_active_world_bytes=87474 rss_hot_delta_bytes=20815872 walls=0 elapsed_secs=0.441
+=== stress_mem rep=4 started=2026-11-25T03:19:08-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_mem
+profile stress_mem_compact events=2000 recovered_entries=2002 spike_bytes=5160960 spike_mib=4.92 elapsed_us=24729
+profile stress_mem_compact events=100000 recovered_entries=100002 spike_bytes=93679616 spike_mib=89.34 elapsed_us=344904
+profile stress_mem tier=10x seed=22673 worlds_held=11001 idle_held=10000 active_held=1000 hot_held=1 rss_start_bytes=19296256 rss_after_idle_bytes=99688448 rss_after_active_bytes=187162624 rss_final_bytes=207978496 peak_rss_bytes=271630336 rss_per_world_bytes=17151 rss_per_idle_world_bytes=8039 rss_per_active_world_bytes=87474 rss_hot_delta_bytes=20815872 walls=0 elapsed_secs=0.416
+=== stress_mem rep=5 started=2026-11-25T03:19:09-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_mem
+profile stress_mem_compact events=2000 recovered_entries=2002 spike_bytes=5472256 spike_mib=5.22 elapsed_us=23746
+profile stress_mem_compact events=100000 recovered_entries=100002 spike_bytes=93700096 spike_mib=89.36 elapsed_us=369884
+profile stress_mem tier=10x seed=22673 worlds_held=11001 idle_held=10000 active_held=1000 hot_held=1 rss_start_bytes=19021824 rss_after_idle_bytes=99414016 rss_after_active_bytes=186888192 rss_final_bytes=207704064 peak_rss_bytes=271413248 rss_per_world_bytes=17151 rss_per_idle_world_bytes=8039 rss_per_active_world_bytes=87474 rss_hot_delta_bytes=20815872 walls=0 elapsed_secs=0.451

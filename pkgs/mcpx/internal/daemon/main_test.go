@@ -21,22 +21,25 @@ import (
 // drift even though every test passes.
 func TestMain(m *testing.M) {
 	testsupport.SuperviseReExec()
-	dir, err := os.MkdirTemp("", "daemon-suite-state")
+	stateDir, err := os.MkdirTemp("", "mcpx-daemon-state-")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "daemon tests: making an isolated state dir: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		_ = os.RemoveAll(dir)
+	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon tests: isolating XDG_STATE_HOME: %v\n", err)
+		_ = os.RemoveAll(stateDir)
 		os.Exit(1)
 	}
 	if err := os.Unsetenv("MCPX_STATE_DIR"); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		_ = os.RemoveAll(dir)
+		fmt.Fprintf(os.Stderr, "daemon tests: unsetting MCPX_STATE_DIR: %v\n", err)
+		_ = os.RemoveAll(stateDir)
 		os.Exit(1)
 	}
 	code := testsupport.MainWithSweep(m)
-	_ = os.RemoveAll(dir)
+	if err := os.RemoveAll(stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon tests: removing isolated state dir: %v\n", err)
+		code = 1
+	}
 	os.Exit(code)
 }

@@ -92,11 +92,16 @@ goals updates 10,870, …), `agent_quota_records` (75,024), `agg_*`
 `agg_store_documents`, `agg_activity_ingestion`), `agent_token_expirations`,
 `agent_external_comms` (70).
 
-- **Why clean:** every reader and writer is a Cloudflare Worker (`pm-stack/`);
-  the data is _derived_ — a mirror of Muse session/usage state plus quota
+- **Why it is a fit, with a writer-path correction:** the data is _derived_ —
+  a mirror of Muse session/usage state plus quota
   snapshots — so it is rebuildable from source and a cutover mistake loses
-  nothing canonical. No joins against Turso-resident tables; the mirror writer
-  is a scheduled sync, which dual-writes naturally during cutover.
+  nothing canonical. No joins against Turso-resident tables. The writer paths
+  are not all Workers: `agent_quota_records` is also written by the laptop
+  quota gatherer and subscription recorder, and `agg_*` is written by the
+  laptop aggregator through `remote-stores.ts`. These processes need the D1
+  HTTP API; they cannot use a Worker binding. The `agent_mirror_*` writer still
+  needs to be identified before that family can be cut over. A scheduled
+  mirror sync can dual-write only after its concrete writer is located.
 - **Win:** this family is the presumed majority of fleet-platform's 57.4M
   rows written/month (inference: the mirror re-upserts its row set every sync
   cycle; per-table write attribution is not exposed by the Turso API). Even at
@@ -106,7 +111,9 @@ goals updates 10,870, …), `agent_quota_records` (75,024), `agg_*`
   10 GB cap; D1's 50M included writes absorb the churn. One caution: D1's
   single-writer serialization means the sync writer must batch (it already
   writes in sync cycles, not per-event transactions).
-- **Effort/risk:** one Worker-side store swap + dual-write window. Low.
+- **Effort/risk:** a D1 HTTP transport for laptop writers, Worker bindings for
+  any Worker writers, and per-writer dual-write/parity windows. Medium until
+  the `agent_mirror_*` writer and every reader are inventoried.
 - **Side effect:** `fleet-mirror` (175 MB) holds a second, lagging copy of this
   same `agent_mirror_*` dataset (5,952 writes/month — a periodic copy). Once G1
   lands in D1, `fleet-mirror` is redundant and can be retired after a parity

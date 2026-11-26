@@ -689,7 +689,7 @@ mod tests {
                 (ReportReason::Other, NOW - 50),
             ]
         );
-        assert!(queue.closed().is_empty());
+        assert_eq!(queue.closed(), []);
 
         // The operator's own policy reorders the same facts.
         let spam_first = QueuePolicy {

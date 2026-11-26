@@ -40,12 +40,12 @@ path, kind, size, blob SHA-1, class, present-on-main flag). Empty directories
 
 ## Accounting (computed from the audit data)
 
-| Class | Entries | Meaning |
-| --- | ---: | --- |
-| current | 4,529 | identical to `origin/main` |
-| history | 1,536 | exact content in git history |
-| generated | 3,095 | cargo build/clippy output, reproducible |
-| **total** | **9,160** | 9,120 files + 40 symlinks |
+| Class     |   Entries | Meaning                                 |
+| --------- | --------: | --------------------------------------- |
+| current   |     4,529 | identical to `origin/main`              |
+| history   |     1,536 | exact content in git history            |
+| generated |     3,095 | cargo build/clippy output, reproducible |
+| **total** | **9,160** | 9,120 files + 40 symlinks               |
 
 - Differing vs `origin/main`: 4,631 entries; not present on `origin/main` at
   all: 4,165.
@@ -67,7 +67,7 @@ path, kind, size, blob SHA-1, class, present-on-main flag). Empty directories
 ### Why these counts differ from the #13919 §7 pass
 
 §7 reported 367 differing files and 23 orphan-only entries. That pass ran a
-recursive diff against the primary clone's *working tree of the same era*
+recursive diff against the primary clone's _working tree of the same era_
 (HEAD `9e6b4adf64e5`), which collapses whole unique directories into single
 "only in" lines and shares the era's build output. This audit counts per file
 against current `origin/main` and counts build output individually; the

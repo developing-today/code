@@ -299,7 +299,9 @@ def _transport_errors(where, rec):
         else:
             for agent_class, offers in enrollment.items():
                 at = f"{where}: enrollment.{agent_class}"
-                if not (isinstance(agent_class, str) and SECRET_CLASS.match(agent_class)):
+                if not (
+                    isinstance(agent_class, str) and SECRET_CLASS.match(agent_class)
+                ):
                     errors.append(f"{at}: agent class must be a lowercase slug")
                 if not isinstance(offers, list) or not offers:
                     errors.append(f"{at}: must list at least one offer name")

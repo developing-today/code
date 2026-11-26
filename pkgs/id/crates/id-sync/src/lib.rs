@@ -22,12 +22,16 @@
 
 pub mod admission;
 pub mod announcement;
+pub mod announcement_pkarr;
+pub mod announcement_relay;
 pub mod artifact;
 pub mod bridge;
 pub mod bridge_http;
 pub mod chained_message;
 mod checked_json;
 pub mod dht;
+pub mod discovery_client;
+pub mod discovery_resolver;
 pub mod envelope;
 pub mod envelope_net;
 pub mod envelope_outbox;

@@ -162,7 +162,7 @@ equal to `"ok"` for `local`, `r2`, `drive`), with two additional fields:
 
 ```json
 {
-  "source": {"host": "actual-source-host", "port": 5432, "database": "kaneo"},
+  "source": { "host": "actual-source-host", "port": 5432, "database": "kaneo" },
   "recoveryPointAt": "2026-11-25T02:00:00Z"
 }
 ```
@@ -244,7 +244,7 @@ so the Grist/Pad syncs are mechanical instead of advisory:
 - Step 2 (windowed): the cutover itself, per §4 — run `preflight`, `presync`, then the
   fenced writers, then `promote` (Kaneo's gate in §4 names the driver and
   what it refuses; Grist/Pad finals go through `grist-pad-sync.sh --mode
-  final`, per-store fenced with a clean pad WAL — §4 names that driver
+final`, per-store fenced with a clean pad WAL — §4 names that driver
   too). Rollback (§5) is driven by `kaneo-cutover.sh --mode
 rollback` (fence-gated replay with parity receipt, stub-tested); the
   DSN flip, restarts, and the first window run remain operator steps.

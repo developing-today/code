@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use id_config::{
-    CONFIG_SCHEMA_VERSION, ConfigDocument, ConfigError, DEADLINE_MS_LIMIT, FIXED_GATE_IDS,
-    Fanout, FieldClass, MAX_HOPS_LIMIT, Mode, PEER_BREADTH_LIMIT, PER_PEER_TIMEOUT_MS_LIMIT,
+    CONFIG_SCHEMA_VERSION, ConfigDocument, ConfigError, DEADLINE_MS_LIMIT, FIXED_GATE_IDS, Fanout,
+    FieldClass, MAX_HOPS_LIMIT, Mode, PEER_BREADTH_LIMIT, PER_PEER_TIMEOUT_MS_LIMIT,
     ResolvedConfig, SyncScope, Tier, field_class,
 };
 use serde_json::{Value, json};
@@ -112,7 +112,7 @@ fn oracle_rejects_any_attempt_to_disable_fixed_gates() {
         .keys()
         .cloned()
         .collect();
-    assert!(!gate_fields.is_empty());
+    assert_ne!(gate_fields, [] as [String; 0]);
     for field in gate_fields {
         let mut doc = valid_doc();
         doc["gates"] = json!({ field.clone(): false });
@@ -432,7 +432,11 @@ fn hop_ceiling_is_bounded() {
     load(&doc).expect("max_hops at the limit loads");
     doc["ceilings"]["max_hops"] = json!(MAX_HOPS_LIMIT + 1);
     match load_err(&doc) {
-        ConfigError::OutOfRange { field, value, limit } => {
+        ConfigError::OutOfRange {
+            field,
+            value,
+            limit,
+        } => {
             assert_eq!(field, "ceilings.max_hops");
             assert_eq!(value, u64::from(MAX_HOPS_LIMIT) + 1);
             assert_eq!(limit, u64::from(MAX_HOPS_LIMIT));

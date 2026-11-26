@@ -21,7 +21,7 @@ ok: 13 conformance cases, collapse holds for unauthorised and lapsed callers, de
 A failed dereference has five causes worth naming — the object is unknown, the
 object was pruned, the caller's grant has lapsed, the caller was never
 authorised, or a pinned mutable head has gone stale — but a resolver may only
-ever *reveal* a cause to a caller who currently holds access to the object.
+ever _reveal_ a cause to a caller who currently holds access to the object.
 Everyone else gets the one coalesced answer slice 1 §7 already promises:
 `unavailable`. A URI names an object and never grants authority, and under the
 non-renewal posture (composition A) a lapsed grant is not renewed by presenting
@@ -33,14 +33,14 @@ caller, immediately and indistinguishably.
 A resolver reports one of four outcomes for a v2 graph URI. These are the only
 outcomes; there is no per-cause error code on the wire.
 
-| Outcome       | Meaning                                                                                                                                 |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `ok`          | The named object (or the current head) is returned and verified.                                                                        |
-| `unavailable` | The coalesced answer. It asserts nothing about which cause produced it.                                                                 |
-| `tombstone`   | The object was removed and a tombstone was retained (D3 §5: a tombstone-kind object linked by `supersede`, carrying reason and scope).   |
-| `stale_head`  | `head/…/at/<cid>` only: the pinned head is readable but is no longer the current head. The `stale` state word of slice 5.                |
+| Outcome       | Meaning                                                                                                                                |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`          | The named object (or the current head) is returned and verified.                                                                       |
+| `unavailable` | The coalesced answer. It asserts nothing about which cause produced it.                                                                |
+| `tombstone`   | The object was removed and a tombstone was retained (D3 §5: a tombstone-kind object linked by `supersede`, carrying reason and scope). |
+| `stale_head`  | `head/…/at/<cid>` only: the pinned head is readable but is no longer the current head. The `stale` state word of slice 5.              |
 
-`tombstone` and `stale_head` are *detail*: they are only ever returned to a
+`tombstone` and `stale_head` are _detail_: they are only ever returned to a
 caller with current access, under the rules of §3. For the `head/` form whose
 current head is itself a tombstone, an authorised caller gets `tombstone`
 (the head is "removed", per slice 1 §7 and D3 §5); the display word is
@@ -53,15 +53,15 @@ Caller states: **authorised** (holds current access to the object),
 under non-renewal). Lapsed and unauthorised are the same column in every row —
 that identity is a rule, not a coincidence (§4).
 
-| Cause                                   | Authorised caller                              | Unauthorised or lapsed caller |
-| --------------------------------------- | ---------------------------------------------- | ----------------------------- |
-| Unknown object (never existed here)     | `unavailable`                                  | `unavailable`                 |
-| Pruned object, tombstone retained       | `tombstone`                                    | `unavailable`                 |
-| Pruned object, no tombstone retained    | `unavailable`                                  | `unavailable`                 |
-| Grant lapsed (object itself unaffected) | — (the lapse *is* the caller state)           | `unavailable`                 |
-| Never authorised (object exists)        | — (the caller state, not an object cause)      | `unavailable`                 |
-| Stale mutable head (`head/…/at/<cid>`)  | `stale_head`                                   | `unavailable`                 |
-| Current head / existing object          | `ok`                                           | `unavailable`                 |
+| Cause                                   | Authorised caller                         | Unauthorised or lapsed caller |
+| --------------------------------------- | ----------------------------------------- | ----------------------------- |
+| Unknown object (never existed here)     | `unavailable`                             | `unavailable`                 |
+| Pruned object, tombstone retained       | `tombstone`                               | `unavailable`                 |
+| Pruned object, no tombstone retained    | `unavailable`                             | `unavailable`                 |
+| Grant lapsed (object itself unaffected) | — (the lapse _is_ the caller state)       | `unavailable`                 |
+| Never authorised (object exists)        | — (the caller state, not an object cause) | `unavailable`                 |
+| Stale mutable head (`head/…/at/<cid>`)  | `stale_head`                              | `unavailable`                 |
+| Current head / existing object          | `ok`                                      | `unavailable`                 |
 
 Reading the matrix:
 
@@ -78,7 +78,7 @@ Reading the matrix:
   not change any other caller's row: a caller authorised through another
   grant resolves the same object normally (`ok`, `tombstone` or
   `stale_head` as the object's own state dictates).
-- **Staleness is not failure of the object.** `stale_head` says the *pin*
+- **Staleness is not failure of the object.** `stale_head` says the _pin_
   moved, not that anything was removed. It is still detail: it confirms the
   chain exists and has advanced, so an unauthorised caller gets
   `unavailable`, never `stale_head`.
@@ -105,7 +105,7 @@ Reading the matrix:
    the distinction through side channels they control (per-cause messages,
    per-cause sub-codes, or a member count of hidden objects).
 5. **Detail follows current access only.** `tombstone` and `stale_head`
-   require access *at resolution time*. Past access — including access the
+   require access _at resolution time_. Past access — including access the
    caller held when the object was pruned — does not qualify.
 6. **Naming never pins.** Pruning may proceed while URIs to the object are
    outstanding (slice 1 §7, R1 row 7). The matrix, not retention, is how a
@@ -137,7 +137,7 @@ access, every object state returns the one identical outcome.
 - R1 row 7 (prune fails): adopted as rule 6 — naming never pins — with the
   cause matrix R1 left open now filled by §3.
 - R1 row 18 (no capability in the URI): adopted as rules 1–2; the failure
-  matrix adds that *presenting* a URI is also not a renewal event.
+  matrix adds that _presenting_ a URI is also not a renewal event.
 - D3 §5: the tombstone outcome is D3's tombstone-kind object reached by
   `supersede`, surfaced as the head of a removed chain; removal stays a
   link, never a rewrite.

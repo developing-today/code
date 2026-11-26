@@ -393,14 +393,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_MCPX_CALL_LEDGER_DIR,
       fromHome("PM_AGG_MCPX_CALL_LEDGER_DIR", ".local", "state", "mcpx", "call-ledger"),
     ),
-    fleetInvocationLedgerFile: s(
-      env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE,
-      () =>
-        join(
-          env.XDG_STATE_HOME?.trim() || fromHome("PM_AGG_FLEET_INVOCATION_LEDGER_FILE", ".local", "state")(),
-          "fleet",
-          "invocations.jsonl",
-        ),
+    fleetInvocationLedgerFile: s(env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE, () =>
+      join(
+        env.XDG_STATE_HOME?.trim() || fromHome("PM_AGG_FLEET_INVOCATION_LEDGER_FILE", ".local", "state")(),
+        "fleet",
+        "invocations.jsonl",
+      ),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),
