@@ -14,7 +14,8 @@ specified in the #2020 Jules investigation).
   `~/.config/openchamber/projects/*.json`) plus the laptop's systemd
   user timers — the OS-timer surface the #2019 pattern and its
   implementation issue #2232 build on. #2232 is still open, so this
-  section lists the units as they exist today.
+  section lists the units as they exist today. Laptop NixOS system-scope
+  timers are listed separately under Surface 2d.
 - **Surface 3 — Jules schedules:** web-UI CRUD on the one collected
   Jules account (pilot #2265).
 - **Surface 5 — Mac launchd jobs:** timed launchd daemons and agents
@@ -512,6 +513,16 @@ from issue #1319.
 | timer unit             | cadence spec                                                | activates                | owner / scope                                                       | budget       | kill criteria | created    | last review |
 | ---------------------- | ----------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------- | ------------ | ------------- | ---------- | ----------- |
 | `quota-recorder.timer` | `OnCalendar=*:0/5` (Persistent=true, RandomizedDelaySec=20) | `quota-recorder.service` | sandbox (system systemd; deploy target `quota-recorder`, code#5770) | not recorded | not recorded  | 2026-10-28 | 2026-11-22  |
+
+### 2d. Laptop systemd system timers (1 listed; 1 Nix-configured pending deployment)
+
+System-scope timers declared in the laptop's NixOS configuration. Unlike
+Surface 2b, these run without a user systemd session and can activate
+system services.
+
+| timer unit | cadence spec | activates | owner / scope | budget | kill criteria | created | last review |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------- | ------------ | ------------- | ---------- | ----------- |
+| `pm-stack-follow-main.timer` (Nix-configured; not yet loaded) | `OnCalendar=hourly,OnBootSec=15min` + `AccuracySec=5min,RandomizedDelaySec=5min,Persistent=true` | `agent-rebuild-switch.service` | laptop amd (system systemd; NixOS pm-stack module; calls the reviewed main-only rebuild-and-switch service) | not recorded | not recorded | 2026-11-26 | 2026-11-26 |
 
 ## Surface 3 — Jules schedules (1 entry, retired)
 

@@ -20,5 +20,6 @@ jq -e '
   and .timerConfig.Persistent == true
   and .timerConfig.Unit == "agent-rebuild-switch.service"
 ' <<<"$timer" >/dev/null
+grep -Fq '`pm-stack-follow-main.timer`' "$repo_root/doc/fleet-schedule-registry.md"
 
 echo "PM follow-main timer NixOS evaluation passed."
