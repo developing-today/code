@@ -198,3 +198,24 @@ test("http: routing, version probes and token hashes", async () => {
   const health = await (await handle(new Request("https://gw.example/health"), env)).json();
   assert.deepEqual(health.databases, ["fleet-queue"]);
 });
+
+test("more than 100 arguments go in as literals (D1 binds at most 100)", async () => {
+  const db = await setup();
+  const rows = 60;
+  const values = Array.from({ length: rows }, (_, i) => `(?${2 * i + 1}, ?${2 * i + 2})`).join(", ");
+  const args = [];
+  for (let i = 0; i < rows; i++) args.push(T(i === 0 ? "it's -- not /* a comment ?1" : `r${i}`), { type: "float", value: i + 0.1 });
+  const res = await pipeline(db, {
+    requests: [
+      exec(`INSERT INTO t (name, n) VALUES ${values}`, args),
+      exec("SELECT count(*) AS c FROM t"),
+      exec("SELECT name, n FROM t WHERE id = 1"),
+      exec("SELECT n FROM t WHERE id = 60"),
+    ],
+  });
+  assert.equal(res.results[0].type, "ok", JSON.stringify(res.results[0]));
+  assert.equal(res.results[0].response.result.affected_row_count, rows);
+  assert.deepEqual(res.results[1].response.result.rows[0], [I(rows)]);
+  assert.deepEqual(res.results[2].response.result.rows[0], [T("it's -- not /* a comment ?1"), { type: "float", value: 0.1 }]);
+  assert.deepEqual(res.results[3].response.result.rows[0], [{ type: "float", value: 59.1 }]);
+});

@@ -62,11 +62,70 @@ jobs:
       # checkout lands at .pm-central because pm-dispatch-task's own
       # nested steps load pm-dispatch-start / pm-dispatch-queue from
       # that same path (see that action's header note).
+      #
+      # The checkout is pinned to the commit this workflow file was
+      # read from, not to main (#15764). A caller that pins
+      # pm-scheduled.yml@<sha> then also pins the resolver script and
+      # the dispatch actions this job runs, and a push to main cannot
+      # change what a pinned caller executes under its own token. The
+      # pin is self-referential: it follows whatever revision of this
+      # file runs, so it never needs a manual bump.
+      #
+      # The `github` context belongs to the caller in a reusable
+      # workflow, so github.sha cannot name this file's commit. The
+      # job's OIDC token can: its job_workflow_ref / job_workflow_sha
+      # claims are set by GitHub to this workflow's own path and
+      # commit. Callers already grant `id-token: write` (see above).
+      # When this workflow runs directly (workflow_dispatch here),
+      # github.workflow_ref names this file and github.sha is its
+      # commit. With neither, the step fails closed rather than fall
+      # back to a mutable ref.
+      - name: Find the commit this workflow runs from
+        id: self
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          self="developing-today/code/.github/workflows/pm-scheduled.yml@"
+
+          if [ "${WORKFLOW_REF#"$self"}" != "$WORKFLOW_REF" ]; then
+            ref="$WORKFLOW_REF"
+            sha="$RUN_SHA"
+          else
+            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+              echo "::error::pm-scheduled needs the calling job to grant 'id-token: write' to pin its own checkout"
+              exit 1
+            fi
+            token="$(curl -fsS \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=pm-scheduled-self-pin" | jq -r '.value')"
+            echo "::add-mask::$token"
+            # The claims are the JWT's middle segment, base64url without padding.
+            payload="$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')"
+            while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
+            claims="$(printf '%s' "$payload" | base64 -d)"
+            ref="$(printf '%s' "$claims" | jq -r '.job_workflow_ref // empty')"
+            sha="$(printf '%s' "$claims" | jq -r '.job_workflow_sha // empty')"
+          fi
+
+          if [ "${ref#"$self"}" = "$ref" ]; then
+            echo "::error::unexpected workflow ref '$ref'; refusing to check out an unpinned revision"
+            exit 1
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::workflow commit '$sha' is not a full commit SHA"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "pm-scheduled runs from $ref at $sha"
+
       - name: Check out the pm-dispatch actions (central)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: developing-today/code
-          ref: main
+          ref: ${{ steps.self.outputs.sha }}
           path: .pm-central
           persist-credentials: false
 

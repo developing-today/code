@@ -22,6 +22,7 @@
 //! hardware shell (#10929) and the native shell (#10928) followed.
 
 pub mod frames;
+pub mod present;
 pub mod session;
 
 /// Shell-contract name this client speaks (F13.1).

@@ -1292,7 +1292,10 @@ mod tests {
     fn test_native_redb_oracle_compacted_table_roundtrip() {
         let mut store = open_test_store();
         store.put("compacted", b"position", b"residue").unwrap();
-        assert_eq!(store.get("compacted", b"position").unwrap(), Some(b"residue".to_vec()));
+        assert_eq!(
+            store.get("compacted", b"position").unwrap(),
+            Some(b"residue".to_vec())
+        );
     }
 
     /// The oracle is the protocol's value encoding (hrana over HTTP):

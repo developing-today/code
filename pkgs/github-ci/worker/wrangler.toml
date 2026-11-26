@@ -26,7 +26,7 @@ workers_dev = true
 [vars]
 # Turso -> D1 move (2026-11-25): d1gw://<db> goes through the d1-gateway
 # Worker (service binding D1GW below) to the D1 database of that name.
-TURSO_PLATFORM_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+TURSO_PLATFORM_URL = "d1gw://fleet-platform"
 TURSO_QUEUE_URL = "d1gw://fleet-queue"
 EVENTS_BROKER_URL = "https://queue-broker.security.cab"
 # EVENTS_BROKER_URL (#6925): the queue broker's public route —
