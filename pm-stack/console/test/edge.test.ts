@@ -8404,7 +8404,7 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.push(COMMENT);
     w.net.hostUp = false;
     w.net.edgeUp = false;
-    w.storeFails.add("held");
+    w.storeFails.add(`held:${ID(256)}`);
     await w.act("issue.comment", { issue: 85, text: "older" }, ID(256)).catch(() => null);
     expect([...w.stored.keys()].filter((key) => key.startsWith("relaying:"))).toHaveLength(1);
   });
