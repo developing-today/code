@@ -66,7 +66,7 @@
 //     nothing.
 
 import { FailClosed, parseBindingId, parseJurisdiction, type Jurisdiction } from "./routing.ts";
-import { TenancyRegistry } from "./tenancy-registry.ts";
+import { TenancyRegistry, type TenancyDatabase } from "./tenancy-registry.ts";
 
 export const TENANT_STATES = [
   "requested",
@@ -171,6 +171,7 @@ interface DOState {
 interface Env {
   TENANT_DB_PROVIDER?: TenantDatabaseProvider;
   TENANT_DELETION_COOLING_OFF_MS?: string;
+  TENANCY_DB?: TenancyDatabase;
 }
 
 interface TenantRow {
@@ -437,8 +438,8 @@ export class TenantOpsDO {
 
   /** Steps 1–3 (signup + binding ceremony are upstream; this is
    * the tenant request they enable): record the row `requested`
-   * with its intent, then validate. A tenant whose binding is
-   * missing or not active fails validation ON the row (§4's
+   * with its intent, then validate. A tenant whose account is not
+   * active, or whose binding is missing or not active, fails validation ON the row (§4's
    * requested ──► failed edge) — and no database is ever created
    * before a binding exists. Idempotent: a repeat request returns
    * the existing row, whatever state it has reached. */
@@ -477,7 +478,7 @@ export class TenantOpsDO {
       request_id: provisioningRequestId(row.tenant_id),
       jurisdiction,
     });
-    const reason = new TenancyRegistry(this.sql()).provisioningBlockReason(this.tenantId);
+    const reason = await new TenancyRegistry(this.env.TENANCY_DB).provisioningBlockReason(this.tenantId);
     if (reason !== null) {
       row = this.setState(row, "failed");
       this.journal(at, "failed", "requested", "failed", actor, { reason });
