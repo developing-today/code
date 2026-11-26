@@ -39,7 +39,7 @@ fn names(value: &Value) -> BTreeSet<String> {
 fn record_workflow() -> Vec<Value> {
     let mut shell = HwShell::new();
     let mut transcript = Vec::new();
-    let mut fold = |shell: &mut HwShell, transcript: &mut Vec<Value>, frame: Value| {
+    let fold = |shell: &mut HwShell, transcript: &mut Vec<Value>, frame: Value| {
         let update = shell.apply_server_frame(&frame).unwrap();
         transcript.push(json!({"from": "server", "frame": frame}));
         update
