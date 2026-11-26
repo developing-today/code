@@ -320,6 +320,9 @@ in
             # signal delivered to this service is attributed in
             # ${aggState}/sigterm-witness.log before it is
             # forwarded to the app.
+            # Refresh the collector's local OpenCode password when possible;
+            # a missing/failing helper must not take the board offline.
+            ExecStartPre = "-${home}/.local/bin/fleet-feed-oc-password.sh";
             # Bun 1.4.4 cannot adopt a systemd-passed listener.
             # Preserve the direct public binds until the socket is
             # explicitly enabled; with aggregatorSocketActivation the
@@ -333,7 +336,12 @@ in
               "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log "
               + (lib.optionalString cfg.aggregatorSocketActivation "${pkgs.coreutils}/bin/env PM_AGG_HOSTS=127.0.0.1 PM_AGG_PORT=${toString cfg.aggregatorBackendPort} PM_AGG_FRESHNESS_PORT=${toString cfg.aggregatorFreshnessBackendPort} ")
               + "${pmAggregator}/bin/pm-aggregator";
-            EnvironmentFile = "${aggState}/.env";
+            # The in-process quota job also needs the optional Antigravity
+            # credential file previously loaded by quota-gatherer.service.
+            EnvironmentFile = [
+              "${aggState}/.env"
+              "-%h/.local/state/opencode/mistral-api-key.env"
+            ];
             # The projector is a deployed service of this stack — never
             # render it off (see the header note). The coverage snapshot
             # is runtime state: keep it in the state dir, not the
@@ -381,6 +389,30 @@ in
               # switching this back to "file" is the rollback.
               "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=pm-aggregator.service"
+              # #8570: preserve the old quota-gatherer service's state paths
+              # when its main() runs inside pm-aggregator.
+              "QUOTA_CURRENT_PATH=${aggState}/quota-current.json"
+              "QUOTA_HEARTBEAT_PATH=${aggState}/quota-gatherer-heartbeat.json"
+              "QUOTA_GATHERER_STATE_PATH=${aggState}/quota-gatherer-state.json"
+              "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots"
+              "POOL_STATE_PATH=${home}/.local/state/opencode-claimant/pool-state.json"
+              # #8570: preserve the collector's source paths and runtime
+              # credentials when it runs inside pm-aggregator rather than its
+              # former oneshot unit.
+              "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
+              "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
+              "ORCHESTRATION_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
+              "DNS_REGISTER_PATH=${home}/hatch-personal/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md"
+              "AA_OPENCODE_CONFIG_PATH=${home}/git/code/.opencode/opencode.jsonc"
+              "CHARGE_CANDIDATES_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json"
+              "CHARGES_SURFACED_STATE_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced-state.json"
+              "CLAUDE_LAUNCH_RECORDS_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/claude-launch-records.jsonl"
+              "USAGE_SNAPSHOT_OUTBOX_PATH=${aggState}/usage-snapshot-outbox.jsonl"
+              "SANDBOX_OPENCODE_URL=http://127.0.0.1:13420"
+              "OPENCODE_SERVER_URL=http://127.0.0.1:13420"
+              "OPENCODE_SESSION_SOURCE=opencode-laptop"
+              "OPENCODE_SERVER_PASSWORD_FILE=${aggState}/opencode-server-password"
+              "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               # The digest archive (#1278) is runtime state too: one
@@ -592,6 +624,7 @@ in
               "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=fleet-feed-collector"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
+              "PM_CORE_FEED_CREDENTIAL_REFRESH=${home}/.local/bin/fleet-feed-oc-password.sh"
               "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
               "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
@@ -719,17 +752,6 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
 
-        quota-gatherer = {
-          Unit.Description = "Run the quota gatherer every 15 minutes (pm-stack, #1151)";
-          Timer = {
-            OnCalendar = "*:0/15";
-            RandomizedDelaySec = 20;
-            Persistent = true;
-            Unit = "quota-gatherer.service";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
-
         pm-digest-daily = {
           Unit.Description = "Run the PM daily digest every morning at 07:00 local (pm-stack, #1278)";
           Timer = {
@@ -759,16 +781,6 @@ in
             RandomizedDelaySec = 60;
             Persistent = true;
             Unit = "quota-weekly-review.service";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
-
-        fleet-feed-collector = {
-          Unit.Description = "Collect the fleet feed for the laptop aggregator every ~5 minutes";
-          Timer = {
-            OnBootSec = "2min";
-            OnUnitActiveSec = "5min";
-            Unit = "fleet-feed-collector.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };
