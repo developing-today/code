@@ -9,7 +9,10 @@ use tracing::Instrument;
 
 use crate::world_caps::{CapsReport, Decision, Subscription};
 
+mod command;
 mod execution;
+
+pub(crate) use command::WorldCommand;
 
 /// Reserved tracing target for structured administrative and provider-use audit records.
 pub(crate) const AUDIT_TRACE_TARGET: &str = "id::audit";
@@ -72,482 +75,23 @@ fn authority_identity(authority: &Authority) -> String {
     }
 }
 
-impl WorldCommand {
-    pub(crate) fn name(&self) -> &'static str {
-        match self {
-            Self::Issue { .. } => "Issue",
-            Self::Attenuate { .. } => "Attenuate",
-            Self::DelegateToFriend { .. } => "DelegateToFriend",
-            Self::Directory { .. } => "Directory",
-            Self::ApplyDirectory { .. } => "ApplyDirectory",
-            Self::DirectoryAccount { .. } => "DirectoryAccount",
-            Self::Revoke { .. } => "Revoke",
-            Self::RevokeAuthorized { .. } => "RevokeAuthorized",
-            Self::ParticipantId { .. } => "ParticipantId",
-            Self::AuthorizeScope { .. } => "AuthorizeScope",
-            Self::BindAuthorKey { .. } => "BindAuthorKey",
-            Self::Chat { .. } => "Chat",
-            Self::Input { .. } => "Input",
-            Self::EntityInput { .. } => "EntityInput",
-            Self::ExportEntity { .. } => "ExportEntity",
-            Self::ImportEntity { .. } => "ImportEntity",
-            Self::HandoffWriteLease { .. } => "HandoffWriteLease",
-            Self::Snapshot { .. } => "Snapshot",
-            Self::HostView { .. } => "HostView",
-            Self::EventsAfter { .. } => "EventsAfter",
-            Self::ProjectEvent { .. } => "ProjectEvent",
-            Self::View { .. } => "View",
-            Self::ViewAt { .. } => "ViewAt",
-            Self::InstallProgram { .. } => "InstallProgram",
-            Self::InstallProgramAuthorized { .. } => "InstallProgramAuthorized",
-            Self::Presence { .. } => "Presence",
-            Self::SubmitFormResult { .. } => "SubmitFormResult",
-            Self::UpdateCaps { .. } => "UpdateCaps",
-            Self::SetCapsCeiling { .. } => "SetCapsCeiling",
-            Self::SetExecutionProfile { .. } => "SetExecutionProfile",
-            Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
-            Self::ManifestState { .. } => "ManifestState",
-            Self::AdminScheduleAt { .. } => "AdminScheduleAt",
-            Self::AdminCancelSchedule { .. } => "AdminCancelSchedule",
-            Self::AdminSetScheduleGrant { .. } => "AdminSetScheduleGrant",
-            Self::DeliverSchedule { .. } => "DeliverSchedule",
-            Self::SetScheduleDelivery { .. } => "SetScheduleDelivery",
-            Self::AdminSetPortalGrant { .. } => "AdminSetPortalGrant",
-            Self::PortalGrantsInfo { .. } => "PortalGrantsInfo",
-            Self::PortalSendPrecheck { .. } => "PortalSendPrecheck",
-            Self::PortalSendAdmit { .. } => "PortalSendAdmit",
-            Self::PortalSendRecord { .. } => "PortalSendRecord",
-            Self::DeliverPortal { .. } => "DeliverPortal",
-            Self::CapsInfo { .. } => "CapsInfo",
-            Self::SetIsolation { .. } => "SetIsolation",
-            Self::IsolationInfo { .. } => "IsolationInfo",
-            Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
-            Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
-            Self::SetFileScope { .. } => "SetFileScope",
-            Self::PolicyInfo { .. } => "PolicyInfo",
-            Self::Metrics { .. } => "Metrics",
-            Self::ProgramHealth { .. } => "ProgramHealth",
-            Self::AdminEventHistory { .. } => "AdminEventHistory",
-            Self::ReplicationFeed { .. } => "ReplicationFeed",
-            Self::ReplicaSidecars { .. } => "ReplicaSidecars",
-            Self::ReplicationCompact { .. } => "ReplicationCompact",
-            Self::Shutdown { .. } => "Shutdown",
-        }
-    }
-}
-
 /// The most unsigned inputs one group-commit batch may stage (#8239):
 /// bounding the drain bounds how long the actor loop spends staging
 /// before it persists, and how much one sync must cover.
 const MAX_INPUT_BATCH: usize = 64;
 
-pub(crate) enum WorldCommand {
-    Issue {
-        name: String,
-        scopes: WorldScopes,
-        bounds: CapabilityBounds,
-        reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
-    },
-    Attenuate {
-        token: JoinCapability,
-        name: String,
-        scopes: WorldScopes,
-        bounds: CapabilityBounds,
-        reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
-    },
-    DelegateToFriend {
-        token: JoinCapability,
-        friend: String,
-        name: String,
-        scopes: WorldScopes,
-        bounds: CapabilityBounds,
-        reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
-    },
-    Directory {
-        caller: crate::directory_auth::Caller,
-        action: crate::directory_view::DirectoryAction,
-        /// Whether this server has an outbox to queue what the action sends.
-        outbox: bool,
-        reply: oneshot::Sender<Result<crate::directory_view::DirectoryOutcome>>,
-    },
-    ApplyDirectory {
-        entry: crate::directory::DirectoryEntry,
-        reply: oneshot::Sender<Result<()>>,
-    },
-    /// Whether the world's directory holds `account`, and if so
-    /// whether it is verified (#8538). Refused on a replica, like
-    /// `ApplyDirectory`: the answer exists so a caller can apply an
-    /// entry next, and a replica never applies one.
-    DirectoryAccount {
-        account: String,
-        reply: oneshot::Sender<Result<Option<bool>>>,
-    },
-    Revoke {
-        participant_id: u64,
-        /// The moderator participant who ordered the revoke, for the audit
-        /// journal. `None` means the admin revoked.
-        by: Option<u64>,
-        reply: oneshot::Sender<bool>,
-    },
-    /// Revoke ordered by a joined moderator (design #835 phase 2): the
-    /// actor authorizes the live capability itself and derives the audit
-    /// actor from it; no caller-supplied actor ID is trusted. The reply is
-    /// a `Result` so a journal failure is surfaced instead of being
-    /// reported as an audited success; the in-memory revocation stands
-    /// either way (fail-closed).
-    RevokeAuthorized {
-        token: JoinCapability,
-        participant_id: u64,
-        reply: oneshot::Sender<Result<bool>>,
-    },
-    ParticipantId {
-        token: JoinCapability,
-        reply: oneshot::Sender<Result<u64>>,
-    },
-    /// Authorize a live capability for a scope set without performing
-    /// the operation (design #835 phase 3): session paths check this
-    /// before receiving upload bytes, while the operation commands
-    /// (`InstallProgramAuthorized`, `RevokeAuthorized`) still re-check
-    /// at the effect boundary. Replies with the derived participant ID.
-    AuthorizeScope {
-        token: JoinCapability,
-        required: WorldScopes,
-        reply: oneshot::Sender<Result<u64>>,
-    },
-    Chat {
-        token: JoinCapability,
-        text: String,
-        reply: oneshot::Sender<Result<WorldEvent>>,
-    },
-    Input {
-        token: JoinCapability,
-        input: Vec<u8>,
-        session_id: Option<SessionId>,
-        device_input: Option<serde_json::Value>,
-        /// The player-signed move event bytes for this input (#2814), when
-        /// the participant plays signed. `None` is the unsigned path,
-        /// which refuses participants with a bound author key.
-        signed_move: Option<Vec<u8>>,
-        reply: oneshot::Sender<Result<WorldEvent>>,
-    },
-    /// Bind the calling participant's author key for signed play (#2814).
-    BindAuthorKey {
-        token: JoinCapability,
-        author_key: [u8; 32],
-        reply: oneshot::Sender<Result<u64>>,
-    },
-    EntityInput {
-        token: JoinCapability,
-        entity_ref: String,
-        input: Vec<u8>,
-        reply: oneshot::Sender<Result<WorldEvent>>,
-    },
-    ExportEntity {
-        handoff_id: String,
-        entity_ref: String,
-        source_region: String,
-        target_region: String,
-        prior_owner_epoch: u64,
-        reply: oneshot::Sender<Result<HandoffTransferState>>,
-    },
-    ImportEntity {
-        handoff_id: String,
-        entity_ref: String,
-        source_region: String,
-        target_region: String,
-        prior_owner_epoch: u64,
-        program_module_hash: String,
-        payload_schema: String,
-        payload: Vec<u8>,
-        payload_digest: String,
-        reply: oneshot::Sender<Result<HandoffTransferState>>,
-    },
-    /// DO-authority control request. The actor derives the source holder
-    /// from its journaled state and serializes the durable boundary with all
-    /// world commands.
-    HandoffWriteLease {
-        to: String,
-        epoch: u64,
-        expires_at_ms: Option<u64>,
-        reply: oneshot::Sender<Result<u64>>,
-    },
-    Snapshot {
-        token: JoinCapability,
-        reply: oneshot::Sender<Result<WorldSnapshot>>,
-    },
-    /// Admin-authorized web rendering; the caller must validate the admin
-    /// secret before requesting this view. The synthetic viewer is not a
-    /// registered participant and never receives presence or event rights.
-    HostView {
-        reply: oneshot::Sender<Result<(WorldSnapshot, Option<String>)>>,
-    },
-    EventsAfter {
-        token: JoinCapability,
-        sequence: u64,
-        reply: oneshot::Sender<Result<EventPage>>,
-    },
-    ProjectEvent {
-        token: JoinCapability,
-        event: WorldEvent,
-        reply: oneshot::Sender<Result<Option<WorldEvent>>>,
-    },
-    View {
-        token: JoinCapability,
-        reply: oneshot::Sender<Result<Option<String>>>,
-    },
-    ViewAt {
-        token: JoinCapability,
-        width: u16,
-        height: u16,
-        reply: oneshot::Sender<Result<Option<String>>>,
-    },
-    InstallProgram {
-        module_hash: String,
-        seed: u64,
-        provenance: Option<ModuleProvenance>,
-        /// The builder participant who ordered the install, for the audit
-        /// journal. `None` means the admin installed.
-        installed_by: Option<u64>,
-        /// The trust decision that admitted the module, for the audit
-        /// journal (#1069). `None` records no decision.
-        trust: Option<crate::world::TrustDecision>,
-        program: Box<dyn WorldProgram>,
-        reply: oneshot::Sender<Result<WorldEvent>>,
-    },
-    /// Install ordered by a joined builder (design #835 phase 2): the
-    /// actor authorizes the live capability itself at the mutation
-    /// boundary and derives `installed_by` from it.
-    InstallProgramAuthorized {
-        token: JoinCapability,
-        module_hash: String,
-        seed: u64,
-        provenance: Option<ModuleProvenance>,
-        trust: Option<crate::world::TrustDecision>,
-        program: Box<dyn WorldProgram>,
-        reply: oneshot::Sender<Result<WorldEvent>>,
-    },
-    /// A session opened or closed for this participant.
-    Presence {
-        participant: u64,
-        joined: bool,
-    },
-    /// A trusted host submits a deferred answer from its local form presenter.
-    SubmitFormResult {
-        /// When present, the joined session that submitted the answer.
-        token: Option<JoinCapability>,
-        /// Connection context for attribution of resulting program requests.
-        session_id: Option<SessionId>,
-        result: id_core::world_presentation::FormResult,
-        reply: oneshot::Sender<Result<FormSubmissionStatus>>,
-    },
-    /// Admin: change the granted capability set.
-    UpdateCaps {
-        grant: Vec<String>,
-        revoke: Vec<String>,
-        reply: oneshot::Sender<Result<CapsReport>>,
-    },
-    /// Admin: replace the world's capability ceiling. It applies immediately.
-    SetCapsCeiling {
-        ceiling: Vec<String>,
-        reply: oneshot::Sender<Result<CapsReport>>,
-    },
-    /// Admin: durably replace this world's requested runtime profile.
-    SetExecutionProfile {
-        profile: crate::world_limits::WorldExecutionProfile,
-        reply: oneshot::Sender<Result<ExecutionProfileUpdate>>,
-    },
-    /// Read this world's requested runtime profile.
-    ExecutionProfileInfo {
-        reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
-    },
-    /// Admin: read the manifest-reconciliation state — the active install
-    /// seed and the pending schedules. The seed stays inside the actor and
-    /// the admin layer; it is never part of a participant projection (#240).
-    ManifestState {
-        reply: oneshot::Sender<(u64, BTreeMap<String, u64>)>,
-    },
-    /// Admin: pend one schedule, replacing any pending schedule with the
-    /// same id. Replies with the full pending map after the change.
-    AdminScheduleAt {
-        id: String,
-        at_ms: u64,
-        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
-    },
-    /// Admin: cancel a pending schedule by id (a no-op when absent).
-    /// Replies with the full pending map after the change.
-    AdminCancelSchedule {
-        id: String,
-        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
-    },
-    /// Admin: set this world's schedule-delivery consent for one peer
-    /// (#1355 part 2). Replies with the full grant map after the change.
-    AdminSetScheduleGrant {
-        peer: String,
-        send: bool,
-        receive: bool,
-        reply: oneshot::Sender<Result<BTreeMap<String, ScheduleGrant>>>,
-    },
-    /// A cross-world schedule fire arriving from `source` (#1355 part 2).
-    /// Replies true only when this world durably accepted the fire.
-    DeliverSchedule {
-        source: String,
-        id: String,
-        at_ms: u64,
-        late: bool,
-        reply: oneshot::Sender<bool>,
-    },
-    /// Install the cross-world schedule delivery sink (composition layer).
-    SetScheduleDelivery {
-        delivery: std::sync::Arc<dyn ScheduleDelivery>,
-        reply: oneshot::Sender<()>,
-    },
-    /// Admin: set this world's F12.14 portal grant for one peer
-    /// (code#1068 wiring slice): `granted: true` grants the portal,
-    /// `granted: false` revokes a live grant. Replies with the full
-    /// grant book after the change.
-    AdminSetPortalGrant {
-        peer: String,
-        granted: bool,
-        reply: oneshot::Sender<Result<id_caps::portal::PortalGrants>>,
-    },
-    /// Read this world's current portal grant book (the transport
-    /// reads the peer's book through this before a send).
-    PortalGrantsInfo {
-        reply: oneshot::Sender<id_caps::portal::PortalGrants>,
-    },
-    /// Phase 1 of a portal send (code#1068 wiring slice): the
-    /// actor-local half of the pre-transport check — this world must
-    /// be writable and must itself grant the target. Runs no
-    /// cross-world await, so the command loop never blocks on a peer.
-    PortalSendPrecheck {
-        target: String,
-        bytes: usize,
-        reply: oneshot::Sender<Result<(), PortalSendError>>,
-    },
-    /// Phase 3 of a portal send: the full mutual check against the
-    /// peer book the handle fetched through the transport (phase 2,
-    /// outside the actor), the delivered-envelope bound, and the
-    /// per-pair rate admission. Replies with this world's id (the
-    /// source name the transport delivers under).
-    PortalSendAdmit {
-        target: String,
-        peer_grants: id_caps::portal::PortalGrants,
-        message: String,
-        reply: oneshot::Sender<Result<String, PortalSendError>>,
-    },
-    /// Phase 5 of a portal send: record the send-side audit shape
-    /// for the delivery outcome the handle observed (phase 4) — an
-    /// accepted shape for `refusal: None`, the refusal shape (and a
-    /// `Refused` reply) for `Some`.
-    PortalSendRecord {
-        target: String,
-        bytes: usize,
-        refusal: Option<id_caps::portal::PortalRefusal>,
-        reply: oneshot::Sender<Result<(), PortalSendError>>,
-    },
-    /// A portal message arriving from `source` (code#1068 wiring
-    /// slice). Replies `Ok` only when this world accepted it (its
-    /// own grant re-checked, message delivered to the program); a
-    /// policy refusal is recorded in this world's audit log.
-    DeliverPortal {
-        source: String,
-        message: String,
-        reply: oneshot::Sender<Result<(), PortalSendError>>,
-    },
-    /// Admin: read the capability report.
-    CapsInfo {
-        reply: oneshot::Sender<Result<CapsReport>>,
-    },
-    /// Admin or moderator: change the world's isolation.
-    SetIsolation {
-        authority: Authority,
-        isolation: Isolation,
-        reply: oneshot::Sender<Result<Isolation>>,
-    },
-    IsolationInfo {
-        reply: oneshot::Sender<Isolation>,
-    },
-    /// Moderator or admin: let other unisolated worlds write here.
-    SetCrossWorldWrite {
-        authority: Authority,
-        enabled: bool,
-        reply: oneshot::Sender<Result<WorldPolicy>>,
-    },
-    /// Admin: force cross-world writes on.
-    ForceCrossWorldWrite {
-        authority: Authority,
-        reply: oneshot::Sender<Result<WorldPolicy>>,
-    },
-    /// Moderator or admin: set the file scope; the admin alone sets the override.
-    SetFileScope {
-        authority: Authority,
-        scope: FileScope,
-        write_override: Option<bool>,
-        reply: oneshot::Sender<Result<WorldPolicy>>,
-    },
-    PolicyInfo {
-        reply: oneshot::Sender<WorldPolicy>,
-    },
-    /// Read this world's host metrics (F11.7): counters and histograms
-    /// recorded by the actor, the journal path, and the session layer.
-    Metrics {
-        reply: oneshot::Sender<MetricsSnapshot>,
-    },
-    /// Whether the program is still healthy: false once the actor has
-    /// latched a guest failure (an input, records, or wants call that
-    /// trapped). Answered in command order, and the run loop awaits
-    /// `after_change` after each command before receiving the next, so
-    /// a health query sent after an input observes that input's
-    /// post-input `after_change` outcome.
-    ProgramHealth {
-        reply: oneshot::Sender<bool>,
-    },
-    /// Admin-only consistent snapshot for replayable fixture export.
-    AdminEventHistory {
-        reply: oneshot::Sender<Result<AdminEventHistory>>,
-    },
-    /// Atomically capture the journal and subscribe to subsequent durable changes.
-    /// When the captured journal is large enough to hold an over-bound entry,
-    /// a second source is returned as a probe: the caller scans it OUTSIDE
-    /// the actor (#8095), because awaiting the scan here would suspend all
-    /// command processing for the duration of a full journal read.
-    ReplicationFeed {
-        reply: oneshot::Sender<
-            Result<(
-                String,
-                JournalSnapshotSource,
-                Option<JournalSnapshotSource>,
-                broadcast::Receiver<ReplicationUpdate>,
-            )>,
-        >,
-    },
-    /// The authenticated sidecars for one replication snapshot
-    /// (F12.13 phase 5): the directory facts for `subjects` (the
-    /// accounts in the snapshot journal's capability chains) as
-    /// JSONL entry bytes, plus the active module hash whose bytes
-    /// the feed serves from the module store. The feed captures the
-    /// sidecars from the actor immediately after the snapshot image
-    /// in the same session, and the signed batch binds them to that
-    /// snapshot's cursor; facts are derived inside the actor (the
-    /// only place directory changes are applied), never read from a
-    /// file the actor is concurrently appending to.
-    ReplicaSidecars {
-        subjects: std::collections::BTreeSet<String>,
-        reply: oneshot::Sender<Result<(Vec<u8>, Option<String>)>>,
-    },
-    /// Serialized forced compaction after an out-of-actor probe found an
-    /// oversized legacy entry (#8095). Compaction itself stays an actor
-    /// operation; only the scan moved out.
-    ReplicationCompact {
-        ordinal: usize,
-        encoded_size: usize,
-        reply: oneshot::Sender<Result<()>>,
-    },
-    Shutdown {
-        reply: oneshot::Sender<()>,
-    },
+/// Whether `error` is a fuel-rate admission refusal (#1067): the
+/// program never ran, so the actor stays healthy and the input may
+/// be retried once the account's window rolls. Every other program
+/// error is a guest failure and poisons the program.
+///
+/// Checked before any `.context(...)` is applied: the bare program
+/// error carries the refusal at its outermost layer.
+fn is_fuel_rate_refusal(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+        .is_some()
 }
-
 /// Trim `journal` behind a verified snapshot of `program`. `Ok(false)` means
 /// the program cannot snapshot.
 pub(crate) fn compact_journal(
@@ -635,6 +179,19 @@ pub(crate) struct WorldActor {
     pub(crate) active_subs: BTreeSet<Subscription>,
     /// Request ids already executed, so `wants` states intent, not polling.
     pub(crate) handled_requests: BTreeSet<String>,
+    /// Capability results whose delivery was refused at the account's
+    /// fuel rate (#1067): the side effect already ran, so the result
+    /// event waits here — never re-executed — until the window rolls
+    /// and `retry_pending_results` delivers it. Actor lifetime only,
+    /// like `handled_requests`: a restart falls back to the existing
+    /// restarted-refusal path for the same id.
+    pub(crate) pending_results: std::collections::VecDeque<String>,
+    /// Earliest actor-clock instant a fuel-refused delivery may be
+    /// retried (#1067): one full window past the refusal, which is
+    /// guaranteed to land in a fresh budget window — the refused
+    /// window started no later than the refusal. `None` while no
+    /// refusal is outstanding.
+    pub(crate) fuel_retry_not_before: Option<std::time::Instant>,
     /// Forms registered by `form.present`; actor-lifetime only, so a restart
     /// invalidates outstanding UI submissions instead of replaying stale input.
     pub(crate) pending_forms: BTreeMap<String, PendingForm>,
@@ -783,6 +340,9 @@ impl WorldActor {
                     continue;
                 },
                 () = Self::sleep_until(deadline) => {
+                    // Give already-executed capability results first claim
+                    // on the fresh fuel window, before recurring timers.
+                    self.after_change().await;
                     self.fire_ticks().await;
                     self.fire_loc_watches().await;
                     self.fire_schedules().await;
@@ -887,6 +447,14 @@ impl WorldActor {
         }
         let deliverable = self.program_healthy && !self.storage_failed;
         let clock = self.core.clock();
+        let now_instant = clock.now_instant();
+        // A fuel-rate refusal backs delivery off until one full window
+        // past the refusal (#1067): the budget's window started no
+        // later than the refusal, so that instant is guaranteed to
+        // land in a fresh window.
+        let fuel_backoff = self
+            .fuel_retry_not_before
+            .filter(|deadline| *deadline > now_instant);
         self.ticks
             .values()
             .min()
@@ -895,11 +463,16 @@ impl WorldActor {
             .chain(next_schedule_wake(
                 &self.core.schedules,
                 clock.now_ms(),
-                clock.now_instant(),
+                now_instant,
                 deliverable,
+                fuel_backoff,
             ))
             .chain(self.loc_watches.values().min().copied())
             .chain(self.provider_broker.next_deadline())
+            // A queued capability result needs a wake at the retry
+            // deadline too, or the loop would sleep past the rollover
+            // with a result still waiting (#1067).
+            .chain(fuel_backoff.filter(|_| !self.pending_results.is_empty()))
             .min()
     }
 
@@ -1008,6 +581,53 @@ impl WorldActor {
         self.core.write_lease = next_lease;
         self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         Ok(epoch)
+    }
+
+    /// Execute a spill v2 automatic failover (design #5787 §1, #7572):
+    /// plan from the journaled lease and the grantor-side pool, then
+    /// journal the plan's entries in order. The live lease advances to
+    /// match the journaled prefix after each entry, so a crash — or a
+    /// failed grant append — between the revoke and the grant leaves
+    /// the world holder-less (writers refused `holder-lost`), never
+    /// with two holders. The host adapter authenticates this control
+    /// request and supplies the pool observations and the journal tip;
+    /// the returned execution names the grant position the successor
+    /// must replay through before it may write.
+    fn failover_write_lease(
+        &mut self,
+        pool: &spill_pool::SpillPool,
+        journal_tip: u64,
+        max_catch_up_lag: u64,
+        term_ms: u64,
+    ) -> Result<spill_pool::FailoverExecution> {
+        self.check_not_replica()?;
+        self.check_storage()?;
+        ensure!(
+            self.journal.is_some(),
+            "write lease failover requires a durable journal"
+        );
+        let now_ms = self.core.clock().now_ms();
+        let plan = pool
+            .plan_failover(
+                self.core.write_lease(),
+                now_ms,
+                journal_tip,
+                max_catch_up_lag,
+            )
+            .map_err(anyhow::Error::new)?;
+        let execution = plan.execute(self.core.write_lease(), now_ms, term_ms)?;
+        let entries = execution.entries().to_vec();
+        let last = entries.len() - 1;
+        for (index, entry) in entries.into_iter().enumerate() {
+            self.persist(entry)?;
+            self.core.write_lease = if index == last {
+                execution.resulting_lease().clone()
+            } else {
+                execution.intermediate_lease().clone()
+            };
+            self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        }
+        Ok(execution)
     }
 
     /// Policy-B admission, checked at every token-admission entry
@@ -1424,8 +1044,18 @@ impl WorldActor {
                                     })
                             }
                             Err(error) => {
-                                self.program_healthy = false;
-                                Err(error.context("world program rejected input"))
+                                if is_fuel_rate_refusal(&error) {
+                                    // Recoverable admission refusal
+                                    // (#1067): the program never ran
+                                    // and stays healthy; the same
+                                    // input can succeed once the
+                                    // account's window rolls.
+                                    Err(error
+                                        .context("world program refused input at its fuel rate"))
+                                } else {
+                                    self.program_healthy = false;
+                                    Err(error.context("world program rejected input"))
+                                }
                             }
                         }
                     }
@@ -1471,8 +1101,19 @@ impl WorldActor {
                                     self.republished(records.unwrap_or_default(), event.sequence);
                                 }),
                             Err(error) => {
-                                self.program_healthy = false;
-                                Err(error.context("world program rejected entity input"))
+                                if is_fuel_rate_refusal(&error) {
+                                    // Recoverable admission refusal
+                                    // (#1067): the program never ran
+                                    // and stays healthy; the same
+                                    // input can succeed once the
+                                    // account's window rolls.
+                                    Err(error.context(
+                                        "world program refused entity input at its fuel rate",
+                                    ))
+                                } else {
+                                    self.program_healthy = false;
+                                    Err(error.context("world program rejected entity input"))
+                                }
                             }
                         }
                     }
@@ -1510,6 +1151,29 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.handoff_write_lease(to, epoch, expires_at_ms);
+                let _ = reply.send(result);
+            }
+            WorldCommand::FailoverWriteLease {
+                pool,
+                journal_tip,
+                max_catch_up_lag,
+                term_ms,
+                reply,
+            } => {
+                let result =
+                    self.failover_write_lease(&pool, journal_tip, max_catch_up_lag, term_ms);
+                let _ = reply.send(result);
+            }
+            WorldCommand::DispatchSpillCopy {
+                holder,
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            } => {
+                let result =
+                    self.core
+                        .dispatch_spill_copy(&holder, epoch, replayed_position, journal_copy);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
@@ -1980,6 +1644,44 @@ impl WorldActor {
                 // would misattribute a participant read.
                 let _ = reply.send(profile);
             }
+            WorldCommand::SetPresentationPolicy { policy, reply } => {
+                // A summary, not the whole policy: its lists and maps are
+                // bounded but can run to hundreds of entries.
+                let audit_parameters = serde_json::json!({
+                    "user_uploads": policy.assets.user_uploads,
+                    "max_rung": policy.assets.max_rung,
+                    "disguise": policy.filters.disguise,
+                    "shaders": policy.shaders.enabled,
+                });
+                let result = self
+                    .check_writable()
+                    .and_then(|()| {
+                        policy.validate().map_err(|error| {
+                            anyhow::anyhow!("invalid presentation policy: {error}")
+                        })
+                    })
+                    .and_then(|()| {
+                        self.persist(JournalEntry::PresentationPolicy {
+                            policy: policy.clone(),
+                        })
+                    })
+                    .map(|()| {
+                        self.core.presentation = policy;
+                        self.core.presentation.clone()
+                    });
+                self.audit_admin_result(
+                    "admin",
+                    "SetPresentationPolicy",
+                    audit_parameters,
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::PresentationPolicyInfo { reply } => {
+                // No audit record: the policy is public pre-join metadata,
+                // readable without a capability (#5970 §5).
+                let _ = reply.send(self.core.presentation.clone());
+            }
             WorldCommand::ManifestState { reply } => {
                 let state = (self.core.active_seed, self.core.schedule_times());
                 // No audit record, for the same reason as Metrics below:
@@ -2183,6 +1885,20 @@ impl WorldActor {
                     authority_identity(&authority),
                     "SetIsolation",
                     serde_json::json!({"isolation": format!("{isolation:?}")}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::AuthorizeLifecycle {
+                authority,
+                act,
+                reply,
+            } => {
+                let result = self.require_ownership(&authority, act);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "AuthorizeLifecycle",
+                    serde_json::json!({"act": act}),
                     result.is_ok(),
                 );
                 let _ = reply.send(result);
@@ -3030,7 +2746,7 @@ mod replication_feed_tests {
         let snapshot = snapshot_source.read().unwrap();
         assert_eq!(reset.bytes, snapshot.bytes);
         let chunks = split_entry_payload(&snapshot.bytes).unwrap();
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [Vec<u8>; 0]);
         assert!(
             chunks
                 .iter()
@@ -4293,6 +4009,8 @@ impl WorldActor {
             presence: HashMap::new(),
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_results: std::collections::VecDeque::new(),
+            fuel_retry_not_before: None,
             pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),

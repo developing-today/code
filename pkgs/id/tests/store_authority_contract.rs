@@ -2,6 +2,8 @@
 //!
 //! Oracle: **research-matrix** — the report at
 //! `doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json`
+//! (vendored at `tests/fixtures/store-placement-research-report.json`
+//! so the Nix sandbox, which holds only `pkgs/id`, can read it)
 //! maps the blob/event/world/sync authority owners to source paths,
 //! states exact hash/profile facts without conflation, and records the
 //! Atlas `content_hash` producer status without inferred
@@ -121,14 +123,44 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn load_report() -> serde_json::Value {
-    let path = repo_root().join(
+/// The canonical research report, in the design doc at the repo root.
+/// Outside this crate's source tree, so it does not exist in the Nix
+/// sandbox; the vendored copy below is what the checks read there.
+fn canonical_report_path() -> PathBuf {
+    repo_root().join(
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/\
          store-placement-research-report.json",
-    );
-    let text = std::fs::read_to_string(&path)
-        .expect("the C9135-01 research report must exist (owned file of #10167)");
+    )
+}
+
+/// The vendored copy of the research report, inside this crate.
+fn vendored_report_path() -> PathBuf {
+    manifest_dir().join("tests/fixtures/store-placement-research-report.json")
+}
+
+fn load_report() -> serde_json::Value {
+    let text = std::fs::read_to_string(vendored_report_path())
+        .expect("the vendored C9135-01 research report must exist (owned file of #10167)");
     serde_json::from_str(&text).expect("the research report must be valid JSON")
+}
+
+/// The vendored report must match the canonical design-doc copy, so the
+/// two cannot drift silently. The doc copy is absent in the Nix sandbox,
+/// where this check has nothing to compare against; when it IS present,
+/// any difference fails loudly.
+#[test]
+fn vendored_report_matches_the_design_doc_copy() {
+    let canonical = canonical_report_path();
+    if !canonical.is_file() {
+        return;
+    }
+    let original = std::fs::read_to_string(&canonical).unwrap();
+    let vendored = std::fs::read_to_string(vendored_report_path()).unwrap();
+    assert_eq!(
+        vendored, original,
+        "tests/fixtures/store-placement-research-report.json differs from the \
+         design doc copy; edit the doc copy and re-copy it into tests/fixtures"
+    );
 }
 
 /// Build owned-map entries from the report JSON, asserting each

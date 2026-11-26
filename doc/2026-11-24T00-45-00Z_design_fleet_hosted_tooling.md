@@ -51,16 +51,16 @@ E. Mirror the laptop queue into Turso and make the mirror authoritative. Rejecte
 
 ### 4.2 Stamp parity
 
-| Native field | Hosted meaning | Treatment |
-|---|---|---|
-| queue id | same | kept |
-| scheduled start | same | kept |
-| pickup / work-start times | same, set by the service at claim time | kept |
-| worktree | no worktree on a Worker | replaced by `origin` = `hosted:<service-id>` |
-| host | Worker id | kept as `host`, value `workers:<region>` |
-| session id | same | kept |
-| model | same, from the caller's declaration | kept, marked `declared` |
-| lane-start issue set | same | kept |
+| Native field              | Hosted meaning                         | Treatment                                    |
+| ------------------------- | -------------------------------------- | -------------------------------------------- |
+| queue id                  | same                                   | kept                                         |
+| scheduled start           | same                                   | kept                                         |
+| pickup / work-start times | same, set by the service at claim time | kept                                         |
+| worktree                  | no worktree on a Worker                | replaced by `origin` = `hosted:<service-id>` |
+| host                      | Worker id                              | kept as `host`, value `workers:<region>`     |
+| session id                | same                                   | kept                                         |
+| model                     | same, from the caller's declaration    | kept, marked `declared`                      |
+| lane-start issue set      | same                                   | kept                                         |
 
 Unknown fields are rejected rather than silently dropped, so a caller cannot write a stamp field the service does not understand.
 
@@ -72,14 +72,14 @@ Unknown fields are rejected rather than silently dropped, so a caller cannot wri
 
 ### 4.4 Capability inventory against the native surface
 
-| Native capability | Hosted equivalent | State |
-|---|---|---|
-| Create issue/PR with stamp (#9073) | `POST /fleet/v1/issues`, `/pulls` | design here |
-| Metadata query (#9074) | `GET /fleet/v1/metadata?filter=` | design here |
-| Session provenance (#9075) | `POST /fleet/v1/sessions` | design here |
-| Sync tools (#9016) | sweeper + `POST /fleet/v1/sync` | design here, after the stamp path |
-| Worktree, shell, local build | none | stays native (N1) |
-| Queue claim and complete | see 4.5 | open |
+| Native capability                  | Hosted equivalent                 | State                             |
+| ---------------------------------- | --------------------------------- | --------------------------------- |
+| Create issue/PR with stamp (#9073) | `POST /fleet/v1/issues`, `/pulls` | design here                       |
+| Metadata query (#9074)             | `GET /fleet/v1/metadata?filter=`  | design here                       |
+| Session provenance (#9075)         | `POST /fleet/v1/sessions`         | design here                       |
+| Sync tools (#9016)                 | sweeper + `POST /fleet/v1/sync`   | design here, after the stamp path |
+| Worktree, shell, local build       | none                              | stays native (N1)                 |
+| Queue claim and complete           | see 4.5                           | open                              |
 
 ### 4.5 Queue answer
 

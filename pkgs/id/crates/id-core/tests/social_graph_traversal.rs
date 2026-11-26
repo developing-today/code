@@ -38,6 +38,7 @@ fn obj(id: u8, kind: SocialObjectKind, parent: Option<u8>) -> SocialObject {
         content_ref: oid(100 + id),
         schema_version: 1,
         succeeds_ref: None,
+        target_ref: None,
     }
 }
 
@@ -323,7 +324,10 @@ fn missing_root_is_an_empty_complete_traversal() {
     let objects = vec![obj(1, SocialObjectKind::Topic, None)];
     let traversal = traverse(&objects, &oid(9), &TraversalProfile::default(), |_| true);
     assert!(traversal.complete);
-    assert!(traversal.entries.is_empty());
+    assert_eq!(
+        traversal.entries,
+        [] as [id_core::graph::social::TraversalEntry; 0]
+    );
 }
 
 fn scope() -> FeedScope {
@@ -411,7 +415,10 @@ fn since_and_before_page_the_pinned_snapshot() {
         .map(|entry| entry.entry_id.clone())
         .collect();
     assert_eq!(older, vec!["a1", "b1", "a2"]);
-    assert!(ledger.since(&head).unwrap().is_empty());
+    assert_eq!(
+        ledger.since(&head).unwrap(),
+        [] as [id_core::graph::social::FeedEntry; 0]
+    );
 }
 
 #[test]

@@ -416,3 +416,19 @@ test('null or non-object daemon bodies are isError results, never a throw or a "
   assert.equal(hot.result.isError, true);
   assert.match(hot.result.content[0].text, /array JSON body/);
 });
+
+test('a tree answer without string tree text is an isError result, not an empty success (#7983 item 8)', async () => {
+  for (const body of [{}, { tree: null }, { tree: 42 }, { tree: { a: 1 } }]) {
+    const handle = createHandler({
+      fetchFn: stubFetch({ '/explore/tree': body }),
+      daemonUrl: 'http://127.0.0.1:7719',
+    });
+    const tree = await call(handle, 'codedb_tree', {});
+    assert.equal(tree.result.isError, true, JSON.stringify(body));
+    assert.match(tree.result.content[0].text, /no tree text for \/explore\/tree/);
+  }
+  const empty = createHandler({ fetchFn: stubFetch({ '/explore/tree': { tree: '' } }), daemonUrl: 'http://127.0.0.1:7719' });
+  const ok = await call(empty, 'codedb_tree', {});
+  assert.equal(ok.result.isError, undefined);
+  assert.equal(ok.result.content[0].text, '');
+});

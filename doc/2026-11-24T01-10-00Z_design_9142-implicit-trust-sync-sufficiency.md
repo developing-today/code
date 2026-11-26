@@ -38,6 +38,7 @@ artifact, #10262 divergence/anti-entropy).
 ## 2. Goals and explicit non-goals
 
 **Goals:**
+
 - G1. Implicit-trust peers converge toward 1:1 sameness inside an explicit
   authorized scope (tenant, trust domain, capacity, retention); anything
   outside scope is excluded by rule, not by accident.
@@ -50,6 +51,7 @@ artifact, #10262 divergence/anti-entropy).
   envelopes, policy gates), not a parallel trust channel.
 
 **Non-goals (explicit):**
+
 - N1. No automatic merge or CRDT convergence in V2 — that is conditional
   V4 work gated on the five #9143 research slices (which may conclude
   "adopt none").
@@ -86,20 +88,20 @@ artifact, #10262 divergence/anti-entropy).
 pointers, not duplication.)
 
 - **Trust classes as policy labels:** `PeerPolicy { peer_id, class ∈
-  {fully_trusted, send_only, accept_signed_from}, operations, relay,
-  scope, policy_version, valid_from, expires_at }`. "Fully trusted"
+{fully_trusted, send_only, accept_signed_from}, operations, relay,
+scope, policy_version, valid_from, expires_at }`. "Fully trusted"
   widens configured operations only — it never bypasses validation.
   Unknown peers reject by default.
 - **Wire model:** `SignedEnvelope { suite, signer_id, key_id, event_id,
-  object_id, sequence?, parent_ids[], issued_at, payload_digest,
-  payload_len, scope, signature }`, Ed25519 over deterministic-CBOR Body
+object_id, sequence?, parent_ids[], issued_at, payload_digest,
+payload_len, scope, signature }`, Ed25519 over deterministic-CBOR Body
   with domain prefix; versioned suite allowlist, fail closed. Ingest
   pipeline `received → parsed → signature_valid → identity_bound →
-  policy_allowed → accepted`; local producers sign before admission
+policy_allowed → accepted`; local producers sign before admission
   through the same gate.
 - **Conflict artifact:** `ConflictReport { report_id, object_id,
-  versions[], signer/source[], scope, policy_digest, detected_at,
-  evidence_refs[], status }` — durable/addressable; creation precedes
+versions[], signer/source[], scope, policy_digest, detected_at,
+evidence_refs[], status }` — durable/addressable; creation precedes
   any merge; resolution is a new signed event. Conflicts never block
   unrelated objects (B07, landed as #10248).
 - **Convergence scope ("within reason" defined):** sync converges only
@@ -142,6 +144,7 @@ belongs under #9143-gated follow-ups, not #9142.
 ## 6. Rollout + rollback
 
 Rollout (per mill migration §, #9142-scoped):
+
 1. Inventory current ID sync paths; preserve existing world/event/group contracts.
 2. Ship envelope parser + canonical vectors in shadow mode; admit nothing new.
 3. Activate the mandatory signed gate for the new sync API (not configurable off);
@@ -160,14 +163,14 @@ No silent byte rewrites in either direction.
 ## 7. Verification plan
 
 - **Executable model:** `python3 -I
-  doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/federation_model.py`
+doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/federation_model.py`
   — disjoint sub-budget reservation, retry reuse, changed-binding
   rejection, revocation-before-cache-release, no-rerun-after-expiry,
   plus 2,000 seeded allocation-tree traces. (Models authenticated-edge
   grants; not crypto or global-budget proof — stated limit.)
 - **Oracles:** PBT envelope (any signed-field mutation fails
   verification); PBT budget accounting (monotone spend, `spent + held ≤
-  cap`); PBT dedup; MBT ingest/rotate/revoke/replay state machine; MBT
+cap`); PBT dedup; MBT ingest/rotate/revoke/replay state machine; MBT
   network traces terminate under caps; **conflict-first oracle** (audit
   log contains report before any merge/resolution; unrelated sync
   proceeds); receipt/claims oracle.

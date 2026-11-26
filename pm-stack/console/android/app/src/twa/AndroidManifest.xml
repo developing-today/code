@@ -38,7 +38,7 @@
             <meta-data
                 android:name="android.support.customtabs.trusted.NAVIGATION_BAR_COLOR"
                 android:resource="@color/bar" />
-            <!-- Long-press the icon: Dictate, Ask, Needs me, Now. -->
+            <!-- Long-press the icon: Dictate, Ask, Needs me, Now, Messages. -->
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
@@ -60,6 +60,27 @@
 
         <activity android:name="com.google.androidbrowserhelper.trusted.FocusActivity" />
 
+        <!-- The launcher activity adds a site-settings shortcut as it
+             opens, and names this activity as the shortcut's target:
+             the library's instructions say to declare it here, with
+             its action and the page the settings are for. Without the
+             declaration the launch itself crashes — the offline
+             check's runs found it: "Component class
+             com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity
+             does not exist in today.developing.pmconsole", thrown out
+             of LauncherActivity.launchTwa before the browser opens. -->
+        <activity
+            android:name="com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity"
+            android:exported="true">
+            <meta-data
+                android:name="android.support.customtabs.trusted.MANAGE_SPACE_URL"
+                android:value="${defaultUrl}" />
+            <intent-filter>
+                <action android:name="android.support.customtabs.action.ACTION_MANAGE_TRUSTED_WEB_ACTIVITY_DATA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Asks for permission to show notifications when the site turns them on (Android 13 and later). -->
         <activity android:name="com.google.androidbrowserhelper.trusted.NotificationPermissionRequestActivity" />
 
@@ -74,11 +95,14 @@
                 <action android:name="today.developing.pmconsole.OPEN_NEEDS" />
                 <action android:name="today.developing.pmconsole.OPEN_NOW" />
                 <action android:name="today.developing.pmconsole.OPEN_NEXT" />
+                <action android:name="today.developing.pmconsole.OPEN_MESSAGES" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
-        <!-- Text shared from another app, or selected anywhere, lands in the Ask box. -->
+        <!-- Text shared from another app, or selected anywhere, lands in the
+             Ask box — unless it is an enroll command, which lands in
+             provisioning on the Agents screen. -->
         <activity
             android:name=".ShareActivity"
             android:excludeFromRecents="true"
@@ -129,7 +153,8 @@
             </intent-filter>
         </activity>
 
-        <!-- The home-screen widget: in progress, queued, needs me, and the task being worked on. -->
+        <!-- The home-screen widget: in progress, queued, needs me, unread
+             instructions, and the task being worked on. -->
         <receiver
             android:name=".StatusWidget"
             android:exported="false"
