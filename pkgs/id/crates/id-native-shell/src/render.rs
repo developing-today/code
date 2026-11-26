@@ -502,20 +502,25 @@ mod tests {
         let mut rows = app
             .world_mut()
             .query_filtered::<(&TextFont, &LineHeight), With<ScreenRow>>();
-        let rows: Vec<_> = rows.iter(app.world()).collect();
+        let rows: Vec<(FontSize, LineHeight)> = rows
+            .iter(app.world())
+            .map(|(font, line)| (font.font_size, *line))
+            .collect();
         assert_eq!(rows.len(), 1);
         let mut spans = app
             .world_mut()
-            .query::<(&TextSpan, &TextFont, &LineHeight)>();
-        let spans: Vec<_> = spans.iter(app.world()).collect();
+            .query_filtered::<(&TextFont, &LineHeight), With<TextSpan>>();
+        let spans: Vec<(FontSize, LineHeight)> = spans
+            .iter(app.world())
+            .map(|(font, line)| (font.font_size, *line))
+            .collect();
         assert_eq!(spans.len(), 1);
-        for (font, line_height) in rows
-            .iter()
-            .map(|(font, line)| (*font, *line))
-            .chain(spans.iter().map(|(_, font, line)| (*font, *line)))
-        {
-            assert_eq!(font.font_size, FontSize::Px(CELL_FONT_PX));
-            assert_eq!(*line_height, LineHeight::Px(CELL_HEIGHT_PX));
+        for (font_size, line_height) in rows.into_iter().chain(spans) {
+            assert!(
+                matches!(font_size, FontSize::Px(px) if (px - CELL_FONT_PX).abs() < f32::EPSILON),
+                "{font_size:?}"
+            );
+            assert_eq!(line_height, LineHeight::Px(CELL_HEIGHT_PX));
         }
         // The metrics are the face's: 0.6 em wide, 1.2 em tall.
         assert!((CELL_WIDTH_PX - CELL_FONT_PX * 0.6).abs() < f32::EPSILON);
