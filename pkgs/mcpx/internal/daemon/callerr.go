@@ -151,6 +151,20 @@ const CallerVersionHeader = "X-Mcpx-Caller-Protocol"
 // mcpclient.WithTaskExecution.
 const TaskExecutionHeader = "X-Mcpx-Task-Execution"
 
+// withFleetCtx applies the fleet queue-task headers to ctx, so a call
+// arriving at the daemon with its originating queue task rides on to the
+// upstream MCP server in the request's _meta and headers (build 4/5,
+// #14190). Absence is representable: no headers stamp nothing, and the
+// client's env fallback (FLEET_CTX_*, sibling build #14188) still covers
+// a daemon whose own process environment carries the contract.
+func withFleetCtx(ctx context.Context, r *http.Request) context.Context {
+	f := mcpclient.FleetCtx{
+		TaskID:   r.Header.Get(mcpclient.FleetHeaderTaskID),
+		TaskName: r.Header.Get(mcpclient.FleetHeaderTaskName),
+	}
+	return mcpclient.WithFleetCtx(ctx, f)
+}
+
 // withClientCaps applies ClientCapsHeader and CallerVersionHeader to ctx.
 func withClientCaps(ctx context.Context, r *http.Request) context.Context {
 	ctx = mcpclient.WithCallerVersion(ctx, r.Header.Get(CallerVersionHeader))

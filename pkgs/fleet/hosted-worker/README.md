@@ -164,12 +164,12 @@ session_closed`, malformed ids `400 invalid_session_id`. An agent
   `metadata_inserted: false`) is healed by the first check that
   sees the item. The door's operator surface completes the
   #9074 remainder (#14312, `src/backfill.ts`): `POST
-  /v1/ingestion/backfill` runs the same sweep over a named or
+/v1/ingestion/backfill` runs the same sweep over a named or
   configured scope and records the run — counts in/out and every
   per-item failure named — in the backfill run store, read back
   via `GET /v1/ingestion/backfill/runs`; re-running over an
   unchanged store records 0 inserted / 0 refreshed. `POST
-  /v1/ingestion/divergence` is the aggregate counterpart of the
+/v1/ingestion/divergence` is the aggregate counterpart of the
   query door's per-result divergence: over the scope it compares
   every item's body block against the DB and names the
   divergences by class — `missing_row`, `stale_field` (the
@@ -205,6 +205,16 @@ session_closed`, malformed ids `400 invalid_session_id`. An agent
   available only when its filling issue landed: so far the
   hosted-transformed `gh` domain, via the stamping and query doors,
   and the `queue` domain, via the queue door.
+- **Kv door** (#13316, `src/kv-door.ts`, `src/routes/kv.ts`):
+  `POST /v1/kv/v2/pipeline` is the `fleet kv` central plane. A host
+  posts the Hrana transaction its client crate builds; the door
+  forwards only statements in `src/kv-catalog.json` (generated from
+  `pkgs/fleet/crates/fleet-kv/src/catalog.rs`), binds owner, writer
+  and private scope to the caller, checks the scope against the
+  namespace, gates namespace and grant changes on `kv-admin`, and runs
+  the schema migrations itself. Primary: `KV_LIBSQL_URL` +
+  `KV_LIBSQL_AUTH_TOKEN`; unset → 503. Runbook:
+  `pkgs/fleet/book/operations/kv-central.md`.
 
 ## What is a stub
 

@@ -26,7 +26,7 @@ export function instructionsFor(channel = "claude") {
     `send_message sends to Drew by default; its to argument reaches anyone else (${ADDRESS_HELP}), as a message ` +
     'or, with kind "instruction", an instruction to act on; the recipient is woken where it can be. ' +
     `read_messages returns stored messages; inbound ones were sent to ${who}. from_addr says who sent one: null is ` +
-    'Drew (his page or API), "channel:claude"/"channel:chatgpt" another assistant, "agent:<name>" a fleet agent. ' +
+    'Drew (his console or API), "channel:claude"/"channel:chatgpt" another assistant, "agent:<name>" a fleet agent. ' +
     "Answer one with send_message reply_to its id, which sends the answer back to whoever sent it. " +
     "Use read_messages with unread_only to check for new inbound messages, then ack_messages (or mark_read) " +
     "so they are not reported as new again. Every message is kept with its direction, source and time. " +
@@ -42,7 +42,7 @@ export const TOOLS = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Send a message or an instruction. By default it goes to Drew (stored as an outbound message on the history page). " +
+      "Send a message or an instruction. By default it goes to Drew (stored as an outbound message he reads in the console). " +
       `to sends it to anyone else instead or as well: ${ADDRESS_HELP}. ` +
       "reply_to a message id (with no to) sends the answer back to whoever sent that message and marks it read. " +
       "Another assistant or agent is woken when it can be. Returns the stored messages.",
@@ -52,13 +52,13 @@ export const TOOLS = [
         body: { type: "string", description: "Message text.", maxLength: MAX_BODY },
         to: {
           anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, maxItems: 200 }],
-          description: `Recipients: ${ADDRESS_HELP}; a list or comma-separated. Default drew.`,
+          description: `Recipients: ${ADDRESS_HELP}; a list or comma-separated. Default owner.`,
         },
         kind: {
           type: "string",
           enum: ["message", "instruction"],
           default: "message",
-          description: "instruction: something for the recipient to act on (not for drew).",
+          description: "instruction: something for the recipient to act on (not for the owner).",
         },
         reply_to: { type: "integer", minimum: 1, description: "Id of an inbound message this answers." },
         sender: { type: "string", description: "Optional label for who is sending, e.g. 'claude' or 'chatgpt'." },

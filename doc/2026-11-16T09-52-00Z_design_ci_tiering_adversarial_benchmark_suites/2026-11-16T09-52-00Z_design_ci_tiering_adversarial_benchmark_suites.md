@@ -170,6 +170,88 @@ confirmation pass amends this record with the table and the numbers
 and closes #5893. Everything else in this record is final and
 implementation packets may be cut against §§1–4 immediately.
 
+**Status (amended 2026-11-25):** confirmation 1 is done — the #5892
+catalogue landed on main as
+`doc/2026-11-08_decision_id5892_dos_scenario_catalogue.md` (PR #7738)
+and §5.1 enumerates the table. Confirmation 2 is still open on the
+first stored `server-baseline/v1.0` run, so #5893 stays open on it
+alone.
+
+### 5.1 Per-scenario tier table (confirmation 1)
+
+Derived, not newly decided: each cell is §2's rules applied to the
+#5892 catalogue's applicability table and fixed profiles. Rows are
+the catalogue's scenario numbers: 1 connection/session churn,
+2 input-boundary and malformed pressure, 3 expensive-operation
+amplification, 4 slow/incomplete input, 5 stateful resource/quota
+exhaustion, 6 noisy-neighbour fairness, 7 legitimate surge. A dash
+means the catalogue marks the row inapplicable to that family.
+
+Two readings of §2 the table relies on, stated so the table can be
+checked against the rules:
+
+- **Rule 2 places the boundary cases, not the whole row.** Smoke
+  takes the cap / cap+1 and size `M−1` / `M` / `M+1` spot checks
+  and the canary profile for the surfaces a change touches (§1);
+  the same row at its full 30 s profile runs in scheduled. "S+"
+  marks a row whose boundary cases also run in smoke.
+- **Rule 4 places the extended-duration variant.** Rule 3 already
+  matches rows 5 and 6 at the fixed 30 s profile, and §1 puts the
+  full catalogue at fixed profiles in scheduled; rule 4 adds their
+  long-duration fairness and state-exhaustion variants to soak, as
+  §1's soak column lists. "+K" marks a row that also has a soak
+  variant.
+
+| Interface family (#5892)                                  | 1      | 2      | 3   | 4             | 5      | 6      | 7   |
+| --------------------------------------------------------- | ------ | ------ | --- | ------------- | ------ | ------ | --- |
+| Iroh metadata `/iroh-meta/3`                              | Sch    | Sch S+ | Sch | –             | –      | –      | Sch |
+| Iroh blobs / docs / gossip                                | Sch    | Sch S+ | –   | –             | Sch +K | –      | Sch |
+| Range event sync and `/id-sync/1` (library only)          | Sch    | Sch S+ | Sch | –             | –      | –      | Sch |
+| World sessions and world replication                      | Sch    | Sch S+ | Sch | Sch (note a)  | Sch +K | Sch +K | Sch |
+| Friend envelopes and artifact transfer                    | Sch    | Sch S+ | Sch | –             | Sch +K | –      | Sch |
+| Presence over gossip                                      | –      | Sch S+ | Sch | –             | –      | –      | Sch |
+| HTTP and tags / collab / world WebSockets (feature `web`) | Sch    | Sch S+ | Sch | Sch (note b)  | Sch +K | Sch +K | Sch |
+| SSH and SSH-over-Iroh (feature-gated)                     | Sch S+ | Sch S+ | Sch | Soak (note c) | –      | Sch +K | Sch |
+| Outbound mail via an ingress operation                    | –      | –      | Sch | –             | Sch +K | –      | –   |
+
+Key: Sch = scheduled at the fixed 30 s + 30 s profile (rule 3);
+S+ = boundary spot checks and canary also in smoke (rule 2);
++K = extended-duration variant in soak (rule 4); Soak = soak only
+(rule 1).
+
+Notes:
+
+a. World sessions and world replication, row 4: not deadline-bound.
+The deadlines a stalled input meets are 30 s (`world_session`
+receive timeout, `world_replication_net.rs` read and
+`FRAME_WRITE_TIMEOUT`), which do not exceed the fixed profile, so
+rule 1 does not match and rule 3 places the row in scheduled. If
+either deadline is raised above 30 s, rule 1 applies and the
+fixture manifest records soak or a test-only override.
+b. HTTP / WebSocket, row 4: the catalogue requires an explicit
+deadline contract before this gate is implemented. Until it
+exists the row is scheduled by rule 3; a contract deadline above
+30 s moves it under rule 1 like note a.
+c. SSH, row 4: the catalogue's named deadline-bound case
+(`INACTIVITY_TIMEOUT`, ten minutes, `world_ssh.rs`). Rule 1: soak
+at the production deadline, or scheduled if the fixture gains a
+supported test-only inactivity override; the fixture manifest
+records which. No such override exists on main today, so soak.
+d. SSH, row 1: explicit caps give smoke boundary cases —
+`MAX_CONNECTIONS` 64 / 65 and `MAX_TUNNEL_STREAMS` 16 / 17. Other
+families' row 1 has no declared session cap, so the catalogue's
+fixed 64-client profile runs in scheduled only and the missing
+bound stays a contract gap there, not a smoke case.
+e. Hosted Cloudflare Worker: the catalogue gives it a fixture profile
+(header validation and forwarding fan-out) but no row in its
+applicability table. It is placed by its profile's shape: invalid
+binding-ID / jurisdiction refusal spot checks in smoke (rule 2),
+the 30 s forwarding profile in scheduled (rule 3). Adding it to the
+applicability table is #5892's call, not this record's.
+
+Benchmarks need no per-scenario table: rule 5 already places every
+benchmark shape by its kind.
+
 ## 6. Parent #5685 decisions — none changed
 
 No parent decision is changed by this record. The three tiers are

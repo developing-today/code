@@ -75,11 +75,7 @@
 // this package's root, design §6): the entry lands with this
 // module, so every shadow record is attributable to the method
 // that produced it.
-import {
-  indexPercentRecords,
-  pointsForWindow,
-  segmentPeriods,
-} from "./quota-forecast-accuracy.ts";
+import { indexPercentRecords, pointsForWindow, segmentPeriods } from "./quota-forecast-accuracy.ts";
 import {
   DAY_TYPE_GRAINS,
   DAY_TYPE_SAMPLE_GATE,
@@ -112,12 +108,7 @@ export const SPIKE_MIN_SHORT_DATES = 2;
 
 /** Grain precedence at issuance: the design's {weekday × daypart}
  * cells, coarsened only as far as the gate requires (§5). */
-export const DAY_TYPE_GRAIN_PRECEDENCE: readonly DayTypeGrain[] = [
-  "weekday-daypart",
-  "daypart",
-  "weekday",
-  "dayclass",
-];
+export const DAY_TYPE_GRAIN_PRECEDENCE: readonly DayTypeGrain[] = ["weekday-daypart", "daypart", "weekday", "dayclass"];
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -409,7 +400,11 @@ export function buildDayTypeShadowRecords(
                 rateLongPtsPerHour: spike.rateLongPtsPerHour,
                 lightFraction: spike.lightFraction,
                 paceMultiplier: SPIKE_PACE_MULTIPLIER,
-                wallAt: wallAt(nowMs, window.pctNow, (dayType?.ratePtsPerHour ?? window.ratePtsPerHour) * SPIKE_PACE_MULTIPLIER),
+                wallAt: wallAt(
+                  nowMs,
+                  window.pctNow,
+                  (dayType?.ratePtsPerHour ?? window.ratePtsPerHour) * SPIKE_PACE_MULTIPLIER,
+                ),
               }
             : null;
 

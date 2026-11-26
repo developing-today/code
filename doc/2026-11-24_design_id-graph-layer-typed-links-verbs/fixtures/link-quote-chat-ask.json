@@ -1,1 +1,10 @@
-{"author":"ed25519:cccc3333media","created_claim":"2026-11-24T01:53:00Z","object_id":"lnk-quote-chat-ask","schema_version":1,"snapshot":{"digest":"blake3:quoted-bytes-of-msg-ask-photo"},"source":"post-photo-published","target":"msg-ask-photo","verb":"quote"}
+{
+  "author": "ed25519:cccc3333media",
+  "created_claim": "2026-11-24T01:53:00Z",
+  "object_id": "lnk-quote-chat-ask",
+  "schema_version": 1,
+  "snapshot": { "digest": "blake3:quoted-bytes-of-msg-ask-photo" },
+  "source": "post-photo-published",
+  "target": "msg-ask-photo",
+  "verb": "quote"
+}

@@ -493,7 +493,15 @@ export function parseProjectAudit(json: unknown, items: GqlItem[], generatedAt: 
   const node = (json as GqlProjectPage)?.data?.node;
   const itemConnection = node?.items;
   const totalItems = itemConnection?.totalCount;
-  if (!node || !itemConnection || !node.fields || !node.views || totalItems === undefined || !Number.isInteger(totalItems) || totalItems < 0) {
+  if (
+    !node ||
+    !itemConnection ||
+    !node.fields ||
+    !node.views ||
+    totalItems === undefined ||
+    !Number.isInteger(totalItems) ||
+    totalItems < 0
+  ) {
     throw new Error("github GraphQL response omitted Project metadata, fields, views, or item totalCount");
   }
   const fields = (node.fields?.nodes ?? []).flatMap((field) => {

@@ -161,22 +161,22 @@ test("a message for ChatGPT wakes the subscription with a signed event; Claude-o
   assert.equal(log[0].message_id, event.body.data.message_id);
 });
 
-test("the page form wakes ChatGPT too", async () => {
+test("an owner send through the API wakes ChatGPT too", async () => {
   const h = harness();
   await h.rpc(GPT, "events/subscribe", sub());
   const before = h.hook.calls.length;
   const pending = [];
   const res = await route(
-    new Request(`${ORIGIN}/p/${TOKEN}`, {
+    new Request(`${ORIGIN}/api/${TOKEN}/messages`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams([["body", "from the page"], ["to", "chatgpt"], ["kind", "instruction"]]).toString(),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "from the api", to: ["chatgpt"], kind: "instruction" }),
     }),
     h.env,
     () => h.store,
     (p) => pending.push(p),
   );
-  assert.equal(res.status, 303);
+  assert.equal(res.status, 201);
   await Promise.all(pending);
   assert.equal(h.hook.calls.length, before + 1);
   assert.equal(h.hook.calls.at(-1).body.data.kind, "instruction");
