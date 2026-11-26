@@ -53,6 +53,7 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         )
         self.assertIn("owner: developing-today", workflow)
         self.assertIn("permission-contents: write", workflow)
+        self.assertIn("permission-workflows: write", workflow)
         for repo in (
             "code-mirror",
             "fleet-mirror",
