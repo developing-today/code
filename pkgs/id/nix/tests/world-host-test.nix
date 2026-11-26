@@ -89,5 +89,14 @@
     assert state("lobby") == "live"
     seen = json.loads(server.succeed(f"id host inspect {ROOT} lobby --json"))
     assert seen["pinned"] is True, seen
+
+    # A world the operator stopped stays asleep across a restart, even the
+    # default world, and the node still comes up.
+    server.succeed(f"id host stop {ROOT} lobby")
+    server.systemctl("restart id-primary.service")
+    wait_for_node()
+    assert state("lobby") == "asleep"
+    server.succeed(f"id host start {ROOT} lobby")
+    assert state("lobby") == "live"
   '';
 }

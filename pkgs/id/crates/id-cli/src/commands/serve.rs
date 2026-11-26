@@ -1816,7 +1816,23 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             },
         );
         info!("serve startup: opening default world via hub (#190 breadcrumb)");
-        let default_service = hub.open_default().await?;
+        // Host mode keeps a restart from changing a world's state: a
+        // default world the host file records asleep or archived stays
+        // that way (an operator stopped it, or it wakes only on their
+        // start), and is not opened as a client would open it (#10697).
+        let default_at_rest = host.as_ref().is_some_and(|host| {
+            host.state(&world_name)
+                .is_some_and(|state| state != id_worlds::host::LifecycleState::Live)
+        });
+        let default_service = if default_at_rest {
+            info!(
+                world = %world_name,
+                "host mode: the default world is at rest and stays closed"
+            );
+            None
+        } else {
+            Some(hub.open_default().await?)
+        };
         info!("serve startup: default world open, building router (#190 breadcrumb)");
         if let Some(host) = &host {
             // Worlds recorded live stay live across a restart (#10693):
@@ -1870,10 +1886,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     );
                 }
             }
-            default_service
-                .world()
-                .update_caps(world_caps.clone(), Vec::new())
-                .await?;
+            if let Some(default_service) = &default_service {
+                default_service
+                    .world()
+                    .update_caps(world_caps.clone(), Vec::new())
+                    .await?;
+            } else {
+                warn!(
+                    "world: --world-cap is not applied: the default world is at rest; \
+                     start it and restart to apply"
+                );
+            }
         }
         if world_idle_secs > 0 && !ephemeral {
             let idle = std::time::Duration::from_secs(world_idle_secs);
