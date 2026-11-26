@@ -207,6 +207,8 @@ fn to_hex(bytes: &[u8; 32]) -> String {
 
 const USAGE: &str = "\
 Usage: fleet id session-key [--id-secret <hex>] [--stamp | --node-id]
+       fleet id proxy-mode [--raw] [--opaque] [--alpn <alpn>]
+                           [--mode <1|2|3|name>]  (design §4.2, #15434)
 
 Mint (or adopt, via --id-secret / FLEET_ID_SECRET) this session's
 iroh key and render its stamp (design #10391 §4.1):
@@ -230,6 +232,11 @@ pub fn run(args: &[String]) -> i32 {
     // everything after it is this verb's own.
     match rest.next().map(|s| s.as_str()) {
         Some("session-key") => {}
+        // Slice 2 (#15434, §4.2): mode selection lives in id_proxy.
+        Some("proxy-mode") => {
+            let tail: Vec<String> = rest.cloned().collect();
+            return crate::id_proxy::run_proxy_mode(&tail);
+        }
         Some(other) => {
             eprintln!("error: unknown 'fleet id' command '{other}'\n\n{USAGE}");
             return 2;
