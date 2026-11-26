@@ -39,6 +39,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
+use bevy::clipboard::Clipboard;
 use bevy::input::ButtonInput;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
@@ -51,7 +52,9 @@ use id_native_shell::directory::{
     DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus,
     DirectoryInputSystems, DirectoryMarks, DirectoryPlugin,
 };
-use id_native_shell::events::{KeyModifiers, NativeEvent, key_input_bytes, native_event_frame};
+use id_native_shell::events::{
+    KeyModifiers, NativeEvent, is_paste_chord, key_input_bytes, native_event_frame, paste_event,
+};
 use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
 use id_native_shell::scene::SceneRenderPlugin;
 use id_native_shell::widget::WidgetRenderPlugin;
@@ -125,7 +128,61 @@ fn held_modifiers(held: Option<&ButtonInput<KeyCode>>) -> KeyModifiers {
     held.map_or_else(KeyModifiers::default, |held| KeyModifiers {
         ctrl: held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
         alt: held.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
+        shift: held.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
     })
+}
+
+/// Queue one outbound frame without blocking the Bevy frame: a full
+/// queue drops it with a notice naming `what`, and an ended session
+/// drops it silently.
+fn try_send_frame(bridge: &SessionBridge, frame: Value, what: &str) {
+    if let Err(mpsc::error::TrySendError::Full(_)) = bridge.outbound.try_send(frame) {
+        eprintln!("id-native-shell: {what} dropped: the session is not keeping up");
+    }
+}
+
+/// Paste the system clipboard into a session as one contract `paste`
+/// frame (#15022). An empty clipboard sends nothing. A clipboard the
+/// platform cannot read, or text over the contract bound, is reported
+/// on stderr and sends nothing: a paste is never split or truncated.
+fn send_paste(bridge: &SessionBridge, clipboard: Option<&mut Clipboard>) {
+    let Some(clipboard) = clipboard else {
+        eprintln!("id-native-shell: paste not sent: no clipboard is available");
+        return;
+    };
+    let text = match clipboard.fetch_text().poll_result() {
+        Some(Ok(text)) => text,
+        Some(Err(error)) => {
+            eprintln!("id-native-shell: paste not sent: clipboard read failed: {error}");
+            return;
+        }
+        None => {
+            eprintln!("id-native-shell: paste not sent: the clipboard read did not complete");
+            return;
+        }
+    };
+    let Some(event) = paste_event(&text) else {
+        return;
+    };
+    match native_event_frame(&event) {
+        Ok(frame) => try_send_frame(bridge, frame, "paste"),
+        Err(error) => eprintln!("id-native-shell: paste not sent: {error}"),
+    }
+}
+
+/// Send one key press to a session: the paste chord pastes the
+/// clipboard, any other key goes as terminal input.
+fn send_key_or_paste(
+    bridge: &SessionBridge,
+    press: &KeyboardInput,
+    modifiers: KeyModifiers,
+    clipboard: Option<&mut Clipboard>,
+) {
+    if is_paste_chord(&press.logical_key, modifiers) {
+        send_paste(bridge, clipboard);
+    } else {
+        send_key(bridge, press, modifiers);
+    }
 }
 
 /// Send one key press to a session as the contract `input` frame,
@@ -143,23 +200,23 @@ fn send_key(bridge: &SessionBridge, press: &KeyboardInput, modifiers: KeyModifie
             return;
         }
     };
-    if let Err(mpsc::error::TrySendError::Full(_)) = bridge.outbound.try_send(frame) {
-        eprintln!("id-native-shell: key dropped: the session is not keeping up");
-    }
+    try_send_frame(bridge, frame, "key");
 }
 
 /// Direct-join mode: every key press in the window goes to the one
-/// session as terminal input.
+/// session as terminal input, and the paste chord pastes the
+/// clipboard into it.
 #[allow(clippy::needless_pass_by_value)]
 fn forward_session_keys(
     mut keys: MessageReader<'_, '_, KeyboardInput>,
     held: Option<Res<'_, ButtonInput<KeyCode>>>,
     bridge: Res<'_, SessionBridge>,
+    mut clipboard: Option<ResMut<'_, Clipboard>>,
 ) {
     let modifiers = held_modifiers(held.as_deref());
     for press in keys.read() {
         if press.state == ButtonState::Pressed {
-            send_key(&bridge, press, modifiers);
+            send_key_or_paste(&bridge, press, modifiers, clipboard.as_deref_mut());
         }
     }
 }
@@ -169,13 +226,15 @@ fn forward_session_keys(
 /// list. Runs before the directory's own key handling, so a key is
 /// judged by the focus it was pressed in: the Enter that opens a
 /// world is not sent to it, and the Esc that leaves one is not
-/// either.
+/// either. The paste chord pastes the clipboard into the foreground
+/// world only, never into the list.
 #[allow(clippy::needless_pass_by_value)]
 fn forward_directory_session_keys(
     mut keys: MessageReader<'_, '_, KeyboardInput>,
     held: Option<Res<'_, ButtonInput<KeyCode>>>,
     directory: Res<'_, DirectoryApp>,
     sessions: Res<'_, WorldSessions>,
+    mut clipboard: Option<ResMut<'_, Clipboard>>,
 ) {
     let modifiers = held_modifiers(held.as_deref());
     for press in keys.read() {
@@ -186,7 +245,7 @@ fn forward_directory_session_keys(
             continue;
         };
         if let Some(session) = sessions.0.get(world) {
-            send_key(&session.bridge, press, modifiers);
+            send_key_or_paste(&session.bridge, press, modifiers, clipboard.as_deref_mut());
         }
     }
 }
