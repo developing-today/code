@@ -1457,6 +1457,23 @@
       "related_issues": [8941]
     },
     {
+      "id": "pmo.contract-conformance",
+      "paths": [
+        "pkgs/fleet/crates/fleet-queue/tests/pmo_contract_conformance.rs",
+        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**"
+      ],
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance, then cd pm-stack/projector && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts, reported per family by .github/scripts/pmo-contract-conformance.py",
+      "venue": {
+        "workflow": ".github/workflows/pmo-contract-conformance.yml",
+        "job_step": "pmo-contract-conformance / Run the conformance target",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9437],
+      "notes": "CEN-07 golden fixtures through the real adapters, one result per contract family; gated families (receipt, cursor, field ownership) are listed in the fixture manifest and never counted as passing. The same test file also runs inside fleet.rust's workspace run."
+    },
+    {
       "id": "fleet.smoke",
       "paths": ["pkgs/fleet/smoke.sh"],
       "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
