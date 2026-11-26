@@ -152,6 +152,7 @@ import {
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
 import { createD1LedgerQuery, createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
+import { DNS_PAGE_PATHS, dnsPage } from "./dns-pages.ts";
 
 /** Where the settings the owner changed are kept: beside "cfg", never in it. */
 export const OWNER_SETTINGS_KEY = "ownerSettings";
@@ -206,6 +207,7 @@ export class Edge {
   private fetchImpl: typeof fetch;
   private direct?: EdgeOptions["direct"];
   private ledgerPages?: EdgeOptions["ledgerPages"];
+  private dnsPages?: EdgeOptions["dnsPages"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -365,6 +367,7 @@ export class Edge {
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
     this.ledgerPages = options.ledgerPages;
+    this.dnsPages = options.dnsPages;
     if (options.quota?.enabled && options.quota.envelope) {
       try {
         this.quotaStore.applySuccess(options.quota.envelope);
@@ -2285,6 +2288,17 @@ export class Edge {
           this.ledgerPages.store === "d1"
             ? createD1LedgerQuery(this.ledgerPages.db)
             : createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
+        now: () => this.now(),
+      });
+      if (response) return response;
+    }
+    // Hosted /dns (#14968 slice 2), when its own flag is on: the owner
+    // is verified (above), so this side answers from the #902 register
+    // snapshot in the same D1 database. Off, or for any other path,
+    // the request goes on exactly as it did before.
+    if (this.dnsPages && DNS_PAGE_PATHS.has(path)) {
+      const response = await dnsPage(req, {
+        query: createD1LedgerQuery(this.dnsPages.db),
         now: () => this.now(),
       });
       if (response) return response;
