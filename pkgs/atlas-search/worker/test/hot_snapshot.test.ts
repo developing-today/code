@@ -5,17 +5,9 @@
  */
 import { env } from "cloudflare:test";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import {
-  HOT_WINDOW,
-  hotSnapshotDraft,
-  hotSnapshotObjectId,
-  recordHotSnapshot,
-} from "../src/hot_snapshot";
+import { HOT_WINDOW, hotSnapshotDraft, hotSnapshotObjectId, recordHotSnapshot } from "../src/hot_snapshot";
 import { RecommendationAccumulator } from "../src/recommendation_do";
-import {
-  createSnapshot,
-  type ParentEnvelope,
-} from "../src/recommendation_state";
+import { createSnapshot, type ParentEnvelope } from "../src/recommendation_state";
 import { DEFAULT_CLASSES, RetainedObjectStore } from "../src/retained_object";
 import schemaSql from "../migrations/0003_retained_objects.sql?raw";
 import retirementSql from "../migrations/0004_retained_objects_retirement.sql?raw";
@@ -69,9 +61,7 @@ function parent(round: number): ParentEnvelope {
   };
 }
 
-async function enable(
-  windowMs = DEFAULT_CLASSES["hot-short"].windowMs,
-): Promise<void> {
+async function enable(windowMs = DEFAULT_CLASSES["hot-short"].windowMs): Promise<void> {
   await store.setClass({
     ...DEFAULT_CLASSES["hot-short"],
     windowMs,
@@ -80,13 +70,7 @@ async function enable(
 }
 
 async function capture(round: number, at: number) {
-  return recordHotSnapshot(
-    db,
-    await createSnapshot(parent(round)),
-    "tenant-a",
-    "subject-1",
-    () => at,
-  );
+  return recordHotSnapshot(db, await createSnapshot(parent(round)), "tenant-a", "subject-1", () => at);
 }
 
 class MemoryStorage {
@@ -95,18 +79,12 @@ class MemoryStorage {
     const value = this.values.get(key);
     return value === undefined ? undefined : (structuredClone(value) as T);
   }
-  async put<T>(
-    key: string | Record<string, unknown>,
-    value?: T,
-  ): Promise<void> {
-    const entries: Record<string, unknown> =
-      typeof key === "string" ? { [key]: value } : key;
-    for (const [k, v] of Object.entries(entries))
-      this.values.set(k, structuredClone(v));
+  async put<T>(key: string | Record<string, unknown>, value?: T): Promise<void> {
+    const entries: Record<string, unknown> = typeof key === "string" ? { [key]: value } : key;
+    for (const [k, v] of Object.entries(entries)) this.values.set(k, structuredClone(v));
   }
   async delete(keys: string | string[]): Promise<void> {
-    for (const key of Array.isArray(keys) ? keys : [keys])
-      this.values.delete(key);
+    for (const key of Array.isArray(keys) ? keys : [keys]) this.values.delete(key);
   }
 }
 
@@ -150,17 +128,13 @@ describe("hot snapshots", () => {
     });
     expect(snapshot.ordered.length).toBeGreaterThan(HOT_WINDOW);
     expect(draft.payload.items).toEqual(
-      snapshot.ordered
-        .slice(0, HOT_WINDOW)
-        .map(({ id, score_micros }) => ({ id, score_micros })),
+      snapshot.ordered.slice(0, HOT_WINDOW).map(({ id, score_micros }) => ({ id, score_micros })),
     );
   });
 
   it("records nothing without a binding or while the class is disabled", async () => {
     const snapshot = await createSnapshot(parent(1));
-    expect(
-      await recordHotSnapshot(undefined, snapshot, "tenant-a", "subject-1"),
-    ).toEqual({
+    expect(await recordHotSnapshot(undefined, snapshot, "tenant-a", "subject-1")).toEqual({
       recorded: false,
       reason: "off",
     });
@@ -189,15 +163,9 @@ describe("hot snapshots", () => {
     expect((await store.live(OBJECT)).map((v) => v.version)).toEqual([2, 3]);
     expect(await store.retired(OBJECT)).toEqual([1]);
     // Retiring is the cold step: the version is still stored.
-    expect((await store.history(OBJECT)).map((v) => v.version)).toEqual([
-      1, 2, 3,
-    ]);
+    expect((await store.history(OBJECT)).map((v) => v.version)).toEqual([1, 2, 3]);
     // A later pass retires nothing twice.
-    expect(
-      await new RetainedObjectStore(db, () => T0 + 27 * HOUR).retireExpired(
-        OBJECT,
-      ),
-    ).toEqual([]);
+    expect(await new RetainedObjectStore(db, () => T0 + 27 * HOUR).retireExpired(OBJECT)).toEqual([]);
   });
 
   it("keeps everything inside the window, however many there are", async () => {
@@ -232,9 +200,7 @@ describe("hot snapshots", () => {
     }
     const live = await store.live(OBJECT);
     expect(live.map((v) => v.version)).toEqual([1, 2, 3]);
-    expect((live[0]!.payload as { items: unknown[] }).items.length).toBe(
-      HOT_WINDOW,
-    );
+    expect((live[0]!.payload as { items: unknown[] }).items.length).toBe(HOT_WINDOW);
   });
 
   it("never fails a start when the store is unusable", async () => {

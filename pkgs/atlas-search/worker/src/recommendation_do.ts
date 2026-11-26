@@ -64,11 +64,7 @@ interface RecommendationParentBody {
   tenant: string;
   subject: string;
   page_size: number;
-  candidate_set: Array<{
-    id: string;
-    score_micros: number;
-    arrival_sequence: number;
-  }>;
+  candidate_set: Array<{ id: string; score_micros: number; arrival_sequence: number }>;
   [key: string]: unknown;
 }
 
@@ -143,9 +139,7 @@ export class RecommendationPartitionError extends Error {
 export class RecommendationReplayExpiredError extends Error {
   readonly code = "RecommendationReplayExpired";
   constructor(position: number) {
-    super(
-      `page replay at position ${position} is outside the retained horizon`,
-    );
+    super(`page replay at position ${position} is outside the retained horizon`);
     this.name = "RecommendationReplayExpiredError";
   }
 }
@@ -153,9 +147,7 @@ export class RecommendationReplayExpiredError extends Error {
 export class RecommendationCursorAheadError extends Error {
   readonly code = "RecommendationCursorAhead";
   constructor(position: number, committed: number) {
-    super(
-      `cursor position ${position} is ahead of committed position ${committed}`,
-    );
+    super(`cursor position ${position} is ahead of committed position ${committed}`);
     this.name = "RecommendationCursorAheadError";
   }
 }
@@ -173,25 +165,15 @@ function hex(bytes: Uint8Array): string {
 
 function pageSigningPreimage(body: PageEnvelope["body"]): Uint8Array {
   const domain = new TextEncoder().encode(PAGE_DOMAIN);
-  const canonical = deterministicCbor(
-    body as unknown as Parameters<typeof deterministicCbor>[0],
-  );
+  const canonical = deterministicCbor(body as unknown as Parameters<typeof deterministicCbor>[0]);
   const preimage = new Uint8Array(domain.length + canonical.length);
   preimage.set(domain);
   preimage.set(canonical, domain.length);
   return preimage;
 }
 
-function requireIdentity(
-  tenant: unknown,
-  subject: unknown,
-): asserts tenant is string {
-  if (
-    typeof tenant !== "string" ||
-    tenant.length === 0 ||
-    typeof subject !== "string" ||
-    subject.length === 0
-  ) {
+function requireIdentity(tenant: unknown, subject: unknown): asserts tenant is string {
+  if (typeof tenant !== "string" || tenant.length === 0 || typeof subject !== "string" || subject.length === 0) {
     throw new Error("tenant and subject are required");
   }
 }
@@ -200,10 +182,7 @@ export class RecommendationAccumulator {
   private readonly state: DurableStateLike;
   private readonly env: RecommendationEnv;
 
-  constructor(
-    state: DurableObjectState | DurableStateLike,
-    env: RecommendationEnv,
-  ) {
+  constructor(state: DurableObjectState | DurableStateLike, env: RecommendationEnv) {
     this.state = state as DurableStateLike;
     this.env = env;
   }
@@ -226,10 +205,7 @@ export class RecommendationAccumulator {
           },
         });
       }
-      return Response.json(
-        { error: { code: "not_found", message: "no route" } },
-        { status: 404 },
-      );
+      return Response.json({ error: { code: "not_found", message: "no route" } }, { status: 404 });
     } catch (error) {
       const code = (error as { code?: string }).code ?? "recommendation_failed";
       const status =
@@ -240,10 +216,7 @@ export class RecommendationAccumulator {
             : code === "recommendation_failed"
               ? 500
               : 400;
-      return Response.json(
-        { error: { code, message: (error as Error).message } },
-        { status },
-      );
+      return Response.json({ error: { code, message: (error as Error).message } }, { status });
     }
   }
 
@@ -256,8 +229,7 @@ export class RecommendationAccumulator {
   private async readMeta(): Promise<StoredMeta | undefined> {
     const meta = await this.state.storage.get<StoredMeta>(META_KEY);
     if (meta) return meta;
-    const legacy =
-      await this.state.storage.get<LegacyStoredAccumulator>(LEGACY_STORE_KEY);
+    const legacy = await this.state.storage.get<LegacyStoredAccumulator>(LEGACY_STORE_KEY);
     if (!legacy) return undefined;
     const retained = Object.keys(legacy.pages)
       .map(Number)
@@ -291,17 +263,14 @@ export class RecommendationAccumulator {
   }
 
   private async readParent(): Promise<RecommendationParent> {
-    const parent =
-      await this.state.storage.get<RecommendationParent>(PARENT_KEY);
-    if (!parent)
-      throw new Error("recommendation snapshot has not been started");
+    const parent = await this.state.storage.get<RecommendationParent>(PARENT_KEY);
+    if (!parent) throw new Error("recommendation snapshot has not been started");
     return parent;
   }
 
   private async readOrder(): Promise<PageEntry[]> {
     const ordered = await this.state.storage.get<PageEntry[]>(ORDER_KEY);
-    if (!ordered)
-      throw new Error("recommendation snapshot has not been started");
+    if (!ordered) throw new Error("recommendation snapshot has not been started");
     return ordered;
   }
 
@@ -311,33 +280,19 @@ export class RecommendationAccumulator {
     const signatureHex = wireParent.signature_hex;
     const rawSignature = wireParent.signature;
     let signature: Uint8Array;
-    if (
-      typeof signatureHex === "string" &&
-      /^(?:[0-9a-f]{2})+$/.test(signatureHex)
-    ) {
+    if (typeof signatureHex === "string" && /^(?:[0-9a-f]{2})+$/.test(signatureHex)) {
       signature = hexToBytes(signatureHex);
     } else if (
       Array.isArray(rawSignature) &&
-      rawSignature.every(
-        (value) => Number.isInteger(value) && value >= 0 && value <= 255,
-      )
+      rawSignature.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
     ) {
       signature = new Uint8Array(rawSignature as number[]);
-    } else if (
-      typeof rawSignature === "object" &&
-      rawSignature !== null &&
-      !Array.isArray(rawSignature)
-    ) {
-      const indexed = Object.entries(
-        rawSignature as Record<string, unknown>,
-      ).sort(([a], [b]) => Number(a) - Number(b));
+    } else if (typeof rawSignature === "object" && rawSignature !== null && !Array.isArray(rawSignature)) {
+      const indexed = Object.entries(rawSignature as Record<string, unknown>).sort(([a], [b]) => Number(a) - Number(b));
       if (
         indexed.every(
           ([key, value], index) =>
-            key === String(index) &&
-            Number.isInteger(value) &&
-            Number(value) >= 0 &&
-            Number(value) <= 255,
+            key === String(index) && Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 255,
         )
       ) {
         signature = new Uint8Array(indexed.map(([, value]) => Number(value)));
@@ -350,22 +305,14 @@ export class RecommendationAccumulator {
     if (Object.keys(bodyValue).length === 0) {
       throw new Error("a signed parent envelope is required");
     }
-    const parent = {
-      body: bodyValue,
-      signature,
-    } as unknown as RecommendationParent;
+    const parent = { body: bodyValue, signature } as unknown as RecommendationParent;
     const body = parent.body as RecommendationParentBody;
     requireIdentity(body.tenant, body.subject);
-    if (body.page_size !== PAGE_SIZE)
-      throw new Error(`page_size must be ${PAGE_SIZE}`);
-    if (!Array.isArray(body.candidate_set))
-      throw new Error("candidate_set must be an array");
+    if (body.page_size !== PAGE_SIZE) throw new Error(`page_size must be ${PAGE_SIZE}`);
+    if (!Array.isArray(body.candidate_set)) throw new Error("candidate_set must be an array");
 
     const existing = await this.readMeta();
-    if (
-      existing &&
-      (existing.tenant !== body.tenant || existing.subject !== body.subject)
-    ) {
+    if (existing && (existing.tenant !== body.tenant || existing.subject !== body.subject)) {
       throw new RecommendationPartitionError();
     }
 
@@ -377,18 +324,13 @@ export class RecommendationAccumulator {
         tenant: body.tenant,
         subject: body.subject,
         parent_snapshot_id: snapshot.parent_snapshot_id,
-        cursor: {
-          parent_snapshot_id: snapshot.parent_snapshot_id,
-          position: cursor.cursor_position,
-        },
+        cursor: { parent_snapshot_id: snapshot.parent_snapshot_id, position: cursor.cursor_position },
       };
     }
 
     // Replacing a previous snapshot: its retained page keys are stale and
     // are deleted after the new snapshot's keys land.
-    const stalePageKeys = existing
-      ? (await this.readCursor()).retained_pages.map(pageKey)
-      : [];
+    const stalePageKeys = existing ? (await this.readCursor()).retained_pages.map(pageKey) : [];
     await this.state.storage.put({
       [META_KEY]: {
         schema_version: 2,
@@ -398,39 +340,23 @@ export class RecommendationAccumulator {
       } satisfies StoredMeta,
       [PARENT_KEY]: parent,
       [ORDER_KEY]: snapshot.ordered,
-      [CURSOR_KEY]: {
-        cursor_position: 0,
-        retained_pages: [],
-      } satisfies StoredCursor,
+      [CURSOR_KEY]: { cursor_position: 0, retained_pages: [] } satisfies StoredCursor,
     });
-    if (stalePageKeys.length > 0)
-      await this.state.storage.delete(stalePageKeys);
+    if (stalePageKeys.length > 0) await this.state.storage.delete(stalePageKeys);
     // The snapshot is committed; keeping its history is best effort and
     // never fails the start. A retried start of the same parent returns
     // above, so one recompute is recorded once.
     let retained: number | undefined;
     try {
-      const outcome = await recordRecommendation(
-        this.env.RETAINED,
-        snapshot,
-        body.tenant,
-        body.subject,
-      );
+      const outcome = await recordRecommendation(this.env.RETAINED, snapshot, body.tenant, body.subject);
       if (outcome.recorded) retained = outcome.version;
     } catch (error) {
-      console.warn(
-        `recommendation history not recorded: ${(error as Error).message}`,
-      );
+      console.warn(`recommendation history not recorded: ${(error as Error).message}`);
     }
     // The same cadence captures the hot window under the short class.
     let hot: number | undefined;
     try {
-      const outcome = await recordHotSnapshot(
-        this.env.RETAINED,
-        snapshot,
-        body.tenant,
-        body.subject,
-      );
+      const outcome = await recordHotSnapshot(this.env.RETAINED, snapshot, body.tenant, body.subject);
       if (outcome.recorded) hot = outcome.version;
     } catch (error) {
       console.warn(`hot snapshot not recorded: ${(error as Error).message}`);
@@ -448,24 +374,14 @@ export class RecommendationAccumulator {
 
   private async sign(body: PageEnvelope["body"]): Promise<Uint8Array> {
     const message = pageSigningPreimage(body);
-    const response = await this.env.PAGE_SIGNER.fetch(
-      "https://page-signer/v1/sign",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          domain: PAGE_DOMAIN.replace(/\0$/, ""),
-          message_hex: hex(message),
-        }),
-      },
-    );
-    if (!response.ok)
-      throw new Error(`page signing failed with status ${response.status}`);
+    const response = await this.env.PAGE_SIGNER.fetch("https://page-signer/v1/sign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: PAGE_DOMAIN.replace(/\0$/, ""), message_hex: hex(message) }),
+    });
+    if (!response.ok) throw new Error(`page signing failed with status ${response.status}`);
     const result = objectBody(await response.json());
-    if (
-      typeof result.signature_hex !== "string" ||
-      !/^(?:[0-9a-f]{2})+$/.test(result.signature_hex)
-    ) {
+    if (typeof result.signature_hex !== "string" || !/^(?:[0-9a-f]{2})+$/.test(result.signature_hex)) {
       throw new Error("page signer returned an invalid signature_hex");
     }
     return hexToBytes(result.signature_hex);
@@ -516,22 +432,15 @@ export class RecommendationAccumulator {
 
     const position = cursor.position;
     if (cursorState.retained_pages.includes(position)) {
-      const cached = await this.state.storage.get<StoredPage>(
-        pageKey(position),
-      );
+      const cached = await this.state.storage.get<StoredPage>(pageKey(position));
       if (cached) return cached;
       throw new RecommendationReplayExpiredError(position);
     }
-    if (position < cursorState.cursor_position)
-      throw new RecommendationReplayExpiredError(position);
+    if (position < cursorState.cursor_position) throw new RecommendationReplayExpiredError(position);
     if (position > cursorState.cursor_position) {
-      throw new RecommendationCursorAheadError(
-        position,
-        cursorState.cursor_position,
-      );
+      throw new RecommendationCursorAheadError(position, cursorState.cursor_position);
     }
-    if (position % PAGE_SIZE !== 0)
-      throw new Error(`cursor position must be a multiple of ${PAGE_SIZE}`);
+    if (position % PAGE_SIZE !== 0) throw new Error(`cursor position must be a multiple of ${PAGE_SIZE}`);
 
     const ordered = await this.readOrder();
     const entries = ordered.slice(position, position + PAGE_SIZE);
@@ -541,19 +450,14 @@ export class RecommendationAccumulator {
       entries,
       done: position + entries.length >= ordered.length,
     };
-    const envelope: PageEnvelope = {
-      body: pageBody,
-      signature: await this.sign(pageBody),
-    };
+    const envelope: PageEnvelope = { body: pageBody, signature: await this.sign(pageBody) };
     const envelope_id = await pageEnvelopeId(envelope);
     const nextCursor: PageCursor = {
       parent_snapshot_id: meta.parent_snapshot_id,
       position: position + entries.length,
     };
     const page: StoredPage = { envelope, envelope_id, next_cursor: nextCursor };
-    const retainedAll = [...cursorState.retained_pages, position].sort(
-      (a, b) => a - b,
-    );
+    const retainedAll = [...cursorState.retained_pages, position].sort((a, b) => a - b);
     const retained = retainedAll.slice(-MAX_REPLAY_PAGES);
     const pruned = retainedAll.slice(0, retainedAll.length - retained.length);
     // The only write on the advance path: the new page plus the small

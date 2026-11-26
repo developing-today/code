@@ -45,16 +45,13 @@ export function hotSnapshotDraft(
     payload: {
       parent_snapshot_id: snapshot.parent_snapshot_id,
       window: HOT_WINDOW,
-      items: snapshot.ordered
-        .slice(0, HOT_WINDOW)
-        .map((entry) => ({ id: entry.id, score_micros: entry.score_micros })),
+      items: snapshot.ordered.slice(0, HOT_WINDOW).map((entry) => ({ id: entry.id, score_micros: entry.score_micros })),
     },
   };
 }
 
 export type HotSnapshotOutcome =
-  | { recorded: true; version: number; retired: number[] }
-  | { recorded: false; reason: "off" };
+  { recorded: true; version: number; retired: number[] } | { recorded: false; reason: "off" };
 
 /**
  * Capture one hot snapshot and retire what the class lets go. Returns what
@@ -71,9 +68,7 @@ export async function recordHotSnapshot(
   const store = new RetainedObjectStore(db, now);
   const rule = await store.getClass("hot-short");
   if (!rule?.enabled) return { recorded: false, reason: "off" };
-  const stored = await store.append(
-    hotSnapshotDraft(snapshot, tenant, subject, new Date(now())),
-  );
+  const stored = await store.append(hotSnapshotDraft(snapshot, tenant, subject, new Date(now())));
   const retired = await store.retireExpired(stored.objectId);
   return { recorded: true, version: stored.version, retired };
 }
