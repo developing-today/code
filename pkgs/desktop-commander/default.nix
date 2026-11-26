@@ -85,7 +85,7 @@ buildNpmPackage {
     '
   '';
 
-  npmDepsHash = lib.fakeHash;
+  npmDepsHash = "sha256-tcTf3AJmwbjeNsNDLHQM+dsPUYbPkE0DncYTTr0pw/c=";
 
   npmFlags = [
     "--ignore-scripts"
