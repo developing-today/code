@@ -12,6 +12,7 @@
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
+import { TenancyRegistry, type TenancyDatabase } from "./tenancy-registry.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
 import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 import { FENCE_RETRY_AFTER_SECONDS, HDR_MIGRATION } from "./migration-fence.ts";
@@ -25,8 +26,9 @@ export { TenantOpsDO } from "./tenant-ops.ts";
 
 interface Env {
   USERS: ObjectNamespaceLike;
-  /** Optional structural adapter. Raw D1 is not compatible: its `.all()`
-   * result must be unwrapped from `{ results }` by an adapter first. */
+  /** The central account/binding registry. Missing configuration fails closed. */
+  TENANCY_DB?: TenancyDatabase;
+  /** Transitional route projection; consulted only for migration state. */
   HOSTED_DIRECTORY?: HostedDirectoryDatabase;
   USER_CEILING_BYTES?: string;
 }
@@ -43,58 +45,47 @@ export default {
     try {
       const bindingId = parseBindingId(req.headers.get("x-binding-id"));
       const jurisdiction = parseJurisdiction(req.headers.get("x-jurisdiction"));
+      const binding = await new TenancyRegistry(env.TENANCY_DB).binding(bindingId);
+      if (binding === null) {
+        throw new FailClosed(403, "registry_binding_missing", "no central binding record exists; failing closed");
+      }
+      if (binding.bindingStatus !== "active") {
+        throw new FailClosed(403, "registry_binding_inactive", "central binding is not active; failing closed");
+      }
+      if (binding.accountState !== "active") {
+        throw new FailClosed(403, "registry_account_inactive", "central account is not active; failing closed");
+      }
       if (env.HOSTED_DIRECTORY) {
-        // Read-only routing guard (#3399): resolve the binding to a
-        // validated record. A migrating record (#3404) still routes to
-        // its active jurisdiction until the switch. Never signup, inventory, provision,
-        // enable, or migrate here — reads only. Missing, legacy-only,
-        // mismatched, and corrupt records all fail closed before any
-        // namespace access.
+        // The central registry decides whether the binding/account exists
+        // and is active. The legacy directory is only a migration routing
+        // projection; it cannot grant access without the central row.
         const directory = new PersistentHostedAccountDirectory(env.HOSTED_DIRECTORY);
-        let record;
         try {
-          record = await directory.findByBindingId(bindingId);
-        } catch (error) {
-          if (error instanceof FailClosed) throw error;
-          throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
-        }
-        if (!record) {
-          let legacy;
-          try {
-            legacy = await directory.findLegacyByBindingId(bindingId);
-          } catch (error) {
-            if (error instanceof FailClosed) throw error;
-            throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
-          }
-          if (legacy) {
+          const routeRecord = await directory.findByBindingId(bindingId);
+          if (routeRecord) {
+            if (await directory.legacyInventory(routeRecord.subjectKey) || await directory.findLegacyByBindingId(bindingId)) {
+              throw new FailClosed(503, "invalid_directory_record", "account conflicts with legacy inventory; failing closed");
+            }
+            if (routeRecord.phase === "switched") {
+              return json(
+                { error: "migration_switching", message: "account is switching jurisdiction; retry shortly" },
+                503,
+                { "retry-after": String(FENCE_RETRY_AFTER_SECONDS) },
+              );
+            }
+            if (routeRecord.jurisdiction !== jurisdiction) {
+              throw new FailClosed(403, "directory_jurisdiction_mismatch", "request jurisdiction does not match the migration route projection; failing closed");
+            }
+          } else if (await directory.findLegacyByBindingId(bindingId)) {
             throw new FailClosed(
               403,
               "legacy_subject_requires_migration",
-              "subject has a legacy account of unknown jurisdiction; routing cannot relabel it — migration is a separately reviewed procedure",
+              "legacy binding has no central account record; failing closed",
             );
-          }
-          throw new FailClosed(403, "directory_account_missing", "no validated hosted account record; failing closed");
-        }
-        try {
-          if (await directory.legacyInventory(record.subjectKey) || await directory.findLegacyByBindingId(bindingId)) {
-            throw new FailClosed(503, "invalid_directory_record", "account conflicts with legacy inventory; failing closed");
           }
         } catch (error) {
           if (error instanceof FailClosed) throw error;
-          throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
-        }
-        if (record.phase === "switched") {
-          // The directory names the target as authoritative but the
-          // target is not serving yet (#3404): neither side may take the
-          // request, so refuse it as retryable instead of routing.
-          return json(
-            { error: "migration_switching", message: "account is switching jurisdiction; retry shortly" },
-            503,
-            { "retry-after": String(FENCE_RETRY_AFTER_SECONDS) },
-          );
-        }
-        if (record.jurisdiction !== jurisdiction) {
-          throw new FailClosed(403, "directory_jurisdiction_mismatch", "request jurisdiction does not match the persisted account; failing closed");
+          throw new FailClosed(503, "directory_unavailable", "migration route projection unavailable; failing closed");
         }
       }
       const hasBody = req.method !== "GET" && req.method !== "HEAD";
