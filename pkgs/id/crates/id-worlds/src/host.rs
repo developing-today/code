@@ -795,6 +795,26 @@ impl HostLifecycle {
         Ok(())
     }
 
+    /// Set the host-wide snapshot policy, or one world's own, and save
+    /// (#13739).
+    ///
+    /// # Errors
+    ///
+    /// As [`HostFile::set_snapshot_policy`], and when the save fails
+    /// (nothing changes then).
+    pub fn set_snapshot_policy(
+        &self,
+        world: Option<&str>,
+        policy: Option<SnapshotPolicy>,
+    ) -> Result<()> {
+        let mut file = self.lock();
+        let mut next = file.clone();
+        next.set_snapshot_policy(world, policy)?;
+        self.save(&next)?;
+        *file = next;
+        Ok(())
+    }
+
     /// The data root this host file describes.
     pub fn root(&self) -> &Path {
         &self.root
@@ -1218,6 +1238,66 @@ pub fn settings_body(file: &HostFile, world: &str) -> Result<serde_json::Value> 
     }))
 }
 
+/// Take a set of the live world `name` from its `service` when `policy`
+/// says one is due at `now_secs`, then prune its sets to the policy
+/// (#13739). Both `id host run` and a serving node (`id serve
+/// --world-host`) call this from their schedule.
+///
+/// A world whose journal has not grown since its newest set gets the
+/// fresh set in place of that one. A failed export leaves no partial set
+/// behind: it is written under a name that is not a set, then renamed.
+///
+/// # Errors
+///
+/// When the snapshot directory cannot be listed or created, the export
+/// fails, or a set cannot be renamed or removed. What was taken and
+/// removed before the failure is recorded in `run`.
+pub async fn snapshot_live_world(
+    service: &WorldService,
+    key: &SigningKey,
+    name: &str,
+    policy: &SnapshotPolicy,
+    snapshot_root: &Path,
+    now_secs: u64,
+    run: &mut SnapshotRun,
+) -> Result<()> {
+    let sets = list_sets(snapshot_root, name)?;
+    let previous = sets.last().cloned();
+    if !is_due(policy, previous.as_ref(), now_secs) {
+        return Ok(());
+    }
+    let dir = world_snapshot_dir(snapshot_root, name);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating snapshot directory {}", dir.display()))?;
+    let taking = dir.join(format!(".{now_secs:020}.taking"));
+    let manifest = export_world_to_file(service, key, &taking).await?;
+    let path = dir.join(set_file_name(now_secs, manifest.entries));
+    std::fs::rename(&taking, &path)
+        .with_context(|| format!("renaming {} to {}", taking.display(), path.display()))?;
+    let bytes = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+    let taken = SnapshotSet {
+        world: name.to_owned(),
+        path,
+        at_secs: now_secs,
+        entries: manifest.entries,
+        bytes,
+    };
+    run.taken.push(taken.clone());
+    let mut after = sets;
+    // The journal is append-only, so the same entry count is the same
+    // journal: the new set replaces the newest one.
+    if let Some(previous) = previous.filter(|set| set.entries == manifest.entries) {
+        remove_sets(std::slice::from_ref(&previous))?;
+        after.pop();
+        run.removed.push(previous);
+    }
+    after.push(taken);
+    let plan = prune_plan(&after, policy, now_secs);
+    remove_sets(&plan)?;
+    run.removed.extend(plan);
+    Ok(())
+}
+
 /// The answer body for a snapshot-policy change: the policy `world`
 /// follows (or the host-wide default when `world` is `None`), where sets
 /// live, and the world's sets on disk.
@@ -1508,9 +1588,9 @@ impl Supervisor {
     /// the others; a failed export leaves no partial set behind.
     pub async fn run_due_snapshots(&self, now_secs: u64) -> SnapshotRun {
         let mut run = SnapshotRun::default();
-        if self.signing_key.is_none() {
+        let Some(key) = self.signing_key.as_ref() else {
             return run;
-        }
+        };
         let snapshot_root = self.file.snapshot_root(&self.root);
         let mut names: Vec<&String> = self.live.keys().collect();
         names.sort();
@@ -1519,61 +1599,22 @@ impl Supervisor {
             if !policy.is_on() {
                 continue;
             }
-            if let Err(error) = self
-                .snapshot_world(name, &policy, &snapshot_root, now_secs, &mut run)
-                .await
+            let service = &self.live[name].service;
+            if let Err(error) = snapshot_live_world(
+                service,
+                key,
+                name,
+                &policy,
+                &snapshot_root,
+                now_secs,
+                &mut run,
+            )
+            .await
             {
                 run.failed.push((name.clone(), format!("{error:#}")));
             }
         }
         run
-    }
-
-    async fn snapshot_world(
-        &self,
-        name: &str,
-        policy: &SnapshotPolicy,
-        snapshot_root: &Path,
-        now_secs: u64,
-        run: &mut SnapshotRun,
-    ) -> Result<()> {
-        let sets = list_sets(snapshot_root, name)?;
-        let previous = sets.last().cloned();
-        if !is_due(policy, previous.as_ref(), now_secs) {
-            return Ok(());
-        }
-        let dir = world_snapshot_dir(snapshot_root, name);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating snapshot directory {}", dir.display()))?;
-        // The entry count is known only once the export is written, so it
-        // is written under a name that is not a set, then renamed.
-        let taking = dir.join(format!(".{now_secs:020}.taking"));
-        let manifest = self.export(name, &taking).await?;
-        let path = dir.join(set_file_name(now_secs, manifest.entries));
-        std::fs::rename(&taking, &path)
-            .with_context(|| format!("renaming {} to {}", taking.display(), path.display()))?;
-        let bytes = std::fs::metadata(&path).map_or(0, |meta| meta.len());
-        let taken = SnapshotSet {
-            world: name.to_owned(),
-            path,
-            at_secs: now_secs,
-            entries: manifest.entries,
-            bytes,
-        };
-        run.taken.push(taken.clone());
-        let mut after = sets;
-        // The journal is append-only, so the same entry count is the same
-        // journal: the new set replaces the newest one.
-        if let Some(previous) = previous.filter(|set| set.entries == manifest.entries) {
-            remove_sets(std::slice::from_ref(&previous))?;
-            after.pop();
-            run.removed.push(previous);
-        }
-        after.push(taken);
-        let plan = prune_plan(&after, policy, now_secs);
-        remove_sets(&plan)?;
-        run.removed.extend(plan);
-        Ok(())
     }
 
     /// Restore the export file `path`, signed by `pinned_source`, as a new

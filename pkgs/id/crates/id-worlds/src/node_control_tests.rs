@@ -281,3 +281,61 @@ async fn the_cli_reaches_a_serving_node_over_its_socket() {
     done.send(()).unwrap();
     served.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn a_serving_node_takes_scheduled_snapshots_of_its_live_worlds() {
+    use crate::host_snapshots::{SnapshotPolicy, list_sets};
+
+    let root = data_root_with(&["alpha", "beta"]);
+    let (keyless, hub, host) = node(root.path());
+    let control = NodeControl::new(
+        hub,
+        Arc::clone(&host),
+        Some(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
+    );
+    let hourly = SnapshotPolicy {
+        every_secs: 3_600,
+        keep: 2,
+        max_age_secs: None,
+    };
+    let set = control
+        .handle(ControlRequest::SetSnapshots {
+            world: None,
+            policy: Some(hourly),
+        })
+        .await;
+    assert!(set.ok, "{set:?}");
+    assert_eq!(host.snapshot().snapshot_policy("alpha"), hourly);
+    let bad = control
+        .handle(ControlRequest::SetSnapshots {
+            world: None,
+            policy: Some(SnapshotPolicy { keep: 0, ..hourly }),
+        })
+        .await;
+    assert!(!bad.ok, "a policy keeping nothing is refused: {bad:?}");
+
+    assert!(control.handle(start("alpha")).await.ok);
+    // A node without a key takes nothing; asleep worlds are never taken.
+    assert!(keyless.run_due_snapshots(1_000).await.is_empty());
+    let run = control.run_due_snapshots(1_000).await;
+    assert!(run.failed.is_empty(), "{:?}", run.failed);
+    assert_eq!(
+        run.taken
+            .iter()
+            .map(|set| set.world.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha"]
+    );
+    // Not due again inside the cadence.
+    assert!(control.run_due_snapshots(2_000).await.is_empty());
+
+    let snapshot_root = host.snapshot().snapshot_root(root.path());
+    assert_eq!(list_sets(&snapshot_root, "alpha").unwrap().len(), 1);
+    let shown = control
+        .handle(ControlRequest::Snapshots {
+            world: Some("alpha".to_owned()),
+        })
+        .await;
+    assert!(shown.ok, "{shown:?}");
+    assert_eq!(shown.body.unwrap()["sets"].as_array().unwrap().len(), 1);
+}

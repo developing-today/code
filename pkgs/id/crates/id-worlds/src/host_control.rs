@@ -324,7 +324,7 @@ pub async fn serve(
 }
 
 /// Log what a scheduled snapshot pass did, one line per set and failure.
-fn log_snapshot_run(run: &crate::host_snapshots::SnapshotRun) {
+pub(crate) fn log_snapshot_run(run: &crate::host_snapshots::SnapshotRun) {
     for set in &run.taken {
         tracing::info!(
             world = %set.world,
