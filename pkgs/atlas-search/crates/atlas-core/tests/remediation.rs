@@ -251,6 +251,36 @@ fn missing_or_malformed_statement_results_fail_closed() {
 }
 
 #[test]
+fn invalid_content_hashes_are_rejected_without_echoing_the_value() {
+    let invalid_hash = "not-a-valid-content-hash";
+    let count = vec![Row::new(vec![("total".into(), Value::Integer(1))])];
+    let source_row = Row::new(vec![
+        ("id".into(), Value::Integer(7)),
+        ("h".into(), Value::Text(invalid_hash.to_string())),
+    ]);
+    let source = StaticTransport {
+        results: vec![count.clone(), vec![source_row]],
+    };
+    let source_error = read_source(&source, Sensitivity::SecretBearing)
+        .expect_err("invalid source hash must fail closed")
+        .to_string();
+    assert!(!source_error.contains(invalid_hash));
+
+    let destination_row = Row::new(vec![
+        ("id".into(), Value::Integer(7)),
+        ("h".into(), Value::Text(invalid_hash.to_string())),
+        ("has_vec".into(), Value::Integer(1)),
+    ]);
+    let destination = StaticTransport {
+        results: vec![count, vec![destination_row]],
+    };
+    let destination_error = read_destination(&destination, DEFAULT_VEC_TABLE)
+        .expect_err("invalid destination hash must fail closed")
+        .to_string();
+    assert!(!destination_error.contains(invalid_hash));
+}
+
+#[test]
 fn vector_table_identifier_is_rejected_before_query() {
     let err = read_destination(
         &UnexpectedQuery,

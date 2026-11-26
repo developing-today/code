@@ -189,6 +189,7 @@ mod tests {
         assert_eq!(parsed.vec_table, "vectors");
         assert!(args(&["--out", "report.json", "--out", "other.json"]).is_err());
         assert!(args(&["--out", "report.json", "--unknown", "value"]).is_err());
+        assert!(args(&["--out", "--resume"]).is_err());
         assert!(
             args(&[
                 "--out",
