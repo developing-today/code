@@ -775,6 +775,7 @@ pub fn sign_rotation(
 
             chat: None,
             anchor: None,
+            thread: None,
         },
     )?)
 }

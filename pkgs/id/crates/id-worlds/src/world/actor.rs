@@ -1050,9 +1050,8 @@ impl WorldActor {
                                     // and stays healthy; the same
                                     // input can succeed once the
                                     // account's window rolls.
-                                    Err(error.context(
-                                        "world program refused input at its fuel rate",
-                                    ))
+                                    Err(error
+                                        .context("world program refused input at its fuel rate"))
                                 } else {
                                     self.program_healthy = false;
                                     Err(error.context("world program rejected input"))

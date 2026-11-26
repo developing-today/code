@@ -63,6 +63,23 @@ fleet kv namespace list
   `namespace_scope_change`, because its existing keys would be stranded.
 - Hosts pick up a change on their next `fleet kv sync`.
 
+## Collect unreferenced blobs
+
+A blob that no key references any more is collected in two steps. Run one
+pass per partition, with the same admin credential:
+
+```sh
+fleet kv blob gc eu/standard
+```
+
+- The pass marks every published blob in the partition that nothing
+  references, and clears a mark once a reference lands or the object is gone.
+- It fences the delete of each blob that stayed unreferenced for the grace,
+  24 hours by default (`--grace-ms` changes it).
+- It prints `partition=… marked=N cleared=N deleted=N`, then one
+  `deleted content=DIGEST epoch=N` line per fenced delete. The object bytes
+  stay in the store; this pass only retires the central record.
+
 ## Check readiness
 
 - `GET /health` reports `kv.primary_configured`. It is a boolean and

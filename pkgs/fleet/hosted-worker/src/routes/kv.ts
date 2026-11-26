@@ -8,7 +8,7 @@
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
 import { FailClosed } from "../errors.ts";
-import { handleKvBlobCapability, handleKvBlobPut, handleKvBlobRead } from "../kv-blobs.ts";
+import { handleKvBlobCapability, handleKvBlobPurge, handleKvBlobPut, handleKvBlobRead } from "../kv-blobs.ts";
 import { handleKvPipeline } from "../kv-door.ts";
 import type { RouteDef } from "../router.ts";
 
@@ -42,6 +42,14 @@ export const routes: RouteDef[] = [
     door: "kv",
     handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) =>
       handleKvBlobCapability(req, caller(ctx), deps),
+  },
+  // The purge (#13318): removes the bytes of blobs GC already deleted
+  // centrally. kv-admin only, like the pipeline's admin statements.
+  {
+    method: "POST",
+    path: "/v1/kv/blobs/purge",
+    door: "kv",
+    handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => handleKvBlobPurge(req, caller(ctx), deps),
   },
   // The read itself is authorized by the capability alone: no other
   // credential, so the route is public and the handler fails closed

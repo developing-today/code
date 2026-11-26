@@ -17,6 +17,7 @@ pub mod archive;
 pub mod backup;
 pub mod blob;
 pub mod blob_central;
+pub mod blob_read;
 pub mod catalog;
 pub mod central;
 pub mod cli;
@@ -39,7 +40,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
 use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 10;
 
 /// The outbox op of an ordinary set.
 pub const OP_SET: &str = "set";
@@ -675,7 +676,9 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 /// per-key central base and local copies of sweep receipts; version 6 adds
 /// the cached namespace definitions pulled by `fleet kv sync`; version 7 adds
 /// the short-lived cache of central heads read through a local miss; version
-/// 8 records each partition's last survival-archive checkpoint.
+/// 8 records each partition's last survival-archive checkpoint; version 9
+/// caches each namespace's blob placement; version 10 keeps each cached
+/// central head's row envelope.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -693,6 +696,8 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
     sync::migrate_to_v6(&tx)?;
     read::migrate_to_v7(&tx)?;
     archive::migrate_to_v8(&tx)?;
+    sync::migrate_to_v9(&tx)?;
+    read::migrate_to_v10(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql)?;
     tx.commit().map_err(sql)

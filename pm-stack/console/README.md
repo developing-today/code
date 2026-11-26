@@ -193,6 +193,16 @@ More, Machines shows:
 
 - **Cloudflare's own part**: whether it does the core itself, and what
   it was turned away for lately.
+- **Platform settings**: each of the platform's settings with the value
+  in force, whose it is (main's, a machine's list, or the owner's) and
+  since when. The two the owner may change, the prompt label and the
+  repositories looked in, have "Change" (`settings.set`) and, once
+  changed, "Put back to main's" (`settings.clear`), with main's value
+  beside the change. Cloudflare does both itself and never hands them
+  to a machine; it checks the value whole, and refuses a change made
+  from an older look (another tab changed it meanwhile) with what the
+  settings are now. The log keeps which setting changed and who
+  changed it, never the value.
 - **Each machine**: whether it is reporting and when it was last heard
   from, the commit it runs, and what only it reports and only it can
   do, in words. What Cloudflare does itself is not counted as the

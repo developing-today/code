@@ -326,7 +326,8 @@ export class PmNotify {
     if (postMatch) {
       const ledgerId = ledgerIdFrom(postMatch);
       const body = await req.json().catch(() => null);
-      const token = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).token : undefined;
+      const token =
+        body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).token : undefined;
       const found =
         ledgerId && typeof token === "string" && token ? await this.authorizeQuestion(state, ledgerId, token) : null;
       if (!found) return json({ error: "unknown question or invalid token" }, 403);

@@ -26,7 +26,7 @@ Governing decisions consumed, not re-opened:
   (`pmo_rel_completion_late_activity_holds_before_merge`).
 - **REL-08** (`doc/2026-11-25T22-52-00Z_design_rel08_work_complete_cli/`):
   the `work complete` receipt states `"residual_race": "activity after
-  <watermark> is not seen"`.
+<watermark> is not seen"`.
 - **#9203** (closed): event routing and dedupe own delivery. **#9207**
   owns incremental activity reads; HYD-06 reads activity since the
   checkpoint for REL-07's final refresh.

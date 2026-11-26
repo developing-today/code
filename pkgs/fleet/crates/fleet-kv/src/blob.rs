@@ -268,6 +268,12 @@ fn is_digest(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Whether `text` is a partition label: 1 to 63 of `a-z`, `0-9` and `-`,
+/// the shape the upload door accepts.
+pub fn valid_label(text: &str) -> bool {
+    is_label(text)
+}
+
 fn is_label(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= 63

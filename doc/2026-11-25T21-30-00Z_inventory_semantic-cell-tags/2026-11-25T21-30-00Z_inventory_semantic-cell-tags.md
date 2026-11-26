@@ -12,15 +12,15 @@ Every fact below cites `file:line` and states only what the code shows. Section 
 
 Path keys used in the tables:
 
-| Key | Path |
-| --- | --- |
-| WP | `pkgs/id/crates/id-core/src/world_presentation.rs` |
-| SC | `pkgs/id/crates/id-core/src/screen_codec.rs` |
-| PP / PA / PF | `pkgs/id/crates/id-core/src/presentation_{policy,asset,filter}.rs` |
-| WT | `pkgs/id/crates/id-worlds/src/world_terminal.rs` |
-| WS / WC | `pkgs/id/web/src/world-surface.ts` / `pkgs/id/web/src/screen-codec.ts` |
-| NR | `pkgs/id/crates/id-native-shell/src/render.rs` |
-| RS | `pkgs/id/examples/roc-world/Screen.roc` (the Roc guest SDK screen helper) |
+| Key          | Path                                                                      |
+| ------------ | ------------------------------------------------------------------------- |
+| WP           | `pkgs/id/crates/id-core/src/world_presentation.rs`                        |
+| SC           | `pkgs/id/crates/id-core/src/screen_codec.rs`                              |
+| PP / PA / PF | `pkgs/id/crates/id-core/src/presentation_{policy,asset,filter}.rs`        |
+| WT           | `pkgs/id/crates/id-worlds/src/world_terminal.rs`                          |
+| WS / WC      | `pkgs/id/web/src/world-surface.ts` / `pkgs/id/web/src/screen-codec.ts`    |
+| NR           | `pkgs/id/crates/id-native-shell/src/render.rs`                            |
+| RS           | `pkgs/id/examples/roc-world/Screen.roc` (the Roc guest SDK screen helper) |
 
 ## 1. Screen cell buffer as shipped
 
@@ -28,14 +28,14 @@ Path keys used in the tables:
 
 `ScreenCell` (WP:1627-1644) is `#[serde(deny_unknown_fields)]` (WP:1629) with exactly six fields:
 
-| Field | Type / width | Meaning in code |
-| --- | --- | --- |
-| `symbol` | `String`, one grapheme | "One safe Unicode grapheme, or empty for a wide glyph's continuation cell" (WP:1631-1632) |
-| `fg` | `u8` | xterm-256 index, zero is presenter default (WP:1633-1634) |
-| `bg` | `u8` | xterm-256 index, zero is presenter default (WP:1635-1636) |
-| `bold` | `bool` | (WP:1637-1638) |
-| `columns` | `u8`, values 0, 1, 2 | zero marks a wide-glyph continuation (WP:1626, WP:1639-1640) |
-| `token` | `Option<StyleToken>`, omitted when `None` | "Semantic intent, if supplied by the guest" (WP:1641-1643) |
+| Field     | Type / width                              | Meaning in code                                                                           |
+| --------- | ----------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `symbol`  | `String`, one grapheme                    | "One safe Unicode grapheme, or empty for a wide glyph's continuation cell" (WP:1631-1632) |
+| `fg`      | `u8`                                      | xterm-256 index, zero is presenter default (WP:1633-1634)                                 |
+| `bg`      | `u8`                                      | xterm-256 index, zero is presenter default (WP:1635-1636)                                 |
+| `bold`    | `bool`                                    | (WP:1637-1638)                                                                            |
+| `columns` | `u8`, values 0, 1, 2                      | zero marks a wide-glyph continuation (WP:1626, WP:1639-1640)                              |
+| `token`   | `Option<StyleToken>`, omitted when `None` | "Semantic intent, if supplied by the guest" (WP:1641-1643)                                |
 
 Validation (`is_valid`, WP:2323 onward): a continuation cell must follow a two-column head with equal `fg`, `bg`, `bold` and `token` and an empty symbol (WP:2336-2354); a head must be one grapheme, control-free, with Unicode width equal to `columns` (WP:2355-2362).
 
@@ -68,25 +68,25 @@ Tokens: `emphasis, muted, heading, code, warning, success, link` (WP:1602-1611).
 
 All share the rule that `WorldSurface::text_projection` is exhaustive with no wildcard (WP:144-159).
 
-| Kind | Shape (closed sets) | Text projection |
-| --- | --- | --- |
-| `text` | `TextSurface {version, width, lines}` (WP:625-638) | lines wrapped to width (WP:691) |
-| `form` | fields and actions, closed field kinds (WP:164-250) | numbered field lines (WP:417) |
-| `scene` | nodes with `SceneShape` box/sphere/plane/point (WP:846-893) | one line per node (WP:995) |
-| `audio` | cues with `AudioFormat` wav/ogg/mp3 (WP:1023-1066) | one line per cue (WP:1127) |
-| `widget` | controls button/toggle/link (WP:1153-1216) | one line per control with kind (WP:1304) |
-| `media` | items with `MediaSort` image/audio/video (WP:1338-1392) | one line per item (WP:1477) |
-| `screen` | cell grid above | row symbols, continuation cells skipped, trailing blanks trimmed (WP:2150-2171) |
+| Kind     | Shape (closed sets)                                         | Text projection                                                                 |
+| -------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `text`   | `TextSurface {version, width, lines}` (WP:625-638)          | lines wrapped to width (WP:691)                                                 |
+| `form`   | fields and actions, closed field kinds (WP:164-250)         | numbered field lines (WP:417)                                                   |
+| `scene`  | nodes with `SceneShape` box/sphere/plane/point (WP:846-893) | one line per node (WP:995)                                                      |
+| `audio`  | cues with `AudioFormat` wav/ogg/mp3 (WP:1023-1066)          | one line per cue (WP:1127)                                                      |
+| `widget` | controls button/toggle/link (WP:1153-1216)                  | one line per control with kind (WP:1304)                                        |
+| `media`  | items with `MediaSort` image/audio/video (WP:1338-1392)     | one line per item (WP:1477)                                                     |
+| `screen` | cell grid above                                             | row symbols, continuation cells skipped, trailing blanks trimmed (WP:2150-2171) |
 
 No shipped world emits form, scene, audio, widget or media (a search of `apps/` and `examples/` finds none). Only `screen` is a cell grid, so this inventory scopes tags to `screen`.
 
 ## 2. Tiers (#786) as coded
 
-| Tier | Selection evidence (WT:60-68) | Screen rendering |
-| --- | --- | --- |
+| Tier  | Selection evidence (WT:60-68)                     | Screen rendering                                                                                              |
+| ----- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | Tier1 | (kitty graphics or sixel) and synchronized output | Tier 2 grid inside sync brackets (WT:701-707); presenter-owned images only, never guest payloads (WT:729-750) |
-| Tier2 | cursor position report and 256-colour | full ANSI frame then row diffs (WT:684-697) |
-| Tier3 | anything else, or a conflicted probe (WT:185-193) | `text_projection` then line deltas (WT:644-663) |
+| Tier2 | cursor position report and 256-colour             | full ANSI frame then row diffs (WT:684-697)                                                                   |
+| Tier3 | anything else, or a conflicted probe (WT:185-193) | `text_projection` then line deltas (WT:644-663)                                                               |
 
 `DisplayMode` is auto, alternate, primary or text, negotiated per session via `ID_DISPLAY` (WT:82-145). Alternate and primary force at least Tier 2; text forces Tier 3 (WT:157-171). Primary mode paints with `paint_primary` (WP:2272) over `LogicalCell`, which has no token.
 
@@ -108,22 +108,22 @@ Other clients: the web shell draws a CSS grid of spans with xterm colours and bo
 
 Sizes are frame dimensions. Unless noted, colours are xterm indices in `fg`, `bg` is 0, and no world sets `token`. Grid is "semantic cell to screen cell" width.
 
-| World | Surface | What cells represent (glyph, colour) | Grid | Tag candidates it would need |
-| --- | --- | --- | --- | --- |
-| `apps/checkers` | screen 28x13 (main.roc:733-737) | dark empty square `.`, light square blank; red man `o`/king `O` fg 203, black man `x`/king `X` fg 245, king bold (785-809); selected piece `[ ]` fg 46 bold, cursor `[ ]` fg 226 bold (764-765, 811-819); HUD, rank/file labels, status text (753-769) | 3 screen cells per square | kind square (dark/light), kind piece with side and form man/king; flags cursor, selected; text for chrome |
-| `apps/chess` | screen 28x13 (1014-1018) | white `KQRBNP` fg 231 bold, black `kqrbnp` fg 245 (1066-1106); same `.` squares and `[ ]` cursor/selected (1110-1116); check, promotion, mate only as status text (1118-1137) | 3 per square | as checkers plus forms king, queen, rook, bishop, knight, pawn; candidate `in_check` or highlighted (not drawn today) |
-| `apps/space-invaders` | screen 40x22 (49, 64) | invaders 2-cell `<>` `/\` `[]` `{}` by row, fg 196/208/226/46 (430, 452-474); bombs `:` fg 201 (435); player shot `\|` fg 231 bold (437); player `/A\` fg 51 bold (441); ground `=` fg 240 (442); banners fg 46/196 (444-446); no shields | 2 cells per invader, 3 for player | creature (player, invader, row type), effect/projectile (shot, bomb), terrain (ground), text; hostile vs friendly |
-| `apps/tic-tac-toe` | legacy text, one line (44-53) | board string `X`, `O`, `-` plus `plays=` and `next=`/`winner=` | none | none until it emits a screen; would need square, piece X/O |
-| `examples/territory` | screen 24x19 via `render_rows_json` (61-72) | claimed cells `A`..`H`, fg per seat 10,12,11,13,14,9,15,8 bold (293-305); empty `.` fg 8 (321-329, 30); a seat's cursor replaces the cell with `a`..`h` on a seat bg (307-319, 248-252); box edges, scores | 1 per cell | kind terrain/territory with owner identity; flag cursor (today the cursor hides the owner beneath it) |
-| `examples/roc-burrow` | screen 36x9 boxed (157-167) | digger `A`, rock `#`, exit `X`, soil `s`, cleared `.`, all default colour (172-184, 35, 38) | 1 per cell, space-separated | creature, terrain with blocking (rock), diggable soil, exit with open/locked |
-| `examples/rust-colony` | screen 32x6 (385-410) | worker `@`, ore `*`, stockpile `S`, floor `.`, default colour (330-340); legend line spells the key (402) | 1 per cell, space-separated | creature, item (ore), structure (stockpile), terrain |
-| `examples/rust-orbit` | screen 32x8 (464-498) | cannon `A`, target `T`, shot `\|`, empty `.`, default colour (366-376) | 1 per cell, space-separated | creature (cannon, target), effect (shot) |
-| `examples/rust-cells` | screen 24x7 (114-122) | alive `#`, dead `.` (49-55) | 1 per cell | kind cell with state alive/dead |
-| `examples/roc-grid` | screen 24x6 (25-32) | raw grid bytes as glyphs fg 2 bold; non-UTF-8 byte shows `?` (35-38) | 1 per cell | generic grid cell; shows a world-side `?` the prior record forbids at client level |
-| `examples/roc-mind-map` | screen 40x10 boxed (115-123) | node `id name` labels at positions, outcome and link lines, default colour | label spans | text only; node and link kinds if ever tagged |
-| Counters: `roc-counter`, `roc-screen`, `rust-counter`, `zig-counter` | screen 20x3 boxed, `count=N` (roc-counter 33-34; rust-counter 41-48, 70-73; zig-counter 76-78) | ASCII box `+-\|` (RS:110-127) and text | n/a | none beyond text/chrome |
-| Text-only: `roc-text-counter`, `lounge`, `roc-chat`, `roc-cap-demo`, `rust-sketch` | legacy UTF-8 text (roc-text-counter 19-20; lounge 61-63; roc-chat 81-83; roc-cap-demo 36-44; rust-sketch 141-142) | status lines | none | none |
-| Not worlds | `first-app-poc` (README only), `roc-import-policy` (fixtures), `roc-world`, `rust-world`, `zig-sdk` (SDKs), `session_checkpoint_poc.rs`, `roc-toolchain.sh` | | | |
+| World                                                                              | Surface                                                                                                                                                     | What cells represent (glyph, colour)                                                                                                                                                                                                                   | Grid                              | Tag candidates it would need                                                                                          |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `apps/checkers`                                                                    | screen 28x13 (main.roc:733-737)                                                                                                                             | dark empty square `.`, light square blank; red man `o`/king `O` fg 203, black man `x`/king `X` fg 245, king bold (785-809); selected piece `[ ]` fg 46 bold, cursor `[ ]` fg 226 bold (764-765, 811-819); HUD, rank/file labels, status text (753-769) | 3 screen cells per square         | kind square (dark/light), kind piece with side and form man/king; flags cursor, selected; text for chrome             |
+| `apps/chess`                                                                       | screen 28x13 (1014-1018)                                                                                                                                    | white `KQRBNP` fg 231 bold, black `kqrbnp` fg 245 (1066-1106); same `.` squares and `[ ]` cursor/selected (1110-1116); check, promotion, mate only as status text (1118-1137)                                                                          | 3 per square                      | as checkers plus forms king, queen, rook, bishop, knight, pawn; candidate `in_check` or highlighted (not drawn today) |
+| `apps/space-invaders`                                                              | screen 40x22 (49, 64)                                                                                                                                       | invaders 2-cell `<>` `/\` `[]` `{}` by row, fg 196/208/226/46 (430, 452-474); bombs `:` fg 201 (435); player shot `\|` fg 231 bold (437); player `/A\` fg 51 bold (441); ground `=` fg 240 (442); banners fg 46/196 (444-446); no shields              | 2 cells per invader, 3 for player | creature (player, invader, row type), effect/projectile (shot, bomb), terrain (ground), text; hostile vs friendly     |
+| `apps/tic-tac-toe`                                                                 | legacy text, one line (44-53)                                                                                                                               | board string `X`, `O`, `-` plus `plays=` and `next=`/`winner=`                                                                                                                                                                                         | none                              | none until it emits a screen; would need square, piece X/O                                                            |
+| `examples/territory`                                                               | screen 24x19 via `render_rows_json` (61-72)                                                                                                                 | claimed cells `A`..`H`, fg per seat 10,12,11,13,14,9,15,8 bold (293-305); empty `.` fg 8 (321-329, 30); a seat's cursor replaces the cell with `a`..`h` on a seat bg (307-319, 248-252); box edges, scores                                             | 1 per cell                        | kind terrain/territory with owner identity; flag cursor (today the cursor hides the owner beneath it)                 |
+| `examples/roc-burrow`                                                              | screen 36x9 boxed (157-167)                                                                                                                                 | digger `A`, rock `#`, exit `X`, soil `s`, cleared `.`, all default colour (172-184, 35, 38)                                                                                                                                                            | 1 per cell, space-separated       | creature, terrain with blocking (rock), diggable soil, exit with open/locked                                          |
+| `examples/rust-colony`                                                             | screen 32x6 (385-410)                                                                                                                                       | worker `@`, ore `*`, stockpile `S`, floor `.`, default colour (330-340); legend line spells the key (402)                                                                                                                                              | 1 per cell, space-separated       | creature, item (ore), structure (stockpile), terrain                                                                  |
+| `examples/rust-orbit`                                                              | screen 32x8 (464-498)                                                                                                                                       | cannon `A`, target `T`, shot `\|`, empty `.`, default colour (366-376)                                                                                                                                                                                 | 1 per cell, space-separated       | creature (cannon, target), effect (shot)                                                                              |
+| `examples/rust-cells`                                                              | screen 24x7 (114-122)                                                                                                                                       | alive `#`, dead `.` (49-55)                                                                                                                                                                                                                            | 1 per cell                        | kind cell with state alive/dead                                                                                       |
+| `examples/roc-grid`                                                                | screen 24x6 (25-32)                                                                                                                                         | raw grid bytes as glyphs fg 2 bold; non-UTF-8 byte shows `?` (35-38)                                                                                                                                                                                   | 1 per cell                        | generic grid cell; shows a world-side `?` the prior record forbids at client level                                    |
+| `examples/roc-mind-map`                                                            | screen 40x10 boxed (115-123)                                                                                                                                | node `id name` labels at positions, outcome and link lines, default colour                                                                                                                                                                             | label spans                       | text only; node and link kinds if ever tagged                                                                         |
+| Counters: `roc-counter`, `roc-screen`, `rust-counter`, `zig-counter`               | screen 20x3 boxed, `count=N` (roc-counter 33-34; rust-counter 41-48, 70-73; zig-counter 76-78)                                                              | ASCII box `+-\|` (RS:110-127) and text                                                                                                                                                                                                                 | n/a                               | none beyond text/chrome                                                                                               |
+| Text-only: `roc-text-counter`, `lounge`, `roc-chat`, `roc-cap-demo`, `rust-sketch` | legacy UTF-8 text (roc-text-counter 19-20; lounge 61-63; roc-chat 81-83; roc-cap-demo 36-44; rust-sketch 141-142)                                           | status lines                                                                                                                                                                                                                                           | none                              | none                                                                                                                  |
+| Not worlds                                                                         | `first-app-poc` (README only), `roc-import-policy` (fixtures), `roc-world`, `rust-world`, `zig-sdk` (SDKs), `session_checkpoint_poc.rs`, `roc-toolchain.sh` |                                                                                                                                                                                                                                                        |                                   |                                                                                                                       |
 
 Observations across the table:
 
@@ -137,17 +137,17 @@ Each row gives the ASCII fallback sketch (glyph, xterm fg, bold) a client table 
 
 ### 5.1 Kind (exactly one per cell). Record default: derive from shipped buffer plus #5970 examples; smallest set covering current worlds.
 
-| Candidate | Used by (section 4) | In prior record? | ASCII sketch |
-| --- | --- | --- | --- |
-| `empty` | every world's blank cells | yes | ` ` default |
-| `terrain` | squares, floor, ground, territory, soil, rock | yes | `.` fg 245; `#` if `blocking` |
-| `structure` | stockpile, exit | yes | `+` fg 250 |
-| `creature` | player, invaders, digger, worker, cannon, target | yes | `@` default bold |
-| `item` | ore | yes | `*` fg 226 |
-| `effect` | shots, bombs | yes | `\|` fg 231 |
-| `marker` | cursor/selection brackets if kept as cells | yes | `[` `]` fg 226 bold |
-| `piece` (open question) | checkers, chess, tic-tac-toe marks | no; prior set would file pieces under `creature` or `item` | `o` default bold |
-| `text` (open question) | HUD, labels, box chrome, status lines in every screen world | no; prior record has no kind for chrome | the symbol itself, default |
+| Candidate               | Used by (section 4)                                         | In prior record?                                           | ASCII sketch                  |
+| ----------------------- | ----------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------- |
+| `empty`                 | every world's blank cells                                   | yes                                                        | ` ` default                   |
+| `terrain`               | squares, floor, ground, territory, soil, rock               | yes                                                        | `.` fg 245; `#` if `blocking` |
+| `structure`             | stockpile, exit                                             | yes                                                        | `+` fg 250                    |
+| `creature`              | player, invaders, digger, worker, cannon, target            | yes                                                        | `@` default bold              |
+| `item`                  | ore                                                         | yes                                                        | `*` fg 226                    |
+| `effect`                | shots, bombs                                                | yes                                                        | `\|` fg 231                   |
+| `marker`                | cursor/selection brackets if kept as cells                  | yes                                                        | `[` `]` fg 226 bold           |
+| `piece` (open question) | checkers, chess, tic-tac-toe marks                          | no; prior set would file pieces under `creature` or `item` | `o` default bold              |
+| `text` (open question)  | HUD, labels, box chrome, status lines in every screen world | no; prior record has no kind for chrome                    | the symbol itself, default    |
 
 `fluid` and `vegetation` (prior record §2) have no current user; the record's "smallest set" default would defer them. Record §4.1's suggestion (terrain, creature, item, effect, empty) lacks a home for board pieces, markers and chrome.
 
@@ -155,16 +155,16 @@ Each row gives the ASCII fallback sketch (glyph, xterm fg, bold) a client table 
 
 A candidate 8-bit mask, ordered by how many worlds show the state today:
 
-| Bit | Flag | Shown today by | ASCII sketch |
-| --- | --- | --- | --- |
-| 0 | `cursor` | checkers, chess, territory | bg 7, bold (one-cell form of the bracket/inverse cue) |
-| 1 | `selected` | checkers, chess | fg 46 bold |
-| 2 | `blocking` | burrow rock | glyph `#` |
-| 3 | `hostile` | space-invaders (by colour only) | fg 196 |
-| 4 | `friendly` | space-invaders player | fg 51 |
-| 5 | `open` | burrow exit opens after quota | locked `X` fg 245; open `X` fg 46 bold |
-| 6 | `highlighted` | no current user (candidate for last move, check, legal target) | bold |
-| 7 | `animated` | no current user (motion is re-rendered per tick) | none; must be ignorable at ASCII |
+| Bit | Flag          | Shown today by                                                 | ASCII sketch                                          |
+| --- | ------------- | -------------------------------------------------------------- | ----------------------------------------------------- |
+| 0   | `cursor`      | checkers, chess, territory                                     | bg 7, bold (one-cell form of the bracket/inverse cue) |
+| 1   | `selected`    | checkers, chess                                                | fg 46 bold                                            |
+| 2   | `blocking`    | burrow rock                                                    | glyph `#`                                             |
+| 3   | `hostile`     | space-invaders (by colour only)                                | fg 196                                                |
+| 4   | `friendly`    | space-invaders player                                          | fg 51                                                 |
+| 5   | `open`        | burrow exit opens after quota                                  | locked `X` fg 245; open `X` fg 46 bold                |
+| 6   | `highlighted` | no current user (candidate for last move, check, legal target) | bold                                                  |
+| 7   | `animated`    | no current user (motion is re-rendered per tick)               | none; must be ignorable at ASCII                      |
 
 Prior record flags not observed in any world: `damaged`, `destroyed`, `locked` (covered by `open` clear), `lit`, `occluded`, `hidden`, `neutral`, `interactive`, `owned_by_viewer` (blocked by the no-viewer ABI above).
 

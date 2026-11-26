@@ -43,7 +43,7 @@ acceptance (§10).
 - **Architecture, digest contract**
   (`architecture.md#digest-and-serialization-contract`):
   `digest(domain, dto) = "sha256:" + lower_hex(SHA256(ASCII(domain)
-  || 0x00 || UTF8(JCS(dto))))`, with `domain` chosen only from a
+|| 0x00 || UTF8(JCS(dto))))`, with `domain` chosen only from a
   fixed registry.
 - **Component #9207 §2.1**: input is a canonical `WorkId`, never an
   issue number alone; each source ref carries provider,
@@ -86,6 +86,7 @@ acceptance (§10).
     "a slug is never the identity, only a path component".
 
   This record adopts that rule.
+
 - `fleet-queue` already depends on `sha2` and carries `libc` as an
   optional dependency. It has no `cap-std` or `rustix`.
 - Repo-health dedupe keys
@@ -117,14 +118,14 @@ untrusted text ever reaches a path.
 A source is identified by exactly these fields, all resolved from
 the provider before any artifact is named:
 
-| Field           | Value                                                                    | Alphabet                    |
-| --------------- | ------------------------------------------------------------------------ | --------------------------- |
-| `provider`      | `github` (the only provider in V1)                                       | closed enum                 |
-| `host`          | the API host, lowercased (`github.com`, or a GHES host)                  | DNS name, `[a-z0-9.-]`      |
-| `repository_id` | the provider's stable numeric repository ID                              | decimal, no leading zero    |
-| `kind`          | one of the kinds in §3.2                                                 | closed enum                 |
-| `remote_id`     | the provider's stable ID of the resource                                 | per kind, §3.2              |
-| `qualifier`     | the pinned revision for kinds bound to one (§3.2), else `null`           | lowercase hex, or `null`    |
+| Field           | Value                                                          | Alphabet                 |
+| --------------- | -------------------------------------------------------------- | ------------------------ |
+| `provider`      | `github` (the only provider in V1)                             | closed enum              |
+| `host`          | the API host, lowercased (`github.com`, or a GHES host)        | DNS name, `[a-z0-9.-]`   |
+| `repository_id` | the provider's stable numeric repository ID                    | decimal, no leading zero |
+| `kind`          | one of the kinds in §3.2                                       | closed enum              |
+| `remote_id`     | the provider's stable ID of the resource                       | per kind, §3.2           |
+| `qualifier`     | the pinned revision for kinds bound to one (§3.2), else `null` | lowercase hex, or `null` |
 
 Owner login, repository name and issue or PR number are **locator**
 fields. They are recorded beside the identity, in the manifest's
@@ -138,18 +139,18 @@ the key. So:
 
 ### 3.2 Kinds
 
-| `kind`           | `remote_id`                              | `qualifier`                     |
-| ---------------- | ---------------------------------------- | ------------------------------- |
-| `repository`     | the repository ID again                  | `null`                          |
-| `issue`          | the issue's numeric database ID          | `null`                          |
-| `pull_request`   | the pull request's numeric database ID   | `null`                          |
-| `issue_comment`  | the comment's numeric database ID        | `null`                          |
-| `review`         | the review's numeric database ID         | `null`                          |
-| `review_comment` | the review comment's numeric database ID | `null`                          |
-| `check_run`      | the check run's numeric database ID      | `null`                          |
-| `commit`         | the 40- or 64-hex commit SHA             | `null`                          |
+| `kind`           | `remote_id`                              | `qualifier`                        |
+| ---------------- | ---------------------------------------- | ---------------------------------- |
+| `repository`     | the repository ID again                  | `null`                             |
+| `issue`          | the issue's numeric database ID          | `null`                             |
+| `pull_request`   | the pull request's numeric database ID   | `null`                             |
+| `issue_comment`  | the comment's numeric database ID        | `null`                             |
+| `review`         | the review's numeric database ID         | `null`                             |
+| `review_comment` | the review comment's numeric database ID | `null`                             |
+| `check_run`      | the check run's numeric database ID      | `null`                             |
+| `commit`         | the 40- or 64-hex commit SHA             | `null`                             |
 | `diff`           | the pull request's numeric database ID   | the pinned `head_sha` (#9207 §2.3) |
-| `timeline`       | the issue's or PR's numeric database ID  | `null`                          |
+| `timeline`       | the issue's or PR's numeric database ID  | `null`                             |
 
 Numeric IDs are decimal strings in the key. A JSON number is never
 used, so the lossy-numeric-ID rule of the digest contract cannot
@@ -307,11 +308,11 @@ per-source name contains `--` and a digest.
   handle. A path string is never parsed or concatenated with
   untrusted text.
 - Each artifact is created with create-new semantics (`O_CREAT |
-  O_EXCL`), never truncate-or-create, so a pre-existing file or link
+O_EXCL`), never truncate-or-create, so a pre-existing file or link
   at the name fails the write instead of being followed or replaced.
 - Directories inside staging are created by the writer only. Each
   directory open from the root is no-follow (`O_NOFOLLOW |
-  O_DIRECTORY`, component by component, via `openat` on a held
+O_DIRECTORY`, component by component, via `openat` on a held
   directory descriptor, or an equivalent capability API).
 - The writer keeps the map of name to `source_key` for the
   generation. Two different keys that produce one name is
@@ -367,14 +368,14 @@ rejects symlinks in staging.
 All are named, matchable kinds in the shared result envelope (CLI-02),
 never strings to parse:
 
-| Kind                     | Raised when                                                                 | Effect                                                         |
-| ------------------------ | --------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `SOURCE_UNRESOLVED`      | a locator has no resolved identity tuple (§3.3)                             | per-source; the source is listed with no artifacts             |
-| `UNSAFE_SOURCE_KEY`      | a key fails re-validation or round-trip (§4.1)                              | the key is rejected; nothing is named from it                  |
-| `UNSAFE_PATH_COMPONENT`  | a component built for writing fails §5.3 (a bug upstream)                   | the generation stops before publish                            |
-| `ARTIFACT_KEY_COLLISION` | two keys give one name in one generation (§5.4)                             | the generation stops before publish; prior current stays       |
-| `ARTIFACT_EXISTS`        | create-new finds a file or link already at the name (§5.4)                  | the generation stops before publish                            |
-| `UNSAFE_ARTIFACT_PATH`   | a presented manifest path fails §5.5, or a link is met reading below root   | the manifest is not presented as valid; no partial read        |
+| Kind                     | Raised when                                                               | Effect                                                   |
+| ------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `SOURCE_UNRESOLVED`      | a locator has no resolved identity tuple (§3.3)                           | per-source; the source is listed with no artifacts       |
+| `UNSAFE_SOURCE_KEY`      | a key fails re-validation or round-trip (§4.1)                            | the key is rejected; nothing is named from it            |
+| `UNSAFE_PATH_COMPONENT`  | a component built for writing fails §5.3 (a bug upstream)                 | the generation stops before publish                      |
+| `ARTIFACT_KEY_COLLISION` | two keys give one name in one generation (§5.4)                           | the generation stops before publish; prior current stays |
+| `ARTIFACT_EXISTS`        | create-new finds a file or link already at the name (§5.4)                | the generation stops before publish                      |
+| `UNSAFE_ARTIFACT_PATH`   | a presented manifest path fails §5.5, or a link is met reading below root | the manifest is not presented as valid; no partial read  |
 
 ## 8. Oracles
 
