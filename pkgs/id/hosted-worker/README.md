@@ -58,8 +58,18 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   step returns the applied row, and a stale or competing step gets 409
   `directory_cas_conflict`. Migrating records still route to the
   source; a switched record gets a retryable 503 `migration_switching`
-  at the front door until the migration completes. The lease and the
-  coordinator are later slices.
+  at the front door until the migration completes.
+- Migration snapshot and staged target (#3404, `src/migration-snapshot.ts`):
+  the source answers `POST /v1/migration/snapshot` only while its
+  fence stands for that migration and epoch, with every data table
+  (KV, blob references, the bridge chain store), the freeze watermark
+  and a SHA-256 digest. The target takes it at `POST /v1/migration/import`
+  only when fresh, checks the digest before and after writing, and
+  stays staged: every client route gets a retryable 503
+  `target_not_serving`. `POST /v1/migration/activate` at the switch
+  epoch serves it once every referenced blob is in the target's
+  bucket; `/discard` empties a staged target for a retry. Copying blob
+  bytes, the lease and the coordinator are later slices.
 
 ## Tenancy control plane (component E, #9083)
 
