@@ -596,7 +596,12 @@ export class BridgeSessionServer {
       if (verdict !== true) return this.fail(verdict.code, verdict.message);
     }
     const outcomes = this.opts.store.ingestBatch(entries, this.now());
-    this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));
+    this.send(
+      jsonFrame(TAG.ack, {
+        ...summarizeOutcomes(outcomes),
+        conflicts: this.opts.store.conflictReports(),
+      }),
+    );
   }
 
   private onClientWantEnd(): void {

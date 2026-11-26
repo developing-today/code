@@ -154,14 +154,7 @@ test("sync session: key-based peer auth works with no bearer credential sent", a
   assert.equal(rivalResult.conflicts[0].seq, 0);
   assert.equal(rivalResult.conflicts[0].event_ids.length, 2);
 
-  // The conflict feed is proof-protected like the other hosted sync legs.
-  const conflictNonce = await challenge(doA, key.publicHex);
-  const conflictHeaders = await proofHeaders(key, conflictNonce, "conflicts", new Uint8Array(0));
-  const conflicts = await doA.fetch(
-    routed("/v1/bridge/conflicts", key.publicHex, { headers: conflictHeaders }),
-  );
-  assert.equal(conflicts.status, 200);
-  assert.equal(((await conflicts.json()) as { conflicts: unknown[] }).conflicts.length, 1);
+  // The signed push response surfaces the conflict report immediately.
 
   // The hosted ingress gate refuses a tampered signed event before it
   // reaches the store; malformed outcomes are explicit and not applied.

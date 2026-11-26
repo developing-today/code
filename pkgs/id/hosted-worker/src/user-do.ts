@@ -1307,11 +1307,6 @@ export class UserDO {
         const store = await this.bridgeProof(req, bindingId, irohHex, "heads", new Uint8Array(0));
         return json({ heads: store.heads() });
       }
-      if (url.pathname === "/v1/bridge/conflicts" && req.method === "GET") {
-        const irohHex = this.requireIroh(req);
-        const store = await this.bridgeProof(req, bindingId, irohHex, "conflicts", new Uint8Array(0));
-        return json({ conflicts: store.conflictReports() });
-      }
       if (url.pathname === "/v1/bridge/push" && req.method === "POST") {
         const irohHex = this.requireIroh(req);
         const body = await readBytesUpTo(req, DEFAULT_BRIDGE_LIMITS.maxBatchBytes);
