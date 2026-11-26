@@ -24,13 +24,14 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   ceiling, and `at_cap`); `GET /v1/export` (full KV plus blob index;
   stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-tenant
   store; the key must match `[A-Za-z0-9._-]{1,128}`); `PUT /v1/blobs`,
-  `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
-  deduplicated across users — except client-encrypted blobs
-  (§7 of the #2258 spec), whose R2 keys are scoped to the owning
-  binding so they dedupe only per user; DELETE drops only this
-  user's reference); and the signed-object bridge routes (`GET
-/v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
-/v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
+  `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in
+  jurisdiction-bound R2 — `BLOBS_US`/`BLOBS_EU`/`BLOBS_FEDRAMP` picked
+  strictly from the authoritative jurisdiction and deduped within each
+  bucket — except client-encrypted blobs (§7 of the #2258 spec), whose
+  R2 keys are scoped to the owning binding and dedupe only per user.
+  DELETE drops only this user's reference); and the signed-object bridge routes (`GET
+  /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
+  /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
   `GET /v1/bridge/ws`), covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps. So is the per-binding request cap
@@ -115,10 +116,20 @@ jurisdiction. So locally the application worker fails closed with
 the designed behaviour, not a bug: falling back to the unrestricted
 namespace would silently create the second, unrestricted store the
 design forbids. Residency on a real account can only be established by
-the deployed canary gated on #2285 (still open/escalated) — this
-package makes no residency claim and authorizes no deployment, no
-production binding/config, and no billable resource (#3403 stays
-blocked pending user authorization).
+the deployed canary and resource read-back; local tests do not establish
+where production data resides. Production signup and migration remain
+disabled until that validation passes.
+
+The hosted account directory is one shared D1 database and is the **single
+shared durable-directory residency exception**. Its allowlisted records
+contain pseudonymous subject keys and minimal binding, jurisdiction, and
+migration metadata. A hashed subject is potentially personal data, not
+anonymous. The directory does not hold graph content, journals, blob bytes,
+or private profile data. This exception describes D1 only and is not an
+end-to-end residency claim: KV caches may be global; logs and request
+processing may occur outside a tenant's jurisdiction; vendor backup
+placement is a separate, unverified residency gap. These locations and
+processing paths need their own disclosure and evidence.
 
 ## The signed-object bridge (#3818)
 

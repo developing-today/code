@@ -1,7 +1,7 @@
 # The crates
 
-The fleet binary is one Rust workspace, `pkgs/fleet/`, with 17 crates:
-16 library crates and the one binary crate that assembles them. The
+The fleet binary is one Rust workspace, `pkgs/fleet/`, with 18 crates:
+17 library crates and the one binary crate that assembles them. The
 workspace is self-contained — its own `Cargo.toml`, `Cargo.lock` and
 `rust-toolchain.toml`, no workspace relationship to the repository root
 — at version `0.1.0`, edition 2024, rust-version 1.85, licensed
@@ -20,7 +20,7 @@ embedder touches most: [The queue client](queue-client.md),
 [Placement and surfaces as data](placement.md), and
 [Registry, config and capabilities](registry-and-config.md).
 
-## The 17 crates
+## The 18 crates
 
 ### `fleet`
 
@@ -107,8 +107,13 @@ it is trigger-driven: every verb runs only when a caller invokes it, and
 
 > "Identity-scoped local SQLite storage for fleet-kv."
 
-A platform crate, not a domain: the identity-scoped SQLite storage core
-(#13362) that other fleet surfaces build on.
+The identity-scoped SQLite storage core (#13362) that other fleet
+surfaces build on — and, since the `kv` domain was wired behind its
+fail-closed launch identity (#14912, 2026-11-25), the library under
+that domain: `get`, `set`, `list`, `delete`, `clear-override`,
+`revert`, `snapshot`, and `restore` in the registry inventory, with
+the namespace, blob, and central-plane verbs of the operations
+chapters riding the same crate.
 
 ### `fleet-laptop-agent`
 
@@ -197,7 +202,7 @@ broker surface, and the feature gates between them — is the subject of
 A platform crate with a hard constraint: **dependency-free** (std only,
 strings and tables, no I/O), so it can be compiled into _every_ variant
 — including the size-gated connect build — and `--help` is always
-complete. It owns the 22 capability atoms, the 19 domains, the three
+complete. It owns the 24 capability atoms, the 22 domains, the three
 build variants and the argv0 alias map. Covered in depth in
 [Registry, config and capabilities](registry-and-config.md).
 
@@ -223,6 +228,16 @@ elsewhere), then the `bws` CLI fallback, then a 1Password source where a
 vault is named. Resolved values live in a type whose `Debug` is
 redacted; chain errors count failed sources without ever carrying a
 value.
+
+### `fleet-transport`
+
+> "Fleet transport declarations, asymmetric route resolution, and direction-level enforcement."
+
+A platform crate, not a domain: the transport declarations and route
+resolution the laptop route forms and the `host` domain's transport
+selection build on (landed 2026-11-26, `feat(fleet): add transport
+routing core`). It depends only on the workspace's shared `serde` and
+`serde_json`.
 
 ## Dependency shape
 
@@ -274,11 +289,14 @@ variant unconditionally.
 | `search`                                         | `search`           | `fleet-search`                                  | `fleet_search::run`                                                  |
 | `laptop-agent`                                   | `laptop-agent`     | `fleet-laptop-agent`                            | `fleet_laptop_agent::cli::run`                                       |
 | `orgs`                                           | `orgs`             | `fleet-orgs`                                    | `fleet_orgs::run`                                                    |
+| `kv`                                             | `kv`               | `fleet-kv` (bin-crate glue routes it)           | `crates/fleet/src/kv.rs`, over `fleet-kv`                            |
+| `id`                                             | `id`               | bin crate                                       | `crates/fleet/src/id_key.rs`                                         |
+| `host`                                           | `laptop`           | bin crate, over `fleet-pool`                    | `crates/fleet/src/host.rs`                                           |
 | `cert`                                           | `cert`             | `fleet-cert`                                    | `fleet_cert::run`                                                    |
 
-Note the two irregular rows, because embedders trip on both: `shell`
+Note the irregular rows, because embedders trip on them: `shell`
 has **no capability atom of its own** — it rides the `agent` capability
-— and `secrets` and `gh` are domains without library crates, living as
+— `host` likewise rides the `laptop` capability, and `secrets` and `gh` are domains without library crates, living as
 modules in the bin crate (over `fleet-secrets`, in the `secrets` case).
 
 ## Example: depending on the platform layer

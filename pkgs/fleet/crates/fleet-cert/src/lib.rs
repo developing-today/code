@@ -56,6 +56,7 @@ pub mod cli;
 pub mod dns;
 pub mod engine;
 pub mod error;
+pub mod format;
 pub mod graph;
 pub mod inventory;
 pub mod model;

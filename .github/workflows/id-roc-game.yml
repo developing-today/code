@@ -13,7 +13,9 @@
 #
 # The `board-games` job builds the checkers and chess worlds (#14862)
 # the same way and runs their expects, including the seat and turn
-# enforcement tests of the multiplayer slice (#15111).
+# enforcement tests of the multiplayer slice (#15111). It publishes both
+# modules in one SHA-named artifact and a separate job verifies that a
+# consumer can download them without rebuilding (#15112, slice 4).
 #
 # Main tier only (CI policy: pushes to main + manual dispatch).
 
@@ -137,4 +139,46 @@ jobs:
               wasm=pkgs/id/apps/$game/program/$game.wasm
               echo "- $game: \`$wasm\` ($(stat -c%s "$wasm") bytes, sha256 \`$(sha256sum "$wasm" | cut -d' ' -f1)\`)"
             done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the board-game bundle
+        id: board-games-bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: board-games-${{ github.sha }}
+          path: |
+            pkgs/id/apps/checkers
+            pkgs/id/apps/chess
+          if-no-files-found: error
+
+      - name: Record the shared artifact identity
+        env:
+          ARTIFACT_ID: ${{ steps.board-games-bundle.outputs.artifact-id }}
+        run: |
+          echo "- shared board-games artifact: \`board-games-${GITHUB_SHA}\` (id \`${ARTIFACT_ID}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  board-games-artifact-consumer:
+    name: "download and verify compiled board-game modules"
+    needs: board-games
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: board-games-${{ github.sha }}
+          path: ${{ runner.temp }}/board-games
+
+      - name: Verify the downloaded modules without rebuilding
+        env:
+          BOARD_GAMES_DIR: ${{ runner.temp }}/board-games
+        run: |
+          set -euo pipefail
+          {
+            echo "## downloaded board-game artifact"
+            for game in checkers chess; do
+              wasm="$BOARD_GAMES_DIR/$game/program/$game.wasm"
+              test -s "$wasm"
+              echo "- $game: $(stat -c%s "$wasm") bytes, sha256 $(sha256sum "$wasm" | cut -d' ' -f1)"
+            done
+            echo "- verification: downloaded from the board-games job; this job did not build either module"
           } >> "$GITHUB_STEP_SUMMARY"

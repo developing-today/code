@@ -1453,7 +1453,7 @@ mod tests {
             &bounds,
         )
         .unwrap();
-        assert!(page.items.is_empty());
+        assert_eq!(page.items, [] as [Step; 0]);
         assert!(page.is_end());
     }
 
@@ -1485,7 +1485,7 @@ mod tests {
         // An actor takes part in no thread.
         let page =
             threads_for_object(&graph, &Request::new(id("alice"), 50), &everyone, &bounds).unwrap();
-        assert!(page.items.is_empty());
+        assert_eq!(page.items, [] as [Node; 0]);
     }
 
     #[test]
