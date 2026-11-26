@@ -12,9 +12,7 @@
 //! unlikely to hit on its own: replay, revocation signers, stale
 //! frontiers, the depth budget, canonical payloads and transfers.
 //!
-//! `graph/mod.rs` does not export these modules yet (slice 9110-09 wires
-//! them), so this test includes them, and the modules they build on, by
-//! path.
+//! This suite includes the graph modules and their dependencies by path.
 
 #![allow(
     clippy::unwrap_used,
@@ -850,7 +848,7 @@ fn error_classes_are_stable() {
     for (error, class) in all {
         assert_eq!(error.class(), class);
         assert!(seen.insert(class));
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 }
 

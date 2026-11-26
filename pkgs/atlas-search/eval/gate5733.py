@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Section-4 held-out gate for the Atlas Jaccard rescore (#5733).
 
-Base retrieval: the corpus's Python reference hybrid (eval3.py's own
-functions): Snowflake arctic-embed-m-v2.0 trunc-384 cosine + FTS BM25,
-fused RRF k=60. Sanity gate: at branch depth 30 the fused top-10 must
-reproduce the bake-off's recorded production-hybrid numbers for the
-golden-311 set (183/311 recall@10, MRR 0.3640, per fused_rerank_eval.py).
+Base retrieval: the corpus's Python eval-lineage hybrid (eval3.py's
+own functions): Snowflake arctic-embed-m-v2.0 trunc-384 cosine + FTS
+BM25, fused RRF k=60. This is NOT the production configuration —
+production fuses at RRF k=10 with pool 100 per branch at full 768
+dimensions (atlas_search.py's header; query-parameters-v1.json).
+Sanity gate: at branch depth 30 the fused top-10 must reproduce the
+eval lineage's recorded golden-311 row (183/311 recall@10, MRR
+0.3640, per fused_rerank_eval.py — not checked into this repo; the
+in-repo record is gate-5733-results.md). That row was long labelled
+"production hybrid"; it belongs to this depth-30 / k=60 / trunc-384
+configuration, not to production's (whose recorded best row is 189
+hits@10 / MRR 0.3894). Naming reconciled under #13283.
 
 Rescore: a Python port of the shipped Rust `rescore_fused`
 (atlas-core::shingles, PR #10335), pinned against the Rust test
@@ -15,10 +22,13 @@ Arms: OFF = fused ranking as-is. ON = rescore_fused over the top-100
 union, threshold 0.60 (the design default), jaccard_depth=100.
 
 Sets: general = golden-311 (frozen 2026-10-26) minus queries whose
-gold chunks are all absent from this corpus copy; near-exact = 60
+gold chunks are all absent from this corpus copy; near-exact =
 verbatim 30-token passages sampled deterministically from corpus
 chunks (every 997th chunk id, >=60 normalized tokens, window starting
-at token 10), gold = source chunk.
+at token 10), gold = source chunk, capped at 60 — on the frozen
+corpus copy 54 chunks qualified, and that 54-query set, frozen as
+fixtures/heldout-nearexact-54.json, is the set the verdict record
+(gate-5733-results.md) measures.
 
 Corpus disclosure: ~/atlas/v3/corpus.db carries 101,339 of the frozen
 101,471 chunks (sample fingerprint 07b3e17b... matches); 132 chunk ids

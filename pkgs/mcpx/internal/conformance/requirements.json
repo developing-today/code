@@ -553,7 +553,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "partly: proxy re-emits upstream failures as its own JSON-RPC errors / isError results; origin is text-only"
+      "server": "yes: locally minted JSON-RPC errors include `{\"mcpx\":{\"origin\":\"local\"}}` in error data; relayed peer errors pass through unchanged"
     }
   },
   {
@@ -591,7 +591,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "no: mcpx answers methods it did not advertise for that revision (accept-liberally, e.g. resources/subscribe from modern)"
+      "server": "yes: the capability gate rejects methods whose capabilities were not advertised where that revision defines the capability; revisions predating skills extension advertisement retain legacy acceptance (C24)"
     }
   },
   {
@@ -14461,7 +14461,7 @@
     },
     "notes": {
       "client": "yes — broker records `Server`",
-      "server": "yes — message rewritten \"\u003cserver\u003e (via mcpx) asks:\" so the downstream can meet it"
+      "server": "yes — message rewritten \"\u0026lt;server\u0026gt; (via mcpx) asks:\" so the downstream can meet it"
     }
   },
   {
@@ -15162,7 +15162,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "yes — broker binds questions to session/connection"
+      "server": "yes — state is bound to the request and the daemon principal (the OS owner): keyed by elicitation id over signed `requestState` in the owner-only store; no client-supplied value is read as identity (decision 0007)"
     }
   },
   {
@@ -15181,7 +15181,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "yes — mcpx stores (broker + daemon task) so it binds; `requestState` carries connection id"
+      "server": "yes — mcpx stores (broker + daemon task) and binds what it stores: elicitation id over signed `requestState` in the owner-only store; the caller-supplied session string keys nothing (decision 0007)"
     }
   },
   {
@@ -15801,7 +15801,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "yes"
+      "server": "yes — the practices that apply to a no-identity design are adopted and pinned by test: signed `requestState`, owner-only question storage (0700/0600, #1676), no trust in client-supplied identity values; binding state to an authenticated user is declined (decision 0007)"
     }
   },
   {

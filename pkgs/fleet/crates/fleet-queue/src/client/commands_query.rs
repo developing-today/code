@@ -10,6 +10,176 @@ use serde_json::{Map, Value, json};
 
 use super::*;
 
+fn extract_repeatable(rest: &[String], flag: &str) -> (Vec<String>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut values = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == flag {
+            if i + 1 >= rest.len() || rest[i + 1].starts_with("--") {
+                die(2, &format!("argument {flag}: expected one argument"));
+            }
+            values.push(rest[i + 1].clone());
+            i += 2;
+        } else if let Some(value) = rest[i].strip_prefix(&format!("{flag}=")) {
+            values.push(value.to_string());
+            i += 1;
+        } else {
+            kept.push(rest[i].clone());
+            i += 1;
+        }
+    }
+    (kept, values)
+}
+
+fn parse_meta_pairs(values: &[String]) -> Result<Value, String> {
+    let mut object = serde_json::Map::new();
+    for raw in values {
+        let (key, value) = raw
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got {raw:?}"))?;
+        let parsed =
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
+        if object.insert(key.to_string(), parsed).is_some() {
+            return Err(format!("duplicate key {key:?}"));
+        }
+    }
+    let result = Value::Object(object);
+    crate::validate::validate_metadata(&result)?;
+    Ok(result)
+}
+
+pub(super) fn cmd_meta(rest: &[String]) -> i32 {
+    let verb = rest.first().map(String::as_str).unwrap_or("");
+    let rest = &rest[1..];
+    let args = parse_verb_args("meta", rest, &["json"], &[]);
+    if verb == "keys" {
+        if args.pos(0).is_some() || args.get("json").is_some() {
+            usage_error("meta", "meta keys takes no arguments");
+        }
+        reject_extra_pos("meta", &args, 1);
+        let resp = unwrap_ok(call("/meta", &json!({"op":"keys"})));
+        print_json(resp.get("row").unwrap_or(&Value::Null));
+        return 0;
+    }
+    match verb {
+        "get" => {
+            reject_extra_pos("meta", &args, 2);
+            let id = args.pos_i64(0, "task_id");
+            let mut req = json!({"op":"get","task_id":id});
+            if let Some(key) = args.pos(1) {
+                req["key"] = json!(key);
+            }
+            let resp = unwrap_ok(call("/meta", &req));
+            print_json(resp.get("row").unwrap_or(&Value::Null));
+        }
+        "set" => {
+            if let Some(raw) = args.get("json") {
+                reject_extra_pos("meta", &args, 1);
+                let patch: Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| die(2, &format!("meta set --json: invalid JSON: {e}")));
+                if !patch.is_object() {
+                    die(2, "meta set --json: expected a JSON object");
+                }
+                if let Err(e) = crate::validate::validate_metadata_patch(&patch) {
+                    die(2, &e);
+                }
+                let id = args.pos_i64(0, "task_id");
+                let resp = unwrap_ok(call(
+                    "/meta",
+                    &json!({"op":"set","task_id":id,"patch":patch}),
+                ));
+                print_json(resp.get("row").unwrap_or(&Value::Null));
+            } else {
+                reject_extra_pos("meta", &args, 3);
+                let id = args.pos_i64(0, "task_id");
+                let key = args
+                    .pos(1)
+                    .unwrap_or_else(|| die(2, "meta set: key required"));
+                let raw = args
+                    .pos(2)
+                    .unwrap_or_else(|| die(2, "meta set: JSON value required"));
+                let value: Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| die(2, &format!("meta set: invalid JSON value: {e}")));
+                let mut patch = serde_json::Map::new();
+                patch.insert(key, value);
+                let patch = Value::Object(patch);
+                if let Err(e) = crate::validate::validate_metadata_patch(&patch) {
+                    die(2, &e);
+                }
+                let resp = unwrap_ok(call(
+                    "/meta",
+                    &json!({"op":"set","task_id":id,"patch":patch}),
+                ));
+                print_json(resp.get("row").unwrap_or(&Value::Null));
+            }
+        }
+        "unset" => {
+            reject_extra_pos("meta", &args, 2);
+            let id = args.pos_i64(0, "task_id");
+            let key = args
+                .pos(1)
+                .unwrap_or_else(|| die(2, "meta unset: key required"));
+            let resp = unwrap_ok(call("/meta", &json!({"op":"unset","task_id":id,"key":key})));
+            print_json(resp.get("row").unwrap_or(&Value::Null));
+        }
+        _ => die(
+            2,
+            &format!("meta: expected get, set, unset, or keys\n{}", usage("meta")),
+        ),
+    }
+    0
+}
+
+/// Stewardship staleness read (#14170 Q8): one broker call returns the
+/// actionable tasks whose last history transition is older than the
+/// threshold plus the claims near their lease cap.
+pub(super) fn cmd_staleness(rest: &[String]) -> i32 {
+    let args = parse_verb_args(
+        "staleness",
+        rest,
+        &["queue", "older-than-seconds", "lease-cap-seconds", "limit"],
+        &[],
+    );
+    reject_extra_pos("staleness", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(v) = args.get_i64("older-than-seconds") {
+        req["older_than_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("lease-cap-seconds") {
+        req["lease_cap_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/staleness", &req));
+    print_json(&resp);
+    0
+}
+
+/// Stewardship needs-user read (#14170 Q8): blocked/parked tasks with an
+/// open `question` metadata entry, oldest first.
+pub(super) fn cmd_needs_user(rest: &[String]) -> i32 {
+    let args = parse_verb_args("needs-user", rest, &["queue", "state", "limit"], &[]);
+    reject_extra_pos("needs-user", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(s) = args.get("state") {
+        req["state"] = json!(s);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/needs-user", &req));
+    print_json(&resp);
+    0
+}
+
 pub(super) fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_verb_args("validate", rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -60,10 +230,15 @@ pub(super) fn resolve_enqueue_queue(
 }
 
 pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
+    let (rest, meta_args) = extract_repeatable(rest, "--meta");
+    let metadata = match parse_meta_pairs(&meta_args) {
+        Ok(value) => value,
+        Err(e) => die(2, &format!("enqueue --meta: {e}")),
+    };
     let args = parse_verb_args(
         "enqueue",
-        rest,
-        &["queue", "platform"],
+        &rest,
+        &["queue", "platform", "meta"],
         &["dry-run", "shadow-intent"],
     );
     reject_extra_pos("enqueue", &args, 1);
@@ -108,7 +283,7 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent, "platform": platform,
+            "shadow_intent": shadow_intent, "platform": platform, "metadata": metadata,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -149,6 +324,30 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
             fmt_cell(Some(&tid)),
             fmt_cell(c.get("identity")),
         );
+        if q != queue {
+            warnings.push(format!(
+                "the holding task is in a different queue ({q} != requested {queue})"
+            ));
+        }
+    } else if let Some(m) = resp.get("dedupe_match") {
+        // #10627: the broker absorbed the filing into the task that
+        // already holds this dedupe key and filed nothing. A
+        // terminal match is the dangerous one — the key's work is
+        // complete, so the caller must suffix the key to file the
+        // work again; say that instead of the generic dedupe line
+        // the timestamp heuristics below would produce.
+        if m.get("rule").and_then(|v| v.as_str()) == Some("dedupe_key_terminal") {
+            line = format!(
+                "not filed: dedupe key already belongs to completed task {} (queue {q}, status {s}); \
+                 suffix the dedupe key to file this work again, or set payload.dedupe_override for a deliberate parallel",
+                fmt_cell(Some(&tid)),
+            );
+        } else {
+            line = format!(
+                "dedupe hit: existing task {} (queue {q}, status {s}) already holds this dedupe key; nothing filed",
+                fmt_cell(Some(&tid)),
+            );
+        }
         if q != queue {
             warnings.push(format!(
                 "the holding task is in a different queue ({q} != requested {queue})"
@@ -196,7 +395,18 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
     for w in &warnings {
         println!("warning: {w}");
     }
-    print_json(&row);
+    // #10627: carry the broker's absorption report into the printed
+    // JSON — the bare row alone reads as a fresh filing to a machine
+    // consumer, which is how terminal dedupe returns stranded work.
+    let mut printed = row;
+    if let Some(o) = printed.as_object_mut() {
+        for key in ["dedupe_match", "work_identity_collision"] {
+            if let Some(v) = resp.get(key) {
+                o.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    print_json(&printed);
     0
 }
 
@@ -208,7 +418,15 @@ pub(super) fn list_row_cells(r: &Value) -> Vec<String> {
     vec![
         format!("task {}", fmt_cell(r.get("id"))),
         fmt_cell(r.get("priority")),
-        fmt_cell(r.get("status")),
+        format!(
+            "{}{}",
+            fmt_cell(r.get("status")),
+            if r.get("manual_only").and_then(Value::as_bool) == Some(true) {
+                " (manual-only)"
+            } else {
+                ""
+            }
+        ),
         age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
         fmt_cell(r.get("dedupe_key")),
         truncate(&fmt_cell(r.get("title")), 72),
@@ -243,9 +461,14 @@ pub(crate) fn bare_list_note(args: &Args, resolved_queue: Option<&str>) -> Optio
 }
 
 pub(super) fn cmd_list(rest: &[String]) -> i32 {
+    let (rest, meta_args) = extract_repeatable(rest, "--meta");
+    let metadata_filter = match parse_meta_pairs(&meta_args) {
+        Ok(value) => value,
+        Err(e) => die(2, &format!("list --meta: {e}")),
+    };
     let args = parse_verb_args(
         "list",
-        rest,
+        &rest,
         &[
             "queue",
             "status",
@@ -254,11 +477,25 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "lane",
             "worker",
             "task",
+            "meta",
+            "label",
         ],
-        &[],
+        &["json"],
     );
     reject_extra_pos("list", &args, 0);
     let queue = opt_queue_scoped(&args);
+    // #8581 exact-task status pilot: --json with --queue + --task
+    // is a different read, not a rendering of this listing — one
+    // scoped broker read, one JSON record, no paging.
+    if args.has("json") {
+        if !metadata_filter.as_object().is_some_and(|m| m.is_empty()) {
+            usage_error("list", "--json exact status does not support --meta");
+        }
+        if args.get("label").is_some() {
+            usage_error("list", "--json exact status does not support --label");
+        }
+        return cmd_list_exact_status(&args, queue);
+    }
     if let Some(note) = bare_list_note(&args, queue.as_deref()) {
         eprintln!("repo-queue: {note}");
     }
@@ -298,6 +535,8 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
                 "lane": args.get("lane"),
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
+                "meta": metadata_filter.clone(),
+                "label": args.get("label"),
             }),
         );
         let resp = unwrap_ok(resp);
@@ -339,6 +578,166 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     }
     0
 }
+
+/// Show one task's rich current broker row and the tail of its audit
+/// timeline. The broker's rich /list row is the source of truth for
+/// mutable state; events are intentionally limited only after the
+/// same normalization and ordering used by `timeline`.
+pub(super) fn cmd_show(rest: &[String]) -> i32 {
+    let args = parse_verb_args("show", rest, &["limit"], &["json"]);
+    reject_extra_pos("show", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let limit = match list_limit_or_default(args.get_i64("limit").or(Some(10))) {
+        Ok(limit) => limit as usize,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call(
+        "/list",
+        &json!({"rich": true, "task": task_id, "limit": 1}),
+    ));
+    let rows = match list_rows(&resp) {
+        Ok(rows) => rows,
+        Err(e) => die(3, &e),
+    };
+    let Some(task) = rows
+        .into_iter()
+        .find(|r| r.get("id").and_then(Value::as_i64) == Some(task_id))
+    else {
+        eprint(&format!("repo-queue show: task {task_id} not found\n"));
+        return 1;
+    };
+    let mut events = Vec::new();
+    for kind in [
+        "claimed",
+        "staleness_autocomplete",
+        "session_bound",
+        "lane_session_bound",
+        "model_stamp",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+        "lease_expired",
+        "lease_expired_at_cap",
+        "claim_refused",
+        "released",
+        "parked",
+        "reprioritized",
+        "reprioritize_sync_pending",
+        "failed",
+        "cancelled",
+        "suspect_completion",
+    ] {
+        let response = call(
+            "/events-list",
+            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+        );
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            eprint("repo-queue show: broker does not serve /events-list yet\n");
+            return 3;
+        }
+        if let Some(rows) = response
+            .get("row")
+            .and_then(|r| r.get("rows"))
+            .and_then(Value::as_array)
+        {
+            events.extend(rows.iter().filter_map(timeline_event));
+        }
+    }
+    events.sort_by_key(|event| event.id);
+    let events = collapse_timeline(events);
+    let start = events.len().saturating_sub(limit);
+    let history = &events[start..];
+    // #14170 Q4: the latest notes inline, bounded, with the count of
+    // live notes so a reader knows how many the bound left out.
+    let notes = fetch_notes(task_id, Some(SHOW_NOTES_LATEST));
+    if args.has("json") {
+        let (shown, count) = match &notes {
+            Some((n, c)) => (n.iter().map(note_json).collect::<Vec<_>>(), json!(c)),
+            None => (Vec::new(), Value::Null),
+        };
+        print_json(&json!({
+            "task": task,
+            "notes": shown,
+            "note_count": count,
+            "history": history.iter().map(|ev| json!({
+                "id": ev.id, "kind": ev.kind, "created_at": ev.created_at,
+                "session_id": ev.session_id, "provider": ev.provider,
+                "model": ev.model, "variant": ev.variant, "trigger": ev.trigger,
+            })).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    println!("task {task_id}");
+    for key in [
+        "title",
+        "status",
+        "kind",
+        "queue",
+        "pool",
+        "attempts",
+        "max_attempts",
+        "worker_id",
+        "lease_until",
+        "park_kind",
+        "wait_kind",
+        "ready_condition",
+        "not_before",
+        "blocker",
+        "last_error",
+        "lane_id",
+        "lane_reason",
+        "platform",
+        "claim_provider",
+        "claim_model",
+        "claim_variant",
+        "claim_session_id",
+        "issue",
+        "pr",
+        "labels",
+        "labels_synced_at",
+        "progress",
+    ] {
+        let payload = task.get("payload");
+        let progress = task.get("progress");
+        let value = task.get(key).or_else(|| match key {
+            "kind" => payload.and_then(|p| p.get("kind")),
+            "issue" | "pr" => payload.and_then(|p| p.get(key)),
+            "blocker" | "lane_reason" | "wait_kind" | "ready_condition" => {
+                progress.and_then(|p| p.get(key))
+            }
+            _ => None,
+        });
+        if let Some(value) = value {
+            println!("{key}: {}", value);
+        }
+    }
+    if let Some(checkpoint) = task.get("progress").and_then(|p| p.get("last_checkpoint")) {
+        println!("latest_checkpoint: {checkpoint}");
+    }
+    if let Some(note) = task.get("progress").and_then(|p| {
+        p.get("last_checkpoint")
+            .and_then(|c| c.get("note"))
+            .or_else(|| p.get("note"))
+    }) {
+        println!("latest_checkpoint_note: {note}");
+    }
+    println!("history ({} most recent events):", history.len());
+    for event in history {
+        println!("{}", format_timeline_event(event));
+    }
+    if let Some((shown, count)) = &notes {
+        if *count > 0 || !shown.is_empty() {
+            println!("notes ({} most recent of {count}):", shown.len());
+            for n in shown {
+                println!("{}", format_timeline_note(n));
+            }
+        }
+    }
+    0
+}
+
+/// How many of a task's newest notes `show` prints inline.
+pub(super) const SHOW_NOTES_LATEST: i64 = 5;
 
 /// The /claim-flow request invariants (#5757-A), checked before
 /// any step runs, on both broker backends (the broker is the
@@ -735,6 +1134,25 @@ pub(super) fn collapse_timeline(events: Vec<TimelineEvent>) -> Vec<TimelineEvent
     out
 }
 
+/// Keep the human event representation identical between `history`
+/// and the bounded history shown by `show`.
+pub(super) fn format_timeline_event(ev: &TimelineEvent) -> String {
+    let mut line = format!("{}  {}", ev.created_at, ev.kind);
+    if let Some(sid) = &ev.session_id {
+        line += &format!("  session={sid}");
+    }
+    if let Some(provider) = &ev.provider {
+        line += &format!("  {provider}/{}", ev.model.as_deref().unwrap_or("?"));
+        if let Some(variant) = &ev.variant {
+            line += &format!("#{variant}");
+        }
+    }
+    if let Some(trigger) = &ev.trigger {
+        line += &format!("  ({trigger})");
+    }
+    line
+}
+
 /// #9046 oracle: pair session_bound -> session_unbound per
 /// session into windows (session, start, end-or-None), in the
 /// order the windows close (open bindings last) — the windows
@@ -776,6 +1194,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let mut events: Vec<TimelineEvent> = Vec::new();
     for kind in [
         "claimed",
+        "staleness_autocomplete",
         "session_bound",
         "lane_session_bound",
         "model_stamp",
@@ -787,8 +1206,11 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "claim_refused",
         "released",
         "parked",
+        "reprioritized",
+        "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let resp = call(
             "/events-list",
@@ -819,10 +1241,16 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     }
     events.sort_by_key(|e| e.id);
     let events = collapse_timeline(events);
+    // #14170 Q4: the task's notes interleave with its events into
+    // one chronological story. Fail-soft: a broker without
+    // /note-list renders the events alone.
+    let (notes, _) = fetch_notes(task_id, None).unwrap_or_default();
     let json_out = args.has("json");
-    if events.is_empty() {
+    if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "served": []}));
+            print_json(
+                &json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}),
+            );
             return 0;
         }
         println!("task {task_id}: no timeline records");
@@ -874,25 +1302,23 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
                     })
                 })
                 .collect::<Vec<_>>(),
+            "notes": notes.iter().map(note_json).collect::<Vec<_>>(),
+            "story": interleave_notes(&events, &notes)
+                .iter()
+                .map(|entry| match entry {
+                    TimelineEntry::Event(ev) => json!({"type": "event", "id": ev.id, "created_at": ev.created_at}),
+                    TimelineEntry::Note(n) => json!({"type": "note", "id": n.id, "created_at": n.created_at}),
+                })
+                .collect::<Vec<_>>(),
             "served": served,
         }));
         return 0;
     }
-    for ev in &events {
-        let mut line = format!("{}  {}", ev.created_at, ev.kind);
-        if let Some(sid) = &ev.session_id {
-            line += &format!("  session={sid}");
+    for entry in interleave_notes(&events, &notes) {
+        match entry {
+            TimelineEntry::Event(ev) => println!("{}", format_timeline_event(ev)),
+            TimelineEntry::Note(n) => println!("{}", format_timeline_note(n)),
         }
-        if let Some(p) = &ev.provider {
-            line += &format!("  {p}/{}", ev.model.as_deref().unwrap_or("?"));
-            if let Some(v) = &ev.variant {
-                line += &format!("#{v}");
-            }
-        }
-        if let Some(t) = &ev.trigger {
-            line += &format!("  ({t})");
-        }
-        println!("{line}");
     }
     // The join: exact resolved models per binding window, from
     // the session's raw route_attempt rows (laptop-local,
@@ -1231,4 +1657,618 @@ pub(super) fn cmd_models(rest: &[String]) -> i32 {
         );
     }
     0
+}
+
+/// Whether a broker/transport error message names an access
+/// denial, as opposed to an unavailable or failing store (#8581
+/// pilot: a denial is reported as its own detail — it is never
+/// retried under another identity and never reads as absence).
+fn denial_shaped(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    ["unauthorized", "denied", "forbidden", "permission"]
+        .iter()
+        .any(|w| m.contains(w))
+}
+
+/// Stamp the outcome triple (mode, route, result) on the pilot
+/// record.
+fn exact_outcome(record: &mut Value, mode: &str, route: &str, result: &str) {
+    record["mode"] = json!(mode);
+    record["route"] = json!(route);
+    record["result"] = json!(result);
+}
+
+/// #8581 exact-task status pilot (read-only first slice): the
+/// dispatcher for `list --json`. Both selectors are required —
+/// the JSON form is defined as the exact read, never as a
+/// rendering of the bulk listing — and the bulk narrowing flags
+/// do not apply to it: the one scoped read is named by queue +
+/// task alone, and a silently ignored flag would misstate what
+/// was asked. Exactly one broker read follows; the verb prints
+/// the single record [`exact_task_status`] builds and returns
+/// its exit code. Nothing here writes.
+fn cmd_list_exact_status(args: &Args, queue: Option<String>) -> i32 {
+    let Some(queue) = queue else {
+        usage_error(
+            "list",
+            "--json exact status requires --queue <name> and --task <id>",
+        );
+    };
+    let Some(task_id) = args.get_i64("task") else {
+        usage_error(
+            "list",
+            "--json exact status requires --queue <name> and --task <id>",
+        );
+    };
+    for flag in ["status", "limit", "not-before", "lane", "worker"] {
+        if args.get(flag).is_some() {
+            usage_error(
+                "list",
+                &format!(
+                    "--json exact status takes only --queue and --task; --{flag} does not apply"
+                ),
+            );
+        }
+    }
+    let resp = call_result(
+        "/list",
+        &json!({"rich": true, "queue": queue, "task": task_id, "limit": 1}),
+    );
+    let (record, code) = exact_task_status(&queue, task_id, resp, &utcnow_iso());
+    print_json(&record);
+    code
+}
+
+/// Pure core of the #8581 exact-task status pilot: fold the one
+/// scoped /list result into the single emitted record and the
+/// verb's exit code.
+///
+/// The record names the verb, the mode and the route actually
+/// used (the #8581 contract vocabulary, via the mode adapter),
+/// and one of four results:
+///
+/// - `found` — the authoritative reply carries the exact task;
+///   its broker row rides under `task`, attributed to `source`
+///   with the row's own `task_as_of` when the row carries a
+///   timestamp. Exit 0.
+/// - `not_found` — ONLY a complete authoritative zero: an ok
+///   reply with an empty rows array, a reported total of 0, and
+///   no truncation. Exit 1 (the client's not-found class, the
+///   one `show` uses).
+/// - `partial` — a reply arrived but cannot certify the answer:
+///   a window smaller than the matching set (`truncated_reply`),
+///   a zero whose total was never reported
+///   (`total_unreported`), or a complete reply naming other
+///   tasks — the broker did not scope the read
+///   (`unscoped_reply`). Exit 3.
+/// - `unknown` — nothing trustworthy was learned: the transport
+///   never produced an envelope (`unavailable`), access was
+///   denied (`denied`), the broker returned an error envelope
+///   (`broker_error`), the reply was malformed
+///   (`malformed_reply`), or the matching row names a different
+///   queue than the one asked about (`identity_mismatch`).
+///   Exit 3, or the broker envelope's own exit for
+///   `broker_error` (the unwrap parity the text verbs use).
+///
+/// No outcome other than the certified zero is ever reported as
+/// absence. When no route served, the record says so plainly:
+/// mode `db-degraded`, route `unavailable` — this slice attempts
+/// no replica or marker fallback, so it names none.
+pub(crate) fn exact_task_status(
+    queue: &str,
+    task_id: i64,
+    resp: Result<Value, (i32, String)>,
+    observed_at: &str,
+) -> (Value, i32) {
+    let mut record = json!({
+        "verb": "list",
+        "queue": queue,
+        "task_id": task_id,
+        "as_of": observed_at,
+    });
+    match resp {
+        Err((_code, msg)) => {
+            // The transport produced no envelope: the broker path
+            // is unavailable, or the token was rejected at the
+            // proxy leg. Nothing was read.
+            let detail = if denial_shaped(&msg) {
+                "denied"
+            } else {
+                "unavailable"
+            };
+            exact_outcome(
+                &mut record,
+                crate::work::degraded::Mode::DbDegraded.label(),
+                "unavailable",
+                "unknown",
+            );
+            record["detail"] = json!(detail);
+            record["error"] = json!(msg);
+            (record, 3)
+        }
+        Ok(env) if env.get("ok").and_then(Value::as_bool) == Some(false) => {
+            let msg = env
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("queue-broker error")
+                .to_string();
+            let code = env.get("exit").and_then(Value::as_i64).unwrap_or(4) as i32;
+            let detail = if denial_shaped(&msg) {
+                "denied"
+            } else {
+                "broker_error"
+            };
+            exact_outcome(
+                &mut record,
+                crate::work::degraded::Mode::DbDegraded.label(),
+                "unavailable",
+                "unknown",
+            );
+            record["detail"] = json!(detail);
+            record["error"] = json!(msg);
+            (record, code)
+        }
+        Ok(env) => {
+            // The broker answered: the cloud route served.
+            let line = mode_line_for("list", legs_served(true, true));
+            let (mode, route) = (line.mode.label(), line.route);
+            record["source"] = json!("cloud");
+            if env.get("ok").and_then(Value::as_bool) != Some(true) {
+                exact_outcome(&mut record, mode, route, "unknown");
+                record["detail"] = json!("malformed_reply");
+                record["error"] = json!(
+                    "queue-broker /list reply carried no ok flag — refusing to read it as an answer"
+                );
+                return (record, 3);
+            }
+            let rows = match list_rows(&env) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    exact_outcome(&mut record, mode, route, "unknown");
+                    record["detail"] = json!("malformed_reply");
+                    record["error"] = json!(e);
+                    return (record, 3);
+                }
+            };
+            if let Some(row) = rows
+                .iter()
+                .find(|r| r.get("id").and_then(Value::as_i64) == Some(task_id))
+            {
+                if let Some(row_queue) = row.get("queue").and_then(Value::as_str) {
+                    if row_queue != queue {
+                        exact_outcome(&mut record, mode, route, "unknown");
+                        record["detail"] = json!("identity_mismatch");
+                        record["error"] = json!(format!(
+                            "the matching row names queue {row_queue:?}, not the requested {queue:?}"
+                        ));
+                        return (record, 3);
+                    }
+                }
+                exact_outcome(&mut record, mode, route, "found");
+                if let Some(ts) = row
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("created_at").and_then(Value::as_str))
+                {
+                    record["task_as_of"] = json!(ts);
+                }
+                record["task"] = row.clone();
+                return (record, 0);
+            }
+            let total = list_total(&env);
+            let truncated = env
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if rows.is_empty() && total == Some(0) && !truncated {
+                exact_outcome(&mut record, mode, route, "not_found");
+                return (record, 1);
+            }
+            let detail = if truncated || total.map(|t| t > rows.len() as i64).unwrap_or(false) {
+                "truncated_reply"
+            } else if rows.is_empty() && total.is_none() {
+                "total_unreported"
+            } else {
+                "unscoped_reply"
+            };
+            exact_outcome(&mut record, mode, route, "partial");
+            record["detail"] = json!(detail);
+            (record, 3)
+        }
+    }
+}
+
+/// #14170 Q4: one task note as the timeline and `note list` render
+/// it. Marks print as recorded: an absent mark is None.
+pub(super) struct TimelineNote {
+    pub(super) id: i64,
+    pub(super) author: String,
+    pub(super) author_kind: String,
+    pub(super) session_id: Option<String>,
+    pub(super) provider: Option<String>,
+    pub(super) model: Option<String>,
+    pub(super) variant: Option<String>,
+    pub(super) body: String,
+    pub(super) created_at: String,
+    pub(super) created_us: i64,
+    pub(super) edited_at: Option<String>,
+    pub(super) deleted_at: Option<String>,
+}
+
+pub(super) fn timeline_note(row: &Value) -> Option<TimelineNote> {
+    let s = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    Some(TimelineNote {
+        id: row.get("id").and_then(Value::as_i64)?,
+        author: s("author").unwrap_or_default(),
+        author_kind: s("author_kind").unwrap_or_else(|| "agent".to_string()),
+        session_id: s("session_id"),
+        provider: s("model_provider"),
+        model: s("model_id"),
+        variant: s("model_variant"),
+        body: s("body").unwrap_or_default(),
+        created_at: s("created_at")?,
+        created_us: row.get("created_at").and_then(parse_ts).unwrap_or(0),
+        edited_at: s("edited_at"),
+        deleted_at: s("deleted_at"),
+    })
+}
+
+pub(super) fn note_json(n: &TimelineNote) -> Value {
+    json!({
+        "id": n.id, "author": n.author, "author_kind": n.author_kind,
+        "session_id": n.session_id, "provider": n.provider, "model": n.model,
+        "variant": n.variant, "body": n.body, "created_at": n.created_at,
+        "edited_at": n.edited_at, "deleted_at": n.deleted_at,
+    })
+}
+
+/// A note's line in the same shape as an event line: timestamp,
+/// `note #id`, author and marks, then the body indented beneath.
+pub(super) fn format_timeline_note(n: &TimelineNote) -> String {
+    let mut line = format!("{}  note #{}  by {}", n.created_at, n.id, n.author);
+    if n.author_kind != "agent" {
+        line += &format!(" ({})", n.author_kind);
+    }
+    if let Some(sid) = &n.session_id {
+        line += &format!("  session={sid}");
+    }
+    if let Some(provider) = &n.provider {
+        line += &format!("  {provider}/{}", n.model.as_deref().unwrap_or("?"));
+        if let Some(variant) = &n.variant {
+            line += &format!("#{variant}");
+        }
+    }
+    if let Some(at) = &n.edited_at {
+        line += &format!("  (edited {at})");
+    }
+    if let Some(at) = &n.deleted_at {
+        line += &format!("  (removed {at})");
+    }
+    for body_line in n.body.lines() {
+        line += &format!("\n    {body_line}");
+    }
+    line
+}
+
+/// One entry of a task's story: a history event or a note.
+pub(super) enum TimelineEntry<'a> {
+    Event(&'a TimelineEvent),
+    Note(&'a TimelineNote),
+}
+
+/// #14170 Q4: interleave notes into the (already ordered and
+/// collapsed) events by timestamp, so a reader sees one
+/// chronological story. Each input keeps its own order; on a
+/// timestamp tie the event comes first (the store stamps whole
+/// seconds, and a note about a transition is written after it).
+pub(super) fn interleave_notes<'a>(
+    events: &'a [TimelineEvent],
+    notes: &'a [TimelineNote],
+) -> Vec<TimelineEntry<'a>> {
+    let mut out = Vec::with_capacity(events.len() + notes.len());
+    let (mut i, mut j) = (0, 0);
+    while i < events.len() || j < notes.len() {
+        let take_event = match (events.get(i), notes.get(j)) {
+            (Some(e), Some(n)) => e.created_us <= n.created_us,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if take_event {
+            out.push(TimelineEntry::Event(&events[i]));
+            i += 1;
+        } else {
+            out.push(TimelineEntry::Note(&notes[j]));
+            j += 1;
+        }
+    }
+    out
+}
+
+/// A task's notes, oldest first, and its live note count. Fail-soft:
+/// a broker that does not serve /note-list yet yields None, and the
+/// caller renders the events alone.
+pub(super) fn fetch_notes(task_id: i64, latest: Option<i64>) -> Option<(Vec<TimelineNote>, i64)> {
+    let mut req = json!({"task_id": task_id});
+    if let Some(n) = latest {
+        req["latest"] = json!(n);
+    }
+    let resp = call("/note-list", &req);
+    if resp.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let row = resp.get("row")?;
+    let notes = row
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(timeline_note).collect())
+        .unwrap_or_default();
+    let count = row.get("count").and_then(Value::as_i64).unwrap_or(0);
+    Some((notes, count))
+}
+
+/// `repo-queue note <add|list|edit|remove>` (#14170 Q4): the task
+/// notes stream.
+pub(super) fn cmd_note(rest: &[String]) -> i32 {
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!("{}", usage("note"));
+        return if rest.is_empty() { 2 } else { 0 };
+    }
+    let tail = &rest[1..];
+    match rest[0].as_str() {
+        "add" => cmd_note_add(tail),
+        "list" => cmd_note_list(tail),
+        "edit" => cmd_note_edit(tail),
+        "remove" => cmd_note_remove(tail),
+        sub => {
+            eprint(&format!(
+                "repo-queue: unknown note command {sub:?}\n{}",
+                usage("note")
+            ));
+            2
+        }
+    }
+}
+
+fn cmd_note_add(rest: &[String]) -> i32 {
+    let args = parse_verb_args(
+        "note add",
+        rest,
+        &[
+            "worker",
+            "text",
+            "kind",
+            "session-id",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
+        &[],
+    );
+    reject_extra_pos("note add", &args, 1);
+    let text = args
+        .get("text")
+        .unwrap_or_else(|| die(2, "note add: --text is required"));
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "body": text,
+        "author_kind": args.get("kind"),
+        "session_id": args.get("session-id"),
+        "model_provider": args.get("model-provider"),
+        "model_id": args.get("model-id"),
+        "model_variant": args.get("model-variant"),
+    });
+    let resp = unwrap_ok(call("/note-add", &body));
+    print_json(&require_row(&resp, "note_add"));
+    0
+}
+
+fn cmd_note_list(rest: &[String]) -> i32 {
+    let args = parse_verb_args("note list", rest, &["latest"], &["include-removed", "json"]);
+    reject_extra_pos("note list", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let mut req = json!({"task_id": task_id, "include_removed": args.has("include-removed")});
+    if let Some(n) = args.get_i64("latest") {
+        req["latest"] = json!(n);
+    }
+    let resp = unwrap_ok(call("/note-list", &req));
+    let row = resp.get("row").cloned().unwrap_or(Value::Null);
+    let notes: Vec<TimelineNote> = row
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(timeline_note).collect())
+        .unwrap_or_default();
+    let count = row.get("count").and_then(Value::as_i64).unwrap_or(0);
+    if args.has("json") {
+        print_json(&json!({
+            "task_id": task_id,
+            "count": count,
+            "notes": notes.iter().map(note_json).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    if notes.is_empty() {
+        println!("task {task_id}: no notes");
+        return 0;
+    }
+    println!("task {task_id}: {} of {count} notes", notes.len());
+    for n in &notes {
+        println!("{}", format_timeline_note(n));
+    }
+    0
+}
+
+fn cmd_note_edit(rest: &[String]) -> i32 {
+    let args = parse_verb_args("note edit", rest, &["worker", "text"], &[]);
+    reject_extra_pos("note edit", &args, 1);
+    let text = args
+        .get("text")
+        .unwrap_or_else(|| die(2, "note edit: --text is required"));
+    let body = json!({
+        "note_id": args.pos_i64(0, "note_id"),
+        "worker": opt_worker(&args),
+        "body": text,
+    });
+    let resp = unwrap_ok(call("/note-edit", &body));
+    print_json(&require_row(&resp, "note_edit"));
+    0
+}
+
+fn cmd_note_remove(rest: &[String]) -> i32 {
+    let args = parse_verb_args("note remove", rest, &["worker"], &[]);
+    reject_extra_pos("note remove", &args, 1);
+    let body = json!({
+        "note_id": args.pos_i64(0, "note_id"),
+        "worker": opt_worker(&args),
+    });
+    let resp = unwrap_ok(call("/note-remove", &body));
+    print_json(&require_row(&resp, "note_remove"));
+    0
+}
+
+/// Queue relationship management backed by normalized queue_links.
+pub(super) fn cmd_link(rest: &[String]) -> i32 {
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!("{}", usage("link"));
+        return if rest.is_empty() { 2 } else { 0 };
+    }
+    let (subcommand, rest) = rest.split_first().expect("link subcommand is present");
+    if is_help_arg(subcommand) {
+        println!("{}", usage("link"));
+        return 0;
+    }
+    match subcommand.as_str() {
+        "add" => cmd_link_add(rest),
+        "remove" => cmd_link_remove(rest),
+        "list" => {
+            let parsed = parse_verb_args("link list", rest, &[], &["include-removed", "json"]);
+            reject_extra_pos("link list", &parsed, 1);
+            let task_id = parsed.pos_i64(0, "task_id");
+            let resp = unwrap_ok(call(
+                "/link-list",
+                &json!({
+                    "task_id": task_id,
+                    "include_removed": parsed.has("include-removed"),
+                }),
+            ));
+            if parsed.has("json") {
+                print_json(&resp);
+            } else {
+                println!(
+                    "{}",
+                    resp.get("links").cloned().unwrap_or_else(|| json!([]))
+                );
+            }
+            0
+        }
+        sub => {
+            eprint(&format!(
+                "repo-queue: unknown link command {sub:?}\n{}",
+                usage("link")
+            ));
+            2
+        }
+    }
+}
+
+fn cmd_link_add(rest: &[String]) -> i32 {
+    let verb = "link add";
+    let args = parse_verb_args(
+        "link add",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        true,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn cmd_link_remove(rest: &[String]) -> i32 {
+    let verb = "link remove";
+    let args = parse_verb_args(
+        "link remove",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        false,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn finish_link_change(
+    verb: &str,
+    add: bool,
+    task_id: i64,
+    worker: String,
+    link_kind: Option<String>,
+    issue: Option<String>,
+    pr: Option<String>,
+    other_task: Option<String>,
+) -> i32 {
+    let target_count = [issue.is_some(), pr.is_some(), other_task.is_some()]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    if target_count != 1 {
+        die(
+            2,
+            &format!("{verb}: exactly one of --issue, --pr, or --task is required"),
+        );
+    }
+    let mut body = json!({
+        "task_id": task_id,
+        "worker": worker,
+        "link_kind": link_kind.unwrap_or_else(|| "related".to_owned()),
+    });
+    if let Some(issue) = issue {
+        let (repo, number) = parse_link_target(&issue, "issue");
+        body["other_issue"] = json!({"repo": repo, "number": number});
+    } else if let Some(pr) = pr {
+        let (repo, number) = parse_link_target(&pr, "pr");
+        body["other_pr"] = json!({"repo": repo, "number": number});
+    } else if let Some(task) = other_task {
+        body["other_task_id"] = json!(
+            task.parse::<i64>()
+                .unwrap_or_else(|_| die(2, "link: --task must be a positive integer"))
+        );
+    }
+    let path = if add { "/link-add" } else { "/link-remove" };
+    print_json(&unwrap_ok(call(path, &body)));
+    0
+}
+
+fn parse_link_target(value: &str, label: &str) -> (String, i64) {
+    let Some((repo, number)) = value.rsplit_once('#') else {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    };
+    let number = number
+        .parse::<i64>()
+        .unwrap_or_else(|_| die(2, &format!("link: --{label} number must be positive")));
+    if repo.split('/').count() != 2 || repo.split('/').any(str::is_empty) || number <= 0 {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    }
+    (repo.to_owned(), number)
 }

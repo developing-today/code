@@ -49,6 +49,30 @@ pub fn publish_records(
     });
 }
 
+/// The content address of a blob (#1062): the iroh-blobs hash of the
+/// content in its canonical lowercase-hex spelling — the same
+/// address the node's iroh-blobs store gives the same bytes
+/// (`world_records` addresses stored content with `Hash::new` too).
+pub(crate) fn blob_id(data: &[u8]) -> String {
+    iroh_blobs::Hash::new(data).to_string()
+}
+
+/// Base64 encoding of blob content (#1062): content travels inside
+/// JSON strings on the wire and in the journal, so it rides as text
+/// in both.
+pub(crate) fn blob_encode(data: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Inverse of [`blob_encode`]; `None` on malformed base64.
+pub(crate) fn blob_decode(encoded: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
+}
+
 /// Lower-case hex decoding of an arbitrary-length byte string, the
 /// inverse of [`hex_encode`]. `None` on odd length or a non-hex digit.
 pub(crate) fn hex_decode(encoded: &str) -> Option<Vec<u8>> {
@@ -57,7 +81,7 @@ pub(crate) fn hex_decode(encoded: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let nibble = |b: u8| char::from(b).to_digit(16);
         out.push(u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?);
     }
@@ -70,7 +94,7 @@ pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0_u8; 32];
-    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
         let nibble = |b: u8| char::from(b).to_digit(16);
         *slot = u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?;
     }

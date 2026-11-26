@@ -877,8 +877,8 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		// interpreter, tools and tracebacks see the file it is, while a
 		// raw dispatch keeps the interpreter, not the name, deciding.
 		suffix := ""
-		if d.language == codegen.Python.Name {
-			suffix = codegen.Python.ScriptExt
+		if lang, ok := codegen.Lookup(d.language); ok {
+			suffix = lang.ScriptExt
 		}
 		if workDir == "" {
 			wd, err := os.MkdirTemp("", "mcpx-run-")
@@ -929,7 +929,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		return nil, err
 	}
 	dir = applyChdir(dir, d.chdir)
-	if d.lookupBin != "" {
+	if d.lookupBin != "" && (!devshellIsFlake(opts.Devshell) || !isRocInterpreter(d.lookupBin)) {
 		// The interpreter a shebang names is resolved here, against
 		// the directory the run actually moves to: deciding earlier
 		// would check relative PATH entries against mcpx's own
@@ -940,6 +940,12 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 			return nil, fmt.Errorf("runner: %s interpreter %q not found on PATH: %w", d.source, d.lookupBin, err)
 		}
 		d.bin = abs
+	} else if d.lookupBin != "" {
+		// A Roc shebang under a flake devshell is resolved by that shell,
+		// just like a .roc file dispatched by language. Looking it up on
+		// the host here would reject a compiler that exists only in the
+		// selected devshell.
+		d.bin = d.lookupBin
 	}
 
 	notice := ""

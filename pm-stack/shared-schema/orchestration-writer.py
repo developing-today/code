@@ -27,6 +27,7 @@ with exit 2.
 """
 
 import argparse, json, os, sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -55,6 +56,33 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
+def document_problem(doc, items):
+    """The first reason this document must not be written, or None.
+
+    Checked before any secret fetch or network call. orch_runs is
+    append-only and readers take the newest row by generated_at, so a
+    non-timestamp generatedAt (run orch-2026-11-20T21:44:10Z published
+    its runId there) sorts above every later run and hides them all; a
+    duplicated item id collapses in orch_items and fails the read-back
+    only after the run row has committed.
+    """
+    stamp = doc.get("generatedAt")
+    if not isinstance(stamp, str) or not stamp[:4].isdigit():
+        return "generatedAt is not an ISO-8601 timestamp"
+    try:
+        datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return "generatedAt is not an ISO-8601 timestamp"
+    if not isinstance(doc.get("runId"), str) or not doc["runId"]:
+        return "runId is missing"
+    seen = set()
+    for tier, item in items:
+        if item["id"] in seen:
+            return f"item id {item['id']!r} appears more than once across tiers"
+        seen.add(item["id"])
+    return None
+
+
 def main():
     args = parse_args(sys.argv[1:])
     path = args.path
@@ -70,6 +98,9 @@ def main():
         for item in tiers.get(tier) or []:
             items.append((tier, item))
     item_count = len(items)
+    problem = document_problem(doc, items)
+    if problem:
+        raise SystemExit(f"refused before writing: {problem}")
 
     db = Turso()
     existing = db.query(
@@ -94,10 +125,37 @@ def main():
         )
     ]
     # Upsert before removing stale rows; preserve first_seen atomically.
+    # Avoid rewriting an identical materialized row on a replay, even for
+    # nullable fields. Both the assignment and predicate use the same
+    # columns so a future SET field cannot be missed by the no-op guard.
+    update_fields = (
+        "tier",
+        "kind",
+        "title",
+        "source",
+        "state",
+        "reason",
+        "ref",
+        "since",
+        "last_seen_at",
+        "item",
+        "last_seen_run_id",
+    )
+    assignments = ",".join(f"{field}=excluded.{field}" for field in update_fields)
+    differs = " OR ".join(
+        f"orch_items.{field} IS NOT excluded.{field}" for field in update_fields
+    )
+    upsert_item = (
+        "INSERT INTO orch_items "
+        "(id,tier,kind,title,source,state,reason,ref,since,"
+        "last_seen_at,item,first_seen_run_id,last_seen_run_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        f"ON CONFLICT(id) DO UPDATE SET {assignments} WHERE {differs}"
+    )
     for tier, item in items:
         stmts.append(
             (
-                "INSERT INTO orch_items (id,tier,kind,title,source,state,reason,ref,since,last_seen_at,item,first_seen_run_id,last_seen_run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET tier=excluded.tier,kind=excluded.kind,title=excluded.title,source=excluded.source,state=excluded.state,reason=excluded.reason,ref=excluded.ref,since=excluded.since,last_seen_at=excluded.last_seen_at,item=excluded.item,last_seen_run_id=excluded.last_seen_run_id",
+                upsert_item,
                 [
                     item["id"],
                     tier,

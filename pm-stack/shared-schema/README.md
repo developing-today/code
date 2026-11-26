@@ -1,9 +1,16 @@
 # Shared schema v1: aggregator actions and outcomes
 
-Status: the action/event contract and its #6815 add-on stores have been
-applied to Supabase `muse-dev2` and are the canonical backing store when the
-aggregator runs with `PM_AGG_STORE_BACKEND=supabase`; with the default
-`file` backend the JSON files remain authoritative.
+Status: the PostgreSQL DDL here is the original contract for the
+action/event tables and the #6815 add-on stores. The live copies of these
+tables are in Turso (the Supabase project they were first applied to has
+been deleted; the Turso schema was created during the 2026-11-18 recovery,
+see `doc/2026-11-18_supabase-turso-recovery.md`). They are the canonical
+backing store when the aggregator runs with `PM_AGG_STORE_BACKEND=turso`;
+with the default `file` backend the JSON files remain authoritative. The
+aggregator reaches them only through `aggregator/src/turso-stores.ts`, which
+translates the PostgreSQL-dialect statements in
+`aggregator/src/remote-stores.ts` to SQLite (`public.` prefixes dropped,
+`jsonb`/`timestamptz` casts removed).
 
 The target uses the `public` schema and the table-group names from
 [#1744](https://github.com/developing-today/code/issues/1744):
@@ -76,8 +83,8 @@ Current events default to `{confidence: "unknown", asserted: false}` and
 `{identity: "pm-stack/aggregator"}`. Do not upgrade these to authenticated
 provenance without the separate #941 trust-hardening work.
 
-RLS is enabled on both tables. The migration grants the Supabase
-`service_role` the minimum table privileges needed by the current contracts:
+RLS is enabled on both tables (PostgreSQL DDL only; Turso has no RLS). The
+migration grants `service_role` the minimum table privileges needed by the current contracts:
 actions can be read/inserted/updated but not deleted; events can be
 read/inserted and pruned under the existing event-retention policy, but not
 updated. No client-facing RLS policy or production database write is part of
@@ -85,35 +92,57 @@ this change.
 
 ## Migration, fallback, and rollback
 
-There is no shared Postgres migration runner yet; migrations are applied by
-hand in version order. `migrations/20261105_0001_action_event_store.up.sql`
+There is no shared Postgres migration runner yet; migrations are applied to
+PostgreSQL by hand in version order. The Turso stores have a runner
+(#14256): `turso_migrations.py` translates each migration from the
+PostgreSQL dialect to SQLite — following the aggregator's own translation
+conventions in `aggregator/src/turso-stores.ts`, and refusing any construct
+it has no rule for rather than guessing — and
+`apply-store-migrations.py` applies the pending set in version order, one
+transaction per migration, recording each in the store's
+`pm_schema_migrations` ledger so a re-run is a reported no-op. The
+translation is pinned by reviewed golden files under `golden/`, and
+`test_turso_migrations.py` proves the translated schema accepts and
+rejects the same rows the PostgreSQL suites assert. The
+`pm-store-migrate` workflow dispatches the runner: against a stand-in
+store as the CI proof, or against a named store from
+`pm-stack/platform/stores.json` once its token secret is configured.
+`migrations/20261105_0001_action_event_store.up.sql`
 creates `agg_actions` and `shared_events` with their constraints, indexes, and
 grants. `migrations/20261116_0001_aggregator_remote_stores.up.sql` (#6815)
 adds, in dependency order after it:
 
-| Table                           | Holds                                                                     |
-| ------------------------------- | ------------------------------------------------------------------------- |
-| `public.agg_activity_ingestion` | per-source checkpoints, dedupe seen ids, source status                    |
-| `public.agg_activity_gaps`      | the activity gap ledger (gaps resolve in place)                           |
-| `public.agg_usage_snapshots`    | append-only usage observations, dedupe key `service\|metric\|ts\|value`   |
-| `public.agg_store_documents`    | aggregator-owned JSON documents without a typed contract (`aa-last-good`) |
+| Table                           | Holds                                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `public.agg_activity_ingestion` | per-source checkpoints, dedupe seen ids, source status                                                          |
+| `public.agg_activity_gaps`      | the activity gap ledger (gaps resolve in place)                                                                 |
+| `public.agg_usage_snapshots`    | append-only usage observations, dedupe key `service\|metric\|ts\|value`                                         |
+| `public.agg_store_documents`    | aggregator-owned JSON documents (`aa-last-good`; namespaced C7 report events use an append-only typed contract) |
+
+`migrations/20261122_0001_shared_comments.up.sql` (#1744, Move 1 step 2)
+adds, after those:
+
+| Table                    | Holds                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `public.shared_comments` | dashboard comments (the DashComment record), the shared cross-service comment table of #1744 |
 
 Each paired `.down.sql` refuses to drop a non-empty table; the #6815 down
 migration drops its tables in reverse dependency order. The refusal is
 deliberate protection against an accidental data-loss rollback.
 
 Cutover and rollback are the aggregator's `PM_AGG_STORE_BACKEND` switch
-(`file` default → `supabase`), documented in
-[the aggregator README](../aggregator/README.md#store-backend-supabase-muse-dev2-6815).
-Switching to `supabase` makes the tables the write path; the local JSON
+(`file` default → `turso`), documented in
+[the aggregator README](../aggregator/README.md#store-backend-turso-6815).
+Switching to `turso` makes the tables the write path; the local JSON
 stores are preserved as a rebuildable cache and remain the rollback target.
-The import script (`aggregator/scripts/migrate-stores-to-supabase.ts`) is
-idempotent, and re-running it after the deploy closes writes made between the
-import and the cutover. The migration test proves the paired DDL and rollback
-on a disposable PostgreSQL 16 instance; it does not connect to Supabase.
+The migration test proves the paired PostgreSQL DDL and rollback on a
+disposable PostgreSQL 16 instance; it does not connect to any remote
+database.
 
-This supplies reversible DDL for the #6815 slice. It does **not** finish the
-remaining `agg_*` / `shared_*` contracts, decide the projector's P1 location,
+This supplies reversible DDL for the #6815 slice plus the
+`shared_comments` contract. It does **not** finish the
+remaining `agg_*` / `shared_*` contracts (views, roadmap annotations,
+the projector's `pmp_*` groups), decide the projector's P1 location,
 or complete P1 / Move 1; #1744 acceptance criterion 3 remains unchecked.
 
 ## Disposable test
@@ -124,10 +153,11 @@ Run from the repository root:
 bash pm-stack/shared-schema/test-migration.sh
 ```
 
-The script starts its own temporary PostgreSQL 16 container, applies both up
+The script starts its own temporary PostgreSQL 16 container, applies the up
 migrations in order, proves key/foreign-key/check/idempotency behavior
-(including legacy-null compatibility and the #6815 store-table constraints),
+(including legacy-null compatibility, the #6815 store-table constraints,
+and the #1744 shared_comments constraints),
 proves each down migration refuses non-empty tables, clears only its
-disposable fixtures, applies both down migrations in reverse, and verifies
-the tables are gone. It does not connect to Supabase or the PM Compose
+disposable fixtures, applies the down migrations in reverse, and verifies
+the tables are gone. It does not connect to Turso or the PM Compose
 database.

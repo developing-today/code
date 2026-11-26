@@ -8,6 +8,7 @@ import { PAGES, SUBROUTE_PARENTS, manifestRouteFor, pageByRoute, primaryGroupedP
 import { buildProgramData } from "../src/program.ts";
 import { navLinks, pageDropdown, renderPages, renderProgram } from "../src/render.ts";
 import { STANDING_IDENTITIES } from "../src/registry.ts";
+import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -67,6 +68,19 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // find the question stack) promotes it to primary — a curation
   // ruling recorded here like the others.
   decisions: "primary",
+  // Post-#1497 addition (#12491, 2026-11-22): the report-conflict
+  // review page enters at dropdown tier — no curation ruling promotes
+  // it, and new pages do not take primary slots without one.
+  reports: "dropdown",
+  // Post-#1497 addition (#10035, 2026-11-23): the prompt chat/session
+  // surface enters at dropdown tier — no curation ruling promotes it,
+  // and new pages do not take primary slots without one. Its unread
+  // badge rides the nav bar itself (design #9539 §4), not a bar slot.
+  chat: "dropdown",
+  // Post-#1497 addition (#14084 S1, 2026-11-25): the needs-user list
+  // enters at dropdown tier — no curation ruling promotes it, and new
+  // pages do not take primary slots without one.
+  "needs-user": "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {
@@ -103,6 +117,22 @@ describe("the #1497 decision table is applied to the manifest", () => {
         .map((p) => p.id)
         .sort(),
     );
+  });
+});
+
+describe("console-gated install shortcut (#12416)", () => {
+  test("the web manifest gains /console/ only on the public Host", async () => {
+    const manifest = { name: "PM Aggregator", start_url: "/attention" };
+    const response = (host: string) =>
+      addConsoleShortcut(
+        new Response(JSON.stringify(manifest), { headers: { "content-type": "application/manifest+json" } }),
+        new Request("http://aggregator/manifest.webmanifest", { headers: { host } }),
+        "pm.security.cab",
+      );
+    const gated = JSON.parse(await (await response("pm.security.cab")).text());
+    expect(gated.shortcuts).toContainEqual({ name: "Console", short_name: "Console", url: "/console/" });
+    const direct = JSON.parse(await (await response("localhost")).text());
+    expect(direct.shortcuts).toBeUndefined();
   });
 });
 

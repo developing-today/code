@@ -47,6 +47,9 @@ func (p Problem) String() string {
 // Report is everything found.
 type Report struct {
 	Problems []Problem
+	// Prepared is the dependency environment stage 3 materialised,
+	// set only by the import pipeline in prepare mode (#1915).
+	Prepared *PreparedSet
 }
 
 // Add records a problem.

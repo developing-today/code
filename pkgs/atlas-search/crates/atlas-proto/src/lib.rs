@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 /// The sensitivity ladder, least to most restricted. The ordering
@@ -38,6 +39,21 @@ impl Sensitivity {
         }
     }
 
+    /// Parse a requested ceiling (#13506): a legacy spelling or a
+    /// canonical ladder name (`public < internal < private <
+    /// sensitive`). Stored and reported values stay on
+    /// [`Sensitivity::from_name`] and [`Sensitivity::name`] until the
+    /// output cutover is decided.
+    pub fn from_ceiling_name(name: &str) -> Option<Sensitivity> {
+        Sensitivity::from_name(name).or(match name {
+            "public" => Some(Sensitivity::Shareable),
+            "internal" => Some(Sensitivity::Personal),
+            "private" => Some(Sensitivity::LocalOnly),
+            "sensitive" => Some(Sensitivity::SecretBearing),
+            _ => None,
+        })
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Sensitivity::Shareable => "shareable",
@@ -47,10 +63,45 @@ impl Sensitivity {
         }
     }
 
+    /// The canonical ladder name for this rung (#13506).
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            Sensitivity::Shareable => "public",
+            Sensitivity::Personal => "internal",
+            Sensitivity::LocalOnly => "private",
+            Sensitivity::SecretBearing => "sensitive",
+        }
+    }
+
     /// `min(self, cap)` under the sensitivity ordering.
     pub fn clamped_to(self, cap: Sensitivity) -> Sensitivity {
         std::cmp::min(self, cap)
     }
+}
+
+/// Every spelling a requested ceiling may take on the wire: the
+/// legacy names, then the canonical names (#13506).
+const CEILING_NAMES: [&str; 8] = [
+    "shareable",
+    "personal",
+    "local-only",
+    "secret-bearing",
+    "public",
+    "internal",
+    "private",
+    "sensitive",
+];
+
+/// Deserialize a requested ceiling, accepting either spelling. Only
+/// request ceilings use this; every other sensitivity field keeps
+/// the strict legacy serde names.
+fn deserialize_ceiling<'de, D>(deserializer: D) -> Result<Sensitivity, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let name = String::deserialize(deserializer)?;
+    Sensitivity::from_ceiling_name(&name)
+        .ok_or_else(|| serde::de::Error::unknown_variant(&name, &CEILING_NAMES))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,6 +187,64 @@ pub struct FilterSpec {
     pub since: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
+    /// Generic dimensions (#6228 Phase 3): values for dimensions
+    /// beyond the named fields, keyed by dimension name as declared
+    /// in the effective manifest surface. The named fields above
+    /// are aliases for the `kind`/`topic`/`project`/`client`
+    /// dimensions for one release: reads through
+    /// [`FilterSpec::dimension_values`] resolve the named field
+    /// first, and writes through [`FilterSpec::set_dimension`] to a
+    /// named dimension land in the named field, so existing
+    /// named-field behaviour is unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, Vec<String>>,
+}
+
+/// The dimension names carried by [`FilterSpec`]'s named fields.
+/// These stay the wire aliases for the same-named manifest
+/// dimensions (#6228 Phase 3).
+pub const NAMED_DIMENSIONS: [&str; 4] = ["kind", "topic", "project", "client"];
+
+impl FilterSpec {
+    /// Whether `name` is one of the named-field dimensions.
+    pub fn is_named_dimension(name: &str) -> bool {
+        NAMED_DIMENSIONS.contains(&name)
+    }
+
+    /// The values requested for dimension `name`: the named field
+    /// for a named dimension, otherwise the generic dimension map.
+    /// `None` means the request does not constrain that dimension.
+    pub fn dimension_values(&self, name: &str) -> Option<&[String]> {
+        match name {
+            "kind" => (!self.kind.is_empty()).then_some(self.kind.as_slice()),
+            "topic" => (!self.topic.is_empty()).then_some(self.topic.as_slice()),
+            "project" => (!self.project.is_empty()).then_some(self.project.as_slice()),
+            "client" => (!self.client.is_empty()).then_some(self.client.as_slice()),
+            _ => self
+                .dimensions
+                .get(name)
+                .filter(|values| !values.is_empty())
+                .map(Vec::as_slice),
+        }
+    }
+
+    /// Set the values for dimension `name`. A named dimension
+    /// writes its named field (the alias), keeping the generic map
+    /// free of duplicates of the named fields.
+    pub fn set_dimension(&mut self, name: &str, values: Vec<String>) {
+        match name {
+            "kind" => self.kind = values,
+            "topic" => self.topic = values,
+            "project" => self.project = values,
+            "client" => self.client = values,
+            _ if values.is_empty() => {
+                self.dimensions.remove(name);
+            }
+            _ => {
+                self.dimensions.insert(name.to_string(), values);
+            }
+        }
+    }
 }
 
 fn default_k() -> usize {
@@ -493,8 +602,9 @@ pub struct SearchRequest {
     pub filters: FilterSpec,
     /// The requested ceiling. The server clamps this to the
     /// authenticated client's cap and reports the result as the
-    /// job's effective ceiling.
-    #[serde(default)]
+    /// job's effective ceiling. Either the legacy or the canonical
+    /// spelling is accepted (#13506).
+    #[serde(default, deserialize_with = "deserialize_ceiling")]
     pub ceiling: Sensitivity,
     /// Final result entries to compute (flat results, or sessions
     /// when `group_by_session` is set).
@@ -527,6 +637,16 @@ pub struct SearchRequest {
     /// page size on each results request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_limit: Option<usize>,
+    /// The disclosure context of the destination surface the
+    /// results are bound for (#12404, #9096 design section 4):
+    /// one of `fleet-internal`, `hosted-per-user`,
+    /// `public-surface`, `local-owner`. The context ceiling
+    /// intersects the (clamped) caller ceiling at the output
+    /// boundary. Additive and optional: an absent or unknown
+    /// value fails closed per the receiving surface's rule —
+    /// atlas-core's default is `public-surface`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 impl Default for SearchRequest {
@@ -547,6 +667,7 @@ impl Default for SearchRequest {
             trunc: 0,
             vector_backend: VectorBackend::default(),
             page_limit: None,
+            context: None,
         }
     }
 }
@@ -816,6 +937,34 @@ mod tests {
     }
 
     #[test]
+    fn a_request_ceiling_takes_either_spelling() {
+        for (legacy, canonical) in [
+            ("shareable", "public"),
+            ("personal", "internal"),
+            ("local-only", "private"),
+            ("secret-bearing", "sensitive"),
+        ] {
+            let old: SearchRequest =
+                serde_json::from_value(serde_json::json!({"query": "q", "ceiling": legacy}))
+                    .unwrap();
+            let new: SearchRequest =
+                serde_json::from_value(serde_json::json!({"query": "q", "ceiling": canonical}))
+                    .unwrap();
+            assert_eq!(old.ceiling, new.ceiling);
+            assert_eq!(new.ceiling.name(), legacy);
+            assert_eq!(new.ceiling.canonical_name(), canonical);
+            // The request still serializes the legacy spelling.
+            assert_eq!(serde_json::to_value(&new).unwrap()["ceiling"], legacy);
+        }
+        let bad = serde_json::from_value::<SearchRequest>(
+            serde_json::json!({"query": "q", "ceiling": "secret"}),
+        );
+        assert!(bad.is_err());
+        // Other sensitivity fields stay strict.
+        assert!(serde_json::from_str::<Sensitivity>("\"internal\"").is_err());
+    }
+
+    #[test]
     fn search_request_defaults_are_production_defaults() {
         let req: SearchRequest = serde_json::from_str("{\"query\":\"atlas\"}").unwrap();
         assert_eq!(req.mode, SearchMode::Hybrid);
@@ -1021,5 +1170,47 @@ mod tests {
             q.raw_mode = modes[(raw_mode_idx + 1) % 3];
             proptest::prop_assert_ne!(&k1, &q.result_cache_key("q", "s", "personal", expand, group, false));
         }
+    }
+
+    #[test]
+    fn filter_spec_dimensions_roundtrip_and_alias() {
+        // #6228 Phase 3, oracle: the wire contract. A generic
+        // dimension round-trips through JSON; a named dimension
+        // written via set_dimension lands in (and reads back from)
+        // its named field, never the generic map, so named-field
+        // behaviour is unchanged.
+        let mut filters = FilterSpec::default();
+        filters.set_dimension("source-app", vec!["mail".to_string()]);
+        filters.set_dimension("kind", vec!["message".to_string()]);
+        assert_eq!(
+            filters.dimension_values("source-app"),
+            Some(&["mail".to_string()][..])
+        );
+        assert_eq!(
+            filters.dimension_values("kind"),
+            Some(&["message".to_string()][..])
+        );
+        assert!(filters.dimensions.get("kind").is_none());
+        assert_eq!(filters.dimension_values("absent"), None);
+        let wire = serde_json::to_value(&filters).unwrap();
+        assert_eq!(
+            wire["dimensions"]["source-app"],
+            serde_json::json!(["mail"])
+        );
+        assert_eq!(wire["kind"], serde_json::json!(["message"]));
+        let back: FilterSpec = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, filters);
+        // Pre-Phase-3 payloads (no `dimensions` key) still parse,
+        // with an empty map.
+        let legacy: FilterSpec = serde_json::from_str(r#"{"kind":["message"]}"#).unwrap();
+        assert!(legacy.dimensions.is_empty());
+        assert_eq!(
+            legacy.dimension_values("kind"),
+            Some(&["message".to_string()][..])
+        );
+        assert_eq!(FilterSpec::default().dimension_values("kind"), None);
+        filters.set_dimension("source-app", Vec::new());
+        assert_eq!(filters.dimension_values("source-app"), None);
+        assert!(!filters.dimensions.contains_key("source-app"));
     }
 }

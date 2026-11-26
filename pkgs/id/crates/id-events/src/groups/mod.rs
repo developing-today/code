@@ -60,6 +60,10 @@ pub struct Delegate {
     pub scope: Role,
     /// Whether the grantee may grant the scope on. Only a redelegatable grant extends a chain.
     pub can_redelegate: bool,
+    /// Optional signed expiry bound (Unix seconds). A chain link carries authority only while
+    /// the action's asserted time is before this bound (design §7.4, D1).
+    #[serde(default)]
+    pub expires_at: Option<u64>,
 }
 
 /// An account's key. Accounts are keys in this layer.
@@ -97,6 +101,11 @@ pub struct Event {
     /// friendship's derived group.
     #[serde(with = "wire::opt_hash")]
     pub group: Option<Hash>,
+    /// The author's asserted Unix-seconds timestamp. `None` for events written before
+    /// timestamps existed. A bounded grant carries no chain to an untimestamped action
+    /// (#14876); unbounded grants are unaffected.
+    #[serde(default)]
+    pub at: Option<u64>,
     /// What it does.
     pub body: Body,
 }

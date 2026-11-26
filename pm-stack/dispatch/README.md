@@ -66,6 +66,27 @@ Repo <repo>` so the session knows its tracking ids.
 5. Comment the task/session ids on the issue; label it `queue/claimed` +
    `work/assigned`.
 
+Before step 3, the packaged service runs `placement-record` for explicit
+OpenCode Go account routes and `cline-pass` model hints. For the bare
+`opencode-go` provider it reads the active OpenCode Console account, checks
+that account's quota row, and pins the session to that explicit account
+provider so a concurrent account switch cannot change the result. It reads
+the policy shipped with the package and the quota gatherer's
+`QUOTA_CURRENT_PATH` snapshot (default
+`~/.local/state/pm-aggregator/quota-current.json`). A refusal is written to
+the dispatcher journal verbatim and fails the pre-commit launch, so the
+existing failure path cancels the queue task and records the reason on its
+issue before any worktree or OpenCode session is created. Requests with no
+model hint or a provider outside the account-specific Go/Zen and ClinePass
+mappings are not covered by this slice; the remaining model-to-pool map is
+still needed for full rollout.
+
+If both fresh quota reads fail but a valid last-known monthly measurement
+exists, `placement-record` records B4 reliance, writes that fallback to the
+dispatcher journal, and proceeds. A fresh monthly threshold refusal still
+stops the launch. If the snapshot has no valid prior measurement, the
+service refuses because it cannot make a truthful B4 record.
+
 Stage/failure semantics (design #2668): step 4's claim PATCH is the
 launch's commit point. Steps before it are pre-commit — a failure
 cancels the task and fails the launch. Step 5 is post-commit: the
@@ -87,6 +108,32 @@ returned, so the cancellation and the issue note are the record — a
 task is never left `queued` for a session that did not launch, nor
 `claimed` without a session id, nor claimed-and-running reported as
 failed.
+
+### `POST /v1/agent-wake` — start a Fleet agent run
+
+Use this as the Message Bridge wake hook for an `agent:<name>` address.
+Set the hook URL to `https://dispatch.security.cab/v1/agent-wake` and its
+bearer token to the dispatch API token. The bridge sends its generic wake
+event:
+
+```json
+{
+  "event": "message.created",
+  "address": "agent:agent-next-20-local",
+  "message_ids": [42]
+}
+```
+
+The endpoint starts an OpenCode session in the code checkout and sends a
+fixed prompt to run `fleet agent next --agent <name>`. The agent reads the
+bridge inbox through the normal intake ladder and claims the actual task;
+the wake request creates no separate issue or queue task. The webhook's
+summary text is ignored. A successful session start returns
+`202 {agent, session_id, status: "started"}`. If sending the prompt fails,
+dispatch logs the failure and leaves the session available to inspect. The
+OpenCode server may have accepted the prompt before the client saw the
+failure, so the session is retained and the bridge messages remain unread
+for a later poll or wake.
 
 ### `POST /v1/tasks` — enqueue only
 

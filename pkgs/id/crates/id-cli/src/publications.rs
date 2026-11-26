@@ -339,8 +339,8 @@ impl Registry {
             .collect()
     }
 
-    /// Save the registry atomically: write a sibling temp file, then
-    /// rename over `path`, so a crash mid-save keeps the previous set.
+    /// Save the registry durably: sync a sibling temp file, then rename
+    /// over `path`, so a crash mid-save keeps the previous set.
     ///
     /// # Errors
     ///
@@ -353,8 +353,13 @@ impl Registry {
         }
         let json = serde_json::to_string_pretty(self).context("serialising publications")?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, json).with_context(|| format!("writing {}", temp.display()))?;
-        std::fs::rename(&temp, path).with_context(|| format!("replacing {}", path.display()))?;
+        id_core::durable_write::write_durable(path, &temp, json.as_bytes()).with_context(|| {
+            format!(
+                "durably writing publications file {} via {}",
+                path.display(),
+                temp.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -511,7 +516,7 @@ mod tests {
             .publish(mount("/world", false), KNOWN_EXPLORER_ROUTES)
             .unwrap_err();
         assert!(format!("{err:#}").contains("/world"), "{err:#}");
-        assert!(registry.publications.is_empty());
+        assert_eq!(registry.publications, [] as [Publication; 0]);
 
         let warning = registry
             .publish(mount("/world", true), KNOWN_EXPLORER_ROUTES)
@@ -621,7 +626,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed.world, "arena");
-        assert!(registry.publications.is_empty());
+        assert_eq!(registry.publications, [] as [Publication; 0]);
         assert!(
             registry
                 .unpublish(&Placement::PathMount {
@@ -636,7 +641,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("id-publications-test-{}", std::process::id()));
         let file = dir.join("publications.json");
         let missing = Registry::load(&file).unwrap();
-        assert!(missing.publications.is_empty());
+        assert_eq!(missing.publications, [] as [Publication; 0]);
 
         let mut registry = Registry::default();
         registry
@@ -668,7 +673,10 @@ mod tests {
         registry
             .publish(mount("/arena", false), KNOWN_EXPLORER_ROUTES)
             .unwrap();
-        assert!(registry.boot_warnings(KNOWN_EXPLORER_ROUTES).is_empty());
+        assert_eq!(
+            registry.boot_warnings(KNOWN_EXPLORER_ROUTES),
+            [] as [String; 0]
+        );
 
         // A record persisted outside publish() (hand-edited, or routes
         // changed since) still warns at boot.
@@ -836,6 +844,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed.world, "arena");
-        assert!(registry.publications.is_empty());
+        assert_eq!(registry.publications, [] as [Publication; 0]);
     }
 }

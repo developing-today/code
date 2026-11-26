@@ -10,7 +10,11 @@
 //!      token *file* named in the request (the session broker reads it
 //!      per request and sends `X-Agent-Token`; fleet never opens it);
 //!   2. the **`bws` CLI fallback** — `bws secret list` + `get`, the
-//!      same shape the secrets broker itself uses to fill its cache.
+//!      same shape the secrets broker itself uses to fill its cache;
+//!   3. the **`op` CLI**, only where a vault is named
+//!      (`FLEET_OP_VAULT`): `op read op://<vault>/<name>/<field>`.
+//!      A seat that keeps its secrets in 1Password resolves the same
+//!      names without a broker or a Bitwarden token ([`OpSource`]).
 //!
 //! Discipline, enforced by the types below:
 //!   * a resolved value lives in [`SecretValue`], whose `Debug` is
@@ -155,6 +159,190 @@ pub fn validate_name(name: &str) -> Result<(), SecretError> {
     Ok(())
 }
 
+/// A namespace view over secret names (#10358 design record,
+/// `doc/2026-11-26T07-45-48Z_design_fleet_secrets_scoping/`, D1 to D5).
+///
+/// A prefix is a namespace view, not a security layer: what a device
+/// can read is bounded by the keys it holds, never by the prefix.
+/// [`Scope::none`] is the identity, so an unconfigured instance
+/// behaves exactly as it did before scoping existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scope {
+    prefix: Option<String>,
+}
+
+impl Scope {
+    /// The one separator between a prefix and the rest of a name.
+    pub const SEPARATOR: char = '.';
+    /// The environment variable that names the prefix; it beats
+    /// `[secrets] prefix` in `fleet.toml` (D9).
+    pub const PREFIX_ENV: &'static str = "FLEET_SECRETS_PREFIX";
+
+    /// No prefix: every name maps and displays as itself (D1).
+    pub fn none() -> Scope {
+        Scope { prefix: None }
+    }
+
+    /// A prefix scope. The prefix must itself be a valid name and may
+    /// not end with the separator; a dotted prefix such as `team.42`
+    /// is legal and matched as a whole (D9).
+    pub fn prefixed(prefix: &str) -> Result<Scope, SecretError> {
+        validate_name(prefix)?;
+        if prefix.ends_with(Self::SEPARATOR) {
+            return Err(SecretError::InvalidName(prefix.to_string()));
+        }
+        Ok(Scope {
+            prefix: Some(prefix.to_string()),
+        })
+    }
+
+    /// The scope from an environment value and a config value: the
+    /// environment wins, and an empty or blank value in either counts
+    /// as unset (D9).
+    pub fn from_sources(
+        env_value: Option<&str>,
+        config_value: Option<&str>,
+    ) -> Result<Scope, SecretError> {
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.filter(|s| !s.trim().is_empty())
+        }
+        match set(env_value).or_else(|| set(config_value)) {
+            Some(prefix) => Scope::prefixed(prefix),
+            None => Ok(Scope::none()),
+        }
+    }
+
+    /// The scope a resolved config runs with: `$FLEET_SECRETS_PREFIX`,
+    /// else `[secrets] prefix`, else none.
+    pub fn from_config(config: &fleet_config::Config) -> Result<Scope, SecretError> {
+        Scope::from_sources(
+            std::env::var(Self::PREFIX_ENV).ok().as_deref(),
+            config.secrets.prefix.as_deref(),
+        )
+    }
+
+    /// The configured prefix, if any.
+    pub fn prefix(&self) -> Option<&str> {
+        self.prefix.as_deref()
+    }
+
+    /// `P.`, the start every stored name in this scope shares.
+    fn lead(prefix: &str) -> String {
+        format!("{prefix}{}", Self::SEPARATOR)
+    }
+
+    /// The stored name a caller's name means (D2 to D4). A name that
+    /// already starts with `P.` is full and used as is; any other name
+    /// gains `P.` once. The full name is validated, and a full name
+    /// with nothing after `P.` is refused.
+    pub fn to_full(&self, name: &str) -> Result<String, SecretError> {
+        validate_name(name)?;
+        let Some(prefix) = self.prefix.as_deref() else {
+            return Ok(name.to_string());
+        };
+        let lead = Scope::lead(prefix);
+        let full = if name.starts_with(&lead) {
+            name.to_string()
+        } else {
+            format!("{lead}{name}")
+        };
+        if full.len() == lead.len() {
+            return Err(SecretError::InvalidName(name.to_string()));
+        }
+        validate_name(&full)?;
+        Ok(full)
+    }
+
+    /// How a stored name is shown in this scope (D5), or `None` when it
+    /// lies outside the scope. `P.` is stripped, except where the rest
+    /// itself starts with `P.` or is a bare dot segment (`.` or `..`):
+    /// that name is shown in full, so every displayed name maps back
+    /// through [`Scope::to_full`] to the stored name it came from.
+    pub fn display(&self, stored: &str) -> Option<String> {
+        let Some(prefix) = self.prefix.as_deref() else {
+            return Some(stored.to_string());
+        };
+        let lead = Scope::lead(prefix);
+        let rest = stored.strip_prefix(&lead)?;
+        if rest.is_empty() {
+            return None;
+        }
+        // A rest that starts with `P.` would gain the prefix twice, and
+        // a rest that is a bare dot segment is not a valid name on its
+        // own: both are shown in full so they still map back.
+        if rest.starts_with(&lead) || rest == "." || rest == ".." {
+            Some(stored.to_string())
+        } else {
+            Some(rest.to_string())
+        }
+    }
+}
+
+/// The pseudo-name a listing's errors carry: a listing has no single
+/// secret to name.
+const LIST_PSEUDO_NAME: &str = "names";
+
+/// The broker route a listing in `scope` asks for (#10358 D6). An
+/// unscoped listing never sends the parameter, so it works against old
+/// and new brokers alike.
+pub fn list_path(scope: &Scope) -> String {
+    match scope.prefix() {
+        None => "/secrets".to_string(),
+        Some(prefix) => format!("/secrets?prefix={}", query_encode(prefix)),
+    }
+}
+
+/// Percent-encode everything outside RFC 3986's unreserved set, so a
+/// prefix holding `&`, `=` or `+` stays one query value.
+fn query_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The names a broker listing answered. A scoped listing that the
+/// broker does not know (404) is unresolved and never retried
+/// unscoped (#10358 D6).
+fn names_from_listing(
+    status: u16,
+    body: &serde_json::Value,
+    scope: &Scope,
+) -> Result<Vec<String>, SecretError> {
+    let unavailable = |detail: String| SecretError::Unavailable {
+        source: "secrets-broker",
+        name: LIST_PSEUDO_NAME.to_string(),
+        detail,
+    };
+    match status {
+        200 => {
+            let names = body
+                .get("names")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| unavailable("200 response without a \"names\" array".to_string()))?;
+            names
+                .iter()
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        unavailable("\"names\" array holds a non-string entry".to_string())
+                    })
+                })
+                .collect()
+        }
+        404 if scope.prefix().is_some() => Err(unavailable(
+            "broker does not support scoped list".to_string(),
+        )),
+        status => Err(unavailable(format!(
+            "secrets-broker answered HTTP {status}"
+        ))),
+    }
+}
+
 /// One way to resolve a name. Sources are tried in chain order.
 pub trait SecretSource {
     /// Stable source name for error messages ("secrets-broker", "bws").
@@ -178,6 +366,23 @@ pub const BROKER_RETRY_MAX_DELAY: Duration = Duration::from_secs(15);
 /// one attempt could block forever and no retry or fallback
 /// would ever run.
 pub const BROKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Per-invocation ceiling on a single fallback-tier subprocess
+/// wait (`bws` / `op` through a [`CommandRunner`], and the
+/// `--version` probe in program resolution). The broker legs bound
+/// each exchange with [`BROKER_ATTEMPT_TIMEOUT`]; the fallback
+/// tiers spawn children, and `Command::output()` waits forever --
+/// a wedged `bws` or `op` child was the one remaining path by
+/// which a secrets client could still hang under the never-hang
+/// ruling (#14040 Residual B). Same discipline: one named
+/// per-attempt ceiling, in one obvious place.
+pub const SUBPROCESS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on the `--version` probe [`program_runs`] runs against
+/// a candidate program. A healthy candidate answers instantly, so
+/// the probe gets a shorter bound than a real invocation: a wedged
+/// candidate must fail the gate, not hang resolution.
+pub const PROGRAM_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How a broker source retries `Unavailable` outcomes before
 /// giving up to the chain. `NotFound` (a broker 404) and
@@ -249,6 +454,14 @@ fn resolve_with_retry(
         match attempt() {
             Ok(value) => return Ok(value),
             Err(err @ SecretError::Unavailable { .. }) => {
+                // A cold secrets broker reports this stable error
+                // while its first refresh is in flight. Waiting out
+                // the generic restart budget here wedges clients
+                // behind a healthy-but-not-yet-serving broker; allow
+                // the resolver chain to try its next source now.
+                if is_initial_refresh_unavailable(&err) {
+                    return Err(err);
+                }
                 let elapsed = started.elapsed();
                 if elapsed >= policy.budget {
                     return Err(err);
@@ -269,6 +482,11 @@ fn resolve_with_retry(
             Err(err) => return Err(err),
         }
     }
+}
+
+fn is_initial_refresh_unavailable(error: &SecretError) -> bool {
+    matches!(error, SecretError::Unavailable { source: "secrets-broker", detail, .. }
+        if detail.contains("secrets not loaded yet"))
 }
 
 /// The ordered chain: broker protocol first, `bws` fallback (§1).
@@ -307,7 +525,17 @@ impl Resolver {
                 .with_retry_policy(broker_retry),
         ));
         sources.push(Box::new(BwsSource::new()));
+        if let Some(op) = OpSource::from_environment() {
+            sources.push(Box::new(op));
+        }
         Resolver::new(sources)
+    }
+
+    /// Resolve a caller's name inside a scope: the name is mapped to
+    /// its full stored name once, before any source sees it, so every
+    /// source in the chain receives the same full name (D2, D12).
+    pub fn resolve_scoped(&self, scope: &Scope, name: &str) -> Result<SecretValue, SecretError> {
+        self.resolve(&scope.to_full(name)?)
     }
 
     pub fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
@@ -393,6 +621,8 @@ impl BrokerSource {
             trip: None,
             transport: None,
             cf_ok: None,
+            // #14188: the caller's FLEET_CTX_* record rides the frame.
+            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         let mut stream = self.connect(name)?;
         // Bound the exchange: a session broker (or the path behind
@@ -412,38 +642,16 @@ impl BrokerSource {
     /// Errors are [`SecretError::Unavailable`] under the pseudo-name
     /// `"names"` — a listing has no single secret to name.
     pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
-        let name = "names";
-        let response = self.request("/secrets", name)?;
-        match response.status {
-            200 => {
-                let names = response
-                    .body
-                    .get("names")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| SecretError::Unavailable {
-                        source: "secrets-broker",
-                        name: name.to_string(),
-                        detail: "200 response without a \"names\" array".to_string(),
-                    })?;
-                names
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| SecretError::Unavailable {
-                                source: "secrets-broker",
-                                name: name.to_string(),
-                                detail: "\"names\" array holds a non-string entry".to_string(),
-                            })
-                    })
-                    .collect()
-            }
-            status => Err(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
-            }),
-        }
+        self.list_names_in(&Scope::none())
+    }
+
+    /// The names listing for a scope (#10358 D6): a prefixed scope
+    /// asks the broker for `GET /secrets?prefix=P`; [`Scope::none`]
+    /// sends exactly today's `GET /secrets`. The names come back as
+    /// the broker stored them; the caller applies [`Scope::display`].
+    pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
+        let response = self.request(&list_path(scope), LIST_PSEUDO_NAME)?;
+        names_from_listing(response.status, &response.body, scope)
     }
 
     fn connect(&self, name: &str) -> Result<UnixStream, SecretError> {
@@ -466,6 +674,14 @@ impl SecretSource for BrokerSource {
 
     fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
         validate_name(name)?;
+        // No socket file at all means no session broker on this box (a
+        // fresh sandbox before init, or a host that never runs one), not
+        // a broker mid-restart: a restarting broker leaves its socket
+        // path behind (ECONNREFUSED, retried). Spending the retry budget
+        // here only delays the bws fallback by two minutes per secret.
+        if !self.broker_socket.exists() {
+            return self.resolve_once(name);
+        }
         resolve_with_retry(&self.retry_policy, || self.resolve_once(name))
     }
 }
@@ -607,8 +823,11 @@ impl DirectBrokerSource {
             let _ = stream.set_read_timeout(Some(self.retry_policy.attempt_timeout));
             let _ = stream.set_write_timeout(Some(self.retry_policy.attempt_timeout));
         }
+        // #14188: the caller's FLEET_CTX_* record as X-Fleet-Ctx-*
+        // headers (empty when there is no context).
+        let ctx_headers = fleet_config::ctx::Ctx::from_env().header_lines();
         let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\nConnection: close\r\n\r\n",
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
             token.trim()
         );
         stream
@@ -635,37 +854,14 @@ impl DirectBrokerSource {
     /// same `GET /secrets` route [`BrokerSource::list_names`]
     /// reads through the session broker. Names only.
     pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
-        let name = "names";
-        let (status, body) = self.get("/secrets", name)?;
-        match status {
-            200 => {
-                let names = body
-                    .get("names")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| SecretError::Unavailable {
-                        source: "secrets-broker",
-                        name: name.to_string(),
-                        detail: "200 response without a \"names\" array".to_string(),
-                    })?;
-                names
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| SecretError::Unavailable {
-                                source: "secrets-broker",
-                                name: name.to_string(),
-                                detail: "\"names\" array holds a non-string entry".to_string(),
-                            })
-                    })
-                    .collect()
-            }
-            status => Err(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
-            }),
-        }
+        self.list_names_in(&Scope::none())
+    }
+
+    /// The scoped names listing over the direct socket, as
+    /// [`BrokerSource::list_names_in`].
+    pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
+        let (status, body) = self.get(&list_path(scope), LIST_PSEUDO_NAME)?;
+        names_from_listing(status, &body, scope)
     }
 }
 
@@ -726,14 +922,104 @@ pub trait CommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String>;
 }
 
-pub struct ProcessRunner;
+/// Run `cmd` to completion collecting its output -- a bounded
+/// `Command::output()`. The unbounded call waits forever: a child
+/// that never exits (a `bws` wedged on a dead network, an `op`
+/// stuck on a prompt nobody can see) would block the fallback tier
+/// -- and with it the whole chain -- indefinitely. Here the child
+/// is polled and killed once `timeout` elapses, the same
+/// spawn/poll/kill shape the secrets broker's own `bws` runner
+/// uses (fleet-queue's `BwsRunner`). Stdout and stderr are drained
+/// on threads so a chatty child cannot fill a pipe and deadlock
+/// the wait. Error shapes match the runners' existing ones: spawn
+/// failures name the io error kind; a timeout names the bound.
+fn run_command_bounded(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+    let mut stdout_pipe = child.stdout.take();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let mut stderr_pipe = child.stderr.take();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait failed: {}", e.kind()));
+            }
+        }
+    };
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+pub struct ProcessRunner {
+    timeout: Duration,
+}
+
+impl ProcessRunner {
+    /// A runner with the standard per-invocation ceiling
+    /// ([`SUBPROCESS_ATTEMPT_TIMEOUT`]).
+    pub fn new() -> ProcessRunner {
+        ProcessRunner {
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// A runner with a caller-chosen ceiling -- the shape tests
+    /// use to prove a never-exiting child fails within the bound
+    /// without waiting out the production ceiling.
+    pub fn with_timeout(timeout: Duration) -> ProcessRunner {
+        ProcessRunner { timeout }
+    }
+}
+
+impl Default for ProcessRunner {
+    fn default() -> ProcessRunner {
+        ProcessRunner::new()
+    }
+}
 
 impl CommandRunner for ProcessRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
-        let out = Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
         if !out.status.success() {
             return Err(format!("exit status {}", out.status));
         }
@@ -809,9 +1095,41 @@ fn is_executable_file(p: &Path) -> bool {
     rc == 0
 }
 
-/// The pure core of [`resolve_bws_program`], split out for tests:
-/// a candidate wins only when it is an executable file, in
-/// override -> PATH -> well-known-locations order.
+/// X_OK is not sufficient: a Nix binary whose ELF interpreter is
+/// absent passes `access(2)` and then fails every exec with
+/// ENOENT -- the #12498 defect the shell tooling fixed by
+/// resolving through test execution. A candidate must also
+/// actually run: probe it with `--version` (the harmless
+/// invocation the shell resolver uses), stdio discarded; a spawn
+/// error or a non-zero exit means the candidate does not run on
+/// this host and must not shadow a working one later in the
+/// order.
+fn program_runs(p: &Path) -> bool {
+    program_runs_within(p, PROGRAM_PROBE_TIMEOUT)
+}
+
+/// [`program_runs`] with a caller-chosen bound, split out for
+/// tests: the probe is a subprocess wait like any other, and an
+/// unbounded one would hang program resolution itself on a wedged
+/// candidate (#14040 Residual B).
+fn program_runs_within(p: &Path, timeout: Duration) -> bool {
+    let mut cmd = std::process::Command::new(p);
+    cmd.arg("--version");
+    run_command_bounded(&mut cmd, timeout)
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// The full candidate gate for [`resolve_bws_program_from`]:
+/// an executable file that actually runs.
+fn is_runnable_program(p: &Path) -> bool {
+    is_executable_file(p) && program_runs(p)
+}
+
+/// The core of [`resolve_bws_program`], split out for tests:
+/// a candidate wins only when it is an executable file that
+/// actually runs, in override -> PATH -> well-known-locations
+/// order.
 fn resolve_bws_program_from(
     env_override: Option<&str>,
     path_var: Option<&std::ffi::OsStr>,
@@ -819,7 +1137,7 @@ fn resolve_bws_program_from(
 ) -> PathBuf {
     if let Some(p) = env_override {
         let p = p.trim();
-        if !p.is_empty() && is_executable_file(Path::new(p)) {
+        if !p.is_empty() && is_runnable_program(Path::new(p)) {
             // Canonicalize a relative override: the bare name would
             // make Command::new search PATH and could run a
             // different program than the one validated here
@@ -830,7 +1148,7 @@ fn resolve_bws_program_from(
     if let Some(path_var) = path_var {
         for dir in std::env::split_paths(path_var) {
             let cand = dir.join("bws");
-            if is_executable_file(&cand) {
+            if is_runnable_program(&cand) {
                 return cand;
             }
         }
@@ -840,7 +1158,7 @@ fn resolve_bws_program_from(
         home.join(".nix-profile/bin/bws"),
         PathBuf::from("/run/current-system/sw/bin/bws"),
     ] {
-        if is_executable_file(&cand) {
+        if is_runnable_program(&cand) {
             return cand;
         }
     }
@@ -859,17 +1177,30 @@ fn resolve_bws_program_from(
 /// value cannot masquerade as a credential either.
 pub struct BwsTokenRunner {
     token: Option<String>,
+    timeout: Duration,
 }
 
 impl BwsTokenRunner {
     pub fn from_environment() -> BwsTokenRunner {
         BwsTokenRunner {
             token: bws_access_token(),
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
         }
     }
 
     pub fn with_token(token: Option<String>) -> BwsTokenRunner {
-        BwsTokenRunner { token }
+        BwsTokenRunner {
+            token,
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// The same runner with a caller-chosen subprocess ceiling --
+    /// the shape tests use to prove a never-exiting child fails
+    /// within the bound without waiting out the production one.
+    pub fn with_timeout(mut self, timeout: Duration) -> BwsTokenRunner {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -895,9 +1226,7 @@ impl CommandRunner for BwsTokenRunner {
                 cmd.env_remove("BWS_ACCESS_TOKEN");
             }
         }
-        let out = cmd
-            .output()
-            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
         if !out.status.success() {
             return Err(format!("exit status {}", out.status));
         }
@@ -994,9 +1323,464 @@ impl SecretSource for BwsSource {
     }
 }
 
+/// Finds the id of the secret keyed `name` in a `bws secret list`
+/// reply, with [`BwsSource`]'s discipline: a listing that is not a
+/// JSON array is a source failure, and a malformed id on the matching
+/// entry is malformed, never absent. Entries for other names are not
+/// inspected.
+fn bws_listed_id(list_raw: &str, name: &str) -> Result<Option<String>, SecretError> {
+    let unavailable = |detail: &str| SecretError::Unavailable {
+        source: "bws",
+        name: name.to_string(),
+        detail: detail.to_string(),
+    };
+    let list: serde_json::Value = serde_json::from_str(list_raw)
+        .map_err(|_| unavailable("bws secret list: output is not JSON"))?;
+    let items = list
+        .as_array()
+        .ok_or_else(|| unavailable("bws secret list: output is not a JSON array"))?;
+    for item in items {
+        if item.get("key").and_then(|k| k.as_str()) == Some(name) {
+            let raw_id = item.get("id").and_then(|i| i.as_str()).ok_or_else(|| {
+                unavailable(
+                    "bws secret list: entry for the requested key has a missing or non-string id",
+                )
+            })?;
+            return Ok(Some(raw_id.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// Which project a secret write lands in: the environment value
+/// wins, the config value is the fallback, a blank value counts as
+/// absent (the #6405 misspelling class).
+fn bws_project_id_from(env_value: Option<&str>, config_value: Option<&str>) -> Option<String> {
+    let clean = |v: Option<&str>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    clean(env_value).or_else(|| clean(config_value))
+}
+
+/// The write counterpart of [`BwsSource`] (#14370): stores a value
+/// under a name in one Bitwarden Secrets Manager project, through the
+/// same `bws` CLI and runner. This is the vault write path
+/// `fleet bridge exchange` uses to put a freshly minted per-agent
+/// credential under its name (`bridge.<agent>-fleet-token`,
+/// `bridge.<agent>-token`).
+///
+/// bws has no stdin or file input for values, so the value passes
+/// through the `bws` child's argv — transiently, the exposure the
+/// house backup script already accepts (pkgs/agent-backup) — and
+/// nowhere else: never in this process's argv, a file, output or an
+/// error (runner errors carry exit status only, and the `--`
+/// separator before the positionals keeps bws's own parser from
+/// echoing the value on a usage error). Storing over an existing
+/// name replaces it (delete, then create), so re-enrolment rotates
+/// the credential. The store verifies its work by reading the name
+/// back and comparing in memory; a mismatch is a loud failure.
+pub struct BwsStore {
+    runner: Box<dyn CommandRunner>,
+    project_id: String,
+}
+
+impl BwsStore {
+    /// The environment variable that names the write project when the
+    /// config does not (the [`OpSource`] env-first pattern).
+    pub const PROJECT_ID_ENV: &'static str = "FLEET_BWS_PROJECT_ID";
+
+    pub fn new(project_id: String) -> BwsStore {
+        BwsStore {
+            runner: Box::new(BwsTokenRunner::from_environment()),
+            project_id,
+        }
+    }
+
+    pub fn with_runner(runner: Box<dyn CommandRunner>, project_id: String) -> BwsStore {
+        BwsStore { runner, project_id }
+    }
+
+    /// The store for a config: the project id from
+    /// $FLEET_BWS_PROJECT_ID, else `[secrets] bws_project_id`. None
+    /// when neither names one — reads are unaffected, only writes
+    /// are impossible.
+    pub fn from_config(config: &fleet_config::Config) -> Option<BwsStore> {
+        let project_id = bws_project_id_from(
+            std::env::var(Self::PROJECT_ID_ENV).ok().as_deref(),
+            config.secrets.bws_project_id.as_deref(),
+        )?;
+        Some(BwsStore::new(project_id))
+    }
+
+    /// Store `value` under `name`, replacing any existing secret of
+    /// that name in the project. Errors are value-free.
+    pub fn store(&self, name: &str, value: &str) -> Result<(), SecretError> {
+        validate_name(name)?;
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "bws",
+            name: name.to_string(),
+            detail,
+        };
+        if value.is_empty() {
+            return Err(unavailable("refusing to store an empty value".to_string()));
+        }
+        let list_raw = self
+            .runner
+            .run("bws", &["secret", "list", "-o", "json"])
+            .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
+        if let Some(old_id) = bws_listed_id(&list_raw, name)? {
+            self.runner
+                .run("bws", &["secret", "delete", &old_id, "-o", "json"])
+                .map_err(|d| unavailable(format!("bws secret delete: {d}")))?;
+        }
+        // Options first, then `--`, then the positionals: a value
+        // starting with '-' must never be parsed as a flag (bws's
+        // parser echoes the offending value in its error otherwise).
+        self.runner
+            .run(
+                "bws",
+                &[
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    &self.project_id,
+                ],
+            )
+            .map_err(|d| unavailable(format!("bws secret create: {d}")))?;
+        // Verify by reading the name back; the comparison happens in
+        // memory and the value is never printed either way.
+        let list_raw = self
+            .runner
+            .run("bws", &["secret", "list", "-o", "json"])
+            .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
+        let id = bws_listed_id(&list_raw, name)?.ok_or_else(|| {
+            unavailable(
+                "bws secret create: the name is absent from the listing afterwards".to_string(),
+            )
+        })?;
+        let got_raw = self
+            .runner
+            .run("bws", &["secret", "get", &id, "-o", "json"])
+            .map_err(|d| unavailable(format!("bws secret get: {d}")))?;
+        let got: serde_json::Value = serde_json::from_str(&got_raw)
+            .map_err(|_| unavailable("bws secret get: output is not JSON".to_string()))?;
+        let stored = got
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| unavailable("bws secret get: no string \"value\" field".to_string()))?;
+        if stored != value {
+            return Err(unavailable(
+                "bws secret create: the value read back does not match what was stored".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Source 3, opt-in: the 1Password CLI. One read per name:
+/// `op read --no-newline op://<vault>/<name>/<field>`, so the item
+/// title in the vault is the fleet secret name. It joins the default
+/// chain only where a vault is named, so a seat without 1Password
+/// keeps the historical chain exactly.
+///
+/// Every `op` failure is `Unavailable`, never `NotFound`: the CLI
+/// exits non-zero the same way for a missing item, a locked vault
+/// and a signed-out session, and this crate does not read a child's
+/// stderr (it could quote vault material) — so absence cannot be
+/// told apart from a broken read here.
+pub struct OpSource {
+    vault: String,
+    field: String,
+    runner: Box<dyn CommandRunner>,
+}
+
+impl OpSource {
+    /// Names the vault; setting it is what turns the source on.
+    pub const VAULT_ENV: &'static str = "FLEET_OP_VAULT";
+    /// Names the item field that holds the value.
+    pub const FIELD_ENV: &'static str = "FLEET_OP_FIELD";
+    /// 1Password's own default field for an API-credential item.
+    pub const DEFAULT_FIELD: &'static str = "credential";
+
+    /// The source for a vault and an optional field, or None where
+    /// no usable vault is named. A vault or field that could not be
+    /// one path segment of a secret reference turns the source off
+    /// rather than reading from somewhere unintended.
+    pub fn from_values(
+        vault: Option<&str>,
+        field: Option<&str>,
+        runner: Box<dyn CommandRunner>,
+    ) -> Option<OpSource> {
+        let vault = vault.map(str::trim).filter(|v| Self::is_segment(v))?;
+        let field = match field.map(str::trim).filter(|f| !f.is_empty()) {
+            Some(f) if Self::is_segment(f) => f,
+            Some(_) => return None,
+            None => Self::DEFAULT_FIELD,
+        };
+        Some(OpSource {
+            vault: vault.to_string(),
+            field: field.to_string(),
+            runner,
+        })
+    }
+
+    pub fn from_environment() -> Option<OpSource> {
+        let vault = std::env::var(Self::VAULT_ENV).ok();
+        let field = std::env::var(Self::FIELD_ENV).ok();
+        Self::from_values(
+            vault.as_deref(),
+            field.as_deref(),
+            Box::new(ProcessRunner::new()),
+        )
+    }
+
+    fn is_segment(s: &str) -> bool {
+        !s.is_empty()
+            && !s
+                .chars()
+                .any(|c| c == '/' || c == '?' || c == '#' || c.is_control())
+    }
+
+    /// The secret reference `op read` is given for a name.
+    pub fn reference(&self, name: &str) -> String {
+        format!("op://{}/{}/{}", self.vault, name, self.field)
+    }
+}
+
+impl SecretSource for OpSource {
+    fn source_name(&self) -> &'static str {
+        "op"
+    }
+
+    fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+        validate_name(name)?;
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op",
+            name: name.to_string(),
+            detail,
+        };
+        let reference = self.reference(name);
+        let value = self
+            .runner
+            .run("op", &["read", "--no-newline", &reference])
+            .map_err(|d| unavailable(format!("op read: {d}")))?;
+        if value.is_empty() {
+            return Err(unavailable("op read: empty value".to_string()));
+        }
+        Ok(SecretValue(value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Scope (#10358 S1, design record §6) ----
+
+    /// The record's nine-row matrix: (caller name, prefix, stored name
+    /// or None when refused).
+    const SCOPE_MATRIX: [(&str, Option<&str>, Option<&str>); 9] = [
+        ("alpha", None, Some("alpha")),
+        ("42.alpha", None, Some("42.alpha")),
+        ("alpha", Some("42"), Some("42.alpha")),
+        ("42.alpha", Some("42"), Some("42.alpha")),
+        ("42.x", Some("42"), Some("42.x")),
+        ("42.42.x", Some("42"), Some("42.42.x")),
+        ("42", Some("42"), Some("42.42")),
+        ("42.", Some("42"), None),
+        ("420.x", Some("42"), Some("42.420.x")),
+    ];
+
+    fn scope_for(prefix: Option<&str>) -> Scope {
+        match prefix {
+            Some(p) => Scope::prefixed(p).unwrap(),
+            None => Scope::none(),
+        }
+    }
+
+    #[test]
+    fn scope_maps_the_nine_row_matrix() {
+        for (row, (name, prefix, stored)) in SCOPE_MATRIX.iter().enumerate() {
+            let got = scope_for(*prefix).to_full(name);
+            match stored {
+                Some(want) => assert_eq!(
+                    got.as_deref().ok(),
+                    Some(*want),
+                    "row {}: {name:?} under {prefix:?}",
+                    row + 1
+                ),
+                None => assert!(
+                    matches!(got, Err(SecretError::InvalidName(_))),
+                    "row {}: {name:?} under {prefix:?} must be refused, got {got:?}",
+                    row + 1
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn scope_none_is_identity_on_every_matrix_row() {
+        let none = Scope::none();
+        assert_eq!(none.prefix(), None);
+        for (name, _, _) in SCOPE_MATRIX {
+            assert_eq!(none.to_full(name).unwrap(), name);
+            assert_eq!(none.display(name).as_deref(), Some(name));
+        }
+        assert_eq!(Scope::default(), Scope::none());
+    }
+
+    #[test]
+    fn scope_refuses_names_validate_name_refuses() {
+        let scope = Scope::prefixed("42").unwrap();
+        for bad in ["", ".", "..", "a/b", "a b", "a%2f", "a?b", "a#b", "a\nb"] {
+            assert!(
+                matches!(scope.to_full(bad), Err(SecretError::InvalidName(_))),
+                "{bad:?} must stay refused under a prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_prefix_must_be_a_name_without_a_trailing_separator() {
+        for bad in ["", ".", "..", "42.", "a/b", "a b"] {
+            assert!(Scope::prefixed(bad).is_err(), "prefix {bad:?}");
+        }
+        let dotted = Scope::prefixed("team.42").unwrap();
+        assert_eq!(dotted.to_full("x").unwrap(), "team.42.x");
+        assert_eq!(dotted.to_full("team.42.x").unwrap(), "team.42.x");
+        assert_eq!(dotted.to_full("team.x").unwrap(), "team.42.team.x");
+    }
+
+    #[test]
+    fn scope_sources_prefer_env_and_treat_empty_as_unset() {
+        let scope = |e, c| Scope::from_sources(e, c).unwrap();
+        assert_eq!(scope(None, None), Scope::none());
+        assert_eq!(scope(Some(""), Some("")), Scope::none());
+        assert_eq!(scope(Some("  "), None), Scope::none());
+        assert_eq!(scope(Some("env"), Some("cfg")).prefix(), Some("env"));
+        assert_eq!(scope(Some(""), Some("cfg")).prefix(), Some("cfg"));
+        assert_eq!(scope(None, Some("cfg")).prefix(), Some("cfg"));
+        assert!(Scope::from_sources(Some("42."), None).is_err());
+    }
+
+    #[test]
+    fn scope_display_filters_and_strips_for_list() {
+        let scope = Scope::prefixed("42").unwrap();
+        let stored = ["alpha", "42.alpha", "42.42.x", "420.y", "43.z", "42."];
+        let shown: Vec<String> = stored.iter().filter_map(|s| scope.display(s)).collect();
+        assert_eq!(shown, ["alpha", "42.42.x"]);
+    }
+
+    #[test]
+    fn a_dot_segment_rest_is_shown_in_full() {
+        // `42..` and `42...` are valid stored names, but `.` and `..`
+        // are not valid names on their own, so stripping `42.` would
+        // show a name that cannot be typed back.
+        let scope = Scope::prefixed("42").unwrap();
+        for stored in ["42..", "42..."] {
+            let shown = scope.display(stored).unwrap();
+            assert_eq!(shown, stored);
+            assert_eq!(scope.to_full(&shown).unwrap(), stored);
+        }
+        assert_eq!(scope.display("42....").as_deref(), Some("..."));
+    }
+
+    #[test]
+    fn scope_display_round_trips_through_to_full() {
+        // Property over a deterministic spread of stored names under
+        // the prefix: every displayed name maps back to its stored name.
+        let parts = [
+            "a", "42", "4", "420", "x.y", "42.", ".", "-", "42.42", "b.42",
+        ];
+        for prefix in ["42", "team.42", "x"] {
+            let scope = Scope::prefixed(prefix).unwrap();
+            for first in parts {
+                for second in parts {
+                    let stored = format!("{prefix}.{first}{second}");
+                    if validate_name(&stored).is_err() {
+                        continue;
+                    }
+                    let shown = scope
+                        .display(&stored)
+                        .unwrap_or_else(|| panic!("{stored:?} lies under {prefix:?}"));
+                    assert_eq!(
+                        scope.to_full(&shown).unwrap(),
+                        stored,
+                        "{stored:?} shown as {shown:?} under {prefix:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn list_path_sends_a_query_only_when_scoped() {
+        assert_eq!(list_path(&Scope::none()), "/secrets");
+        assert_eq!(
+            list_path(&Scope::prefixed("42").unwrap()),
+            "/secrets?prefix=42"
+        );
+        assert_eq!(
+            list_path(&Scope::prefixed("team.4&2=+").unwrap()),
+            "/secrets?prefix=team.4%262%3D%2B"
+        );
+    }
+
+    #[test]
+    fn a_scoped_listing_the_broker_does_not_know_is_unresolved() {
+        let scoped = Scope::prefixed("42").unwrap();
+        let err = names_from_listing(404, &serde_json::Value::Null, &scoped).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("broker does not support scoped list"),
+            "{err}"
+        );
+        // Unscoped, a 404 keeps the generic status detail.
+        let err = names_from_listing(404, &serde_json::Value::Null, &Scope::none()).unwrap_err();
+        assert!(err.to_string().contains("HTTP 404"), "{err}");
+        let names =
+            names_from_listing(200, &serde_json::json!({"names": ["42.a"]}), &scoped).unwrap();
+        assert_eq!(names, ["42.a"]);
+    }
+
+    /// A chain source that records the name it was asked for.
+    struct RecordingSource(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl SecretSource for RecordingSource {
+        fn source_name(&self) -> &'static str {
+            "recording"
+        }
+        fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+            self.0.lock().unwrap().push(name.to_string());
+            Ok(SecretValue("fixture-value-not-a-secret".to_string()))
+        }
+    }
+
+    #[test]
+    fn resolve_scoped_sends_the_full_name_to_the_chain() {
+        for (row, (name, prefix, stored)) in SCOPE_MATRIX.iter().enumerate() {
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let resolver = Resolver::new(vec![Box::new(RecordingSource(asked.clone()))]);
+            let got = resolver.resolve_scoped(&scope_for(*prefix), name);
+            let asked = asked.lock().unwrap().clone();
+            match stored {
+                Some(want) => {
+                    assert!(got.is_ok(), "row {}", row + 1);
+                    assert_eq!(asked, [*want], "row {}", row + 1);
+                }
+                None => {
+                    assert!(
+                        matches!(got, Err(SecretError::InvalidName(_))),
+                        "row {}",
+                        row + 1
+                    );
+                    assert!(asked.is_empty(), "row {}: no source may be asked", row + 1);
+                }
+            }
+        }
+    }
 
     struct FakeSource {
         name: &'static str,
@@ -1104,7 +1888,7 @@ mod tests {
             assert!(validate_name(bad).is_err(), "name {bad:?} must be rejected");
         }
         for good in [
-            "supabase.service-role-key",
+            "turso.fleet-queue-rw-token",
             "openclaw.gateway-token",
             "a.b-c_d",
         ] {
@@ -1157,6 +1941,202 @@ mod tests {
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
+    }
+
+    /// An in-memory `bws` for the store tests: entries keyed by id,
+    /// every call recorded so the argv shape itself is assertable.
+    struct FakeBws {
+        entries: std::cell::RefCell<Vec<(String, String, String)>>, // (id, key, value)
+        calls: std::cell::RefCell<Vec<Vec<String>>>,
+        fail_create: bool,
+    }
+
+    impl FakeBws {
+        fn new(entries: Vec<(&str, &str, &str)>) -> FakeBws {
+            FakeBws {
+                entries: std::cell::RefCell::new(
+                    entries
+                        .into_iter()
+                        .map(|(i, k, v)| (i.to_string(), k.to_string(), v.to_string()))
+                        .collect(),
+                ),
+                calls: std::cell::RefCell::new(Vec::new()),
+                fail_create: false,
+            }
+        }
+        fn value_of(&self, key: &str) -> Option<String> {
+            self.entries
+                .borrow()
+                .iter()
+                .find(|(_, k, _)| k == key)
+                .map(|(_, _, v)| v.clone())
+        }
+    }
+
+    impl CommandRunner for FakeBws {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            assert_eq!(program, "bws");
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|a| a.to_string()).collect());
+            match args {
+                ["secret", "list", "-o", "json"] => {
+                    let items: Vec<serde_json::Value> = self
+                        .entries
+                        .borrow()
+                        .iter()
+                        .map(|(id, key, _)| serde_json::json!({"id": id, "key": key}))
+                        .collect();
+                    Ok(serde_json::Value::Array(items).to_string())
+                }
+                ["secret", "get", id, "-o", "json"] => {
+                    let entries = self.entries.borrow();
+                    let (id, key, value) = entries
+                        .iter()
+                        .find(|(i, _, _)| i == id)
+                        .ok_or("exit status 1")?;
+                    Ok(serde_json::json!({"id": id, "key": key, "value": value}).to_string())
+                }
+                ["secret", "delete", id, "-o", "json"] => {
+                    self.entries.borrow_mut().retain(|(i, _, _)| i != id);
+                    Ok("{}".to_string())
+                }
+                [
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    _project,
+                ] => {
+                    if self.fail_create {
+                        return Err("exit status 1".to_string());
+                    }
+                    let id = format!("id-{}", self.entries.borrow().len() + 1);
+                    self.entries.borrow_mut().push((
+                        id.clone(),
+                        name.to_string(),
+                        value.to_string(),
+                    ));
+                    Ok(serde_json::json!({"id": id}).to_string())
+                }
+                other => Err(format!("unexpected args: {other:?}")),
+            }
+        }
+    }
+
+    #[test]
+    fn bws_store_creates_with_the_house_argv_shape_and_verifies() {
+        // Drive it through a shared fake so the calls stay observable.
+        let fake = std::rc::Rc::new(FakeBws::new(vec![]));
+        struct Shared(std::rc::Rc<FakeBws>);
+        impl CommandRunner for Shared {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.0.run(program, args)
+            }
+        }
+        let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
+        store
+            .store("bridge.new-1-token", "fixture-value-not-a-secret")
+            .unwrap();
+        assert_eq!(
+            fake.value_of("bridge.new-1-token").as_deref(),
+            Some("fixture-value-not-a-secret")
+        );
+        let calls = fake.calls.borrow();
+        let create = calls
+            .iter()
+            .find(|c| c[1] == "create")
+            .expect("a create call happened");
+        assert_eq!(
+            create,
+            &vec![
+                "secret".to_string(),
+                "create".to_string(),
+                "-o".to_string(),
+                "json".to_string(),
+                "--".to_string(),
+                "bridge.new-1-token".to_string(),
+                "fixture-value-not-a-secret".to_string(),
+                "proj-1".to_string(),
+            ],
+            "options first, -- before the positionals, project last"
+        );
+    }
+
+    #[test]
+    fn bws_store_replaces_an_existing_name() {
+        let fake = std::rc::Rc::new(FakeBws::new(vec![(
+            "id-old",
+            "bridge.new-1-token",
+            "old-value",
+        )]));
+        struct Shared(std::rc::Rc<FakeBws>);
+        impl CommandRunner for Shared {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.0.run(program, args)
+            }
+        }
+        let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
+        store.store("bridge.new-1-token", "new-value").unwrap();
+        assert_eq!(
+            fake.value_of("bridge.new-1-token").as_deref(),
+            Some("new-value")
+        );
+        let calls = fake.calls.borrow();
+        let verbs: Vec<&str> = calls.iter().map(|c| c[1].as_str()).collect();
+        let delete_at = verbs
+            .iter()
+            .position(|v| *v == "delete")
+            .expect("old entry deleted");
+        let create_at = verbs
+            .iter()
+            .position(|v| *v == "create")
+            .expect("new entry created");
+        assert!(
+            delete_at < create_at,
+            "rotation deletes before it creates: {verbs:?}"
+        );
+        assert_eq!(calls[delete_at][2], "id-old");
+    }
+
+    #[test]
+    fn bws_store_errors_never_carry_the_value() {
+        let mut fake = FakeBws::new(vec![]);
+        fake.fail_create = true;
+        let store = BwsStore::with_runner(Box::new(fake), "proj-1".to_string());
+        let err = store
+            .store("bridge.new-1-token", "fixture-value-not-a-secret")
+            .unwrap_err();
+        let text = format!("{err}");
+        assert!(
+            text.contains("bridge.new-1-token"),
+            "error names the secret: {text}"
+        );
+        assert!(
+            !text.contains("fixture-value-not-a-secret"),
+            "error must not carry the value: {text}"
+        );
+        // An empty value and a bad name are refused before any bws call.
+        let store = BwsStore::with_runner(Box::new(FakeBws::new(vec![])), "proj-1".to_string());
+        assert!(store.store("bridge.new-1-token", "").is_err());
+        assert!(store.store("bad/name", "x").is_err());
+    }
+
+    #[test]
+    fn bws_project_id_prefers_env_then_config() {
+        assert_eq!(
+            bws_project_id_from(Some(" env-proj "), Some("cfg-proj")).as_deref(),
+            Some("env-proj")
+        );
+        assert_eq!(
+            bws_project_id_from(Some("  "), Some("cfg-proj")).as_deref(),
+            Some("cfg-proj")
+        );
+        assert_eq!(bws_project_id_from(None, None), None);
+        assert_eq!(bws_project_id_from(Some(""), Some("")), None);
     }
 
     fn bws_resolve_with_list(list: &str) -> Result<SecretValue, SecretError> {
@@ -1303,6 +2283,46 @@ mod tests {
     }
 
     #[test]
+    fn broker_scoped_list_sends_the_prefix_and_never_retries_unscoped() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-secrets-scoped-list-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("broker.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            // Two exchanges: a broker that answers the scoped form,
+            // then an older broker that does not know it (404).
+            for status in [200u16, 404] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
+                assert_eq!(req.path, "/secrets?prefix=42");
+                let resp = Response {
+                    status,
+                    body: serde_json::json!({"names": ["42.a"]}),
+                    transport: None,
+                };
+                fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
+            }
+        });
+        let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"));
+        let scope = Scope::prefixed("42").unwrap();
+        assert_eq!(source.list_names_in(&scope).unwrap(), ["42.a"]);
+        let err = source.list_names_in(&scope).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("broker does not support scoped list"),
+            "{err}"
+        );
+        // Exactly two requests reached the broker: no unscoped retry.
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn broker_list_names_roundtrip_over_a_temp_socket() {
         use std::os::unix::net::UnixListener;
 
@@ -1426,6 +2446,7 @@ mod tests {
             trip: None,
             transport: None,
             cf_ok: None,
+            ctx: None,
         };
         let resp = source
             .exchange(&mut client, &request, "wanted.name")
@@ -1493,12 +2514,65 @@ mod tests {
         let empty_home = dir.join("empty-home");
         std::fs::create_dir_all(&empty_home).unwrap();
         let sys = Path::new("/run/current-system/sw/bin/bws");
-        let expected = if is_executable_file(sys) {
+        let expected = if is_runnable_program(sys) {
             sys.to_path_buf()
         } else {
             PathBuf::from("bws")
         };
         assert_eq!(resolve_bws_program_from(None, None, &empty_home), expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bws_program_resolution_skips_candidates_that_do_not_run() {
+        // oracle (#12498): a candidate that passes access(X_OK)
+        // but cannot actually run -- a script naming a missing
+        // interpreter stands in for a Nix binary whose ELF
+        // interpreter is absent -- is skipped, not trusted, and
+        // does not shadow a working candidate later in the order.
+        // Same for a candidate that runs but exits non-zero.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("bws-resolve-broken");
+        let path_dir = dir.join("pathbin");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        std::fs::create_dir_all(home.join("tools/bin")).unwrap();
+        let mk = |p: &Path, body: &str| {
+            std::fs::write(p, body).unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let broken = dir.join("broken-bws");
+        mk(&broken, "#!/nonexistent/fleet-test-interp\n");
+        let nonzero = dir.join("nonzero-bws");
+        mk(&nonzero, "#!/bin/sh\nexit 3\n");
+        let working = path_dir.join("bws");
+        mk(&working, "#!/bin/sh\n");
+        let path_var = std::env::join_paths([&path_dir]).unwrap();
+        // Both unrunnable overrides are skipped for the working
+        // PATH candidate.
+        assert_eq!(
+            resolve_bws_program_from(Some(broken.to_str().unwrap()), Some(&path_var), &home),
+            working
+        );
+        assert_eq!(
+            resolve_bws_program_from(Some(nonzero.to_str().unwrap()), Some(&path_var), &home),
+            working
+        );
+        // An unrunnable PATH candidate is skipped for the working
+        // well-known home location.
+        let home_bws = home.join("tools/bin/bws");
+        mk(&home_bws, "#!/bin/sh\n");
+        let broken_path_dir = dir.join("broken-pathbin");
+        std::fs::create_dir_all(&broken_path_dir).unwrap();
+        mk(
+            &broken_path_dir.join("bws"),
+            "#!/nonexistent/fleet-test-interp\n",
+        );
+        let broken_path_var = std::env::join_paths([&broken_path_dir]).unwrap();
+        assert_eq!(
+            resolve_bws_program_from(None, Some(&broken_path_var), &home),
+            home_bws
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1558,6 +2632,28 @@ mod tests {
         });
         assert_eq!(out.unwrap().expose(), "fixture-value-not-a-secret");
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn cold_refresh_unavailable_fails_over_without_spending_restart_budget() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        let out = resolve_with_retry(&test_retry_policy(), || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: "x".to_string(),
+                detail: "secrets-broker answered HTTP 503: secrets not loaded yet".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::Unavailable { .. })));
+        assert_eq!(
+            calls.get(),
+            1,
+            "cold-refresh response should fall through immediately"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
@@ -1629,6 +2725,28 @@ mod tests {
         let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"))
             .with_retry_policy(test_retry_policy());
         (source, handle, dir)
+    }
+
+    #[test]
+    fn broker_cold_refresh_response_returns_within_client_bound() {
+        // Oracle (#13893 / #13948 S1): a broker that explicitly says
+        // its first refresh has not loaded must not consume the long
+        // restart retry budget before the resolver tries its next
+        // source. The response body is the production 503 shape.
+        let (source, handle, dir) = scripted_broker_replies(vec![(
+            503,
+            serde_json::json!({"error": "secrets not loaded yet"}),
+        )]);
+        let started = Instant::now();
+        let result = source.resolve("wanted.name");
+        assert!(matches!(result, Err(SecretError::Unavailable { .. })));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            handle.join().unwrap(),
+            1,
+            "one prompt request reaches the broker"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1737,6 +2855,32 @@ mod tests {
     }
 
     #[test]
+    fn missing_broker_socket_falls_through_to_bws_without_spending_the_budget() {
+        // Default policy (2-minute budget): a box with no session broker
+        // must reach bws at once, not after the budget.
+        let broker = BrokerSource::new(
+            PathBuf::from("/nonexistent/broker.sock"),
+            PathBuf::from("/nonexistent/token"),
+        );
+        let resolver = Resolver::new(vec![
+            Box::new(broker),
+            Box::new(BwsSource::with_runner(Box::new(FakeRunner {
+                list: r#"[{"id":"id-1","key":"wanted.name"}]"#.to_string(),
+                get: r#"{"id":"id-1","key":"wanted.name","value":"fixture-value-not-a-secret"}"#
+                    .to_string(),
+            }))),
+        ]);
+        let started = Instant::now();
+        let v = resolver.resolve("wanted.name").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
     fn direct_broker_source_retries_a_503_then_resolves() {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixListener;
@@ -1836,5 +2980,189 @@ mod tests {
             "set"
         );
         assert_eq!(probe(&BwsTokenRunner::with_token(None)), "unset");
+    }
+
+    // ---- bounded subprocess waits (#14040 Residual B) ----
+    //
+    // Oracle: the never-hang ruling -- a fallback-tier child that
+    // never exits must fail its tier within the named bound
+    // instead of blocking the caller forever. Each test drives a
+    // real `sh -c "sleep 60"` child through the production code
+    // path with a short caller-chosen ceiling and asserts both the
+    // timeout error and that the elapsed time stays bounded.
+
+    #[test]
+    fn bounded_run_kills_a_never_exiting_child_within_the_bound() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 60"]);
+        let started = Instant::now();
+        let err = run_command_bounded(&mut cmd, Duration::from_millis(200))
+            .expect_err("a never-exiting child must fail, not hang");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the bound must actually bound: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn bounded_run_returns_output_and_status_for_a_quick_child() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo hello; exit 3"]);
+        let out = run_command_bounded(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn process_runner_times_out_a_hanging_child() {
+        let runner = ProcessRunner::with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn bws_token_runner_times_out_a_hanging_child() {
+        let runner = BwsTokenRunner::with_token(None).with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn program_probe_times_out_a_hanging_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("probe-hang");
+        let script = dir.join("bws");
+        std::fs::write(&script, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        assert!(!program_runs_within(&script, Duration::from_millis(200)));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- op (1Password) source ----
+    //
+    // Oracle: the 1Password secret-reference shape
+    // `op://<vault>/<item>/<field>` and this crate's own rules
+    // (an empty value and a failed child are source failures).
+
+    struct OpRunner {
+        answer: Result<String, String>,
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl CommandRunner for OpRunner {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            assert_eq!(program, "op");
+            self.seen
+                .borrow_mut()
+                .push(args.iter().map(|a| a.to_string()).collect());
+            self.answer.clone()
+        }
+    }
+
+    fn op_source(
+        vault: Option<&str>,
+        field: Option<&str>,
+        answer: Result<String, String>,
+    ) -> (
+        Option<OpSource>,
+        std::rc::Rc<std::cell::RefCell<Vec<Vec<String>>>>,
+    ) {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let runner = OpRunner {
+            answer,
+            seen: seen.clone(),
+        };
+        (OpSource::from_values(vault, field, Box::new(runner)), seen)
+    }
+
+    #[test]
+    fn op_reads_one_reference_built_from_vault_name_and_field() {
+        let (source, seen) = op_source(
+            Some("fleet"),
+            None,
+            Ok("fixture-value-not-a-secret".to_string()),
+        );
+        let source = source.expect("a named vault turns the source on");
+        let v = source.resolve("message-bridge.fleet-token").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            [vec![
+                "read".to_string(),
+                "--no-newline".to_string(),
+                "op://fleet/message-bridge.fleet-token/credential".to_string(),
+            ]]
+        );
+        // A named field replaces the default one.
+        let (source, _) = op_source(Some("fleet"), Some("password"), Ok("x".to_string()));
+        assert_eq!(source.unwrap().reference("a.b"), "op://fleet/a.b/password");
+    }
+
+    #[test]
+    fn op_is_off_unless_a_usable_vault_is_named() {
+        for vault in [None, Some(""), Some("   "), Some("a/b"), Some("a?b")] {
+            let (source, _) = op_source(vault, None, Ok("x".to_string()));
+            assert!(source.is_none(), "vault {vault:?} must leave op off");
+        }
+        // A field that is not one path segment turns it off too,
+        // rather than reading some other field.
+        let (source, _) = op_source(Some("fleet"), Some("a/b"), Ok("x".to_string()));
+        assert!(source.is_none());
+        // Positive control: surrounding whitespace is not a reason.
+        let (source, _) = op_source(Some(" fleet "), Some(" "), Ok("x".to_string()));
+        assert_eq!(source.unwrap().reference("n"), "op://fleet/n/credential");
+    }
+
+    #[test]
+    fn op_failures_and_empty_values_are_unavailable_and_carry_no_value() {
+        let (source, _) = op_source(Some("fleet"), None, Err("exit status 1".to_string()));
+        match source.unwrap().resolve("wanted.name") {
+            Err(SecretError::Unavailable { source, detail, .. }) => {
+                assert_eq!(source, "op");
+                assert_eq!(detail, "op read: exit status 1");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        let (source, _) = op_source(Some("fleet"), None, Ok(String::new()));
+        match source.unwrap().resolve("wanted.name") {
+            Err(SecretError::Unavailable { source, .. }) => assert_eq!(source, "op"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        // A name that is not a valid secret name never reaches op.
+        let (source, seen) = op_source(Some("fleet"), None, Ok("x".to_string()));
+        assert!(matches!(
+            source.unwrap().resolve("bad/name"),
+            Err(SecretError::InvalidName(_))
+        ));
+        assert!(seen.borrow().is_empty());
+    }
+
+    #[test]
+    fn op_answers_when_the_sources_before_it_cannot() {
+        let (op, _) = op_source(Some("fleet"), None, Ok("from-op".to_string()));
+        let resolver = Resolver::new(vec![
+            Box::new(FakeSource {
+                name: "bws",
+                result: Err(SecretError::Unavailable {
+                    source: "bws",
+                    name: "wanted.name".to_string(),
+                    detail: "bws secret list: spawn failed: NotFound".to_string(),
+                }),
+            }),
+            Box::new(op.unwrap()),
+        ]);
+        assert_eq!(resolver.resolve("wanted.name").unwrap().expose(), "from-op");
     }
 }

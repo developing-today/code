@@ -71,12 +71,25 @@
     5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092, 6093, 6099, 5582, 5937, 5945, 5951, 6034,
     6081, 6090, 6094, 6095, 6178, 6179
   ],
-  "uncovered_count": 41,
+  "uncovered_count": 42,
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
+      "id": "id.rust.id-pg.integration",
+      "paths": ["pkgs/id/crates/id-pg/tests/*.rs"],
+      "invocation": "nix develop ./pkgs/id --command bash pkgs/id/scripts/test-postgrest-contract.sh",
+      "venue": {
+        "workflow": ".github/workflows/id-pg-postgrest-contract.yml",
+        "job_step": "postgrest-contract / Run injectable and real PostgREST container contracts",
+        "state": "not yet audited",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The script runs the offline integration tests and the ignored real-PostgREST contract target separately. Configuration is not evidence of a successful CI run."
+    },
+    {
       "id": "id.rust.unit",
-      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
+      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**", "pkgs/id/crates/id-store/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -110,6 +123,25 @@
         "dispatchable": true
       },
       "status": "mapped"
+    },
+    {
+      "id": "id.rust.substrate-path",
+      "paths": [
+        "pkgs/id/crates/id-core/tests/substrate_path.rs",
+        "pkgs/id/crates/id-sync/tests/substrate_sync_path.rs",
+        "pkgs/id/crates/id-sync/tests/substrate_transport_path.rs",
+        "pkgs/id/crates/id-cli/tests/walk_cli_path.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12232, 9106],
+      "notes": "The #9106 walking skeleton (#12232), steps 1 and 2: a signed record read back from its id:// address, then written on one in-process node, synced to a second, and a conflicting write reported on both. Step 3 (substrate_transport_path) runs the same path between two OS processes over the iroh transport (/id-fed-exchange/1); it needs UDP loopback, so it runs where UDP is available (the laptop, CI) and not in the Muse sandbox. Step B3 (walk_cli_path) drives the same five steps through the id walk CLI surface against on-disk nodes, restarting the holding node between stages. The only substrate suites that import from id_core and id_sync instead of including modules by path, so they also fail to compile when a substrate module stops being part of its crate. Direct run: cargo test --manifest-path pkgs/id/Cargo.toml -p id-core --test substrate_path && cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test substrate_sync_path && cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test substrate_transport_path && cargo test --manifest-path pkgs/id/Cargo.toml -p id-cli --test walk_cli_path."
     },
     {
       "id": "id.rust.planted-bug-check",
@@ -158,6 +190,7 @@
         "pkgs/id/examples/roc-chat/**",
         "pkgs/id/examples/roc-counter/**",
         "pkgs/id/examples/roc-grid/**",
+        "pkgs/id/examples/roc-mind-map/**",
         "pkgs/id/examples/roc-screen/**",
         "pkgs/id/examples/roc-text-counter/**",
         "pkgs/id/examples/territory/**",
@@ -200,6 +233,20 @@
       "status": "mapped",
       "related_issues": [7904],
       "notes": "Standalone crate (path dependency on plaza-sdk); its checked-in counter.wasm is loaded by the sandbox conformance tests (src/sandbox.rs), and the rust-counter-wasm check rebuilds the module from source (roc-examples pattern) and runs those tests against the rebuild -- wasm bytes are not reproducible across rustc builds, so no byte gate."
+    },
+    {
+      "id": "id.examples.rust-colony",
+      "paths": ["pkgs/id/examples/rust-colony/src/**"],
+      "invocation": "cargo test --manifest-path examples/rust-colony/Cargo.toml (test-rust-examples flake check)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-rust-examples",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13605],
+      "notes": "Standalone crate, no path dependencies; pure domain twin of the Roc colony guest (#13605), oracle-checked against colony/two-deliveries. No wasm build yet."
     },
     {
       "id": "id.web.playwright",
@@ -249,13 +296,38 @@
       "id": "id.hosted-worker.routing",
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
+        "pkgs/id/hosted-worker/test/persistent-account-directory.test.ts",
+        "pkgs/id/hosted-worker/test/hosted-directory-allowlist.test.ts",
+        "pkgs/id/hosted-worker/test/admission-gate.test.ts",
+        "pkgs/id/hosted-worker/test/provisioning.test.ts",
+        "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
+        "pkgs/id/hosted-worker/test/enablement.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/request-cap.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
-        "pkgs/id/hosted-worker/test/front-door.test.ts"
+        "pkgs/id/hosted-worker/test/front-door.test.ts",
+        "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-blake3.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-event.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-range.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-store.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-session.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-do.test.ts",
+        "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
+        "pkgs/id/hosted-worker/test/tenant-ops.test.ts",
+        "pkgs/id/hosted-worker/test/identity-link.test.ts",
+        "pkgs/id/hosted-worker/test/credentials.test.ts",
+        "pkgs/id/hosted-worker/test/export.test.ts",
+        "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
+        "pkgs/id/hosted-worker/test/migration-control.test.ts",
+        "pkgs/id/hosted-worker/test/object-plane-r2.test.ts",
+        "pkgs/id/hosted-worker/test/references.test.ts",
+        "pkgs/id/hosted-worker/test/reference-index.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -264,7 +336,7 @@
       },
       "status": "mapped",
       "related_issues": [6095],
-      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329)."
+      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329). Trued up again 2026-11-23 (#12230): the bridge suites and provisioning had joined npm test without registry rows, and admission-gate was added to the npm test script in the same change (it ran nowhere; verified 8/8 standalone before wiring)."
     },
     {
       "id": "id.hosted-worker.smoke",
@@ -293,6 +365,74 @@
       "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
     },
     {
+      "id": "id.android-remote.session",
+      "paths": ["pkgs/id/crates/id-android-remote/src/lib.rs", "pkgs/id/crates/id-android-remote/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-android-remote runs cargo test -p id-android-remote)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [1831],
+      "notes": "The Android remote-drive bridge test uses the embedded shell contract and an in-process Iroh WorldService host; the crate is a non-default workspace member and has a dedicated Nix check."
+    },
+    {
+      "id": "id.tui-shell.capability-statement",
+      "paths": ["pkgs/id/crates/id-tui-shell/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-tui-shell runs cargo nextest -p id-tui-shell)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-tui-shell",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The tui-shell check runs every integration target in this non-default workspace member; the first target is the capability-statement check recorded for #12818 (shells v2 slice 2, decision D3)."
+    },
+    {
+      "id": "id.rust.id-hw-shell.integration",
+      "paths": ["pkgs/id/crates/id-hw-shell/tests/live_wake.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-hw-shell runs cargo nextest -p id-hw-shell)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-hw-shell",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The hw-shell check runs the integration targets of this non-default workspace member, mirroring test-native-shell. live_wake is the live-host behavioral check for the hardware-shell spike (#10929); it ran nowhere until wired 2026-11-23 (#12230), verified green standalone first."
+    },
+    {
+      "id": "id.bevy-bridge.replay-oracle",
+      "paths": ["pkgs/id/crates/id-bevy-bridge/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-bridge runs cargo nextest -p id-bevy-bridge)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-bridge",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13702, 13703, 13704],
+      "notes": "The bevy-bridge check runs every integration target of this non-default workspace member: fixture projection (slice 1), the journal tail and intents (slice 2), and the replay oracle with its recorded corpus, soak and fault injection (slice 3). The replay oracle is the acceptance gate for a bump of the bridge's pinned bevy_ecs."
+    },
+    {
+      "id": "id.bevy-presenter.e2e",
+      "paths": ["pkgs/id/crates/id-bevy-presenter/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-presenter runs cargo nextest -p id-bevy-presenter)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-presenter",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13705, 13706],
+      "notes": "The bevy-presenter check runs the Bevy slice 4 presenter-client app headless against the demo world hosted as a separate process: projection, intents end to end, predicted presentation that reconciles or snaps back, the provider manifest and surface grants, and the replay oracle over the host's journal. It also runs slice 5, the host posture: the Bevy process hosting the world with its journal on disk, a second presenter (in process and as the app in its own process) seeing the same world as with an external host, the host's own presenter on the same path, admission by manifest up to capacity, and a reopened or killed host resuming from its last acknowledged position."
+    },
+    {
       "id": "id.bench.compare-script",
       "paths": [".github/scripts/id-bench-compare.test.sh"],
       "invocation": "bash .github/scripts/id-bench-compare.test.sh",
@@ -306,6 +446,20 @@
       "phase3_issue": 6187,
       "related_issues": [1619],
       "reason": "The registered id-bench workflow is disabled_manually."
+    },
+    {
+      "id": "id.planted-bug.preflight",
+      "paths": ["pkgs/id/tests/test_planted_bug_preflight.py"],
+      "invocation": "python3 -I -m unittest discover -s pkgs/id/tests -p 'test_planted_bug_preflight.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "guard / Test planted-bug preflight safety refusals",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12058],
+      "notes": "Runs on the existing nightly/manual guard, before Nix setup. Five refusal tests use synthetic disposable Git fixtures and a fake Cargo sentinel, not the heavy mutation harness. Workflow enablement verified 2026-11-19; configured coverage is not evidence of a hosted run."
     },
     {
       "id": "id.just-recipes.drift-guard",
@@ -445,9 +599,16 @@
         "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tools.test.ts",
-        "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
+        "pkgs/mcpx/plugin/opencode/v2/v2.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/annotate.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/backend.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/bin-args.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/bin.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/discovery-retry.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/plugin-tools.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/remember.test.ts"
       ],
-      "invocation": "bun test plugin/opencode/v2/ (73 tests)",
+      "invocation": "bun test plugin/opencode/v2/ (102 tests)",
       "venue": {
         "workflow": ".github/workflows/mcpx.yml",
         "job_step": "plugin / bun test (opencode plugin v2)",
@@ -456,7 +617,7 @@
       },
       "status": "mapped",
       "phase2_issue": 6092,
-      "notes": "Wired 2026-11-14 (#6092): the plugin job runs the v2 directory and asserts the six registered files exist. Verified locally at wiring time: 73 pass, 0 fail, 6 files."
+      "notes": "Wired 2026-11-14 (#6092): the plugin job runs the v2 directory and asserts the six registered files exist. Verified locally at wiring time: 73 pass, 0 fail, 6 files. Extended 2026-11-23 (#12230): the seven #8472 effect-probe suites (annotate, backend, bin-args, bin, discovery-retry, plugin-tools, remember) had landed in the directory and were running under the directory invocation without registry rows; the workflow assertion list now names all thirteen files. Verified locally: 102 pass, 0 fail, 13 files."
     },
     {
       "id": "mcpx.conformance.official",
@@ -615,14 +776,13 @@
       "id": "quota-exporters",
       "paths": [
         "pm-stack/opencode-usage-export/opencode-usage-export.test.mjs",
-        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs",
-        "pm-stack/supabase-export/supabase-quota-export.test.mjs"
+        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs"
       ],
       "invocation": "Node/Bun tests; exact per-package commands not established",
       "venue": null,
       "status": "uncovered",
       "phase2_issue": 6084,
-      "reason": "Three exporter suites have no venue."
+      "reason": "Two exporter suites have no venue."
     },
     {
       "id": "github-backup.worker",
@@ -648,6 +808,45 @@
       },
       "status": "mapped",
       "related_issues": [9860]
+    },
+    {
+      "id": "pm-service.tenant-store",
+      "paths": ["pm-stack/pm-service/test/tenant-store.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12825]
+    },
+    {
+      "id": "pm-service.collector",
+      "paths": ["pm-stack/pm-service/test/collector.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12826]
+    },
+    {
+      "id": "pm-service.read-api",
+      "paths": ["pm-stack/pm-service/test/read-api.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12828]
     },
     {
       "id": "opencode-claimant.install",
@@ -734,6 +933,30 @@
       "status": "mapped"
     },
     {
+      "id": "pm-stack.console",
+      "paths": ["pm-stack/console/test/*.test.ts", "pm-stack/console/scripts/test_expose.py"],
+      "invocation": "cd pm-stack/console && bun test && python3 -I -m unittest discover -s scripts -p 'test_*.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test console",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.platform",
+      "paths": ["pm-stack/platform/*.test.ts"],
+      "invocation": "cd pm-stack/platform && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test the list of Workers against the repository",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "pm-stack.dispatch",
       "paths": ["pm-stack/dispatch/test/*.test.ts"],
       "invocation": "cd pm-stack/dispatch && bun test",
@@ -777,6 +1000,19 @@
       },
       "status": "mapped",
       "related_issues": [9877, 9103]
+    },
+    {
+      "id": "pm-stack.lane-guard",
+      "paths": ["pm-stack/lane-guard/test_lane_guard.py"],
+      "invocation": "cd pm-stack/lane-guard && python3 -m unittest test_lane_guard.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test lane guard",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7616, 9991]
     },
     {
       "id": "pm-stack.grist.choice-options",
@@ -844,6 +1080,29 @@
       "status": "mapped",
       "related_issues": [10423],
       "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
+    },
+    {
+      "id": "doc.15340-gap-evidence",
+      "paths": ["doc/2026-11-26T07-46-31Z_verification_15340-monitoring-gaps/test_gap_evidence.py"],
+      "invocation": "python3 -m unittest discover -s doc/2026-11-26T07-46-31Z_verification_15340-monitoring-gaps -p 'test_*.py'",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 15340,
+      "reason": "Evidence-anchor checks for the #15340 criterion-1 verification record; no CI venue runs doc-folder suites yet, verified by remote dispatch on its PR."
+    },
+    {
+      "id": "pm-stack.host-health-collector",
+      "paths": ["pm-stack/tests/test_host_health_collector.py", "pm-stack/host-health-collector.py"],
+      "invocation": "python3 -m unittest discover -s pm-stack/tests -p 'test_host_health_collector.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test host-health collector Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [3989],
+      "notes": "Wired for #3989 criterion 6: validates the host-health collector's backup restore-point projection. The workflow runs nightly on main with no path filters."
     },
     {
       "id": "pm-stack.meta-exporter",
@@ -1013,6 +1272,19 @@
       "related_issues": [1411]
     },
     {
+      "id": "ci.root-status-files",
+      "paths": [".github/scripts/check-root-status-files.test.sh"],
+      "invocation": "bash .github/scripts/check-root-status-files.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/root-status-guard.yml",
+        "job_step": "Guard contract tests (#12136)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12136]
+    },
+    {
       "id": "bin.node-tests",
       "paths": ["bin/*.test.mjs"],
       "invocation": "node --test bin/*.test.mjs",
@@ -1044,6 +1316,33 @@
       "reason": "The registered scripts-test workflow is disabled_manually."
     },
     {
+      "id": "scripts.nix-dep-gate",
+      "paths": ["scripts/tests/test_check_nix_dep_gate.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_nix_dep_gate.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/nix-dep-gate.yml",
+        "job_step": "Run gate contract tests (#14195)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14195],
+      "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
+    },
+    {
+      "id": "scripts.fleet-binary-keeper",
+      "paths": ["scripts/tests/test_fleet_binary_keeper.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run fleet binary keeper contract tests (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
       "id": "scripts.provider-retirement-gate",
       "paths": ["scripts/tests/test_check_provider_retirement_gate.py"],
       "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v",
@@ -1056,6 +1355,19 @@
       "status": "mapped",
       "related_issues": [5610, 7789],
       "reason": "Wired by #7789: scripts-test.yml names the suite explicitly, following the sibling pattern for this directory. The workflow is active (the scripts.direct-python row's disabled_manually note is stale registry state for #6187 to refresh)."
+    },
+    {
+      "id": "scripts.restore-row-count-diff",
+      "paths": ["scripts/tests/test_restore_row_count_diff.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_restore_row_count_diff.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "restore row-count diff contract tests (#12788)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12788]
     },
     {
       "id": "scripts.research-workflow",
@@ -1098,7 +1410,8 @@
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh",
-        "nixos/home/oc-password-sync.test.sh"
+        "nixos/home/oc-password-sync.test.sh",
+        "nixos/home/stable-entrypoints.test.sh"
       ],
       "invocation": "nix flake check (make-laptop-backups-checks)",
       "venue": {
@@ -1118,6 +1431,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
@@ -1145,6 +1459,23 @@
       "related_issues": [8941]
     },
     {
+      "id": "pmo.contract-conformance",
+      "paths": [
+        "pkgs/fleet/crates/fleet-queue/tests/pmo_contract_conformance.rs",
+        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**"
+      ],
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance, then cd pm-stack/projector && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts, reported per family by .github/scripts/pmo-contract-conformance.py",
+      "venue": {
+        "workflow": ".github/workflows/pmo-contract-conformance.yml",
+        "job_step": "pmo-contract-conformance / Run the conformance target",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9437],
+      "notes": "CEN-07 golden fixtures through the real adapters, one result per contract family; gated families (receipt, cursor, field ownership) are listed in the fixture manifest and never counted as passing. The same test file also runs inside fleet.rust's workspace run."
+    },
+    {
       "id": "fleet.smoke",
       "paths": ["pkgs/fleet/smoke.sh"],
       "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
@@ -1156,6 +1487,32 @@
       },
       "status": "mapped",
       "related_issues": [6400]
+    },
+    {
+      "id": "fleet.static-release",
+      "paths": [".github/scripts/check-fleet-static-release.test.sh"],
+      "invocation": "bash .github/scripts/check-fleet-static-release.sh && bash .github/scripts/check-fleet-static-release.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/fleet-static-release.yml",
+        "job_step": "publish / Contract — wiring matches registry and policy (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
+      "id": "cf.record-worker-deploy",
+      "paths": ["scripts/tests/test_record_worker_deploy.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_record_worker_deploy.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run cf worker record-deploy retry tests (#15041)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [15041]
     },
     {
       "id": "web-gen-api.e2e",
@@ -1213,6 +1570,15 @@
       "status": "uncovered",
       "phase2_issue": 6185,
       "reason": "Root-level device/connectivity probe has no venue; confirm whether it is a product test suite or a manual diagnostic in Phase 2."
+    },
+    {
+      "id": "id.android-shell.structure",
+      "paths": ["pkgs/id/android/check-android-shell.sh"],
+      "invocation": "bash pkgs/id/android/check-android-shell.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Structural Android shell smoke check; no CI venue is registered yet."
     },
     {
       "id": "deploy.flake-checks",
@@ -1283,32 +1649,41 @@
       "notes": "Registered 2026-11-14 (#6188 ratchet): already invoked by mcpx.yml but named by no registry row."
     },
     {
-      "id": "id.rust.other-crate-integration",
+      "id": "id.rust.id-core.integration",
       "paths": [
+        "pkgs/id/crates/id-core/tests/admission_gate.rs",
         "pkgs/id/crates/id-core/tests/array_address.rs",
         "pkgs/id/crates/id-core/tests/array_order_prop.rs",
         "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
+        "pkgs/id/crates/id-core/tests/array_shorthand.rs",
+        "pkgs/id/crates/id-core/tests/atlas_content_profile_vectors.rs",
+        "pkgs/id/crates/id-core/tests/attribute_definition.rs",
+        "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
+        "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
+        "pkgs/id/crates/id-core/tests/delegation_model.rs",
+        "pkgs/id/crates/id-core/tests/graph_query_reference.rs",
+        "pkgs/id/crates/id-core/tests/graph_term_codec.rs",
+        "pkgs/id/crates/id-core/tests/hash_profile.rs",
+        "pkgs/id/crates/id-core/tests/id_uri_format.rs",
+        "pkgs/id/crates/id-core/tests/id_uri_parse.rs",
+        "pkgs/id/crates/id-core/tests/id_uri_property.rs",
         "pkgs/id/crates/id-core/tests/id_shape.rs",
+        "pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs",
+        "pkgs/id/crates/id-core/tests/location_ref.rs",
+        "pkgs/id/crates/id-core/tests/namespace_definition.rs",
+        "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
+        "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
+        "pkgs/id/crates/id-core/tests/signed_envelope_identity.rs",
+        "pkgs/id/crates/id-core/tests/world_definition.rs",
+        "pkgs/id/crates/id-core/tests/world_key_status_model.rs",
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
-        "pkgs/id/crates/id-core/tests/typed_value.rs",
-        "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",
-        "pkgs/id/crates/id-currency-registry/tests/factory_acceptance.rs",
-        "pkgs/id/crates/id-currency-registry/tests/grants_acceptance.rs",
-        "pkgs/id/crates/id-render/tests/compose.rs",
-        "pkgs/id/crates/id-render/tests/lower.rs",
-        "pkgs/id/crates/id-render/tests/lower_gui.rs",
-        "pkgs/id/crates/id-render/tests/lower_native.rs",
-        "pkgs/id/crates/id-render/tests/pipeline.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b01.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b02.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b03.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b04.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b05.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b08.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b20.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b21.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b31.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b32.rs"
+        "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
+        "pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs",
+        "pkgs/id/crates/id-core/tests/carried_comment_projection.rs",
+        "pkgs/id/crates/id-core/tests/social_graph_traversal.rs",
+        "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
+        "pkgs/id/crates/id-core/tests/swarm_bench.rs",
+        "pkgs/id/crates/id-core/tests/typed_value.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
@@ -1318,7 +1693,157 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "Existing nightly full-flake check runs test-sandbox over default workspace members; these additional integration targets are distinct from the five explicit PR targets added by #10329."
+      "notes": "Existing nightly full-flake check runs test-sandbox over default workspace members; this crate's integration targets are distinct from the five explicit PR targets added by #10329."
+    },
+    {
+      "id": "id.rust.id-events.integration",
+      "paths": [
+        "pkgs/id/crates/id-events/tests/append_list_state_machine.rs",
+        "pkgs/id/crates/id-events/tests/deletion_state_machine.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Model-based append-admission state-machine oracle for A-GRAPH-9127-02 (#10237); deletion_state_machine is the model oracle for A-GRAPH-9130-01 (requests, moderation, projection hide and server-local true deletion stay distinct; batches idempotent; retained evidence verifiable)."
+    },
+    {
+      "id": "id.rust.e6-persistence.unit",
+      "paths": [
+        "pkgs/id/crates/id-events/src/event_store/persistence_tests.rs",
+        "pkgs/id/crates/id-store/src/turso.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (test-sandbox runs cargo nextest --all-features for default workspace members); targeted: cargo test -p id-events --lib event_store::persistence_tests; cargo test -p id-store --lib turso::tests",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Native-redb row oracle for E6 shared event/body/chain/fork persistence, generated keys/bodies and aborted partial writes; tenant protocol and row-layer tests. This is not EventStoreBackend conformance."
+    },
+    {
+      "id": "id.rust.id-currency-registry.integration",
+      "paths": [
+        "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",
+        "pkgs/id/crates/id-currency-registry/tests/factory_acceptance.rs",
+        "pkgs/id/crates/id-currency-registry/tests/grants_acceptance.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-render.integration",
+      "paths": [
+        "pkgs/id/crates/id-render/tests/assertions.rs",
+        "pkgs/id/crates/id-render/tests/compose.rs",
+        "pkgs/id/crates/id-render/tests/lower.rs",
+        "pkgs/id/crates/id-render/tests/lower_gui.rs",
+        "pkgs/id/crates/id-render/tests/lower_native.rs",
+        "pkgs/id/crates/id-render/tests/pipeline.rs",
+        "pkgs/id/crates/id-render/tests/tooling.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-sync.integration",
+      "paths": [
+        "pkgs/id/crates/id-sync/tests/exchange_lock_release.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b01.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b02.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b03.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b04.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b05.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b06.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b07.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b08.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b09.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b15.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b16.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b17.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b18.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b19.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b20.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b21.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b22.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b23.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b24.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b28.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b31.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b32.rs",
+        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs",
+        "pkgs/id/crates/id-sync/tests/bridge_live.rs",
+        "pkgs/id/crates/id-sync/tests/relay_poc.rs",
+        "pkgs/id/crates/id-sync/tests/forwarding_sink.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-store.integration",
+      "paths": [
+        "pkgs/id/crates/id-store/tests/array_query_model.rs",
+        "pkgs/id/crates/id-store/tests/content_store.rs",
+        "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs",
+        "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs",
+        "pkgs/id/crates/id-store/tests/location_index_model.rs",
+        "pkgs/id/crates/id-store/tests/location_privacy.rs",
+        "pkgs/id/crates/id-store/tests/name_candidates.rs",
+        "pkgs/id/crates/id-store/tests/namespace_registry_model.rs",
+        "pkgs/id/crates/id-store/tests/numeric_registry.rs",
+        "pkgs/id/crates/id-store/tests/sidecar_migration.rs",
+        "pkgs/id/crates/id-store/tests/sidecar_snapshot.rs",
+        "pkgs/id/crates/id-store/tests/stream_subscribe.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-import-notion.integration",
+      "paths": [
+        "pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
     },
     {
       "id": "id.benchmarks.integration",
@@ -1341,6 +1866,7 @@
     {
       "id": "id.rust.crate-integration",
       "paths": [
+        "pkgs/id/crates/id-caps/tests/mcp_bridge_surface.rs",
         "pkgs/id/crates/id-caps/tests/roc_import_policy.rs",
         "pkgs/id/crates/id-cli/tests/aliases.rs",
         "pkgs/id/crates/id-core/tests/probe_petname_load.rs",
@@ -1355,7 +1881,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all five member-crate targets, including the four named by the issue and id-caps/roc_import_policy."
+      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all six member-crate targets, including the MCP bridge surface, the four named by the issue and id-caps/roc_import_policy."
     },
     {
       "id": "id.web.build-manifest",
@@ -1419,6 +1945,18 @@
       "venue": {
         "workflow": ".github/workflows/scripts-test.yml",
         "job_step": "update-nixpkgs-inputs-contract / Run queue-reconcile coverage contract tests (#8028)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "fleet.flow-report",
+      "paths": ["scripts/fleet/flow-report/test_flow_report.py"],
+      "invocation": "python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "update-nixpkgs-inputs-contract / Run flow-report contract tests",
         "state": "active",
         "dispatchable": true
       },

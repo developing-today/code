@@ -172,9 +172,13 @@ func TestRepoAndWorktreeScopesResolveWithNoGitInstalled(t *testing.T) {
 			line = l
 		}
 	}
+	// An artifact supplied through MCPX_TEST_BINARY may be a wrapper that
+	// changes PATH, so only the unwrapped run can assert git is absent.
+	noGitExpected := os.Getenv("MCPX_TEST_BINARY") == ""
 	if !strings.HasPrefix(line, "ok") || !strings.Contains(line, "worktree "+side) ||
-		!strings.Contains(line, "resolved natively") || !strings.Contains(line, "no git on PATH") {
-		t.Errorf("doctor should report the native answer and that git is absent, without warning:\n%s", doctor)
+		!strings.Contains(line, "resolved natively") ||
+		(noGitExpected && !strings.Contains(line, "no git on PATH")) {
+		t.Errorf("doctor should report the native answer and the expected git fallback, without warning:\n%s", doctor)
 	}
 }
 

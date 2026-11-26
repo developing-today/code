@@ -33,6 +33,7 @@ in
       "services/opencode-watchdog"
       "services/keyring-auto-unlock"
       "services/signal-audit"
+      "services/archer-slack"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -138,6 +139,16 @@ in
         services.keyring-auto-unlock.enable = true;
       }
       {
+        # Archer Slack collector (code#2137 S2): the Socket Mode
+        # listener as a user service, running the 3-day parallel run
+        # beside the sandbox seat's watermark puller that the cutover
+        # decision waits on.
+        services.archer-slack-collector.enable = true;
+        # Alignment request responder (code#6651): consume the collector
+        # event store and respond only in the written #alignment scope.
+        services.alignment-handler.enable = true;
+      }
+      {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
         # backup (local + R2 + Drive) and the repo-archive restic job,
         # declared in this flake (nixos/home/laptop-backups.nix) as a
@@ -147,8 +158,6 @@ in
         home-manager.users.user = {
           imports = [ ../home/laptop-backups.nix ];
           services.laptop-backups.enable = true;
-          # muse-dev2 deleted; preserve existing dumps, retire failed source backup.
-          services.laptop-backups.supabase.enable = false;
         };
       }
       {
@@ -164,12 +173,34 @@ in
         };
       }
       {
+        # Stable deploy entrypoints (code#14187): the OpenChamber and
+        # mcpx user units exec fixed state-home paths instead of
+        # store paths, so a deploy app can repoint a service's
+        # entrypoint and restart it without writing Home Manager's
+        # unit files. The contract lives in
+        # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
+        # the coordinated consumer is dezren39/darwin-nix#1393.
+        home-manager.users.user = {
+          imports = [ ../home/stable-entrypoints.nix ];
+          services.stable-entrypoints.enable = true;
+        };
+      }
+      {
         # Laptop repo keeper (code#1723): hourly sweep keeping every
         # repo primary on this machine committed, pulled, pushed and
         # on its default branch.
         home-manager.users.user = {
           imports = [ ../home/laptop-repo-keeper.nix ];
           services.laptop-repo-keeper.enable = true;
+        };
+      }
+      {
+        # Queue coverage reconciliation (code#7016, #14929): report
+        # uncovered issues and ready PRs hourly; the first runs are
+        # observe-only until the import mode file is explicitly set.
+        home-manager.users.user = {
+          imports = [ ../home/queue-coverage-reconcile.nix ];
+          services.queue-coverage-reconcile.enable = true;
         };
       }
       {
@@ -222,21 +253,6 @@ in
             ../home/cloudflare-quota-export.nix
           ];
           services.cloudflare-quota-export.enable = true;
-        };
-      }
-      {
-        # Supabase -> Turso coord mirror (code#1723): the daily
-        # sync_agent_to_turso duty that moved to the laptop with
-        # the Tier-2 migration but was never scheduled (its
-        # watermark sat at 2026-10-28). Declared in this flake
-        # (nixos/home/supabase-turso-coord-mirror.nix) per Drew's
-        # all-laptop-services-in-nix rule. The identical hand
-        # units were installed 2026-11-11 ahead of the switch so
-        # the schedule was live; the switch replaces them with
-        # the store units below.
-        home-manager.users.user = {
-          imports = [ ../home/supabase-turso-coord-mirror.nix ];
-          services.supabase-turso-coord-mirror.enable = false; # source retired 2026-11-18
         };
       }
       {

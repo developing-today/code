@@ -28,9 +28,12 @@ self="$(cd "$(dirname "$0")" && pwd)/build-sh-test.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/bin" "$tmp/work/web/dist" "$tmp/work/src" "$tmp/work/crates" \
+mkdir -p "$tmp/bin" "$tmp/work/web/dist" "$tmp/work/src" "$tmp/work/crates" "$tmp/work/scripts" "$tmp/work/composition" \
   "$tmp/work/target/debug" "$tmp/work/target/release"
 cp "$script" "$tmp/work/build.sh"
+cp "$(dirname "$script")/variant-features.sh" "$tmp/work/scripts/variant-features.sh"
+cp "$(dirname "$script")/../composition/variants.toml" "$tmp/work/composition/variants.toml"
+chmod +x "$tmp/work/scripts/variant-features.sh"
 
 # Stub cargo: record every invocation, produce nothing. build.sh
 # touches the binary itself after a successful cargo run.
@@ -39,6 +42,9 @@ chmod +x "$tmp/bin/cargo"
 export PATH="$tmp/bin:$PATH"
 
 cd "$tmp/work"
+# Fleet runners set CARGO_TARGET_DIR globally; keep the default-path cases
+# below isolated, then set it explicitly in the shared-target case.
+unset CARGO_TARGET_DIR
 # An up-to-date manifest: the frontend step must stay a no-op so the
 # web/assets controls never invoke bun.
 printf '{"main.js":{}}\n' >web/dist/manifest.json
@@ -78,15 +84,15 @@ bash ./build.sh assets >assets.out 2>&1 ||
 after="$(wc -l <"$tmp/cargo.log")"
 [ "$before" = "$after" ] || fail "assets invoked cargo"
 
-# web control: still invokes cargo with --features web and records
+# web control: still invokes cargo with the generated web feature set and records
 # the web variant (the variant mismatch with the lib build above is
 # what must trigger the rebuild).
 bash ./build.sh web debug >web.out 2>web.err || {
   cat web.err >&2
   fail "web debug exited non-zero"
 }
-grep -qx 'cargo build --features web' "$tmp/cargo.log" ||
-  fail "web debug did not invoke 'cargo build --features web'"
+grep -qx 'cargo build --features web,ssh' "$tmp/cargo.log" ||
+  fail "web debug did not invoke 'cargo build --features web,ssh'"
 [ "$(cat target/.build-variant)" = "web" ] ||
   fail "web debug did not write 'web' to target/.build-variant"
 
@@ -110,13 +116,13 @@ bash ./build.sh lib debug >missing.out 2>missing.err || {
   fail "missing-marker rebuild did not rewrite the marker as 'lib'"
 
 # Empty marker (the interrupted-build state): truncate it, request
-# web — cargo must run with --features web, marker rewritten as 'web'.
+# web — cargo must run with the generated web feature set, marker rewritten as 'web'.
 : >target/.build-variant
 bash ./build.sh web debug >empty.out 2>empty.err || {
   cat empty.err >&2
   fail "empty-marker web debug exited non-zero"
 }
-[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build --features web" ] ||
+[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build --features web,ssh" ] ||
   fail "empty marker did not force a web rebuild (log tail: $(tail -n 1 "$tmp/cargo.log"))"
 [ "$(cat target/.build-variant)" = "web" ] ||
   fail "empty-marker rebuild did not rewrite the marker as 'web'"
@@ -178,6 +184,39 @@ grep -q 'unaccounted argument' "$tmp/selfcheck.err" ||
 if [ -n "$(ls -A "$tmp/selfcheck-empty")" ]; then
   fail "own extra argument did fixture work before rejection"
 fi
+
+# ── Shared target path ──────────────────────────────────────────────
+# fleet shell --build sets CARGO_TARGET_DIR to a broker lease. The helper
+# must inspect and mark the binary there rather than a stale local target/.
+shared="$tmp/shared-target"
+mkdir -p "$shared/debug" "$shared/release"
+rm -f target/debug/id
+before="$(wc -l <"$tmp/cargo.log")"
+CARGO_TARGET_DIR="$shared" bash ./build.sh lib debug >shared.out 2>shared.err || {
+  cat shared.err >&2
+  fail "shared-target lib debug exited non-zero"
+}
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$after" -eq "$((before + 1))" ] ||
+  fail "shared target did not invoke cargo exactly once"
+[ -f "$shared/debug/id" ] ||
+  fail "shared target did not place the binary under CARGO_TARGET_DIR"
+[ "$(cat "$shared/.build-variant")" = "lib" ] ||
+  fail "shared target did not place the variant marker under CARGO_TARGET_DIR"
+[ ! -e target/debug/id ] ||
+  fail "shared target unexpectedly wrote a local target/debug/id"
+
+# Exact match on the leased target must still avoid recompiling.
+before="$after"
+CARGO_TARGET_DIR="$shared" bash ./build.sh lib debug >shared-uptodate.out 2>shared-uptodate.err || {
+  cat shared-uptodate.err >&2
+  fail "shared-target exact match exited non-zero"
+}
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$before" = "$after" ] ||
+  fail "shared-target exact match invoked cargo"
+grep -q 'up to date' shared-uptodate.out ||
+  fail "shared-target exact match did not report 'up to date'"
 
 # ── Teardown: manifest/source rebuild path (#6883/#6869 fixed form) ─
 # Not part of the arg-contract case; keep the file ending stable.

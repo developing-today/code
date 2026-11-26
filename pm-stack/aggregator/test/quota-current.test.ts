@@ -312,6 +312,31 @@ describe("quota-current overlay", () => {
     expect(out.pools.find((p) => p.id === "openai")?.windows.map((w) => [w.name, w.percent])).toEqual([["7-day", 17]]);
   });
 
+  test("a window with a negative value is dropped and counted, while null and zero values pass (#15162)", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "openai",
+            windows: [
+              win("7-day", 17, iso(5 * 60_000)),
+              { ...win("weekly", 42, iso(5 * 60_000)), value: -5 },
+              { ...win("monthly", 0, iso(5 * 60_000)), value: 0 },
+              { ...win("5h", 3, iso(5 * 60_000)), value: null },
+            ],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized).toEqual({ droppedProviders: 0, droppedWindows: 1 });
+    expect(parsed?.providers[0].windows.map((w) => [w.name, w.value])).toEqual([
+      ["7-day", 17],
+      ["monthly", 0],
+      ["5h", null],
+    ]);
+  });
+
   test("an ok entry whose windows are entirely malformed is downgraded so a valid fresh sibling supplies the headline", () => {
     const doc = JSON.parse(
       JSON.stringify(
@@ -464,6 +489,27 @@ describe("overlayTursoUsage (#1049)", () => {
       ["databases", 3, "count", 3],
       ["storage", 1.053323, "gb", 21.066],
     ]);
+  });
+  test("a parsed window with a negative value never reaches the card as negative used (#15162)", () => {
+    const at = iso(5 * 60_000);
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [tursoWin("databases", 3, 3, at), tursoWin("storage", -5, 21.066, at)],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized?.droppedWindows).toBe(1);
+    const out = overlayTursoUsage([tursoSvc()], parsed!, NOW);
+    expect(out[0].metrics.map((m) => [m.id, m.used])).toEqual([["databases", 3]]);
+    expect(out[0].metrics.every((m) => m.used == null || m.used >= 0)).toBe(true);
   });
   test("the card's plan label and limits follow the read's plan (#10436)", () => {
     const at = iso(5 * 60_000);
@@ -1374,6 +1420,37 @@ describe("shell-pool stale/retained path (#6942)", () => {
     expect(cline.state).toBe("stale");
     expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+  });
+
+  test("meta retained errored-leg read replaces its fallback windows but stays stale (#9358)", () => {
+    const f = legErrorFile([
+      entry({
+        providerId: "_muse",
+        serviceId: "meta",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("5h", 0, iso(45 * 60_000)), win("weekly", 100, iso(45 * 60_000))],
+      }),
+    ]);
+    f.heartbeat.perProvider = { _muse: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    const view = baseView();
+    view.pools.find((p) => p.id === "meta")!.windows = [
+      { name: "weekly", unit: "other", limit: 100, used: 98, percent: 98, resetsAt: null },
+    ];
+
+    const out = overlayQuotaCurrent(view, f, NOW);
+    const meta = out.pools.find((p) => p.id === "meta")!;
+    expect(meta.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["weekly", 100],
+    ]);
+    expect(meta.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "stale",
+    });
+    expect(meta.state).toBe("stale");
   });
 });
 

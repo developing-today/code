@@ -20,8 +20,11 @@ pub(crate) async fn run_world_session<I: SessionIo>(
             capability,
             after,
             screen_patches,
+            screen_msgpack,
+            screen_compress,
             resume_token,
             agent_profile,
+            device_input,
         } => {
             if capability.len() > MAX_CAPABILITY_BYTES {
                 let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
@@ -34,8 +37,11 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 JoinCapability::from_wire(capability),
                 after,
                 screen_patches,
+                screen_msgpack,
+                screen_compress,
                 resume_token,
                 agent_profile,
+                device_input,
                 documents_store,
             )
             .await;
@@ -256,6 +262,56 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                     "refused",
                     serde_json::json!({}),
                 );
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::SetPresentationPolicy {
+            admin_token,
+            policy,
+        } => match service
+            .set_presentation_policy(Some(&admin_token), policy)
+            .await
+        {
+            Ok(policy) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::PresentationPolicy {
+                        policy,
+                        message: PRESENTATION_POLICY_SAVED,
+                    },
+                )
+                .await;
+                audit_admin_frame(
+                    world_name,
+                    "SetPresentationPolicy",
+                    "accepted",
+                    serde_json::json!({}),
+                );
+            }
+            Err(error) => {
+                audit_admin_frame(
+                    world_name,
+                    "SetPresentationPolicy",
+                    "refused",
+                    serde_json::json!({}),
+                );
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::PresentationPolicyInfo {} => match service.presentation_policy().await {
+            Ok(policy) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::PresentationPolicy {
+                        policy,
+                        message: PRESENTATION_POLICY_CURRENT,
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
                 let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
@@ -499,7 +555,7 @@ async fn query_session<I: SessionIo>(
                     let _ = send_error(service.frame_meter(), io, "world frame is too large").await;
                     return;
                 }
-                Inbound::Unsupported => {
+                Inbound::Unsupported | Inbound::Bytes(_) => {
                     let _ =
                         send_error(service.frame_meter(), io, "frames must be UTF-8 text").await;
                     return;
@@ -512,8 +568,11 @@ async fn query_session<I: SessionIo>(
                 capability,
                 after,
                 screen_patches,
+                screen_msgpack,
+                screen_compress,
                 resume_token,
                 agent_profile,
+                device_input,
             } => {
                 if capability.len() > MAX_CAPABILITY_BYTES {
                     let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
@@ -526,8 +585,11 @@ async fn query_session<I: SessionIo>(
                     JoinCapability::from_wire(capability),
                     after,
                     screen_patches,
+                    screen_msgpack,
+                    screen_compress,
                     resume_token,
                     agent_profile,
+                    device_input,
                     documents_store.clone(),
                 )
                 .await;

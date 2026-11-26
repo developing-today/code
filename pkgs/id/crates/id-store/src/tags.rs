@@ -1744,14 +1744,8 @@ async fn save_registry(path: &Path, registry: &Registry) -> Result<()> {
             .await
             .context("creating registry parent directory")?;
     }
-    // Atomic write: temp file then rename.
     let tmp = path.with_extension("json.tmp");
-    tokio::fs::write(&tmp, &json)
-        .await
-        .context("writing registry temp file")?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .context("renaming registry temp to final")?;
+    id_core::durable_write::write_durable(path, &tmp, &json).context("writing registry")?;
     Ok(())
 }
 
@@ -2615,8 +2609,8 @@ mod tests {
 
     #[test]
     fn test_parse_search_empty() {
-        assert!(parse_search_query("").unwrap().is_empty());
-        assert!(parse_search_query("   ").unwrap().is_empty());
+        assert_eq!(parse_search_query("").unwrap(), [] as [SearchTerm; 0]);
+        assert_eq!(parse_search_query("   ").unwrap(), [] as [SearchTerm; 0]);
     }
 
     #[test]

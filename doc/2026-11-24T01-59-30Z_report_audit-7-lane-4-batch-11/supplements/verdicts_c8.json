@@ -1,0 +1,177 @@
+[
+  {
+    "evidence": "Body closes #12622; hosted-per-user context pin forwarded on /v1/search, keyed cache (6 files, +88/-18). Issue state not fetched at audit time; verify.",
+    "gap": null,
+    "issue": 12622,
+    "pr": 12653,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only plan bookkeeping (1 file, +1/-1) updating B2 state line for #12232; no closing keyword.",
+    "gap": null,
+    "issue": 12232,
+    "pr": 12654,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Rust half of #12242 bullet 2 (12 files, +649/-15); TS golden parity deferred to follow-up slice PR 12667 (same batch).",
+    "gap": null,
+    "issue": 12242,
+    "pr": 12655,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Follow-on (c) of #6028 design record; row-watermark detector (3 files, +1472/-5). Rest of design coverage not checked at audit time. #6028 design record closed; sibling detectors #9978/#9980 landed earlier per body.",
+    "gap": null,
+    "issue": 6028,
+    "pr": 12656,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "TS/browser half of #12242 after Rust PR 12655; strict browser screen-codec decoder with Rust parity (7 files, +264/-2).",
+    "gap": null,
+    "issue": 12242,
+    "pr": 12667,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body closes #12232; composes disk store (#12492) with transport; reconcile_remote_with + id walk CLI (11 files, +1523/-19). Issue state not fetched; verify.",
+    "gap": null,
+    "issue": 12232,
+    "pr": 12672,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Failing fleet-smoke fixed by adding session built-in to operator docs inventory (2 files, +3/-3); judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12673,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Slice 1a of #12657 (contract only, 4 files, +394/-8); renderer/audio/widget slices deferred. Remainder landed post-batch: slice 1b #12843, step 2a #13214, 2b #13244, 2c #13266; #12657 closed.",
+    "gap": null,
+    "issue": 12657,
+    "pr": 12674,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Test-only #[allow] attributes for clippy unwrap errors (1 file, +2); no runtime change.",
+    "gap": null,
+    "issue": 12665,
+    "pr": 12675,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Fixture teardown into afterAll; no-op test removed in validate.test.ts. File list not retrieved at audit time; judged on body + file set.",
+    "gap": null,
+    "issue": 12670,
+    "pr": 12676,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Title references #1187; claimant cap-saturation handback (3 files, +421). Issue not read at audit time; judged on intent.",
+    "gap": null,
+    "issue": 1187,
+    "pr": 12678,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body references #12659; http.fetch allowlist port matching fix (8 files, +291/-21) incl. design doc + Cargo changes.",
+    "gap": null,
+    "issue": 12659,
+    "pr": 12679,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body references #12658; id-check.yml workflow (1 file, +60/-7) sizes timeouts + watchdog.",
+    "gap": null,
+    "issue": 12658,
+    "pr": 12680,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body references #12671; production-line guard restore + pm-stack TypeScript coverage (16 files, +766/-605).",
+    "gap": null,
+    "issue": 12671,
+    "pr": 12683,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "fleet-smoke fix dropping ureq/rustls/base64 from connect variant (2 files, +31/-3); breakage ref #12326, no closing keyword.",
+    "gap": null,
+    "issue": null,
+    "pr": 12684,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body references #8584 Turso-to-D1 export + restore drill (7 files, +828). Restore drill run status unchecked; overlaps PR 12686 file set.",
+    "gap": null,
+    "issue": 8584,
+    "pr": 12685,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Second PR for #8584 export-and-restore drill (13 files, +1216), overlapping 12685. Overlap/authoritativeness unchecked at audit time. Overlap with #12685 noted; both target open #8584 which tracks acceptance. No filing.",
+    "gap": null,
+    "issue": 8584,
+    "pr": 12686,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Title references #1338; babysitter verdict rounds (5 files, +925/-1). Issue body not read at audit time; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12687,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Title references #1187 (stall nudges + escalation). File list not retrieved at audit time; judged on title + file set.",
+    "gap": null,
+    "issue": null,
+    "pr": 12688,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Lands pool-state.json feed for #1338 under epic #1334 (4 files, +265/-3): projection + gather-quota wiring.",
+    "gap": null,
+    "issue": 1338,
+    "pr": 12689,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "4-hour lease in agent next (2 files, +68/-4) for #12618.",
+    "gap": null,
+    "issue": 12618,
+    "pr": 12690,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Title '#1744 Move 1 step 2'; dashboard comments moved to shared_comments (13 files, +460/-23). Body not read; judged on title + file set.",
+    "gap": null,
+    "issue": null,
+    "pr": 12691,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Local SQLite replica for #8583 against #12638 interface (4 files, +700). sync_up behavior unchecked against contract at audit time. sync_up delivered; remainder tracked by open #8583. No filing.",
+    "gap": null,
+    "issue": 8583,
+    "pr": 12692,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Closes #1782 concurrency gap by keying group on Breakage-ID (3 files, +524/-66) incl. budget script + tests.",
+    "gap": null,
+    "issue": 1782,
+    "pr": 12693,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only design record for #1177 Stage 3 (1 file, +368). Design, not implementation; D1-D4 implementation not evidenced in any merged PR here. Docs-only design record as intended; implementation tracked under epic #12694/#12695 (closed).",
+    "gap": null,
+    "issue": 1177,
+    "pr": 12702,
+    "verdict": "audit:complete"
+  }
+]

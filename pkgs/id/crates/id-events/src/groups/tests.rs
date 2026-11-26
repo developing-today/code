@@ -36,6 +36,7 @@ fn event(name: &str, author: u8, after_names: &[&str], group: Option<Hash>, body
         author: key(author),
         after: after(after_names),
         group,
+        at: None,
         body,
     }
 }
@@ -468,7 +469,7 @@ fn test_a_rule_refusal_gives_the_voided_reason() {
         ),
         add("a0", 2, g, 4, Role::Read, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
     assert_eq!(outcome(&p, "a0").reason(), Some(Reason::Voided));
 }
 
@@ -528,8 +529,41 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
         add("a0", 2, g, 4, Role::Read, &["g"]),
         remove("x0", 2, g, 3, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
-    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_delegated_manage_can_add_and_remove_members() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 3, Role::Read, &["g", "d0"]),
+        remove("r0", 2, g, 3, &["a0"]),
+    ];
+    let projection = project(&events);
+    assert_eq!(outcome(&projection, "a0"), Outcome::Applied);
+    assert_eq!(outcome(&projection, "r0"), Outcome::Applied);
+    assert_eq!(role_of(&projection, g, 3), None);
+}
+
+#[test]
+fn test_a_cut_delegated_manage_chain_refuses_membership_changes() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        veto("v0", 1, g, "d0", &["d0"]),
+        add("a0", 2, g, 3, Role::Read, &["g", "d0", "v0"]),
+    ];
+    let projection = project(&events);
+    assert_eq!(outcome(&projection, "v0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&projection, "a0"),
+        Outcome::Refused(Refusal::NoChain)
+    );
+    assert_eq!(role_of(&projection, g, 3), None);
 }
 
 #[test]
@@ -550,6 +584,7 @@ fn test_a_friendship_request_must_name_its_pair_and_counter() {
         author: key(1),
         after: vec![],
         group: Some(id("not a friendship")),
+        at: None,
         body: Body::Create(Create {
             template: Template::Friendship,
             policy: Policy::friendship(),
@@ -732,8 +767,35 @@ fn delegate(
         grantee: key(to),
         scope,
         can_redelegate: redelegate,
+        expires_at: None,
     });
     event(name, by, after_names, Some(group), body)
+}
+
+/// A grant carrying a signed expiry bound.
+fn delegate_exp(
+    name: &str,
+    by: u8,
+    group: Hash,
+    to: u8,
+    scope: Role,
+    redelegate: bool,
+    expires_at: Option<u64>,
+    after_names: &[&str],
+) -> Event {
+    let body = Body::Delegate(Delegate {
+        grantee: key(to),
+        scope,
+        can_redelegate: redelegate,
+        expires_at,
+    });
+    event(name, by, after_names, Some(group), body)
+}
+
+/// Stamp an authored time onto a test event.
+fn stamped(mut e: Event, at: Option<u64>) -> Event {
+    e.at = at;
+    e
 }
 
 fn veto(name: &str, by: u8, group: Hash, grant: &str, after_names: &[&str]) -> Event {
@@ -1298,8 +1360,9 @@ fn test_reassign_to_group_keeps_the_grant_as_a_group_root_without_manage_authori
         Outcome::Applied,
         "the group root reaches 3"
     );
-    assert_eq!(outcome(&p, "x1"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "x1"), Outcome::Applied);
     assert_eq!(p.group(&g).unwrap().members.get(&key(3)), Some(&Role::Read));
+    assert_eq!(p.group(&g).unwrap().members.get(&key(4)), None);
     assert!(!p.group(&g).unwrap().members.contains_key(&key(5)));
     let reassigned = p
         .grants_in_force()
@@ -1744,6 +1807,7 @@ fn delegation_build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
                     grantee: key(target),
                     scope: role,
                     can_redelegate: mask % 2 == 0,
+                    expires_at: None,
                 }),
             ),
             3 => (
@@ -1766,6 +1830,7 @@ fn delegation_build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
             author: key(author),
             after: after_hashes,
             group,
+            at: None,
             body,
         };
         if matches!(created.body, Body::Create(_)) {
@@ -1997,6 +2062,7 @@ fn build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
             author: key(author),
             after: after_hashes,
             group,
+            at: None,
             body,
         };
         if matches!(created.body, Body::Create(_)) {
@@ -2230,4 +2296,280 @@ fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_pas
     let weak = project(&events);
     assert_eq!(outcome(&weak, "dv1"), Outcome::Applied);
     assert!(weak.grant_in_force(&id("dv1")));
+}
+
+// ----- Grant expiry (F1) and grantor veto (F2, #13534) -----
+
+/// The expiry comparison rule (D1): expired iff action time T >= grant bound; T = None
+/// is expired under a bounded grant (#14876). Each action below differs only in its asserted time.
+#[test]
+fn test_an_expired_grant_carries_no_chain_at_or_past_its_bound() {
+    let g = id("g");
+    for (action_at, stands) in [
+        (Some(50), true),
+        (Some(99), true),
+        (Some(100), false),
+        (Some(200), false),
+    ] {
+        let events = vec![
+            stamped(custom("g", 1, &[], Policy::default()), Some(10)),
+            stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+            stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+            stamped(
+                delegate_exp("d0", 1, g, 2, Role::Write, true, Some(100), &["a1"]),
+                Some(10),
+            ),
+            stamped(
+                delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+                Some(10),
+            ),
+            stamped(
+                delegate("d2", 3, g, 4, Role::Read, false, &["d1"]),
+                action_at,
+            ),
+        ];
+        let p = project(&events);
+        assert_eq!(
+            outcome(&p, "d2"),
+            if stands {
+                Outcome::Applied
+            } else {
+                Outcome::Refused(Refusal::NoChain)
+            },
+            "action at {action_at:?}"
+        );
+    }
+}
+
+/// A bounded grant fails closed: an action that asserts no time cannot show it falls before
+/// the bound, so the chain is refused (#14876).
+#[test]
+fn test_an_untimed_action_is_outside_a_bounded_grant() {
+    let g = id("g");
+    let events = vec![
+        stamped(custom("g", 1, &[], Policy::default()), Some(10)),
+        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+        stamped(
+            delegate_exp("d0", 1, g, 2, Role::Write, true, Some(100), &["a1"]),
+            Some(10),
+        ),
+        stamped(
+            delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+            Some(10),
+        ),
+        delegate("d2", 3, g, 4, Role::Read, false, &["d1"]),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
+}
+
+/// Fail-closed applies only to bounded grants: an untimed action under an unbounded chain
+/// still stands (#14876).
+#[test]
+fn test_an_untimed_action_under_an_unbounded_grant_stands() {
+    let g = id("g");
+    let events = vec![
+        stamped(custom("g", 1, &[], Policy::default()), Some(10)),
+        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+        stamped(
+            delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+            Some(10),
+        ),
+        stamped(
+            delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+            Some(10),
+        ),
+        delegate("d2", 3, g, 4, Role::Read, false, &["d1"]),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "d2"), Outcome::Applied);
+}
+
+#[test]
+fn test_expiry_is_judged_per_link_so_a_downstream_expiry_cuts_the_chain() {
+    // d0 is unexpiring; only the middle link d1 carries the bound. An action past
+    // the bound still fails even though the head link's own grant is fresh.
+    let g = id("g");
+    let events = vec![
+        stamped(custom("g", 1, &[], Policy::default()), Some(10)),
+        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+        stamped(
+            delegate_exp("d0", 1, g, 2, Role::Write, true, None, &["a1"]),
+            Some(10),
+        ),
+        stamped(
+            delegate_exp("d1", 2, g, 3, Role::Write, true, Some(100), &["d0"]),
+            Some(10),
+        ),
+        stamped(
+            delegate("d2", 3, g, 4, Role::Read, false, &["d1"]),
+            Some(200),
+        ),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_reissued_and_reanchored_links_inherit_the_grants_expiry() {
+    // Transfer: 5 reissues d1 but the bound travels with it, so 3 loses the chain
+    // once the action time passes the original grant's expiry.
+    let g = id("g");
+    let transfer = vec![
+        stamped(
+            custom("g", 1, &[], with_mode(Some(Delegation::Transfer))),
+            Some(10),
+        ),
+        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+        stamped(
+            delegate_exp("d0", 1, g, 2, Role::Write, true, None, &["a1"]),
+            Some(10),
+        ),
+        stamped(
+            delegate_exp("d1", 2, g, 3, Role::Write, true, Some(100), &["d0"]),
+            Some(10),
+        ),
+        stamped(add("a2", 1, g, 5, Role::Write, &["a1"]), Some(10)),
+        stamped(
+            delegate("d2", 1, g, 5, Role::Write, true, &["a2"]),
+            Some(10),
+        ),
+        stamped(remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]), Some(10)),
+        stamped(
+            delegate("d3", 3, g, 4, Role::Read, false, &["x0"]),
+            Some(200),
+        ),
+    ];
+    assert_eq!(
+        outcome(&project(&transfer), "d3"),
+        Outcome::Refused(Refusal::NoChain),
+        "reissued links inherit the expiry"
+    );
+    // Reassign: the group-anchored link inherits the bound the same way.
+    let reassign = vec![
+        stamped(custom("g", 1, &[], Policy::default()), Some(10)),
+        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+        stamped(
+            delegate_exp("d0", 1, g, 2, Role::Write, true, None, &["a1"]),
+            Some(10),
+        ),
+        stamped(
+            delegate_exp("d1", 2, g, 3, Role::Write, true, Some(100), &["d0"]),
+            Some(10),
+        ),
+        stamped(
+            member(
+                "x0",
+                1,
+                g,
+                MemberOp::Remove {
+                    member: key(2),
+                    mode: RemoveMode::ReassignToGroup,
+                },
+                &["d1"],
+            ),
+            Some(10),
+        ),
+        stamped(
+            delegate("d2", 3, g, 4, Role::Read, false, &["x0"]),
+            Some(200),
+        ),
+    ];
+    assert_eq!(
+        outcome(&project(&reassign), "d2"),
+        Outcome::Refused(Refusal::NoChain),
+        "re-anchored links inherit the expiry"
+    );
+}
+
+#[test]
+fn test_the_grantor_may_veto_its_own_grant_without_manage() {
+    // 2 is a Write member whose own chain grants Write onward; as grantor of
+    // record of d1 it may veto d1 without holding Manage, and the veto cuts 3.
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+        veto("v0", 2, g, "d1", &["d1"]),
+        delegate("d2", 3, g, 4, Role::Read, false, &["v0"]),
+    ]);
+    assert_eq!(outcome(&p, "v0"), Outcome::Applied);
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
+    assert!(!p.grant_in_force(&id("d1")));
+}
+
+#[test]
+fn test_a_non_grantor_without_manage_may_not_veto() {
+    // 4 is a member with no grantor relationship to d1 and no Manage: refused.
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        add("a2", 1, g, 4, Role::Write, &["a1"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a2"]),
+        delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+        veto("v0", 4, g, "d1", &["d1", "a2"]),
+    ]);
+    assert_eq!(outcome(&p, "v0"), Outcome::Refused(Refusal::NotManager));
+}
+
+#[test]
+fn test_a_transfer_successor_may_veto_as_grantor_of_record() {
+    // After 2 is transferred to 5, 5 is the grantor of record of d1 and may veto
+    // it; 2 (no longer the record holder, no Manage) may not.
+    let g = id("g");
+    let base = vec![
+        custom("g", 1, &[], with_mode(Some(Delegation::Transfer))),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+        add("a2", 1, g, 5, Role::Write, &["a1"]),
+        delegate("d2", 1, g, 5, Role::Write, true, &["a2"]),
+        remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]),
+    ];
+    let mut successor_veto = base.clone();
+    successor_veto.push(veto("v0", 5, g, "d1", &["x0"]));
+    let p = project(&successor_veto);
+    assert_eq!(outcome(&p, "v0"), Outcome::Applied);
+
+    let mut stale_veto = base;
+    stale_veto.push(veto("v1", 2, g, "d1", &["x0"]));
+    let q = project(&stale_veto);
+    assert_eq!(outcome(&q, "v1"), Outcome::Refused(Refusal::NotActive));
+}
+
+#[test]
+fn test_a_reanchored_grant_has_no_grantor_veto() {
+    // ReassignToGroup leaves the grant anchored at the group: no author matches,
+    // so the original grantor's veto falls back to the manager path and fails.
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+        member(
+            "x0",
+            1,
+            g,
+            MemberOp::Remove {
+                member: key(2),
+                mode: RemoveMode::ReassignToGroup,
+            },
+            &["d1"],
+        ),
+        veto("v0", 2, g, "d1", &["x0"]),
+    ]);
+    assert_eq!(outcome(&p, "v0"), Outcome::Refused(Refusal::NotActive));
 }

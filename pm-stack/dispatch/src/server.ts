@@ -23,6 +23,7 @@ import { APP_INSTALLED_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig, type Config } 
 import { AuthError, assertCallerRepo, authenticate, type CallerIdentity } from "./auth.ts";
 import {
   ValidationError,
+  parseAgentWakeRequest,
   parseSessionRequest,
   parseTaskRequest,
   resolveSessionDirectory,
@@ -35,6 +36,7 @@ import {
   canonicalDedupeKey,
   describeCaller,
   dispatchDedupeKey,
+  issueDispatchDedupeKey,
   randomDispatchSuffix,
   validatePayload,
 } from "./packet.ts";
@@ -48,6 +50,9 @@ import {
 import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient, OpenCodeError } from "./opencode.ts";
+import { createDispatchWorktree, worktreeNotice } from "./worktree.ts";
+import { WorktreeRegistry, cleanupDispatchWorktree, sweepDispatchWorktrees } from "./worktree_cleanup.ts";
+import { enforcePlacementGuard } from "./placement-guard.ts";
 
 const cfg: Config = loadConfig();
 // #9028: the queue client talks to the fleet queue broker. Its token
@@ -66,6 +71,31 @@ const brokerToken = loadBrokerToken();
 const queue = brokerToken ? new QueueClient(cfg.queueBrokerUrl, brokerToken) : null;
 const github = new GitHubClient(cfg.githubAppId, cfg.githubAppPrivateKeyPem);
 const opencode = new OpenCodeClient(cfg.opencodeUrl, cfg.opencodeAuthFile);
+const worktreeRegistry = new WorktreeRegistry(cfg.worktreeRegistryFile);
+
+/** Best-effort periodic cleanup. A failed upstream read or unsafe tree is
+ * retained by the cleanup module; cleanup outcomes never affect dispatch. */
+async function sweepWorktrees(): Promise<void> {
+  if (!cfg.worktreeRoot) return;
+  const outcomes = await sweepDispatchWorktrees({
+    registry: worktreeRegistry,
+    getSession: (id) => opencode.getSession(id),
+    listSessions: () => opencode.listSessions(),
+  });
+  for (const outcome of outcomes) {
+    console.info(
+      `[dispatch-worktree] ${outcome.removed ? "removed" : "retained"} ${outcome.worktree}: ${outcome.reason}`,
+    );
+  }
+}
+
+function startWorktreeSweep(): void {
+  if (!cfg.worktreeRoot || cfg.worktreeSweepSeconds == null) return;
+  const interval = setInterval(() => void sweepWorktrees(), cfg.worktreeSweepSeconds * 1000);
+  interval.unref();
+  // One startup pass catches trees from before this process restarted.
+  void sweepWorktrees();
+}
 
 const MAX_BODY_BYTES = 256 * 1024;
 const LEASE_SECONDS = 6 * 60 * 60;
@@ -75,6 +105,42 @@ function json(status: number, body: unknown): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Launch-path request logging (#6992)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-leg timing for the two write endpoints. pm-dispatch logged nothing
+ * per request, so when a launch stalled inside one leg — the #6992 shape
+ * was a gh subprocess parked on API rate-limit retries while the bounded
+ * fetch legs stacked — the journal could not say which leg ate the
+ * client's patience, and the failure read as a tunnel outage. Each leg
+ * records its elapsed ms as it completes; `done` emits the completion
+ * line (method, path, status, total ms, leg split, task/session ids).
+ * Observation only: logging never throws into the request path.
+ */
+export class LaunchLog {
+  private readonly startedAt = performance.now();
+  private legStartedAt = this.startedAt;
+  private readonly legs: string[] = [];
+
+  leg(name: string): void {
+    const now = performance.now();
+    this.legs.push(`${name}=${Math.round(now - this.legStartedAt)}ms`);
+    this.legStartedAt = now;
+  }
+
+  done(method: string, path: string, status: number, taskId?: number | null, sessionId?: string | null): void {
+    const total = Math.round(performance.now() - this.startedAt);
+    const ids = [...(taskId != null ? [`task=${taskId}`] : []), ...(sessionId ? [`session=${sessionId}`] : [])];
+    console.info(
+      `[dispatch-request] ${method} ${path} status=${status} total=${total}ms` +
+        (this.legs.length ? ` legs: ${this.legs.join(" ")}` : "") +
+        (ids.length ? ` ${ids.join(" ")}` : ""),
+    );
+  }
 }
 
 async function readJsonBody(req: Request): Promise<unknown> {
@@ -170,6 +236,30 @@ async function maybeCreateIssue(
 // POST /v1/sessions
 // ---------------------------------------------------------------------------
 
+/** Failure-path retirement looks up only the exact recorded worktree.
+ * Missing/bad registry state is an explicit retained outcome rather
+ * than a guessed path or an exception that could replace the launch
+ * error. */
+async function retireFailedWorktree(worktree: string | null, sessionId: string | null = null) {
+  if (!worktree) return null;
+  try {
+    // A previous registry bind may have failed even though createSession
+    // returned. Retry the durable binding after the failure handler has
+    // deleted that known session, so cleanup can use confirmed evidence.
+    if (sessionId != null) await worktreeRegistry.setSessionId(worktree, sessionId);
+    const record = (await worktreeRegistry.load()).find((r) => r.worktree === worktree && r.state === "active");
+    if (!record) return { worktree, removed: false, reason: "no active registry record; retained" };
+    return await cleanupDispatchWorktree({
+      record,
+      registry: worktreeRegistry,
+      getSession: (id) => opencode.getSession(id),
+      listSessions: () => opencode.listSessions(),
+    });
+  } catch (e) {
+    return { worktree, removed: false, reason: `cleanup unavailable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 async function launchSession(
   caller: CallerIdentity,
   req: SessionRequest,
@@ -178,13 +268,80 @@ async function launchSession(
   directory: string,
   warnings: string[],
   failureContext: LaunchFailureContext,
+  log: LaunchLog,
 ): Promise<string> {
+  // Enforce the monthly guard before creating a worktree or seating a
+  // session. A refusal is a pre-commit launch failure: the caller's
+  // existing compensation path cancels the enqueued task and records the
+  // reason on its tracking issue.
+  const needsActiveGoAccount =
+    cfg.placementGuardEnabled && (req.model?.providerID === "opencode-go" || req.model?.providerID === "opencode");
+  const activeGoAccountLabel = needsActiveGoAccount
+    ? await opencode.activeIntegrationCredentialLabel("opencode", directory)
+    : undefined;
+  const placement = enforcePlacementGuard(
+    {
+      enabled: cfg.placementGuardEnabled,
+      executable: cfg.placementRecordExecutable,
+      policyFile: cfg.placementPolicyFile,
+      quotaCurrentFile: cfg.quotaCurrentFile,
+    },
+    { taskId: task.id, repo: req.repo, model: req.model, activeGoAccountLabel },
+  );
+  if (placement) log.leg("placement");
+
+  // code#12213: never run a dispatched session in the primary clone.
+  // A worktree failure throws here, before any session exists, so the
+  // launch fails and the task is cancelled like any pre-session error.
+  let sessionDirectory = directory;
+  let notice = "";
+  let createdWorktree: { directory: string; worktree: string; base: string } | null = null;
+  if (cfg.worktreeRoot) {
+    const primary = resolveSessionDirectory("bearer", req.repo, undefined, REPO_DIRS);
+    const wt = await createDispatchWorktree({
+      primary,
+      requestedDirectory: directory,
+      root: cfg.worktreeRoot,
+      repo: req.repo,
+      taskId: task.id,
+    });
+    createdWorktree = wt;
+    failureContext.worktree = wt.worktree;
+    sessionDirectory = wt.directory;
+    notice = `\n${worktreeNotice(wt.worktree, primary)}`;
+    try {
+      await worktreeRegistry.add({
+        taskId: task.id,
+        sessionId: null,
+        repo: req.repo,
+        primary,
+        worktree: wt.worktree,
+        base: wt.base,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      warnings.push(
+        `dispatch worktree registry write failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  if (createdWorktree) log.leg("worktree");
   const session = await opencode.createSession({
-    directory,
+    directory: sessionDirectory,
     title: req.title ?? titleFromPrompt(req.prompt),
-    model: req.model,
+    model: placement?.sessionModel ?? req.model,
   });
-  const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
+  if (createdWorktree) {
+    try {
+      await worktreeRegistry.setSessionId(createdWorktree.worktree, session.id);
+    } catch (e) {
+      warnings.push(
+        `dispatch worktree session binding failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  log.leg("session");
+  const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}${notice}`;
   await withCreatedSession(session.id, failureContext, async () => {
     await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
@@ -195,6 +352,8 @@ async function launchSession(
     // meantime keeps it, and this launch backs out (ClaimLostError).
     await requireQueue().claimTask(task, session.id, describeCaller(caller), LEASE_SECONDS);
   });
+
+  log.leg("claim");
 
   // The lane ledger is recorded inside claimTask's claim-flow (a
   // lane-step failure there is noted on the task by the client and
@@ -220,10 +379,12 @@ async function launchSession(
       )),
     );
   }
+  if (issue) log.leg("annotate");
   return session.id;
 }
 
 async function handleSessions(req: Request, caller: CallerIdentity): Promise<Response> {
+  const log = new LaunchLog();
   const body = parseSessionRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -238,6 +399,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   if (body.issue) {
     const footer = `\n\n---\nLaunched by pm-dispatch for ${body.repo}. Queue task and OpenCode session ids follow in a comment below.`;
     issue = await maybeCreateIssue(body.repo, title, body.prompt + footer, ["source/dispatch"], warnings);
+    log.leg("issue");
   }
 
   // 2. Enqueue the queue task.
@@ -263,15 +425,18 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
     // compensate it (note + close as not planned) instead of orphaning it.
     const err = new Error(`internal packet validation failed: ${payloadErrors.join("; ")}`);
     await compensateOrphanedIssue(github, body.repo, issue?.number ?? null, "packet validation", err);
+    log.done("POST", "/v1/sessions", 500);
     return json(500, { error: err.message });
   }
   let task: TaskRow;
   try {
     task = await requireQueue().enqueue(packet, body.repo);
   } catch (e) {
+    log.leg("enqueue");
     // #4917: same compensation on the enqueue failure path — this is
     // the exact shape that produced the 66 orphan tracking issues.
     const msg = await compensateOrphanedIssue(github, body.repo, issue?.number ?? null, "enqueue", e);
+    log.done("POST", "/v1/sessions", 502);
     return json(502, {
       error: msg,
       issue_number: issue?.number ?? null,
@@ -279,14 +444,18 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
     });
   }
 
+  log.leg("enqueue");
+
   // 3-5. Launch + assign. wait=false: answer after the enqueue and finish
   // the launch asynchronously, recording the outcome on the task row.
   if (!body.wait) {
-    const failureContext: LaunchFailureContext = { sessionId: null };
+    const failureContext: LaunchFailureContext = { sessionId: null, worktree: null };
     void (async () => {
       try {
-        await launchSession(caller, body, task, issue, directory, warnings, failureContext);
+        const launchedId = await launchSession(caller, body, task, issue, directory, warnings, failureContext, log);
+        log.done("POST", "/v1/sessions", 201, task.id, launchedId);
       } catch (e) {
+        log.done("POST", "/v1/sessions", 502, task.id);
         // Mirror the wait:true failure path exactly (#2901): cancel the
         // task and note the failure on the issue — never leave a queued
         // task behind for a session that did not launch.
@@ -299,9 +468,11 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
           e,
           failureContext.sessionId,
           (sessionId) => opencode.deleteSession(sessionId),
+          (sessionId) => retireFailedWorktree(failureContext.worktree, sessionId),
         );
       }
     })();
+    log.done("POST", "/v1/sessions", 202, task.id);
     return json(202, {
       task_id: task.id,
       issue_number: issue?.number ?? null,
@@ -312,9 +483,9 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   }
 
   let sessionId: string;
-  const failureContext: LaunchFailureContext = { sessionId: null };
+  const failureContext: LaunchFailureContext = { sessionId: null, worktree: null };
   try {
-    sessionId = await launchSession(caller, body, task, issue, directory, warnings, failureContext);
+    sessionId = await launchSession(caller, body, task, issue, directory, warnings, failureContext, log);
   } catch (e) {
     // Never leave a queued/claimed task behind for a session that did
     // not launch: cancel it and note the failure on the issue (the
@@ -328,13 +499,16 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
       e,
       failureContext.sessionId,
       (sessionId) => opencode.deleteSession(sessionId),
+      (failedSessionId) => retireFailedWorktree(failureContext.worktree, failedSessionId),
     );
     // A lost claim race is a conflict, not an upstream failure: the
     // task is running under the worker that claimed it (#10737).
     const status = e instanceof ClaimLostError ? 409 : 502;
+    log.done("POST", "/v1/sessions", status, task.id);
     return json(status, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 
+  log.done("POST", "/v1/sessions", 201, task.id, sessionId);
   return json(201, {
     task_id: task.id,
     session_id: sessionId,
@@ -449,6 +623,7 @@ export async function enqueueDispatchTask(args: {
 // ---------------------------------------------------------------------------
 
 async function handleTasks(req: Request, caller: CallerIdentity): Promise<Response> {
+  const log = new LaunchLog();
   const body: TaskRequest = parseTaskRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -468,6 +643,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     }
   } else if (body.issue) {
     issue = await maybeCreateIssue(body.repo, body.title, body.prompt, ["queue/queued", "source/dispatch"], warnings);
+    log.leg("issue");
   }
 
   // Verify the attach target before enqueueing (#3007): a nonexistent
@@ -484,6 +660,8 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       },
     });
     if (verification.outcome === "reject" || verification.outcome === "lookup_failed") {
+      log.leg("verify");
+      log.done("POST", "/v1/tasks", verification.status);
       return json(verification.status, {
         error: verification.error,
         issue_number: issue.number,
@@ -493,11 +671,15 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     }
     if (verification.outcome === "unverified") warnings.push(verification.warning);
     attachVerified = verification.outcome === "verified";
+    log.leg("verify");
   }
 
+  // #12527: request idempotency keys are not broker packet identities.
   const dedupeKey =
+    (issue
+      ? issueDispatchDedupeKey(body.kind, body.repo, issue.number, body.dedupeKey, body.issueNumber !== undefined)
+      : null) ??
     body.dedupeKey ??
-    (issue ? canonicalDedupeKey(body.kind, body.repo, issue.number) : null) ??
     dispatchDedupeKey(body.repo);
   const packetInput = {
     repo: body.repo,
@@ -524,6 +706,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       "packet validation",
       err,
     );
+    log.done("POST", "/v1/tasks", 500);
     return json(500, { error: err.message });
   }
   let outcome: EnqueueDispatchOutcome;
@@ -541,14 +724,17 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       callerSuppliedKey: body.dedupeKey !== undefined,
     });
   } catch (e) {
+    log.leg("enqueue");
     // #4917: compensate an issue THIS request created (never an attach
     // target) on either enqueue failure shape.
     const createdIssueNumber = body.issueNumber === undefined ? (issue?.number ?? null) : null;
     if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
       await compensateOrphanedIssue(github, body.repo, createdIssueNumber, "packet validation", e);
+      log.done("POST", "/v1/tasks", 500);
       return json(500, { error: e.message });
     }
     const msg = await compensateOrphanedIssue(github, body.repo, createdIssueNumber, "enqueue", e);
+    log.done("POST", "/v1/tasks", 502);
     return json(502, {
       error: msg,
       issue_number: issue?.number ?? null,
@@ -556,6 +742,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       ...(warnings.length ? { warnings } : {}),
     });
   }
+  log.leg("enqueue");
   const task: TaskRow = outcome.task;
   warnings.push(...outcome.warnings);
 
@@ -585,8 +772,10 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
         }
       }
     }
+    if (!attachSkipped) log.leg("annotate");
   }
 
+  log.done("POST", "/v1/tasks", 201, task.id);
   return json(201, {
     task_id: task.id,
     issue_number: issue?.number ?? null,
@@ -789,6 +978,31 @@ async function handleGetSession(caller: CallerIdentity, idSegment: string): Prom
   return json(200, sessionStatusView(raw));
 }
 
+/** A Message Bridge wake starts an OpenCode session that enters the same
+ * fleet intake ladder as a scheduled lane. The prompt is fixed and does not
+ * treat the webhook's text as a work packet; `fleet agent next` reads the
+ * authenticated inbox and claims work itself. */
+async function handleAgentWake(req: Request): Promise<Response> {
+  const wake = parseAgentWakeRequest(await readJsonBody(req));
+  let session: { id: string };
+  try {
+    session = await opencode.createSession({
+      directory: REPO_DIRS["developing-today/code"],
+      title: `Fleet wake: ${wake.agent}`,
+      model: null,
+    });
+  } catch (error) {
+    return json(502, { error: error instanceof Error ? error.message : String(error) });
+  }
+  const prompt =
+    `A Message Bridge wake arrived for Fleet agent ${wake.agent} (message ids ${wake.messageIds.join(", ")}).\n\n` +
+    `Run \`fleet agent next --agent ${wake.agent}\` once now. If it returns a task, follow its packet and every command in its \`then\` list. If it returns no work, report that and stop.`;
+  void opencode.sendPrompt(session.id, prompt).catch((error) => {
+    console.error(`[dispatch-wake] prompt failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  return json(202, { agent: wake.agent, session_id: session.id, status: "started" });
+}
+
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -809,6 +1023,14 @@ export async function handler(req: Request): Promise<Response> {
         allowlist: cfg.repoAllowlist,
       });
       return path === "/v1/sessions" ? await handleSessions(req, caller) : await handleTasks(req, caller);
+    }
+    if (req.method === "POST" && path === "/v1/agent-wake") {
+      await authenticate(req, {
+        apiToken: cfg.apiToken,
+        oidcAudience: cfg.oidcAudience,
+        allowlist: cfg.repoAllowlist,
+      });
+      return await handleAgentWake(req);
     }
     const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)$/);
     const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/);
@@ -834,4 +1056,5 @@ if (import.meta.main) {
   for (const server of servers) {
     console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
   }
+  startWorktreeSweep();
 }

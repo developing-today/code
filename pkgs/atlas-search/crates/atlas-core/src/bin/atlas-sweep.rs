@@ -1,6 +1,8 @@
 //! atlas-sweep — the Atlas ingestion sweep runner CLI (#7969).
 //!
 //! Usage: `atlas-sweep --state-dir DIR <action> ...`
+//! (`--help` prints the usage text, `--version` the version;
+//! both exit 0.)
 //!
 //! Actions (design §6, the complete operator set this core exposes):
 //!   pause-class --class CLASS --host HOST
@@ -28,6 +30,10 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+const USAGE: &str = "usage: atlas-sweep --state-dir DIR <action> ...\n  \
+    actions: pause-class --class CLASS --host HOST | resume-class --class CLASS --host HOST | \
+    run-once REQUEST.json | dead-letter list|retry REF|drop REF | report [--run RUN_ID]";
+
 fn class_and_host(args: &[String]) -> Result<(SourceClass, String), String> {
     let mut class = None;
     let mut host = None;
@@ -54,6 +60,17 @@ fn class_and_host(args: &[String]) -> Result<(SourceClass, String), String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-sweep {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let mut state_dir: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::new();
     let mut i = 0;

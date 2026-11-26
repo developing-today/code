@@ -2,19 +2,13 @@
 
 Periodic export of the Muse runtime records DB into the Turso DB
 `muse-mirror` (`agent_mirror_*` tables). Built 2026-10-29, approved by
-Drew 2026-10-28. Runs as an agent cron job `runtime-db-export` every 6 hours
+the user 2026-10-28. Runs as an agent cron job `runtime-db-export` every 6 hours
 (America/Chicago) — it must be an agent job because scripts cannot reach the
 runtime DB (per-exec mount namespaces hide the socket); the only source
 route is the `muse.db` tool inside an agent run.
 
-**Repointed 2026-11-06** (code#5691): the landing side moved from muse-dev2
-Supabase (`agent.mirror_*`) to the dedicated Turso DB `muse-mirror`
-(`agent_mirror_*`), whose initial contents are the migration copy of the PG
-tables (219,105 rows, parity-verified). The job was paused for the migration
-and is **safe to unpause** — see the status banner at the top of JOB-BODY.md
-for the first-run checks. Nothing in this directory writes to Postgres
-anymore; `load_rows_pg.py` / `run_sql_pg.py` are the retired PG versions,
-kept for reference/rollback only.
+Turso is the store: everything here lands in the Turso DB `muse-mirror`
+(`agent_mirror_*`).
 
 ## Files
 
@@ -41,8 +35,6 @@ kept for reference/rollback only.
   `agent_mirror_export_state`.
 - `spec_m1..m8.json`, `spec_r1.json`, `spec_r2.json`, `spec_s5.json` —
   loader specs for the saved-output flow.
-- `schema.sql`, `schema2.sql` — the original PG DDL for all landing tables
-  (historical; the live SQLite DDL lives in `turso_client.py`).
 - `state.json` — per-unit watermarks/status (mirrored in muse-mirror).
 - `progress/` — backfill logs per unit (build record).
 - `merge_s5.py` — S5 merge helper from the build (superseded by the JOB-BODY
@@ -128,7 +120,7 @@ every run.)
   (`turso db shell muse-mirror`) or `state.json` (last_status / last_error
   per unit; failures are isolated per unit and named in the run's report
   line).
-- Manual run: `cron.run runtime-db-export`. Cadence changes need Drew.
+- Manual run: `cron.run runtime-db-export`. Cadence changes need the user.
 - Steady-state cost (measured on the inaugural run, 2026-10-29):
   50,772,671 input tokens / 199,890 output across the run's 6-agent tree
   (worker root + live worker + 4 subagents), 3,067s wall. Usage rows post
@@ -139,4 +131,4 @@ every run.)
   cadence it projects to ~200M input tokens/day. If that burn is
   unwanted, levers are: longer cadence, narrower recompute windows, or a
   leaner run agent (fewer inline pages in context). Cadence changes need
-  Drew.
+  the user.

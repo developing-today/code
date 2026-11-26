@@ -1026,6 +1026,9 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		// source chose it (#1917 Phase 2); the same options the runner
 		// itself would derive reach one from daemon callers.
 		Clients: map[string]runner.Client{
+			codegen.Roc.Name: {
+				Module: codegen.RocModule(nss, s.endpoint, session),
+			},
 			codegen.Python.Name: {
 				Module:  codegen.PythonModule(nss, s.endpoint, session),
 				Globals: codegen.PythonGlobals(nss),
@@ -1209,6 +1212,17 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 // (sampling is deprecated in MCP 2026-07-28; #1961).
 var errNoModel = fmt.Errorf("no model provider answered")
 
+// providerPaymentRequired reports whether a generation error is a
+// provider's HTTP 402. generateViaModel keeps the typed error rather than
+// collapsing it to errNoModel, and the intent route calls this to answer
+// with the payment refusal instead of the generic no-answer message
+// (#13610). It lives here because routes_consumer's local `model` variable
+// shadows the package name.
+func providerPaymentRequired(err error) bool {
+	var paymentRequired *model.PaymentRequiredError
+	return errors.As(err, &paymentRequired)
+}
+
 // modelLayer resolves the #1925 provider layer for this request from the
 // request's own policy. (nil, nil) means no layer applies -- model.provider
 // none or unset, or auto with nothing configured -- and the caller keeps
@@ -1276,6 +1290,14 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 		MaxTokens: maxTokens,
 	})
 	if err != nil || strings.TrimSpace(resp.Text) == "" {
+		// A provider's HTTP 402 is not "no provider answered": the
+		// provider was reached and refused for payment. Keep the typed
+		// error so the intent route can say that instead of the generic
+		// no-answer message (#13610).
+		var paymentRequired *model.PaymentRequiredError
+		if errors.As(err, &paymentRequired) {
+			return "", "", paymentRequired
+		}
 		return "", "", errNoModel
 	}
 	providerName := resp.Provider

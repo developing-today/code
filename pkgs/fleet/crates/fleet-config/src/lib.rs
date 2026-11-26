@@ -16,6 +16,8 @@
 //! keys are malformed for this purpose (#5460): a misspelled `[domains]`
 //! table or `idle_exit_secs` key is a parse error, not a silent default.
 
+pub mod ctx;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -120,7 +122,111 @@ pub struct GhConfig {
     /// rule. On the laptop itself localhost IS the laptop, so the
     /// same localhost-then-laptop order serves both machines.
     pub cache_laptop: Option<String>,
+    /// Additional GitHub Apps, declared without a fleet binary
+    /// change (code#10311 ask (b)). Existing built-in Apps remain
+    /// available; configured entries extend them by slug.
+    #[serde(default)]
+    pub apps: Vec<GhAppConfig>,
 }
+
+/// A GitHub App credential source declared in `[[gh.apps]]`.
+/// Exactly one of `app_id` and `app_id_secret` must be set. The
+/// private key is always resolved by name through fleet-secrets;
+/// key material is never stored in this config.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhAppConfig {
+    /// Stable rotation slug, used by `FLEET_GH_ORDER` and cache requests.
+    pub slug: String,
+    /// Public GitHub App ID, when not resolved from fleet-secrets.
+    pub app_id: Option<u64>,
+    /// Secret name containing the GitHub App ID.
+    pub app_id_secret: Option<String>,
+    /// Secret name containing the App's private key.
+    pub key_secret: String,
+    /// Default owners whose installations may be used.
+    #[serde(default)]
+    pub owners: Vec<String>,
+}
+/// `[bridge]` — the message bridge's fleet mailboxes (`fleet
+/// bridge`). Everything is optional: the URL defaults to
+/// [`DEFAULT_BRIDGE_URL`], the agent name comes from `--agent` or
+/// `FLEET_AGENT`, and the tokens resolve by name through
+/// fleet-secrets. Env beats the file for url, agent and groups
+/// (`FLEET_BRIDGE_URL`, `FLEET_AGENT`, `FLEET_AGENT_GROUPS`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BridgeConfig {
+    /// Bridge base URL (`https://host`).
+    pub url: Option<String>,
+    /// This host's agent name (its mailbox).
+    pub agent: Option<String>,
+    /// Groups the agent registers in (e.g. `["muse"]`).
+    pub groups: Option<Vec<String>>,
+    /// Secret name of the owner (central) token; default
+    /// [`DEFAULT_BRIDGE_OWNER_TOKEN_NAME`].
+    pub owner_token_name: Option<String>,
+    /// Secret name of the fleet (agent) token; default
+    /// [`DEFAULT_BRIDGE_FLEET_TOKEN_NAME`].
+    pub fleet_token_name: Option<String>,
+    /// Secret name of this agent's class/name notes token (#14370).
+    /// Default: the name the agent profile recorded at enrolment,
+    /// else `bridge.<agent>-token` derived from the agent name.
+    pub notes_token_name: Option<String>,
+}
+
+pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
+pub const DEFAULT_BRIDGE_OWNER_TOKEN_NAME: &str = "message-bridge.access-token";
+pub const DEFAULT_BRIDGE_FLEET_TOKEN_NAME: &str = "message-bridge.fleet-token";
+
+/// Pass-1 tool endpoint sections (design mill #10389, pass 1 #10390):
+/// `[opencode]`, `[openchamber]`, `[id]` and `[mcpx]`. All optional:
+/// with no section fleet falls through to the tool's standard local
+/// endpoint. Resolution order for every tool is flag → this setting →
+/// env (`FLEET_<TOOL>_ENDPOINT`) → standard local endpoint (see
+/// [`resolve_tool_endpoint`]). The standard endpoints themselves are
+/// still TBD pending per-service confirmation — the next slice fills
+/// them in; this slice lands the mechanism plus its tests.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolEndpointConfig {
+    /// Explicit endpoint (`host[:port]`, socket path or base URL);
+    /// overrides the standard local endpoint for this tool.
+    pub endpoint: Option<String>,
+}
+
+/// Env var holding an explicit OpenCode endpoint (between the
+/// `[opencode]` setting and the standard local endpoint).
+pub const OPENCODE_ENDPOINT_ENV: &str = "FLEET_OPENCODE_ENDPOINT";
+/// Env var holding an explicit OpenChamber endpoint.
+pub const OPENCHAMBER_ENDPOINT_ENV: &str = "FLEET_OPENCHAMBER_ENDPOINT";
+/// Env var holding an explicit ID-tool endpoint.
+pub const FLEET_ID_ENDPOINT_ENV: &str = "FLEET_ID_ENDPOINT";
+/// Env var holding an explicit mcpx endpoint.
+pub const MCPX_ENDPOINT_ENV: &str = "FLEET_MCPX_ENDPOINT";
+
+/// Resolve one pass-1 tool endpoint in flag → setting → env → standard
+/// order (#10390). Blank levels (empty or whitespace-only) count as
+/// unset; the first non-blank wins, else `standard`. Values pass
+/// through byte-for-byte (no trimming of the winner). Pure function
+/// so the precedence is unit-testable; callers read the env var
+/// themselves.
+pub fn resolve_tool_endpoint(
+    flag: Option<&str>,
+    setting: Option<&str>,
+    env: Option<&str>,
+    standard: &str,
+) -> String {
+    for candidate in [flag, setting, env] {
+        if let Some(value) = candidate {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    standard.to_string()
+}
+
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
 /// set of its `[host.roles]` table; any other name is a loud parse
@@ -331,7 +437,7 @@ pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-j
 
 /// The Turso jobs store the dispatch-test domain records jobs in.
 pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
-    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-dispatch-jobs";
 
 /// The default Actions-capacity threshold for dispatch-test scope
 /// selection: a scope is eligible below this many active jobs.
@@ -363,6 +469,18 @@ pub struct Config {
     pub search: SearchConfig,
     /// `[gh]` — the gh domain's credential-cache view (code#10742).
     pub gh: GhConfig,
+    /// `[bridge]` — the bridge domain's view of the message bridge
+    /// (fleet mailboxes): URL, this host's agent name and groups,
+    /// and the secret names its tokens resolve under.
+    pub bridge: BridgeConfig,
+    /// `[opencode]` — pass-1 endpoint view for OpenCode (#10390).
+    pub opencode: ToolEndpointConfig,
+    /// `[openchamber]` — pass-1 endpoint view for OpenChamber (#10390).
+    pub openchamber: ToolEndpointConfig,
+    /// `[id]` — pass-1 endpoint view for the ID tool (#10390).
+    pub id: ToolEndpointConfig,
+    /// `[mcpx]` — pass-1 endpoint view for mcpx (#10390).
+    pub mcpx: ToolEndpointConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -435,6 +553,17 @@ pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
     pub token_file: Option<String>,
+    /// Bitwarden Secrets Manager project id that secret writes
+    /// (`fleet-secrets`' store path, used by `fleet bridge exchange`)
+    /// create into (#14370). The `FLEET_BWS_PROJECT_ID` environment
+    /// variable overrides it. Reads never need it.
+    pub bws_project_id: Option<String>,
+    /// The secret-name prefix this instance works inside (#10358, D2
+    /// to D5): `get alpha` reads `<prefix>.alpha`. The
+    /// `FLEET_SECRETS_PREFIX` environment variable overrides it; an
+    /// empty value counts as unset. A namespace view, not access
+    /// control.
+    pub prefix: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -502,6 +631,19 @@ pub struct DispatchTestConfig {
     /// fork network.
     #[serde(default)]
     pub scopes: Vec<String>,
+}
+
+/// Whether a `[secrets] prefix` value is usable: a valid secret name
+/// (the rule of fleet-secrets' `validate_name`) that does not end with
+/// the `.` separator.
+fn valid_secrets_prefix(prefix: &str) -> bool {
+    !(prefix.is_empty()
+        || prefix == "."
+        || prefix == ".."
+        || prefix.ends_with('.')
+        || prefix.chars().any(|c| {
+            c == '/' || c == '?' || c == '#' || c == '%' || c.is_whitespace() || c.is_control()
+        }))
 }
 
 #[derive(Debug)]
@@ -671,6 +813,94 @@ pub fn probe_socket(path: &std::path::Path) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
+/// File name of the tailnet proxy env the seat bootstrap writes
+/// beside tailscaled's node state in userspace mode
+/// (`scripts/muse/bootstrap.sh`): one `export HTTPS_PROXY=...` line
+/// naming tailscaled's local CONNECT proxy.
+pub const TAILNET_PROXY_ENV_FILE: &str = "fleet-proxy.env";
+
+/// Where to look for [`TAILNET_PROXY_ENV_FILE`], most specific
+/// first: an explicit `$FLEET_PROXY_ENV` path, then the named
+/// agent's isolated node state
+/// (`~/.local/state/tailscale/agents/<slug>`, with the bootstrap's
+/// own slug rule over `$FLEET_AGENT`), then the legacy shared node
+/// state (`~/.local/state/tailscale`). Pure over its inputs so the
+/// order is testable.
+pub fn tailnet_proxy_env_candidates(
+    home: &std::path::Path,
+    fleet_agent: Option<&str>,
+    explicit: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(path) = non_empty_path(explicit) {
+        out.push(resolve_under(home, &path));
+    }
+    let state = home.join(".local").join("state").join("tailscale");
+    if let Some(slug) = fleet_agent.and_then(agent_slug) {
+        out.push(state.join("agents").join(slug).join(TAILNET_PROXY_ENV_FILE));
+    }
+    out.push(state.join(TAILNET_PROXY_ENV_FILE));
+    out
+}
+
+/// The bootstrap's agent slug: lower-cased, every character outside
+/// `[a-z0-9-]` replaced by `-`, leading and trailing dashes trimmed,
+/// cut to 55 characters, then one `muse-` prefix dropped. `None`
+/// when nothing is left, as the bootstrap refuses such a name.
+fn agent_slug(agent: &str) -> Option<String> {
+    let mapped: String = agent
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed: String = mapped.trim_matches('-').chars().take(55).collect();
+    let slug = trimmed.strip_prefix("muse-").unwrap_or(&trimmed);
+    (!slug.is_empty()).then(|| slug.to_string())
+}
+
+/// The `HTTPS_PROXY` value an env file sets, from a line of the form
+/// `[export ]HTTPS_PROXY=value` (the value optionally in matching
+/// single or double quotes). The last such line with a value wins,
+/// as it would when the file is sourced.
+pub fn parse_tailnet_proxy_env(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+        let value = line.strip_prefix("HTTPS_PROXY=")?.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// The seat's recorded tailnet proxy (#12555): the first readable
+/// [`TAILNET_PROXY_ENV_FILE`] among [`tailnet_proxy_env_candidates`]
+/// that sets `HTTPS_PROXY`. Tailnet tunnels use it in place of the
+/// caller's ambient `HTTPS_PROXY`, which in a sandbox shell is the
+/// platform egress proxy: a broker started from there otherwise
+/// opens every tailnet tunnel through the wrong proxy while it looks
+/// alive. `None` (no file, as on a kernel-mode seat) leaves the
+/// ambient env in charge.
+pub fn tailnet_https_proxy() -> Option<String> {
+    let agent = std::env::var("FLEET_AGENT").ok();
+    tailnet_proxy_env_candidates(
+        &home_dir(),
+        agent.as_deref(),
+        std::env::var_os("FLEET_PROXY_ENV").map(PathBuf::from),
+    )
+    .into_iter()
+    .find_map(|path| parse_tailnet_proxy_env(&std::fs::read_to_string(path).ok()?))
+}
+
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
@@ -790,6 +1020,12 @@ impl Config {
             (&self.dispatch.token_name, "[dispatch] token_name"),
             (&self.gh.cache_local, "[gh] cache_local"),
             (&self.gh.cache_laptop, "[gh] cache_laptop"),
+            (&self.bridge.url, "[bridge] url"),
+            (&self.bridge.agent, "[bridge] agent"),
+            (&self.bridge.owner_token_name, "[bridge] owner_token_name"),
+            (&self.bridge.fleet_token_name, "[bridge] fleet_token_name"),
+            (&self.bridge.notes_token_name, "[bridge] notes_token_name"),
+            (&self.secrets.bws_project_id, "[secrets] bws_project_id"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
@@ -797,6 +1033,68 @@ impl Config {
                     message: format!(
                         "{field} must not be empty or blank; omit the field for the default"
                     ),
+                });
+            }
+        }
+        // [[gh.apps]] (#10311 ask (b)): these records are a
+        // credential-source schema, so reject ambiguous ID sources,
+        // built-in slug collisions and blank secret/owner fields at
+        // config load rather than silently shadowing a rotation leg.
+        let mut gh_app_slugs = std::collections::BTreeSet::new();
+        for (index, app) in self.gh.apps.iter().enumerate() {
+            let row = index + 1;
+            let slug_valid = !app.slug.is_empty()
+                && app
+                    .slug
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !slug_valid || matches!(app.slug.as_str(), "app" | "devtoday" | "backup") {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} has an invalid or reserved slug; use lowercase letters, digits and hyphens, excluding app, devtoday and backup"
+                    ),
+                });
+            }
+            if !gh_app_slugs.insert(app.slug.as_str()) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!("[[gh.apps]] row {row} duplicates an App slug"),
+                });
+            }
+            if app.app_id.is_some() == app.app_id_secret.is_some() {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} must set exactly one of app_id or app_id_secret"
+                    ),
+                });
+            }
+            if app.key_secret.trim().is_empty()
+                || app
+                    .app_id_secret
+                    .as_deref()
+                    .is_some_and(|name| name.trim().is_empty())
+                || app.owners.iter().any(|owner| owner.trim().is_empty())
+            {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} secret names and owners must not be empty or blank"
+                    ),
+                });
+            }
+        }
+        // [secrets] prefix (#10358 D9): an empty value counts as
+        // unset, so it is not a blank-field error; a set prefix must be
+        // a usable secret name and may not end with the separator. The
+        // refused characters mirror fleet-secrets' validate_name (that
+        // crate depends on this one, not the other way round).
+        if let Some(prefix) = self.secrets.prefix.as_deref() {
+            if !prefix.trim().is_empty() && !valid_secrets_prefix(prefix) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: "[secrets] prefix must be a valid secret name (no '/', '?', '#', '%', whitespace or control characters, not '.' or '..') and may not end with '.'".to_string(),
                 });
             }
         }
@@ -932,7 +1230,7 @@ impl Config {
         &self,
         env_contents: Option<&str>,
         env_location: Option<&str>,
-        file_path: &std::path::Path,
+        _file_path: &std::path::Path,
     ) -> Result<Option<ResolvedHost>, ConfigError> {
         if let Some(text) = env_contents {
             let label = PathBuf::from("$FLEET_HOST_CONFIG");
@@ -951,14 +1249,9 @@ impl Config {
                 HostSource::EnvContents,
             ));
         }
-        if let Some(location) = env_location {
-            let location = location.trim();
-            if location.is_empty() {
-                // An all-whitespace value is the empty case of the
-                // #5473 rule wearing spaces; treat it as unset and
-                // fall through to the file.
-                return self.resolve_host_from(None, None, file_path);
-            }
+        // An all-whitespace value is the empty case of the #5473 rule
+        // wearing spaces; treat it as unset and fall through to the file.
+        if let Some(location) = env_location.map(str::trim).filter(|v| !v.is_empty()) {
             if self.host.location.as_deref() == Some(location) && self.host.is_present() {
                 return Ok(Self::resolved_from_manifest(
                     self.host.clone(),
@@ -1491,6 +1784,58 @@ impl Config {
 mod tests {
     use super::*;
 
+    #[test]
+    fn tailnet_proxy_env_candidates_follow_the_bootstrap_layout() {
+        let home = std::path::Path::new("/home/a");
+        let state = home.join(".local/state/tailscale");
+        assert_eq!(
+            tailnet_proxy_env_candidates(home, None, None),
+            vec![state.join("fleet-proxy.env")]
+        );
+        assert_eq!(
+            tailnet_proxy_env_candidates(home, Some("Muse-Felix"), Some("x/p.env".into())),
+            vec![
+                home.join("x/p.env"),
+                state.join("agents/felix/fleet-proxy.env"),
+                state.join("fleet-proxy.env"),
+            ]
+        );
+        // A name with nothing usable gets no agent path.
+        assert_eq!(
+            tailnet_proxy_env_candidates(home, Some("--"), None),
+            vec![state.join("fleet-proxy.env")]
+        );
+    }
+
+    #[test]
+    fn agent_slug_matches_the_bootstrap_rule() {
+        assert_eq!(agent_slug("felix").as_deref(), Some("felix"));
+        assert_eq!(agent_slug("Muse Archer!").as_deref(), Some("archer"));
+        assert_eq!(agent_slug("muse-archer").as_deref(), Some("archer"));
+        assert_eq!(agent_slug("-a_b-").as_deref(), Some("a-b"));
+        assert_eq!(agent_slug("muse-").as_deref(), Some("muse"));
+        assert_eq!(agent_slug(""), None);
+        assert_eq!(agent_slug(&"x".repeat(80)).map(|s| s.len()), Some(55));
+    }
+
+    #[test]
+    fn parse_tailnet_proxy_env_reads_the_bootstrap_line() {
+        assert_eq!(
+            parse_tailnet_proxy_env("export HTTPS_PROXY=http://127.0.0.1:3130\n").as_deref(),
+            Some("http://127.0.0.1:3130")
+        );
+        assert_eq!(
+            parse_tailnet_proxy_env(
+                "# c\nHTTPS_PROXY='http://a:1'\nexport HTTPS_PROXY=\"http://b:2\"\n"
+            )
+            .as_deref(),
+            Some("http://b:2")
+        );
+        assert_eq!(parse_tailnet_proxy_env("HTTP_PROXY=http://x\n"), None);
+        assert_eq!(parse_tailnet_proxy_env("export HTTPS_PROXY=\n"), None);
+        assert_eq!(parse_tailnet_proxy_env(""), None);
+    }
+
     fn write_temp(contents: &str) -> (tempfile_dir::Dir, PathBuf) {
         let dir = tempfile_dir::Dir::new();
         let path = dir.path().join("fleet.toml");
@@ -1499,10 +1844,103 @@ mod tests {
     }
 
     #[test]
+    fn gh_configured_apps_parse_and_validate_sources() {
+        // Oracle: a configured App has a stable slug, exactly one
+        // App-ID source, a secret name for its private key and
+        // default owners; duplicate/reserved slugs and ambiguous
+        // IDs are rejected at config load.
+        let (_dir, path) = write_temp(
+            "[[gh.apps]]\nslug = \"backup-next\"\napp_id_secret = \"github.backup-next.id\"\nkey_secret = \"github.backup-next.key\"\nowners = [\"developing-today\", \"layercloud\"]\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.gh.apps.len(), 1);
+        assert_eq!(cfg.gh.apps[0].slug, "backup-next");
+        assert_eq!(cfg.gh.apps[0].app_id, None);
+        assert_eq!(
+            cfg.gh.apps[0].app_id_secret.as_deref(),
+            Some("github.backup-next.id")
+        );
+        assert_eq!(cfg.gh.apps[0].key_secret, "github.backup-next.key");
+        assert_eq!(cfg.gh.apps[0].owners, ["developing-today", "layercloud"]);
+
+        for (contents, expected) in [
+            (
+                "[[gh.apps]]\nslug = \"app\"\napp_id = 1\nkey_secret = \"key\"\n",
+                "invalid or reserved slug",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id = 1\napp_id_secret = \"id\"\nkey_secret = \"key\"\n",
+                "exactly one of app_id or app_id_secret",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id_secret = \"id\"\nkey_secret = \"key\"\n\n[[gh.apps]]\nslug = \"extra\"\napp_id = 2\nkey_secret = \"key2\"\n",
+                "duplicates an App slug",
+            ),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains(expected), "{message}");
+                }
+                other => panic!("expected Parse error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn missing_file_is_defaults() {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn tool_endpoint_resolution_is_flag_then_setting_then_env_then_standard() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(None, None, None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(None, None, Some("http://env:1"), std),
+            "http://env:1"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(None, Some("http://file:2"), Some("http://env:1"), std),
+            "http://file:2"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(
+                Some("http://flag:3"),
+                Some("http://file:2"),
+                Some("http://env:1"),
+                std
+            ),
+            "http://flag:3"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_blank_levels_count_as_unset() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(Some("  "), Some(""), None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(Some("  "), Some("http://file:2"), None, std),
+            "http://file:2"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_sections_default_to_unset_and_parse() {
+        let cfg = Config::default();
+        assert!(cfg.opencode.endpoint.is_none());
+        assert!(cfg.openchamber.endpoint.is_none());
+        assert!(cfg.id.endpoint.is_none());
+        assert!(cfg.mcpx.endpoint.is_none());
+        let (_dir, path) = write_temp("[opencode]\nendpoint = \"http://127.0.0.1:4096\"\n");
+        let cfg = Config::load_from(path.as_path()).unwrap();
+        assert_eq!(
+            cfg.opencode.endpoint.as_deref(),
+            Some("http://127.0.0.1:4096")
+        );
+        assert!(cfg.mcpx.endpoint.is_none());
     }
 
     #[test]
@@ -2355,6 +2793,35 @@ socket = "rel/s.sock"
         assert_eq!(cfg.dispatch_url(), None);
         assert_eq!(cfg.dispatch_token_name(), DEFAULT_DISPATCH_TOKEN_NAME);
     }
+    #[test]
+    fn secrets_prefix_parses_and_bad_prefixes_are_refused() {
+        // #10358 S1: the prefix key parses as written.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"42\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some("42"));
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"team.42\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some("team.42"));
+        // An empty value counts as unset (D9), not a blank-field error.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some(""));
+        // An empty table and an old-shape table both still load.
+        let (_d, _p, cfg) = cfg_from("[secrets]\n");
+        assert_eq!(cfg.secrets.prefix, None);
+        let (_d, _p, cfg) = cfg_from("[secrets]\ntoken_file = \"/run/token\"\n");
+        assert_eq!(cfg.secrets.prefix, None);
+        // A prefix ending in the separator, or holding a refused
+        // character, is a loud parse error naming the field.
+        for bad in ["42.", ".", "..", "a/b", "a b", "a%2f", "a?b", "a#b"] {
+            let (_dir, path) = write_temp(&format!("[secrets]\nprefix = {bad:?}\n"));
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => assert!(
+                    message.contains("[secrets] prefix"),
+                    "error should name the field for {bad:?}: {message}"
+                ),
+                other => panic!("expected Parse error for prefix {bad:?}, got {other:?}"),
+            }
+        }
+    }
+
     // ---- [host] manifest + location resolution (#6770, #5687) ----
 
     fn cfg_from(contents: &str) -> (tempfile_dir::Dir, PathBuf, Config) {
@@ -2491,6 +2958,18 @@ socket = "rel/s.sock"
             cfg.resolve_host_from(None, Some("lab-99"), &path).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn host_whitespace_env_location_falls_through_to_file() {
+        let (_d, path, cfg) =
+            cfg_from("[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n");
+        let resolved = cfg
+            .resolve_host_from(None, Some(" \t "), &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.location, "sandbox");
+        assert_eq!(resolved.source, HostSource::File);
     }
 
     #[test]

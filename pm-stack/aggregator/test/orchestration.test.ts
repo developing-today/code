@@ -573,6 +573,8 @@ describe("live source orchestration states (#1140)", () => {
       PM_AGG_SOURCE: "live",
       PM_AGG_FEED_FILE: feedFile,
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_AGG_OPENCODE_SERVER_STATE: join(dir, "no-opencode-server-state.json"),
+      PM_AGG_OPENCHAMBER_STATE: join(dir, "no-openchamber-state.json"),
       PM_PROJECTOR_URL: "off",
     });
     const events: unknown[] = [];
@@ -666,6 +668,7 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
       PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
       PM_AGG_SNAPSHOTS_DIR: join(dir, "snapshots"),
       PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+      PM_AGG_OPENCODE_SERVER_STATE: join(dir, "no-opencode-server-state.json"),
       PM_PROJECTOR_URL: "off",
       KANEO_ADMIN_EMAIL: "",
       KANEO_ADMIN_PASSWORD: "",

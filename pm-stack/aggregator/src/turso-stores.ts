@@ -3,7 +3,8 @@
 // not an arbitrary PostgreSQL query translator. Literals become typed args
 // BEFORE rewriting syntax, so user text/JSON can never be rewritten as SQL.
 import { resolveBwsSecret } from "./secrets.ts";
-import type { SupabaseClient } from "./supabase.ts";
+import type { SqlClient } from "./sql-client.ts";
+import type { TursoWriteContext, TursoWriteMetrics } from "./turso-write-metrics.ts";
 import { DECISION_EVENTS_TURSO_URL, DECISION_EVENTS_TURSO_TOKEN_NAME } from "./decision-events-sync.ts";
 
 export type StoreArg = { type: "text"; value: string };
@@ -37,7 +38,7 @@ export function storeStatement(input: string): { sql: string; args: StoreArg[] }
     sql += `?${args.length}`;
   }
   sql = sql
-    .replace(/\bpublic\.(agg_[a-z_]+|orch_runs)\b/g, "$1")
+    .replace(/\bpublic\.(agg_[a-z_]+|shared_[a-z_]+|orch_runs)\b/g, "$1")
     .replace(/\balerts\.(incidents|incident_events|push_subscriptions|notification_sends)\b/g, "alerts_$1")
     .replace(/\bpush_subscriptions\.classes\b/g, "alerts_push_subscriptions.classes")
     .replace(/array\[([^\]]*)\]::text\[\]/gi, "json_array($1)")
@@ -77,6 +78,7 @@ const JSON_COLUMNS = new Set([
   "detail",
   "payload",
   "author",
+  "linked_identity",
   "checkpoint",
   "seen_ids",
   "source_status",
@@ -95,13 +97,18 @@ export function decodeStoreRow(row: Record<string, unknown>): Record<string, unk
   );
 }
 
-export function createTursoStoreClient(url: string, token: string, fetchFn: typeof fetch = fetch): SupabaseClient {
+export function createTursoStoreClient(
+  url: string,
+  token: string,
+  fetchFn: typeof fetch = fetch,
+  writeMetrics?: TursoWriteMetrics,
+): SqlClient {
   const endpoint = new URL(url.replace(/^libsql:/, "https:"));
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password)
     throw new Error("invalid Turso store URL");
   return {
     ref: "turso:fleet-platform",
-    async query<T = Record<string, unknown>>(input: string): Promise<T[]> {
+    async query<T = Record<string, unknown>>(input: string, writeContext?: TursoWriteContext): Promise<T[]> {
       const stmt = storeStatement(input);
       const res = await fetchFn(`${endpoint.href.replace(/\/$/, "")}/v2/pipeline`, {
         method: "POST",
@@ -119,7 +126,7 @@ export function createTursoStoreClient(url: string, token: string, fetchFn: type
         // Do not echo server SQL/errors: they can contain subscription keys.
         throw new Error("Turso store query failed or returned a malformed result");
       }
-      return result.rows.map((cells: any[]) => {
+      const rows = result.rows.map((cells: any[]) => {
         if (cells.length !== result.cols.length) throw new Error("malformed Turso store row");
         const row = Object.fromEntries(
           cells.map((cell, i) => {
@@ -136,17 +143,30 @@ export function createTursoStoreClient(url: string, token: string, fetchFn: type
         );
         return decodeStoreRow(row) as T;
       });
+      if (writeMetrics && writeContext && first.response.type === "execute") {
+        // Never expose SQL, bindings, rows or the rest of the response to the
+        // meter. Observing a decoded success cannot change the query's result.
+        try {
+          writeMetrics.observe(writeContext, result.affected_row_count, result.rows_read, result.rows_written);
+        } catch {
+          // A diagnostic failure is not a failed write and must not induce retries.
+        }
+      }
+      return rows;
     },
   };
 }
 
-export function createTursoStoreGetter(resolveSecret = resolveBwsSecret): () => Promise<SupabaseClient | null> {
-  let cached: Promise<SupabaseClient | null> | null = null;
+export function createTursoStoreGetter(
+  resolveSecret = resolveBwsSecret,
+  writeMetrics?: TursoWriteMetrics,
+): () => Promise<SqlClient | null> {
+  let cached: Promise<SqlClient | null> | null = null;
   return () => {
     if (!cached) {
       const pending = (async () => {
         const token = await resolveSecret(DECISION_EVENTS_TURSO_TOKEN_NAME);
-        return token ? createTursoStoreClient(DECISION_EVENTS_TURSO_URL, token) : null;
+        return token ? createTursoStoreClient(DECISION_EVENTS_TURSO_URL, token, fetch, writeMetrics) : null;
       })();
       cached = pending;
       void pending.then(

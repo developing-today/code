@@ -33,12 +33,18 @@
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
 //!   gallery      Administer a program gallery directory (removals, appeals, review)
+//!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
+//!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
+//!   host       Host mode: run a data root of world directories and operate it
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
+//!   talk         Talk pages: post on and list an object's discussion
+//!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -108,9 +114,14 @@ pub mod claim;
 pub mod doc;
 pub mod gallery;
 pub mod groups;
-#[cfg(feature = "sandbox")]
+pub mod host;
+pub mod hosted;
 pub mod match_audit;
+pub mod nav;
+pub mod petname;
 pub mod tag;
+pub mod talk;
+pub mod walk;
 pub mod world;
 pub mod writer_sets;
 
@@ -118,17 +129,22 @@ pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
-#[cfg(feature = "sandbox")]
+pub use host::HostCommand;
+pub use hosted::{HostedCommand, HostedTarget};
 pub use match_audit::MatchAuditCommand;
+pub use nav::{NavArgs, NavOp};
+pub use petname::PetnameCommand;
 pub use tag::TagCommand;
+pub use talk::TalkCommand;
+pub use walk::WalkCommand;
 pub use world::{
-    JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
-    WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
-    WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs,
-    WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs, WorldLogsArgs,
-    WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs,
-    WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs,
-    WorldVerifyArgs, WorldVia,
+    JournalCommand, WorldAnnounceArgs, WorldApplyArgs, WorldCapsArgs, WorldCommand,
+    WorldCompileArgs, WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs,
+    WorldDownloadArgs, WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs,
+    WorldInviteArgs, WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs,
+    WorldLogsArgs, WorldLookupArgs, WorldMeasureArgs, WorldMirrorArgs, WorldPresentationArgs,
+    WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs,
+    WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 
@@ -219,7 +235,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub groups_log: Option<PathBuf>,
 
-    /// The event store that `doc` and `claim` read and append to.
+    /// The event store that `doc`, `claim` and `talk` read and append to.
     ///
     /// Defaults to `events` in the data directory. A relative path is relative to the data
     /// directory, so a store shared by several nodes is best given as an absolute path.
@@ -337,6 +353,21 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
     }
 }
 
+/// A `--world-partition` label: lowercase `[a-z0-9-]`, 1 to 63 bytes, the
+/// same syntax the journal partition fence accepts.
+fn parse_world_partition(raw: &str) -> Result<String, String> {
+    if !raw.is_empty()
+        && raw.len() <= 63
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Ok(raw.to_owned())
+    } else {
+        Err("a partition label is 1 to 63 bytes of lowercase a-z, 0-9 and -".to_owned())
+    }
+}
+
 /// The arguments of `id serve`, extracted from the `Command`
 /// variant into their own `Args` struct (#4751): clap's derive inlines
 /// a struct-style variant's argument construction into the parent
@@ -375,6 +406,9 @@ pub struct ServeArgs {
     /// discover peers. Useful for isolated servers.
     #[arg(long)]
     pub no_gossip: bool,
+    /// Enable gossip peer discovery, overriding a build-time disabled default.
+    #[arg(long, conflicts_with = "no_gossip")]
+    pub gossip: bool,
     /// Start web interface.
     ///
     /// Enables an HTTP server with a browser-based UI for
@@ -396,7 +430,10 @@ pub struct ServeArgs {
     /// Gossip topic name for peer discovery.
     ///
     /// All servers on the same topic can discover each other.
-    /// Default: "id-peer-discovery-v1" (public network).
+    /// A stock serve reads its topic from `defaults.json` first;
+    /// the hardcoded constant "id-peer-discovery-v1" (public network)
+    /// is only the fallback, used when `defaults.json` supplies no
+    /// topic or `--no-default-topic` is passed.
     /// Use a custom topic for private networks.
     #[arg(long)]
     pub topic: Option<String>,
@@ -404,26 +441,23 @@ pub struct ServeArgs {
     ///
     /// Used to encrypt DHT bootstrap records. Only nodes with
     /// the same secret can discover each other via DHT.
-    /// Default: "id-public-discovery-v1" (public network).
+    /// A stock serve reads its secret from `defaults.json` first;
+    /// the hardcoded constant "id-public-discovery-v1" (public
+    /// network) is only the fallback, used when `defaults.json`
+    /// supplies no secret or `--no-default-topic` is passed.
     #[arg(long)]
     pub topic_secret: Option<String>,
-    /// Skip default bootstrap node IDs from `defaults.conf`.
+    /// Skip default bootstrap node IDs from `defaults.json`.
     ///
     /// Only CLI-provided `--bootstrap` nodes are used.
     #[arg(long)]
     pub no_default_bootstrap: bool,
-    /// Skip default topic and secret from `defaults.conf`.
+    /// Skip default topic and secret from `defaults.json`.
     ///
     /// Falls back to the hardcoded constant values. CLI-provided
     /// `--topic` and `--topic-secret` still take precedence.
     #[arg(long)]
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-    ///
-    /// Useful when you want to fully control defaults via the
-    /// embedded configuration file at build time.
-    #[arg(long)]
-    pub replace_defaults: bool,
     /// Disable mDNS local peer discovery.
     ///
     /// By default, the server uses mDNS to discover peers on the
@@ -456,7 +490,7 @@ pub struct ServeArgs {
     /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
     ///
     /// Each occurrence adds one listener; the set replaces any
-    /// `[web_bindings]` entries from `defaults.conf` entirely.
+    /// `web_bindings` entries from `defaults.json` entirely.
     /// Combining `--web-listen` with an explicitly-set `--bind` or
     /// `--port` is a startup error naming the conflict. IPv6
     /// addresses use the bracket form, e.g. `[::1]:3001`.
@@ -544,9 +578,32 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 1024, requires = "world")]
     pub world_max_sessions: usize,
     /// Close durable worlds that no session used for this many seconds
-    /// (they reopen from their journal on demand). `0` keeps them open.
-    #[arg(long, default_value_t = 600, requires = "world")]
-    pub world_idle_secs: u64,
+    /// (they reopen from their journal on demand). Defaults to 600, or to
+    /// 900 under `--world-host`. `0` keeps them open, and is refused under
+    /// `--world-host`, where `id host pin` keeps a world awake instead.
+    #[arg(long, requires = "world")]
+    pub world_idle_secs: Option<u64>,
+    /// Serve the worlds directory as a host-mode data root (#10693): keep
+    /// its `host.json`, wake asleep worlds when clients name them (unless
+    /// `id host wake-mode` set `operator`), never close `id host pin`
+    /// worlds for idleness or room, record idle closes as asleep, refuse
+    /// archived worlds, and reopen the worlds recorded live at startup.
+    /// `id host list` shows the states.
+    #[arg(long, requires = "world", conflicts_with = "ephemeral")]
+    pub world_host: bool,
+    /// Serve worlds inside one jurisdiction partition (#3898). Every world
+    /// this server creates is bound to the label before its first journal
+    /// byte; a world bound to another partition, or never bound, is treated
+    /// as absent: it is not listed, cannot be opened or created, and reads
+    /// exactly like a name that does not exist. The label is lowercase
+    /// `[a-z0-9-]`, at most 63 bytes, and comes only from the operator.
+    #[arg(
+        long,
+        requires = "world",
+        conflicts_with_all = ["ephemeral", "world_host"],
+        value_parser = parse_world_partition
+    )]
+    pub world_partition: Option<String>,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.
@@ -667,8 +724,6 @@ pub enum Command {
     /// # Skip built-in topic/secret (use hardcoded constants)
     /// id serve --no-default-topic
     ///
-    /// # Use only defaults.conf values (ignore hardcoded fallbacks)
-    /// id serve --replace-defaults
     /// ```
     Serve(ServeArgs),
     /// Publish a program (world) on the RUNNING `id serve` (#2147).
@@ -776,7 +831,7 @@ pub enum Command {
         /// are sent to that remote node.
         #[arg(required = false)]
         files: Vec<String>,
-        /// Read content from stdin instead of file paths.
+        /// Read content from stdin instead of file paths (requires exactly one name argument).
         ///
         /// Requires exactly one name argument for the stored content.
         #[arg(long, visible_alias = "data", conflicts_with = "stdin")]
@@ -1193,6 +1248,9 @@ pub enum Command {
         /// - `tag`: each match with its query
         /// - `group`: matches grouped by query
         /// - `union`: deduplicated by hash
+        ///
+        /// The command-line default is `tag`; the REPL's `find`
+        /// defaults to `union` instead.
         #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
@@ -1271,7 +1329,10 @@ pub enum Command {
         /// Output directory for `--all`.
         #[arg(long)]
         dir: Option<String>,
-        /// Output format: tag, group, or union.
+        /// Output format: tag (default), group, or union.
+        ///
+        /// The command-line default is `tag`; the REPL's `search`
+        /// defaults to `union` instead.
         #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
@@ -1388,11 +1449,29 @@ pub enum Command {
     /// Administer a program gallery directory: removals, appeals, review,
     /// posture and operator tags, all on the public transparency list.
     Gallery(GalleryArgs),
+    /// List the petnames one owner gave, read-only, from a petnames journal.
+    Petname {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The petname action to run.
+        #[command(subcommand)]
+        command: PetnameCommand,
+    },
     /// Export and verify signed match-audit v0 logs.
-    #[cfg(feature = "sandbox")]
     #[command(subcommand)]
     MatchAudit(MatchAuditCommand),
-    /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
+    /// The #9106 walking skeleton, driven by hand: stored nodes,
+    /// a signed record at an id:// address, sync over the
+    /// federation exchange protocol, conflict reports (#12232).
+    #[command(subcommand)]
+    Walk(WalkCommand),
+    /// Host mode over a data root of world directories (#10693): run
+    /// the root's live worlds until Ctrl-C, or list every world's
+    /// lifecycle state and storage without opening any world.
+    #[command(subcommand)]
+    Host(HostCommand),
+    /// Groups: create, show the policy, add, remove, set roles, and list (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
     /// `--json`. A refused action exits non-zero, and its event stays in the log.
@@ -1460,6 +1539,71 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Walk a typed graph snapshot: neighbors, backlinks, threads,
+    /// history, or a bounded path (native graph navigation, #7612).
+    ///
+    /// The CLI runs the same executor as the script/API and agent
+    /// surfaces, so answers match them item for item; only the printing
+    /// differs. Pages end with a `next:` cursor to pass back with
+    /// `--cursor`, and a bound that cut a result is named, never silent.
+    ///
+    /// ```bash
+    /// id nav neighbors NOTE --graph graph.json
+    /// id nav backlinks NOTE --graph graph.json --edge references
+    /// id nav path NOTE --to REPLY --max-depth 4 --graph graph.json --json
+    /// ```
+    Nav(NavArgs),
+    /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
+    ///
+    /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
+    /// the object may post; a correction is a new post that supersedes the old one, which stays
+    /// listed and is marked superseded.
+    ///
+    /// The thread steps of a conversation group (#7849) are signed events in that group:
+    /// propose a change, resolve a thread, reject or withdraw a proposal, accept one by the
+    /// note revision that cites it, and read the group's threads back.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id talk post DOCUMENT "this section needs a source"
+    /// id talk post DOCUMENT "fixed wording" --supersedes POST
+    /// id talk list DOCUMENT --json
+    /// id talk propose GROUP NOTE/KEY --base REVISION --content BLOB/KEY --thread THREAD
+    /// id talk accept GROUP PROPOSAL edited.md --media-type text/markdown
+    /// id talk resolve GROUP THREAD --no-action
+    /// id talk threads GROUP
+    /// ```
+    Talk {
+        /// Print JSON instead of lines (one array for `list` and `threads`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The talk action to run.
+        #[command(subcommand)]
+        command: TalkCommand,
+    },
+    /// Push to and pull from your hosted ID store over the bridge.
+    ///
+    /// Every call proves possession of the ID key the binding names, so
+    /// run it with this node's key or pass `--key-file`. Refused calls
+    /// (a wrong key, an unknown binding, a full store) fail with the
+    /// hosted store's own error code.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id hosted heads --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// id hosted push --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// ID_HOSTED_URL=https://id.example ID_HOSTED_BINDING=0123456789abcdef0123456789abcdef id hosted pull
+    /// ```
+    Hosted {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The hosted action to run.
+        #[command(subcommand)]
+        command: HostedCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).
@@ -1601,7 +1745,11 @@ pub enum Command {
         bootstrap: Vec<String>,
         /// Gossip topic name for peer discovery.
         ///
-        /// Default: "id-peer-discovery-v1" (public network).
+        /// A stock invocation reads its topic from `defaults.json`
+        /// first; the hardcoded constant "id-peer-discovery-v1"
+        /// (public network) is only the fallback, used when
+        /// `defaults.json` supplies no topic or `--no-default-topic`
+        /// is passed.
         /// Use a custom topic for private networks.
         #[arg(long)]
         topic: Option<String>,
@@ -1610,19 +1758,16 @@ pub enum Command {
         /// Used to encrypt DHT bootstrap records.
         #[arg(long)]
         topic_secret: Option<String>,
-        /// Skip default bootstrap node IDs from `defaults.conf`.
+        /// Skip default bootstrap node IDs from `defaults.json`.
         ///
         /// Only CLI-provided `--bootstrap` nodes are used.
         #[arg(long)]
         no_default_bootstrap: bool,
-        /// Skip default topic and secret from `defaults.conf`.
+        /// Skip default topic and secret from `defaults.json`.
         ///
         /// Falls back to the hardcoded constant values.
         #[arg(long)]
         no_default_topic: bool,
-        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-        #[arg(long)]
-        replace_defaults: bool,
         /// Disable relay servers and use direct connections only.
         #[arg(long)]
         no_relay: bool,
@@ -1710,6 +1855,10 @@ pub enum KeysetCommand {
     },
     /// Enrol another device key. The device's 32-byte key file is read
     /// to countersign the enrolment, proving the device holds the key.
+    /// Prefer the `enrol-offer` / `enrol-accept` / `enrol-complete`
+    /// pairing flow when the secret must not travel: same record, but
+    /// the new device only reveals a countersignature over a scanned
+    /// offer.
     Enrol {
         /// The new device's key file (the `.iroh-key` it was created with).
         device_key_file: PathBuf,
@@ -1717,6 +1866,51 @@ pub enum KeysetCommand {
         #[arg(long)]
         label: String,
         /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Mint an enrolment offer for a new device to scan (#2380 packet
+    /// 2). Prints the `id:keyset-enrol?…` payload: show it as a QR
+    /// code or paste it to the new device. It names the exact head
+    /// the enrolment will extend, so a captured offer cannot enrol
+    /// twice across a moved head. The device answers with `id keyset
+    /// enrol-accept`; file its answer with `id keyset enrol-complete`.
+    EnrolOffer {
+        /// A name for the device, shown by `id keyset show`.
+        #[arg(long)]
+        label: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Answer an enrolment offer on the joining device. Countersigns
+    /// the scanned offer with this device's key and prints the accept
+    /// for the admin to file with `id keyset enrol-complete`. The
+    /// secret never leaves this device: only the public key and its
+    /// proof-of-possession signature travel.
+    EnrolAccept {
+        /// The offer string, as printed by `id keyset enrol-offer` or
+        /// scanned from its QR code.
+        offer: String,
+        /// This device's key file (the `.iroh-key` it was created with).
+        device_key_file: PathBuf,
+    },
+    /// File a scanned enrolment accept, printed by `id keyset
+    /// enrol-accept` on the new device, as a `DeviceEnrolled` record.
+    /// Stale accepts (the head moved on), accepts for another admin,
+    /// and bad countersignatures are refused and change nothing.
+    EnrolComplete {
+        /// The accept string, as printed or scanned.
+        accept: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Print this identity's device payload for an admin to scan
+    /// before `id keyset revoke`: the revocation half of pairing, so
+    /// no hex is typed. The payload names only the public key.
+    DeviceQr {
+        /// Show the client identity's payload instead of the server's.
         #[arg(long)]
         client: bool,
     },

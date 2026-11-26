@@ -21,7 +21,9 @@ use std::collections::{HashMap, HashSet};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
+use crate::chat_anchor::ObjectRef;
 use crate::documents::DocumentRef;
+use crate::thread_resolution::AcceptingEdit;
 use id_core::waiting::AuthorKey;
 
 /// The kind of a `note.create` event, as the header's `kind` names it. The event's own ID is
@@ -54,6 +56,13 @@ pub enum NoteOp {
         /// The revisions this one builds on: at least one, none repeated. A first revision
         /// names the note's create event; a merge names every head it joins.
         parents: Vec<Hash>,
+        /// The change proposal this revision accepts, by its event ID (#7849, decision
+        /// record `doc/2026-11-08_decision_id5874_thread_resolution.md` §3–§4). Acceptance
+        /// is the edit itself: the citation lives inside the signed revision, so it cannot
+        /// be asserted after the fact. Absent for an ordinary revision, and then absent
+        /// from the encoding, so revisions made before it read the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proposal: Option<Hash>,
     },
 }
 
@@ -137,7 +146,11 @@ pub fn check_note_op(kind: &str, op: &NoteOp) -> Result<(), NoteError> {
 }
 
 /// An applied note event, as the fold reads it: its ID, its signer, and its operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serializable so a host can persist the log's events alongside the
+/// policy snapshot and rebuild the log from them after a restart
+/// (#3819): the events are the durable form of the log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppliedNote {
     /// The event's ID. For a `note.create`, this is also the note's stable ID.
     pub id: Hash,
@@ -161,6 +174,9 @@ pub struct RevisionRecord {
     /// The revisions this one builds on, in ID order. Empty only for the first revision:
     /// the note's create.
     pub parents: Vec<Hash>,
+    /// The change proposal this revision accepts, as its signed event cites it. Never set
+    /// on the create.
+    pub proposal: Option<Hash>,
 }
 
 /// A note in the store: its stable ID, every revision folded so far, and its current heads.
@@ -169,7 +185,9 @@ pub struct NoteRecord {
     /// The note's stable ID: the ID of its `note.create` event. It is not any later
     /// revision's ID, and it does not depend on a filename or alias.
     pub id: Hash,
-    /// Every revision of the note, in revision ID order. The first is the create.
+    /// Every revision of the note, in revision ID order. The create is
+    /// the revision whose ID is the note's ID — not necessarily the
+    /// first: a later revision's ID may sort before the note's ID.
     pub revisions: Vec<RevisionRecord>,
     /// The revisions no other revision names as a parent, in ID order. Concurrent
     /// revisions are all heads until an explicit merge revision names them.
@@ -182,6 +200,43 @@ impl NoteRecord {
     pub fn revision(&self, id: Hash) -> Option<&RevisionRecord> {
         self.revisions.iter().find(|revision| revision.id == id)
     }
+
+    /// The note as an object a thread or a proposal names: its stable ID and the key that
+    /// created it.
+    #[must_use]
+    pub fn object(&self) -> Option<ObjectRef> {
+        self.revision(self.id)
+            .map(|create| ObjectRef::new(self.id, create.author))
+    }
+
+    /// The revisions of this note that accept a change proposal, as the thread fold
+    /// (`thread_resolution::project_threads`) reads them, in revision ID order. Only an
+    /// admitted revision is here, so only a writer's edit can accept (record §4); the
+    /// fold then checks that the cited proposal is about this note.
+    #[must_use]
+    pub fn accepting_edits(&self) -> Vec<AcceptingEdit> {
+        let Some(object) = self.object() else {
+            return Vec::new();
+        };
+        self.revisions
+            .iter()
+            .filter_map(|revision| {
+                revision.proposal.map(|proposal| AcceptingEdit {
+                    id: revision.id,
+                    author: revision.author,
+                    object,
+                    proposal,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Every revision of every note that accepts a change proposal, note by note in ID order:
+/// the edits half of the thread fold's input.
+#[must_use]
+pub fn accepting_edits(notes: &[NoteRecord]) -> Vec<AcceptingEdit> {
+    notes.iter().flat_map(NoteRecord::accepting_edits).collect()
 }
 
 /// Why a set of applied note events could not be folded.
@@ -267,6 +322,7 @@ pub fn fold_notes(events: &[AppliedNote]) -> Result<Vec<NoteRecord>, NoteFoldErr
             author: event.author,
             content: content.clone(),
             parents: Vec::new(),
+            proposal: None,
         }];
         let mut folded: HashSet<Hash> = HashSet::from([note_id]);
         let mut pending: Vec<&AppliedNote> = events
@@ -283,7 +339,10 @@ pub fn fold_notes(events: &[AppliedNote]) -> Result<Vec<NoteRecord>, NoteFoldErr
             let mut rest: Vec<&AppliedNote> = Vec::with_capacity(pending.len());
             for candidate in pending {
                 let NoteOp::Revise {
-                    content, parents, ..
+                    content,
+                    parents,
+                    proposal,
+                    ..
                 } = &candidate.op
                 else {
                     continue;
@@ -314,6 +373,7 @@ pub fn fold_notes(events: &[AppliedNote]) -> Result<Vec<NoteRecord>, NoteFoldErr
                         author: candidate.author,
                         content: content.clone(),
                         parents: named,
+                        proposal: *proposal,
                     });
                     folded.insert(candidate.id);
                     progressed = true;
@@ -409,6 +469,7 @@ mod tests {
                 note: hash(note),
                 content: content(bytes),
                 parents: parents.iter().map(|parent| hash(*parent)).collect(),
+                proposal: None,
             },
         }
     }
@@ -433,6 +494,122 @@ mod tests {
         // other bytes do not.
         assert!(second.content.verify_content(b"second").is_ok());
         assert!(second.content.verify_content(b"tampered").is_err());
+    }
+
+    fn accept(id: u8, note: u8, bytes: &[u8], parents: &[u8], proposal: Hash) -> AppliedNote {
+        let mut event = revise(id, note, bytes, parents);
+        event.author = author(2);
+        if let NoteOp::Revise {
+            proposal: cited, ..
+        } = &mut event.op
+        {
+            *cited = Some(proposal);
+        }
+        event
+    }
+
+    #[test]
+    fn test_a_revision_citing_a_proposal_is_an_accepting_edit_on_the_note() {
+        let proposal = hash(90);
+        let events = vec![
+            create(10, b"first"),
+            revise(11, 10, b"second", &[10]),
+            accept(12, 10, b"proposed", &[11], proposal),
+        ];
+        let notes = fold_notes(&events).unwrap();
+        let note = &notes[0];
+        assert_eq!(note.revision(hash(10)).unwrap().proposal, None);
+        assert_eq!(note.revision(hash(11)).unwrap().proposal, None);
+        assert_eq!(note.revision(hash(12)).unwrap().proposal, Some(proposal));
+        let object = note.object().unwrap();
+        assert_eq!(object, ObjectRef::new(hash(10), author(1)));
+        assert_eq!(
+            note.accepting_edits(),
+            vec![AcceptingEdit {
+                id: hash(12),
+                author: author(2),
+                object,
+                proposal,
+            }]
+        );
+        assert_eq!(accepting_edits(&notes), note.accepting_edits());
+    }
+
+    #[test]
+    fn test_the_thread_fold_accepts_a_proposal_on_the_note_it_cites() {
+        use crate::chat::{ChatLink, ChatLinkKind};
+        use crate::thread_resolution::{
+            ChatProposal, ProposalState, ThreadAuthority, ThreadEvent, ThreadEventRecord,
+            project_threads,
+        };
+
+        struct Writers;
+        impl ThreadAuthority for Writers {
+            fn may_resolve(&self, _thread: &Hash, _author: &AuthorKey) -> bool {
+                true
+            }
+            fn may_write(&self, _object: &ObjectRef, author: &AuthorKey) -> bool {
+                *author == [2; 32]
+            }
+        }
+
+        let note_object = ObjectRef::new(hash(10), author(1));
+        let other_object = ObjectRef::new(hash(20), author(1));
+        let propose = |id: u8, object: ObjectRef| ThreadEventRecord {
+            id: hash(id),
+            author: author(3),
+            after: Vec::new(),
+            backlink: None,
+            event: ThreadEvent::Proposal(ChatProposal {
+                object,
+                base: hash(10),
+                content: ChatLink {
+                    kind: ChatLinkKind::Blob,
+                    hash: hash(id + 1),
+                    author: author(3),
+                    hint: None,
+                },
+                thread: hash(50),
+                supersedes: None,
+            }),
+        };
+        // Revision 12 cites proposal 90, which is about this note; revision
+        // 13 cites proposal 92, which is about another object, so it does
+        // not accept it.
+        let events = vec![
+            create(10, b"first"),
+            accept(12, 10, b"proposed", &[10], hash(90)),
+            accept(13, 10, b"elsewhere", &[12], hash(92)),
+        ];
+        let notes = fold_notes(&events).unwrap();
+        let projection = project_threads(
+            [propose(90, note_object), propose(92, other_object)],
+            accepting_edits(&notes),
+            &Writers,
+        );
+        let state = |id: u8| {
+            projection
+                .proposals
+                .iter()
+                .find(|record| record.id == hash(id))
+                .unwrap()
+                .state
+        };
+        assert_eq!(state(90), ProposalState::Accepted);
+        assert_eq!(state(92), ProposalState::Proposed);
+    }
+
+    #[test]
+    fn test_an_ordinary_revision_encodes_as_it_did_before_the_citation() {
+        let op = revise(11, 10, b"second", &[10]).op;
+        let text = serde_json::to_string(&op).unwrap();
+        assert!(!text.contains("proposal"), "{text}");
+        // An encoding from before the field reads back with no citation.
+        assert_eq!(serde_json::from_str::<NoteOp>(&text).unwrap(), op);
+        let cited = accept(12, 10, b"proposed", &[11], hash(90)).op;
+        let text = serde_json::to_string(&cited).unwrap();
+        assert!(text.contains("proposal"), "{text}");
+        assert_eq!(serde_json::from_str::<NoteOp>(&text).unwrap(), cited);
     }
 
     #[test]
@@ -482,6 +659,7 @@ mod tests {
                     note: hash(1),
                     content: good.clone(),
                     parents: vec![hash(1)],
+                    proposal: None,
                 }
             ),
             Err(NoteError::KindMismatch { .. })
@@ -510,6 +688,7 @@ mod tests {
                         note: hash(1),
                         content: good.clone(),
                         parents,
+                        proposal: None,
                     }
                 ),
                 Err(NoteError::Field(_))

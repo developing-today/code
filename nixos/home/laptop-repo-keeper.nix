@@ -37,6 +37,17 @@ in
       default = "*-*-* *:23:00";
       description = "Hourly run time (local) for the repo keeper sweep.";
     };
+
+    noSnapshotRepos = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "${home}/git/code" ];
+      description = ''
+        Repos the keeper never snapshot-commits in (code#12162). The
+        default is the deploy clone that pm-git-sync keeps on clean
+        main, whose changes go through a PR. Edits there are reported
+        and left on disk. Paths must not contain spaces.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -45,7 +56,10 @@ in
       Service = {
         Type = "oneshot";
         ExecStart = "${keeperPkg}/bin/laptop-repo-keeper";
-        Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+        Environment = [
+          "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+          "\"REPO_KEEPER_NO_SNAPSHOT=${lib.concatStringsSep " " cfg.noSnapshotRepos}\""
+        ];
         TimeoutStartSec = "15m";
       };
     };

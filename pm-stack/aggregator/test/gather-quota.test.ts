@@ -107,7 +107,7 @@ test("an ok-but-null provider result retains the last good quota row", async () 
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: libDir,
       },
     });
@@ -231,7 +231,6 @@ test("a lapsed Meta session retains the last good windows and reports lapsed, no
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -346,7 +345,6 @@ test("a lapsed Go workspace survives ingest instead of being replaced by last-kn
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -474,7 +472,6 @@ test("a lapsed Go workspace survives retention when a sibling workspace fails", 
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -601,7 +598,7 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
         QUOTA_SUBCOMMAND: process.execPath + " " + subcommandPath,
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: libDir,
         OPENCHAMBER_LIB_INSTALL_CMD: process.execPath + " " + installerPath,
         OPENDESIGN_RENEWAL_STATE_PATH: renewalStatePath,
@@ -706,7 +703,7 @@ test("a folded OpenAI answer under the pre-rename 'codex' spelling keys its hear
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });
@@ -780,7 +777,7 @@ test("a Claude 429 that clears within the tick lands a fresh row, not a retained
         STUB_MODE: "clear429",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });
@@ -895,7 +892,7 @@ test("a persistent Claude 429 retains the last good row marked rate_limited, nev
         STUB_MODE: "always429",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });
@@ -916,6 +913,212 @@ test("a persistent Claude 429 retains the last good row marked rate_limited, nev
     });
     expect(output.heartbeat.perProvider._claude.errorKind).toBe("rate_limited");
     expect(output.heartbeat.perProvider._claude.error).toContain("Rate limited");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the tick publishes the Stage-3 forecast product beside quota-current.json (#12695)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-forecast-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const now = Date.now();
+    const HOUR = 3_600_000;
+    const resetMs = now + 10 * HOUR;
+    const resetIso = new Date(resetMs).toISOString();
+
+    // Seed the snapshot store with a clean 10 pts/h burn for
+    // cline-pass/weekly in the same reset period: 40/50/60 at
+    // 3/2/1 h ago. The tick's own read (70) completes the series.
+    await mkdir(snapshotsDir, { recursive: true });
+    const month = new Date(now).toISOString().slice(0, 7);
+    const seed = [3, 2, 1]
+      .map((h) =>
+        JSON.stringify({
+          ts: new Date(now - h * HOUR).toISOString(),
+          serviceId: "cline-pass",
+          metricId: "weekly",
+          value: 70 - h * 10,
+          unit: "pct",
+          limit: 100,
+          resetsAt: resetIso,
+          source: "api",
+          observedBy: "quota-gatherer",
+        }),
+      )
+      .join("\n");
+    await writeFile(join(snapshotsDir, `usage-${month}.jsonl`), `${seed}\n`, "utf8");
+
+    const providerResult = {
+      providerId: "cline-pass",
+      providerName: "ClinePass",
+      ok: true,
+      configured: true,
+      fetchedAt: now,
+      usage: { windows: { weekly: { usedPercent: 70, windowSeconds: 604_800, resetAt: resetMs } } },
+    };
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        TURSO_QUOTA_SINK: "0",
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+    expect(result.stdout).toContain("forecast wrote");
+
+    const forecast = JSON.parse(await readFile(join(dir, "quota-forecast.json"), "utf8"));
+    expect(forecast.version).toBe(1);
+    expect(forecast.source).toBe("gather-quota");
+    const pool = forecast.pools["cline-pass"]?.find((p: { serviceId: string }) => p.serviceId === "cline-pass");
+    expect(pool).toBeDefined();
+    const weekly = pool.windows.find((w: { name: string }) => w.name === "weekly");
+    // The oracle's verdict on this series: 10 pts/h from 70% walls
+    // in ~3 h, before the reset 10 h out.
+    expect(weekly.state).toBe("projected");
+    expect(weekly.samples).toBeGreaterThanOrEqual(3);
+    expect(weekly.ratePtsPerHour).toBeGreaterThan(5);
+    expect(weekly.pctNow).toBe(70);
+    expect(weekly.resetsAt).toBe(resetIso);
+    expect(weekly.projectedWallAt).toBeGreaterThan(now - 60_000);
+    expect(weekly.projectedWallAt).toBeLessThan(resetMs);
+    expect(weekly.wallsBeforeReset).toBe(true);
+
+    // C4.1 (#13257): the same tick appends the complete-downtime
+    // prediction record to the C4 log beside the forecast product.
+    // The fixture's single pool walls before its reset, so the
+    // all-pools-walled interval is that pool's own wall interval.
+    const predictions = (await readFile(join(dir, "quota-predictions.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const downtime = predictions.filter((r: { kind: string }) => r.kind === "downtime_window");
+    expect(downtime).toHaveLength(1);
+    expect(downtime[0].subject.pools).toEqual(["cline-pass"]);
+    expect(downtime[0].state).toBe("predicted");
+    expect(downtime[0].basis.name).toBe("since_last_reset");
+    expect(downtime[0].prediction.earliest).toBe(new Date(weekly.projectedWallAt).toISOString());
+    expect(downtime[0].prediction.latest).toBe(resetIso);
+    expect(typeof downtime[0].prediction.rendered).toBe("string");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the tick posts C4 forecast-alert findings once, then suppresses repeats (#13261 slice 2)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-forecast-alerts-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const predictionsPath = join(dir, "quota-predictions.jsonl");
+    const alertStatePath = join(dir, "quota-forecast-alert-state.json");
+    const now = Date.now();
+    const HOUR = 3_600_000;
+
+    // A live predicted downtime window for pools outside this
+    // tick's own forecast (so the tick's derived honesty record
+    // never shares its subject): the hook must fire it once with
+    // the record id attached and the rendered text verbatim.
+    const seeded = {
+      record_version: 1,
+      id: "c4:downtime_window:opencode-go+meta:1764000000000",
+      kind: "downtime_window",
+      subject: { pools: ["opencode-go", "meta"] },
+      issued_at: new Date(now - HOUR).toISOString(),
+      basis: { name: "since_last_reset", detail: "seeded for the tick-hook test" },
+      prediction: {
+        earliest: new Date(now + 2 * HOUR).toISOString(),
+        latest: new Date(now + 6 * HOUR).toISOString(),
+        rendered: "likely runs out between tonight and tomorrow morning",
+      },
+      methodology_version: "c4-meth:4",
+      state: "predicted",
+      state_reason: null,
+      supersedes: null,
+    };
+    await writeFile(predictionsPath, `${JSON.stringify(seeded)}\n`, "utf8");
+
+    const providerResult = {
+      providerId: "cline-pass",
+      providerName: "ClinePass",
+      ok: true,
+      configured: true,
+      fetchedAt: now,
+      usage: { windows: { weekly: { usedPercent: 70, windowSeconds: 604_800, resetAt: now + 10 * HOUR } } },
+    };
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
+
+    const env = {
+      PATH: process.env.PATH ?? "",
+      HOME: dir,
+      QUOTA_CURRENT_PATH: currentPath,
+      QUOTA_HEARTBEAT_PATH: heartbeatPath,
+      QUOTA_GATHERER_STATE_PATH: statePath,
+      QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+      QUOTA_PREDICTIONS_PATH: predictionsPath,
+      QUOTA_FORECAST_ALERT_STATE_PATH: alertStatePath,
+      QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+      QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+      OPENDESIGN_RENEWAL_DISABLED: "1",
+      META_RENEWAL_DISABLED: "1",
+      TURSO_QUOTA_SINK: "0",
+    };
+
+    const first = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env,
+    });
+    if (first.error || first.status !== 0) {
+      throw new Error(`gatherer tick 1 failed: ${first.error?.message ?? first.stderr}\n${first.stdout}`);
+    }
+    // No alerts store in this env (Turso sink off): the finding is
+    // recorded and the skip is logged, never an error.
+    expect(first.stdout).toContain("forecast alerts: 1 new finding(s)");
+    expect(first.stdout).toContain("no alerts store — no ledger post");
+
+    const state = JSON.parse(await readFile(alertStatePath, "utf8"));
+    expect(state.version).toBe(1);
+    expect(state.fired.map((e: { recordId: string }) => e.recordId)).toContain(seeded.id);
+
+    const second = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env,
+    });
+    if (second.error || second.status !== 0) {
+      throw new Error(`gatherer tick 2 failed: ${second.error?.message ?? second.stderr}\n${second.stdout}`);
+    }
+    // The repeat tick re-reads the same log and posts nothing: the
+    // persisted fired state suppresses the already-alerted record.
+    expect(second.stdout).toContain("forecast alerts: 0 new finding(s)");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

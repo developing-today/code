@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Boots the real server on an ephemeral port and verifies the fixture-backed
 // app serves all four views and its health/JSON endpoints.
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
+const reportRecordsFile = join(tmpdir(), `pm-agg-report-review-${crypto.randomUUID()}.jsonl`);
 
 // #10467: starting the aggregator subprocess can take longer than bun's
 // default 5 s hook budget on a loaded machine; give the hook room to
@@ -14,7 +17,13 @@ beforeAll(async () => {
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
     cwd: import.meta.dir + "/..",
-    env: { ...Bun.env, PM_AGG_PORT: String(port), PM_AGG_SOURCE: "fixtures" },
+    env: {
+      ...Bun.env,
+      PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
+      PM_AGG_STORE_BACKEND: "file",
+      PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile,
+    },
     stdout: "pipe",
     stderr: "inherit",
   });
@@ -46,6 +55,25 @@ describe("server boots from fixtures", () => {
     const body = (await res.json()) as { status: string; source: { board: string } };
     expect(body.status).toBe("ok");
     expect(body.source.board).toBe("fixtures");
+  });
+
+  test("search routes expose in-process stage timings", async () => {
+    // Oracle: each named timing is recorded by the search path while it runs
+    // and is returned in the standard Server-Timing response header.
+    const expected = ["board", "roadmap", "registry", "dns", "usage", "orchestration", "items", "search"];
+    const json = await fetch(`http://127.0.0.1:${port}/api/search.json?q=fleet`);
+    expect(json.status).toBe(200);
+    const jsonTiming = json.headers.get("server-timing") ?? "";
+    for (const stage of [...expected, "serialize", "total"]) {
+      expect(jsonTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
+    }
+
+    const page = await fetch(`http://127.0.0.1:${port}/search?q=fleet`);
+    expect(page.status).toBe(200);
+    const pageTiming = page.headers.get("server-timing") ?? "";
+    for (const stage of [...expected, "render", "total"]) {
+      expect(pageTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
+    }
   });
 
   test("item JSON exposes ready-for-agent dispatch state and provenance", async () => {
@@ -131,6 +159,17 @@ describe("server boots from fixtures", () => {
     const res = await fetch(`http://127.0.0.1:${port}/roadmap`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Roadmap");
+  });
+
+  test("report review route exposes explicit append-only conflict choices", async () => {
+    const page = await fetch(`http://127.0.0.1:${port}/reports`);
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain("Report conflict review");
+    expect(body).toContain("No comparable report-block conflicts found");
+    const api = await fetch(`http://127.0.0.1:${port}/api/reports.json`);
+    expect(api.status).toBe(200);
+    expect(await api.json()).toEqual({ records: [], conflicts: [] });
   });
 
   test("quota and attention pages render", async () => {

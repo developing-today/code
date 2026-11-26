@@ -8,7 +8,7 @@
 #   The script now declares the expected set once (EXPECTED_SET):
 #   12 aggregator state files are REQUIRED (decisions.json and
 #   decision-events.jsonl since #10293), meta-quota-export files are
-#   OPTIONAL, db-dumps and the five #6815 Supabase store exports are
+#   OPTIONAL, db-dumps and the Turso store exports are
 #   required when their step ran (optional when it did not). The
 #   snapshots tree + 2 journal logs are OPTIONAL.
 #   manifest.json records every member's status, and the verify step
@@ -56,8 +56,7 @@ mkdir -p "$BIN"
   printf '#!%s\n' "$BASH"
   cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
-  # The #6815 Supabase store export reads these two by key name only.
-  printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"},{"key":"supabase.muse-dev2.db-password","value":"fake-db-password"},{"key":"supabase.muse-dev2.project-ref","value":"fake-project-ref"}]'
+  printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
 fi
 echo "stub bws: unsupported args: $*" >&2
@@ -152,7 +151,7 @@ run_backup() {
     RCLONE_STUB_DIR="$TMP_ROOT/$name/rclone-store" \
     RCLONE_CALLS_LOG="$TMP_ROOT/$name/rclone-calls.log" \
     PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" \
-    PM_AGG_SUPABASE_EXPORT=off \
+    PM_AGG_STORE_EXPORT=off \
     "$@" \
     bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/$name.log" 2>&1
   RC=$?
@@ -231,13 +230,10 @@ else
 fi
 assert_member missing-optional aggregator/snapshots optional missing
 assert_member missing-optional db-dumps optional missing
-# #6815: the canonical Supabase store exports are conditionally required
-# only when the export ran (backend=file in this harness, so optional).
-assert_member missing-optional supabase/agg_actions.json optional missing
-assert_member missing-optional supabase/agg_activity_ingestion.json optional missing
-assert_member missing-optional supabase/agg_activity_gaps.json optional missing
-assert_member missing-optional supabase/agg_usage_snapshots.json optional missing
-assert_member missing-optional supabase/agg_store_documents.json optional missing
+# The Turso store exports are conditionally required only when the
+# export ran (backend=file in this harness, so optional).
+assert_member missing-optional turso/agg_actions.json optional missing
+assert_member missing-optional turso/orch_runs.json optional missing
 assert_member missing-optional aggregator/actions.json required present
 assert_member missing-optional meta-quota-export/latest.json optional missing
 assert_member missing-optional meta-quota-export/history.jsonl optional missing
@@ -250,11 +246,11 @@ fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 46 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 47 else 1)
 '; then
-  ok "missing-optional: manifest lists all 46 expected members"
+  ok "missing-optional: manifest lists all 47 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 46-member set"
+  fail "missing-optional: manifest expected list is not the full 47-member set"
 fi
 
 # --- decisions ledger is required (#10293) -----------------------------------
@@ -340,144 +336,34 @@ assert_member dump-ran-with-dir db-dumps required present
 assert_member dump-ran-with-dir meta-quota-export/latest.json optional present
 assert_member dump-ran-with-dir meta-quota-export/history.jsonl optional present
 
-# --- file backend: Supabase export not applicable --------------------------------
-# Default PM_AGG_SUPABASE_EXPORT=auto with no $AGG/.env (or a backend=file
-# .env) runs no Supabase step: the five #6815 store exports stay
-# conditional/optional, the run is green, and no bws keys are needed.
+# --- file backend: remote store export not applicable ---------------------------
+# Default PM_AGG_STORE_EXPORT=auto with no $AGG/.env (or a backend=file
+# .env) runs no store export: the turso/ members stay conditional/optional
+# and the run is green.
 setup_home file-backend
-run_backup file-backend env -u PM_AGG_SUPABASE_EXPORT
+run_backup file-backend env -u PM_AGG_STORE_EXPORT
 if [[ $RC -eq 0 ]]; then
   ok "file-backend: script exited 0"
 else
   fail "file-backend: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/file-backend.log")"
 fi
-assert_member file-backend supabase/agg_actions.json optional missing
-if grep -q 'Supabase store export not applicable' "$TMP_ROOT/file-backend.log"; then
-  ok "file-backend: log names the skipped Supabase export"
+assert_member file-backend turso/agg_actions.json optional missing
+if grep -q 'remote store export not applicable' "$TMP_ROOT/file-backend.log"; then
+  ok "file-backend: log names the skipped store export"
 else
   fail "file-backend: log does not name the skipped export: $(cat "$TMP_ROOT/file-backend.log")"
 fi
 
-# --- supabase backend, export off: still not applicable -------------------------
-# An explicit PM_AGG_STORE_BACKEND=supabase .env opts back in via
-# PM_AGG_SUPABASE_EXPORT=off: same green run, optional members, no creds.
-setup_home supabase-backend-off
-printf 'PM_AGG_STORE_BACKEND=supabase\n' >"$RUN_HOME/.local/state/pm-aggregator/.env"
-run_backup supabase-backend-off
+# --- turso backend, export off: not applicable ----------------------------------
+setup_home turso-backend-off
+printf 'PM_AGG_STORE_BACKEND=turso\n' >"$RUN_HOME/.local/state/pm-aggregator/.env"
+run_backup turso-backend-off
 if [[ $RC -eq 0 ]]; then
-  ok "supabase-backend-off: script exited 0"
+  ok "turso-backend-off: script exited 0"
 else
-  fail "supabase-backend-off: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/supabase-backend-off.log")"
+  fail "turso-backend-off: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/turso-backend-off.log")"
 fi
-assert_member supabase-backend-off supabase/agg_actions.json optional missing
-if grep -q 'Supabase store export not applicable' "$TMP_ROOT/supabase-backend-off.log"; then
-  ok "supabase-backend-off: log names the skipped Supabase export"
-else
-  fail "supabase-backend-off: log does not name the skipped export: $(cat "$TMP_ROOT/supabase-backend-off.log")"
-fi
-
-# --- supabase backend, psql missing: fail-closed ---------------------------------
-# No silent skip: a supabase backend that cannot be exported fails the run
-# before any upload, with the journal marker unchanged.
-setup_home supabase-no-psql
-printf 'PM_AGG_STORE_BACKEND=supabase\n' >"$RUN_HOME/.local/state/pm-aggregator/.env"
-if command -v psql >/dev/null 2>&1; then
-  EMPTY_BIN="$TMP_ROOT/supabase-no-psql/empty-bin"
-  mkdir -p "$EMPTY_BIN"
-  # A PATH with everything this script may call EXCEPT psql: link every
-  # executable from the real PATH dirs, skipping psql, so the run reaches
-  # the export step and finds the tool genuinely missing.
-  while IFS= read -r dir; do
-    [ -d "$dir" ] || continue
-    for p in "$dir"/*; do
-      b="${p##*/}"
-      [ "$b" = "psql" ] && continue
-      [ -x "$p" ] && [ ! -e "$EMPTY_BIN/$b" ] && ln -s "$p" "$EMPTY_BIN/$b"
-    done
-  done < <(printf '%s\n' "$PATH" | tr ':' '\n')
-  ln -sf "$BIN/bws" "$EMPTY_BIN/bws"
-  PATH="$EMPTY_BIN" \
-    HOME="$RUN_HOME" BWS_ACCESS_TOKEN="fake-token" \
-    RCLONE_STUB_DIR="$TMP_ROOT/supabase-no-psql/rclone-store" \
-    RCLONE_CALLS_LOG="$TMP_ROOT/supabase-no-psql/rclone-calls.log" \
-    PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" \
-    bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/supabase-no-psql.log" 2>&1
-  RC=$?
-  MARKER_AFTER="$(cat "$RUN_HOME/backups/dashboard/.last-run-epoch" 2>/dev/null || echo missing)"
-  if [[ $RC -ne 0 ]] && grep -q 'psql not found' "$TMP_ROOT/supabase-no-psql.log"; then
-    ok "supabase-no-psql: run failed naming the missing psql"
-  else
-    fail "supabase-no-psql: expected non-zero + psql line, got rc=$RC: $(cat "$TMP_ROOT/supabase-no-psql.log")"
-  fi
-  if [[ $MARKER_AFTER == "$PRESET" ]] && no_upload supabase-no-psql; then
-    ok "supabase-no-psql: marker unchanged, nothing uploaded"
-  else
-    fail "supabase-no-psql: marker moved or an upload was attempted"
-  fi
-else
-  ok "supabase-no-psql: psql genuinely absent; skipped (host already proves the case)"
-fi
-
-# --- supabase backend, export on: stub psql exports five tables -----------------
-# A stub psql answers the JSON-array query for each table from fixture
-# files, so the REQUIRED members are staged and the manifest records
-# them present; SUPA_COUNTS names every table in the log.
-setup_home supabase-export
-printf 'PM_AGG_STORE_BACKEND=supabase\n' >"$RUN_HOME/.local/state/pm-aggregator/.env"
-# The stub dir only SHADOWS psql; everything else resolves from the real PATH.
-EXPORT_BIN="$TMP_ROOT/supabase-export/bin-stub"
-mkdir -p "$EXPORT_BIN/supabase-fixtures"
-ln -sf "$BIN/bws" "$EXPORT_BIN/bws"
-ln -sf "$BIN/rclone" "$EXPORT_BIN/rclone"
-printf '[{"id":"act-1"}]' >"$EXPORT_BIN/supabase-fixtures/agg_actions"
-printf '[{"source":"cron"}]' >"$EXPORT_BIN/supabase-fixtures/agg_activity_ingestion"
-printf '[]' >"$EXPORT_BIN/supabase-fixtures/agg_activity_gaps"
-printf '[{"snapshot_key":"k"}]' >"$EXPORT_BIN/supabase-fixtures/agg_usage_snapshots"
-printf '[{"store":"aa-last-good"}]' >"$EXPORT_BIN/supabase-fixtures/agg_store_documents"
-cat >"$EXPORT_BIN/psql" <<'STUBEOF'
-#!/usr/bin/env bash
-# Stub psql: implement only the export call shape (args include -c).
-# The table name is the last public.<table> mention in the -c argument.
-args="$*"
-table="$(printf '%s' "$args" | grep -o 'public\.[a-z_]*' | tail -1 | sed 's/^public\.//')"
-if [[ -n "$table" && -f "${PSQL_FIXTURES:?}/$table" ]]; then
-  cat "$PSQL_FIXTURES/$table"
-  echo
-  exit 0
-fi
-echo "stub psql: unsupported invocation: $args" >&2
-exit 1
-STUBEOF
-chmod +x "$EXPORT_BIN/psql"
-PATH="$EXPORT_BIN:$PATH" \
-  HOME="$RUN_HOME" BWS_ACCESS_TOKEN="fake-token" \
-  RCLONE_STUB_DIR="$TMP_ROOT/supabase-export/rclone-store" \
-  RCLONE_CALLS_LOG="$TMP_ROOT/supabase-export/rclone-calls.log" \
-  PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" \
-  PSQL_FIXTURES="$EXPORT_BIN/supabase-fixtures" \
-  bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/supabase-export.log" 2>&1
-RC=$?
-MARKER_AFTER="$(cat "$RUN_HOME/backups/dashboard/.last-run-epoch" 2>/dev/null || echo missing)"
-if [[ $RC -eq 0 ]]; then
-  ok "supabase-export: script exited 0"
-else
-  fail "supabase-export: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/supabase-export.log")"
-fi
-assert_member supabase-export supabase/agg_actions.json required present
-assert_member supabase-export supabase/agg_store_documents.json required present
-D_SUPA="$TMP_ROOT/supabase-export-extract"
-mkdir -p "$D_SUPA"
-tar -I zstd -xf "$RUN_HOME/backups/dashboard/2026-10-28/dashboard-2026-10-28.tar.zst" -C "$D_SUPA" 2>/dev/null
-if [[ "$(cat "$D_SUPA/supabase/agg_actions.json" 2>/dev/null)" == '[{"id":"act-1"}]' ]]; then
-  ok "supabase-export: staged agg_actions.json carries the exported rows"
-else
-  fail "supabase-export: staged agg_actions.json wrong: $(cat "$D_SUPA/supabase/agg_actions.json" 2>/dev/null || echo missing)"
-fi
-if grep -q 'canonical aggregator stores exported from Supabase: .*agg_actions=1.*agg_activity_gaps=0' "$TMP_ROOT/supabase-export.log"; then
-  ok "supabase-export: log names the exported per-table counts"
-else
-  fail "supabase-export: log lacks the per-table counts: $(cat "$TMP_ROOT/supabase-export.log")"
-fi
+assert_member turso-backend-off turso/agg_actions.json optional missing
 
 # --- Turso exporter stages every required table, no credentials in fixtures ---
 setup_home turso-export
@@ -487,7 +373,7 @@ cat >"$EXPORTER" <<'STUBEOF'
 set -eu
 [[ "$1" == --output-dir && $# == 2 ]]
 mkdir -p "$2"
-for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs; do
+for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs push_endpoints push_preferences push_item_stages push_item_stage_events push_registry_meta; do
   printf '[]' >"$2/$table.json"
 done
 STUBEOF
@@ -503,6 +389,7 @@ if [[ $RC -eq 0 ]]; then ok "turso-export: completed"; else fail "turso-export: 
 assert_member turso-export turso/agg_actions.json required present
 assert_member turso-export turso/alerts_push_subscriptions.json required present
 assert_member turso-export turso/orch_runs.json required present
+assert_member turso-export turso/push_endpoints.json optional present
 
 setup_home turso-missing
 PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \

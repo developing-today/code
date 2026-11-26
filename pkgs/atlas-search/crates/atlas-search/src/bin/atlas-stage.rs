@@ -3,7 +3,7 @@
 //! versioned schema, provisioning tool and registry; design
 //! `doc/2026-11-04T21-27-34Z_design_atlas_scaler_revision` section 4.1).
 //!
-//! Two verbs:
+//! Seven verbs:
 //! * `atlas-stage provision --db <path> --unit <id> --owner <o>
 //!   [--sensitivity internal] --registry <path>` — create the unit's
 //!   staging DB, apply the v1 schema, and register the unit as `open`.
@@ -13,11 +13,41 @@
 //!   in a lifecycle state (what the aggregator's poll reads).
 //! * `atlas-stage ingest --db <path> --unit <id> --repo <r>
 //!   --path <p> --file <f> --commit <sha> [--kind config]
-//!   [--language yaml] [--sensitivity internal]` — stage one
+//!   [--language yaml] [--sensitivity internal]
+//!   [--segments <segments.json>]` — stage one
 //!   code/config artifact as an embedding entry (#1518): one
 //!   `items` row plus its `chunks_raw` in the unit's staging DB.
+//!   With `--segments`, the artifact is staged classified (#12628):
+//!   boundary-safe chunks from the declared classification segments,
+//!   with one persisted classification record per chunk.
+//! * `atlas-stage provision-corpora --registry <path> --dir <dir>`
+//!   — register the five Atlas memory-integration corpora (#8622
+//!   slice 1a) as staging units, provisioning each unit's staging
+//!   DB under <dir>. Idempotent: a corpus already registered is
+//!   reported as recorded.
+//! * `atlas-stage ingest-memory --db <path> --unit <id>
+//!   --export <memories.json>` — stage a read-only JSON export of
+//!   OpenClaw's memory-lancedb store into the agent-memory unit
+//!   (#8622 slice 1a): one `items` row plus its `chunks_raw` per
+//!   memory, carrying the design's provenance set. The export's
+//!   vectors are ignored; promotion re-embeds with the mandated
+//!   model.
+//! * `atlas-stage ingest-memory-files --db <path> --unit <id>
+//!   --dir <memory-tree>` — scan a Muse memory tree and stage
+//!   its markdown files into the fleet-memory unit (#8626 slice
+//!   4): one `items` row plus its `chunks_raw` per file, carrying
+//!   the design's provenance set with the file's mtime as
+//!   `updated_at`. Re-scanning an unchanged tree stages zero;
+//!   an edited file re-stages exactly its chunks.
 //! * `atlas-stage items --db <path> [--unit <id>]` — list the
 //!   items staged in a unit's DB, with chunk counts.
+//! * `atlas-stage ingest-notes --db <path> --unit <id>
+//!   --dir <vault>` — scan a Zettelkasten/Emanote notes vault and
+//!   stage its markdown notes into the zettelkasten unit (#8626
+//!   slice 4): one `items` row plus its `chunks_raw` per note,
+//!   carrying the design's provenance set with the file's mtime as
+//!   `updated_at`. Re-scanning an unchanged vault stages zero;
+//!   an edited note re-stages exactly its chunks.
 //!
 //! * `atlas-stage promote --registry <path> --unit <id>
 //!   --shard-dir <dir> [--topic codeconfig]` — the aggregator's
@@ -29,9 +59,11 @@
 //!   ONNX runtime (ATLAS_MODEL_DIR / ATLAS_ORT_LIB, the same
 //!   resolution the atlas-search binary uses).
 //!
-//! All three are offline: a staging DB is a local libSQL/SQLite file
-//! today; hosted Turso creation is the aggregator slice's deployment
-//! surface, not this foundation.
+//! Five of the six are offline: a staging DB is a local libSQL/SQLite
+//! file today; hosted Turso creation is the aggregator slice's
+//! deployment surface, not this foundation. `promote` is the
+//! exception: it needs the embedding model + ONNX runtime, as its
+//! entry above states.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -52,6 +84,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Stage changed Markdown documents from explicit fleet checkouts (#8626).
+    IngestRepoDocs {
+        /// Already-provisioned repo-docs staging database.
+        #[arg(long)]
+        db: PathBuf,
+        /// JSON array of {"repo": <fleet repo ID>, "root": <absolute local directory>}.
+        #[arg(long)]
+        roots: PathBuf,
+        /// Agent attribution, if known.
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, default_value = "internal")]
+        sensitivity: String,
+    },
     /// Create a staging DB, apply the v1 schema, and register the unit.
     Provision {
         /// The staging database file to create.
@@ -100,12 +146,59 @@ enum Command {
         /// The entry kind (prose|code|config).
         #[arg(long, default_value = "config")]
         kind: String,
-        /// The artifact language (yaml, toml, rust, ...).
+        /// The artifact language (yaml, toml, rust, ...); when empty,
+        /// the staged file's extension is used.
         #[arg(long, default_value = "")]
         language: String,
         /// Physical sensitivity level (public|internal|secret; default internal).
         #[arg(long, default_value = "internal")]
         sensitivity: String,
+        /// Optional JSON file declaring the artifact's source-native
+        /// classification segments (#12628): an array of
+        /// {"start": <byte>, "end": <byte>, "sensitivity":
+        /// shareable|personal|local-only|secret-bearing,
+        /// "certain": <bool, default true>}. When given, the
+        /// artifact is staged classified: boundary-safe chunks plus
+        /// one persisted classification record per chunk.
+        #[arg(long)]
+        segments: Option<PathBuf>,
+    },
+    /// Register the five memory-integration corpora (#8622 slice 1a)
+    /// as staging units in the registry.
+    ProvisionCorpora {
+        /// The registry store file (created if missing).
+        #[arg(long)]
+        registry: PathBuf,
+        /// Directory each corpus unit's staging DB is provisioned in.
+        #[arg(long)]
+        dir: PathBuf,
+    },
+    /// Stage a memory-lancedb JSON export into the agent-memory unit
+    /// (#8622 slice 1a).
+    IngestMemory {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the entries belong to.
+        #[arg(long)]
+        unit: String,
+        /// The read-only JSON export of the memory-lancedb store.
+        #[arg(long)]
+        export: PathBuf,
+    },
+    /// Scan a Muse memory tree and stage its markdown files
+    /// into the fleet-memory unit (#8626 slice 4).
+    IngestMemoryFiles {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the files belong to.
+        #[arg(long)]
+        unit: String,
+        /// The memory tree root to scan (`MEMORY.md`, topic files,
+        /// daily logs — every `*.md` file under this directory).
+        #[arg(long)]
+        dir: PathBuf,
     },
     /// List the items staged in a unit's staging DB.
     Items {
@@ -133,12 +226,62 @@ enum Command {
         #[arg(long, default_value = "codeconfig")]
         topic: String,
     },
+    /// Rebuild an already-promoted corpus end-to-end under the
+    /// mandated embedding model (#8623 slice 2: the re-embed job).
+    /// Reads the unit's promotion archive, embeds with the mandated
+    /// model, writes one new core scan shard part, and closes out the
+    /// registry's per-corpus identity record. The unit stays merged.
+    Reembed {
+        /// The registry store file.
+        #[arg(long)]
+        registry: PathBuf,
+        /// The staging-unit id to rebuild (must be merged).
+        #[arg(long)]
+        unit: String,
+        /// Directory the new core scan shard is written into
+        /// (created if missing).
+        #[arg(long)]
+        shard_dir: PathBuf,
+        /// Shard topic for the rebuilt entries.
+        #[arg(long, default_value = "codeconfig")]
+        topic: String,
+    },
     /// List units in a lifecycle state (open|closing|merged).
     Units {
         #[arg(long, default_value = "open")]
         state: String,
         #[arg(long)]
         registry: PathBuf,
+    },
+    /// Stage a tree of research reports (goal files, briefs) into
+    /// the research-reports unit (#8626 slice 4). Re-running over an
+    /// unchanged tree stages nothing; an edited report re-stages
+    /// exactly its own chunks.
+    IngestReports {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the reports belong to.
+        #[arg(long)]
+        unit: String,
+        /// The root of the research-output tree to collect `.md`
+        /// reports from, recursively.
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Scan a Zettelkasten/Emanote notes vault and stage its markdown
+    /// notes into the zettelkasten unit (#8626 slice 4).
+    IngestNotes {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the notes belong to.
+        #[arg(long)]
+        unit: String,
+        /// The notes vault root to scan (every `*.md` file under this
+        /// directory).
+        #[arg(long)]
+        dir: PathBuf,
     },
 }
 
@@ -175,8 +318,91 @@ fn parse_state(s: &str) -> Result<UnitState, String> {
     UnitState::parse(s).ok_or_else(|| format!("unknown state {s:?} (want open|closing|merged)"))
 }
 
+/// Load the declared classification segments for `ingest
+/// --segments`: a JSON array of {"start", "end", "sensitivity",
+/// "certain"?} objects over the artifact's byte offsets. Parsed
+/// strictly — a missing or mistyped field, or an unknown sensitivity
+/// name, is a usage error, never a silent default.
+fn load_segments(
+    path: &PathBuf,
+) -> Result<Vec<atlas_core::boundary::ClassificationSegment>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading segments {}: {e}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("parsing segments {}: {e}", path.display()))?;
+    let array = value
+        .as_array()
+        .ok_or("segments file must be a JSON array of segment objects")?;
+    let mut out = Vec::with_capacity(array.len());
+    for (i, entry) in array.iter().enumerate() {
+        let field = |name: &str| {
+            entry
+                .get(name)
+                .ok_or_else(|| format!("segments[{i}]: missing field {name:?}"))
+        };
+        let start = field("start")?
+            .as_u64()
+            .ok_or_else(|| format!("segments[{i}]: \"start\" must be an unsigned integer"))?
+            as usize;
+        let end = field("end")?
+            .as_u64()
+            .ok_or_else(|| format!("segments[{i}]: \"end\" must be an unsigned integer"))?
+            as usize;
+        let sensitivity_name = field("sensitivity")?
+            .as_str()
+            .ok_or_else(|| format!("segments[{i}]: \"sensitivity\" must be a string"))?;
+        let sensitivity = atlas_core::filters::Sensitivity::from_name(sensitivity_name)
+            .ok_or_else(|| {
+                format!(
+                    "segments[{i}]: unknown sensitivity {sensitivity_name:?} \
+                     (want shareable|personal|local-only|secret-bearing)"
+                )
+            })?;
+        let certain = match entry.get("certain") {
+            None => true,
+            Some(v) => v
+                .as_bool()
+                .ok_or_else(|| format!("segments[{i}]: \"certain\" must be a boolean"))?,
+        };
+        out.push(atlas_core::boundary::ClassificationSegment {
+            start,
+            end,
+            sensitivity,
+            certain,
+        });
+    }
+    Ok(out)
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
+        Command::IngestRepoDocs {
+            db,
+            roots,
+            agent,
+            sensitivity,
+        } => {
+            let sensitivity = parse_tier(&sensitivity)?;
+            let raw = std::fs::read_to_string(&roots)
+                .map_err(|e| format!("reading {}: {e}", roots.display()))?;
+            let roots: Vec<atlas_core::repo_docs::RepoRoot> =
+                serde_json::from_str(&raw).map_err(|e| format!("invalid repo-docs roots: {e}"))?;
+            // Open an existing DB only: a bad path must not silently create a new store.
+            let conn = atlas_core::repo_docs::open_repo_docs_db(&db).map_err(|e| e.to_string())?;
+            let ids = atlas_core::repo_docs::ingest_repo_docs(
+                &conn,
+                &roots,
+                agent.as_deref(),
+                sensitivity,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{}",
+                serde_json::json!({"unit": "repo-docs", "items_staged": ids.len(), "item_ids": ids})
+            );
+            Ok(())
+        }
         Command::Provision {
             db,
             unit,
@@ -212,6 +438,7 @@ fn run(cli: Cli) -> Result<(), String> {
             kind,
             language,
             sensitivity,
+            segments,
         } => {
             let sensitivity = parse_tier(&sensitivity)?;
             let text = std::fs::read_to_string(&file)
@@ -233,8 +460,21 @@ fn run(cli: Cli) -> Result<(), String> {
                 sensitivity,
                 text,
             };
-            let item_id = atlas_core::stage::stage_artifact_in_db(&db, &unit, &entry, &now_utc())
-                .map_err(|e| e.to_string())?;
+            let item_id = match &segments {
+                Some(segments_path) => {
+                    let declared = load_segments(segments_path)?;
+                    atlas_core::stage::stage_classified_artifact_in_db(
+                        &db,
+                        &unit,
+                        &entry,
+                        &declared,
+                        &now_utc(),
+                    )
+                    .map_err(|e| e.to_string())?
+                }
+                None => atlas_core::stage::stage_artifact_in_db(&db, &unit, &entry, &now_utc())
+                    .map_err(|e| e.to_string())?,
+            };
             println!(
                 "{{\"item_id\":{item_id},\"unit\":{},\"source\":{}}}",
                 json_str(&unit),
@@ -242,6 +482,43 @@ fn run(cli: Cli) -> Result<(), String> {
                     "{}:{}@{}",
                     entry.repo, entry.path, entry.commit_sha
                 )),
+            );
+            Ok(())
+        }
+        Command::ProvisionCorpora { registry, dir } => {
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let units = atlas_core::memory::register_memory_corpora(&registry, &dir, &now_utc())
+                .map_err(|e| e.to_string())?;
+            for u in &units {
+                println!("{}", unit_json(u));
+            }
+            Ok(())
+        }
+        Command::IngestMemory { db, unit, export } => {
+            let raw = std::fs::read_to_string(&export)
+                .map_err(|e| format!("reading {}: {e}", export.display()))?;
+            let entries =
+                atlas_core::memory::parse_memory_export(&raw).map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::memory::stage_memory_export_in_db(&db, &unit, &entries, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
+                json_str(&unit),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
+            Ok(())
+        }
+        Command::IngestMemoryFiles { db, unit, dir } => {
+            let item_ids =
+                atlas_core::memory::scan_and_stage_memory_files_in_db(&db, &unit, &dir, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
+                json_str(&unit),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
             );
             Ok(())
         }
@@ -293,6 +570,36 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        Command::Reembed {
+            registry,
+            unit,
+            shard_dir,
+            topic,
+        } => {
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let embedder = load_doc_embedder()?;
+            let report = atlas_core::aggregate::reembed_unit_into_shard(
+                &registry,
+                &unit,
+                &shard_dir,
+                &topic,
+                &embedder,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"shard\":{},\"shard_path\":{},\"items\":{},\"prior_chunks\":{},\"chunks\":{},\"dims\":{},\"embedding_model\":{}}}",
+                json_str(&report.unit_id),
+                json_str(&report.shard_name),
+                json_str(&report.shard_path.display().to_string()),
+                report.items,
+                report.prior_chunks,
+                report.chunks,
+                report.dims,
+                json_str(&report.embedding_model),
+            );
+            Ok(())
+        }
         Command::Units { state, registry } => {
             let state = parse_state(&state)?;
             let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
@@ -300,6 +607,33 @@ fn run(cli: Cli) -> Result<(), String> {
             for u in &units {
                 println!("{}", unit_json(u));
             }
+            Ok(())
+        }
+        Command::IngestReports { db, unit, root } => {
+            let reports =
+                atlas_core::reports::collect_research_reports(&root).map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::reports::stage_research_reports_in_db(&db, &unit, &reports, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"reports_collected\":{},\"items_staged\":{},\"item_ids\":{}}}",
+                json_str(&unit),
+                reports.len(),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
+            Ok(())
+        }
+        Command::IngestNotes { db, unit, dir } => {
+            let item_ids =
+                atlas_core::notes::scan_and_stage_note_files_in_db(&db, &unit, &dir, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
+                json_str(&unit),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
             Ok(())
         }
     }
@@ -354,7 +688,7 @@ fn load_doc_embedder() -> Result<atlas_core::AtlasEmbedder, String> {
 
 fn unit_json(unit: &atlas_core::stage::StagingUnit) -> String {
     format!(
-        "{{\"unit_id\":{},\"db_uri\":{},\"owner\":{},\"sensitivity\":{},\"state\":{},\"schema_version\":{},\"created_at\":{},\"updated_at\":{}}}",
+        "{{\"unit_id\":{},\"db_uri\":{},\"owner\":{},\"sensitivity\":{},\"state\":{},\"schema_version\":{},\"created_at\":{},\"updated_at\":{},\"embedding_model\":{}}}",
         json_str(&unit.unit_id),
         json_str(&unit.db_uri),
         json_str(&unit.owner),
@@ -363,6 +697,7 @@ fn unit_json(unit: &atlas_core::stage::StagingUnit) -> String {
         unit.schema_version,
         json_str(&unit.created_at),
         json_str(&unit.updated_at),
+        json_str(&unit.embedding_model),
     )
 }
 
@@ -385,6 +720,16 @@ fn json_str(s: &str) -> String {
 }
 
 fn main() -> ExitCode {
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-stage {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

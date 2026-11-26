@@ -9,6 +9,6 @@
   },
   "authz-stdio-use-environment": {
     "server": "applies",
-    "why": "#1950 remainder (task 14860): re-judged so the recorded gap in coverage_authz.go (pointing at live #1950, with the reason) renders instead of the blanket pointer at closed #1975. The client side is untouched and keeps the #1950 blanket gap per the recorded deferral."
+    "why": "#1950 remainder: re-judged so the binding in coverage_authz.go renders instead of the blanket pointer at closed #1975. Bound by pool.TestStdioChildReceivesEnvCredential: the `env` auth type retrieves the credential from the daemon's environment and the spawned stdio child reports it back end to end. The client side is untouched and keeps the #1950 blanket gap per the recorded deferral."
   }
 }

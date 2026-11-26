@@ -146,7 +146,9 @@ fn decode_utf16_text(data: &[u8]) -> Option<String> {
         return None;
     };
     let units: Vec<u16> = body
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             if little_endian {
                 u16::from_le_bytes([c[0], c[1]])
@@ -556,6 +558,7 @@ pub fn create_program_router(
     };
     let router = Router::new()
         .route("/", get(program_page_handler))
+        .route("/sw.js", get(service_worker_handler))
         .route("/assets/{*path}", get(assets_handler))
         .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
     let router = router
@@ -641,6 +644,8 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/ws/collab/{doc_id}", get(super::collab::ws_collab_handler))
         // WebSocket for live tag updates
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
+        // Offline-shell service worker (#13918), root scope
+        .route("/sw.js", get(service_worker_handler))
         // Static assets
         .route("/assets/{*path}", get(assets_handler));
     // Optional authoritative in-memory world session bridge, bound
@@ -661,6 +666,16 @@ fn create_router_inner(state: AppState) -> Router {
     // The program gallery's read surface (#10003): 404 on every route
     // unless the serving process wired a gallery in.
     let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
+    // #10392 §6.1 (#14224): `POST /v1/runs` runs one subcommand of this
+    // binary with argv parity, for loopback clients only, checking app
+    // runs against the state's app manifests (#14226; see `super::runs`).
+    // Absent when the running executable cannot be found.
+    let router = match super::runs::RunsConfig::current_exe() {
+        Some(config) => router.merge(super::runs::runs_routes(
+            config.with_apps(state.run_apps.clone()),
+        )),
+        None => router,
+    };
     let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state.clone());
@@ -1434,6 +1449,11 @@ async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
     super::assets::static_handler(&path)
 }
 
+/// Offline-shell service worker at the site root (#13918).
+async fn service_worker_handler() -> impl IntoResponse {
+    super::assets::service_worker_handler()
+}
+
 /// System tag keys that are excluded from user-visible tags display.
 const SYSTEM_TAG_KEYS: &[&str] = &[
     "created", "modified", "deleted", "name", "file", "path", "origin",
@@ -2196,7 +2216,7 @@ mod save_publication_tests {
     use serde_json::json;
 
     use super::*;
-    use id_events::local_events::Entry;
+    use id_events::local_events::{Entry, Head};
     use id_store::tags::TagStore;
 
     use crate::{AppState, SaveRateLimiter};
@@ -2359,8 +2379,40 @@ mod save_publication_tests {
         // The current version is A's, untouched by B's refused save.
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), h2);
+    }
+
+    #[tokio::test]
+    async fn save_is_refused_when_the_current_version_cannot_be_read() {
+        // #12146: a tag-store read failure must not read as "no binding".
+        // That would skip the #8524 stale-save check and let the save
+        // supersede whatever the name points to.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let h1 = response_json(first).await["hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        state.store.shutdown().await.unwrap();
+        assert!(
+            current_filename_hash(&state.store, "notes.md")
+                .await
+                .is_err(),
+            "a store that cannot be read reports an error, not an unbound name"
+        );
+
+        let refused = save_based_on(state.clone(), "notes.md", "edit", &h1).await;
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(refused).await["reason"],
+            "current_version_unavailable"
+        );
     }
 
     #[tokio::test]
@@ -2427,6 +2479,7 @@ mod save_publication_tests {
         .await;
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), winner_body["hash"].as_str().unwrap());
     }
@@ -2557,14 +2610,9 @@ mod save_publication_tests {
         let (state, _endpoint, _docs) = state().await;
         let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(
-            state
-                .local_events
-                .lock()
-                .await
-                .frontier()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            state.local_events.lock().await.frontier().unwrap(),
+            [] as [Head; 0]
         );
     }
 }
@@ -4694,7 +4742,7 @@ mod upload_router_tests {
             body.contains("do not match the declared image type"),
             "body: {body}"
         );
-        assert!(list_images(router).await.is_empty());
+        assert_eq!(list_images(router).await, [] as [serde_json::Value; 0]);
     }
 
     #[tokio::test]
@@ -4721,7 +4769,7 @@ mod upload_router_tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{content_type}: {body}");
         }
-        assert!(list_images(router).await.is_empty());
+        assert_eq!(list_images(router).await, [] as [serde_json::Value; 0]);
     }
 
     #[tokio::test]

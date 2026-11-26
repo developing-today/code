@@ -5,12 +5,7 @@
 // laptop transport reads). The broker is backed by the live Turso
 // queue store and validates every packet on /enqueue.
 //
-// This replaces the direct PostgREST producer this module used to be:
-// pm-dispatch held the Supabase service-role key and wrote task rows
-// (enqueue RPC + claim PATCH) straight into the legacy Supabase store,
-// bypassing the packet validator and the broker, while the fleet's
-// live queue moved to Turso — its writes landed where no lane claims.
-// There is no service-role key in this process anymore, and no generic
+// No database credential lives in this process and there is no generic
 // row PATCH: the broker's verbs are the whole surface —
 //   enqueue    -> POST /enqueue    {packet, queue}   (validated)
 //   claimTask  -> POST /claim-flow {task_id, worker, queue, session_id,
@@ -25,13 +20,15 @@
 //   assignLane -> POST /lane       {task_id, worker}
 import type { Packet } from "./packet.ts";
 import { REPO_QUEUES } from "./config.ts";
-import { outboundTimeout } from "./fetchTimeout.ts";
+import { OUTBOUND_FETCH_TIMEOUT_MS, outboundTimeout } from "./fetchTimeout.ts";
 
 export class QueueError extends Error {
   status = 502;
   constructor(
     message: string,
     readonly httpStatus?: number,
+    /** The request may have committed even though its response was lost. */
+    readonly outcomeUnknown = false,
   ) {
     super(message);
   }
@@ -67,6 +64,19 @@ function isTaskRow(v: unknown): v is TaskRow {
   return typeof v === "object" && v !== null && !Array.isArray(v) && typeof (v as { id?: unknown }).id === "number";
 }
 
+/** A rich row is proof that this dispatch's claim committed only when
+ * the live status and the session id both match the request we just made. */
+function claimBelongsToSession(row: TaskRow | null, sessionId: string): row is TaskRow {
+  if (row?.status !== "claimed") return false;
+  const progress = row.progress;
+  return (
+    typeof progress === "object" &&
+    progress !== null &&
+    !Array.isArray(progress) &&
+    (progress as Record<string, unknown>).session_id === sessionId
+  );
+}
+
 interface BrokerEnvelope {
   ok?: unknown;
   row?: unknown;
@@ -78,6 +88,12 @@ interface BrokerEnvelope {
 
 export const DISPATCH_WORKER = "dispatch-opencode";
 
+// claim-flow performs three broker writes (claim, lane, bind) before it
+// answers. Give that bounded composite route more time than a read or a
+// single write; if the response still gets lost, claimTask reconciles by
+// task + session before launch compensation can cancel a committed claim.
+const CLAIM_FLOW_TIMEOUT_MS = 30_000;
+
 export class QueueClient {
   constructor(
     private brokerUrl: string,
@@ -87,8 +103,13 @@ export class QueueClient {
   /** One broker round trip. Throws QueueError on a transport failure,
    * a non-OK HTTP status, a non-JSON body, or an {ok: false} envelope
    * (the broker's verb refusals carry their message in ). */
-  private async call(path: string, body: Record<string, unknown>): Promise<BrokerEnvelope> {
+  private async call(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutMs = OUTBOUND_FETCH_TIMEOUT_MS,
+  ): Promise<BrokerEnvelope> {
     let res: Response;
+    let text: string;
     try {
       res = await fetch(`${this.brokerUrl}${path}`, {
         method: "POST",
@@ -97,12 +118,16 @@ export class QueueClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
-        signal: outboundTimeout(),
+        signal: outboundTimeout(timeoutMs),
       });
+      text = await res.text();
     } catch (e) {
-      throw new QueueError(`queue broker ${path} unreachable: ${e instanceof Error ? e.message : String(e)}`);
+      throw new QueueError(
+        `queue broker ${path} unreachable: ${e instanceof Error ? e.message : String(e)}`,
+        undefined,
+        true,
+      );
     }
-    const text = await res.text();
     let parsed: unknown = null;
     if (text.trim()) {
       try {
@@ -183,14 +208,23 @@ export class QueueClient {
    * the claim, and a launch whose session is not bound must back out
    * through the caller's failure compensation. */
   async claimTask(task: TaskRow, sessionId: string, launchedBy: string, leaseSeconds: number): Promise<TaskRow> {
-    const env = await this.call("/claim-flow", {
+    const body = {
       task_id: task.id,
       worker: DISPATCH_WORKER,
       queue: task.queue,
       session_id: sessionId,
       launched_by: launchedBy,
       lease_seconds: leaseSeconds,
-    });
+    };
+    let env: BrokerEnvelope;
+    try {
+      env = await this.call("/claim-flow", body, CLAIM_FLOW_TIMEOUT_MS);
+    } catch (e) {
+      if (e instanceof QueueError && e.outcomeUnknown) {
+        return await this.reconcileClaimFlow(task.id, sessionId, launchedBy, e);
+      }
+      throw e;
+    }
     const row = this.envelopeRow(env, "/claim-flow");
     if (!row) throw new ClaimLostError(task.id, "queued");
     const partial = env.claim_flow_partial;
@@ -205,6 +239,39 @@ export class QueueClient {
       }
     }
     return row;
+  }
+
+  /** A lost /claim-flow response is ambiguous: Turso may have committed
+   * the claim and session bind before the dispatch timeout fired. Read the
+   * exact task, and recover only when its live claim names this session.
+   * Reapplying the lane/bind state writes for the same session completes a
+   * flow that timed out between steps; a different or still-queued claim keeps
+   * the original error and follows normal launch compensation. */
+  private async reconcileClaimFlow(
+    taskId: number,
+    sessionId: string,
+    launchedBy: string,
+    originalError: QueueError,
+  ): Promise<TaskRow> {
+    let row: TaskRow | null;
+    try {
+      row = await this.getTask(taskId);
+    } catch {
+      throw originalError;
+    }
+    if (!claimBelongsToSession(row, sessionId)) throw originalError;
+
+    await this.assignLane(taskId);
+    await this.call("/bind", {
+      task_id: taskId,
+      worker: DISPATCH_WORKER,
+      session_id: sessionId,
+      launched_by: launchedBy,
+    });
+
+    const confirmed = await this.getTask(taskId);
+    if (!claimBelongsToSession(confirmed, sessionId)) throw originalError;
+    return confirmed;
   }
 
   /** One task by id via the broker's rich list. A failed lookup is

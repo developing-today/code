@@ -45,13 +45,20 @@
  *   unparseable      an endpoint answered something whose shape this
  *                    parser does not recognise. Exit 6.
  *   fetch-failed     network/other error inside the page. Exit 7.
+ *   no-subscription  the team has no active Muse Code subscription: the
+ *                    subscription-quota endpoint answers an empty object
+ *                    and the billing banner is the subscription upsell
+ *                    (first seen 2026-11-21, after the plan ended). There
+ *                    is no quota to read, so this is a valid reading of
+ *                    "nothing to measure", not drift. Exit 0, so the
+ *                    timer unit does not sit failed; the document still
+ *                    carries no windows or values.
  * "laptop-unreachable" is deliberately NOT produced here: if the
  * laptop is down nothing runs, so consumers derive it from the age of
  * latest.json (> 2 ticks = > 30 min without a fresh document).
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -72,11 +79,24 @@ const round2 = (n) => Math.round(n * 100) / 100;
 const MIN_EPOCH_SECONDS = 1_577_836_800; // 2020-01-01T00:00:00Z
 const MAX_EPOCH_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
 
-/** Parse a subscription-quota payload into export windows. Throws on
- * any shape drift — fail-closed, never partial zeros. The one tolerated
- * absence is a not-yet-started window (used = 0) whose reset the
- * console returns as null or omits: that window is emitted with
- * resetAt: null instead of failing the whole export (#1301). */
+/** The team has no active subscription: subscription-quota answers an
+ * empty object (no subscription_quota, nothing else) and the billing
+ * banner is the subscription upsell. Both must hold; any other missing
+ * quota stays "unparseable" so real shape drift still fails closed. */
+export function detectNoSubscription(quota, banner) {
+  const emptyQuota =
+    quota !== null && typeof quota === "object" && !Array.isArray(quota) && Object.keys(quota).length === 0;
+  return emptyQuota && banner?.kind === "subscription_upsell";
+}
+
+export const NO_SUBSCRIPTION_DETAIL =
+  "no active Muse Code subscription on this team: subscription-quota is empty and the billing banner offers a subscription";
+
+/** Parse a subscription-quota payload into export windows. Invalid shared
+ * fields fail closed; a malformed reset drops only its own window so one
+ * provider window cannot poison a healthy sibling (#2490). A not-yet-started
+ * window (used = 0) whose reset is null or omitted remains valid with
+ * resetAt: null (#1301). */
 export function parseSubscriptionQuota(payload) {
   const q = payload?.subscription_quota;
   if (!q || typeof q !== "object") {
@@ -140,8 +160,6 @@ export function parseSubscriptionQuota(payload) {
     }
     return epochSecondsField(num(raw), label);
   };
-  const windowReset = resetField(q.window_resets_at, windowUsed, "windowReset");
-  const weeklyReset = resetField(q.weekly_resets_at, weeklyUsed, "weeklyReset");
   if (windowLimit === 0 || weeklyLimit === 0) {
     throw new ExportError("unparseable", 6, "subscription-quota: zero limit");
   }
@@ -159,13 +177,28 @@ export function parseSubscriptionQuota(payload) {
   if (!(asOfRaw === null || asOfRaw === undefined || (typeof asOfRaw === "string" && asOfRaw.trim() === ""))) {
     consoleAsOf = iso(epochSecondsField(num(asOfRaw), "as_of"));
   }
+  // A malformed reset invalidates only its own window. Keep the healthy
+  // sibling window (and the rest of the export) instead of failing the
+  // entire pool; if neither window can be trusted, preserve the existing
+  // fail-closed behavior.
+  const windows = [];
+  const windowErrors = [];
+  for (const [name, used, limit, rawReset, label] of [
+    [shortName, windowUsed, windowLimit, q.window_resets_at, "windowReset"],
+    ["weekly", weeklyUsed, weeklyLimit, q.weekly_resets_at, "weeklyReset"],
+  ]) {
+    try {
+      const reset = resetField(rawReset, used, label);
+      windows.push({ name, usedPct: round2((used / limit) * 100), resetAt: reset === null ? null : iso(reset) });
+    } catch (error) {
+      windowErrors.push(error);
+    }
+  }
+  if (windows.length === 0) throw windowErrors[0];
   return {
     tier: typeof q.tier === "string" ? q.tier : null,
     consoleAsOf,
-    windows: [
-      { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: windowReset === null ? null : iso(windowReset) },
-      { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: weeklyReset === null ? null : iso(weeklyReset) },
-    ],
+    windows,
   };
 }
 
@@ -233,6 +266,19 @@ async function httpJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.json();
+}
+
+/** CDP's /json/list answers an array of targets (#7983 item 9). Anything
+ * else is a broken endpoint, not "no tabs": checked here so callers get
+ * a named error (cdp-unavailable) instead of a TypeError from .find. */
+async function listTargets(cdpBase) {
+  const url = `${cdpBase}/json/list`;
+  const body = await httpJson(url);
+  if (!Array.isArray(body)) {
+    const kind = body === null ? "null" : typeof body;
+    throw new Error(`${url} answered ${kind}, expected a JSON array of targets`);
+  }
+  return body;
 }
 
 function connectWs(wsUrl) {
@@ -330,7 +376,7 @@ async function fetchQuotaPayloads(client, teamId) {
  * Absence is reported as null, never invented. */
 async function fetchPaygBalance(cdpBase) {
   try {
-    const targets = await httpJson(`${cdpBase}/json/list`);
+    const targets = await listTargets(cdpBase);
     const frame = targets.find(
       (t) => t.type === "iframe" && typeof t.url === "string" && t.url.includes("billing.dev.meta.ai"),
     );
@@ -526,7 +572,7 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
   const cdpBase = `http://127.0.0.1:${cdpPort}`;
   let targets;
   try {
-    targets = await httpJson(`${cdpBase}/json/list`);
+    targets = await listTargets(cdpBase);
   } catch (e) {
     throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable: ${e.message}`);
   }
@@ -554,7 +600,7 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
       // PR #6333): its dev.meta.ai entry carries the old debugger URL.
       // Re-fetch before selecting or creating the console page.
       try {
-        targets = await httpJson(`${cdpBase}/json/list`);
+        targets = await listTargets(cdpBase);
       } catch (e) {
         throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable after restart: ${e.message}`, recovery);
       }
@@ -613,6 +659,9 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
     } finally {
       client.close();
     }
+    if (detectNoSubscription(bodies.quota, bodies.banner)) {
+      throw new ExportError("no-subscription", 0, NO_SUBSCRIPTION_DETAIL, recovery);
+    }
     const parsed = parseSubscriptionQuota(bodies.quota);
     const freeCreditsUsd = parseBillingBanner(bodies.banner);
     const paygBalanceUsd = await fetchPaygBalance(cdpBase);
@@ -654,6 +703,20 @@ function parseCdpPort(raw) {
   return port;
 }
 
+/** HOME for the default --out-dir, per the #5762 home-resolution contract
+ * (#8220): an unset or empty HOME is a usage error (nothing is written),
+ * never os.homedir's silent passwd fallback; a set HOME is unchanged. */
+function requireHome() {
+  const home = process.env.HOME;
+  if (home === undefined || home.trim() === "") {
+    usageError(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so the default --out-dir cannot be derived; ` +
+        "set HOME or pass --out-dir (home-resolution contract #5762: no passwd fallback)",
+    );
+  }
+  return home;
+}
+
 export function parseArgs(argv) {
   const values = {};
   for (let i = 0; i < argv.length; i++) {
@@ -672,7 +735,7 @@ export function parseArgs(argv) {
     i++; // consume the value: no token is read twice
   }
   return {
-    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "meta-quota-export"),
+    outDir: values["--out-dir"] ?? join(requireHome(), "atlas", "meta-quota-export"),
     cdpPort: parseCdpPort(values["--cdp-port"] ?? "19222"),
     teamId: values["--team-id"] ?? process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID,
   };

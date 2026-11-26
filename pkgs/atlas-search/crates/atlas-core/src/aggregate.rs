@@ -19,7 +19,11 @@
 //!    pipeline's own contract is that the embedder only ever sees
 //!    in-context inputs, and atlas-embed refuses longer ones. The
 //!    pieces partition the chunk text exactly and become separate
-//!    shard chunks under the same source pointer, in order.
+//!    shard chunks under the same source pointer, in order. Pieces
+//!    split within one staged chunk, so a piece never crosses the
+//!    classification boundary its chunk was cut on (#12628), and
+//!    each distinct piece text is embedded once per run: identical
+//!    texts share the one computed vector.
 //! 3. Write one new local core scan shard in `shard_dir` —
 //!    `atlas-core-<tier>-<topic>-<nn>.db` carrying exactly the shard
 //!    schema shard discovery and the fan-out scan read (`chunks`, the
@@ -27,7 +31,9 @@
 //!    promoted entries are searchable by the existing fan-out with no
 //!    new read path. The shard's tier is the unit's recorded
 //!    sensitivity; each chunk's `sensitivity` is written in the scan
-//!    vocabulary (see [`tier_sensitivity_name`]).
+//!    vocabulary (see [`tier_sensitivity_name`]) — for an item staged
+//!    with classification records (#12628), the chunk's own persisted
+//!    effective sensitivity; otherwise its item's tier.
 //! 4. Stamp the unit DB's `atlas_manifest` `embedding_model` with the
 //!    mandated model — the provenance record [`Registry::promote`]'s
 //!    M6 gate (#7648) reads. Stamping adds the manifest table to the
@@ -58,8 +64,9 @@ use rusqlite::{Connection, params};
 
 use crate::embed::DocEmbedder;
 use crate::error::{Error, Result};
+use crate::filters::Sensitivity;
 use crate::shards::{EMBEDDING_MODEL_ID, Tier};
-use crate::stage::{Registry, UnitState};
+use crate::stage::{Registry, UnitState, chunk_classifications};
 use crate::types::DEFAULT_VEC_TABLE;
 
 /// The scan-vocabulary sensitivity name a chunk of this tier carries
@@ -90,12 +97,45 @@ pub struct PromoteReport {
     pub dims: usize,
 }
 
+/// What one explicit re-embed run did (#8623 slice 2): a named,
+/// already-promoted corpus rebuilt end-to-end under the mandated
+/// model, with the before/after counts that prove the rebuild
+/// preserved the corpus exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReembedReport {
+    pub unit_id: String,
+    pub shard_name: String,
+    pub shard_path: PathBuf,
+    pub items: usize,
+    /// Staged chunks the corpus held before the rebuild (read from
+    /// its archive): the before half of the before/after evidence.
+    pub prior_chunks: usize,
+    /// Vector rows written into the new shard: the after half. Equal
+    /// to `prior_chunks` whenever no chunk exceeded the embedder's
+    /// context (the embed-time split partitions over-context chunks,
+    /// so a corpus with long chunks legitimately grows here).
+    pub chunks: usize,
+    pub dims: usize,
+    pub embedding_model: String,
+}
+
 struct StagedChunk {
     item_id: i64,
     item_source: Option<String>,
+    observed_at: String,
     item_sensitivity: String,
     text: String,
     content_hash: String,
+    /// Byte offsets in the original staged item, not the embed-time
+    /// piece. These are accumulated in staging chunk order below.
+    span_start: i64,
+    /// The chunk's persisted effective sensitivity (#12628), for
+    /// items staged with classification records: `Some` whenever the
+    /// item carries records — a chunk whose record is missing from a
+    /// classified item resolves to `secret-bearing` here, never to
+    /// the item's tier — and `None` for legacy items staged without
+    /// records, whose chunks keep the item-tier behaviour.
+    effective_sensitivity: Option<Sensitivity>,
 }
 
 /// Read one unit's staged chunks in staging order (item id, then
@@ -107,29 +147,71 @@ fn read_staged_chunks(db_path: &Path, unit_id: &str) -> Result<Vec<StagedChunk>>
             db_path.display()
         ))
     })?;
+    // The unit's per-item classification records, resolved once per
+    // item: item id -> (records present?, per-chunk classifications).
+    let mut classifications: std::collections::HashMap<
+        i64,
+        Option<Vec<crate::stage::ChunkClassification>>,
+    > = std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT id FROM items WHERE unit_id = ?1")
+            .map_err(|e| Error::backend(format!("aggregator: reading staged items: {e}")))?;
+        let ids = stmt
+            .query_map(params![unit_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| Error::backend(format!("aggregator: reading staged items: {e}")))?;
+        for id in ids {
+            let id =
+                id.map_err(|e| Error::backend(format!("aggregator: reading staged items: {e}")))?;
+            classifications.insert(id, chunk_classifications(&conn, id)?);
+        }
+    }
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.source, i.sensitivity, c.text, c.content_hash \
+            "SELECT i.id, i.source, i.created_at, i.sensitivity, c.text, c.content_hash, c.idx \
              FROM chunks_raw c JOIN items i ON i.id = c.item_id \
              WHERE i.unit_id = ?1 ORDER BY i.id, c.idx",
         )
         .map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?;
     let rows = stmt
         .query_map(params![unit_id], |r| {
-            Ok(StagedChunk {
-                item_id: r.get(0)?,
-                item_source: r.get(1)?,
-                item_sensitivity: r.get(2)?,
-                text: r.get(3)?,
-                content_hash: r.get(4)?,
-            })
+            Ok((
+                StagedChunk {
+                    item_id: r.get(0)?,
+                    item_source: r.get(1)?,
+                    observed_at: r.get(2)?,
+                    item_sensitivity: r.get(3)?,
+                    text: r.get(4)?,
+                    content_hash: r.get(5)?,
+                    effective_sensitivity: None,
+                    span_start: 0,
+                },
+                r.get::<_, i64>(6)?,
+            ))
         })
         .map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?;
     let mut out = Vec::new();
+    let mut item_offsets = std::collections::HashMap::<i64, i64>::new();
     for row in rows {
-        out.push(
-            row.map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?,
-        );
+        let (mut chunk, idx) =
+            row.map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?;
+        chunk.span_start = *item_offsets.entry(chunk.item_id).or_default();
+        *item_offsets
+            .get_mut(&chunk.item_id)
+            .expect("inserted above") += chunk.text.len() as i64;
+        chunk.effective_sensitivity = match classifications.get(&chunk.item_id) {
+            // Classified item: the chunk's own record governs; a
+            // chunk with no record in a classified item fails closed.
+            Some(Some(records)) => Some(
+                records
+                    .get(idx as usize)
+                    .map(|record| record.sensitivity)
+                    .unwrap_or(Sensitivity::SecretBearing),
+            ),
+            // Legacy item (or item not seen above): no records.
+            _ => None,
+        };
+        out.push(chunk);
     }
     Ok(out)
 }
@@ -156,10 +238,11 @@ fn next_shard_part(shard_dir: &Path, tier: Tier, topic: &str) -> Result<u32> {
         let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        if let Some((t, tp, part)) = crate::shards::parse_shard_name(stem) {
-            if t == tier && tp == topic {
-                next = next.max(part + 1);
-            }
+        if let Some((t, tp, part)) = crate::shards::parse_shard_name(stem)
+            && t == tier
+            && tp == topic
+        {
+            next = next.max(part + 1);
         }
     }
     Ok(next)
@@ -169,8 +252,16 @@ fn next_shard_part(shard_dir: &Path, tier: Tier, topic: &str) -> Result<u32> {
 /// the embed-time context split.
 struct ShardChunk {
     item_source: Option<String>,
+    observed_at: String,
     item_sensitivity: String,
+    /// The staged chunk's persisted effective sensitivity (#12628),
+    /// inherited by every embed-time piece of that chunk: pieces are
+    /// split *within* one staged chunk, so they never cross the
+    /// boundary the chunk was cut on and keep its classification.
+    effective_sensitivity: Option<Sensitivity>,
     chunk_idx: i64,
+    span_start: i64,
+    span_end: i64,
     text: String,
     content_hash: String,
 }
@@ -205,7 +296,217 @@ fn unique_piece_hash(
     }
 }
 
-/// Split `text` into pieces the embedder accepts: each piece
+/// Split staged chunks into embeddable pieces and embed every
+/// distinct piece text once (#12628): a document vector is a pure
+/// function of (text, model), and one run uses one model, so
+/// identical pieces share the single computed vector instead of
+/// being re-embedded. Only a text that actually changed is embedded
+/// anew. `label` names the calling job in error messages
+/// (`promote`, `re-embed`).
+fn embed_pieces(
+    chunks: &[StagedChunk],
+    embedder: &dyn DocEmbedder,
+    unit_id: &str,
+    label: &str,
+) -> Result<(Vec<ShardChunk>, Vec<Vec<f32>>)> {
+    // Split over-context chunks into embeddable pieces (module
+    // docs, step 2), then embed everything before writing anything:
+    // a model failure leaves no partial shard and an unstamped,
+    // still-open unit.
+    let mut pieces: Vec<ShardChunk> = Vec::new();
+    let mut item_piece_ordinals: std::collections::HashMap<i64, i64> =
+        std::collections::HashMap::new();
+    // The shard's `content_hash` column is UNIQUE, but two pieces can
+    // carry the same text: a file that repeats a block splits into
+    // identical pieces, and two items can stage identical whole files.
+    // Every piece is kept (the pieces must still partition each item's
+    // text), so a repeat gets a hash derived from its position (#10836).
+    let mut used_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for c in chunks {
+        let mut piece_offset = c.span_start;
+        for piece in split_for_embed(&c.text, embedder)? {
+            let ordinal = item_piece_ordinals.entry(c.item_id).or_insert(0);
+            let chunk_idx = *ordinal;
+            *ordinal += 1;
+            let text_hash = if piece == c.text {
+                c.content_hash.clone()
+            } else {
+                sha256_hex(&piece)
+            };
+            let content_hash = unique_piece_hash(&mut used_hashes, text_hash, c.item_id, chunk_idx);
+            pieces.push(ShardChunk {
+                item_source: c.item_source.clone(),
+                observed_at: c.observed_at.clone(),
+                item_sensitivity: c.item_sensitivity.clone(),
+                effective_sensitivity: c.effective_sensitivity,
+                chunk_idx,
+                span_start: piece_offset,
+                span_end: piece_offset + piece.len() as i64,
+                content_hash,
+                text: piece,
+            });
+            piece_offset = pieces.last().expect("piece just pushed").span_end;
+        }
+    }
+    // Embed each distinct text once (#12628): a document vector is a
+    // pure function of (text, model), and this run uses one model,
+    // so identical pieces — repeated blocks, identical items, and
+    // chunks a boundary revision left unchanged — share the single
+    // computed vector instead of being re-embedded. Only a text that
+    // actually changed is embedded anew.
+    let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(pieces.len());
+    let mut vec_by_text: std::collections::HashMap<String, Vec<f32>> =
+        std::collections::HashMap::new();
+    for piece in &pieces {
+        let key = sha256_hex(&piece.text);
+        if let Some(vec) = vec_by_text.get(&key) {
+            vecs.push(vec.clone());
+            continue;
+        }
+        let vec = embedder.embed_doc(&piece.text)?;
+        vec_by_text.insert(key, vec.clone());
+        vecs.push(vec);
+    }
+    let dims = vecs.first().map(Vec::len).unwrap_or(0);
+    if dims == 0 || vecs.iter().any(|v| v.len() != dims) {
+        return Err(Error::fatal(format!(
+            "aggregator: {label} embedder returned inconsistent vector dims for unit {unit_id:?} (first {dims})"
+        )));
+    }
+    Ok((pieces, vecs))
+}
+
+/// Write embedded pieces as one new core scan shard in `shard_dir`
+/// and stamp it with the mandated embedding-model provenance.
+/// Returns the shard name and path. On any failure the partial shard
+/// file is removed, so a failed run leaves no half-written shard.
+fn write_shard(
+    shard_dir: &Path,
+    tier: Tier,
+    topic: &str,
+    unit_id: &str,
+    pieces: &[ShardChunk],
+    vecs: &[Vec<f32>],
+    label: &str,
+) -> Result<(String, PathBuf)> {
+    std::fs::create_dir_all(shard_dir).map_err(|e| {
+        Error::backend(format!(
+            "aggregator: {label} creating shard dir {}: {e}",
+            shard_dir.display()
+        ))
+    })?;
+    let part = next_shard_part(shard_dir, tier, topic)?;
+    let shard_name = format!("atlas-core-{}-{}-{:02}", tier.name(), topic, part);
+    let shard_path = shard_dir.join(format!("{shard_name}.db"));
+    if shard_path.exists() {
+        return Err(Error::fatal(format!(
+            "aggregator: {label} shard file {} already exists; refusing to overwrite",
+            shard_path.display()
+        )));
+    }
+
+    let write = (|| -> Result<()> {
+        let conn = Connection::open(&shard_path).map_err(|e| {
+            Error::backend(format!(
+                "aggregator: {label} creating shard {}: {e}",
+                shard_path.display()
+            ))
+        })?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, \
+               chunk_idx INTEGER, text TEXT NOT NULL, content_hash TEXT UNIQUE NOT NULL, \
+               sensitivity TEXT); \
+              CREATE TABLE {DEFAULT_VEC_TABLE} (chunk_id INTEGER PRIMARY KEY, vec BLOB NOT NULL); \
+              CREATE TABLE chunk_occurrences ( \
+                shard_chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE, \
+                canonical_hash TEXT NOT NULL, source TEXT NOT NULL, \
+                span_start INTEGER NOT NULL, span_end INTEGER NOT NULL, observed_at TEXT NOT NULL, \
+                PRIMARY KEY (shard_chunk_id, source, span_start)); \
+              CREATE INDEX chunk_occurrences_hash ON chunk_occurrences (canonical_hash); \
+              CREATE TABLE atlas_manifest (\"key\" TEXT PRIMARY KEY, value TEXT);"
+        ))
+        .map_err(|e| Error::backend(format!("aggregator: {label} shard schema: {e}")))?;
+        conn.execute_batch("BEGIN")
+            .map_err(|e| Error::backend(format!("aggregator: {label} shard begin: {e}")))?;
+        for (i, (c, v)) in pieces.iter().zip(vecs.iter()).enumerate() {
+            let id = (i + 1) as i64;
+            // The chunk's sensitivity: for a classified item, its
+            // persisted effective sensitivity, whose name is already
+            // scan vocabulary (the fan-out filters chunk sensitivity
+            // against the Sensitivity ladder). Otherwise its item's
+            // recorded tier, in scan vocabulary; an unparseable
+            // record falls back to the unit's tier rather than
+            // widening access.
+            let sens = match c.effective_sensitivity {
+                Some(sensitivity) => sensitivity.name(),
+                None => Tier::parse(&c.item_sensitivity)
+                    .map(tier_sensitivity_name)
+                    .unwrap_or_else(|| tier_sensitivity_name(tier)),
+            };
+            let message_id = c
+                .item_source
+                .clone()
+                .unwrap_or_else(|| format!("unit:{unit_id}"));
+            conn.execute(
+                "INSERT INTO chunks VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, message_id, c.chunk_idx, c.text, c.content_hash, sens],
+            )
+            .map_err(|e| Error::backend(format!("aggregator: {label} shard chunk {id}: {e}")))?;
+            conn.execute(
+                &format!("INSERT INTO {DEFAULT_VEC_TABLE} VALUES (?1, ?2)"),
+                params![id, vec_blob(v)],
+            )
+            .map_err(|e| Error::backend(format!("aggregator: {label} shard vector {id}: {e}")))?;
+            let source = c
+                .item_source
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("unit:{unit_id}"));
+            conn.execute(
+                "INSERT INTO chunk_occurrences \
+                 (shard_chunk_id, canonical_hash, source, span_start, span_end, observed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id,
+                    sha256_hex(&c.text),
+                    source,
+                    c.span_start,
+                    c.span_end,
+                    c.observed_at
+                ],
+            )
+            .map_err(|e| {
+                Error::backend(format!("aggregator: {label} shard occurrence {id}: {e}"))
+            })?;
+        }
+        let manifest: [(&str, String); 9] = [
+            ("shard", shard_name.clone()),
+            ("tier", tier.name().to_string()),
+            ("topic", topic.to_string()),
+            ("part", part.to_string()),
+            ("expected_chunks", pieces.len().to_string()),
+            ("metric", "cosine".to_string()),
+            ("embedding_model", EMBEDDING_MODEL_ID.to_string()),
+            ("engine", "tursodb".to_string()),
+            ("source_unit", unit_id.to_string()),
+        ];
+        for (k, v) in &manifest {
+            conn.execute(
+                "INSERT OR REPLACE INTO atlas_manifest VALUES (?1, ?2)",
+                params![k, v],
+            )
+            .map_err(|e| Error::backend(format!("aggregator: {label} shard manifest {k}: {e}")))?;
+        }
+        conn.execute_batch("COMMIT")
+            .map_err(|e| Error::backend(format!("aggregator: {label} shard commit: {e}")))?;
+        Ok(())
+    })();
+    if let Err(e) = write {
+        let _ = std::fs::remove_file(&shard_path);
+        return Err(e);
+    }
+    Ok((shard_name, shard_path))
+}
 /// tokenizes to at most `embedder.max_input_tokens()`. Pieces break
 /// at line boundaries (lines keep their terminators, so the pieces
 /// partition `text` exactly); a single line still over the limit is
@@ -339,137 +640,21 @@ pub fn embed_unit_into_shard(
         ids.len()
     };
 
-    // Split over-context chunks into embeddable pieces (module
-    // docs, step 2), then embed everything before writing anything:
-    // a model failure leaves no partial shard and an unstamped,
+    // Split + embed via the shared helper (also used by the
+    // re-embed job): embed everything before writing anything, so a
+    // model failure leaves no partial shard and an unstamped,
     // still-open unit.
-    let mut pieces: Vec<ShardChunk> = Vec::new();
-    let mut item_piece_ordinals: std::collections::HashMap<i64, i64> =
-        std::collections::HashMap::new();
-    // The shard's `content_hash` column is UNIQUE, but two pieces can
-    // carry the same text: a file that repeats a block splits into
-    // identical pieces, and two items can stage identical whole files.
-    // Every piece is kept (the pieces must still partition each item's
-    // text), so a repeat gets a hash derived from its position (#10836).
-    let mut used_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for c in &chunks {
-        for piece in split_for_embed(&c.text, embedder)? {
-            let ordinal = item_piece_ordinals.entry(c.item_id).or_insert(0);
-            let chunk_idx = *ordinal;
-            *ordinal += 1;
-            let text_hash = if piece == c.text {
-                c.content_hash.clone()
-            } else {
-                sha256_hex(&piece)
-            };
-            let content_hash = unique_piece_hash(&mut used_hashes, text_hash, c.item_id, chunk_idx);
-            pieces.push(ShardChunk {
-                item_source: c.item_source.clone(),
-                item_sensitivity: c.item_sensitivity.clone(),
-                chunk_idx,
-                content_hash,
-                text: piece,
-            });
-        }
-    }
-    let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(pieces.len());
-    for piece in &pieces {
-        vecs.push(embedder.embed_doc(&piece.text)?);
-    }
-    let dims = vecs[0].len();
-    if dims == 0 || vecs.iter().any(|v| v.len() != dims) {
-        return Err(Error::fatal(format!(
-            "aggregator: embedder returned inconsistent vector dims for unit {unit_id:?} (first {dims})"
-        )));
-    }
-
-    std::fs::create_dir_all(shard_dir).map_err(|e| {
-        Error::backend(format!(
-            "aggregator: creating shard dir {}: {e}",
-            shard_dir.display()
-        ))
-    })?;
-    let part = next_shard_part(shard_dir, unit.sensitivity, topic)?;
-    let shard_name = format!(
-        "atlas-core-{}-{}-{:02}",
-        unit.sensitivity.name(),
+    let (pieces, vecs) = embed_pieces(&chunks, embedder, unit_id, "promote")?;
+    let (shard_name, shard_path) = write_shard(
+        shard_dir,
+        unit.sensitivity,
         topic,
-        part
-    );
-    let shard_path = shard_dir.join(format!("{shard_name}.db"));
-    if shard_path.exists() {
-        return Err(Error::fatal(format!(
-            "aggregator: shard file {} already exists; refusing to overwrite",
-            shard_path.display()
-        )));
-    }
-
-    let write = (|| -> Result<()> {
-        let conn = Connection::open(&shard_path).map_err(|e| {
-            Error::backend(format!(
-                "aggregator: creating shard {}: {e}",
-                shard_path.display()
-            ))
-        })?;
-        conn.execute_batch(&format!(
-            "CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, \
-               chunk_idx INTEGER, text TEXT NOT NULL, content_hash TEXT UNIQUE NOT NULL, \
-               sensitivity TEXT); \
-             CREATE TABLE {DEFAULT_VEC_TABLE} (chunk_id INTEGER PRIMARY KEY, vec BLOB NOT NULL); \
-             CREATE TABLE atlas_manifest (\"key\" TEXT PRIMARY KEY, value TEXT);"
-        ))
-        .map_err(|e| Error::backend(format!("aggregator: shard schema: {e}")))?;
-        conn.execute_batch("BEGIN")
-            .map_err(|e| Error::backend(format!("aggregator: shard begin: {e}")))?;
-        for (i, (c, v)) in pieces.iter().zip(vecs.iter()).enumerate() {
-            let id = (i + 1) as i64;
-            // The chunk's sensitivity is its item's recorded tier,
-            // in scan vocabulary; an unparseable record falls back
-            // to the unit's tier rather than widening access.
-            let sens = Tier::parse(&c.item_sensitivity)
-                .map(tier_sensitivity_name)
-                .unwrap_or_else(|| tier_sensitivity_name(unit.sensitivity));
-            let message_id = c
-                .item_source
-                .clone()
-                .unwrap_or_else(|| format!("unit:{unit_id}"));
-            conn.execute(
-                "INSERT INTO chunks VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, message_id, c.chunk_idx, c.text, c.content_hash, sens],
-            )
-            .map_err(|e| Error::backend(format!("aggregator: shard chunk {id}: {e}")))?;
-            conn.execute(
-                &format!("INSERT INTO {DEFAULT_VEC_TABLE} VALUES (?1, ?2)"),
-                params![id, vec_blob(v)],
-            )
-            .map_err(|e| Error::backend(format!("aggregator: shard vector {id}: {e}")))?;
-        }
-        let manifest: [(&str, String); 9] = [
-            ("shard", shard_name.clone()),
-            ("tier", unit.sensitivity.name().to_string()),
-            ("topic", topic.to_string()),
-            ("part", part.to_string()),
-            ("expected_chunks", pieces.len().to_string()),
-            ("metric", "cosine".to_string()),
-            ("embedding_model", EMBEDDING_MODEL_ID.to_string()),
-            ("engine", "tursodb".to_string()),
-            ("source_unit", unit_id.to_string()),
-        ];
-        for (k, v) in &manifest {
-            conn.execute(
-                "INSERT OR REPLACE INTO atlas_manifest VALUES (?1, ?2)",
-                params![k, v],
-            )
-            .map_err(|e| Error::backend(format!("aggregator: shard manifest {k}: {e}")))?;
-        }
-        conn.execute_batch("COMMIT")
-            .map_err(|e| Error::backend(format!("aggregator: shard commit: {e}")))?;
-        Ok(())
-    })();
-    if let Err(e) = write {
-        let _ = std::fs::remove_file(&shard_path);
-        return Err(e);
-    }
+        unit_id,
+        &pieces,
+        &vecs,
+        "promote",
+    )?;
+    let dims = vecs.first().map(Vec::len).unwrap_or(0);
 
     // Stamp the unit DB's embedding-model provenance (the M6 gate's
     // record), then promote through the registry gate. On failure the
@@ -507,5 +692,94 @@ pub fn embed_unit_into_shard(
         items,
         chunks: pieces.len(),
         dims,
+    })
+}
+
+/// Rebuild one already-promoted corpus end-to-end under the mandated
+/// model (#8623 slice 2: the re-embed job). The staged set is read
+/// from the unit's promotion archive (the durable record
+/// [`Registry::promote`] branched beside the staging DB), embedded
+/// with the single mandated model via the shared helper, and written
+/// as one new core scan shard in `shard_dir` — a new part number, so
+/// the previous shard stays discoverable until the operator retires
+/// it. The registry's per-corpus identity record is closed out to the
+/// mandated model. The unit stays `merged`: re-embed is a rebuild,
+/// not a state transition.
+///
+/// Failure shape mirrors promotion: a model or write failure leaves
+/// no partial shard (the helper removes it) and touches neither the
+/// archive nor the registry record, so a retry starts clean.
+pub fn reembed_unit_into_shard(
+    registry: &Registry,
+    unit_id: &str,
+    shard_dir: &Path,
+    topic: &str,
+    embedder: &dyn DocEmbedder,
+    now: &str,
+) -> Result<ReembedReport> {
+    let unit = registry.lookup(unit_id)?.ok_or_else(|| {
+        Error::fatal(format!(
+            "aggregator: no staging unit {unit_id:?} to re-embed"
+        ))
+    })?;
+    if unit.state != UnitState::Merged {
+        return Err(Error::fatal(format!(
+            "aggregator: staging unit {unit_id:?} is not merged (state {}); re-embed rebuilds a promoted corpus, so promote it first",
+            unit.state
+        )));
+    }
+    if topic.is_empty()
+        || !topic
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(Error::fatal(format!(
+            "aggregator: shard topic {topic:?} must be non-empty [A-Za-z0-9-]"
+        )));
+    }
+    let archive = crate::stage::staging_archive_path(&unit.db_uri);
+    if !archive.exists() {
+        return Err(Error::fatal(format!(
+            "aggregator: re-embed unit {unit_id:?} has no archive at {}; promote it first so the staged set is preserved",
+            archive.display()
+        )));
+    }
+    let chunks = read_staged_chunks(&archive, unit_id)?;
+    if chunks.is_empty() {
+        return Err(Error::fatal(format!(
+            "aggregator: re-embed unit {unit_id:?} archive holds no staged chunks to embed"
+        )));
+    }
+    let prior_chunks = chunks.len();
+    let items = {
+        let mut ids: Vec<i64> = Vec::new();
+        for c in &chunks {
+            if !ids.contains(&c.item_id) {
+                ids.push(c.item_id);
+            }
+        }
+        ids.len()
+    };
+    let (pieces, vecs) = embed_pieces(&chunks, embedder, unit_id, "re-embed")?;
+    let (shard_name, shard_path) = write_shard(
+        shard_dir,
+        unit.sensitivity,
+        topic,
+        unit_id,
+        &pieces,
+        &vecs,
+        "re-embed",
+    )?;
+    let dims = vecs.first().map(Vec::len).unwrap_or(0);
+    registry.record_embedding_model(unit_id, EMBEDDING_MODEL_ID, now)?;
+    Ok(ReembedReport {
+        unit_id: unit_id.to_string(),
+        shard_name,
+        shard_path,
+        items,
+        prior_chunks,
+        chunks: pieces.len(),
+        dims,
+        embedding_model: EMBEDDING_MODEL_ID.to_string(),
     })
 }

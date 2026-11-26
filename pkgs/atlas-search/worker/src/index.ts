@@ -12,17 +12,43 @@
  *
  * Routes:
  *   GET  /health                    (open; liveness only)
- *   POST /v1/search  {query, k?}    (gated) -> miss or hit envelope
+ *   POST /v1/search  {query, k?, session?} (gated) -> miss or hit envelope
  *   GET  /v1/cache/inspect?query=&k= (gated) -> DO metadata readback
+ *   POST /v1/cache/purge {query, k?} (gated) -> delete one cached query
+ *   POST /mcp                       (gated) -> MCP endpoint (#8625; src/mcp.ts)
+ *   POST /v1/admin/retained/audit {object, version} (gated) -> pin a version for audit (#9140)
+ *   GET  /v1/admin/retained/compare?object=&from=&to= (gated) -> before/after report (#9140)
+ *   POST /v1/admin/retained/report  (gated) -> on-demand retention dry-run report (#9140)
+ *   POST /v1/admin/retained/promote {class} (gated) -> move a class to live-cold once earned (#9140)
+ *
+ * Cron (wrangler.toml [triggers]): each scheduled event runs one retention
+ * cycle (#9140 slice 7) when a RETAINED binding exists; otherwise nothing.
  */
 import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
+import { handleMcp } from "./mcp";
+import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
+import { AuditError, compareAudited, pinForAudit } from "./audit_report";
+import { RetainedObjectError } from "./retained_object";
+import { promoteClass, RetentionReportError, runRetentionReport, runScheduledCycle } from "./retention_report";
+import { recordSearch, validSession } from "./search_history";
+import { CONTEXT } from "./space";
 
 export { QueryCache };
 
 export interface Env {
   QUERY_CACHE: DurableObjectNamespace;
+  /** D1 tenant hot cache binding (#9134 §5, #13100); optional so a
+   * deploy without the database provisioned still typechecks and
+   * runs the pre-cache path. */
+  HOT_CACHE?: D1Database;
+  /** Hot-cache master flag; only the literal "true" enables it. */
+  HOT_CACHE_ENABLED?: string;
+  /** Retained objects (#9140): search history for callers that name a
+   * session, kept only while its class is enabled there, and the admin
+   * audit set the comparison report reads. */
+  RETAINED?: D1Database;
   GATE_TOKEN: string;
   SERVICE_BASE: string;
   SERVICE_TOKEN: string;
@@ -30,11 +56,89 @@ export interface Env {
   ACCESS_CLIENT_SECRET: string;
 }
 
-const DEFAULT_K = 10;
-const MAX_K = 50;
-
 function errorJson(status: number, code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status });
+}
+
+/** A positive whole version number, or undefined. */
+function versionNumber(value: unknown): number | undefined {
+  const n = typeof value === "string" && /^[0-9]{1,15}$/.test(value) ? Number(value) : value;
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? n : undefined;
+}
+
+/** The admin retained-object routes (#9140 slices 5 and 6). */
+async function retainedAdmin(req: Request, env: Env, url: URL): Promise<Response> {
+  const db = env.RETAINED;
+  if (!db) return errorJson(503, "retained_off", "no retained-object store is configured");
+  try {
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/audit") {
+      const raw = await readTextUpTo(req);
+      if (raw === null) return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return errorJson(400, "bad_request", "body must be JSON");
+      }
+      const { object, version } = (typeof body === "object" && body !== null ? body : {}) as {
+        object?: unknown;
+        version?: unknown;
+      };
+      const v = versionNumber(version);
+      if (typeof object !== "string" || object.length === 0 || v === undefined) {
+        return errorJson(400, "bad_request", "object must be a non-empty string and version a positive integer");
+      }
+      return Response.json(await pinForAudit(db, object, v));
+    }
+    if (req.method === "GET" && url.pathname === "/v1/admin/retained/compare") {
+      const object = url.searchParams.get("object");
+      const from = versionNumber(url.searchParams.get("from"));
+      const to = versionNumber(url.searchParams.get("to"));
+      if (!object || from === undefined || to === undefined) {
+        return errorJson(400, "bad_request", "object, from and to are required; from and to are positive integers");
+      }
+      return Response.json(await compareAudited(db, object, from, to));
+    }
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/report") {
+      // On-demand only: these reports never count toward promotion.
+      return Response.json(await runRetentionReport(db, `on-demand-${crypto.randomUUID()}`, "on-demand"));
+    }
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/promote") {
+      // The reviewed step (design §6): a class goes live only on this call,
+      // and only once its two latest scheduled reports agree.
+      const raw = await readTextUpTo(req);
+      if (raw === null) return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return errorJson(400, "bad_request", "body must be JSON");
+      }
+      const name = (typeof body === "object" && body !== null ? body : {}) as { class?: unknown };
+      if (typeof name.class !== "string" || name.class.length === 0) {
+        return errorJson(400, "bad_request", "class must be a non-empty string");
+      }
+      const earned = await promoteClass(db, name.class);
+      return Response.json({ class: name.class, mode: "live-cold", promoted_from: earned });
+    }
+  } catch (error) {
+    if (error instanceof AuditError) {
+      return errorJson(error.code === "family_mismatch" ? 409 : 404, error.code, error.message);
+    }
+    if (error instanceof RetainedObjectError) return errorJson(409, error.code, error.message);
+    if (error instanceof RetentionReportError) {
+      return errorJson(error.code === "unknown_retention_class" ? 404 : 409, error.code, error.message);
+    }
+    throw error;
+  }
+  const known = [
+    "/v1/admin/retained/audit",
+    "/v1/admin/retained/compare",
+    "/v1/admin/retained/report",
+    "/v1/admin/retained/promote",
+  ];
+  if (!known.includes(url.pathname)) return errorJson(404, "not_found", "no route");
+  return errorJson(405, "method_not_allowed", "use POST for audit, report and promote, GET for compare");
 }
 
 /** Constant-time bearer comparison (via digests, so length-safe). */
@@ -54,11 +158,6 @@ async function gateOk(env: Env, req: Request): Promise<boolean> {
   return diff === 0;
 }
 
-function clampK(raw: unknown): number {
-  const n = typeof raw === "number" ? Math.floor(raw) : DEFAULT_K;
-  return Math.min(MAX_K, Math.max(1, Number.isFinite(n) ? n : DEFAULT_K));
-}
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -76,7 +175,7 @@ export default {
       if (raw === null) {
         return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
       }
-      let body: { query?: unknown; k?: unknown };
+      let body: { query?: unknown; k?: unknown; session?: unknown };
       try {
         body = JSON.parse(raw) as typeof body;
       } catch {
@@ -94,18 +193,29 @@ export default {
       }
       const query = normalizeQuery(body.query);
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
+      const session = body.session === undefined ? undefined : validSession(body.session) ? body.session : null;
+      if (session === null) {
+        return errorJson(400, "bad_request", "session must be 1 to 128 of A-Z, a-z, 0-9, '.', '_', ':' or '-'");
+      }
       const k = clampK(body.k);
-      const key = await queryKey({ q: query, k });
-      const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
-      const resp = await stub.fetch("https://do/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, k }),
-      });
-      const payload = (await resp.json()) as Record<string, unknown>;
-      if (!resp.ok) return Response.json(payload, { status: resp.status });
-      const { outcome, ...rest } = payload as { outcome: string };
-      return Response.json({ cache: outcome, key, query, ...rest });
+      const { status, payload } = await executeSearch(env, query, k);
+      if (status === 200 && session !== undefined) {
+        // Search history (#9140 slice 3) is best effort: it never changes
+        // or fails the answer.
+        try {
+          await recordSearch(env.RETAINED, {
+            session,
+            query,
+            k,
+            key: String(payload.key),
+            cache: payload.cache === "hit" ? "hit" : "miss",
+            result: payload.result,
+          });
+        } catch (error) {
+          console.warn(`search history not recorded: ${(error as Error).message}`);
+        }
+      }
+      return Response.json(payload, { status });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/cache/inspect") {
@@ -120,13 +230,86 @@ export default {
       // keyed or reach a Durable Object.
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(Number(url.searchParams.get("k") ?? DEFAULT_K));
-      const key = await queryKey({ q: query, k });
+      const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/inspect");
-      const meta = (await resp.json()) as Record<string, unknown>;
+      const meta = await doJsonObject(resp);
+      if (meta === null) return Response.json(malformedDoPayload("inspect"), { status: 502 });
+      if (!resp.ok) return Response.json(meta, { status: resp.status });
       return Response.json({ key, query, ...meta });
     }
 
+    if (req.method === "POST" && url.pathname === "/v1/cache/purge") {
+      if (!(await gateOk(env, req))) {
+        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      }
+      const raw = await readTextUpTo(req);
+      if (raw === null) {
+        return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      }
+      let body: { query?: unknown; k?: unknown };
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        return errorJson(400, "bad_request", "body must be JSON");
+      }
+      if (typeof body !== "object" || body === null) {
+        return errorJson(400, "bad_request", "body must be a JSON object");
+      }
+      if (typeof body.query !== "string") {
+        return errorJson(400, "bad_request", "query must be a string");
+      }
+      const query = normalizeQuery(body.query);
+      if (!query) return errorJson(400, "bad_request", "query must not be empty");
+      const k = clampK(body.k);
+      const key = await queryKey({ q: query, k, context: CONTEXT });
+      const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
+      const resp = await stub.fetch("https://do/purge", { method: "POST" });
+      const result = await doJsonObject(resp);
+      if (result !== null && !resp.ok) return Response.json(result, { status: resp.status });
+      if (result === null || typeof result.purged !== "boolean") {
+        return Response.json(malformedDoPayload("purge"), { status: 502 });
+      }
+      return Response.json({ key, query, purged: result.purged });
+    }
+
+    if (url.pathname.startsWith("/v1/admin/retained/")) {
+      if (!(await gateOk(env, req))) {
+        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      }
+      return retainedAdmin(req, env, url);
+    }
+
+    if (url.pathname === "/mcp") {
+      // The MCP endpoint (#8625; src/mcp.ts) is POST-only and
+      // sits behind the same gate as /v1/*. The gate runs here
+      // so mcp.ts owns the JSON-RPC layer only.
+      if (req.method !== "POST") {
+        const resp = errorJson(405, "method_not_allowed", "the MCP endpoint accepts POST only");
+        resp.headers.set("Allow", "POST");
+        return resp;
+      }
+      if (!(await gateOk(env, req))) {
+        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      }
+      return handleMcp(req, env);
+    }
+
     return errorJson(404, "not_found", "no route");
+  },
+
+  /** One retention cycle per cron event (#9140 slice 7); a no-op with no RETAINED binding. */
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (!env.RETAINED) return;
+    const cycle = await runScheduledCycle(env.RETAINED, controller.scheduledTime);
+    console.log(
+      JSON.stringify({
+        event: "retention_cycle",
+        run_id: cycle.run_id,
+        ran: cycle.ran,
+        retired: cycle.retired.length,
+        deferred: cycle.deferred,
+      }),
+    );
   },
 };

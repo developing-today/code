@@ -7,25 +7,33 @@
 //! #5851/#5852/#5853 consumed as data inputs to lowering, never as code
 //! branches in the pipeline.
 //!
-//! This crate implements the first stages:
+//! This crate implements all five stages:
 //!
 //! * **Stage 1 — parse** ([`parse`]): semantic source in the HTML-shaped
 //!   authoring syntax of decision record #5849 §2 parses to the IR
 //!   ([`Document`]). Parse errors are fatal, located, and never recovered
 //!   by guessing (#5855 §2.1).
-//! * **Stage 2 — validate, vocabulary half** ([`validate`]): the IR is
+//! * **Stage 2 — validate** ([`validate`]): the IR is
 //!   checked against the #5849 element vocabulary (consumed as data from
 //!   [`vocabulary`]): unknown element kinds, unknown attributes, missing
 //!   required attributes, enum-valued attribute domains, the child and
 //!   sibling rules of #5849 §4.5, and the names-not-expressions rule for
 //!   binding slots (#5849 §8) are build errors with source locations.
+//!   The assertion half of the stage checks the `assert` slot against
+//!   the #5850 assertion vocabulary (consumed as versioned data from
+//!   [`assertion_vocabulary`]): an unknown dimension or role token
+//!   fails with suggestions (the #5849 idiom), a raw value is rejected
+//!   (#5850 invariant 1), and a dimension asserted twice in one slot
+//!   is an error (#5854 §2.2).
 //!
 //! * **Stage 3 — compose** ([`compose`]): the #5854 cascade over
-//!   data-supplied composition tables (theme layering, assertion and
-//!   override resolution, the web-only raw-CSS layer), producing the
-//!   resolved IR and composition report for one target. Conditional
-//!   blocks await a #5849 vocabulary representation; see the module
-//!   documentation for the stated boundary.
+//!   the source `assert` slots (layer-3 assertions at instance
+//!   specificity) and data-supplied composition tables (theme
+//!   layering, further assertion and override resolution, the
+//!   web-only raw-CSS layer), producing the resolved IR and
+//!   composition report for one target. Conditional
+//!   blocks (`<conditional>`, #5854 §5) are resolved for the
+//!   target before the cascade; see the module documentation.
 //!
 //! * **Stages 4–5 — lower + emit, web target** ([`lower`]): the
 //!   resolved IR is lowered through the #5851 mapping table
@@ -57,12 +65,31 @@
 //!   renderer registration (§2.2) are build-time errors, never
 //!   runtime gaps.
 //!
-//! The assertion half of stage 2 remains outside this parser: source
-//! `assert` values are carried opaquely, while typed assertion inputs
-//! enter composition through [`compose::ComposeData`]. The closed role
-//! vocabulary is settled by #5850 and its per-target mappings by
-//! #5851/#5852; the conformance corpus gates coverage for both.
+//! The assertion half of stage 2 was the one deferral #5855
+//! assumption A2 prescribed: the `assert` attribute's grammar and
+//! role vocabulary are #5850's, and the slot was carried opaquely
+//! until that record settled. #5850 is settled (its decision
+//! record is the vocabulary v1 on the closed issue), so the
+//! deferral is discharged: [`assertion_vocabulary`] consumes the
+//! record as versioned data, stage 2 validates the slot against
+//! it, and stage 3 composes the slot's assertions like any other
+//! layer-3 input. What remains outside the pipeline is unchanged
+//! and belongs to its own records: state-delta composition
+//! (#5851 §3.6 — targets render state behaviour natively).
+//! Conditional blocks, which #5849 v1 could not represent, are the
+//! `<conditional>` element of [`vocabulary::CONDITIONAL`] (issue
+//! #7920): validated in stage 2, resolved per target in stage 3.
 
+//! * **Author tooling** ([`tooling`]): the one toolchain
+//!   surface #5855 §4 settles — a linter over the source plus
+//!   the vocabularies and tables the pipeline consumes, and
+//!   the multi-target preview: the pipeline run in report
+//!   mode, presenting every target's artefact together with
+//!   the coverage/conflict report, including the essential-
+//!   content rule for conditional blocks; see the module
+//!   documentation.
+//!
+pub mod assertion_vocabulary;
 pub mod compose;
 pub mod gui_table;
 pub mod lower;
@@ -70,6 +97,7 @@ pub mod lower_gui;
 pub mod lower_native;
 pub mod native_table;
 mod parse;
+pub mod tooling;
 mod validate;
 pub mod vocabulary;
 pub mod web_table;
@@ -208,9 +236,10 @@ pub fn parse(source: &str) -> Result<Document, BuildError> {
     parse::Parser::new(source).parse_document()
 }
 
-/// Stage 2 (vocabulary half): validate a parsed document against the
-/// #5849 vocabulary — element registry, attribute registry, enum
-/// domains, child/sibling rules, and binding-slot name rules.
+/// Stage 2: validate a parsed document against the vocabularies —
+/// the #5849 element registry, attribute registry, enum domains,
+/// child/sibling rules, and binding-slot name rules, plus the
+/// `assert` slot against the #5850 assertion vocabulary.
 ///
 /// # Errors
 ///

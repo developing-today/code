@@ -2,9 +2,20 @@
 
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
-import { terminalBytesForKey } from "./world-keyboard";
+import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
+import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
+import {
+  documentFrame,
+  documentsFrame,
+  documentsRefusal,
+  nextDocumentsCursor,
+  parseDocumentRead,
+  parseDocumentsPage,
+} from "./documents";
+import { loadWorldSnapshot, saveWorldSnapshot, type StoredWorldSnapshot } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
+import { viewportCellsForPane } from "./world-viewport";
 
 type WorldFrame = {
   type:
@@ -12,6 +23,8 @@ type WorldFrame = {
     | "event"
     | "view"
     | "records"
+    | "documents"
+    | "document"
     | "invite"
     | "upload_ready"
     | "module_installed"
@@ -40,9 +53,13 @@ type WorldFrame = {
   view_revision?: number;
   base_view_revision?: number;
   patch?: ScreenPatch;
+  resume_token?: string | null;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
+  names?: string[];
+  size?: number;
+  text?: string;
   next_after?: string | null;
   chunk_bytes?: number;
   module_hash?: string;
@@ -91,6 +108,10 @@ function initWorld(): void {
   const worldInput = element<HTMLInputElement>(root, "[data-world-world]");
   const recordsView = element<HTMLElement>(root, "[data-world-records]");
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
+  const documentsList = element<HTMLElement>(root, "[data-world-documents]");
+  const documentsView = element<HTMLElement>(root, "[data-world-document]");
+  const documentsRefresh = element<HTMLButtonElement>(root, "[data-world-documents-refresh]");
+  const documentsPrefix = element<HTMLInputElement>(root, "[data-world-documents-prefix]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
   // The host controls (admin token, invite minting, module install,
@@ -123,6 +144,16 @@ function initWorld(): void {
   const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
+  // The keyboard encoder for this connection (#787 Slice F): the legacy
+  // encoder is the default; `?keyboard=kitty` selects the
+  // kitty-disambiguate-v1 rich encoder for worlds compiled with the
+  // extended Key module. The choice is fixed for the page's lifetime —
+  // switching encoders mid-connection would mix two key grammars on one
+  // input stream.
+  const encodeKey =
+    new URLSearchParams(window.location.search).get("keyboard") === "kitty"
+      ? richTerminalBytesForKey
+      : terminalBytesForKey;
   // A program-only surface (#2146 phase 2) pins its world server-side:
   // the rendered data-world-program wins over the ?world= parameter.
   if (root.dataset.worldProgram) worldInput.value = root.dataset.worldProgram;
@@ -135,10 +166,17 @@ function initWorld(): void {
   let cursor = 0;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
+  let resumeToken: string | null = null;
+  let sentViewport: { width: number; height: number } | null = null;
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
   let recordsRefetch = false;
+  let documentsNames: string[] = [];
+  let documentsAfter: string | null = null;
+  let documentsPages = 0;
+  let documentsPending = false;
+  let documentPending = false;
   let reconnects = 0;
   let intentionalClose = false;
   let hostMode = false;
@@ -148,6 +186,55 @@ function initWorld(): void {
   // the #1461 socket identity guard, for the HTTP path).
   let hostViewGeneration = 0;
   let refreshHostView: () => Promise<void> = async () => {};
+
+  // #10927: the offline read model. `offlineSnapshot` accumulates the
+  // rendered state of the world being joined (identity, participants,
+  // last applied sequence, rendered view, records) and is written
+  // through to the snapshot store after every frame that changes it,
+  // so a reload can read the world with no connection at all.
+  // `offlineWorld` is the world name (null = default world) the
+  // accumulated snapshot belongs to.
+  let offlineSnapshot: StoredWorldSnapshot | null = null;
+  let offlineWorld: string | null = null;
+  const persistOfflineSnapshot = () => {
+    if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
+  };
+  const renderParticipants = (list: Array<{ id: number; display_name: string }>) => {
+    participants.replaceChildren();
+    for (const participant of list) {
+      const tag = document.createElement("span");
+      tag.className = "badge badge-outline mr-2";
+      tag.dataset.participant = String(participant.id);
+      tag.textContent = participant.display_name;
+      participants.append(tag);
+    }
+  };
+  // Restore the stored snapshot for `world` as the offline read
+  // state: participants, view and records render with no socket, the
+  // resume cursor is seeded from the stored sequence, and the status
+  // says the shell is offline (a reader, not a writer).
+  const restoreOfflineSnapshot = (world: string | null) => {
+    offlineWorld = world;
+    const stored = loadWorldSnapshot(localStorage, window.location.host, world);
+    offlineSnapshot = stored;
+    if (!stored) return;
+    cursor = stored.sequence;
+    renderParticipants(stored.participants);
+    if (stored.view?.kind === "surface" && renderWorldSurface(view, stored.view.surface)) {
+      renderedSurface = stored.view.surface;
+      renderedViewRevision = stored.view_revision;
+    } else if (stored.view?.kind === "text") {
+      view.textContent = stored.view.text;
+      renderedViewRevision = stored.view_revision;
+    }
+    records = { ...stored.records };
+    recordsView.textContent = JSON.stringify(records, null, 2);
+    appendLine(
+      log,
+      `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`,
+    );
+    setStatus("Offline — saved snapshot");
+  };
 
   const setStatus = (text: string, state: "idle" | "good" | "error" = "idle") => {
     status.textContent = text;
@@ -233,6 +320,31 @@ function initWorld(): void {
     inviteOutput.hidden = false;
   };
 
+  const receiveBinary = async (bytes: Uint8Array) => {
+    // Negotiated binary screen transport (#12242, Rust half #12655):
+    // a binary message is one versioned MessagePack view patch,
+    // applied exactly like a JSON view frame's patch. Compressed
+    // version-2 frames (#805) inflate through the async decoder.
+    // Anything undecodable or inapplicable falls back to asking for
+    // a full view, the same recovery as a JSON patch whose base
+    // mismatches.
+    try {
+      const frame = await decodeViewPatchAsync(bytes);
+      if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
+        const patched = applyScreenPatch(renderedSurface, frame.patch);
+        if (patched && renderWorldSurface(view, patched)) {
+          renderedSurface = patched;
+          renderedViewRevision = frame.view_revision;
+          resumeToken = frame.resume_token;
+          return;
+        }
+      }
+    } catch {
+      // Any failure below falls through to a full view.
+    }
+    sendViewport(true);
+  };
+
   const receive = (raw: string) => {
     let parsed: unknown;
     try {
@@ -254,14 +366,23 @@ function initWorld(): void {
           return;
         }
         cursor = snapshot.current_sequence;
-        participants.replaceChildren();
-        for (const participant of snapshot.participants) {
-          const tag = document.createElement("span");
-          tag.className = "badge badge-outline mr-2";
-          tag.dataset.participant = String(participant.id);
-          tag.textContent = participant.display_name;
-          participants.append(tag);
-        }
+        renderParticipants(snapshot.participants);
+        // #10927: a snapshot (re)starts the offline read model for
+        // this world. Records are reset — the records fetch below
+        // re-reads them against this snapshot — while the rendered
+        // view carries over until the host re-sends it.
+        offlineSnapshot = {
+          world_id: snapshot.world_id,
+          sequence: cursor,
+          participants: snapshot.participants.map((participant) => ({
+            id: participant.id,
+            display_name: participant.display_name,
+          })),
+          view: offlineSnapshot?.view ?? null,
+          view_revision: offlineSnapshot?.view_revision ?? null,
+          records: {},
+        };
+        persistOfflineSnapshot();
         appendLine(log, `Connected to ${snapshot.world_id} at event ${cursor}`);
         setStatus("Connected", "good");
         if (!hostMode) requestRecords();
@@ -274,6 +395,11 @@ function initWorld(): void {
           return;
         }
         cursor = Math.max(cursor, event.sequence);
+        // #10927: the stored resume position tracks every applied event.
+        if (offlineSnapshot) {
+          offlineSnapshot.sequence = cursor;
+          persistOfflineSnapshot();
+        }
         if (event.kind.kind === "chat") {
           const who = participants.querySelector<HTMLElement>(`[data-participant="${event.participant_id}"]`);
           appendLine(log, `${who?.textContent ?? `player ${event.participant_id}`}: ${String(event.kind.data)}`);
@@ -292,7 +418,8 @@ function initWorld(): void {
           (frame.view_revision !== undefined && frame.view_revision !== null && !isFiniteNumber(frame.view_revision)) ||
           (frame.base_view_revision !== undefined &&
             frame.base_view_revision !== null &&
-            !isFiniteNumber(frame.base_view_revision))
+            !isFiniteNumber(frame.base_view_revision)) ||
+          (frame.resume_token !== undefined && frame.resume_token !== null && typeof frame.resume_token !== "string")
         ) {
           rejectFrame();
           return;
@@ -307,12 +434,20 @@ function initWorld(): void {
             if (patched && renderWorldSurface(view, patched)) {
               renderedSurface = patched;
               renderedViewRevision = frame.view_revision;
+              resumeToken = frame.resume_token ?? null;
+              // #10927: the offline store holds the patched surface.
+              if (offlineSnapshot) {
+                offlineSnapshot.view = { kind: "surface", surface: patched };
+                offlineSnapshot.view_revision = frame.view_revision;
+                persistOfflineSnapshot();
+              }
               break;
             }
           }
           // A gap or invalid patch means the browser no longer has the exact
-          // base. A same-size resize asks the server to reset with a full view.
-          sendViewport();
+          // base. A forced same-size resize asks the server to reset with a
+          // full view, and the stale unit is dropped with it.
+          sendViewport(true);
           break;
         }
         if (frame.surface && frame.surface.kind === "form") {
@@ -320,21 +455,43 @@ function initWorld(): void {
           // browser's own input manifest; the program supplies data only.
           // The authoritative screen is replaced, so drop its patch base.
           renderedSurface = null;
+          resumeToken = null;
           renderedViewRevision = frame.view_revision ?? null;
           formPresenter.present(frame.surface);
+          // #10927: a form is an interactive presentation, not offline
+          // content — the store keeps no view behind it.
+          if (offlineSnapshot) {
+            offlineSnapshot.view = null;
+            offlineSnapshot.view_revision = renderedViewRevision;
+            persistOfflineSnapshot();
+          }
           break;
         }
         if (frame.surface?.kind === "screen" && renderWorldSurface(view, frame.surface)) {
           formPresenter.present(null);
           renderedSurface = frame.surface;
           renderedViewRevision = frame.view_revision ?? null;
+          resumeToken = frame.resume_token ?? null;
+          // #10927: the offline store holds the rendered screen.
+          if (offlineSnapshot) {
+            offlineSnapshot.view = { kind: "surface", surface: frame.surface };
+            offlineSnapshot.view_revision = renderedViewRevision;
+            persistOfflineSnapshot();
+          }
           break;
         }
         if (frame.data !== undefined) {
           formPresenter.present(null);
           view.textContent = frame.data;
           renderedSurface = null;
+          resumeToken = null;
           renderedViewRevision = frame.view_revision ?? null;
+          // #10927: the offline store holds the rendered text view.
+          if (offlineSnapshot) {
+            offlineSnapshot.view = { kind: "text", text: frame.data };
+            offlineSnapshot.view_revision = renderedViewRevision;
+            persistOfflineSnapshot();
+          }
         }
         break;
       }
@@ -361,6 +518,11 @@ function initWorld(): void {
         if (recordsAfter === null) {
           recordsPending = false;
           recordsView.textContent = JSON.stringify(records, null, 2);
+          // #10927: a complete records set joins the offline snapshot.
+          if (offlineSnapshot) {
+            offlineSnapshot.records = { ...records };
+            persistOfflineSnapshot();
+          }
           // #1458: a re-request arrived while this fetch was in flight
           // and was coalesced (see requestRecords). Now that a complete
           // set has rendered, run the refetch it was waiting for.
@@ -377,6 +539,60 @@ function initWorld(): void {
             }),
           );
         }
+        break;
+      }
+      case "documents": {
+        if (!documentsPending) return;
+        const refusal = documentsRefusal(frame);
+        if (refusal) {
+          documentsPending = false;
+          documentsPages = 0;
+          setStatus(refusal.message, "error");
+          return;
+        }
+        const page = parseDocumentsPage(frame);
+        if (!page) {
+          documentsPending = false;
+          documentsPages = 0;
+          rejectFrame();
+          return;
+        }
+        documentsPages += 1;
+        try {
+          documentsAfter = nextDocumentsCursor(documentsAfter, page.nextAfter, documentsPages);
+        } catch (error) {
+          documentsPending = false;
+          documentsPages = 0;
+          setStatus(error instanceof Error ? error.message : "Documents listing failed", "error");
+          return;
+        }
+        documentsNames.push(...page.names);
+        if (documentsAfter === null) {
+          documentsPending = false;
+          documentsPages = 0;
+          renderDocumentsList();
+        } else {
+          socket?.send(
+            JSON.stringify(
+              documentsFrame(capability.value.trim(), {
+                prefix: documentsPrefix?.value.trim() || null,
+                after: documentsAfter,
+              }),
+            ),
+          );
+        }
+        break;
+      }
+      case "document": {
+        if (!documentPending) return;
+        documentPending = false;
+        const read = parseDocumentRead(frame);
+        if (!read) {
+          rejectFrame();
+          return;
+        }
+        if (documentsView)
+          documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
         break;
       }
       case "invite": {
@@ -405,11 +621,51 @@ function initWorld(): void {
           rejectFrame();
           return;
         }
+        documentsPending = false;
+        documentsPages = 0;
+        documentPending = false;
         setStatus(frame.message ?? "World request failed", "error");
         appendLine(log, `error: ${frame.message ?? "world request failed"}`);
         break;
       }
     }
+  };
+
+  const renderDocumentsList = () => {
+    if (!documentsList) return;
+    documentsList.textContent = "";
+    for (const docName of documentsNames) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "btn btn-ghost btn-xs block";
+      item.textContent = docName;
+      item.addEventListener("click", () => requestDocument(docName));
+      documentsList.append(item);
+    }
+  };
+
+  const requestDocument = (docName: string) => {
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
+    documentPending = true;
+    socket.send(JSON.stringify(documentFrame(capability.value.trim(), docName)));
+  };
+
+  const requestDocuments = () => {
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
+    if (documentsPending) return;
+    documentsNames = [];
+    documentsAfter = null;
+    documentsPages = 0;
+    documentsPending = true;
+    socket.send(
+      JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })),
+    );
   };
 
   const requestRecords = () => {
@@ -458,7 +714,12 @@ function initWorld(): void {
   };
 
   view.addEventListener("keydown", (event: KeyboardEvent) => {
-    const bytes = terminalBytesForKey(event);
+    // The paste shortcut belongs to the browser, not the terminal encoder:
+    // encoding Ctrl+V as the C0 byte 0x16 and preventing default would
+    // cancel the paste event the listener below forwards as a paste frame,
+    // so keyboard paste could never reach the program (#15170).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") return;
+    const bytes = encodeKey(event);
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
   });
@@ -480,17 +741,45 @@ function initWorld(): void {
     }
   });
 
-  const sendViewport = () => {
-    if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
-    const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
-    const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
-    const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
-    socket.send(JSON.stringify({ type: "resize", width, height }));
+  // The resume unit: the token is worth sending only together with the
+  // exact surface and revision it names. All three are retained across
+  // reconnects and dropped together — a catch-up patch applies only to
+  // that exact base, and the host honors the token only for the
+  // viewport that produced the baseline.
+  const hasResumableScreen = () => resumeToken !== null && renderedSurface !== null && renderedViewRevision !== null;
+  const dropResumeUnit = () => {
+    renderedSurface = null;
+    renderedViewRevision = null;
+    resumeToken = null;
   };
-  const viewportObserver = new ResizeObserver(sendViewport);
+  const sendViewport = (force = false) => {
+    if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
+    const style = getComputedStyle(view);
+    const { width, height } = viewportCellsForPane({
+      clientWidth: view.clientWidth,
+      clientHeight: view.clientHeight,
+      fontSize: Number.parseFloat(style.fontSize) || 16,
+      paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
+      paddingRight: Number.parseFloat(style.paddingRight) || 0,
+      paddingTop: Number.parseFloat(style.paddingTop) || 0,
+      paddingBottom: Number.parseFloat(style.paddingBottom) || 0,
+    });
+    const sameAsLast = sentViewport?.width === width && sentViewport.height === height;
+    // A same-size resize resets the host's retained screen baseline.
+    // Keep it out of an unchanged reconnect so the resume token can
+    // catch up against the retained surface instead.
+    if (!force && sameAsLast) return;
+    // A forced resync or a real viewport change invalidates the local
+    // base too: the host answers with a full view at the new size.
+    if (force || sentViewport !== null) dropResumeUnit();
+    socket.send(JSON.stringify({ type: "resize", width, height }));
+    sentViewport = { width, height };
+  };
+  const viewportObserver = new ResizeObserver(() => sendViewport());
   viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
+  documentsRefresh?.addEventListener("click", requestDocuments);
 
   refreshHostView = async () => {
     if (!admin || !hostViewButton) return;
@@ -514,6 +803,7 @@ function initWorld(): void {
     setStatus("Loading read-only host view…");
     renderedSurface = null;
     renderedViewRevision = null;
+    resumeToken = null;
     const world = selectedWorld();
     let after: string | null = null;
     let pages = 0;
@@ -558,6 +848,7 @@ function initWorld(): void {
           }
           renderedSurface = null;
           renderedViewRevision = null;
+          resumeToken = null;
           if (result.surface && renderWorldSurface(view, result.surface)) {
             renderedSurface = result.surface;
           } else if (result.view) {
@@ -590,13 +881,24 @@ function initWorld(): void {
       return;
     }
     intentionalClose = false;
+    // #10927: joining a world other than the one the accumulated
+    // snapshot belongs to restores that world's stored snapshot first
+    // (which also seeds the resume cursor sent as `after` on open).
+    if (offlineWorld !== selectedWorld()) restoreOfflineSnapshot(selectedWorld());
     // A new connection owns no records fetch: one left pending by a
     // previous connection can never complete and must not coalesce
     // (block) this connection's first fetch.
     recordsPending = false;
     recordsRefetch = false;
-    renderedSurface = null;
-    renderedViewRevision = null;
+    // A fetch on the previous socket cannot complete after this join.
+    documentsPending = false;
+    documentsPages = 0;
+    documentPending = false;
+    // The resume unit (surface, revision, token) deliberately survives
+    // a reconnect: the join below offers the token, and the host
+    // answers with a catch-up patch against exactly this surface — or
+    // a full view when the token misses, which replaces the unit
+    // wholesale. Clearing it here is what wasted the patch round-trip.
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     // #1461: every handler captures THIS connection's socket (`ws`) and
     // ignores events once it is no longer the current one. The handlers
@@ -605,6 +907,7 @@ function initWorld(): void {
     // it) scheduled a duplicate reconnect, and a stale socket's open
     // sent its join frame on the newer socket.
     const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
+    ws.binaryType = "arraybuffer";
     socket = ws;
     setStatus("Connecting…");
     ws.addEventListener("open", () => {
@@ -617,13 +920,25 @@ function initWorld(): void {
           after: cursor || null,
           world: selectedWorld(),
           screen_patches: true,
+          screen_msgpack: true,
+          screen_compress: true,
+          resume_token: hasResumableScreen() ? resumeToken : undefined,
+          device_input: {
+            keys: 128,
+            encoder: false,
+            pointer: true,
+            text_entry: "keyboard",
+          },
         }),
       );
-      sendViewport();
+      // A fresh session needs its initial resize. A resumable
+      // reconnect keeps the established viewport unless it changed.
+      sendViewport(!hasResumableScreen());
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
-      receive(String(event.data));
+      if (event.data instanceof ArrayBuffer) receiveBinary(new Uint8Array(event.data));
+      else receive(String(event.data));
     });
     ws.addEventListener("error", () => {
       if (ws !== socket) return;
@@ -635,6 +950,9 @@ function initWorld(): void {
       // This connection's records fetch, if any, can never complete.
       recordsPending = false;
       recordsRefetch = false;
+      documentsPending = false;
+      documentsPages = 0;
+      documentPending = false;
       if (intentionalClose) return;
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
@@ -959,6 +1277,10 @@ function initWorld(): void {
     }
   });
 
+  // #10927: read the world offline from the snapshot store before
+  // any connection exists; a stored capability auto-joins on top of
+  // the restored state and resumes from the stored sequence.
+  restoreOfflineSnapshot(selectedWorld());
   if (capability.value) connect();
 }
 

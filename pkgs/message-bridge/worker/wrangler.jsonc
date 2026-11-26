@@ -1,7 +1,8 @@
 {
-  // Message bridge Worker: a remote MCP connector for Claude plus a
-  // history page. This file drives local `wrangler dev` (and cf's
-  // build delegation); deployment goes through cloudflare.config.ts and
+  // Message bridge Worker: a remote MCP connector for Claude; the
+  // owner's website is the PM console (#14378). This file drives
+  // local `wrangler dev` (and cf's build delegation); deployment
+  // goes through cloudflare.config.ts and
   // the cf versions flow (nix run .#message-bridge-deploy). The two
   // configs describe the same Worker and must be kept in step (a test
   // checks the main fields).
@@ -10,14 +11,30 @@
   "compatibility_date": "2026-10-25",
   "observability": { "enabled": true },
   "vars": {
-    "PUBLIC_URL": "https://message-bridge.developing-today.workers.dev"
+    // The address the connectors and the page use: a Workers custom
+    // domain (this URL's host) that deploy.mjs attaches, and keeps
+    // attached, on every deploy.
+    "PUBLIC_URL": "https://bridge.security.cab",
+    // Always answers too; deploy.mjs checks /healthz here, since a new
+    // custom domain can take a while to get its certificate.
+    "WORKERS_DEV_URL": "https://message-bridge.developing-today.workers.dev",
+    // Where the owner link (/p/<token>) redirects: the PM console's
+    // Messages surface, the bridge's only website since #14378.
+    "CONSOLE_URL": "https://pm.security.cab/console/#more/messages"
   },
-  // Secret (uploaded by deploy.mjs from Bitwarden, never in this file):
-  //   ACCESS_TOKEN  the path token that guards /mcp, /p and /api
+  // Secrets (uploaded by deploy.mjs from Bitwarden, never in this file):
+  //   ACCESS_TOKEN   the owner's path token: /mcp (Claude), /p and /api
+  //   CHATGPT_TOKEN  the ChatGPT connector's token: its /mcp only
   // Lets /healthz report which version is answering (deploy.mjs waits for it).
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "durable_objects": {
     "bindings": [{ "name": "MESSAGES", "class_name": "MessageStore" }]
   },
+  // Bridge state backup (#14951): the scheduled export of the whole
+  // MessageStore lands in this bucket (backup.js). The cron is the
+  // daily run; POST /api/<token>/backup-export is the same run on
+  // demand, and backup-import restores an export into a namespace.
+  "r2_buckets": [{ "binding": "BRIDGE_BACKUP", "bucket_name": "message-bridge-backup" }],
+  "triggers": { "crons": ["17 8 * * *"] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MessageStore"] }]
 }

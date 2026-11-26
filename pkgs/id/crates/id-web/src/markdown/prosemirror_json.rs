@@ -104,7 +104,7 @@ pub(crate) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
             node_json
         }
 
-        NodeValue::ThematicBreak => {
+        NodeValue::ThematicBreak(_) => {
             json!({"type": "horizontal_rule"})
         }
 
@@ -163,7 +163,7 @@ pub(crate) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
             text_node_with_marks(&code.literal, &marks)
         }
 
-        NodeValue::Emph => {
+        NodeValue::Emph(_) => {
             // Emphasis - collect children with em mark added
             let mut marks = active_marks.to_vec();
             marks.push(Mark {
@@ -174,7 +174,7 @@ pub(crate) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
             json!(collect_inline_children(node, &marks))
         }
 
-        NodeValue::Strong => {
+        NodeValue::Strong(_) => {
             // Strong - collect children with strong mark added
             let mut marks = active_marks.to_vec();
             marks.push(Mark {
@@ -354,8 +354,8 @@ pub(crate) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
             table_json
         }
 
-        NodeValue::TableRow(is_header) => {
-            let cell_type = if *is_header {
+        NodeValue::TableRow(row) => {
+            let cell_type = if row.header {
                 "table_header"
             } else {
                 "table_cell"
@@ -412,7 +412,7 @@ pub(crate) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
             })
         }
 
-        NodeValue::Strikethrough => {
+        NodeValue::Strikethrough(_) => {
             // Strikethrough - collect children with strikethrough mark added
             let mut marks = active_marks.to_vec();
             marks.push(Mark {
@@ -688,7 +688,10 @@ pub(crate) fn collect_inline_children<'a>(
         // Check if this is a mark wrapper (Emph, Strong, Link)
         let is_mark_wrapper = matches!(
             child_data.value,
-            NodeValue::Emph | NodeValue::Strong | NodeValue::Link(_) | NodeValue::Strikethrough
+            NodeValue::Emph(_)
+                | NodeValue::Strong(_)
+                | NodeValue::Link(_)
+                | NodeValue::Strikethrough(_)
         );
         drop(child_data);
 
@@ -784,7 +787,7 @@ pub(crate) fn collect_alt_markdown<'a>(node: &'a AstNode<'a>, out: &mut String) 
         NodeValue::SoftBreak => out.push(' '),
         NodeValue::LineBreak => out.push('\n'),
         NodeValue::HtmlInline(html) => out.push_str(html),
-        NodeValue::Emph => {
+        NodeValue::Emph(_) => {
             drop(data);
             out.push('*');
             for child in node.children() {
@@ -792,7 +795,7 @@ pub(crate) fn collect_alt_markdown<'a>(node: &'a AstNode<'a>, out: &mut String) 
             }
             out.push('*');
         }
-        NodeValue::Strong => {
+        NodeValue::Strong(_) => {
             drop(data);
             out.push_str("**");
             for child in node.children() {
@@ -800,7 +803,7 @@ pub(crate) fn collect_alt_markdown<'a>(node: &'a AstNode<'a>, out: &mut String) 
             }
             out.push_str("**");
         }
-        NodeValue::Strikethrough => {
+        NodeValue::Strikethrough(_) => {
             drop(data);
             out.push_str("~~");
             for child in node.children() {

@@ -40,13 +40,34 @@ pub enum RestoreStatus {
 /// Records that the key with public key `public_key` (hex) was restored
 /// from a backup, replacing any earlier marker.
 ///
+/// The marker is written durably (#12420): the new contents go to a
+/// sibling temp file that is synced before a rename replaces the
+/// marker, and the directory is synced after. A crash or a failed
+/// write leaves the earlier complete marker (or none), never an empty
+/// or partial one that would silence the rotation warning.
+///
 /// # Errors
 ///
 /// Fails if the marker cannot be written.
 pub fn mark_restored(marker: impl AsRef<Path>, public_key: &str) -> Result<()> {
     let marker = marker.as_ref();
-    std::fs::write(marker, format!("{public_key}\n"))
-        .with_context(|| format!("could not write restore marker {}", marker.display()))
+    let tmp = marker_tmp(marker);
+    let result =
+        id_core::durable_write::write_durable(marker, &tmp, format!("{public_key}\n").as_bytes());
+    if let Err(error) = &result {
+        if error.stage() == id_core::durable_write::WriteStage::BeforeRename {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+    result.with_context(|| format!("could not write restore marker {}", marker.display()))
+}
+
+/// The sibling temp file a marker is staged in before it replaces the
+/// marker.
+fn marker_tmp(marker: &Path) -> std::path::PathBuf {
+    let mut name = marker.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    marker.with_file_name(name)
 }
 
 /// The public key (hex) a restore marker names, if there is one.
@@ -130,6 +151,47 @@ mod tests {
 
     fn public_hex(key: &SigningKey) -> String {
         hex_encode(&key.verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn marking_again_replaces_the_marker_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(RESTORED_KEY_FILE);
+        let first = public_hex(&SigningKey::from_bytes(&[7; 32]));
+        let second = public_hex(&SigningKey::from_bytes(&[8; 32]));
+        mark_restored(&marker, &first).unwrap();
+        mark_restored(&marker, &second).unwrap();
+        assert_eq!(restored_key(&marker).unwrap(), Some(second));
+        assert!(!marker_tmp(&marker).exists(), "no temp file left behind");
+    }
+
+    #[test]
+    fn a_failed_marker_write_keeps_the_prior_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(CLIENT_RESTORED_KEY_FILE);
+        let prior = public_hex(&SigningKey::from_bytes(&[9; 32]));
+        mark_restored(&marker, &prior).unwrap();
+        // A directory where the temp file goes makes the write fail
+        // before the rename.
+        std::fs::create_dir(marker_tmp(&marker)).unwrap();
+        let next = public_hex(&SigningKey::from_bytes(&[10; 32]));
+        let error = mark_restored(&marker, &next).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&marker.display().to_string()),
+            "error names the marker: {error:#}"
+        );
+        assert_eq!(restored_key(&marker).unwrap(), Some(prior));
+    }
+
+    #[test]
+    fn a_failed_first_write_leaves_no_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(RESTORED_KEY_FILE);
+        std::fs::create_dir(marker_tmp(&marker)).unwrap();
+        let key = public_hex(&SigningKey::from_bytes(&[11; 32]));
+        assert!(mark_restored(&marker, &key).is_err());
+        assert!(!marker.exists());
+        assert_eq!(restored_key(&marker).unwrap(), None);
     }
 
     #[test]

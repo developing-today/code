@@ -99,8 +99,9 @@ type Server struct {
 	httpServing sync.WaitGroup
 	// tcpLn and unixLn are *connListener once Listen has run. They are the
 	// daemon's only accept path, so a handover can see every connection.
-	tcpLn  net.Listener
-	unixLn net.Listener
+	tcpLn              net.Listener
+	tcpSocketActivated bool
+	unixLn             net.Listener
 	// tsnetLn is set only when daemon.tsnet.hostname names a tailnet
 	// identity for this daemon (#1967); nil on every daemon that did not
 	// ask for one.
@@ -399,13 +400,14 @@ func (s *Server) Listen(tcpPort int) error {
 	if host == "" {
 		host = s.set.String("daemon.address")
 	}
-	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
+	tcpLn, socketActivated, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.listen()
 	if err != nil {
 		_ = unixLn.Close()
 		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
 	s.tcpLn = newConnListener(tcpLn, &s.conns, nil)
+	s.tcpSocketActivated = socketActivated
 	// An identity listener, when one is named: the same API on the
 	// daemon's tailnet, reachable by name from another network. A
 	// failure here is fatal to Listen — a daemon that was asked for a
@@ -918,9 +920,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/client.ts", s.handleClient)
 	s.route(mux, "GET /v1/globals.d.ts", s.handleGlobals)
 	s.route(mux, "POST /v1/call", s.handleCall)
+	s.route(mux, "POST /v1/calls/{run}", s.handleCallHistoryBegin)
+	s.route(mux, "GET /v1/calls/{run}", s.handleCallHistorySnapshot)
 	s.route(mux, "POST /v1/batch", s.handleBatch)
 	s.route(mux, "POST /v1/resource", s.handleResource)
 	s.route(mux, "POST /v1/session/release", s.handleRelease)
+	s.route(mux, "POST /v1/session/kill", s.handleKill)
 	s.route(mux, "POST /v1/refresh", s.handleRefresh)
 	s.route(mux, "POST /v1/reload", s.handleReload)
 	s.route(mux, "POST /v1/restart", s.handleRestart)
@@ -1270,7 +1275,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := withRun(withCallSettings(withClientCaps(r.Context(), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	ctx := withRun(withCallSettings(withFleetCtx(withClientCaps(r.Context(), r), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 	reply := writeJSON
 	if req.Relay != nil {
 		rw := &relayWriter{w: w}
@@ -1396,7 +1401,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cc := callContext(r, req.Context, req.Session)
-	ctx := withRun(withCallSettings(withClientCaps(r.Context(), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	ctx := withRun(withCallSettings(withFleetCtx(withClientCaps(r.Context(), r), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 
 	results := make([]map[string]any, len(req.Calls))
 
@@ -1547,6 +1552,31 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"released": s.reg.ReleaseCaller(req.Session)})
 }
 
+// handleKill ends the instances a caller session created, even when busy
+// (#1931 slice 2). The address is the caller session handle, the same lease
+// key release takes: release detaches and stops only what is already idle,
+// kill ends every owned instance. An unknown handle is a typed refusal, so
+// a caller cannot mistake a misspelled session for an empty success.
+func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
+	if req.Session == "" {
+		req.Session = r.Header.Get("X-Mcpx-Session")
+	}
+	if req.Session == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("session is required"))
+		return
+	}
+	killed, found := s.reg.KillCaller(req.Session)
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("unknown session %q", req.Session))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"killed": killed})
+}
+
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// The configuration is re-read first. Refreshing schemas while still
 	// serving a server list from a file read hours ago answered half the
@@ -1636,6 +1666,12 @@ var signalSelf = func(sig os.Signal) error {
 }
 
 func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
+	// In-place exec cannot request the listening descriptor again. Reject
+	// before draining so the daemon stays up; systemd owns this lifecycle.
+	if s.tcpSocketActivated {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "socket-activated daemon must be restarted through systemd"})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
 	go func() {
 		time.Sleep(defaults.DaemonRestartSettle)
@@ -1949,6 +1985,26 @@ func (s *Server) callRegistry() *execsvc.CallRegistry {
 	return s.calls
 }
 
+func (s *Server) handleCallHistoryBegin(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	if runID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "run id is required"})
+		return
+	}
+	s.callRegistry().BeginHistory(runID)
+	writeJSON(w, http.StatusOK, map[string]any{"available": true})
+}
+
+func (s *Server) handleCallHistorySnapshot(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	calls, ok, truncated := s.callRegistry().History(runID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "call history is unavailable or expired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"available": true, "truncated": truncated, "calls": calls})
+}
+
 // reportCallFrame tells the exec stream that is running this call, if
 // any, that the call happened: a call frame with the tool's resolved
 // destructiveHint. A call with no run id, or a run this daemon is not
@@ -1976,6 +2032,25 @@ func (s *Server) reportCallFrame(ctx context.Context, server, tool, callerSessio
 		}
 		if callerSession != "" {
 			attrs["caller_session"] = callerSession
+		}
+		// Fleet attribution (build 4/5, #14190): the originating queue
+		// task id rides the ledger frame, resolved ctx-first with the
+		// process env as fallback (the stdio/no-header path). Absent
+		// stamps nothing, never an error.
+		if f := mcpclient.FleetCtxFrom(ctx); !f.Empty() {
+			if f.TaskID != "" {
+				attrs["fleet_task_id"] = f.TaskID
+			}
+			if f.TaskName != "" {
+				attrs["fleet_task_name"] = f.TaskName
+			}
+		} else if f := mcpclient.FleetCtxFromEnv(); !f.Empty() {
+			if f.TaskID != "" {
+				attrs["fleet_task_id"] = f.TaskID
+			}
+			if f.TaskName != "" {
+				attrs["fleet_task_name"] = f.TaskName
+			}
 		}
 		s.callLedger.Write(logging.Record{Time: time.Now(), Msg: "tool_call", Attrs: attrs}, nil)
 		now := time.Now()

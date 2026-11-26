@@ -12,9 +12,7 @@
 //! nor any verification. The existing petname store is used as is, as a
 //! regression check of its locality contract.
 //!
-//! `graph/mod.rs` does not export these modules yet (slice 9110-09 wires
-//! them), so this test includes them, and the modules they build on, by
-//! path.
+//! This suite includes the graph modules and their dependencies by path.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

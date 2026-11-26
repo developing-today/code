@@ -1,0 +1,7 @@
+# Fleet research and development
+
+Fleet coordinates how a seat obtains work, runs it within an included plan and leaves evidence another seat can verify. The [program charter](https://github.com/developing-today/code/blob/main/doc/2026-11-23T18-00-00Z_design_fleet_program/charter.md) sets out the operating rules and the authority for each observation. The [design record](https://github.com/developing-today/code/blob/main/doc/2026-11-23T18-00-00Z_design_fleet_program/design-record.md) records the proposed direction for each workstream.
+
+Use the [delivery plan](roadmap.md) to find the next acceptance gate and the [dated issue map](issue-map.md) to identify its prerequisites. Read current ownership and issue comments before starting work. The research chapters distinguish proposed contracts from released commands. A merged fix, a published binary, an activated service and a successfully observed workload each have their own receipt.
+
+The [dated investigation notebook](https://github.com/developing-today/code/blob/main/doc/2026-11-23T18-00-00Z_design_fleet_program/investigation-notebook.md) retains the source comparisons, coverage counts, member-by-member inventory and acceptance fixtures underlying the research chapters. The [native blocker ledger](https://github.com/developing-today/code/blob/main/doc/2026-11-23T18-00-00Z_design_fleet_program/native-blockers.csv) records each endpoint observation, including closed prerequisites.

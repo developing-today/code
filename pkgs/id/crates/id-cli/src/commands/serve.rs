@@ -22,14 +22,14 @@
 //! │         │     └───────────┘ └───────────┘                    │
 //! │         │                                                    │
 //! │         ▼                                                    │
-//! │  Lock File: .id-serve-lock                                   │
+//! │  Lock File: .iroh-serve.lock                                 │
 //! │  - Node ID, PID, Socket addresses                            │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Lock File Protocol
 //!
-//! The serve process creates a lock file (`.id-serve-lock`) containing:
+//! The serve process creates a lock file (`.iroh-serve.lock`) containing:
 //! 1. Node ID (line 1)
 //! 2. Process ID (line 2)
 //! 3. Socket addresses (remaining lines)
@@ -51,6 +51,8 @@
 //! ```
 
 use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -88,6 +90,14 @@ use id_groups::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use id_groups::groups::warnings::{Evaluator, Observation, Warning};
 use id_store::store::{load_or_create_keypair, open_store};
 use id_store::tags::TagStore;
+#[cfg(feature = "web")]
+use id_sync::forwarding_sink::ForwardingSink;
+#[cfg(feature = "web")]
+use id_sync::graph_frontier::GraphFrontier;
+#[cfg(feature = "web")]
+use id_sync::relay_gate::RelayGate;
+#[cfg(feature = "web")]
+use id_sync::relay_ingest::{CHAINED_RELAY_ALPN, ChainedRelayProtocol};
 
 mod gossip;
 mod startup;
@@ -176,6 +186,15 @@ pub struct ServeInfo {
     pub start_time: Option<u64>,
 }
 
+/// Ownership token for the discovery lock written by one `id serve` process.
+///
+/// The serialized lock contents are retained so shutdown can remove the file
+/// only if it still contains the record published by this serve instance.
+#[derive(Debug)]
+pub struct ServeLock {
+    contents: String,
+}
+
 impl ServeInfo {
     /// Parse the `node_id` string back to an [`EndpointId`].
     pub fn endpoint_id(&self) -> Option<EndpointId> {
@@ -212,12 +231,60 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 
     // Check if process is still alive
     if !is_process_alive(info.pid, info.start_time) {
-        // Stale lock file - remove it
-        let _ = afs::remove_file(SERVE_LOCK).await;
+        // Only remove the file we inspected. The shared sidecar lock protects
+        // the ownership check and unlink from concurrent publication.
+        remove_stale_serve_lock(Path::new(SERVE_LOCK), &contents);
         return None;
     }
 
     Some(info)
+}
+
+/// Opens the stable sidecar used to serialize all mutations of a serve lock.
+/// The sidecar is deliberately never removed: unlinking a locked sidecar can
+/// let processes lock different inodes and enter the critical section at once.
+fn lock_serve_lock(path: &Path) -> Result<File> {
+    let mut guard_name = path.as_os_str().to_os_string();
+    guard_name.push(".guard");
+    let guard = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(guard_name))?;
+    guard.lock()?;
+    Ok(guard)
+}
+
+/// Removes a stale lock only when the contents still match the inspected
+/// snapshot. Publication and cleanup share a stable OS file lock, so checking
+/// ownership and unlinking cannot expose a replacement lock path as vacant.
+fn remove_stale_serve_lock(path: &Path, expected_contents: &str) {
+    let _guard = match lock_serve_lock(path) {
+        Ok(guard) => guard,
+        Err(error) => {
+            warn!(?error, ?path, "could not lock serve lock for stale cleanup");
+            return;
+        }
+    };
+    remove_stale_serve_lock_locked(path, expected_contents);
+}
+
+fn remove_stale_serve_lock_locked(path: &Path, expected_contents: &str) {
+    match fs::read_to_string(path) {
+        Ok(contents) if contents == expected_contents => {
+            if let Err(error) = fs::remove_file(path) {
+                warn!(?error, ?path, "could not remove stale serve lock");
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(
+            ?error,
+            ?path,
+            "could not inspect serve lock for stale cleanup"
+        ),
+    }
 }
 
 mod process;
@@ -247,7 +314,7 @@ pub async fn create_serve_lock(
     addrs: &[SocketAddr],
     web_port: Option<u16>,
     web_bindings: Vec<String>,
-) -> Result<()> {
+) -> Result<ServeLock> {
     let info = ServeInfo {
         node_id: node_id.to_string(),
         pid: std::process::id(),
@@ -257,17 +324,56 @@ pub async fn create_serve_lock(
         start_time: get_process_start_time(std::process::id()),
     };
     let contents = serde_json::to_string_pretty(&info)?;
-    afs::write(SERVE_LOCK, contents).await?;
+    let lock_path = Path::new(SERVE_LOCK);
+    let _guard = lock_serve_lock(lock_path)?;
+    publish_serve_lock_reclaiming_stale_locked(lock_path, &contents)?;
+    Ok(ServeLock { contents })
+}
+
+/// Atomically publishes a lock only if no serve process already owns it.
+fn publish_serve_lock(lock_path: &Path, contents: &str) -> Result<()> {
+    let _guard = lock_serve_lock(lock_path)?;
+    publish_serve_lock_locked(lock_path, contents)
+}
+
+fn publish_serve_lock_locked(lock_path: &Path, contents: &str) -> Result<()> {
+    let parent = lock_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".iroh-serve-lock-")
+        .tempfile_in(parent)?;
+    temporary.write_all(contents.as_bytes())?;
+    temporary
+        .persist_noclobber(lock_path)
+        .map(|_| ())
+        .map_err(|error| error.error)?;
     Ok(())
 }
 
-/// Removes the serve lock file.
+fn publish_serve_lock_reclaiming_stale_locked(lock_path: &Path, contents: &str) -> Result<()> {
+    if let Ok(existing) = fs::read_to_string(lock_path) {
+        if let Ok(existing_info) = serde_json::from_str::<ServeInfo>(&existing) {
+            if !is_process_alive(existing_info.pid, existing_info.start_time) {
+                remove_stale_serve_lock_locked(lock_path, &existing);
+            }
+        }
+    }
+    publish_serve_lock_locked(lock_path, contents)
+}
+
+/// Removes this serve instance's lock file, if it is still the current owner.
 ///
-/// Called during graceful shutdown to indicate the serve is no longer running.
-/// Errors are silently ignored (file may already be removed).
-pub async fn remove_serve_lock() -> Result<()> {
-    let _ = afs::remove_file(SERVE_LOCK).await;
+/// Called during graceful shutdown. A replacement lock published by another
+/// serve process is preserved.
+pub async fn remove_serve_lock(lock: ServeLock) -> Result<()> {
+    remove_serve_lock_at(Path::new(SERVE_LOCK), &lock.contents);
     Ok(())
+}
+
+fn remove_serve_lock_at(lock_path: &Path, expected_contents: &str) {
+    remove_stale_serve_lock(lock_path, expected_contents);
 }
 /// Options for [`cmd_serve`], mirroring the `serve` CLI flags.
 #[derive(Debug, Clone)]
@@ -285,6 +391,8 @@ pub struct ServeOptions {
     pub no_relay: bool,
     /// Disable gossip peer discovery.
     pub no_gossip: bool,
+    /// Explicitly enable gossip, overriding a build-time disabled default.
+    pub gossip: bool,
     /// Start the web interface.
     pub web: bool,
     /// Web interface port (0 = random).
@@ -299,8 +407,6 @@ pub struct ServeOptions {
     pub no_default_bootstrap: bool,
     /// Skip default topic and secret.
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values.
-    pub replace_defaults: bool,
     /// Disable mDNS.
     pub no_mdns: bool,
     /// Enable mainline DHT address lookup and publishing.
@@ -349,8 +455,13 @@ pub struct ServeOptions {
     pub world_max_open: usize,
     /// Most world sessions at once, across all worlds.
     pub world_max_sessions: usize,
-    /// Close durable worlds idle for this many seconds (`0` never).
-    pub world_idle_secs: u64,
+    /// Close durable worlds idle for this many seconds (`0` never); when
+    /// absent, as [`resolve_world_idle_secs`] decides.
+    pub world_idle_secs: Option<u64>,
+    /// Serve the worlds directory as a host-mode data root (#10693).
+    pub world_host: bool,
+    /// Serve worlds inside this jurisdiction partition only (#3898).
+    pub world_partition: Option<String>,
     /// Refuse signed world requests for this many seconds after startup (`0` none).
     pub world_boot_window_secs: u64,
     /// Capabilities the default world's program may use.
@@ -426,8 +537,8 @@ impl WebContentTarget {
 
     /// Parse one target spec: `explorer` or `program:<world-name>`.
     /// This is the grammar a target is expressed in wherever a
-    /// binding is written as text (the `[web_bindings]` lines in
-    /// `defaults.conf`), so a target always travels inside its own
+    /// binding is written as text (the `web_bindings` entries in
+    /// `defaults.json`), so a target always travels inside its own
     /// binding's spec -- never as a separate repeated flag paired
     /// with listener flags by position (the design forbids that).
     ///
@@ -541,7 +652,7 @@ impl WebBinding {
 /// 1. `--web-listen` flags, when given at least once, win entirely.
 ///    Combining them with an explicitly-set `--bind` or `--port` is an
 ///    error naming the conflicting flag (clap defaults do not count).
-/// 2. Else the `[web_bindings]` section of `defaults.conf`, parsed here
+/// 2. Else the `web_bindings` list from `defaults.json`, parsed here
 ///    so a malformed line fails startup naming the line. A config line
 ///    is `IP:PORT` (an Explorer binding) or `IP:PORT <target>` with a
 ///    #2146 content target (`explorer` / `program:<world-name>`); the
@@ -582,14 +693,14 @@ pub fn resolve_web_bindings(
             .iter()
             .map(|line| {
                 parse_web_binding_line(line).map_err(|e| {
-                    anyhow::anyhow!("invalid [web_bindings] entry {line:?} in defaults.conf: {e}")
+                    anyhow::anyhow!("invalid web_bindings entry {line:?} in defaults.json: {e}")
                 })
             })
             .collect();
         let bindings = bindings?;
         ensure_unique_web_listener_addresses(
             bindings.iter().map(WebBinding::socket_addr),
-            "[web_bindings] in defaults.conf",
+            "web_bindings in defaults.json",
         )?;
         return Ok(bindings);
     }
@@ -715,6 +826,33 @@ pub async fn build_access_policy(
 #[cfg(feature = "world")]
 pub const WORLDS_DIR: &str = ".id-worlds";
 
+/// Idle window when `--world-idle-secs` is not given.
+pub const DEFAULT_WORLD_IDLE_SECS: u64 = 600;
+
+/// Idle window under `--world-host` when `--world-idle-secs` is not given:
+/// the hosted-worlds design's 15 minutes (#10694).
+pub const DEFAULT_HOST_IDLE_SECS: u64 = 900;
+
+/// The idle window `serve` uses, from `--world-idle-secs` and
+/// `--world-host`.
+///
+/// # Errors
+///
+/// Refuses `0` under `--world-host`: a hosted world always sleeps once its
+/// last client has been gone for the window, and `id host pin` is how an
+/// operator keeps one awake.
+pub fn resolve_world_idle_secs(given: Option<u64>, world_host: bool) -> Result<u64> {
+    match (given, world_host) {
+        (Some(0), true) => anyhow::bail!(
+            "--world-idle-secs 0 would keep every hosted world awake: \
+             pin the worlds that must stay live with `id host pin` instead"
+        ),
+        (Some(secs), _) => Ok(secs),
+        (None, true) => Ok(DEFAULT_HOST_IDLE_SECS),
+        (None, false) => Ok(DEFAULT_WORLD_IDLE_SECS),
+    }
+}
+
 #[cfg(feature = "world")]
 const OUTBOX_FLUSH_SECS: u64 = 30;
 
@@ -727,22 +865,19 @@ pub fn world_dir(name: &str) -> PathBuf {
 
 /// Resolve the compile settings: an explicit flag, the environment, or the
 /// conventional repository layout. Absence is fine (compilation stays off).
+///
+/// An explicit flag or `ID_ROC_PLATFORM` that is not a built platform is an
+/// error. A conventional checkout that is not built (no
+/// `targets/wasm32/host.wasm`, as in a source tree or the nix test sandbox)
+/// only leaves compilation off: the operator never asked for it.
 #[cfg(feature = "world")]
 fn resolve_compiler(
     roc_bin: Option<String>,
     roc_platform: Option<PathBuf>,
 ) -> Result<Option<id_worlds::world_compile::Compiler>> {
-    let Some(platform) = roc_platform
-        .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
-        .or_else(|| {
-            [
-                PathBuf::from("examples/roc-world"),
-                PathBuf::from("../examples/roc-world"),
-            ]
-            .into_iter()
-            .find(|dir| dir.is_dir())
-        })
-    else {
+    let explicit =
+        roc_platform.or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from));
+    let Some(platform) = explicit.or_else(|| discover_platform_dir(Path::new("."))) else {
         return Ok(None);
     };
     let roc_bin = roc_bin
@@ -774,6 +909,27 @@ fn resolve_compiler(
         lru_bytes, "world: shared compiled-world cache enabled"
     );
     Ok(Some(compiler.with_cache(std::sync::Arc::new(cache))))
+}
+
+/// The conventional platform checkout (`examples/roc-world`, or
+/// `../examples/roc-world` from a subdirectory such as `e2e/`) under
+/// `base`, when one is present and built. An unbuilt checkout is skipped
+/// with a warning rather than failing the server.
+#[cfg(feature = "world")]
+fn discover_platform_dir(base: &Path) -> Option<PathBuf> {
+    let found = ["examples/roc-world", "../examples/roc-world"]
+        .into_iter()
+        .map(|rel| base.join(rel))
+        .find(|dir| dir.is_dir())?;
+    if id_worlds::world_compile::is_platform_dir(&found) {
+        Some(found)
+    } else {
+        warn!(
+            platform = %found.display(),
+            "world: platform checkout has no built host (targets/wasm32/host.wasm); on-the-fly compilation stays off"
+        );
+        None
+    }
 }
 
 /// Builds this server's worlds: durable under [`WORLDS_DIR`] unless
@@ -822,6 +978,8 @@ fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<S
 struct ServeWorlds {
     ephemeral: bool,
     admin_token: Option<String>,
+    boundary_config: Option<crate::server_config::Boundaries>,
+    boundary_server: String,
     blobs: iroh_blobs::api::Store,
     docs: Docs,
     checkpoint_every: u64,
@@ -835,6 +993,11 @@ struct ServeWorlds {
     trusted_module_keys: Vec<[u8; 32]>,
     runtime: id_caps::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn id_directory::directory_mail::MailSink>>,
+    /// Host-mode lifecycle over [`WORLDS_DIR`] (`--world-host`, #10693).
+    host: Option<Arc<id_worlds::host::HostLifecycle>>,
+    /// The jurisdiction partition this server's worlds live in
+    /// (`--world-partition`, #3898); `None` serves unassigned local worlds.
+    partition: Option<String>,
 }
 
 #[cfg(feature = "world")]
@@ -844,33 +1007,107 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
             if !create && !self.exists(name) {
                 return Ok(None);
             }
-            self.open_world(name).await.map(Some)
+            // A partition-scoped server never creates over a name that is
+            // already present on disk but not bound to its partition: it
+            // answers exactly as for a name it may not create (#3898).
+            if create
+                && partition_create_refused(Path::new(WORLDS_DIR), name, self.partition.as_deref())
+            {
+                return Ok(None);
+            }
+            let Some(host) = &self.host else {
+                return self.open_world(name).await.map(Some);
+            };
+            // Host mode (#10693): record the wake (or the admin-authorised
+            // create) before opening, and take it back if the open fails,
+            // so the host file never shows a world live that is not.
+            let admission = if create {
+                host.admit_create(name)?
+            } else {
+                host.admit_wake(name)?
+            };
+            match self.open_world(name).await {
+                Ok(service) => Ok(Some(service)),
+                Err(error) => {
+                    if let Err(undo) = host.undo_wake(name, admission) {
+                        warn!(world = name, "host: could not undo wake: {undo:#}");
+                    }
+                    Err(error)
+                }
+            }
         })
     }
 
+    fn closed(&self, name: &str) {
+        if let Some(host) = &self.host
+            && let Err(error) = host.record_closed(name)
+        {
+            warn!(world = name, "host: could not record idle close: {error:#}");
+        }
+    }
+
+    fn pinned(&self, name: &str) -> bool {
+        self.host.as_ref().is_some_and(|host| host.pinned(name))
+    }
+
     fn exists(&self, name: &str) -> bool {
-        !self.ephemeral && world_dir(name).join("journal.jsonl").is_file()
+        !self.ephemeral && world_visible(Path::new(WORLDS_DIR), name, self.partition.as_deref())
     }
 
     fn list(&self) -> Vec<String> {
         if self.ephemeral {
             return Vec::new();
         }
-        let mut names: Vec<String> = std::fs::read_dir(WORLDS_DIR)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.path().join("journal.jsonl").is_file())
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| id_worlds::world_hub::validate_world_name(name).is_ok())
-            .collect();
-        names.sort();
-        names
+        visible_worlds(Path::new(WORLDS_DIR), self.partition.as_deref())
     }
 
     fn durable(&self) -> bool {
         !self.ephemeral
     }
+}
+
+/// Whether `name` is a durable world under `root` that this server may
+/// see. Unscoped, any journal counts; scoped to a partition (#3898), only
+/// a journal bound to that partition does, so worlds bound elsewhere,
+/// unassigned legacy worlds and malformed bindings all read as absent.
+#[cfg(feature = "world")]
+fn world_visible(root: &Path, name: &str, partition: Option<&str>) -> bool {
+    let dir = root.join(name);
+    match partition {
+        None => dir.join("journal.jsonl").is_file(),
+        Some(partition) => id_worlds::world_store::world_bound_to_partition(&dir, name, partition),
+    }
+}
+
+/// The world names under `root` that [`world_visible`] admits, sorted.
+#[cfg(feature = "world")]
+fn visible_worlds(root: &Path, partition: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| id_worlds::world_hub::validate_world_name(name).is_ok())
+        .filter(|name| world_visible(root, name, partition))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Whether a partition-scoped server must refuse to create `name`: a
+/// journal or partition record is already there but the world is not
+/// bound to this partition. Fail closed; an interrupted creation that
+/// left only a record is for the operator to clear.
+#[cfg(feature = "world")]
+fn partition_create_refused(root: &Path, name: &str, partition: Option<&str>) -> bool {
+    let Some(partition) = partition else {
+        return false;
+    };
+    let dir = root.join(name);
+    let present = ["journal.jsonl", "journal.jsonl.partition.json"]
+        .iter()
+        .any(|file| std::fs::symlink_metadata(dir.join(file)).is_ok());
+    present && !id_worlds::world_store::world_bound_to_partition(&dir, name, partition)
 }
 
 #[cfg(feature = "world")]
@@ -886,6 +1123,18 @@ impl ServeWorlds {
             ..WorldLimits::default()
         };
         let runtime = self.runtime;
+        // Until the serving process has live placement evidence sources, an
+        // enabled boundary receives no claims and therefore fails closed.
+        let boundary_gate = self.boundary_config.as_ref().map(|boundaries| {
+            Arc::new(
+                crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
+                    boundaries.clone(),
+                    self.boundary_server.clone(),
+                    Some(name.to_owned()),
+                    Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+                ),
+            ) as Arc<dyn id_directory::directory::BoundaryGate>
+        });
         let make = {
             let admin_token = self.admin_token.clone();
             let blobs = self.blobs.clone();
@@ -920,15 +1169,43 @@ impl ServeWorlds {
             "serve startup: records ready, building world service (#190 breadcrumb)"
         );
         let service = if self.ephemeral {
+            let mut core = WorldCore::new(name, limits)?;
+            if let Some(gate) = boundary_gate {
+                core.directory_mut().set_boundary_gate(Arc::clone(&gate));
+                core.set_world_boundary_gate(gate);
+            }
             make(WorldHandle::spawn_with_device_manifest(
-                WorldCore::new(name, limits)?,
+                core,
                 Box::<id_worlds::world::EmptyWorldProgram>::default(),
                 Some(WorldHandle::host_device_manifest()),
             ))
             .with_records_store(records)
         } else {
-            let (service, report) =
-                id_worlds::world_store::open_world(&dir, name, limits, runtime, make).await?;
+            let (service, report) = match self.partition.as_deref() {
+                Some(partition) => {
+                    id_worlds::world_store::open_world_in_partition(
+                        &dir,
+                        name,
+                        partition,
+                        limits,
+                        runtime,
+                        boundary_gate,
+                        make,
+                    )
+                    .await?
+                }
+                None => {
+                    id_worlds::world_store::open_world_with_directory_gate(
+                        &dir,
+                        name,
+                        limits,
+                        runtime,
+                        boundary_gate,
+                        make,
+                    )
+                    .await?
+                }
+            };
             status!(
                 "world {name}: restored {} at sequence {} ({} input(s) replayed)",
                 dir.display(),
@@ -1064,11 +1341,10 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
 /// * `web` - If `true`, start the web interface (requires `web` feature)
 /// * `port` - Port for the web interface (default 3000)
 /// * `bootstrap` - Additional node IDs for manual peer bootstrapping
-/// * `topic` - Custom gossip topic name (default: from `defaults.conf` or `DEFAULT_TOPIC`)
+/// * `topic` - Custom gossip topic name (default: from `defaults.json` or `DEFAULT_TOPIC`)
 /// * `topic_secret` - Custom shared secret for topic access control
-/// * `no_default_bootstrap` - If `true`, skip default bootstrap nodes from `defaults.conf`
-/// * `no_default_topic` - If `true`, skip default topic/secret from `defaults.conf`
-/// * `replace_defaults` - If `true`, use only `defaults.conf` values (skip hardcoded fallbacks)
+/// * `no_default_bootstrap` - If `true`, skip default bootstrap nodes from `defaults.json`
+/// * `no_default_topic` - If `true`, skip file topic/secret defaults
 ///
 /// # Behavior
 ///
@@ -1089,6 +1365,22 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 
+fn resolve_network_overrides(
+    default_relay: id_core::connectivity::RelayPolicy,
+    default_gossip: bool,
+    no_relay: bool,
+    gossip: bool,
+    no_gossip: bool,
+) -> (id_core::connectivity::RelayPolicy, bool) {
+    let relay = if no_relay {
+        id_core::connectivity::RelayPolicy::Disabled
+    } else {
+        default_relay
+    };
+    let gossip = gossip || (default_gossip && !no_gossip);
+    (relay, gossip)
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -1096,6 +1388,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         groups_log,
         no_relay,
         no_gossip,
+        gossip,
         web,
         port,
         bootstrap,
@@ -1103,7 +1396,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         topic_secret,
         no_default_bootstrap,
         no_default_topic,
-        replace_defaults,
         no_mdns,
         dht,
         iroh_port,
@@ -1127,6 +1419,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_max_open,
         world_max_sessions,
         world_idle_secs,
+        world_host,
+        world_partition,
         world_boot_window_secs,
         world_caps,
         world_cap_policy,
@@ -1271,6 +1565,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));
     let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    // #14226: the discovered apps' run manifests, which the web
+    // surface's `POST /v1/runs` loader checks app runs against.
+    #[cfg(feature = "web")]
+    let run_apps = crate::app_manifest::run_apps(&app_discovery.apps);
     for app in app_discovery.apps {
         info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
     }
@@ -1298,10 +1596,25 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let store = open_store(ephemeral).await?;
     let store_handle = store.as_store();
 
-    let mut builder = id_core::connectivity::public_builder(
-        id_core::connectivity::RelayPolicy::from_no_relay(no_relay),
-    )
-    .secret_key(key.clone());
+    let resolved_defaults = resolve_config(
+        &bootstrap,
+        topic.as_deref(),
+        topic_secret.as_deref(),
+        no_default_bootstrap,
+        no_default_topic,
+    )?;
+    info!("{}", id_core::discovery::defaults_provenance().describe());
+    let (relay_policy, gossip_enabled) = resolve_network_overrides(
+        resolved_defaults.relay,
+        resolved_defaults.gossip,
+        no_relay,
+        gossip,
+        no_gossip,
+    );
+    // The build's defaults.json can disable relays without --no-relay, so
+    // everything downstream asks the resolved policy, not the flag.
+    let relays_disabled = relay_policy == id_core::connectivity::RelayPolicy::Disabled;
+    let mut builder = id_core::connectivity::public_builder(relay_policy).secret_key(key.clone());
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }
@@ -1327,9 +1640,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Do not announce readiness before the endpoint is reachable through
     // its home relay (#3028). The wait is bounded and non-fatal: a dead
     // relay entry must not hold startup, so on timeout we warn and carry on.
-    // With `--no-relay` no relay ever connects, so the wait is skipped.
-    if no_relay {
-        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    // With relays disabled (`--no-relay` or the build's defaults) no relay
+    // ever connects, so the wait is skipped.
+    if relays_disabled {
+        info!("serve startup: relays disabled, skipping home-relay wait");
     } else {
         match id_core::connectivity::await_home_relay(
             &endpoint,
@@ -1419,7 +1733,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let blob_gate: Option<Arc<crate::blob_gate::RefreshingWorlds>> = match &event_events {
         Some(events) => {
-            let folded = build_blob_gate(events, &store_handle, &groups_log).await;
+            // A failed first build has no previous fold to keep: the gate
+            // starts empty — fail-closed, as before — and the refresh task
+            // below retries on its cadence (#13821).
+            let folded = match build_blob_gate(events, &store_handle, &groups_log).await {
+                Ok(folded) => folded,
+                Err(error) => {
+                    tracing::error!(
+                        "blob gate: initial build failed: {error:#}; \
+                         starting with an empty gate until a refresh succeeds"
+                    );
+                    crate::blob_gate::FoldedWorlds::new(
+                        crate::groups::worlds::Worlds::empty(),
+                        std::collections::HashMap::new(),
+                    )
+                }
+            };
             Some(Arc::new(crate::blob_gate::RefreshingWorlds::new(folded)))
         }
         None => None,
@@ -1472,6 +1801,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         use id_worlds::world_hub::{HubLimits, WorldHub};
         let runtime = id_caps::world_limits::RuntimeLimits::from_args(&world_runtime)?;
         let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
+        let world_idle_secs = resolve_world_idle_secs(world_idle_secs, world_host)?;
         let compiler = resolve_compiler(roc_bin, roc_platform)?;
         let trusted_module_keys = world_module_trust_keys
             .iter()
@@ -1496,6 +1826,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
+            boundary_config: started_server_config
+                .as_ref()
+                .map(|started| started.config.boundaries().clone()),
+            boundary_server: node_id.to_string(),
             blobs: store_handle.clone(),
             docs: docs.clone(),
             checkpoint_every: world_checkpoint_every,
@@ -1514,7 +1848,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 world_mail_smtp,
                 world_mail_from,
             )?,
+            host: world_host
+                .then(|| -> Result<_> {
+                    std::fs::create_dir_all(WORLDS_DIR)?;
+                    Ok(Arc::new(id_worlds::host::HostLifecycle::open(
+                        std::path::Path::new(WORLDS_DIR),
+                    )?))
+                })
+                .transpose()?,
+            partition: world_partition,
         });
+        let host = opener.host.clone();
         let hub = WorldHub::new(
             opener,
             world_admin_token.clone(),
@@ -1528,6 +1872,26 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         info!("serve startup: opening default world via hub (#190 breadcrumb)");
         let default_service = hub.open_default().await?;
         info!("serve startup: default world open, building router (#190 breadcrumb)");
+        if let Some(host) = &host {
+            // Worlds recorded live stay live across a restart (#10693):
+            // reopen each now, so a bad journal fails startup loudly.
+            let live: Vec<String> = host
+                .snapshot()
+                .worlds
+                .into_iter()
+                .filter(|(_, record)| record.state == id_worlds::host::LifecycleState::Live)
+                .map(|(name, _)| name)
+                .collect();
+            for name in live {
+                hub.lease(Some(&name), None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("reopen live world {name}: {}", e.message()))?;
+            }
+            info!(
+                root = WORLDS_DIR,
+                "host mode: serving the worlds directory as a data root"
+            );
+        }
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
                 if !server_caps.contains(cap) {
@@ -1706,6 +2070,40 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
         None => router_builder,
     };
+    // Relay authorization uses the same signed-graph store as LocalEvents.
+    // Serve has no neighbour-discovery view at this layer yet, so this slice
+    // serves the gated ALPN with an empty fan-out set.
+    #[cfg(feature = "web")]
+    let router_builder = match &event_events {
+        Some(events) => {
+            let store = events.lock().await.shared_store();
+            let frontier = GraphFrontier::new(store);
+            let relay_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
+            let boundary_gate = started_server_config.as_ref().map(|started| {
+                Arc::new(
+                    crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
+                        started.config.boundaries().clone(),
+                        node_id.to_string(),
+                        None,
+                        Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+                    ),
+                ) as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>
+            });
+            let sink =
+                ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
+            let sink = match boundary_gate.as_ref() {
+                Some(gate) => sink.with_boundary_gate(Arc::clone(gate)),
+                None => sink,
+            };
+            let protocol = ChainedRelayProtocol::new(RelayGate::new(&relay_key, frontier), sink);
+            let protocol = match boundary_gate {
+                Some(gate) => protocol.with_boundary_gate(gate),
+                None => protocol,
+            };
+            router_builder.accept(CHAINED_RELAY_ALPN, protocol)
+        }
+        None => router_builder,
+    };
     let router = router_builder.spawn();
     info!("serve startup: router spawned (#190 breadcrumb)");
 
@@ -1759,16 +2157,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         })
     });
 
-    if !no_gossip {
-        // Resolve effective config from defaults + CLI flags
-        let config = resolve_config(
-            &bootstrap,
-            topic.as_deref(),
-            topic_secret.as_deref(),
-            replace_defaults,
-            no_default_bootstrap,
-            no_default_topic,
-        )?;
+    if gossip_enabled {
+        let config = resolved_defaults;
 
         let dtt_topic_id = TopicId::new(config.topic.clone());
 
@@ -1912,7 +2302,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     info!("serve startup: writing serve lock (#190 breadcrumb)");
-    create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
+    let serve_lock =
+        create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
     info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
@@ -1921,10 +2312,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     } else {
         status!("mode: persistent ({STORE_PATH})");
     }
-    if no_relay {
+    // Which defaults this binary embeds, shown at the default log level so
+    // an operator can tell a customized build apart without verbose logs.
+    status!("{}", id_core::discovery::defaults_provenance().describe());
+    if relays_disabled {
         status!("relay: disabled");
     }
-    if no_gossip {
+    if !gossip_enabled {
         status!("peers: disabled");
     }
     if no_mdns {
@@ -2061,6 +2455,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 Some(endpoint.clone()),
                 Some(std::sync::Arc::clone(&transport_ad_minter)),
                 gallery,
+                Some(run_apps),
             )
             .await?;
             publication_surface = Some(surface);
@@ -2227,8 +2622,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         status!(
             "world ssh over iroh: `id world ssh-tunnel <node-id>` then `ssh -p 2222 <world>@127.0.0.1`"
         );
+        // #787 Slice E: kitty keyboard negotiation is opt-in per server,
+        // for worlds compiled with the extended Key module; every other
+        // world keeps the legacy input semantics by default.
+        let kitty_keyboard = std::env::var("ID_WORLD_SSH_KITTY_KEYBOARD")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if kitty_keyboard {
+            status!(
+                "world ssh kitty keyboard: enabled (kitty-disambiguate-v1, negotiated per session)"
+            );
+        }
+        let options = id_worlds::world_ssh::SshServeOptions { kitty_keyboard };
         tokio::spawn(async move {
-            if let Err(e) = id_worlds::world_ssh::serve(listener, hub, host_key, blobs).await {
+            if let Err(e) =
+                id_worlds::world_ssh::serve_with_options(listener, hub, host_key, blobs, options)
+                    .await
+            {
                 tracing::error!("world ssh server error: {}", e);
             }
         })
@@ -2268,8 +2677,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    let folded = build_blob_gate(&events, &store, &groups_log).await;
-                    gate.refresh(folded);
+                    // A failed rebuild keeps the previous fold (#13821):
+                    // a transient read error must not empty the live gate.
+                    if let Err(error) =
+                        gate.try_refresh(build_blob_gate(&events, &store, &groups_log).await)
+                    {
+                        tracing::error!(
+                            "blob gate: refresh failed: {error:#}; keeping the previous fold"
+                        );
+                    }
                 }
             }))
         }
@@ -2277,7 +2693,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     };
 
     tokio::signal::ctrl_c().await?;
-    remove_serve_lock().await?;
+    remove_serve_lock(serve_lock).await?;
     router.shutdown().await?;
     #[cfg(feature = "web")]
     if let Some(sync_task) = _event_sync_handle {
@@ -2320,6 +2736,222 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn partition_scoped_server_sees_only_its_own_worlds() {
+        // #3898: a partition-scoped server lists and finds only worlds bound
+        // to its partition; foreign, legacy and malformed worlds read as
+        // absent, and it refuses to create over any of them.
+        use id_worlds::world::JournalAckMode;
+        use id_worlds::world_store::FileJournal;
+
+        let root = tempfile::TempDir::new().unwrap();
+        let journal = |name: &str| root.path().join(name).join("journal.jsonl");
+        drop(
+            FileJournal::open_in_partition(&journal("ours"), "ours", "eu", JournalAckMode::Sync)
+                .unwrap(),
+        );
+        drop(
+            FileJournal::open_in_partition(
+                &journal("theirs"),
+                "theirs",
+                "us",
+                JournalAckMode::Sync,
+            )
+            .unwrap(),
+        );
+        drop(FileJournal::open(&journal("legacy"), "legacy").unwrap());
+        drop(
+            FileJournal::open_in_partition(
+                &journal("broken"),
+                "broken",
+                "eu",
+                JournalAckMode::Sync,
+            )
+            .unwrap(),
+        );
+        std::fs::write(root.path().join("broken/journal.jsonl.partition.json"), "{").unwrap();
+
+        assert_eq!(
+            visible_worlds(root.path(), Some("eu")),
+            vec!["ours".to_owned()]
+        );
+        assert_eq!(
+            visible_worlds(root.path(), Some("us")),
+            vec!["theirs".to_owned()]
+        );
+        assert_eq!(
+            visible_worlds(root.path(), None),
+            vec![
+                "broken".to_owned(),
+                "legacy".to_owned(),
+                "ours".to_owned(),
+                "theirs".to_owned()
+            ]
+        );
+        for name in ["theirs", "legacy", "broken", "missing"] {
+            assert!(!world_visible(root.path(), name, Some("eu")), "{name}");
+        }
+        assert!(world_visible(root.path(), "ours", Some("eu")));
+
+        for name in ["theirs", "legacy", "broken"] {
+            assert!(
+                partition_create_refused(root.path(), name, Some("eu")),
+                "{name}"
+            );
+            assert!(!partition_create_refused(root.path(), name, None), "{name}");
+        }
+        assert!(!partition_create_refused(root.path(), "ours", Some("eu")));
+        assert!(!partition_create_refused(
+            root.path(),
+            "missing",
+            Some("eu")
+        ));
+    }
+
+    #[test]
+    fn host_mode_idles_worlds_after_fifteen_minutes_and_never_never() {
+        // #10694: a hosted world always sleeps once its last client has
+        // been gone for the window; pins are how a world stays awake.
+        assert_eq!(resolve_world_idle_secs(None, false).unwrap(), 600);
+        assert_eq!(resolve_world_idle_secs(None, true).unwrap(), 900);
+        assert_eq!(resolve_world_idle_secs(Some(0), false).unwrap(), 0);
+        assert_eq!(resolve_world_idle_secs(Some(30), true).unwrap(), 30);
+        let refused = resolve_world_idle_secs(Some(0), true).unwrap_err();
+        assert!(format!("{refused}").contains("id host pin"), "{refused}");
+    }
+
+    #[test]
+    fn relay_and_gossip_cli_flags_override_build_defaults() {
+        use id_core::connectivity::RelayPolicy;
+
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, false, false, false, false),
+            (RelayPolicy::N0, false),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, false, false, true, false),
+            (RelayPolicy::N0, true),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, true, false, false, true),
+            (RelayPolicy::N0, false),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::Disabled, true, false, false, false),
+            (RelayPolicy::Disabled, true),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, true, true, false, false),
+            (RelayPolicy::Disabled, true),
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_lock_cleanup_preserves_replacement_written_after_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let stale = r#"{"pid":1}"#;
+        let replacement = r#"{"pid":2}"#;
+        afs::write(&path, stale).await.unwrap();
+
+        // Deterministically model a writer publishing a new lock after the
+        // caller read the stale contents but before cleanup takes the path.
+        let replacement_file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        std::fs::write(replacement_file.path(), replacement).unwrap();
+        replacement_file.persist(&path).unwrap();
+        remove_stale_serve_lock(&path, stale);
+
+        assert_eq!(afs::read_to_string(path).await.unwrap(), replacement);
+    }
+
+    #[test]
+    fn competing_serve_starts_publish_only_one_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let publishers = [r#"{"pid":1}"#, r#"{"pid":2}"#].map(|contents| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                publish_serve_lock(&path, contents).is_ok()
+            })
+        });
+
+        barrier.wait();
+        let successes = publishers
+            .into_iter()
+            .map(|publisher| publisher.join().unwrap())
+            .filter(|success| *success)
+            .count();
+
+        assert_eq!(successes, 1, "exactly one serve start must own the lock");
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(
+            contents == r#"{"pid":1}"# || contents == r#"{"pid":2}"#,
+            "the published lock must be one complete contender's record"
+        );
+    }
+
+    #[test]
+    fn shutdown_preserves_a_replacement_serve_lock_without_vacating_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let incumbent = r#"{"pid":1}"#;
+        let replacement = r#"{"pid":2}"#;
+        let third = r#"{"pid":3}"#;
+        publish_serve_lock(&path, incumbent).unwrap();
+
+        // Hold the same interprocess guard while installing a replacement and
+        // starting both a late cleanup and a third publisher. Neither may
+        // observe a temporarily vacant public lock path.
+        let guard = lock_serve_lock(&path).unwrap();
+        fs::write(&path, replacement).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let cleanup_path = path.clone();
+        let cleanup_barrier = barrier.clone();
+        let cleanup = std::thread::spawn(move || {
+            cleanup_barrier.wait();
+            remove_serve_lock_at(&cleanup_path, incumbent);
+        });
+        let publish_path = path.clone();
+        let publish_barrier = barrier.clone();
+        let publisher = std::thread::spawn(move || {
+            publish_barrier.wait();
+            publish_serve_lock(&publish_path, third)
+        });
+        barrier.wait();
+        assert_eq!(fs::read_to_string(&path).unwrap(), replacement);
+        drop(guard);
+
+        cleanup.join().unwrap();
+        assert!(publisher.join().unwrap().is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), replacement);
+    }
+
+    #[test]
+    fn startup_reclaims_a_dead_process_lock_before_no_clobber_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let stale = serde_json::to_string(&ServeInfo {
+            node_id: "stale".to_owned(),
+            pid: i32::MAX as u32,
+            addrs: Vec::new(),
+            web_port: None,
+            web_bindings: Vec::new(),
+            start_time: None,
+        })
+        .unwrap();
+        let current = r#"{"pid":42}"#;
+        fs::write(&path, stale).unwrap();
+
+        let _guard = lock_serve_lock(&path).unwrap();
+        publish_serve_lock_reclaiming_stale_locked(&path, current).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), current);
+    }
 
     fn stale_test_peer(seed: u8) -> id_core::discovery::PeerInfo {
         let node_id = iroh_base::SecretKey::from_bytes(&[seed; 32]).public();
@@ -2528,7 +3160,10 @@ mod tests {
 
         // The persistent Evaluator's high-water mark: the same state warns
         // no second time.
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Growing past the next threshold warns once more, for that tier.
         {
@@ -2566,13 +3201,19 @@ mod tests {
 
         // The first authorization is not a re-add, and warns about nothing.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-authorize cycles inside the window: the fourth
         // re-add crosses the churn threshold and warns exactly once.
         for cycle in 0..4_u64 {
             log.device_revoke(author, group, device).unwrap();
-            assert!(evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2).is_empty());
+            assert_eq!(
+                evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2),
+                [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+            );
             log.device_add(author, group, device, Role::Read).unwrap();
             let fired = evaluate_group_warnings(&mut watcher, &path, 1_002 + cycle * 2);
             if cycle < 3 {
@@ -2603,7 +3244,10 @@ mod tests {
 
         // The first authorization is not a re-add, and warns about nothing.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-authorize cycles, all inside one interval:
         // no evaluation runs until every cycle is already in the log.
@@ -2639,7 +3283,10 @@ mod tests {
 
         // Account A authorizes the device; the first evaluation adopts it.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-add cycles by account B inside one interval:
         // B's revokes do not touch A's grant, so nothing here is a re-add.
@@ -2647,7 +3294,10 @@ mod tests {
             log.device_revoke(other, group, device).unwrap();
             log.device_add(other, group, device, Role::Read).unwrap();
         }
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2674,14 +3324,20 @@ mod tests {
         // adopts it with both grant owners tracked.
         log.device_add(author, group, device, Role::Read).unwrap();
         log.device_add(other, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
         log.remove(author, group, other, id_events::groups::RemoveMode::Revoke)
             .unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four genuine revoke + re-add cycles by the remaining account,
         // all inside one interval, must count four re-adds and warn.
@@ -3036,7 +3692,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.web_port, Some(3001));
-        assert!(parsed.web_bindings.is_empty());
+        assert_eq!(parsed.web_bindings, [] as [String; 0]);
     }
 
     #[test]
@@ -3124,8 +3780,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("127.0.0.1:3000"), "{err}");
-        assert!(err.contains("[web_bindings]"), "{err}");
-        assert!(err.contains("defaults.conf"), "{err}");
+        assert!(err.contains("web_bindings in defaults.json"), "{err}");
     }
 
     #[test]
@@ -3373,7 +4028,10 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-            assert!(err.contains("[web_bindings]"), "{err}");
+            assert!(
+                err.contains("web_bindings entry") && err.contains("defaults.json"),
+                "{err}"
+            );
             assert!(err.contains("127.0.0.1:3000"), "{err}");
         }
     }
@@ -3391,7 +4049,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
-        assert!(err.to_string().contains("[web_bindings]"), "{err}");
+        assert!(err.to_string().contains("defaults.json"), "{err}");
     }
 
     // Integration tests for lock file functions require file system access
@@ -3694,5 +4352,31 @@ mod tests {
         };
         let crate::cli::ServeArgs { server_config, .. } = args;
         assert_eq!(server_config, Some(PathBuf::from("ops.toml")));
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn conventional_platform_checkout_is_used_only_when_built() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(discover_platform_dir(root.path()), None);
+
+        // A source checkout without the built host leaves compilation off
+        // instead of failing `serve` (the test-e2e sandbox layout).
+        let platform = root.path().join("examples/roc-world");
+        fs::create_dir_all(&platform).unwrap();
+        fs::write(platform.join("platform.roc"), "platform \"x\"\n").unwrap();
+        assert_eq!(discover_platform_dir(root.path()), None);
+
+        fs::create_dir_all(platform.join("targets/wasm32")).unwrap();
+        fs::write(platform.join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        assert_eq!(discover_platform_dir(root.path()), Some(platform.clone()));
+
+        // From a subdirectory such as `e2e/`, the parent's checkout is found.
+        let sub = root.path().join("e2e");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            discover_platform_dir(&sub),
+            Some(sub.join("../examples/roc-world"))
+        );
     }
 }

@@ -18,7 +18,7 @@
 //! is F12.7, and transports (iroh, WebSocket, SSH exec) only move these
 //! frames.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -719,6 +719,291 @@ pub(crate) fn sample_client_frame(contract: &ShellContract, kind: &str, capabili
         frame.insert(name.clone(), value);
     }
     Value::Object(frame)
+}
+
+/// The suite manifest document, embedded at build time.
+pub const SHELL_SUITE_JSON: &str = include_str!("../../../contract/shell-suite.v1.json");
+
+/// One shell's capability statement against the contract: the client
+/// frames it sends, the server frames it presents, the capability
+/// providers it declares (v1 declarations ride the F12.4 registry out
+/// of band; the statement names them so the suite can see them), and
+/// the client frames its required workflow must exercise. A shell
+/// that cannot state its capabilities in these terms is not a v1
+/// shell (design #6296, "The one gate").
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CapabilityStatement {
+    /// Client frame kinds the shell may send.
+    pub sends: BTreeSet<String>,
+    /// Server frame kinds the shell presents.
+    pub presents: BTreeSet<String>,
+    /// Declared capability providers, by registry name.
+    #[serde(default)]
+    pub providers: Vec<String>,
+    /// Client frame kinds the shell's required workflow must
+    /// exercise; a recorded session that never sends one is a thin
+    /// transcript, not a pass (review finding, PR #8243).
+    pub workflow: Vec<String>,
+}
+
+/// One shell's entry in the suite manifest.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct SuiteShell {
+    /// The shell's name (`terminal`, `browser`, `native`, `hardware`,
+    /// `tui`).
+    pub name: String,
+    /// Its capability statement; a shell without one fails the suite.
+    pub statement: Option<CapabilityStatement>,
+    /// Its recorded session, as a path relative to the manifest;
+    /// `None` while the shell's own slice has not recorded one yet.
+    pub session: Option<String>,
+}
+
+/// The parsed suite manifest (`contract/shell-suite.v1.json`): every
+/// shell on the v1 contract (the v1 shells and, from shells v2, the
+/// TUI), its capability statement, and its recorded session. The
+/// suite is the product (core topic #6279): slices add their shell's
+/// session path here and the whole suite gates on it, with no code
+/// change.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ShellSuite {
+    /// Manifest kind (`shell-suite`).
+    pub suite: String,
+    /// Manifest version.
+    pub version: u32,
+    /// The shells, in presentation order.
+    pub shells: Vec<SuiteShell>,
+}
+
+impl ShellSuite {
+    /// Parse a suite manifest document.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the document is not a valid suite manifest.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let suite: Self = id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+            .map_err(|error| error.to_string())?;
+        if suite.suite != "shell-suite" {
+            return Err(format!("not a shell suite manifest: {:?}", suite.suite));
+        }
+        if suite.version != 1 {
+            return Err(format!("unsupported shell suite version {}", suite.version));
+        }
+        Ok(suite)
+    }
+
+    /// The embedded version 1 suite manifest.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the embedded document is broken, which its tests rule out.
+    pub fn embedded() -> Result<&'static Self, String> {
+        static SUITE: OnceLock<Result<ShellSuite, String>> = OnceLock::new();
+        SUITE
+            .get_or_init(|| Self::parse(SHELL_SUITE_JSON))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+/// Where one shell's recorded session comes from, resolved by the
+/// caller (the library does no IO).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionSource<'a> {
+    /// The shell has no recorded session yet; it is reported as
+    /// unrecorded, never silently skipped.
+    Unrecorded,
+    /// The recorded session's transcript text.
+    Recorded(&'a str),
+    /// The manifest names a session that could not be read; the
+    /// string says why.
+    Unreadable(&'a str),
+}
+
+/// One shell to run through the suite, with its session resolved.
+#[derive(Clone, Copy, Debug)]
+pub struct SuiteEntry<'a> {
+    /// The shell's name.
+    pub name: &'a str,
+    /// Its capability statement, if it has one.
+    pub statement: Option<&'a CapabilityStatement>,
+    /// Its recorded session.
+    pub session: SessionSource<'a>,
+}
+
+/// The suite's verdict for one shell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellVerdict {
+    /// The shell's name.
+    pub name: String,
+    /// Whether a recorded session was checked.
+    pub recorded: bool,
+    /// Frames in the recorded session (0 when unrecorded/unreadable).
+    pub frames: usize,
+    /// Every way the shell failed; empty is a pass.
+    pub failures: Vec<String>,
+}
+
+impl ShellVerdict {
+    /// Whether the shell passed.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.failures.is_empty()
+    }
+}
+
+/// Run the conformance suite: for every shell, validate its
+/// capability statement against the contract, run its recorded
+/// session through the F13.1 conformance check, and verify the
+/// session stays inside the statement and exercises the workflow
+/// the statement requires. Failures are per-shell and named, so one
+/// command reports every shell at once.
+#[must_use]
+pub fn check_suite(contract: &ShellContract, entries: &[SuiteEntry<'_>]) -> Vec<ShellVerdict> {
+    let mut seen = BTreeSet::new();
+    entries
+        .iter()
+        .map(|entry| check_suite_shell(contract, entry, &mut seen))
+        .collect()
+}
+
+fn check_suite_shell(
+    contract: &ShellContract,
+    entry: &SuiteEntry<'_>,
+    seen: &mut BTreeSet<String>,
+) -> ShellVerdict {
+    let mut failures = Vec::new();
+    if !seen.insert(entry.name.to_owned()) {
+        failures.push(format!("duplicate suite entry for shell `{}`", entry.name));
+    }
+    let statement = entry.statement;
+    match statement {
+        None => failures.push("shell has no capability statement".to_owned()),
+        Some(statement) => {
+            if statement.sends.is_empty() {
+                failures.push("capability statement declares no client frames it sends".to_owned());
+            }
+            if statement.presents.is_empty() {
+                failures
+                    .push("capability statement declares no server frames it presents".to_owned());
+            }
+            for kind in &statement.sends {
+                if !contract.client_frames.contains_key(kind) {
+                    failures.push(format!(
+                        "capability statement claims client frame `{kind}`, which shell \
+                         contract v{}.{} does not name",
+                        contract.version, contract.revision
+                    ));
+                }
+            }
+            for kind in &statement.presents {
+                if !contract.server_frames.contains_key(kind) {
+                    failures.push(format!(
+                        "capability statement claims server frame `{kind}`, which shell \
+                         contract v{}.{} does not name",
+                        contract.version, contract.revision
+                    ));
+                }
+            }
+            if statement.workflow.is_empty() {
+                failures.push("capability statement declares no workflow frames".to_owned());
+            }
+            for kind in &statement.workflow {
+                if !statement.sends.contains(kind) {
+                    failures.push(format!(
+                        "workflow frame `{kind}` is not one of the client frames the \
+                         capability statement says the shell sends"
+                    ));
+                }
+            }
+        }
+    }
+
+    let (recorded, frames) = match entry.session {
+        SessionSource::Unrecorded => (false, 0),
+        SessionSource::Unreadable(why) => {
+            failures.push(format!("recorded session could not be read: {why}"));
+            (true, 0)
+        }
+        SessionSource::Recorded(text) => {
+            let mut check = Conformance::new(contract);
+            let mut client_kinds = BTreeSet::new();
+            let mut frames = 0_usize;
+            let mut unreadable_line = None;
+            for (number, line) in text.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let parsed: Result<TranscriptLine, _> =
+                    id_core::json_unique::from_slice_without_duplicate_keys(line.as_bytes());
+                match parsed {
+                    Ok(line_entry) => {
+                        frames += 1;
+                        match line_entry.from {
+                            Side::Client => {
+                                if let Some(kind) =
+                                    line_entry.frame.get("type").and_then(Value::as_str)
+                                {
+                                    client_kinds.insert(kind.to_owned());
+                                }
+                                check.client(&line_entry.frame);
+                            }
+                            Side::Server => check.server(&line_entry.frame),
+                        }
+                    }
+                    Err(error) => {
+                        unreadable_line = Some(format!("transcript line {}: {error}", number + 1));
+                        break;
+                    }
+                }
+            }
+            if let Some(message) = unreadable_line {
+                failures.push(message);
+            } else {
+                failures.extend(check.finish().iter().map(ToString::to_string));
+                if let Some(statement) = statement {
+                    let undeclared: Vec<&String> =
+                        client_kinds.difference(&statement.sends).collect();
+                    if !undeclared.is_empty() {
+                        failures.push(format!(
+                            "recorded session sends client frame(s) outside its capability \
+                             statement: {}",
+                            undeclared
+                                .iter()
+                                .map(|kind| kind.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    let unexercised: Vec<&String> = statement
+                        .workflow
+                        .iter()
+                        .filter(|kind| !client_kinds.contains(*kind))
+                        .collect();
+                    if !unexercised.is_empty() {
+                        failures.push(format!(
+                            "recorded session never exercises workflow frame(s) its \
+                             capability statement requires: {}",
+                            unexercised
+                                .iter()
+                                .map(|kind| kind.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                }
+            }
+            (true, frames)
+        }
+    };
+
+    ShellVerdict {
+        name: entry.name.to_owned(),
+        recorded,
+        frames,
+        failures,
+    }
 }
 
 #[cfg(test)]

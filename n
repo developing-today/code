@@ -1,1 +1,0 @@
-lib/nvim.sh

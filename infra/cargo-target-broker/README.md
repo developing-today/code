@@ -22,7 +22,10 @@ dispatch: a bounded pool, exclusive leases, no concurrent writers.
 - `checkout` grants an **exclusive lease** on a warm pooled dir (or
   creates one). A concurrent request for the same key gets a second
   pooled dir — up to the per-key cap (default 3) — or waits; it never
-  shares a live dir.
+  shares a live dir. Before returning the lease, the broker cleans the
+  current workspace members' outputs from that target dir, preventing
+  checkout-sensitive artifacts from leaking between worktrees while
+  retaining dependency artifacts.
 - `checkin` releases the lease and refreshes the dir's recorded
   size. The dir stays warm for the next lane of the same repo.
 - Bounds: total pool cap (default 300 GiB) with LRU eviction of
@@ -32,6 +35,14 @@ dispatch: a bounded pool, exclusive leases, no concurrent writers.
   first sight rather than orphaned.
 - State is SQLite at `~/.local/state/cargo-target-broker/broker.db`;
   every mutation runs under an flock. No daemon.
+- `exec` also watches sccache compiler clients. A client older than the
+  configured stall bound with negligible CPU is treated as wedged (the
+  observed failure shape in code#13367): the broker reports its pid/crate
+  and sends it SIGTERM so Cargo fails that compile instead of parking the
+  build indefinitely. Healthy compiles accrue CPU; young idle clients are
+  ignored. Default bound: 15 minutes old and at most 5 CPU seconds, polled
+  every 30 seconds. This is a local client-side guard; it does not diagnose
+  or alter the upstream sccache daemon.
 
 ## Use
 
@@ -56,18 +67,26 @@ used). Holders default to `user@host:pid`; set
 
 Useful flags: `--wait SECONDS` on checkout/exec (wait for a dir
 instead of failing when the per-key cap is fully leased),
+`--workspace-cwd DIR` on checkout/exec (clean the selected Cargo workspace
+while keeping the command's original working directory),
 `--cap-gib`, `--per-key`, `--ttl-secs`, `--pool-root`, `--state-dir`.
+
+The `exec` watchdog can be tuned with `CARGO_BROKER_SCCACHE_STALL_SECS`,
+`CARGO_BROKER_SCCACHE_MAX_CPU_SECS`, and
+`CARGO_BROKER_SCCACHE_POLL_SECS`. Set
+`CARGO_BROKER_NO_SCCACHE_WATCHDOG=1` to opt out. An explicitly empty
+`RUSTC_WRAPPER` or `CARGO_BUILD_RUSTC_WRAPPER` also disables it when Cargo
+is intentionally run without sccache.
 
 ## Integration status
 
 Fully wired (2026-11-11, code#6797):
 
-- `~/tools/fleet-build-lock` routes its `CARGO_TARGET_DIR` default
-  through `checkout`/`checkin`: a cargo build that reaches the lock
-  without `CARGO_TARGET_DIR` set leases a pooled dir — keyed by the
-  lock's workspace key plus the invocation's profile label — for
-  the build's duration. If the broker cannot lease, the lock falls
-  back to the pre-broker static per-workspace dir.
+- `~/tools/fleet-build-lock` routes direct Cargo compile commands
+  through a broker lease keyed by workspace and profile. A command with
+  `--manifest-path` supplies the selected workspace for checkout cleanup,
+  while Cargo itself keeps running from the caller's original directory.
+  If the broker is absent, the lock uses the static per-workspace fallback.
 - Repo-queue session launches: the opencode claimant's session
   prompts (`pm-stack/opencode-claimant/launch_one.py` and
   `claimant.py`) instruct launched sessions to run heavy cargo

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT, CRON, MODEL_ID, PROVIDER_ID, TASK_ID,
-  buildTask, mergeTasks, parseArgs,
+  buildTask, defaultStore, mergeTasks, parseArgs,
 } from "../install.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,12 +59,14 @@ async function expectNoWrites(stores) {
   // runs the installer (observed on CI runners where bun is installed under
   // ~/.bun); that is a runtime artifact, not an installer write, so it is
   // excluded from the no-write assertion. See developing-today/code#9532.
-  const homeEntries = (await readdir(stores.home)).filter(
-    (name) => name !== ".bun",
-  );
-  expect(homeEntries).toEqual([
-    ".config", "explicit-store.json",
-  ]);
+  // A directory is listed in whatever order the filesystem keeps it: on
+  // the CI runner that is not the order the entries were made in, which
+  // failed this assertion on every scheduled run. What is asserted is
+  // which entries exist, so both sides are put in one order.
+  const homeEntries = (await readdir(stores.home))
+    .filter((name) => name !== ".bun")
+    .sort();
+  expect(homeEntries).toEqual([".config", "explicit-store.json"].sort());
   expect(await readdir(stores.defaultDir)).toEqual([
     "path_L2hvbWUvdXNlci9naXQvY29kZQ.json",
   ]);
@@ -230,6 +232,37 @@ describe("installer CLI argument validation", () => {
       await expectNoWrites(stores);
     } finally {
       await rm(stores.home, { recursive: true, force: true });
+    }
+  });
+});
+
+// #8220: the home-resolution contract (#5762). The default store needs HOME;
+// an unset or empty HOME is a usage error naming --store, never the passwd
+// fallback, and an explicit --store needs no HOME.
+describe("default store home resolution (#8220)", () => {
+  const STORE_TAIL = join(".config", "openchamber", "projects", "path_L2hvbWUvdXNlci9naXQvY29kZQ.json");
+
+  test("a set HOME gives the same default store path", () => {
+    expect(defaultStore({ HOME: "/home/probe" })).toBe(join("/home/probe", STORE_TAIL));
+  });
+
+  for (const home of [undefined, "", "  "]) {
+    test(`HOME ${home === undefined ? "unset" : JSON.stringify(home)} is a usage error naming --store`, () => {
+      expect(() => defaultStore(home === undefined ? {} : { HOME: home })).toThrow(
+        home === undefined ? "HOME is unset" : "HOME is empty",
+      );
+      expect(() => defaultStore({})).toThrow("set HOME or pass --store");
+    });
+  }
+
+  test("an explicit --store needs no HOME", () => {
+    const saved = process.env.HOME;
+    delete process.env.HOME;
+    try {
+      expect(parseArgs(["--store", "/tmp/store"]).storePath).toBe("/tmp/store");
+      expect(() => parseArgs([])).toThrow("set HOME or pass --store");
+    } finally {
+      if (saved !== undefined) process.env.HOME = saved;
     }
   });
 });

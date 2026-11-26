@@ -4,7 +4,7 @@
 
 There is ONE fleet queue (one broker, one tasks table); the per-repo
 values in the `queue` column are stream labels inside it, not separate
-queues. The matching model (Drew, 2026-11-10; #8097):
+queues. The matching model (the user, 2026-11-10; #8097):
 
 - **Default claim is unfiltered.** A lane claims with no stream and no
   filter and receives the highest-priority available item it is
@@ -40,6 +40,78 @@ queues. The matching model (Drew, 2026-11-10; #8097):
   item names a platform beyond the optional coarse family mark; Muse
   lanes work their own fixes and triage is a separate step; lanes do
   the work rather than handing off, and a handoff records its reason.
+
+## Filing an issue outside a creator run
+
+**File and enqueue in the same pass.** Any lane that files a GitHub issue
+outside a creator run — a work lane filing a blocker mid-task, an audit
+lane, a hand filing — enqueues that issue's triage packet in the same
+pass, or records in the filing comment why it is deliberately not
+queued. An issue filed without a queue item is invisible to every worker
+lane: nothing dispositions it, and it sits open until someone notices by
+hand (#7016).
+
+```bash
+repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
+```
+
+The standing backstop is the coverage reconciliation
+(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
+must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
+in its own pilot queue. A `done` task is not coverage, and neither is a
+task in a `*-shadow` queue. When the reconciliation reports uncovered
+issues, the rule above was missed somewhere; fix the filing path, not
+just the import.
+
+## Who holds an issue (assignee is not a hold)
+
+Every open issue and PR here used to be auto-assigned to `dezren39`
+(the user) by a sweeper workflow, so the assignee says nothing about
+ownership. Lanes read it as "user-owned" and parked work for an
+"explicit ownership release" that never comes (#7616 collected 50+
+park notes in two days). The rule:
+
+- An issue or PR is **held for a human only** when it carries a hold
+  label: `held`, `user/owned` or `do-not-auto-edit`. `do-not-merge`
+  blocks merging, not working. "User-owned" in any runbook means one of
+  these labels, nothing else.
+- **Assignees never hold work**, whoever they are, and neither does a
+  `work/assigned` label. Which worker holds a task is the queue's
+  atomic claim, not a label or an assignee. Never park, and never wait
+  for a "release" or "handoff", because of an assignee.
+- **A PR or branch authored by `dezren39` is not the user's either.** Fleet
+  agents push and open PRs under that account, so authorship is fleet
+  work product, not a hold. A PR is someone else's only if a live queue
+  claim holds it or it carries a hold label.
+- **There is no ownership handoff.** Never park "awaiting ownership
+  handoff", "owner release", "owner coordination" or "reassignment",
+  and never carry such a gate forward in a resume brief or queue
+  checkpoint: nobody gives one. A queue task's own earlier branch,
+  worktree or draft PR is its own work to inspect and continue. (On
+  2026-11-21 seven parked tasks were still waiting on such a gate
+  after the assignments were cleared; their checkpoints were reset.)
+  See [FDR-0012](../decisions/FDR-0012-no-ownership-handoff-park-gates.md).
+- Check before parking on ownership (exit 0 = workable, 3 = held):
+
+  ```bash
+  python3 pm-stack/lane-guard/lane_guard.py hold --repo <owner/repo> --issue <n>
+  ```
+
+- **One park note, not one per cycle.** Before posting a parked or
+  picked-up agent note, run the note check and skip the comment on
+  exit 3; record the park in the queue checkpoint instead.
+
+  ```bash
+  python3 pm-stack/lane-guard/lane_guard.py note --repo <owner/repo> \
+    --issue <n> --task <task-id> --state parked
+  ```
+
+  When it says to post, start the note with the `header` line it
+  prints. Progress notes (PR opened, blocked, completed) always post.
+
+- A task too big for one run is not a reason to park without code:
+  land the next reviewable slice as a PR (or a checkpointed branch)
+  and park with that slice named as the resume point.
 
 ## Decision records bind this file
 

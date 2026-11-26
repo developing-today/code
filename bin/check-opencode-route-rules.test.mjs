@@ -173,6 +173,35 @@ test('unknown non-inverted window gates are rejected and excluded from coverage'
   assert.ok(result.issues.some((issue) => issue.includes('unknown model-route window "typo-window"')));
 });
 
+test('window class vocabulary and route window bindings (#9378 stage 2)', () => {
+  const config = configWith();
+  config.experimental.model_route_windows = {
+    peak: { daysOfWeek: ['mon'], start: '01:00', end: '04:00', timezone: 'UTC', class: 'peak' },
+    off: { daysOfWeek: ['mon'], start: '04:00', end: '06:00', timezone: 'UTC', class: 'off-peak' },
+    bad: { daysOfWeek: ['mon'], start: '00:00', end: '23:59', timezone: 'UTC', class: 'spicy' },
+  };
+  config.experimental.model_routes.bound = { targets: ['good/model#low'], windows: ['peak', 'off'] };
+  config.experimental.model_routes.badroute = { targets: ['good/model#low'], windows: ['nope'] };
+  config.experimental.model_routes.notalist = { targets: ['good/model#low'], windows: 'peak' };
+  const result = inspectRouteRules(config);
+  assert.ok(
+    result.issues.some((issue) => issue.includes('window "bad"') && issue.includes('unknown class')),
+    `bad class must flag: ${result.issues}`,
+  );
+  assert.ok(
+    result.issues.some((issue) => issue.includes('route "badroute"') && issue.includes('unknown model-route window "nope"')),
+    `unknown binding must flag: ${result.issues}`,
+  );
+  assert.ok(
+    result.issues.some((issue) => issue.includes('route "notalist"') && issue.includes('"windows" must be a list')),
+    `non-list binding must flag: ${result.issues}`,
+  );
+  assert.ok(
+    !result.issues.some((issue) => issue.includes('route "bound"')),
+    `valid binding must not flag: ${result.issues}`,
+  );
+});
+
 test('permanently closed window gates are rejected and excluded from coverage', () => {
   const config = configWith({ scout: [{ model: 'good/model#low', window: 'closed' }] });
   config.experimental.model_route_windows = {
@@ -202,8 +231,8 @@ test('repeated nested-route references expand once like the runtime', () => {
 });
 
 test('an emptied chain stage contributes nothing instead of failing the tier', () => {
-  // main's workhorse-primary is deliberately targets: [] while the
-  // chain's other stages serve the tier (Drew emptied it 2026-11-07).
+  // A legacy empty nested route is a no-op while the chain's other stages
+  // serve the tier; the canonical workhorse-primary stage is now removed.
   const config = configWith({
     workhorse: ['opencode-route/empty-stage#low', 'good/model#high'],
   });
@@ -228,30 +257,46 @@ test('canonical OpenCode config satisfies the route rules', () => {
   assert.deepEqual(checkRouteRules(source), []);
 });
 
-// --- class fallback layout (Drew 2026-11-13) ---
+// --- class fallback layout (route-pool decision #14432, 2026-11-26) ---
 import { CLASS_FALLBACKS, inspectFallbackLayout } from './check-opencode-route-rules.mjs';
 
 function configWithFallbacks(overrides = {}) {
   const config = configWith({
-    // Scout chain ruled by Drew 2026-11-14: background first, then workhorse
-    // (matches CLASS_FALLBACKS, .opencode/route-fallbacks.md, and the canonical config).
-    scout: ['good/model#low', 'opencode-route/background', 'opencode-route/workhorse'],
-    workhorse: ['good/model#high', 'opencode-route/scout', 'opencode-route/specialist'],
+    // Scout falls to background then workhorse; workhorse has no edge back
+    // to scout, so the class graph remains acyclic.
+    scout: ['good/model#low', 'opencode-route/background'],
+    workhorse: ['good/model#high', 'opencode-route/specialist'],
     summit: ['plan/model#high', 'opencode-route/specialist'],
     ...overrides,
   });
   const routes = config.experimental.model_routes;
   routes.small = { targets: ['good/model#low', 'opencode-route/speed'] };
   routes.speed = {
-    targets: ['good/model#high', 'opencode-route/workhorse', 'opencode-route/summit', 'opencode-route/specialist'],
+    targets: ['good/model#high', 'opencode-route/workhorse-last-resort', 'opencode-route/specialist'],
   };
   routes.background = { targets: ['good/model#low', 'opencode-route/workhorse'] };
+  routes['workhorse-last-resort'] = { targets: ['plan/model#low'] };
   return config;
 }
 
-test('class fallback layout passes and the workhorse<->scout pair is not a cycle', () => {
+test('class fallback layout passes with acyclic workhorse, scout and speed fallbacks', () => {
   const result = inspectRouteRules(configWithFallbacks());
   assert.deepEqual(result.issues, []);
+});
+
+test('declared class fallback graph is acyclic', () => {
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (route) => {
+    if (visiting.has(route)) throw new Error(`class fallback cycle reaches ${route}`);
+    if (visited.has(route)) return;
+    visiting.add(route);
+    for (const target of CLASS_FALLBACKS[route] ?? []) visit(target);
+    visiting.delete(route);
+    visited.add(route);
+  };
+  for (const route of Object.keys(CLASS_FALLBACKS)) visit(route);
+  assert.equal(visiting.size, 0, 'every fallback path returns from the cycle-check walk');
 });
 
 test('class fallback drift between config and the declared chain is flagged', () => {
@@ -291,5 +336,348 @@ test('fallback escalation walk fires when the chain loops without reaching speci
   assert.ok(
     issues.some((issue) => issue.includes('escalation walk') && issue.includes('never reaches specialist')),
     `expected an escalation walk issue, got: ${JSON.stringify(issues)}`,
+  );
+});
+// --- purpose designations (code#13675, 2026-11-23) ---
+
+function configWithDesignations() {
+  const config = configWith();
+  config.model_designations = {
+    'decision-bot': { purposes: ['decision'] },
+    'embed-bot': { purposes: ['embed'] },
+    'stt-bot': { purposes: ['transcribe'], capabilities: ['stt', 'audio-in'] },
+  };
+  const routes = config.experimental.model_routes;
+  routes.deciders = { purpose: 'decision', targets: ['free/decision-bot#low'] };
+  routes.embedders = { purpose: 'embed', targets: ['free/embed-bot#low'] };
+  routes.transcribers = { purpose: 'transcribe', targets: ['free/stt-bot#low'] };
+  return config;
+}
+
+test('designated models pass when seated only in pools of their purpose', () => {
+  const result = inspectRouteRules(configWithDesignations());
+  assert.deepEqual(result.issues, []);
+});
+
+test('designation rule fires when a designated model is seated in a pool of another purpose', () => {
+  const config = configWithDesignations();
+  config.experimental.model_routes.embedders.targets = ['free/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"embedders"')),
+    `expected a designation issue for decision-bot in embedders, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('a model designated without chat never resolves into a chat-purpose pool (systemone convention)', () => {
+  const config = configWithDesignations();
+  // scout is a chat-purpose tier (no purpose field = chat).
+  config.experimental.model_routes.scout.targets = ['good/model#low', 'free/embed-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"embed-bot"') && issue.includes('"scout"') && issue.includes('purpose "chat"')),
+    `expected a designation issue for embed-bot in scout, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designation rule follows provider-route expansion into pools', () => {
+  const config = configWithDesignations();
+  config.provider.good.models['decision-bot'] = { variants: { low: {} } };
+  config.experimental.model_routes.deciders.targets = ['plan/decision-bot#low'];
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.experimental.model_routes.workhorse.targets = ['plan/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"workhorse"')),
+    `expected a designation issue for decision-bot in workhorse, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('unknown designation purposes and capabilities are flagged', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision', 'fly'] };
+  config.model_designations['stt-bot'] = { purposes: ['transcribe'], capabilities: ['stt', 'wings'] };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(issues.some((issue) => issue.includes('unknown purpose "fly"')), `got: ${JSON.stringify(issues)}`);
+  assert.ok(issues.some((issue) => issue.includes('unknown capability "wings"')), `got: ${JSON.stringify(issues)}`);
+});
+
+test('an unknown pool purpose is flagged', () => {
+  const config = configWithDesignations();
+  config.experimental.model_routes.deciders.purpose = 'teleport';
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"deciders"') && issue.includes('unknown purpose "teleport"')),
+    `expected an unknown-purpose issue for deciders, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designations may also live under experimental like the other route maps', () => {
+  const config = configWithDesignations();
+  config.experimental.model_designations = config.model_designations;
+  delete config.model_designations;
+  config.experimental.model_routes.scout.targets = ['good/model#low', 'free/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"scout"')),
+    `expected a designation issue via experimental.model_designations, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designation source, when present, must be a non-empty string', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 'models.dev' };
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: '' };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('source must be a non-empty string')),
+    `expected a source validation issue, got: ${JSON.stringify(issues)}`,
+  );
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 42 };
+  assert.ok(inspectRouteRules(config).issues.some((issue) => issue.includes('source must be a non-empty string')));
+});
+
+// --- wallScope declarations + free/paid alias invariants (code#13693) ---
+import { WALL_SCOPES, inspectProviderWallRules } from './check-opencode-route-rules.mjs';
+
+function configWithWallSplit() {
+  const config = configWith();
+  config.provider.paid = {
+    models: { 'free-model': {}, 'paid-model': {} },
+    options: { baseURL: 'https://paid.example/v1' },
+  };
+  config.provider['paid-free'] = {
+    instanceOf: 'paid',
+    wallScope: 'per-model',
+    models: { 'free-model': {} },
+  };
+  config.provider.paid.wallScope = 'provider';
+  config.experimental.model_routes['free-pool'] = { targets: ['paid-free/free-model'] };
+  return config;
+}
+
+test('wallScope vocabulary is the closed set from the design', () => {
+  assert.deepEqual(WALL_SCOPES, ['per-model', 'provider', 'account']);
+});
+
+test('a well-formed wall split passes the wall rules and the full checker', () => {
+  const config = configWithWallSplit();
+  assert.deepEqual(inspectProviderWallRules(config), []);
+  assert.deepEqual(checkRouteRules(config), []);
+});
+
+test('an unknown wallScope value fails, naming the provider', () => {
+  const config = configWithWallSplit();
+  config.provider.groq = { wallScope: 'per-org', models: {} };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"groq"') && issue.includes('"per-org"')),
+    `expected a wallScope issue naming groq: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('wallScope')));
+});
+
+test('every closed-vocabulary wallScope value passes', () => {
+  for (const scope of WALL_SCOPES) {
+    const config = configWithWallSplit();
+    config.provider.groq = { wallScope: scope, models: {} };
+    assert.deepEqual(inspectProviderWallRules(config), [], );
+  }
+});
+
+test('a -free alias declaring a differing credential fails, naming both ids', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { apiKey: 'a-different-key' };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('options.apiKey')),
+    `expected an alias credential issue naming both ids: ${issues}`,
+  );
+});
+
+test('a -free alias declaring a differing baseURL fails, naming both ids', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { baseURL: 'https://elsewhere.example/v1' };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('options.baseURL')),
+    `expected an alias baseURL issue naming both ids: ${issues}`,
+  );
+});
+
+test('a -free alias re-declaring the base value verbatim does not differ and passes', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { baseURL: 'https://paid.example/v1' };
+  assert.deepEqual(inspectProviderWallRules(config), []);
+});
+
+test('a free-alias model also seated under the paid base fails, naming the seat', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['paid-pool'] = { targets: ['paid/free-model'] };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some(
+      (issue) =>
+        issue.includes('"free-model"') && issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('paid-pool'),
+    ),
+    `expected a split invariant issue naming the seat: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('wallScope')));
+});
+
+test('a free-alias model seated under the paid base via weights alone fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['paid-pool'] = {
+    targets: ['paid/paid-model'],
+    weights: { 'paid/free-model': 1, 'paid/paid-model': 1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('weights')),
+    `expected a split invariant issue naming the weights seat: ${issues}`,
+  );
+});
+
+test('a same-model paid tail passes when the free seat outweighs it in the same route', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+    weights: { 'paid-free/free-model': 3, 'paid/free-model': 0.1 },
+  };
+  assert.deepEqual(inspectProviderWallRules(config), []);
+});
+
+test('a same-model paid tail at equal weight to the free seat fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+    weights: { 'paid-free/free-model': 1, 'paid/free-model': 1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the equal-weight tail: ${issues}`,
+  );
+});
+
+test('a same-model paid tail outweighing the free seat fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+    weights: { 'paid-free/free-model': 0.1, 'paid/free-model': 3 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the heavier tail: ${issues}`,
+  );
+});
+
+test('a paid tail fails when the free seat is only in a different route', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid/free-model#low'],
+    weights: { 'paid/free-model': 0.1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the cross-route tail: ${issues}`,
+  );
+});
+
+test('a paid tail fails when either seat lacks an explicit weight', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the unweighted tail: ${issues}`,
+  );
+});
+
+// --- tokenMetering declarations (code#13839) ---
+import { inspectProviderMeteringRules } from './check-opencode-route-rules.mjs';
+
+function configWithMetering() {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].models['free-small'] = {};
+  config.provider['paid-free'].tokenMetering = {
+    groups: {
+      large: { dailyTokens: 1000000, marginTokens: 20000, models: ['free-model'] },
+      small: { dailyTokens: 10000000, models: ['free-small'] },
+    },
+  };
+  return config;
+}
+
+test('a well-formed tokenMetering declaration passes the metering rules and the full checker', () => {
+  const config = configWithMetering();
+  assert.deepEqual(inspectProviderMeteringRules(config), []);
+  assert.deepEqual(checkRouteRules(config), []);
+});
+
+test('tokenMetering without a groups object fails, naming the provider', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering = {};
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"groups"')),
+    `expected a groups issue naming paid-free: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('tokenMetering')));
+});
+
+test('a non-positive dailyTokens fails, naming the group', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.large.dailyTokens = 0;
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"large"') && issue.includes('dailyTokens')),
+    `expected a dailyTokens issue naming the large group: ${issues}`,
+  );
+});
+
+test('a marginTokens at or past dailyTokens fails', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.large.marginTokens = 1000000;
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"large"') && issue.includes('marginTokens')),
+    `expected a marginTokens issue naming the large group: ${issues}`,
+  );
+});
+
+test('a model mapped to two groups fails, naming the model', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.small.models.push('free-model');
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('exactly one')),
+    `expected a double-mapping issue naming free-model: ${issues}`,
+  );
+});
+
+test('an unmapped catalog model fails — it could never wall', () => {
+  const config = configWithMetering();
+  delete config.provider['paid-free'].tokenMetering.groups.small;
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-small"') && issue.includes('unmapped')),
+    `expected an unmapped-model issue naming free-small: ${issues}`,
+  );
+});
+
+test('a mapped model outside the catalog fails, naming the model', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.small.models = ['not-a-model'];
+  config.provider['paid-free'].tokenMetering.groups.large.models.push('free-small');
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"not-a-model"') && issue.includes('not in the provider')),
+    `expected an outside-catalog issue naming not-a-model: ${issues}`,
   );
 });

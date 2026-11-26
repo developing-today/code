@@ -1448,7 +1448,7 @@ mod tests {
             .unwrap();
         let committed = receiver.accept(&terminal_bytes).unwrap();
         assert_eq!(committed.kind, ReplicationKind::Terminal);
-        assert!(committed.payload.is_empty());
+        assert_eq!(committed.payload, [] as [u8; 0]);
     }
 
     #[test]
@@ -2501,5 +2501,168 @@ mod tests {
         )
         .unwrap();
         assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
+        // 9. Claimed journal header version disagreeing with the
+        //    payload's own Created header (#12218): both versions are
+        //    supported, so only the header-agreement rule can refuse
+        //    it. The control signs the same claim over a payload whose
+        //    header matches it, proving the refusal is the mismatch
+        //    and not the claim itself.
+        let control = ReplicationEnvelope::snapshot(
+            WORLD,
+            source,
+            2,
+            NONCE,
+            [0; 32],
+            entry_payload_with_version(2),
+        )
+        .unwrap();
+        assert!(SignedReplicationEnvelope::sign(control, &key).is_some());
+        let env = ReplicationEnvelope::snapshot(WORLD, source, 2, NONCE, [0; 32], payload.clone())
+            .unwrap();
+        assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
+    }
+
+    fn kind_strategy() -> impl Strategy<Value = ReplicationKind> {
+        proptest::sample::select(vec![
+            ReplicationKind::Snapshot,
+            ReplicationKind::Tail,
+            ReplicationKind::Directory,
+            ReplicationKind::Module,
+            ReplicationKind::Terminal,
+        ])
+    }
+
+    /// A payload shape: empty, a journal with or without its header (at
+    /// the frame's version or another), entries past the frame's version,
+    /// an unterminated line, or arbitrary bytes.
+    fn payload_for(shape: u8, header_version: u32, junk: &[u8]) -> Vec<u8> {
+        match shape {
+            0 => Vec::new(),
+            1 => entry_payload_with_version(header_version),
+            2 => entry_payload_with_version(header_version.wrapping_add(1)),
+            3 => journal_entry_line(&JournalEntry::CapsGranted {
+                granted: vec!["chat".to_string()],
+            }),
+            4 => over_version_payload(),
+            5 => b"{\"not\":\"terminated\"}".to_vec(),
+            _ => junk.to_vec(),
+        }
+    }
+
+    /// The receiver state the envelope claims to continue: same world,
+    /// pinned source, session, header version, chain cursor and frame
+    /// chain head. Every receiver-state rule `accept` applies is then
+    /// satisfied, so only envelope-local rules can refuse the frame.
+    fn receiver_for(envelope: &ReplicationEnvelope) -> ReplicationTracker {
+        ReplicationTracker {
+            world_id: envelope.world_id.clone(),
+            pinned_source: envelope.source,
+            session_nonce: envelope.session_nonce,
+            header_version: envelope.header_version,
+            cursor: envelope.cursor_before,
+            last_frame_digest: envelope.prev_frame_digest,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// #6487 / #6469: `sign` hands out a frame only for its own
+        /// source and only for an envelope every receiver in the state the
+        /// envelope continues accepts; and an envelope it refuses for its
+        /// own source is refused by that receiver with the same rule.
+        #[test]
+        fn signed_envelopes_are_frames_the_receiver_accepts(
+            kind in kind_strategy(),
+            envelope_version in prop_oneof![
+                Just(REPLICATION_ENVELOPE_VERSION),
+                any::<u8>(),
+            ],
+            header_version in prop_oneof![
+                Just(0u32),
+                JOURNAL_VERSION..=MAX_JOURNAL_VERSION,
+                Just(MAX_JOURNAL_VERSION + 1),
+            ],
+            payload_shape in 0u8..7,
+            junk in proptest::collection::vec(any::<u8>(), 0..24),
+            cursor_shape in 0u8..3,
+            other_cursor in (0u64..4, any::<[u8; 32]>()),
+            after_shape in 0u8..3,
+            digest_matches in prop_oneof![3 => Just(true), 1 => Just(false)],
+            prev_frame_digest in any::<[u8; 32]>(),
+            signer_is_source in prop_oneof![3 => Just(true), 1 => Just(false)],
+        ) {
+            let source_key = signing_key(1);
+            let key = if signer_is_source { signing_key(1) } else { signing_key(2) };
+            let source = source_of(&source_key);
+            let payload = payload_for(payload_shape, header_version, &junk);
+            let cursor_before = match cursor_shape {
+                0 => chain_base_cursor(WORLD, &source, header_version),
+                1 => chain_base_cursor(WORLD, &source, header_version.wrapping_add(1)),
+                _ => ReplicationCursor {
+                    ordinal: other_cursor.0,
+                    digest: other_cursor.1,
+                },
+            };
+            let chained = chain_payload(cursor_before, &payload).unwrap_or(cursor_before);
+            let cursor_after = match after_shape {
+                0 => chained,
+                1 => cursor_before,
+                _ => ReplicationCursor {
+                    ordinal: chained.ordinal + 1,
+                    digest: chained.digest,
+                },
+            };
+            let mut payload_digest_bytes = payload_digest(&payload);
+            if !digest_matches {
+                payload_digest_bytes[0] ^= 1;
+            }
+            let envelope = ReplicationEnvelope {
+                version: envelope_version,
+                world_id: WORLD.to_string(),
+                source,
+                header_version,
+                kind,
+                session_nonce: NONCE,
+                cursor_before,
+                cursor_after,
+                prev_frame_digest,
+                payload_digest: payload_digest_bytes,
+                payload,
+            };
+            let local = validate_envelope_local(&envelope);
+
+            match SignedReplicationEnvelope::sign(envelope.clone(), &key) {
+                Some(signed) => {
+                    prop_assert!(signer_is_source, "signed for a key that is not the source");
+                    prop_assert_eq!(&local, &Ok(()));
+                    prop_assert_eq!(signed.verify_signature(), Ok(()));
+                    let frame = signed
+                        .encode_frame()
+                        .map_err(|err| TestCaseError::fail(format!("encode: {err}")))?;
+                    let decoded = SignedReplicationEnvelope::decode_frame(&frame);
+                    prop_assert_eq!(decoded.as_ref(), Some(&signed));
+                    let mut receiver = receiver_for(&envelope);
+                    let accepted = receiver.accept(&frame).map_err(|err| {
+                        TestCaseError::fail(format!("receiver refused a signed frame: {err:?}"))
+                    })?;
+                    prop_assert_eq!(accepted.kind, kind);
+                    prop_assert_eq!(accepted.cursor_after, envelope.cursor_after);
+                    prop_assert_eq!(receiver.cursor(), envelope.cursor_after);
+                    prop_assert_eq!(receiver.last_frame_digest, frame_digest(&frame));
+                }
+                None if !signer_is_source => {}
+                None => {
+                    let rule = local.clone().err().ok_or_else(|| {
+                        TestCaseError::fail("refused an envelope every local rule accepts")
+                    })?;
+                    let frame = sign_bypass(envelope.clone(), &source_key);
+                    let mut receiver = receiver_for(&envelope);
+                    let before = (receiver.cursor(), receiver.last_frame_digest);
+                    prop_assert_eq!(receiver.accept(&frame).err(), Some(rule));
+                    prop_assert_eq!((receiver.cursor(), receiver.last_frame_digest), before);
+                }
+            }
+        }
     }
 }

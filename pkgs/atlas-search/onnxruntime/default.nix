@@ -14,6 +14,16 @@
 #
 # Local changes vs the nixpkgs expression:
 # - version 1.27.1 -> 1.31.1; src hash refreshed.
+# - src is fetched from the vendored mirror repo
+#   developing-today-forks/onnxruntime-src (release v<version>), not
+#   fetchFromGitHub: microsoft/onnxruntime has returned 404 since
+#   2026-11-20 (repo made private) — code#12247. The mirror tarball
+#   packs the verified upstream tree with submodules inlined; the
+#   pinned hash below is the recursive hash of that tree, unchanged
+#   from the fetchFromGitHub pin, so the mirror URL is replaceable by
+#   any host serving the same tree. To move versions: pack the new
+#   tag's verified tree the same way, upload it to the mirror repo
+#   as release v<version>, refresh the hash (code#12716).
 # - onnx-src v1.21.0 -> v1.22.0 (ORT 1.31.1's cmake/deps.txt pin).
 # - pythonSupport defaults to false: the only consumers are the
 #   atlas-search / fleet binaries, which dlopen the shared library;
@@ -32,6 +42,7 @@
   config,
   stdenv,
   fetchFromGitHub,
+  fetchzip,
   abseil-cpp,
   buildPackages,
   cmake,
@@ -152,11 +163,16 @@ effectiveStdenv.mkDerivation (finalAttrs: {
   pname = "onnxruntime";
   version = "1.31.1";
 
-  src = fetchFromGitHub {
-    owner = "microsoft";
-    repo = "onnxruntime";
-    tag = "v${finalAttrs.version}";
-    fetchSubmodules = true;
+  # microsoft/onnxruntime returns 404 on GitHub since 2026-11-18
+  # (code#12247), so the v1.31.1 tag (with submodules) can no longer be
+  # fetched upstream. The identical source tree is published as a
+  # release asset in developing-today-forks/onnxruntime-src; the NAR
+  # hash is unchanged from the upstream fetchFromGitHub pin, so the
+  # build is the same. To bump `version`, publish the new tag's source
+  # (submodules included) there first.
+  src = fetchzip {
+    name = "source";
+    url = "https://github.com/developing-today-forks/onnxruntime-src/releases/download/v${finalAttrs.version}/onnxruntime-${finalAttrs.version}-src.tar.xz";
     hash = "sha256-wATnI1v3De6+41fGYWS2458TCUWhBECNw2kBnfajKEo=";
   };
 

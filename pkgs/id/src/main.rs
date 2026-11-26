@@ -4,7 +4,7 @@
 //! using content-addressed storage backed by Iroh.
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches};
 
 // Import from library
 use id::{
@@ -191,14 +191,22 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
-    let cli = Cli::parse_from(id::cli::normalize_args(std::env::args_os()));
+    let mut command = Cli::command();
+    let provenance = id_core::discovery::defaults_provenance();
+    let version: &'static str = Box::leak(
+        format!("{}\n{}", env!("CARGO_PKG_VERSION"), provenance.describe()).into_boxed_str(),
+    );
+    command = command.long_version(version);
+    let matches = command
+        .clone()
+        .get_matches_from(id::cli::normalize_args(std::env::args_os()));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     // #2145: `--web-listen` conflicts only with an *explicitly-set*
     // `--bind`/`--port`; clap defaults must not count, so read the value
     // sources from a matches pass (`Cli::parse` above already validated
     // the arguments and would have exited on any error).
     let (bind_explicit, port_explicit) = {
-        let matches = Cli::command().get_matches();
         matches
             .subcommand_matches("serve")
             .map(|serve| {
@@ -291,6 +299,7 @@ async fn main() -> Result<()> {
                 server_config,
                 no_relay,
                 no_gossip,
+                gossip,
                 web,
                 port,
                 bootstrap,
@@ -298,7 +307,6 @@ async fn main() -> Result<()> {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 dht,
                 iroh_port,
@@ -321,6 +329,8 @@ async fn main() -> Result<()> {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_host,
+                world_partition,
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
@@ -341,6 +351,7 @@ async fn main() -> Result<()> {
                 groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,
+                gossip,
                 web,
                 port,
                 bootstrap,
@@ -348,7 +359,6 @@ async fn main() -> Result<()> {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 dht,
                 iroh_port,
@@ -373,6 +383,8 @@ async fn main() -> Result<()> {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_host,
+                world_partition,
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
@@ -402,7 +414,6 @@ async fn main() -> Result<()> {
             topic_secret,
             no_default_bootstrap,
             no_default_topic,
-            replace_defaults,
             no_relay,
             no_mdns,
             node,
@@ -419,7 +430,6 @@ async fn main() -> Result<()> {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_relay,
                 no_mdns,
                 abuse,
@@ -438,6 +448,13 @@ async fn main() -> Result<()> {
         }
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
+        }
+        Some(Command::Nav(args)) => id::commands::cmd_nav(&args),
+        Some(Command::Talk { json, command }) => {
+            id::commands::cmd_talk(cli.event_store, json, command).await
+        }
+        Some(Command::Hosted { json, command }) => {
+            id::commands::cmd_hosted(cli.event_store, json, command).await
         }
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await
@@ -461,8 +478,13 @@ async fn main() -> Result<()> {
         }
         Some(Command::Publications) => id::commands::cmd_publications().await,
         Some(Command::Gallery(args)) => id::commands::cmd_gallery(args),
+        Some(Command::Petname { json, command }) => id::commands::cmd_petname(command, json),
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
+        #[cfg(not(feature = "sandbox"))]
+        Some(Command::MatchAudit(_)) => anyhow::bail!("this build has no sandbox support"),
+        Some(Command::Walk(command)) => id::commands::cmd_walk(command).await,
+        Some(Command::Host(command)) => id::commands::cmd_host(command).await,
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]

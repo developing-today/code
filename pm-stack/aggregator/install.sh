@@ -185,9 +185,9 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
     # #6815: the four stores that used to be laptop-local files
     # (actions, activity-ingestion, usage snapshots, aa-last-good) are
-    # canonical in Supabase muse-dev2; the local files remain a
+    # canonical in Turso (src/turso-stores.ts); the local files remain a
     # rebuildable cache. PM_AGG_STORE_BACKEND=file is the rollback.
-    echo "PM_AGG_STORE_BACKEND=supabase"
+    echo "PM_AGG_STORE_BACKEND=turso"
     echo "PM_AGG_STORE_WRITER=pm-aggregator.service"
     echo "BWS_BIN=/run/current-system/sw/bin/bws"
     echo "BWS_ACCESS_TOKEN_FILE=${HOME}/.config/bws/access-token"
@@ -222,6 +222,18 @@ if [ "$CHANGED" -eq 1 ]; then
   echo "$SRC_INPUTS" >"$STATE_DIR/.deploy-inputs-hash"
 fi
 
+# #8570: pm-core owns quota (15m) and fleet-feed (5m) schedules in-process.
+# Retire any previously enabled user timers before the aggregator (re)starts,
+# so the legacy collector cannot overlap the in-process one.
+for RETIRED_TIMER in quota-gatherer.timer fleet-feed-collector.timer; do
+  if systemctl --user is-active --quiet "$RETIRED_TIMER"; then
+    systemctl --user stop "$RETIRED_TIMER"
+  fi
+  if systemctl --user is-enabled --quiet "$RETIRED_TIMER"; then
+    systemctl --user disable "$RETIRED_TIMER"
+  fi
+done
+
 systemctl --user daemon-reload
 systemctl --user enable pm-aggregator.service
 if [ "$CHANGED" -eq 1 ]; then
@@ -255,33 +267,22 @@ curl -s "http://${TAILNET_IP}:4870/api/health"
 echo
 systemctl --user is-active pm-aggregator.service
 
-# Quota gatherer (#1151): a user timer on the same 15-minute cadence
-# as the Meta file exporter (#1301), running scripts/gather-quota.ts
-# from this checkout. Units ship with this package (systemd/). Guarded:
-# a checkout without the units skips this block instead of failing the install.
+# Keep the quota oneshot service available for explicit operator runs, but
+# do not install or enable its retired timer.
 GATHERER_SVC_SRC="$SRC/systemd/quota-gatherer.service"
-GATHERER_TMR_SRC="$SRC/systemd/quota-gatherer.timer"
-if [ -f "$GATHERER_SVC_SRC" ] && [ -f "$GATHERER_TMR_SRC" ]; then
+if [ -f "$GATHERER_SVC_SRC" ]; then
   # Home-manager hosts manage these units as symlinks into /nix/store
   # (#9586): a plain cp over the symlink aborts the install on the
   # read-only store. Mirror the pm-aggregator unit guard above: skip
   # the copy for symlink-managed destinations and leave those units
   # to the NixOS/home-manager switch.
   GATHERER_SVC_DST="$HOME/.config/systemd/user/quota-gatherer.service"
-  GATHERER_TMR_DST="$HOME/.config/systemd/user/quota-gatherer.timer"
   if [ -L "$GATHERER_SVC_DST" ]; then
     echo "quota-gatherer.service is symlink-managed at $GATHERER_SVC_DST; skipping unit copy"
   else
     cp "$GATHERER_SVC_SRC" "$GATHERER_SVC_DST"
   fi
-  if [ -L "$GATHERER_TMR_DST" ]; then
-    echo "quota-gatherer.timer is symlink-managed at $GATHERER_TMR_DST; skipping unit copy"
-  else
-    cp "$GATHERER_TMR_SRC" "$GATHERER_TMR_DST"
-  fi
   systemctl --user daemon-reload
-  systemctl --user enable --now quota-gatherer.timer
-  echo "quota-gatherer.timer: $(systemctl --user is-active quota-gatherer.timer)"
 else
-  echo "quota-gatherer units not found — gatherer timer not installed"
+  echo "quota-gatherer service not found — explicit gatherer runs unavailable"
 fi

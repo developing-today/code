@@ -21,7 +21,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,10 +29,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
-    JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
-    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
-    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
+    BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
+    JsonlFeedbackSink, JsonlTraceSink, Manifest, QueryEmbedder, SearchBackend,
+    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    VectorBackend as CoreVectorBackend, builtin_manifest, chunk_classification, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk_with_context,
+    run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -42,6 +44,22 @@ use atlas_proto::{
 };
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+
+/// The disclosure context a service request runs under
+/// (#12404, #9096 design section 4): a stated context resolves
+/// fail-closed — an unknown value means `public-surface` — and
+/// an unstated one takes this surface's stated default. The
+/// service's callers are authenticated fleet surfaces (the job
+/// API requires a client credential), so the default is
+/// `fleet-internal`; a caller preparing output for any other
+/// destination states that destination's context, and sinks
+/// beyond this service apply their own.
+fn request_context(req: &SearchRequest) -> DisclosureContext {
+    match req.context.as_deref() {
+        Some(name) => DisclosureContext::for_outbound(Some(name)),
+        None => DisclosureContext::FleetInternal,
+    }
+}
 
 // -------------------------------------------------------------- time ----
 
@@ -212,6 +230,10 @@ struct ServiceConfigFile {
     /// Seconds between shard re-discoveries in serve mode
     /// (#6666 slice 1). Default 60; ignored without `shards`.
     shard_refresh_seconds: Option<u64>,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7). Requires
+    /// `shards`; absent = occurrence rows stay unattributed.
+    source_registry: Option<String>,
     limits: Option<RuntimeLimitsFile>,
     clients: Vec<RawClientConfig>,
 }
@@ -230,6 +252,13 @@ pub struct ServeSettings {
     /// snapshot-bound result cache invalidates on the new
     /// snapshot id.
     pub shard_refresh: Duration,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7): opened at serve
+    /// start and attached to the shard fan-out, so served
+    /// get-chunk occurrence rows carry `root_id` for registered
+    /// locators. Requires `shards`; `None` = unattributed rows,
+    /// exactly as before slice 7.
+    pub source_registry: Option<PathBuf>,
 }
 
 /// Default shard re-discovery interval for serve mode (#6666).
@@ -253,7 +282,10 @@ pub fn default_service_config_path() -> PathBuf {
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
-    if let Some(p) = flag {
+    // An empty flag value counts as absent (same reasoning as
+    // service::base_url: the clap env binding on --config passes a
+    // set-but-empty ATLAS_SEARCH_SERVICE_CONFIG through as a value).
+    if let Some(p) = flag.filter(|p| !p.as_os_str().is_empty()) {
         return p.to_path_buf();
     }
     if let Ok(p) = std::env::var("ATLAS_SEARCH_SERVICE_CONFIG")
@@ -316,9 +348,9 @@ pub fn load_service_settings(
                 c.name
             ));
         }
-        let cap = ProtoSensitivity::from_name(&c.ceiling_cap).ok_or_else(|| {
+        let cap = ProtoSensitivity::from_ceiling_name(&c.ceiling_cap).ok_or_else(|| {
             format!(
-                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing",
+                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing (or public, internal, private, sensitive)",
                 c.name
             )
         })?;
@@ -355,6 +387,19 @@ pub fn load_service_settings(
     if shard_refresh_seconds == 0 {
         return Err("service config shard_refresh_seconds must be at least 1".to_string());
     }
+    let source_registry = match raw.source_registry {
+        Some(p) if !p.trim().is_empty() => Some(PathBuf::from(p)),
+        Some(_) => {
+            return Err("service config source_registry path must not be empty".to_string());
+        }
+        None => None,
+    };
+    if source_registry.is_some() && shards.is_none() {
+        return Err(
+            "service config source_registry requires shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        );
+    }
     Ok(ServeSettings {
         listen,
         clients,
@@ -364,6 +409,7 @@ pub fn load_service_settings(
         limits,
         shards,
         shard_refresh: Duration::from_secs(shard_refresh_seconds),
+        source_registry,
     })
 }
 
@@ -565,6 +611,16 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
 }
 
 fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
@@ -578,6 +634,16 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
 }
 
 fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -615,6 +681,16 @@ pub trait SearchEngine: Send + Sync {
     /// backend carries no shard set report [`NO_SNAPSHOT_ID`].
     fn snapshot_id(&self) -> String {
         NO_SNAPSHOT_ID.to_string()
+    }
+
+    /// The effective filter-surface manifest the next search
+    /// would serve under (#6228 Phase 4): the job manager binds
+    /// every cache key to its `(version, content_hash)`, so a
+    /// surface change invalidates coalescing and result reuse
+    /// exactly like a snapshot change. Engines with no manifest
+    /// surface report the built-in manifest.
+    fn surface_manifest(&self) -> Manifest {
+        builtin_manifest()
     }
 
     fn search(
@@ -697,6 +773,7 @@ where
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
             parameters: request.parameters.clone(),
+            context: request_context(request),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -745,11 +822,32 @@ where
             .and_then(CoreSensitivity::from_name)
             .map(|s| s <= core_sensitivity(ceiling))
             .unwrap_or(false);
-        if !allowed {
+        // Excluded content (#12404): `excluded_personal_life`
+        // is ineligible in every disclosure context. The label
+        // is not a ladder value, so the check above already
+        // refuses it; this states the rule explicitly so it
+        // survives any change to the label mapping.
+        let excluded = chunk_classification(detail.eff_sensitivity.as_deref()).is_excluded();
+        if !allowed || excluded {
             return Err(not_found());
         }
-        run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
-            .map_err(|e| ServerError::from_core(&e))
+        // The explicit-id gate keeps its documented form (a
+        // by-id lookup with no caller ceiling; the LocalOwner
+        // context applies, exactly like the Python), while the
+        // caller's actual ceiling is threaded through so the
+        // occurrence provenance is bounded by it — never by the
+        // destination context's standalone ceiling (P1: a
+        // personal-capped caller must not receive secret-tier
+        // source locators, and a personal-only service must not
+        // request a secret-tier fan-out).
+        run_get_chunk_with_context(
+            self.backend.as_ref(),
+            chunk_id,
+            neighbors,
+            DisclosureContext::LocalOwner,
+            core_sensitivity(ceiling),
+        )
+        .map_err(|e| ServerError::from_core(&e))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
@@ -762,6 +860,10 @@ where
         self.backend
             .snapshot_id()
             .unwrap_or_else(|| NO_SNAPSHOT_ID.to_string())
+    }
+
+    fn surface_manifest(&self) -> Manifest {
+        self.backend.manifest()
     }
 
     fn embedder_state(&self) -> String {
@@ -951,11 +1053,13 @@ where
 //   (query, mode, k, pool, group_by_session, expand, with_message,
 //    model, embedder, trunc, vector_backend,
 //    kind[], topic[], project[], client[], since, until,
-//    effective_ceiling)
+//    effective_ceiling, disclosure_context)
 //
 // Exact-key sharing only: the effective ceiling is IN the key, so
 // a lower-ceiling request can never be served from a
-// higher-ceiling entry; filters are in the key, so a filtered
+// higher-ceiling entry; the disclosure context is in the key for
+// the same reason (#12404) — a payload filtered for one
+// destination surface is never served to another; filters are in the key, so a filtered
 // request is never answered by subsetting an unfiltered ranking
 // (or vice versa). An identical submit while a matching
 // computation is queued/running COALESCES onto it (no second
@@ -996,7 +1100,24 @@ struct CacheKey {
     client: Vec<String>,
     since: Option<String>,
     until: Option<String>,
+    /// Generic dimension filters (#6228 Phase 3), in the
+    /// dimension map's sorted (BTreeMap) order: a request filtered
+    /// on a generic dimension never coalesces with one that is
+    /// not, exactly like the named filters above.
+    dimensions: Vec<(String, Vec<String>)>,
+    /// The effective filter surface's identity (#6228 Phase 4,
+    /// design note §7): `(manifest_version, content_hash)` of the
+    /// manifest the serving backend loaded. Entries computed
+    /// under a different surface never coalesce or serve, even on
+    /// the same corpus snapshot.
+    manifest_version: i64,
+    content_hash: String,
     effective_ceiling: ProtoSensitivity,
+    /// The resolved disclosure context (#12404): cached and
+    /// coalesced payloads are context-filtered, so the context
+    /// is part of the effective request exactly like the
+    /// ceiling.
+    context: DisclosureContext,
 }
 
 impl CacheKey {
@@ -1004,6 +1125,7 @@ impl CacheKey {
         req: &SearchRequest,
         effective_ceiling: ProtoSensitivity,
         snapshot: &str,
+        surface: &Manifest,
     ) -> CacheKey {
         CacheKey {
             snapshot: snapshot.to_string(),
@@ -1041,7 +1163,16 @@ impl CacheKey {
             client: req.filters.client.clone(),
             since: req.filters.since.clone(),
             until: req.filters.until.clone(),
+            dimensions: req
+                .filters
+                .dimensions
+                .iter()
+                .map(|(name, values)| (name.clone(), values.clone()))
+                .collect(),
+            manifest_version: surface.version,
+            content_hash: surface.content_hash.clone(),
             effective_ceiling,
+            context: request_context(req),
         }
     }
 }
@@ -1512,7 +1643,13 @@ impl JobManager {
         // carries the snapshot, so nothing computed under another
         // snapshot can coalesce onto or answer this request.
         let snapshot = self.engine.snapshot_id();
-        let key = CacheKey::from_request(&request, effective, &snapshot);
+        // Bind this submit to the effective filter surface too
+        // (#6228 Phase 4): the key carries the loaded manifest's
+        // (version, content_hash), so a manifest change — a new
+        // generic dimension, a changed shape — can never be
+        // answered from entries computed under the old surface.
+        let surface = self.engine.surface_manifest();
+        let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
         let now = Instant::now();
@@ -2013,210 +2150,9 @@ fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
 
 // -------------------------------------------------------------- HTTP ----
 
-struct HttpRequest {
-    method: String,
-    path: String,
-    query: HashMap<String, String>,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
+mod server_http;
 
-impl HttpRequest {
-    fn bearer(&self) -> Option<&str> {
-        let h = self.headers.get("authorization")?;
-        h.strip_prefix("Bearer ")
-            .or_else(|| h.strip_prefix("bearer "))
-    }
-
-    fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, ServerError> {
-        serde_json::from_slice(&self.body)
-            .map_err(|e| ServerError::bad_request(format!("invalid JSON body: {e}")))
-    }
-}
-
-struct HttpResponse {
-    status: u16,
-    body: Json,
-    retry_after_seconds: Option<u64>,
-}
-
-impl HttpResponse {
-    fn json(status: u16, body: Json) -> HttpResponse {
-        HttpResponse {
-            status,
-            body,
-            retry_after_seconds: None,
-        }
-    }
-
-    fn from_error(e: &ServerError) -> HttpResponse {
-        HttpResponse {
-            status: e.status,
-            body: serde_json::to_value(&e.body).unwrap_or_else(
-                |_| json!({"error": {"code": "internal", "message": "unserializable error"}}),
-            ),
-            retry_after_seconds: e.body.error.retry_after_seconds,
-        }
-    }
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        202 => "Accepted",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        410 => "Gone",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        504 => "Gateway Timeout",
-        _ => "Response",
-    }
-}
-
-fn url_decode(s: &str) -> String {
-    let mut out = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn read_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, ServerError> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(60)))
-        .map_err(|e| ServerError::new(500, "internal", e.to_string()))?;
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 8192];
-    let header_end = loop {
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            break pos + 4;
-        }
-        if buf.len() > 64 * 1024 {
-            return Err(ServerError::bad_request("request headers too large"));
-        }
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|e| ServerError::new(400, "bad_request", format!("read failed: {e}")))?;
-        if n == 0 {
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            return Err(ServerError::bad_request("connection closed mid-request"));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("").to_string();
-    if method.is_empty() || target.is_empty() {
-        return Err(ServerError::bad_request("malformed request line"));
-    }
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
-        }
-    }
-    if headers
-        .get("expect")
-        .map(|v| v.to_ascii_lowercase().contains("100-continue"))
-        .unwrap_or(false)
-    {
-        let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
-    }
-    let content_length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if content_length > 4 * 1024 * 1024 {
-        return Err(ServerError::bad_request("request body too large"));
-    }
-    let mut body: Vec<u8> = buf[header_end..].to_vec();
-    while body.len() < content_length {
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|e| ServerError::new(400, "bad_request", format!("read failed: {e}")))?;
-        if n == 0 {
-            return Err(ServerError::bad_request("connection closed mid-body"));
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
-    let (path, query) = match target.split_once('?') {
-        Some((p, q)) => {
-            let mut map = HashMap::new();
-            for pair in q.split('&').filter(|s| !s.is_empty()) {
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                map.insert(url_decode(k), url_decode(v));
-            }
-            (url_decode(p), map)
-        }
-        None => (url_decode(&target), HashMap::new()),
-    };
-    Ok(Some(HttpRequest {
-        method,
-        path,
-        query,
-        headers,
-        body,
-    }))
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn write_response(stream: &mut TcpStream, resp: &HttpResponse) {
-    let body = serde_json::to_string(&resp.body).unwrap_or_else(|_| "{}".to_string());
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        resp.status,
-        reason(resp.status),
-        body.len()
-    );
-    if resp.status == 401 {
-        head.push_str("WWW-Authenticate: Bearer\r\n");
-    }
-    if let Some(secs) = resp.retry_after_seconds {
-        head.push_str(&format!("Retry-After: {secs}\r\n"));
-    }
-    head.push_str("\r\n");
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
-    let _ = stream.flush();
-}
+use server_http::*;
 
 // ---------------------------------------------------------- feedback ----
 
@@ -2500,6 +2436,7 @@ mod tests {
     use super::*;
     use atlas_core::types::{BranchHit, ChunkDetail, MessageRow, NeighborRow};
     use atlas_core::{FixedEmbedder, SearchBackend};
+    use std::net::TcpStream;
     use std::sync::Condvar;
 
     // ----- stub backend -------------------------------------------------
@@ -2681,6 +2618,7 @@ mod tests {
             limits,
             shards: None,
             shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
+            source_registry: None,
         }
     }
 
@@ -2707,6 +2645,57 @@ mod tests {
             })
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
+        );
+    }
+
+    #[test]
+    fn service_config_source_registry_round_trips() {
+        // #3125 slice 7: `source_registry` in the service config
+        // lands on ServeSettings as a path; it requires `shards`
+        // (attribution rides the fan-out) and must not be empty.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-service-registry-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let wired = write(
+            "wired.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&wired, ServeOverrides::default()).unwrap();
+        assert_eq!(
+            settings.source_registry.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.db"))
+        );
+        let orphan = write(
+            "orphan.json",
+            &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&orphan, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry requires shards"),
+            "got: {err}"
+        );
+        let empty = write(
+            "empty.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
+            ),
+        );
+        let err = load_service_settings(&empty, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry path must not be empty"),
+            "got: {err}"
         );
     }
 
@@ -3668,10 +3657,16 @@ mod tests {
         let (handle, calls) = start(RuntimeLimits::default(), None);
         let addr = handle.addr;
 
+        // Both jobs state the local-owner disclosure context
+        // (#12404): the canary is secret-bearing, and under the
+        // service's fleet-internal default context it is now
+        // withheld from every caller — only the owner's local
+        // surface may receive it. The variable under test here
+        // stays the effective ceiling.
         let low = submit(
             addr,
             PERSONAL_TOKEN,
-            json!({"query": "secret canary", "ceiling": "secret-bearing"}),
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
         );
         let low_id = low.body["job_id"].as_str().unwrap().to_string();
         let low_tok = low.body["job_token"].as_str().unwrap().to_string();
@@ -3683,7 +3678,7 @@ mod tests {
         let high = submit(
             addr,
             SECRET_TOKEN,
-            json!({"query": "secret canary", "ceiling": "secret-bearing"}),
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
         );
         assert_eq!(high.body["effective_ceiling"], "secret-bearing");
         let high_id = high.body["job_id"].as_str().unwrap().to_string();
@@ -3715,6 +3710,64 @@ mod tests {
         assert!(
             result_ids(&high_page.body).contains(&3),
             "higher-ceiling job sees its own canary"
+        );
+    }
+
+    #[test]
+    fn dedupe_never_crosses_disclosure_contexts() {
+        // #12404: the caller's ceiling is identical and maximal
+        // for both jobs; only the destination context differs.
+        // The context is part of the cache key, so the public
+        // job executes separately and its stored payload is the
+        // context-filtered one — the owner's unfiltered-by-
+        // context ranking must never be served into it.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+
+        let owner = submit(
+            addr,
+            SECRET_TOKEN,
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
+        );
+        let owner_id = owner.body["job_id"].as_str().unwrap().to_string();
+        let owner_tok = owner.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &owner_id, &owner_tok);
+        let calls_after_owner = calls.lock().unwrap().len();
+
+        let public = submit(
+            addr,
+            SECRET_TOKEN,
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "public-surface"}),
+        );
+        let public_id = public.body["job_id"].as_str().unwrap().to_string();
+        let public_tok = public.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &public_id, &public_tok);
+        assert!(
+            calls.lock().unwrap().len() > calls_after_owner,
+            "different disclosure context must execute separately"
+        );
+
+        let public_page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{public_id}/results"),
+            Some(&public_tok),
+            None,
+        );
+        assert!(
+            !result_ids(&public_page.body).contains(&3),
+            "canary must not cross to the public context"
+        );
+        let owner_page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{owner_id}/results"),
+            Some(&owner_tok),
+            None,
+        );
+        assert!(
+            result_ids(&owner_page.body).contains(&3),
+            "owner-context job sees its own canary"
         );
     }
 
@@ -3785,6 +3838,27 @@ mod tests {
     }
 
     #[test]
+    fn search_rejects_generic_dimensions_before_backend_work() {
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "filters": { "dimensions": { "source-app": ["mail"] } }
+            }),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(
+            response.body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not supported")
+        );
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
     fn search_honors_and_dedupes_by_parameters() {
         // Oracle: the API contract flattens SearchParametersV1 onto the
         // request; effective controls reach branch execution and distinguish
@@ -3842,6 +3916,47 @@ mod tests {
             calls.lock().unwrap().len() > first_calls.len(),
             "different effective parameters must not reuse the first ranking"
         );
+    }
+
+    #[test]
+    fn cache_key_binds_manifest_surface_and_generic_dimensions() {
+        // #6228 Phase 3/4, oracle: key equality. Two submits that
+        // differ only in the effective manifest's (version,
+        // content_hash), or only in a generic dimension filter,
+        // must NOT share a cache key; identical surface + filters
+        // must share one.
+        let mut req = SearchRequest::default();
+        req.query = "alpha".to_string();
+        let builtin = builtin_manifest();
+        let base = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        let same = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_eq!(base, same);
+
+        let mut other_surface = builtin.clone();
+        other_surface.version += 1;
+        other_surface.content_hash = other_surface.compute_hash();
+        let diff_surface =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &other_surface);
+        assert_ne!(base, diff_surface);
+
+        req.filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+        let diff_dimension =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_ne!(base, diff_dimension);
+    }
+
+    #[test]
+    fn generic_dimensions_are_rejected_until_search_support_lands() {
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+
+        let error = build_filters(&request, ProtoSensitivity::Personal).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.body.error.code, "bad_request");
+        assert!(error.body.error.message.contains("not supported"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------

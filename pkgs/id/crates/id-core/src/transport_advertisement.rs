@@ -146,7 +146,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
             _ => None,
         }
     };
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         out.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
     }
     Some(out)
@@ -346,8 +346,8 @@ impl SequenceFile {
     pub fn next_sequence(&self) -> std::io::Result<u64> {
         let next = self.last_issued()?.saturating_add(1).max(1);
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, next.to_string())?;
-        std::fs::rename(&tmp, &self.path)?;
+        crate::durable_write::write_durable(&self.path, &tmp, next.to_string().as_bytes())
+            .map_err(std::io::Error::other)?;
         Ok(next)
     }
 }

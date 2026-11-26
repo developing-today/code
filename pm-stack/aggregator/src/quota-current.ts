@@ -37,7 +37,15 @@ import type {
   UsageMetric,
   UsageUnit,
 } from "./model.ts";
-import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isRecord, isTimestampNotFuture } from "./validate.ts";
+import {
+  arrayOf,
+  isFiniteNumber,
+  isIsoDate,
+  isNonEmptyString,
+  isNonNegative,
+  isRecord,
+  isTimestampNotFuture,
+} from "./validate.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
@@ -57,7 +65,11 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
   const finiteOrNull = (v: unknown) => v === null || isFiniteNumber(v);
   return (
     isNonEmptyString(value.name) &&
-    finiteOrNull(value.value) &&
+    // Range gate mirrors isUsageMetric (#5188): a negative window value
+    // is never legitimate usage data, so refuse it here, at the ingest
+    // boundary, instead of letting overlayTursoUsage render it as a
+    // negative `used` (#15162).
+    (value.value === null || isNonNegative(value.value)) &&
     finiteOrNull(value.pctOfLimit) &&
     (value.valueLabel === null || typeof value.valueLabel === "string") &&
     finiteOrNull(value.windowSeconds) &&
@@ -396,6 +408,20 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     if (isIntentionallyUninstrumented(pool)) {
       adoptEntryWindows(pool, entry);
       pool.state = poolState(pool);
+      return false;
+    }
+    // #9358: meta's base quota-view row can be a fallback transcription
+    // rather than the retained quota-current read. When its provider leg
+    // failed, keep the retained read's windows (including a zero window)
+    // instead of letting that older transcription mask them. Freshness
+    // remains stale under #1268; this does not turn a failed tick into ok.
+    if (pool.id === "meta" && legError && entry.retainedFromFailedTick) {
+      const windows = pctWindows(entry);
+      if (windows.length > 0) {
+        pool.windows = windows;
+        delete pool.note;
+      }
+      pool.state = "stale";
       return false;
     }
     // #6942: a retained entry whose gatherer leg errored is that

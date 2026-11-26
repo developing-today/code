@@ -1,0 +1,10 @@
+[Unit]
+Description=github-backup Cloudflare rehost publish (daily)
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

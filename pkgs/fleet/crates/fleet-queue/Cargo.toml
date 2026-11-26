@@ -12,28 +12,62 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # without the client, and a client-only build is possible for the
 # standalone artifact.
 [features]
-client = ["dep:fleet-config", "dep:ureq"]
+client = [
+  "dep:fleet-config",
+  "dep:ureq",
+  "dep:fleet-cert",
+  "dep:rustls",
+  "dep:rustls-pki-types",
+]
 queue-broker = [
   "client",
-  "dep:tiny_http",
+  "dep:ring",
+  "dep:chunked_transfer",
   "dep:ureq",
   "dep:fleet-config",
   "dep:libc",
+  "dep:rusqlite",
+  "dep:rustls",
+  "dep:rustls-pki-types",
 ]
-secrets-broker = ["dep:tiny_http", "dep:fleet-config", "dep:libc"]
+secrets-broker = ["dep:chunked_transfer", "dep:fleet-config", "dep:libc"]
 
 [dependencies]
 fleet-secrets = { workspace = true }
 fleet-config = { workspace = true, optional = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 # preserve_order: the brokers' JSON key order is part of the wire and
 # stdout shape the fleet already consumes (the standalone workspace
 # built serde_json the same way).
 serde_json = { version = "1", features = ["preserve_order"] }
-tiny_http = { version = "0.12", optional = true }
+chunked_transfer = { version = "1.5", optional = true }
 # uds_http's bind lock (flock) — #6515.
 libc = { version = "0.2", optional = true }
-ureq = { version = "3", features = ["rustls", "json"], optional = true }
+ureq = { version = "3", features = [
+  "rustls",
+  "json",
+  "platform-verifier",
+], optional = true }
+# The #8583 local coordination replica's durable store; bundled so
+# the broker surfaces need no system SQLite (atlas-core pins the same
+# stack). Only the queue-broker surface carries the replica.
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
+# #13774: RS256 verification of the Actions OIDC token in the
+# actions-exec broker verbs (JWKS modulus/exponent -> ring RSA).
+ring = { version = "0.17", optional = true }
+# BT-3 (#14401): TLS server authentication on the queue broker's
+# TCP leg and trust-bundle validation on the client's direct TCP
+# leg. fleet-cert is the BT-2 trust store (active anchors,
+# re-verified on every read); rustls with the ring provider is
+# the TLS stack (ring is already this crate's crypto dep).
+fleet-cert = { workspace = true, optional = true }
+rustls = { version = "0.23", default-features = false, features = [
+  "std",
+  "tls12",
+  "ring",
+], optional = true }
+rustls-pki-types = { version = "1", optional = true }
 
 # Standalone artifacts — the migration's rollback inventory (design
 # note §7): the same code as the fleet binary's queue domain, shipped
@@ -64,8 +98,22 @@ name = "chunked_list"
 path = "tests/chunked_list.rs"
 required-features = ["client"]
 
+[[test]]
+name = "person_wait_cli"
+path = "tests/person_wait_cli.rs"
+required-features = ["client"]
+
 
 [dev-dependencies]
 # Property-based tests for the client parser invariants (#5939),
 # the same proptest version pkgs/id uses.
 proptest = "1.12"
+# The Hrana double in turso_queue/hrana_double.rs (#13579) serves
+# /v2/pipeline over tiny_http.
+tiny_http = "0.12"
+# BT-3 tests (#14401): mint the broker host's key + CSR the way a
+# real host does before fleet-cert issues its broker-server leaf.
+rcgen = { version = "0.14.10", default-features = false, features = [
+  "ring",
+  "pem",
+] }

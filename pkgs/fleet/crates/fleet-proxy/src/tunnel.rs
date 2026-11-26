@@ -169,10 +169,19 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// Parse the egress endpoint from the `HTTPS_PROXY` env var. The
-/// error strings name shapes only — never the URL (it carries the
-/// credential).
+/// Parse the tailnet egress endpoint: the seat's recorded tailnet
+/// proxy when it has one ([`fleet_config::tailnet_https_proxy`],
+/// #12555), else the `HTTPS_PROXY` env var. A process started from
+/// a sandbox shell carries the platform egress proxy in
+/// `HTTPS_PROXY`, and tailnet tunnels through it fail while the
+/// process looks healthy; the Cloudflare leg
+/// ([`egress_from_env_url_port`]) keeps using that ambient proxy.
+/// The error strings name shapes only — never the URL (it carries
+/// the credential).
 pub fn egress_from_env(proxy_port: u16) -> Result<Egress, String> {
+    if let Some(raw) = fleet_config::tailnet_https_proxy() {
+        return egress_from_url(&raw, proxy_port);
+    }
     let raw = std::env::var("HTTPS_PROXY")
         .map_err(|_| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
     egress_from_url(&raw, proxy_port)
@@ -504,6 +513,42 @@ pub fn connect_cf_tunnel(egress: &Egress, cf_host: &str) -> std::io::Result<Shar
         stream.conn.complete_io(&mut stream.sock)?;
     }
     // Established: the standard HTTP timeouts apply from here.
+    stream.sock.set_read_timeout(Some(TUNNEL_READ_TIMEOUT))?;
+    stream.sock.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT))?;
+    Ok(SharedTlsStream {
+        inner: std::sync::Arc::new(std::sync::Mutex::new(stream)),
+    })
+}
+
+/// TLS over an already-connected TCP stream (a CONNECT tunnel or a
+/// direct dial) with a caller's client configuration: the laptop
+/// agent's Broker TLS Phase 1 leg (BT-4, #14402) validates the
+/// daemon's `broker-server` leaf against the fleet trust bundle
+/// rather than the public roots [`connect_cf_tunnel`] uses. The
+/// handshake is driven to completion here, within `setup`, so an
+/// untrusted leaf is refused before any request byte is written;
+/// once established the standard tunnel timeouts apply.
+#[cfg(feature = "serve")]
+pub fn tls_over_tcp(
+    tcp: TcpStream,
+    config: std::sync::Arc<rustls::ClientConfig>,
+    server_name: &str,
+    setup: Duration,
+) -> std::io::Result<SharedTlsStream> {
+    tcp.set_read_timeout(Some(setup))?;
+    tcp.set_write_timeout(Some(setup))?;
+    let name = rustls::pki_types::ServerName::try_from(server_name.to_string()).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("bad TLS server name {server_name:?}: {e}"),
+        )
+    })?;
+    let conn = rustls::ClientConnection::new(config, name)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut stream = rustls::StreamOwned::new(conn, tcp);
+    while stream.conn.is_handshaking() {
+        stream.conn.complete_io(&mut stream.sock)?;
+    }
     stream.sock.set_read_timeout(Some(TUNNEL_READ_TIMEOUT))?;
     stream.sock.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT))?;
     Ok(SharedTlsStream {

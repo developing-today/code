@@ -105,6 +105,25 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "needs-user",
+    title: "Needs user",
+    route: "/needs-user",
+    api: "/api/needs-user",
+    blurb:
+      "Open questions waiting on you (#14084), by the priority you set, then how many issues wait on each answer, then age.",
+    group: "overview",
+    nav: "dropdown",
+  },
+  {
+    id: "reports",
+    title: "Reports",
+    route: "/reports",
+    api: "/api/reports.json",
+    blurb: "Review report versions and resolve prose conflicts without overwriting stored text.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "board",
     title: "Board",
     route: "/board",
@@ -197,6 +216,16 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "chat",
+    title: "Chat",
+    route: "/chat",
+    api: "/api/prompt/threads",
+    blurb:
+      "The prompt chat/session surface (#10035): every prompt submission in its thread — reply, cross-references, archive — plus the unread count behind the nav badge.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "program",
     title: "Program status",
     route: "/program",
@@ -231,7 +260,7 @@ export const PAGES: PageDef[] = [
     route: "/alerts",
     api: "/api/alerts.json",
     blurb:
-      "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Supabase ledger.",
+      "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.",
     group: "ops",
     // Drew 2026-11-01: primary — the ack surface must be one tap from
     // the bar, not buried in the Pages dropdown (supersedes the
@@ -293,6 +322,10 @@ export const SUBROUTE_PARENTS: { name: string; prefix: string; parent: string }[
   // #1497: Projects merged into Program — /projects redirects to the
   // pool section of /program, which is its manifest parent.
   { name: "projects-merge", prefix: "/projects", parent: "/program" },
+  // #15019: C6 incident pages are reached from the incident cards
+  // on /alerts (threshold-meeting health-hook incidents link there);
+  // the pages also cross-link each other from Related incidents.
+  { name: "reports-incident", prefix: "/reports/incident/", parent: "/alerts" },
 ];
 
 /**

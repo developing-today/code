@@ -5,7 +5,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 fixture=$(mktemp -d)
 trap 'rm -r "$fixture"' EXIT
 mkdir -p "$fixture"/{.git,.openai}
-printf '%s\n' '{"project_id":"fixture-project","r2":"BUCKET","capabilities":["mcp"]}' > "$fixture/.openai/hosting.json"
+printf '%s\n' '{"project_id":"fixture-project","r2":"BUCKET","capabilities":["mcp"]}' >"$fixture/.openai/hosting.json"
 refuse() {
   if "$@" >/dev/null 2>&1; then
     echo 'Unexpected success' >&2
@@ -24,7 +24,7 @@ bash "$root/scripts/prepare-site-source.sh" fixture-project "$fixture"
   test ! -e dist
   bash scripts/build.sh
   node scripts/validate-artifact.mjs
-  printf '%s' 'dummy secret' > dist/stale.txt
+  printf '%s' 'dummy secret' >dist/stale.txt
   refuse bash scripts/build.sh
   refuse node scripts/validate-artifact.mjs
   test -f dist/stale.txt

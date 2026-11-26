@@ -14,20 +14,30 @@ forks of upstream projects.
 | PostgreSQL | `postgres:16-alpine` + digest            | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
 
 Phase 2 (2026-10-24) added three layers, each in its own subdirectory
-with the same deploy shape (SOPS → mode-600 env → compose/unit →
-health gate):
+with pinned configuration, bootstrap/seed helpers, and health
+endpoints. NixOS owns the live service lifecycle described below:
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                           | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181) | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname        | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                                                             | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181)                                   | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname                                          | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname                                          | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route                                                | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                                                          | `dispatch/`           |
+| Console   | pm-console      | this repo (Bun app, user unit `pm-console`)                      | `127.0.0.1:4872`; public behind sign-in as `pm.security.cab` (console at `/console`, dashboard at `/` through the console's gate) | `console/`            |
 
-ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
-because upstream ships only an npm package; Pad and Grist run as
-containers per the standing container rule. Grist was chosen over
+The live manager is NixOS, not an interactive deploy script:
+
+- `nixos/services/pm-apps` owns the `pm-grist` and `pm-pad` OCI
+  containers and the `ready-for-agent` systemd **user unit**.
+- `nixos/services/pm-stack` owns the `pm-kaneo` systemd user service,
+  which runs the Compose-backed Kaneo/PostgreSQL stack, plus the other
+  PM user services and timers.
+
+The `pad/` and `grist/` `deploy.sh` files remain bootstrap/fallback
+helpers for rendering their on-machine env files; they are not the live
+manager path. After the migration, use `nixos-rebuild switch` on `amd`
+and the host-side readiness probe for status. Grist was chosen over
 Baserow — the evaluation is in the design record.
 
 ## Environment numbers (the #2835 contract)
@@ -71,7 +81,8 @@ that hostname to `http://localhost:5173`. The tunnel connector runs as
 the `pm-tunnel` systemd **user** unit (see `systemd/pm-tunnel.service`);
 the same tunnel also maps `dispatch.security.cab` to
 `http://localhost:4879` (pm-dispatch, added 2026-10-30). On `amd`, one
-`nixos-rebuild switch` deploys the whole stack: the user units
+`nixos-rebuild switch` deploys the whole stack: the `pm-apps` services
+(`pm-grist`, `pm-pad`, and `ready-for-agent`), the PM user units
 (`pm-aggregator`, `pm-projector`, `pm-dispatch`, `pm-tunnel`) and the
 Kaneo stack's lifecycle are declared in
 [`../nixos/services/pm-stack`](../nixos/services/pm-stack).
@@ -178,8 +189,9 @@ login until the database password is changed to match.
 # 1. Check out this repo (or copy this directory + ../secrets) and cd in
 cd pm-stack
 
-# 2. Render env and start the stack (waits for the health endpoint)
-./deploy.sh
+# 2. Apply the NixOS-managed runtime on the laptop host.
+#    This owns Pad, Grist, ready-for-agent, Kaneo, and PostgreSQL.
+nixos-rebuild switch
 
 # 3. Install + start the tunnel connector
 install -Dm644 systemd/pm-tunnel.service ~/.config/systemd/user/pm-tunnel.service
@@ -316,16 +328,22 @@ clone` clones/fetches them all into `ready-for-agent/repos/`, and
 
 ### Pad (planning layer)
 
+Pad is the `pm-pad` OCI container declared by
+`nixos/services/pm-apps`; do not start it with `pad/deploy.sh` or
+`docker compose` on the live host. Apply `nixos-rebuild switch` and use
+the readiness probe for lifecycle/status. The seed helper is still a
+safe, idempotent API client:
+
 ```bash
 cd pad
-./deploy.sh   # SOPS -> .env, compose up, health gate on /api/v1/health
 ./seed.sh     # idempotent REST seed of the Plan items in seed/
 ```
 
 - **Health:** `GET http://127.0.0.1:7777/api/v1/health` →
   `{"status":"ok",…}`. (`/healthz` only hits the SPA fallback.)
 - **Bootstrap (first time only):** `pad init` must run **inside**
-  the server container (`docker compose exec pad pad init`) —
+  the NixOS-managed `pm-pad` container (for example,
+  `docker exec pm-pad pad init`) —
   bootstrap is loopback/token-gated (token at
   `/data/.bootstrap-token`). Create the admin from the
   `pad_admin_*` SOPS credentials and the workspace
@@ -344,9 +362,14 @@ cd pad
 
 ### Grist (table layer)
 
+Grist is the `pm-grist` OCI container declared by
+`nixos/services/pm-apps`; do not start it with `grist/deploy.sh` or
+`docker compose` on the live host. Apply `nixos-rebuild switch` and use
+the host readiness probe for lifecycle/status. The seed helper remains
+an idempotent API client:
+
 ```bash
 cd grist
-./deploy.sh   # SOPS -> .env, compose up, health gate
 ./seed.sh     # idempotent seed: workspace, doc, Roadmap table + rows
 ```
 
@@ -411,23 +434,25 @@ uses the Grist API.
 
 ## Day-2 operations
 
-- **Status:** `docker compose ps`, `docker compose logs -f kaneo`,
-  `systemctl --user status pm-tunnel`. Phase 2 pieces:
-  `docker compose -f pad/compose.yml ps`, `curl --fail
-http://127.0.0.1:7777/api/v1/health` (Pad), `docker compose -f
-grist/compose.yml ps` (Grist), `systemctl --user status
-ready-for-agent` + `ready-for-agent status
-developing-today/code` (dispatch).
-- **Restart with current env:** `./deploy.sh restart`. Environment
-  changes require `./deploy.sh` (compose applies env on recreate, not
-  restart). Each Phase 2 subdirectory has the same `deploy.sh`
-  contract (Pad, Grist); ready-for-agent refreshes via
-  `ready-for-agent/install.sh`.
-- **Update Kaneo or PostgreSQL:** after reviewing the upstream release
-  notes, bump the tag and digest together in `compose.yml`, then
-  `./deploy.sh`. Never float on a mutable tag. Same rule per component:
-  Pad/Grist image pins (tag + digest) in their `compose.yml`,
-  ready-for-agent's `PINNED_VERSION` in `ready-for-agent/install.sh`.
+- **Status:** Kaneo/PostgreSQL are the Compose-backed `pm-kaneo` user
+  service (`systemctl --user status pm-kaneo` and
+  `docker compose ps`/logs for inspection). Pad and Grist are the
+  NixOS-managed `docker-pm-pad`/`docker-pm-grist` services; inspect them
+  with `systemctl status docker-pm-pad docker-pm-grist pm-apps-health`.
+  Check the HTTP probes at `7777` (Pad), `8484` (Grist), and `6056`
+  (ready-for-agent); dispatch status is
+  `ready-for-agent status developing-today/code`.
+- **Restart with current configuration:** use `nixos-rebuild switch`
+  for Pad, Grist, and ready-for-agent. For Kaneo/PostgreSQL, use
+  `systemctl --user restart pm-kaneo.service`; its NixOS-managed unit
+  invokes the top-level `deploy.sh` and preserves the database volume.
+  The `pad/deploy.sh` and `grist/deploy.sh` scripts are bootstrap/
+  fallback helpers, not live restart commands.
+- **Update images:** for Kaneo/PostgreSQL, review release notes and
+  update the tag and digest together in `compose.yml`; then apply the
+  NixOS switch so `pm-kaneo` invokes the change. For Pad/Grist, update
+  the pinned tag and digest in `nixos/services/pm-apps/default.nix`,
+  then run `nixos-rebuild switch`. Never float on a mutable tag.
 - **Pad API token:** expires 90 days after minting (current:
   2027-01-22) — re-mint, re-file (SOPS + both vaults), restart
   nothing (the token is used by external automation, not the
@@ -439,11 +464,12 @@ developing-today/code` (dispatch).
   (SQLite) under the volume's `/persist/docs`, plus `home.sqlite3`
   for the install itself.
 - **Move hosts:** copy this directory + `../secrets`, ensure the new
-  host's age key is a SOPS recipient, run `./deploy.sh`, install the
-  unit, done. Pad and Grist pick up the new host's tailnet address at
-  render time (`deploy.sh` writes `PM_STACK_TAILNET_IP` from
-  `tailscale ip -4`; set it in the environment to override, and with
-  no tailnet address both bind loopback only). The tunnel is
+  host's age key is a SOPS recipient, and apply the NixOS configuration.
+  `pm-kaneo` invokes the top-level `deploy.sh`; Pad and Grist are
+  created by `services.pm-apps` and pick up the new host's tailnet
+  address from the module. The fallback scripts still derive
+  `PM_STACK_TAILNET_IP` when used for bootstrap, but they are not the
+  live manager. The tunnel is
   host-agnostic (token-based); only one
   connector should run at a time.
 
@@ -461,14 +487,14 @@ pm-stack/
 ├── systemd/
 │   └── pm-tunnel.service      # Cloudflare Tunnel connector (user unit)
 ├── pad/                       # Phase 2 planning layer (Pad 0.18.1)
-│   ├── compose.yml            # pinned image + digest, loopback + tailnet
-│   ├── deploy.sh              # same deploy contract as the top level
+│   ├── compose.yml            # bootstrap/fallback compose definition
+│   ├── deploy.sh              # bootstrap/fallback env + compose helper
 │   ├── .env.example
 │   ├── seed.sh                # idempotent REST seed
 │   └── seed/                  # Plan item content (Markdown)
 ├── grist/                     # Phase 2 table layer (Grist 1.7.21)
-│   ├── compose.yml            # pinned grist-oss image + digest
-│   ├── deploy.sh
+│   ├── compose.yml            # bootstrap/fallback compose definition
+│   ├── deploy.sh              # bootstrap/fallback env + compose helper
 │   ├── .env.example
 │   ├── seed.sh                # idempotent seed via the REST API
 │   ├── reload-doc.sh          # force-reload + API read-back verification

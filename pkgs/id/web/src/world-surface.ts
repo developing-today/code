@@ -14,6 +14,8 @@ export type ScreenCell = {
   bg: number;
   bold: boolean;
   columns: number;
+  /** Style token name from the wire model, when the frame carries one. */
+  token?: string | null;
 };
 
 export type ScreenPatch = {
@@ -816,4 +818,273 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
 
   root.replaceChildren(grid);
   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen v2: semantic tagged cells (#14731 slice 5, #6010).          */
+/* Screen v1 above is unchanged: a v1 surface carries no tags, a v2   */
+/* surface is a separate explicit type, and neither validator accepts */
+/* the other's version — tags are never silently dropped.             */
+/* ------------------------------------------------------------------ */
+
+/** Screen format version carrying semantic tags. */
+export const SCREEN_VERSION_TAGGED = 2;
+/** Maximum semantic tags on one tagged cell (id-core MAX_CELL_TAGS). */
+export const MAX_CELL_TAGS = 16;
+/** Maximum length of one semantic tag, in bytes (id-core MAX_TAG_BYTES). */
+export const MAX_TAG_BYTES = 64;
+
+const SEMANTIC_TAG_SEGMENT = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Validate one semantic tag, mirroring id-core `validate_semantic_tag`:
+ * a dotted name rooted at `sys` or `world` with at least one more
+ * segment, each segment starting with a lowercase letter and using
+ * only lowercase letters, digits, or underscores.
+ */
+export function isValidSemanticTag(tag: unknown): tag is string {
+  if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_BYTES) return false;
+  const segments = tag.split(".");
+  if (segments.length < 2) return false;
+  if (segments[0] !== "sys" && segments[0] !== "world") return false;
+  return segments.every((segment) => SEMANTIC_TAG_SEGMENT.test(segment));
+}
+
+/**
+ * Validate a cell's tag set: bounded, every tag valid, strictly
+ * ascending with no duplicates — the one canonical wire form, so
+ * diagnostics derived from the set are deterministic.
+ */
+export function isValidTagSet(tags: unknown): tags is string[] {
+  if (!Array.isArray(tags) || tags.length > MAX_CELL_TAGS) return false;
+  for (let index = 0; index < tags.length; index++) {
+    if (!isValidSemanticTag(tags[index])) return false;
+    if (index > 0 && !(tags[index - 1] < tags[index])) return false;
+  }
+  return true;
+}
+
+export type TaggedScreenCell = ScreenCell & {
+  /** The cell's semantic tags, sorted and unique. Present on every v2 cell. */
+  tags: string[];
+};
+
+export type ScreenSurfaceV2 = {
+  kind: "screen";
+  version: typeof SCREEN_VERSION_TAGGED;
+  width: number;
+  height: number;
+  cells: TaggedScreenCell[];
+};
+
+export type ScreenPatchV2 = {
+  version: typeof SCREEN_VERSION_TAGGED;
+  width: number;
+  height: number;
+  runs: Array<{ start: number; cells: TaggedScreenCell[] }>;
+};
+
+function isValidTaggedCell(cell: unknown): cell is TaggedScreenCell {
+  if (!cell || typeof cell !== "object") return false;
+  const candidate = cell as TaggedScreenCell;
+  return (
+    typeof candidate.symbol === "string" &&
+    isPrintableSymbol(candidate.symbol) &&
+    Number.isInteger(candidate.fg) &&
+    candidate.fg >= 0 &&
+    candidate.fg <= 255 &&
+    Number.isInteger(candidate.bg) &&
+    candidate.bg >= 0 &&
+    candidate.bg <= 255 &&
+    typeof candidate.bold === "boolean" &&
+    Number.isInteger(candidate.columns) &&
+    candidate.columns >= 0 &&
+    candidate.columns <= 2 &&
+    (candidate.token === undefined ||
+      candidate.token === null ||
+      typeof candidate.token === "string") &&
+    isValidTagSet(candidate.tags)
+  );
+}
+
+/** Validate a whole Screen v2 surface: version, bounds, cells, tags. */
+export function isValidScreenSurfaceV2(surface: unknown): surface is ScreenSurfaceV2 {
+  if (!surface || typeof surface !== "object") return false;
+  const candidate = surface as ScreenSurfaceV2;
+  return (
+    candidate.kind === "screen" &&
+    candidate.version === SCREEN_VERSION_TAGGED &&
+    Number.isInteger(candidate.width) &&
+    candidate.width >= 1 &&
+    candidate.width <= MAX_SCREEN_WIDTH &&
+    Number.isInteger(candidate.height) &&
+    candidate.height >= 1 &&
+    candidate.height <= MAX_SCREEN_HEIGHT &&
+    Array.isArray(candidate.cells) &&
+    candidate.cells.length === candidate.width * candidate.height &&
+    candidate.cells.length <= MAX_SCREEN_CELLS &&
+    candidate.cells.every((cell) => isValidTaggedCell(cell))
+  );
+}
+
+/**
+ * Apply a Screen v2 patch, mirroring id-core `ScreenPatchV2::apply`:
+ * versions and dimensions must match, runs must be ordered and in
+ * bounds, and every incoming cell's tag set is validated — an invalid
+ * patch returns null instead of applying with tags dropped.
+ */
+export function applyScreenPatchV2(previous: ScreenSurfaceV2, patch: ScreenPatchV2): ScreenSurfaceV2 | null {
+  if (
+    !isValidScreenSurfaceV2(previous) ||
+    !patch ||
+    patch.version !== SCREEN_VERSION_TAGGED ||
+    patch.width !== previous.width ||
+    patch.height !== previous.height ||
+    !Array.isArray(patch.runs)
+  ) {
+    return null;
+  }
+  const cells = previous.cells.slice();
+  let coveredUntil = 0;
+  for (const run of patch.runs) {
+    if (!run || !Number.isInteger(run.start) || run.start < coveredUntil || !Array.isArray(run.cells)) return null;
+    if (!run.cells.every((cell) => isValidTaggedCell(cell))) return null;
+    const end = run.start + run.cells.length;
+    if (!Number.isSafeInteger(end) || end > cells.length) return null;
+    for (let index = 0; index < run.cells.length; index++) cells[run.start + index] = run.cells[index];
+    coveredUntil = end;
+  }
+  const next = { ...previous, cells };
+  return isValidScreenSurfaceV2(next) ? next : null;
+}
+
+/** The four fallback rungs, richest first (id-core presentation_policy::Rung). */
+export const FALLBACK_RUNGS = ["rich", "static", "tileset", "glyph"] as const;
+export type FallbackRung = (typeof FALLBACK_RUNGS)[number];
+
+export type FallbackCandidateData =
+  | { kind: "asset"; ref: string; retainedTags: string[]; retainedFilters: string[] }
+  | { kind: "glyph"; glyph: string; retainedTags: string[]; retainedFilters: string[] };
+
+export type FallbackPlanData = {
+  rich?: FallbackCandidateData | null;
+  static?: FallbackCandidateData | null;
+  tileset?: FallbackCandidateData | null;
+  glyph: FallbackCandidateData;
+};
+
+export type ResolvedTaggedCellData = {
+  index: number;
+  symbol: string;
+  tags: string[];
+  rung: FallbackRung;
+  art: { kind: "asset"; ref: string } | { kind: "glyph"; glyph: string };
+  droppedTags: string[];
+  droppedFilters: string[];
+  /** The plan's glyph output: non-blank and never "?", at every rung. */
+  fallbackGlyph: string;
+};
+
+function droppedFilterOccurrences(source: string[], retained: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const filter of retained) counts.set(filter, (counts.get(filter) ?? 0) + 1);
+  const dropped: string[] = [];
+  for (const filter of source) {
+    const count = counts.get(filter) ?? 0;
+    if (count === 0) dropped.push(filter);
+    else counts.set(filter, count - 1);
+  }
+  return dropped;
+}
+
+function candidateIsValidFor(
+  rung: FallbackRung,
+  candidate: FallbackCandidateData,
+  sourceTags: ReadonlySet<string>,
+  sourceFilters: string[],
+): boolean {
+  if (rung === "glyph" ? candidate.kind !== "glyph" : candidate.kind !== "asset") return false;
+  if (candidate.kind === "glyph" && (candidate.glyph.trim() === "" || candidate.glyph === "?")) return false;
+  if (!candidate.retainedTags.every((tag) => sourceTags.has(tag))) return false;
+  // Retained filters must be occurrences of the source chain.
+  const available = new Map<string, number>();
+  for (const filter of sourceFilters) available.set(filter, (available.get(filter) ?? 0) + 1);
+  for (const filter of candidate.retainedFilters) {
+    const count = available.get(filter) ?? 0;
+    if (count === 0) return false;
+    available.set(filter, count - 1);
+  }
+  return true;
+}
+
+/**
+ * Connect the four-rung fallback resolver to one tagged cell,
+ * mirroring id-core `ScreenSurfaceV2::resolve_cell` +
+ * `FallbackPlan::resolve`: select the richest available rung at or
+ * below `startAt`, and report the tags/filters that rung drops, in
+ * deterministic order (tags sorted, filters in source order). Returns
+ * null when the plan does not validate against the cell — a renderer
+ * must never present an unvalidated resolution.
+ */
+export function resolveTaggedCell(
+  cell: TaggedScreenCell,
+  index: number,
+  plan: FallbackPlanData,
+  startAt: FallbackRung,
+  sourceFilters: string[],
+): ResolvedTaggedCellData | null {
+  if (!isValidTaggedCell(cell) || !plan || plan.glyph?.kind !== "glyph") return null;
+  if (plan.glyph.glyph.trim() === "" || plan.glyph.glyph === "?") return null;
+  const sourceTags = new Set(cell.tags);
+  const candidates: Array<[FallbackRung, FallbackCandidateData | null | undefined]> = [
+    ["rich", plan.rich],
+    ["static", plan.static],
+    ["tileset", plan.tileset],
+    ["glyph", plan.glyph],
+  ];
+  const startIndex = FALLBACK_RUNGS.indexOf(startAt);
+  for (const [rung, candidate] of candidates) {
+    if (FALLBACK_RUNGS.indexOf(rung) < startIndex || !candidate) continue;
+    if (!candidateIsValidFor(rung, candidate, sourceTags, sourceFilters)) return null;
+    const retainedTags = new Set(candidate.retainedTags);
+    return {
+      index,
+      symbol: cell.symbol,
+      tags: [...cell.tags],
+      rung,
+      art:
+        candidate.kind === "asset"
+          ? { kind: "asset", ref: candidate.ref }
+          : { kind: "glyph", glyph: candidate.glyph },
+      droppedTags: cell.tags.filter((tag) => !retainedTags.has(tag)),
+      droppedFilters: droppedFilterOccurrences(sourceFilters, candidate.retainedFilters),
+      fallbackGlyph: plan.glyph.glyph,
+    };
+  }
+  return null;
+}
+
+/**
+ * Tag-preserving render data for a whole Screen v2 surface: one
+ * resolved record per cell that has a plan, in row-major order. This
+ * is the web rendering path's input — a DOM presenter renders `symbol`
+ * (or the resolved art) with `droppedTags`/`droppedFilters` as the
+ * presentation diagnostic, exactly as the Rust path does.
+ */
+export function taggedRenderData(
+  surface: ScreenSurfaceV2,
+  plans: ReadonlyMap<number, FallbackPlanData>,
+  startAt: FallbackRung,
+  sourceFilters: string[],
+): ResolvedTaggedCellData[] | null {
+  if (!isValidScreenSurfaceV2(surface)) return null;
+  const out: ResolvedTaggedCellData[] = [];
+  for (let index = 0; index < surface.cells.length; index++) {
+    const plan = plans.get(index);
+    if (!plan) continue;
+    const resolved = resolveTaggedCell(surface.cells[index], index, plan, startAt, sourceFilters);
+    if (!resolved) return null;
+    out.push(resolved);
+  }
+  return out;
 }

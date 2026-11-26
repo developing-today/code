@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (94)
+## /v1 operations (97)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -53,6 +53,8 @@ carry instead is a description that says so and MCP annotations
 | `batch` | `POST /v1/batch` | `mcpx batch` | `mcpx_batch` | `ops.batch()` |  |
 | `call` | `POST /v1/call` | `mcpx call` | `mcpx_call` | `ops.call()`, `call()`, `callAsTask()` |  |
 | `call_path` | `POST /v1/call/{server}/{tool}` | `mcpx call` | `mcpx_call` | `ops.callPath()` |  |
+| `call_history` | `GET /v1/calls/{run}` | `mcpx calls get` *generated* | `mcpx_call_history` | `ops.callHistory()` |  |
+| `call_history_begin` | `POST /v1/calls/{run}` | `mcpx calls begin` *generated* | `mcpx_call_history_begin` | `ops.callHistoryBegin()` |  |
 | `catalog` | `GET /v1/catalog` | `mcpx catalog` | `mcpx_catalog` | `ops.catalog()` |  |
 | `catalog_history` | `GET /v1/catalog/history` | `mcpx history` *generated* | `mcpx_catalog_history` | `ops.catalogHistory()` |  |
 | `chat_completions` | `POST /v1/chat/completions` | `mcpx proxy` | `mcpx_chat_completions` | `ops.chatCompletions()` |  |
@@ -113,6 +115,7 @@ carry instead is a description that says so and MCP annotations
 | `servers_add` | `POST /v1/servers` | `mcpx servers add` | `mcpx_servers_add` | `ops.serversAdd()` | Privileged. |
 | `servers_remove` | `DELETE /v1/servers/{name}` | `mcpx servers remove` | `mcpx_servers_remove` | `ops.serversRemove()` | Privileged. Destructive. |
 | `servers_get` | `GET /v1/servers/{name}` | `mcpx servers show` | `mcpx_servers_get` | `ops.serversGet()` |  |
+| `session_kill` | `POST /v1/session/kill` | `mcpx session kill` *generated* | `mcpx_session_kill` | `ops.sessionKill()` | Privileged. Destructive. |
 | `session_release` | `POST /v1/session/release` | `mcpx session release` *generated* | `mcpx_session_release` | `ops.sessionRelease()` | Privileged. |
 | `sessions_read` | `GET /v1/sessions` | `mcpx sessions read` *generated* | `mcpx_sessions_read` | `ops.sessionsRead()` |  |
 | `settings_list` | `GET /v1/settings` | `mcpx settings list` | `mcpx_settings_list` | `ops.settingsList()` |  |
@@ -131,7 +134,7 @@ carry instead is a description that says so and MCP annotations
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 | `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (74)
+## CLI commands (75)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -146,6 +149,7 @@ that reaches none says why: those are decisions, not gaps.
 | `batch` | `batch` |  |
 | `cache` | – | Reads and prunes the cache directory on this machine; no daemon is involved. |
 | `call` | `call`, `call_path` |  |
+| `calls` | `call_history`, `call_history_begin` | Generated from the operation table. |
 | `catalog` | `catalog` |  |
 | `client` | `client_module` |  |
 | `complete` | `complete` | Generated from the operation table. |
@@ -195,7 +199,7 @@ that reaches none says why: those are decisions, not gaps.
 | `secrets` | `secret_requests_list`, `secret_request_decline`, `secret_request_get`, `secrets_list`, `secrets_unset`, `secrets_set` |  |
 | `serve` | – | It is the MCP surface: a stdio shim over the daemon, which serves the same tools at `/mcp` itself. |
 | `servers` | `servers_list`, `servers_add`, `servers_remove`, `servers_get` |  |
-| `session` | `session_release` | Generated from the operation table. |
+| `session` | `session_kill`, `session_release` | Generated from the operation table. |
 | `sessions` | `sessions_read` | Generated from the operation table. |
 | `settings` | `settings_list`, `settings_unset`, `settings_get`, `settings_set` |  |
 | `skills` | – | Manages embedded agent skills. |

@@ -1,0 +1,75 @@
+{
+  "title": "AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/opencode batch 3/5 (250 PRs)",
+  "body": "Lane 4 (MERGED-PR-AUDIT, tracking https://github.com/developing-today/code/issues/13879, umbrella https://github.com/developing-today/code/issues/13871) continuation slice.\n\nAUDIT each of these merged PRs in developing-today-forks/opencode (merged since 2026-10-23), ONE BY ONE, IN FULL: read the PR body and its complete diff (fleet gh api repos/developing-today-forks/opencode/pulls/<n> and /files, per_page=100, count-confirmed), extract the spawning issue (especially Closes/closes/fixes references), read that issue in full, and judge: did the PR fully implement the issue? Check LATER merged PRs in the same repo before filing any gap - if a later PR completed it, record completed-later on both. Where a gap/bug/unfiled next step is real, FILE it in the owning repo (via gh-post), prioritise it, and link it. NEVER use closing keywords in comments on issues that must stay open. Lane 2 owns reopen/correction decisions on closures - post suspect closures as pointers on the umbrella #13871, do not reopen. Apply the Lane 4 outcome labels (defined on code#13879; create them in developing-today-forks/opencode first if absent): audit:complete / audit:partial / audit:gap-filed / audit:bug-filed / audit:completed-later / audit:no-issue. Post the batch ledger (PR, spawning issue, verdict, filed links) as a comment on code#13879 when the batch is done. Check #13879 and the umbrella for lane claims before acting on any item; a claim from another lane is a hard stop.\n\nPR numbers in this batch: [1444, 1445, 1446, 1447, 1448, 1450, 1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1463, 1465, 1466, 1467, 1468, 1470, 1472, 1473, 1474, 1479, 1480, 1482, 1483, 1490, 1491, 1492, 1495, 1499, 1501, 1505, 1507, 1509, 1510, 1512, 1515, 1516, 1520, 1521, 1523, 1528, 1531, 1532, 1535, 1536, 1537, 1538, 1542, 1544, 1545, 1546, 1547, 1549, 1553, 1555, 1558, 1559, 1561, 1563, 1564, 1565, 1568, 1571, 1575, 1576, 1577, 1578, 1579, 1581, 1586, 1587, 1591, 1594, 1595, 1596, 1598, 1599, 1601, 1602, 1603, 1604, 1605, 1608, 1609, 1612, 1613, 1614, 1616, 1617, 1618, 1619, 1621, 1623, 1626, 1628, 1629, 1630, 1631, 1632, 1635, 1636, 1637, 1638, 1639, 1640, 1641, 1642, 1643, 1644, 1645, 1647, 1648, 1649, 1650, 1652, 1657, 1658, 1659, 1661, 1662, 1663, 1664, 1665, 1669, 1670, 1671, 1674, 1675, 1676, 1686, 1687, 1690, 1691, 1693, 1694, 1696, 1697, 1701, 1702, 1716, 1721, 1722, 1723, 1726, 1728, 1731, 1732, 1735, 1736, 1738, 1739, 1740, 1742, 1743, 1745, 1747, 1748, 1749, 1751, 1754, 1761, 1764, 1766, 1767, 1770, 1771, 1772, 1773, 1774, 1775, 1780, 1783, 1786, 1787, 1789, 1791, 1796, 1798, 1801, 1802, 1807, 1808, 1810, 1812, 1813, 1814, 1815, 1816, 1826, 1827, 1829, 1830, 1832, 1833, 1835, 1836, 1837, 1838, 1839, 1840, 1842, 1843, 1844, 1846, 1847, 1850, 1851, 1853, 1854, 1856, 1859, 1860, 1861, 1863, 1864, 1865, 1869, 1870, 1872, 1873, 1874, 1875, 1878, 1880, 1894, 1896, 1905, 1906, 1908, 1910, 1911, 1914, 1916, 1918, 1921, 1922, 1925, 1929, 1930, 1935, 1936, 1937, 1938, 1940, 1944]",
+  "priority": 40,
+  "dedupe_key": "repo-health:v1:slice:developing-today-forks/opencode:issue:13879:slice-3",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today-forks/opencode",
+    "issue": {
+      "number": 13879,
+      "title": "AUDIT-7 Lane 4 - MERGED-PR-AUDIT tracking",
+      "url": "https://github.com/developing-today/code/issues/13879"
+    },
+    "slice": {
+      "lane": "AUDIT-7 Lane 4",
+      "repo": "developing-today-forks/opencode",
+      "batch": 3,
+      "batches": 5,
+      "pr_numbers": [
+        1444, 1445, 1446, 1447, 1448, 1450, 1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1463, 1465,
+        1466, 1467, 1468, 1470, 1472, 1473, 1474, 1479, 1480, 1482, 1483, 1490, 1491, 1492, 1495, 1499, 1501, 1505,
+        1507, 1509, 1510, 1512, 1515, 1516, 1520, 1521, 1523, 1528, 1531, 1532, 1535, 1536, 1537, 1538, 1542, 1544,
+        1545, 1546, 1547, 1549, 1553, 1555, 1558, 1559, 1561, 1563, 1564, 1565, 1568, 1571, 1575, 1576, 1577, 1578,
+        1579, 1581, 1586, 1587, 1591, 1594, 1595, 1596, 1598, 1599, 1601, 1602, 1603, 1604, 1605, 1608, 1609, 1612,
+        1613, 1614, 1616, 1617, 1618, 1619, 1621, 1623, 1626, 1628, 1629, 1630, 1631, 1632, 1635, 1636, 1637, 1638,
+        1639, 1640, 1641, 1642, 1643, 1644, 1645, 1647, 1648, 1649, 1650, 1652, 1657, 1658, 1659, 1661, 1662, 1663,
+        1664, 1665, 1669, 1670, 1671, 1674, 1675, 1676, 1686, 1687, 1690, 1691, 1693, 1694, 1696, 1697, 1701, 1702,
+        1716, 1721, 1722, 1723, 1726, 1728, 1731, 1732, 1735, 1736, 1738, 1739, 1740, 1742, 1743, 1745, 1747, 1748,
+        1749, 1751, 1754, 1761, 1764, 1766, 1767, 1770, 1771, 1772, 1773, 1774, 1775, 1780, 1783, 1786, 1787, 1789,
+        1791, 1796, 1798, 1801, 1802, 1807, 1808, 1810, 1812, 1813, 1814, 1815, 1816, 1826, 1827, 1829, 1830, 1832,
+        1833, 1835, 1836, 1837, 1838, 1839, 1840, 1842, 1843, 1844, 1846, 1847, 1850, 1851, 1853, 1854, 1856, 1859,
+        1860, 1861, 1863, 1864, 1865, 1869, 1870, 1872, 1873, 1874, 1875, 1878, 1880, 1894, 1896, 1905, 1906, 1908,
+        1910, 1911, 1914, 1916, 1918, 1921, 1922, 1925, 1929, 1930, 1935, 1936, 1937, 1938, 1940, 1944
+      ],
+      "parent_issue": 13879,
+      "number": 3,
+      "criterion": "Every merged PR in developing-today-forks/opencode batch 3 (numbers in pr_numbers) has a recorded PR-vs-spawning-issue verdict on code#13879.",
+      "done_check": "Read back the batch ledger comment on code#13879 and confirm it lists every PR number in pr_numbers exactly once with a verdict and any filed gap/bug links.",
+      "owned_paths": ["audit-7/lane-4"]
+    },
+    "problem": "250 merged PRs in developing-today-forks/opencode (batch 3/5) await Lane 4 PR-vs-issue comparison under AUDIT-7.",
+    "scope": {
+      "include": [
+        "Lane 4 (MERGED-PR-AUDIT, tracking https://github.com/developing-today/code/issues/13879, umbrella https://github.com/developing-today/code/issues/13871) continuation slice.\n\nAUDIT each of these merged PRs in developing-today-forks/opencode (merged since 2026-10-23), ONE BY ONE, IN FULL: read the PR body and its complete diff (fleet gh api repos/developing-today-forks/opencode/pulls/<n> and /files, per_page=100, count-confirmed), extract the spawning issue (especially Closes/closes/fixes references), read that issue in full, and judge: did the PR fully implement the issue? Check LATER merged PRs in the same repo before filing any gap - if a later PR completed it, record completed-later on both. Where a gap/bug/unfiled next step is real, FILE it in the owning repo (via gh-post), prioritise it, and link it. NEVER use closing keywords in comments on issues that must stay open. Lane 2 owns reopen/correction decisions on closures - post suspect closures as pointers on the umbrella #13871, do not reopen. Apply the Lane 4 outcome labels (defined on code#13879; create them in developing-today-forks/opencode first if absent): audit:complete / audit:partial / audit:gap-filed / audit:bug-filed / audit:completed-later / audit:no-issue. Post the batch ledger (PR, spawning issue, verdict, filed links) as a comment on code#13879 when the batch is done. Check #13879 and the umbrella for lane claims before acting on any item; a claim from another lane is a hard stop.\n\nPR numbers in this batch: [1444, 1445, 1446, 1447, 1448, 1450, 1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1463, 1465, 1466, 1467, 1468, 1470, 1472, 1473, 1474, 1479, 1480, 1482, 1483, 1490, 1491, 1492, 1495, 1499, 1501, 1505, 1507, 1509, 1510, 1512, 1515, 1516, 1520, 1521, 1523, 1528, 1531, 1532, 1535, 1536, 1537, 1538, 1542, 1544, 1545, 1546, 1547, 1549, 1553, 1555, 1558, 1559, 1561, 1563, 1564, 1565, 1568, 1571, 1575, 1576, 1577, 1578, 1579, 1581, 1586, 1587, 1591, 1594, 1595, 1596, 1598, 1599, 1601, 1602, 1603, 1604, 1605, 1608, 1609, 1612, 1613, 1614, 1616, 1617, 1618, 1619, 1621, 1623, 1626, 1628, 1629, 1630, 1631, 1632, 1635, 1636, 1637, 1638, 1639, 1640, 1641, 1642, 1643, 1644, 1645, 1647, 1648, 1649, 1650, 1652, 1657, 1658, 1659, 1661, 1662, 1663, 1664, 1665, 1669, 1670, 1671, 1674, 1675, 1676, 1686, 1687, 1690, 1691, 1693, 1694, 1696, 1697, 1701, 1702, 1716, 1721, 1722, 1723, 1726, 1728, 1731, 1732, 1735, 1736, 1738, 1739, 1740, 1742, 1743, 1745, 1747, 1748, 1749, 1751, 1754, 1761, 1764, 1766, 1767, 1770, 1771, 1772, 1773, 1774, 1775, 1780, 1783, 1786, 1787, 1789, 1791, 1796, 1798, 1801, 1802, 1807, 1808, 1810, 1812, 1813, 1814, 1815, 1816, 1826, 1827, 1829, 1830, 1832, 1833, 1835, 1836, 1837, 1838, 1839, 1840, 1842, 1843, 1844, 1846, 1847, 1850, 1851, 1853, 1854, 1856, 1859, 1860, 1861, 1863, 1864, 1865, 1869, 1870, 1872, 1873, 1874, 1875, 1878, 1880, 1894, 1896, 1905, 1906, 1908, 1910, 1911, 1914, 1916, 1918, 1921, 1922, 1925, 1929, 1930, 1935, 1936, 1937, 1938, 1940, 1944]"
+      ],
+      "exclude": ["Reopening or correcting closed issues (Lane 2 owns that)", "Auditing PRs outside the listed batch"]
+    },
+    "acceptance": [
+      "Ledger comment on code#13879 covering all 250 PRs of developing-today-forks/opencode batch 3 with verdicts, outcome labels applied, and any gap/bug issues filed and linked."
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13879",
+      "https://github.com/developing-today/code/issues/13871"
+    ],
+    "risk": {
+      "flags": [],
+      "level": "low"
+    },
+    "timebox_minutes": 45,
+    "priority_reason": "AUDIT-7 is Drew's 2026-11-23 directive programme; Lane 4's remaining repos exceed one session, so the exhaustive audit continues as queued slices at normal pilot priority.",
+    "evidence": [
+      "Census snapshot 2026-11-24T00:39Z via fleet gh api: developing-today-forks/opencode has merged PRs in this batch merged since 2026-10-23; dezren39/fleet slice (92 PRs) already completed by Lane 4 with ledger on code#13879.",
+      "Tracking: https://github.com/developing-today/code/issues/13879 ; umbrella: https://github.com/developing-today/code/issues/13871"
+    ],
+    "tests": [
+      "Batch ledger comment posted on code#13879 covering every PR number in payload.slice.pr_numbers",
+      "Outcome label present on every audited PR in the batch repo"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-24T00:39:00Z",
+      "basis": "Lane 4 tracking issue #13879 and umbrella #13871 checked 2026-11-24: no other lane claims merged-PR audit of these repos; fleet slice done by Lane 4 itself; no live audit task for these PR batches existed at enqueue time."
+    }
+  }
+}

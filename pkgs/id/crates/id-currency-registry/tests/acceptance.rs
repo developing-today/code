@@ -240,3 +240,105 @@ fn migration_creates_the_four_tables_with_the_named_constraints() {
     // Design section 6: the allocator entry point exists.
     assert!(sql.contains("create function allocate_ledger"));
 }
+
+// Status transitions (issue #13342). The oracle is the issue's
+// Acceptance list: "Registry tests: transition happy paths,
+// non-issuer refusal, repeat-transition behavior as documented."
+
+#[test]
+fn issuer_can_freeze_then_sunset_and_sunset_is_terminal() {
+    let mut registry = Registry::new(InMemoryStore::new());
+    registry
+        .register_currency(register_input("abc", "alice", "ABC"))
+        .unwrap();
+    // Sunset is reachable from frozen: freeze first.
+    let frozen = registry.freeze_currency("abc", "alice").unwrap();
+    assert_eq!(frozen.status, CurrencyStatus::Frozen);
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Frozen,
+        "the store carries the new status"
+    );
+    let sunset = registry.sunset_currency("abc", "alice").unwrap();
+    assert_eq!(sunset.status, CurrencyStatus::Sunset);
+    // Sunset is terminal: freezing a sunset currency is a typed
+    // refusal naming the from/to statuses.
+    let err = registry.freeze_currency("abc", "alice").unwrap_err();
+    assert_eq!(
+        err,
+        RegistryError::InvalidTransition {
+            currency_id: "abc".to_owned(),
+            from: CurrencyStatus::Sunset,
+            to: CurrencyStatus::Frozen,
+        }
+    );
+}
+
+#[test]
+fn issuer_can_sunset_directly_from_active() {
+    let mut registry = Registry::new(InMemoryStore::new());
+    registry
+        .register_currency(register_input("abc", "alice", "ABC"))
+        .unwrap();
+    let sunset = registry.sunset_currency("abc", "alice").unwrap();
+    assert_eq!(sunset.status, CurrencyStatus::Sunset);
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Sunset
+    );
+}
+
+#[test]
+fn only_the_issuer_can_transition_status() {
+    let mut registry = Registry::new(InMemoryStore::new());
+    registry
+        .register_currency(register_input("abc", "alice", "ABC"))
+        .unwrap();
+    for attempt in [
+        registry.freeze_currency("abc", "mallory"),
+        registry.sunset_currency("abc", "mallory"),
+    ] {
+        assert_eq!(
+            attempt.unwrap_err(),
+            RegistryError::NotIssuer {
+                currency_id: "abc".to_owned(),
+                account_id: "mallory".to_owned(),
+            }
+        );
+    }
+    // The refusals moved nothing.
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Active
+    );
+}
+
+#[test]
+fn repeat_transitions_are_idempotent_successes() {
+    let mut registry = Registry::new(InMemoryStore::new());
+    registry
+        .register_currency(register_input("abc", "alice", "ABC"))
+        .unwrap();
+    // Freeze on frozen answers with the record as it stands.
+    let first = registry.freeze_currency("abc", "alice").unwrap();
+    let repeat = registry.freeze_currency("abc", "alice").unwrap();
+    assert_eq!(repeat, first);
+    // Sunset on sunset likewise.
+    let first = registry.sunset_currency("abc", "alice").unwrap();
+    let repeat = registry.sunset_currency("abc", "alice").unwrap();
+    assert_eq!(repeat, first);
+    assert_eq!(repeat.status, CurrencyStatus::Sunset);
+}
+
+#[test]
+fn transitions_on_an_unknown_currency_are_refused() {
+    let mut registry = Registry::new(InMemoryStore::new());
+    assert_eq!(
+        registry.freeze_currency("nope", "alice").unwrap_err(),
+        RegistryError::UnknownCurrency("nope".to_owned())
+    );
+    assert_eq!(
+        registry.sunset_currency("nope", "alice").unwrap_err(),
+        RegistryError::UnknownCurrency("nope".to_owned())
+    );
+}

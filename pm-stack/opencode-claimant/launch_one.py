@@ -169,8 +169,15 @@ def journal(rec):
 
 
 def queue(*args, timeout=120):
+    # #6533: the trigger acts as the claimant, never as the lane whose
+    # shell ran it, so an inherited REPO_QUEUE_LANE stays out of every
+    # repo-queue call (the client falls back to it for holder checks).
     p = subprocess.run(
-        [repo_queue_cmd(), *args], capture_output=True, text=True, timeout=timeout
+        [repo_queue_cmd(), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=claimant._queue_env(),
     )
     return p.returncode, p.stdout, p.stderr
 
@@ -272,13 +279,20 @@ def hard_stop_reason(repo, ref):
     if not ref:
         return None
     kind, num = ref
-    cmd = (
-        ["pr", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
-        if kind == "pr"
-        else ["issue", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
-    )
+    # The labels/state/title read runs through the fleet gh
+    # sync-view verb (code#10973) over the token rotation, not a
+    # raw gh composition.
+    cmd = [
+        str(claimant.FLEET_CMD),
+        "gh",
+        "sync-view",
+        "--repo",
+        repo,
+        kind,
+        str(num),
+    ]
     try:
-        p = subprocess.run(["gh", *cmd], capture_output=True, text=True, timeout=60)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if p.returncode != 0:
             return f"label-check-failed:{p.stderr.strip()[:160]}"
         d = json.loads(p.stdout)
@@ -390,13 +404,21 @@ def post_agent_note(row, ref, repo, sid):
     claimant.ensure_state_dir()
     with open(path, "w") as f:
         f.write(note_body(row, ref, sid, url))
-    ncmd = (
-        ["pr", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
-        if ref[0] == "pr"
-        else ["issue", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
-    )
+    # The note post runs through the fleet gh sync-comment verb
+    # (code#10973) over the token rotation, not a raw gh composition.
+    ncmd = [
+        str(claimant.FLEET_CMD),
+        "gh",
+        "sync-comment",
+        "--repo",
+        repo,
+        ref[0],
+        str(ref[1]),
+        "--body-file",
+        str(path),
+    ]
     try:
-        p = subprocess.run(["gh", *ncmd], capture_output=True, text=True, timeout=60)
+        p = subprocess.run(ncmd, capture_output=True, text=True, timeout=60)
         return p.returncode == 0, (
             None if p.returncode == 0 else p.stderr.strip()[:300]
         )
@@ -409,7 +431,8 @@ def post_agent_note(row, ref, repo, sid):
 
 def collect_sink_claim(queue_name, task_id, model_provider=None, model_id=None):
     """Claim THIS sink row (status 'handed_off') by id, as the
-    claimant. Returns (claimed_row, None) or (None, error). The
+    claimant. Returns (claimed_row, None) or (None, error), where
+    error is sink_claim_error's category/action/detail record. The
     claim output is the claimed row itself, a {"task": row}
     wrapper, or {"task": null} when the broker would not hand it
     over; only a row whose id is the requested task counts.
@@ -431,19 +454,42 @@ def collect_sink_claim(queue_name, task_id, model_provider=None, model_id=None):
         argv += ["--model-provider", model_provider, "--model-id", model_id]
     try:
         rc, out, err = queue(*argv)
+    except subprocess.TimeoutExpired:
+        return None, sink_claim_error("timeout", task_id, "")
+    except OSError as e:
+        return None, sink_claim_error("spawn_error", task_id, str(e))
     except Exception as e:
-        return None, str(e)[:300]
+        return None, sink_claim_error("unexpected_error", task_id, str(e))
     data = None
+    category = None
     if out.strip():
         try:
             data = json.loads(out)
         except ValueError:
-            data = None
-    row = data.get("task") if isinstance(data, dict) and "task" in data else data
-    if rc != 0 or not isinstance(row, dict) or row.get("id") != task_id:
-        detail = (err.strip() or out.strip())[:300]
-        return None, f"by-id claim did not return task {task_id}: {detail}"
-    return row, None
+            category = "invalid_json" if rc == 0 else "cli_nonzero"
+    if category is None:
+        row, category = claimant._classify_claim_body(data, rc)
+        if row is not None and row.get("id") != task_id:
+            row, category = None, "different_row"
+        if row is not None and rc != 0:
+            row, category = None, "cli_nonzero"
+        if row is not None:
+            return row, None
+    return None, sink_claim_error(category, task_id, err.strip() or out.strip())
+
+
+def sink_claim_error(category, task_id, detail):
+    """A by-id sink claim failure a coordinator can act on (#6533): a
+    fixed category, the action that category calls for, and the CLI's
+    own words (this trigger runs by hand, so its stderr is the
+    evidence; the scheduled fire log keeps the category only)."""
+    return {
+        "category": category,
+        "action": claimant.SINK_CLAIM_ACTIONS.get(
+            category, claimant.SINK_CLAIM_ACTIONS["unexpected_error"]
+        ),
+        "detail": f"by-id claim did not return task {task_id}: {detail[:300]}",
+    }
 
 
 def launch(queue_name, task_id):
@@ -484,6 +530,10 @@ def launch(queue_name, task_id):
 
     cap_room = claimant.cap_step()
     if cap_room == -1:
+        claimant.fire_opencode_working_hook(
+            "lane-launch",
+            f"launch_one {queue_name}:{task_id} could not read OpenCode sessions",
+        )
         return {
             "task": task_id,
             "queue": queue_name,
@@ -520,7 +570,7 @@ def launch(queue_name, task_id):
                 "queue": queue_name,
                 "ok": False,
                 "reason": "sink_claim_failed",
-                "detail": claim_err,
+                **claim_err,
             }
         worker_id = CLAIMANT_WORKER
     else:
@@ -812,6 +862,9 @@ def parse_spec(spec):
 
 
 def main(argv):
+    # #6533: every repo-queue child, including the claimant helpers
+    # this trigger reuses, acts as the claimant, not an inherited lane.
+    claimant._drop_inherited_lane()
     if len(argv) >= 2 and argv[1] in ("--help", "-h", "help"):
         print(__doc__)
         return 0

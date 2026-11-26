@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { APP_INSTALLED_REPOS, FLEET_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig } from "../src/config.ts";
 
-/** loadConfig needs no fixture secrets (#9028: no Supabase config remains). */
+/** loadConfig needs no fixture secrets (#9028). */
 const ENV = {};
 
 describe("fleet config", () => {
@@ -88,5 +88,19 @@ describe("fleet config", () => {
     for (const repo of APP_INSTALLED_REPOS) {
       expect(FLEET_REPOS).toContain(repo as (typeof FLEET_REPOS)[number]);
     }
+  });
+
+  test("placement guard is enabled only by the Nix wrapper and paths can be overridden", () => {
+    expect(loadConfig({}).placementGuardEnabled).toBe(false);
+    const configured = loadConfig({
+      PM_DISPATCH_PLACEMENT_GUARD: "true",
+      PM_DISPATCH_PLACEMENT_RECORD: "/nix/bin/placement-record",
+      PM_DISPATCH_PLACEMENT_POLICY: "/nix/share/placement-policy.yaml",
+      QUOTA_CURRENT_PATH: "/state/quota-current.json",
+    });
+    expect(configured.placementGuardEnabled).toBe(true);
+    expect(configured.placementRecordExecutable).toBe("/nix/bin/placement-record");
+    expect(configured.placementPolicyFile).toBe("/nix/share/placement-policy.yaml");
+    expect(configured.quotaCurrentFile).toBe("/state/quota-current.json");
   });
 });

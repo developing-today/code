@@ -145,6 +145,121 @@ fn specificity_within_assertions_and_tie_is_an_error_decision_5854_s2_2_s6a() {
     );
 }
 
+fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    let mut out = Vec::new();
+    for i in 0..items.len() {
+        let mut rest = items.to_vec();
+        let head = rest.remove(i);
+        for mut tail in permutations(&rest) {
+            tail.insert(0, head.clone());
+            out.push(tail);
+        }
+    }
+    out
+}
+
+#[test]
+fn cascade_winner_is_independent_of_declaration_order_decision_5854_invariant_2() {
+    let doc = parse_and_validate(FORM_DOC).expect("builds");
+    let theme_tables = ThemeTables {
+        base: theme(&[("accent", "green"), ("brand", "purple"), ("sage", "olive")]),
+        ..Default::default()
+    };
+
+    // A lower-specificity pair that ties with itself, under one
+    // unique instance-level winner: no tie at the top, so every
+    // ordering must compose to the instance winner.
+    let unique_top = [
+        assertion(
+            BUTTON_PATH,
+            "colour-role",
+            "accent",
+            Specificity::KindDefault,
+        ),
+        assertion(
+            BUTTON_PATH,
+            "colour-role",
+            "brand",
+            Specificity::KindDefault,
+        ),
+        assertion(BUTTON_PATH, "colour-role", "sage", Specificity::Instance),
+    ];
+    for order in permutations(&unique_top) {
+        let data = ComposeData {
+            assertions: order,
+            theme: theme_tables.clone(),
+            ..Default::default()
+        };
+        let composed = compose_document(&doc, &target("web"), &data)
+            .expect("unique top-specificity winner must compose in every order");
+        let button = find(&composed.root, BUTTON_PATH).expect("button present");
+        assert_eq!(button.properties[0].token.as_deref(), Some("sage"));
+    }
+
+    // Two different tokens at the top specificity, with a lower
+    // candidate present: the tie is an error in every ordering.
+    let top_tie = [
+        assertion(BUTTON_PATH, "colour-role", "sage", Specificity::KindDefault),
+        assertion(BUTTON_PATH, "colour-role", "accent", Specificity::Instance),
+        assertion(BUTTON_PATH, "colour-role", "brand", Specificity::Instance),
+    ];
+    for order in permutations(&top_tie) {
+        let data = ComposeData {
+            assertions: order,
+            theme: theme_tables.clone(),
+            ..Default::default()
+        };
+        let errors = compose_document(&doc, &target("web"), &data)
+            .expect_err("top-specificity tie must fail in every order");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("same-specificity tie")),
+            "{errors:?}"
+        );
+    }
+
+    // Same invariant for style overrides (layer 4a).
+    let style_top = [
+        OverrideInput::Style {
+            element_path: BUTTON_PATH.to_string(),
+            property: "colour-role".to_string(),
+            token: "sage".to_string(),
+            specificity: Specificity::KindDefault,
+        },
+        OverrideInput::Style {
+            element_path: BUTTON_PATH.to_string(),
+            property: "colour-role".to_string(),
+            token: "accent".to_string(),
+            specificity: Specificity::Instance,
+        },
+        OverrideInput::Style {
+            element_path: BUTTON_PATH.to_string(),
+            property: "colour-role".to_string(),
+            token: "brand".to_string(),
+            specificity: Specificity::Instance,
+        },
+    ];
+    for order in permutations(&style_top) {
+        let data = ComposeData {
+            overrides: order,
+            theme: theme_tables.clone(),
+            ..Default::default()
+        };
+        let errors = compose_document(&doc, &target("web"), &data)
+            .expect_err("style top-specificity tie must fail in every order");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("same-specificity tie")),
+            "{errors:?}"
+        );
+    }
+}
+
 #[test]
 fn theme_layering_mode_beats_target_beats_base_and_mode_fallback_warns_decision_5854_s3() {
     let doc = parse_and_validate(FORM_DOC).expect("builds");
@@ -270,7 +385,10 @@ fn raw_css_is_ignored_off_web_with_a_warning_decision_5854_s2_3_s6d() {
     // appears in the resolved IR for a non-web target.
     assert_eq!(button.properties.len(), 1);
     assert_eq!(button.properties[0].layer, WinningLayer::Assertion);
-    assert!(composed.report.reported_overrides.is_empty());
+    assert_eq!(
+        composed.report.reported_overrides,
+        [] as [id_render::compose::ReportedOverride; 0]
+    );
     assert!(
         composed
             .report
@@ -355,10 +473,19 @@ fn target_locality_other_targets_declarations_do_not_leak_decision_5854_s2_4() {
     let composed =
         compose_document(&doc, &target("native"), &ComposeData::default()).expect("composes");
     let button = find(&composed.root, BUTTON_PATH).expect("button present");
-    assert!(button.properties.is_empty());
+    assert_eq!(
+        button.properties,
+        [] as [id_render::compose::ResolvedProperty; 0]
+    );
     assert_eq!(button.presentation, None);
-    assert!(composed.report.warnings.is_empty());
-    assert!(composed.report.reported_overrides.is_empty());
+    assert_eq!(
+        composed.report.warnings,
+        [] as [id_render::compose::CompositionWarning; 0]
+    );
+    assert_eq!(
+        composed.report.reported_overrides,
+        [] as [id_render::compose::ReportedOverride; 0]
+    );
 }
 
 #[test]

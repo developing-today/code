@@ -42,6 +42,17 @@ pub(crate) struct ViewRevisionState {
     screen: Option<(u64, crate::world_presentation::ScreenSurface)>,
     /// The participant this connection joined as, bound into resume tokens.
     pub(crate) participant: u64,
+    /// Negotiated binary patches (F12.11 phase 3, contract revision
+    /// 12): the join offered `screen_msgpack`, patches are on, and the
+    /// transport carries bytes, so patch frames are sent as versioned
+    /// MessagePack binary frames instead of JSON `view` frames.
+    pub(crate) msgpack_patches: bool,
+    /// Negotiated compressed patches (F12.11 phase 4, contract
+    /// revision 16): the join also offered `screen_compress`, so patch
+    /// frames are sent as version-2 compressed frames whenever
+    /// compression makes the complete frame smaller, and as version-1
+    /// frames otherwise.
+    pub(crate) compress_patches: bool,
     /// A resume token presented at join and not yet consumed by a view send.
     pub(crate) pending_resume: Option<String>,
     /// Agent profile (contract revision 11): set from the join frame's
@@ -270,6 +281,40 @@ pub(crate) async fn send_view<I: SessionIo>(
                     };
                     let delta_size = serde_json::to_vec(&delta_frame).map(|bytes| bytes.len());
                     let full_size = serde_json::to_vec(&full_frame).map(|bytes| bytes.len());
+                    // Negotiated binary patches (F12.11 phase 3): the
+                    // same patch and envelope fields, as one versioned
+                    // MessagePack binary frame, when that is smaller
+                    // than the full view the client would otherwise
+                    // get. With compression negotiated (F12.11 phase 4)
+                    // the frame is the version-2 compressed form when
+                    // that is smaller still, and the version-1 form
+                    // otherwise — compression never grows a frame. An
+                    // encoding failure falls through to the JSON choice
+                    // below — never a guessed encoding.
+                    if view_state.msgpack_patches {
+                        let binary = id_core::screen_codec::ViewPatchFrame {
+                            sequence,
+                            view_revision,
+                            base_view_revision: Some(*base_view_revision),
+                            resume_token: resume_token.clone(),
+                            patch: patch.clone(),
+                        };
+                        let encoded = if view_state.compress_patches {
+                            id_core::screen_codec::encode_view_patch_compressed(&binary)
+                        } else {
+                            id_core::screen_codec::encode_view_patch(&binary)
+                        };
+                        if let (Ok(bytes), Ok(full)) = (encoded, &full_size) {
+                            if bytes.len() < *full {
+                                let sent = send_binary(service.frame_meter(), io, bytes).await;
+                                if sent {
+                                    view_state.screen = Some((view_revision, screen.clone()));
+                                    view_state.note_view_sent(view_revision, Some(screen));
+                                }
+                                return sent;
+                            }
+                        }
+                    }
                     if matches!((delta_size, full_size), (Ok(delta), Ok(full)) if delta < full) {
                         let sent = send_json(service.frame_meter(), io, &delta_frame).await;
                         if sent {
@@ -427,9 +472,15 @@ mod tests {
 
         // No comparable previous screen, or a resized screen, diffs to
         // nothing: the full view frame already carried the truth.
-        assert!(region_changes(None, &after, region(0, 0, 11, 3)).is_empty());
+        assert_eq!(
+            region_changes(None, &after, region(0, 0, 11, 3)),
+            [] as [serde_json::Value; 0]
+        );
         let resized = screen(&["hello agent"]);
-        assert!(region_changes(previous.as_ref(), &resized, region(0, 0, 11, 1)).is_empty());
+        assert_eq!(
+            region_changes(previous.as_ref(), &resized, region(0, 0, 11, 1)),
+            [] as [serde_json::Value; 0]
+        );
     }
 
     /// Oracle: #6300 section 4.2 subscription scoping for event diffs —

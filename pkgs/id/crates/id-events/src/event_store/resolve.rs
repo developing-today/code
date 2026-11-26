@@ -42,8 +42,8 @@ use std::collections::{HashMap, HashSet};
 
 use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::{Hash, SeqNum};
-use redb::ReadableTable;
 
+use super::compaction::Residue;
 use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
 use crate::groups::{
     Body as GroupBody, Create as GroupCreate, DeviceOp, Event as GroupEvent, MemberOp, Policy,
@@ -54,6 +54,7 @@ use id_core::rejection::Reason;
 use id_core::waiting::AuthorKey;
 use id_store::chain::Event;
 use id_store::chat::CHAT_MESSAGE_KIND;
+use id_store::event_rows::RowRead;
 
 /// One stored event, with the membership action it carries when it is a group operation.
 #[derive(Clone, Debug)]
@@ -95,6 +96,10 @@ struct Node {
     /// The author's own previous event, from the header backlink. A chat event's
     /// membership position includes it: a first message may name its group only here.
     backlink: Option<Hash>,
+    /// True for a compacted event's residue: it stands in the causal graph with
+    /// its edges, and it keeps the applied verdict it held when its bytes were
+    /// reclaimed (#3797).
+    residue: bool,
 }
 
 /// The author of an event.
@@ -102,7 +107,9 @@ pub(super) fn author_of(event: &Event) -> AuthorKey {
     *event.header.verifying_key.as_bytes()
 }
 
-/// Resolves which of `stored` apply, given the fork proofs as `(author, fork point)`.
+/// Resolves which of `stored` apply, given the fork proofs as `(author, fork point)`
+/// and the compaction residue, whose events keep the verdict they held when their
+/// bytes were reclaimed.
 ///
 /// # Errors
 ///
@@ -113,6 +120,7 @@ pub(super) fn resolve(
     stored: &[Stored],
     forks: &HashMap<AuthorKey, SeqNum>,
     proof_headers: &[Event],
+    residue: &[Residue],
 ) -> Result<Resolved, StoreError> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut position: HashMap<Hash, usize> = HashMap::new();
@@ -132,6 +140,7 @@ pub(super) fn resolve(
             excluded,
             chat: event.header.extensions.kind == CHAT_MESSAGE_KIND,
             backlink: event.header.backlink,
+            residue: false,
         });
     }
     for header in proof_headers {
@@ -149,6 +158,30 @@ pub(super) fn resolve(
             excluded: true,
             chat: header.header.extensions.kind == CHAT_MESSAGE_KIND,
             backlink: header.header.backlink,
+            residue: false,
+        });
+    }
+    // A compacted event stands in the graph as its residue: present, with the
+    // causal edges it had, so every position computed over the graph is the
+    // position that was computed before its bytes were reclaimed (#3797).
+    for item in residue {
+        if position.contains_key(&item.id) {
+            continue;
+        }
+        position.insert(item.id, nodes.len());
+        nodes.push(Node {
+            id: item.id,
+            author: item.author,
+            group: None,
+            after: item.after.clone(),
+            action: None,
+            device: None,
+            excluded: forks
+                .get(&item.author)
+                .is_some_and(|point| item.seq >= *point),
+            chat: false,
+            backlink: item.backlink,
+            residue: true,
         });
     }
 
@@ -202,6 +235,7 @@ pub(super) fn resolve(
             let role = match (&node.action, node.excluded) {
                 (Some(action), false) if !voided.contains(&node.id) => Role::Auth {
                     author: node.author,
+                    authorization_actor: None,
                     group: node.group,
                     action: action.clone(),
                 },
@@ -224,10 +258,16 @@ pub(super) fn resolve(
         if node.excluded {
             continue;
         }
-        let takes_effect = match (&node.action, membership.as_mut()) {
-            (Some(_), Some(layer)) => layer.is_effective(&node.id),
-            (Some(_), None) => false,
-            (None, layer) => content_applies(node, &applied, layer)?,
+        let takes_effect = if node.residue {
+            // A compacted event applied before its bytes were reclaimed; the
+            // residue keeps that verdict (#3797).
+            true
+        } else {
+            match (&node.action, membership.as_mut()) {
+                (Some(_), Some(layer)) => layer.is_effective(&node.id),
+                (Some(_), None) => false,
+                (None, layer) => content_applies(node, &applied, layer)?,
+            }
         };
         if takes_effect {
             applied.insert(node.id);
@@ -370,6 +410,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
             author: node.author,
             after: Vec::new(),
             group: Some(group),
+            at: None,
             body: GroupBody::Device(*op),
         });
     }
@@ -436,6 +477,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
         author: node.author,
         after: Vec::new(),
         group: node.group,
+        at: None,
         body,
     })
 }
@@ -565,26 +607,18 @@ fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<u
 pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 
 /// Reads every stored event with its action, the fork points, and the kept fork proof headers.
-pub(super) fn load<T>(
-    events: &T,
-    actions: &T,
-    device_ops: &T,
-    forks: &T,
-    proof_headers: &T,
-) -> Result<Loaded, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
+pub(super) fn load<T: RowRead + ?Sized>(rows: &mut T) -> Result<Loaded, StoreError> {
+    let actions: HashMap<_, _> = rows.scan_all("actions")?.into_iter().collect();
+    let device_ops: HashMap<_, _> = rows.scan_all("device_ops")?.into_iter().collect();
     let mut stored = Vec::new();
-    for entry in events.iter()? {
-        let (_, value) = entry?;
-        let event = decode_stored(value.value())?;
-        let action = match actions.get(event.id.as_bytes().as_slice())? {
-            Some(row) => Some(decode_action(row.value())?),
+    for (_, value) in rows.scan_all("events")? {
+        let event = decode_stored(&value)?;
+        let action = match actions.get(event.id.as_bytes().as_slice()) {
+            Some(row) => Some(decode_action(row)?),
             None => None,
         };
-        let device = match device_ops.get(event.id.as_bytes().as_slice())? {
-            Some(row) => Some(decode_device_op(row.value())?),
+        let device = match device_ops.get(event.id.as_bytes().as_slice()) {
+            Some(row) => Some(decode_device_op(row)?),
             None => None,
         };
         stored.push(Stored {
@@ -595,17 +629,15 @@ where
     }
     // An author has a row at each point it has forked at. Its fork point is the lowest of them.
     let mut fork_points: HashMap<AuthorKey, SeqNum> = HashMap::new();
-    for entry in forks.iter()? {
-        let (key, value) = entry?;
-        let (author, _) = split_position(key.value())?;
-        let proof = decode_proof(value.value())?;
+    for (key, value) in rows.scan_all("forks")? {
+        let (author, _) = split_position(&key)?;
+        let proof = decode_proof(&value)?;
         let point = fork_points.entry(author).or_insert(proof.seq);
         *point = (*point).min(proof.seq);
     }
     let mut headers = Vec::new();
-    for entry in proof_headers.iter()? {
-        let (_, value) = entry?;
-        headers.push(decode_stored(value.value())?);
+    for (_, value) in rows.scan_all("proof_headers")? {
+        headers.push(decode_stored(&value)?);
     }
     Ok((stored, fork_points, headers))
 }
@@ -714,6 +746,7 @@ mod tests {
             excluded: false,
             chat: false,
             backlink: None,
+            residue: false,
         }
     }
 
@@ -737,6 +770,7 @@ mod tests {
                     excluded: false,
                     chat: false,
                     backlink: None,
+                    residue: false,
                 })
                 .collect();
             let position: HashMap<Hash, usize> = nodes
@@ -806,6 +840,7 @@ mod tests {
             excluded: false,
             chat: false,
             backlink: None,
+            residue: false,
         };
         let pass_through = Node {
             id: Hash::digest([42]),
@@ -817,6 +852,7 @@ mod tests {
             excluded: true,
             chat: false,
             backlink: None,
+            residue: false,
         };
         vec![create, pass_through]
     }
@@ -847,6 +883,7 @@ mod tests {
             excluded: false,
             chat: false,
             backlink: None,
+            residue: false,
         };
         assert!(matches!(fold_projection_checked(&[create]), Ok(Some(_))));
 

@@ -718,6 +718,57 @@ describe("UPDATE/CURSOR frame validation (#7873)", () => {
     expect(getVersion(view.state)).toBe(v0 + 1);
   });
 
+  it("stops reconnecting when the same steps keep failing to apply after fresh Inits (#1618)", () => {
+    const statuses: string[] = [];
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined, (status) =>
+        statuses.push(status),
+      ),
+    );
+    // Well-shaped (Step.fromJSON accepts it) but out of range for the
+    // one-node document, so applying it throws.
+    const unappliable = { stepType: "replace", from: 50, to: 50, slice: { content: [{ type: "text", text: "x" }] } };
+
+    let socket = FakeWebSocket.instances[0];
+    for (let i = 0; i < 3; i++) {
+      socket.open();
+      socket.deliver(validInit());
+      socket.deliver([MSG_UPDATE, [unappliable], [9999]]);
+      expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+      if (i < 2) {
+        // The reconnect fires within ~300ms (the budget resets on Init),
+        // before the new socket's 2s connect timeout.
+        vi.advanceTimersByTime(1_000);
+        socket = FakeWebSocket.instances.at(-1)!;
+      }
+    }
+
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    expect(statuses.at(-1)).toBe("error");
+    vi.advanceTimersByTime(120_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    conn.disconnect();
+  });
+
+  it("a successful apply between failures keeps reconnecting (#1618)", () => {
+    const { conn, socket: first } = openAndInit();
+    const unappliable = { stepType: "replace", from: 50, to: 50, slice: { content: [{ type: "text", text: "x" }] } };
+
+    let socket = first;
+    for (let i = 0; i < 4; i++) {
+      // A good step applies, then a bad one fails: the streak never builds.
+      socket.deliver([MSG_UPDATE, [remoteStepJson(conn.editor!.view)], [9999]]);
+      socket.deliver([MSG_UPDATE, [unappliable], [9999]]);
+      expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+      vi.advanceTimersByTime(1_000);
+      socket = FakeWebSocket.instances.at(-1)!;
+      socket.open();
+      socket.deliver(validInit());
+    }
+    expect(FakeWebSocket.instances).toHaveLength(5);
+    conn.disconnect();
+  });
+
   it("stores a valid CURSOR and drops malformed CURSOR frames as phantoms", () => {
     const { socket, view } = openAndInit();
     const cursors = () => cursorPluginKey.getState(view.state)?.cursors;

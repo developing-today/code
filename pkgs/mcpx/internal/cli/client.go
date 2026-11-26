@@ -234,7 +234,12 @@ func NewClient(paths daemon.Paths, configPath string) *Client {
 // so pointing it at a real address costs nothing in code and was only ever
 // prevented by the dialler being hardcoded.
 func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
-	set := clientSettings()
+	return NewClientAtWithSettings(paths, configPath, endpoint, clientSettings())
+}
+
+// NewClientAtWithSettings targets a specific daemon with an explicit setting
+// view. It is also the seam for callers that already resolved client settings.
+func NewClientAtWithSettings(paths daemon.Paths, configPath, endpoint string, set *settings.Set) *Client {
 	c := &Client{paths: paths, cfg: configPath, set: set,
 		callSettings: callHeader(set),
 		endpoint:     strings.TrimRight(endpoint, "/")}
@@ -991,6 +996,16 @@ func (c *Client) ReleaseCaller(ctx context.Context, callID string) error {
 	return err
 }
 
+// KillCaller ends the instances a session created, even when they are busy
+// (#1931 slice 2). Release detaches and stops only what is already idle;
+// kill is the force path for the same session handle. The operation is
+// declared destructive, so MCP clients scope it through destructiveHint and
+// the caller's confirmation policy like every other destructive operation.
+func (c *Client) KillCaller(ctx context.Context, callID string) error {
+	_, err := c.do(ctx, http.MethodPost, "/v1/session/kill", map[string]string{"session": callID})
+	return err
+}
+
 // Status returns the daemon status document.
 func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 	b, err := c.do(ctx, http.MethodGet, "/v1/status", nil)
@@ -1270,10 +1285,8 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 		streamClient := &http.Client{Transport: c.hc.Transport}
 		resp, err := streamClient.Do(req)
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if !waitForEventReconnect(ctx, c.set.Duration("events.reconnect")) {
 				return ctx.Err()
-			case <-time.After(c.set.Duration("events.reconnect")):
 			}
 			continue
 		}
@@ -1298,6 +1311,20 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			}
 		}
 		_ = resp.Body.Close()
+		if !waitForEventReconnect(ctx, c.set.Duration("events.reconnect")) {
+			return ctx.Err()
+		}
 	}
 	return ctx.Err()
+}
+
+func waitForEventReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

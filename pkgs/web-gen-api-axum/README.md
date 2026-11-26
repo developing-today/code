@@ -39,9 +39,11 @@ cargo leptos watch
 
 ## Installing Additional Tools
 
-By default, `cargo-leptos` uses `nightly` Rust, `cargo-generate`, and `sass`. If you run into any trouble, you may need to install one or more of these tools.
+This package builds on stable Rust with Leptos 0.4.10. If you use `cargo-leptos`, you may also need `cargo-generate` and `sass`.
 
-1. `rustup toolchain install nightly --allow-downgrade` - make sure you have Rust nightly
+The stable build was verified with Rust 1.99.0 and Leptos, leptos_axum, leptos_meta, and leptos_router 0.4.10.
+
+1. `rustup toolchain install stable` - make sure you have the stable Rust toolchain
 2. `rustup target add wasm32-unknown-unknown` - add the ability to compile Rust to WebAssembly
 3. `cargo install cargo-generate` - install `cargo-generate` binary (should be installed automatically in future)
 4. `npm install -g sass` - install `dart-sass` (should be optional in future

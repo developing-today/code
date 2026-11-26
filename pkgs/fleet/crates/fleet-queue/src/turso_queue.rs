@@ -1,21 +1,10 @@
 //! queue-broker Turso backend — the queue core on libSQL (#6741).
 //!
-//! The Postgres queue core (agent.tasks / leases / lanes / workers /
-//! checkpoints / repo_task_lane_ledger / events in muse-dev2) was the
-//! one piece of the 2026-11-04..06 migration (#5689/#5690 series)
-//! deliberately kept on Postgres for transactional coupling. When
-//! the muse-dev2 data plane went down on 2026-11-06 (#6619, Supabase
-//! platform fault) the queue core had no live home; the GitHub
-//! fallback mode (doc/fleet/queue-fallback-mode.md) carried the work.
-//! This module is the dedicated-Turso replacement Drew ordered the
-//! same evening: a dedicated database (`fleet-queue`, org dezren39,
-//! group great-star-lord; rw token in BWS as
-//! `turso.fleet-queue-rw-token`) behind the SAME broker protocol, so
-//! no client changes: backend selection is the broker's config.
-//!
-//! Selection: `QUEUE_BROKER_BACKEND=turso` (default `postgres` — the
-//! production default does NOT flip with this code; cutover is the
-//! runbook in doc/fleet/queue-turso-cutover.md). URL:
+//! The queue core (tasks / leases / lanes / workers / checkpoints /
+//! repo_task_lane_ledger / events) on a dedicated Turso database
+//! (`fleet-queue`, org dezren39, group great-star-lord; rw token in
+//! BWS as `turso.fleet-queue-rw-token`) behind the broker protocol.
+//! It is the queue broker's only backend. URL:
 //! `QUEUE_BROKER_TURSO_URL` (default the fleet-queue HTTPS URL).
 //! Token: `QUEUE_BROKER_TURSO_TOKEN_FILE`, else the secrets broker
 //! by the name above.
@@ -39,8 +28,7 @@
 //! stream's consumers get broker verbs here: /events-append,
 //! /events-seen (the event_seen ready-condition primitive),
 //! /events-count (observability + health), /events-prune (the
-//! prune_events port). All of it exists only on this backend; the
-//! Postgres dispatch is untouched.
+//! prune_events port).
 //!
 //! Atomicity: libSQL is single-writer. A claim is ONE conditional
 //! UPDATE whose WHERE clause re-checks claimability (status in
@@ -53,20 +41,39 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::validate::{task_from_packet, validate_packet};
+use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
+mod actions_exec;
 mod admin;
 mod claim;
+mod closed_bound;
 mod core;
+pub mod ctx_scope;
+#[cfg(all(test, feature = "queue-broker"))]
+mod hrana_double;
+mod label_enrich;
 mod lifecycle;
+mod links;
+mod notes;
+mod placement_coord;
+mod placement_sessions;
+mod repair;
 mod stacks_outbox;
 mod staleness;
 mod work_identity;
 
+pub use actions_exec::*;
 pub use admin::*;
 pub use claim::*;
+pub use closed_bound::*;
 pub use core::*;
+pub use label_enrich::*;
 pub use lifecycle::*;
+pub use links::*;
+pub use notes::*;
+pub use placement_coord::*;
+pub use placement_sessions::*;
+pub use repair::*;
 pub use stacks_outbox::*;
 pub use staleness::*;
 pub use work_identity::*;
@@ -74,20 +81,30 @@ pub use work_identity::*;
 #[cfg(test)]
 mod tests {
 
-    /// The full backend source, concatenated in original file order
-    /// across the #8589 module split (parent file last, so the
-    /// cfg(test) marker still terminates the production text).
+    /// The full backend source, concatenated across the #8589
+    /// module split (parent file last, so the cfg(test) marker
+    /// still terminates the production text). Each file is
+    /// truncated at its own first `#[cfg(test)]` so inline test
+    /// modules (staleness, work_identity, closed_bound, lifecycle
+    /// reprioritize_tests) never hide a later file's production
+    /// text from the source-content oracles.
     fn test_source() -> String {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
+            include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
+            include_str!("turso_queue/closed_bound.rs"),
             include_str!("turso_queue.rs"),
         ]
+        .iter()
+        .map(|s| s.split("#[cfg(test)]").next().unwrap_or(""))
+        .collect::<Vec<_>>()
         .concat()
     }
     use super::*;
@@ -288,6 +305,1127 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_route_declaration_15070() {
+        // #15070 oracle (validation + dry-run halves): a packet whose
+        // payload carries a valid structured route declaration
+        // enqueues (dry-run) with the declaration intact on the row
+        // shape; packets with a malformed declaration — unknown
+        // family, blank reason, unknown field, non-object — are
+        // refused at validation, naming payload.route. A packet
+        // without a route is untouched by all of this.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let base = packet_12744(15070, 30);
+        let mut routed = base.clone();
+        routed["payload"]["route"] = json!({
+            "platform": "openchamber",
+            "reason": "works in the laptop checkout of openchamber"
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": routed,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["route"]["platform"], "openchamber",
+            "{out}"
+        );
+        assert_eq!(
+            crate::validate::route_declaration(&out["task"]["payload"]),
+            Some((
+                "openchamber".to_string(),
+                "works in the laptop checkout of openchamber".to_string()
+            )),
+            "{out}"
+        );
+        for bad in [
+            json!({"platform": "code-a", "reason": "r"}),
+            json!({"platform": "muse", "reason": "  "}),
+            json!({"platform": "muse"}),
+            json!({"platform": "muse", "reason": "r", "lane": "xaltha"}),
+            json!("openchamber"),
+        ] {
+            let mut packet = base.clone();
+            packet["payload"]["route"] = bad.clone();
+            let req = json!({
+                "queue": "repo-health-code-pilot",
+                "packet": packet,
+                "dry_run": true
+            });
+            let out = verb_enqueue(&backend, &req);
+            assert_eq!(out["ok"], false, "route {bad} must be refused: {out}");
+            assert!(
+                out["errors"]
+                    .as_array()
+                    .map(|errs| {
+                        errs.iter()
+                            .any(|e| e.as_str().unwrap_or("").contains("payload.route"))
+                    })
+                    .unwrap_or(false),
+                "route {bad} refusal names payload.route: {out}"
+            );
+        }
+        // No route: route_declaration reads None (unrouted, legacy).
+        assert_eq!(
+            crate::validate::route_declaration(&base["payload"]),
+            None
+        );
+    }
+
+    #[test]
+    fn enqueue_translates_route_to_ledger_platform_limit_15070() {
+        // #15070 oracle (broker half): verb_enqueue translates the
+        // declaration into the lane ledger's platform limitation at
+        // creation — the INSERT names platform_limit and
+        // platform_limit_reason and sits in verb_enqueue's own
+        // segment, after the task INSERT (the row it limits must
+        // exist first), and the translation is gated on the parsed
+        // declaration so unrouted packets create no ledger row.
+        let src = &test_source();
+        let seg = src
+            .split("pub(crate) fn verb_enqueue(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\npub(crate) fn ")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("route_declaration"),
+            "verb_enqueue parses the route declaration"
+        );
+        assert!(
+            seg.contains("platform_limit_error("),
+            "verb_enqueue rechecks the declaration as a platform limitation"
+        );
+        let task_insert = seg
+            .find("INSERT INTO tasks")
+            .expect("verb_enqueue inserts the task row");
+        let ledger_insert = seg
+            .find("INSERT INTO repo_task_lane_ledger")
+            .expect("verb_enqueue inserts the ledger limitation row");
+        assert!(
+            task_insert < ledger_insert,
+            "the ledger limitation is stamped after the task row exists"
+        );
+        let ledger_seg = &seg[ledger_insert..];
+        assert!(ledger_seg.contains("platform_limit, platform_limit_reason"));
+        assert!(
+            seg.contains("\"route_declared\""),
+            "the translation leaves a route_declared audit event"
+        );
+    }
+
+    /// A one-shot stub of the Turso pipeline endpoint for the
+    /// #12744 tests: captures the first request body it receives
+    /// and answers it with the canned pipeline response. The
+    /// thread is detached — a code path that never queries leaves
+    /// it parked on accept, which is exactly the fail-before shape
+    /// (the assertions on the reply and the capture then fail).
+    fn stub_pipeline(
+        response_body: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(sock.try_clone().unwrap());
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = trimmed.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).unwrap();
+            sink.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&body).to_string());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// A canned pipeline reply carrying one github_mirror_issues
+    /// row whose labels column is `labels_json` (or no rows when
+    /// None).
+    fn mirror_pipeline_reply(labels_json: Option<&str>) -> String {
+        let rows = match labels_json {
+            Some(l) => json!([[{"type": "text", "value": l}]]),
+            None => json!([]),
+        };
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "labels"}],
+                "rows": rows,
+                "affected_row_count": 0,
+                "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// A valid repo-task/v1 packet for an issue, in the shape the
+    /// #8973 dry-run test established, with a stated priority and
+    /// NO payload.labels — the production shape #12744 is about.
+    fn packet_12744(issue: i64, stated: i64) -> Value {
+        json!({
+            "title": "probe", "priority": stated,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{issue}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 45,
+                "issue": {"number": issue },
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
+            }
+        })
+    }
+
+    /// A canned pipeline reply for one INSERT.
+    fn exec_pipeline_reply() -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [], "rows": [], "affected_row_count": 1,
+                "last_insert_rowid": "1"}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    #[test]
+    fn events_carry_the_serving_requests_ctx_id_14191() {
+        // #14191 (build 5/5): an event written while the broker
+        // serves a request that carried context stores the context
+        // id in its detail, so the queue event store joins the
+        // trip logs on one id. Without context the row is unchanged.
+        let (url, captured) = stub_pipeline(exec_pipeline_reply());
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        {
+            let _scope = ctx_scope::enter(Some("task-22655"));
+            event(&backend, Some("w1"), Some(7), "ctx_probe", &json!({"a": 1})).unwrap();
+        }
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].contains(r#"\"ctx_id\":\"task-22655\""#),
+            "{bodies:?}"
+        );
+        drop(bodies);
+
+        let (url, captured) = stub_pipeline(exec_pipeline_reply());
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let out = verb_events_append(&backend, &json!({"kind": "ctx_probe", "detail": {"a": 1}}));
+        assert_eq!(out["ok"], true, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(!bodies[0].contains("ctx_id"), "{bodies:?}");
+    }
+
+    #[test]
+    fn enqueue_mirror_labels_select_band_12744() {
+        // #12744 acceptance oracle, at the verb: a producer-path
+        // enqueue for an expedite-labelled issue whose packet
+        // carries no labels stores at the ratified band 15 with
+        // the mirror's labels on the payload — no manual update.
+        // The mirror row is the stub's; the band is Drew's.
+        let (url, captured) =
+            stub_pipeline(mirror_pipeline_reply(Some("[\"expedite\",\"kind/bug\"]")));
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(12228, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 15, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["expedite", "kind/bug"]),
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(bodies[0].contains("github_mirror_issues"), "{bodies:?}");
+        assert!(bodies[0].contains("developing-today/code"), "{bodies:?}");
+    }
+
+    #[test]
+    fn enqueue_producer_labels_stand_over_mirror_12744() {
+        // A packet that carries its own labels array keeps it —
+        // the mirror is a fill, never an override. The backend is
+        // unreachable, so any lookup attempt would surface as an
+        // enrichment warning on the reply; none may appear.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let mut packet = packet_12744(12228, 90);
+        packet["payload"]["labels"] = json!(["next-up"]);
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 25, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["next-up"]),
+            "{out}"
+        );
+        let warnings = out["warnings"].to_string();
+        assert!(!warnings.contains("mirror enrichment"), "{out}");
+    }
+
+    #[test]
+    fn enqueue_mirror_miss_keeps_stated_priority_12744() {
+        // No mirror row for the issue: the packet stands exactly
+        // as producers have always filed it — stated priority, no
+        // labels key written.
+        let (url, _captured) = stub_pipeline(mirror_pipeline_reply(None));
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(424242, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 30, "{out}");
+        assert!(out["task"]["payload"].get("labels").is_none(), "{out}");
+    }
+
+    #[test]
+    fn enqueue_mirror_error_warns_and_proceeds_12744() {
+        // A store without the mirror tables (a fresh or test DB):
+        // the lookup fails, the enqueue warns and proceeds — the
+        // mirror never gates work.
+        let (url, _captured) = stub_pipeline(
+            json!({"results": [
+                {"type": "error", "error": {"message": "no such table: github_mirror_issues"}}
+            ]})
+            .to_string(),
+        );
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(12228, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 30, "{out}");
+        assert!(
+            out["warnings"]
+                .to_string()
+                .contains("mirror enrichment skipped"),
+            "{out}"
+        );
+    }
+
+    // ---- #13091: the broker must not re-serve parked or completed
+    // work. The incidents (2026-11-23): a parked task whose recorded
+    // term was a condition/stand-down was timer-served to lanes that
+    // could only re-park it, and a fresh filing for already-completed
+    // work created a new servable task that a lane completed a
+    // second time. The tests below pin both halves at the verb/SQL
+    // surface the serve path actually runs.
+
+    /// A content-routed stub of the Turso pipeline endpoint for the
+    /// #13091 tests: each request is answered by the first route
+    /// whose needle appears in its body; unmatched requests get a
+    /// bare ok execute reply. Captures every request body.
+    fn stub_pipeline_routed_13091(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let routes = std::sync::Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { break };
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if reader.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let body = String::from_utf8_lossy(&body).to_string();
+                sink.lock().unwrap().push(body.clone());
+                let resp = routes
+                    .iter()
+                    .find(|(needle, _)| body.contains(needle))
+                    .map(|(_, reply)| reply.clone())
+                    .unwrap_or_else(|| {
+                        json!({"results": [
+                            {"type": "ok", "response": {"type": "execute", "result": {
+                                "cols": [], "rows": [],
+                                "affected_row_count": 0,
+                                "last_insert_rowid": null}}},
+                            {"type": "ok", "response": {"type": "close"}}
+                        ]})
+                        .to_string()
+                    });
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                );
+                if sock.write_all(out.as_bytes()).is_err() {
+                    break;
+                }
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// A SELECT reply carrying full task rows (TASK_COLS order).
+    fn task_select_reply_13091(rows: Vec<Value>) -> String {
+        let cols: Vec<Value> = TASK_COLS
+            .split(", ")
+            .map(|c| json!({"name": c.trim()}))
+            .collect();
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": cols, "rows": rows,
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// One task row in TASK_COLS order for the #13091 stub replies.
+    /// Cells are keyed by column name and emitted in TASK_COLS
+    /// order, so a column added to TASK_COLS cannot silently shift
+    /// the row again (#14873: manual_only, metadata and the
+    /// resolution block did exactly that to the positional row).
+    fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("manual_only", int(0));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text(&payload.to_string()));
+        cells.insert("dedupe_key", text(dedupe_key));
+        cells.insert("priority", int(30));
+        cells.insert("status", text(status));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-21T00:00:00Z"));
+        cells.insert("completed_at", text("2026-11-21T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        for key in cells.keys() {
+            assert!(
+                cols.iter().any(|c| c == key),
+                "stub cell {key} is not a task column"
+            );
+        }
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
+    }
+
+    fn insert_ok_13091(id: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [], "rows": [],
+                "affected_row_count": 1,
+                "last_insert_rowid": id.to_string()}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// A #12744-shaped packet whose payload carries labels, so the
+    /// mirror enrichment (and its backend call) is skipped and the
+    /// first backend call is the dedupe read.
+    fn packet_13091(issue: i64) -> Value {
+        let mut p = packet_12744(issue, 30);
+        p["payload"]["labels"] = json!([]);
+        p
+    }
+
+    /// The full valid packet payload: a holder row only absorbs
+    /// when it is not quarantined, and the claim guard validates
+    /// the holder's payload — a minimal payload would (correctly)
+    /// read as invalid and absorb nothing.
+    fn payload_13091(issue: i64) -> Value {
+        packet_12744(issue, 30)["payload"].clone()
+    }
+
+    #[test]
+    fn enqueue_after_completion_on_the_same_key_files_no_new_task_13091() {
+        // Incident shape: the task for this dedupe key completed
+        // with a verified disposition; a generator re-files the same
+        // packet. The broker must answer with the completed task —
+        // never a fresh servable row.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["row"]["status"], "done", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "only the dedupe read may run: {bodies:?}");
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_after_completion_under_another_key_files_no_new_task_13091() {
+        // Incident 21296's shape: the completed task sits under a
+        // DIFFERENT dedupe key (generators key the same work
+        // differently), so only the work identity can see it. A done
+        // holder of the identity absorbs the filing the same way.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283:dispatch:0123abcd",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_13091(10283);
+        packet["dedupe_key"] =
+            json!("repo-health:v1:fix:developing-today/code:issue:10283:dispatch:0123abcd");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["work_identity_collision"]["status"], "done", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_done_predecessor_with_override_files_a_deliberate_parallel_13091() {
+        // The escape hatch stands: a packet that declares
+        // dedupe_override files a deliberate parallel even over a
+        // completed predecessor (the revive-on-enqueue path).
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_13091(10283);
+        packet["payload"]["dedupe_override"] = json!("deliberate parallel after a regression");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "the override must file: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_failed_predecessor_still_revives_13091() {
+        // Only completion is terminal for a filing: a FAILED
+        // predecessor keeps the #6838 revive-on-enqueue behavior.
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a failed predecessor must still revive: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
+        // The fleet monitor's 2026-11-25 finding on #10627: a fresh
+        // filing under a standard key whose task already completed
+        // got the DONE row back with no signal it was a terminal
+        // return rather than a creation, so `queue/queued` issues
+        // silently held no live task. The absorption stands
+        // (#13091); the envelope must now name it.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![done]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "done", "{out}");
+        assert_eq!(
+            out["dedupe_match"]["dedupe_key"],
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_live_key_match_reports_dedupe_match_10627() {
+        // The live half of the same report: a filing absorbed by a
+        // live holder of the key names the match as live, so a
+        // caller can tell "attach to the holder" apart from both a
+        // creation and a terminal return.
+        let live = task_row_13091(
+            4242,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![live]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_live", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "queued", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_fresh_filing_carries_no_dedupe_match_10627() {
+        // Negative space: a filing that creates its row (here the
+        // revive-on-enqueue path over a failed predecessor) must
+        // NOT carry the absorption report — the field means
+        // "absorbed", never "filed".
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, _captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
+    }
+
+    #[test]
+    fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
+        // The parked half, at the exact SQL the serve path runs:
+        // the default pick predicate (shared verbatim by the pick
+        // SELECT and the claim UPDATE re-check) evaluated per row.
+        // A park whose recorded term is a broker-owned condition
+        // (task_terminal / task_status / event_seen — released by
+        // the park-revalidation sweeper) or a person's answer
+        // (person_answer — released by /wake when the person acts)
+        // is NOT the pick's to timer-serve; every other park keeps
+        // its timer release, and a completed row is never servable.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, manual_only INTEGER NOT NULL DEFAULT 0, payload TEXT,
+               status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+               wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+               priority INTEGER, created_at TEXT, progress TEXT);
+             CREATE TABLE repo_task_lane_ledger (task_id INTEGER, platform_limit TEXT,
+               platform_limit_reason TEXT);",
+        )
+        .unwrap();
+        let now = "2026-11-23T12:00:00Z";
+        let past = "2026-11-23T11:00:00Z";
+        let rows: [(i64, &str, Option<&str>, Option<&str>); 8] = [
+            (1, "queued", None, None),
+            (2, "parked", Some(past), Some("{\"kind\":\"time\"}")),
+            (3, "parked", Some(past), Some("{\"kind\":\"pr_merged\"}")),
+            (
+                4,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"task_terminal\",\"task_id\":99}"),
+            ),
+            (
+                5,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"person_answer\"}"),
+            ),
+            (
+                6,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"event_seen\",\"event_kind\":\"x\"}"),
+            ),
+            (7, "done", None, None),
+            (8, "parked", Some(past), None),
+        ];
+        for (id, status, nb, rc) in rows {
+            conn.execute(
+                "INSERT INTO tasks (id, queue, payload, status, attempts, max_attempts, \
+                   not_before, wait_kind, ready_condition, required_budget_minutes, \
+                   priority, created_at) \
+                 VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}', ?, \
+                   0, 1000, ?, NULL, ?, NULL, 30, '2026-11-20T00:00:00Z')",
+                rusqlite::params![id, status, nb, rc],
+            )
+            .unwrap();
+        }
+        let pred = default_pick_predicate();
+        let scope = claim_scope(None, None, &ClaimerCtx::default());
+        let mut args: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        for a in &scope.args {
+            args.push(match a {
+                Arg::Text(s) => rusqlite::types::Value::Text(s.clone()),
+                Arg::Int(i) => rusqlite::types::Value::Integer(*i),
+                Arg::Float(f) => rusqlite::types::Value::Real(*f),
+                Arg::Null => rusqlite::types::Value::Null,
+            });
+        }
+        let servable = |id: i64| -> bool {
+            let sql = format!(
+                "SELECT COUNT(*) FROM tasks WHERE id = ? AND payload IS NOT NULL \
+                 AND payload <> '' AND payload <> '{{}}' AND ( {pred} ) \
+                 {PLATFORM_LIMIT_PICK_CLAUSE}{}",
+                scope.sql
+            );
+            let mut all: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(id)];
+            all.extend(args.iter().cloned());
+            conn.query_row(&sql, rusqlite::params_from_iter(all), |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                > 0
+        };
+        assert!(servable(1), "a due queued row stays servable");
+        assert!(servable(2), "a timed park keeps its timer release");
+        assert!(
+            servable(3),
+            "a lane-recheck condition park keeps its timer release"
+        );
+        assert!(
+            !servable(4),
+            "a task_terminal park is the sweeper's to release, not the pick's"
+        );
+        assert!(
+            !servable(5),
+            "a person_answer park waits on a person, not on a timer"
+        );
+        assert!(
+            !servable(6),
+            "an event_seen park is the sweeper's to release, not the pick's"
+        );
+        assert!(!servable(7), "a completed task is never served");
+        assert!(
+            servable(8),
+            "a legacy park with no recorded condition keeps its timer release"
+        );
+        // The claim UPDATE re-check embeds the same predicate, so a
+        // row the pick cannot select cannot be claimed by racing it.
+        let upd = claim_update_sql(&pred);
+        assert!(
+            upd.contains("person_answer"),
+            "the claim re-check carries the same exclusion: {upd}"
+        );
+    }
+
+    #[test]
+    fn manual_only_is_excluded_before_automatic_priority_pick_9178() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY, queue TEXT, payload TEXT, status TEXT,
+                attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+                manual_only INTEGER NOT NULL DEFAULT 0, priority INTEGER,
+                created_at TEXT, progress TEXT
+            );",
+        )
+        .unwrap();
+        let now = "2026-11-25T03:00:00Z";
+        let insert = |id: i64, manual_only: i64, priority: i64| {
+            conn.execute(
+                "INSERT INTO tasks (
+                    id, queue, payload, status, attempts, max_attempts, not_before,
+                    wait_kind, ready_condition, required_budget_minutes, manual_only,
+                    priority, created_at, progress
+                 ) VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}',
+                    'queued', 0, 1000, NULL, NULL, NULL, NULL, ?, ?,
+                    '2026-11-20T00:00:00Z', '{}')",
+                rusqlite::params![id, manual_only, priority],
+            )
+            .unwrap();
+        };
+        let predicate = default_pick_predicate();
+        // The predicate binds four arguments (now x2 for the
+        // queued/parked branches, the declared budget x2 for the
+        // bypass + gate). This harness runs it bare — the two
+        // platform-clause arguments of the full production pick
+        // SELECT do not belong here (#14873).
+        let args = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        let pick = || -> Vec<i64> {
+            let sql = format!(
+                "SELECT id FROM tasks WHERE payload IS NOT NULL AND payload <> '' \
+                 AND payload <> '{{}}' AND ({predicate}) \
+                 ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT 1"
+            );
+            conn.prepare(&sql)
+                .unwrap()
+                .query_map(rusqlite::params_from_iter(args.clone()), |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<i64>, _>>()
+                .unwrap()
+        };
+
+        // FDR-0004 oracle: the highest-priority row is manual-only, so
+        // the automatic pick sees no work rather than taking that row.
+        insert(1, 1, 10);
+        assert!(pick().is_empty(), "manual-only work is never auto-claimed");
+        conn.execute(
+            "UPDATE tasks SET status = 'handed_off', progress = '{\"lane\":\"opencode\"}' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let handoff = conn
+            .prepare(&format!(
+                "SELECT id FROM tasks WHERE {} ORDER BY priority ASC LIMIT 1",
+                handoff_pick_predicate()
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            handoff.is_empty(),
+            "handoff auto-pick also skips manual-only work"
+        );
+
+        // It is removed before ordering, so an ordinary lower-priority
+        // row remains eligible instead of being blocked behind it.
+        insert(2, 0, 50);
+        assert_eq!(pick(), vec![2]);
+    }
+
+    #[test]
+    fn payload_issue_ref_shapes_12744() {
+        // The identity the enrichment keys on: the payload's own
+        // repo first, the repo-health dedupe key as fallback, and
+        // nothing for shapes that cannot key the mirror.
+        let p = json!({"repo": "developing-today/code", "issue": {"number": 7}});
+        assert_eq!(
+            payload_issue_ref(&p, None),
+            Some(("developing-today/code".to_string(), 7))
+        );
+        let p = json!({"issue": {"number": 7}});
+        assert_eq!(
+            payload_issue_ref(
+                &p,
+                Some("repo-health:v1:triage:developing-today/code:issue:7")
+            ),
+            Some(("developing-today/code".to_string(), 7))
+        );
+        assert_eq!(payload_issue_ref(&p, None), None);
+        assert_eq!(
+            payload_issue_ref(&p, Some("repo-health:v1:pr:developing-today/code:pr:7")),
+            None
+        );
+        let p = json!({"repo": "code", "issue": {"number": 7}});
+        assert_eq!(payload_issue_ref(&p, None), None);
+        let p = json!({"repo": "developing-today/code"});
+        assert_eq!(payload_issue_ref(&p, None), None);
+    }
+
+    #[test]
+    fn follow_on_band_or_inherited_12744() {
+        // The triage follow-on's stored priority: the label band
+        // wins over the inherited row priority (the label is
+        // Drew's signal), the inherited value stands without one.
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["expedite"]}), Some(30)),
+            Some(15)
+        );
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["next-up"]}), Some(30)),
+            Some(25)
+        );
+        assert_eq!(band_or_inherited(&json!({}), Some(30)), Some(30));
+        assert_eq!(band_or_inherited(&json!({}), None), None);
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["expedite"]}), None),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn not_claimed_reason_names_a_lapsed_lease_12618() {
+        // #12618 oracle: a worker whose lease expired is told the task
+        // went back to the queue, not just that it is "not claimed";
+        // a claim held by another worker names that worker; a missing
+        // task says so; and an expiry by someone else, or one followed
+        // by a new claim, adds no lease detail.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(
+            reason.starts_with("it is queued; archer's lease expired at 2026-11-22T16:00:00Z"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("claim it again before completing it"),
+            "{reason}"
+        );
+
+        let held = json!({"status": "claimed", "worker_id": "felix"});
+        assert_eq!(
+            not_claimed_reason(Some(&held), None, "archer"),
+            "it is claimed by felix"
+        );
+        assert_eq!(not_claimed_reason(None, None, "archer"), "no such task");
+
+        let other = json!({"worker_id": "felix", "kind": "lease_expired"});
+        assert_eq!(
+            not_claimed_reason(Some(&queued), Some(&other), "archer"),
+            "it is queued"
+        );
+        let reclaimed = json!({"worker_id": "archer", "kind": "claimed"});
+        assert_eq!(
+            not_claimed_reason(Some(&queued), Some(&reclaimed), "archer"),
+            "it is queued"
+        );
+    }
+
+    #[test]
+    fn lease_renewal_guidance_names_heartbeat_only_14653() {
+        // #14653 oracle: the lease-expiry diagnostic advertises
+        // exactly one renewal action — heartbeat — and that action
+        // is the verb whose statement actually advances the
+        // deadline. Checkpoint is never advertised as renewal:
+        // verb_checkpoint writes progress only, and this test fails
+        // if it ever gains a lease_until write, so the guidance
+        // and the behaviour cannot drift apart silently again.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(reason.contains("heartbeat to keep a lease"), "{reason}");
+        assert!(
+            !reason.contains("or checkpoint"),
+            "checkpoint is not a renewal action: {reason}"
+        );
+        // The advertised action advances the deadline: the
+        // statement verb_heartbeat runs raises lease_until to the
+        // requested extension whenever that is later.
+        let heartbeat_sql = include_str!("turso_queue/heartbeat.sql");
+        assert!(
+            heartbeat_sql
+                .contains("SET lease_until = CASE WHEN julianday(lease_until) >= julianday(?1)"),
+            "heartbeat statement must advance lease_until: {heartbeat_sql}"
+        );
+        // Checkpoint's verb body touches no lease column.
+        let lifecycle_src = include_str!("turso_queue/lifecycle.rs");
+        let start = lifecycle_src
+            .find("pub(crate) fn verb_checkpoint")
+            .expect("verb_checkpoint exists");
+        let body = &lifecycle_src[start..];
+        let end = body.find("\npub(crate) fn ").unwrap_or(body.len());
+        assert!(
+            !body[..end].contains("lease_until"),
+            "verb_checkpoint must not write lease_until"
+        );
+    }
+
+    #[test]
     fn bind_rejects_malformed_session_id_8287() {
         // #8287 oracle: verb_bind refuses a malformed session id
         // as a usage error (exit 2) before any store access, so
@@ -413,8 +1551,7 @@ mod tests {
         // #9420 oracle: exact-task readback works on the Turso
         // verb_list — the task filter, a dedupe_key filter, and a
         // queue predicate that applies only when a queue is named (an
-        // unnamed queue must not degenerate into queue = ''). The
-        // PostgREST /list handler carries the same contract.
+        // unnamed queue must not degenerate into queue = '').
         let src = &test_source();
         let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
         assert!(
@@ -429,15 +1566,6 @@ mod tests {
         assert!(
             seg.contains("if !queue.is_empty()"),
             "queue predicate is conditional on a named queue"
-        );
-        let broker = include_str!("queue_broker.rs");
-        assert!(
-            broker.contains("dedupe_key=eq."),
-            "PostgREST /list applies the dedupe_key filter"
-        );
-        assert!(
-            broker.contains("queue_pred"),
-            "PostgREST /list omits the queue predicate when unnamed"
         );
     }
 
@@ -650,8 +1778,11 @@ mod tests {
 
     #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
-        // The claim-time wildcard (Drew, 2026-11-16): known
-        // family + nonempty lowercase alphabetic suffix.
+        // The family rule (Drew, 2026-11-16), kept for
+        // execution_lane_fields' mode derivation (#7598): known
+        // family + nonempty lowercase alphabetic suffix. Claims no
+        // longer consult it (#12544): any lane name auto-registers
+        // on first claim, whatever family it parses to (or none).
         for (id, family) in [
             ("code-a", "code"),
             ("code-z", "code"),
@@ -686,21 +1817,65 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_family_lane_id_is_refused_with_the_shape_to_pass() {
-        // #6853 recurrence: scheduled lanes passed `--lane not-code`
-        // for not-code-d. The refusal keeps the unknown-lane verdict
-        // but says what to pass, so the caller can correct itself.
-        let bare = unknown_lane_error("not-code");
-        assert!(
-            bare.starts_with("claim_repo_task: unknown lane_id not-code"),
-            "{bare}"
-        );
-        assert!(bare.contains("lane family"), "{bare}");
-        assert!(bare.contains("not-code-<suffix>"), "{bare}");
-        // Ids that are not a family keep the plain refusal.
+    fn lane_provision_sql_registers_enabled_unbound_for_the_claimer_12544() {
+        // #12544 oracle (auto-register): the statement
+        // claim_preamble runs for a lane with no registry row
+        // registers exactly the canonical row shape -- the
+        // claiming worker as owner (the second bound parameter),
+        // the one-queue binding "*", enabled = 1 -- and INSERT OR
+        // IGNORE means an existing row (in particular one
+        // disabled by hand) is never overwritten by a registration
+        // attempt. After this insert the preamble re-reads the
+        // row, so a claim under a never-seen name ("archer",
+        // "banana-1", a bare "not-code") proceeds with the lane
+        // present and enabled in the registry.
         assert_eq!(
-            unknown_lane_error("banana-1"),
-            "claim_repo_task: unknown lane_id banana-1"
+            lane_provision_sql(),
+            "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) \
+             VALUES (?, ?, '*', 1)"
+        );
+    }
+
+    #[test]
+    fn claim_preamble_auto_registers_instead_of_refusing_unknown_lanes_12544() {
+        // #12544 oracle (unknown-lane errors are gone; the
+        // existing-row refusals stay): the claim preamble
+        // provisions a missing lane via lane_provision_sql and
+        // never refuses a name as unknown -- the unknown-lane
+        // verdict function is deleted outright -- while the
+        // checks an EXISTING row carries keep their refusals in
+        // the same preamble: worker ownership (a lane disabled or
+        // owned is an explicit recorded state, not an unknown
+        // name) and the disabled flag both still refuse, and the
+        // stream-binding check stays.
+        let src = &test_source();
+        let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
+        assert!(
+            preamble.contains("lane_provision_sql()"),
+            "preamble auto-registers a missing lane"
+        );
+        assert!(
+            !preamble.contains("unknown_lane_error"),
+            "preamble never refuses a lane as unknown"
+        );
+        // The banned needle is built with format! so this test
+        // file does not itself contain the literal it bans.
+        let verdict_fn = format!("fn unknown_lane_{}", "error");
+        assert!(
+            !src.contains(&verdict_fn),
+            "the unknown-lane verdict is gone from the backend"
+        );
+        assert!(
+            preamble.contains("belongs to worker"),
+            "an existing row's owner still binds the lane"
+        );
+        assert!(
+            preamble.contains("is disabled"),
+            "a lane disabled by hand still refuses"
+        );
+        assert!(
+            preamble.contains("lane_queue_binds("),
+            "preamble honors the unbound registration marker"
         );
     }
 
@@ -1116,6 +2291,10 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
+        assert!(
+            pred.starts_with("manual_only = 0 AND"),
+            "automatic pick excludes manual-only: {pred}"
+        );
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),
@@ -1955,6 +3134,115 @@ mod tests {
     }
 
     #[test]
+    fn dep_drop_12777() {
+        // Oracle (#12777): the surgical unblock. A stored dep
+        // record drops exactly the entries a spec names — kind
+        // is part of the identity, so an issue spec never eats
+        // a pr record with the same repo and number — and a
+        // spec that matches nothing fails the whole correction.
+        let issue_dep = json!({"kind": "issue", "repo": "developing-today/code",
+            "number": 9513, "state": "open", "reason": "gate"});
+        let pr_dep = json!({"kind": "pr", "repo": "developing-today/code",
+            "number": 9513, "state": "open"});
+        let self_loop = json!({"kind": "task", "task_id": 20408, "state": "open"});
+        let ci_dep = json!({"kind": "ci", "repo": "developing-today/code",
+            "run_id": 777, "state": "open"});
+        let deps = vec![
+            self_loop.clone(),
+            issue_dep.clone(),
+            pr_dep.clone(),
+            ci_dep.clone(),
+        ];
+        // The #12777 case: drop the bogus self-loop entry, keep
+        // the real deps watched, order preserved.
+        let (remaining, dropped) = remove_deps(&deps, &[json!({"kind": "task", "task_id": 20408})])
+            .expect("the self-loop spec matches its record");
+        assert_eq!(dropped, vec![self_loop.clone()]);
+        assert_eq!(
+            remaining,
+            vec![issue_dep.clone(), pr_dep.clone(), ci_dep.clone()]
+        );
+        // Kind is part of the identity.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9513})],
+        )
+        .expect("the issue spec matches its record");
+        assert_eq!(dropped, vec![issue_dep]);
+        assert!(remaining.contains(&pr_dep));
+        // CI deps match on run_id, not number.
+        let (_, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777})],
+        )
+        .expect("the ci spec matches its record");
+        assert_eq!(dropped, vec![ci_dep]);
+        // Dropping every entry empties the record — the broker
+        // releases the task on exactly this outcome.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[
+                json!({"kind": "task", "task_id": 20408}),
+                json!({"kind": "issue", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "pr", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777}),
+            ],
+        )
+        .expect("all four specs match");
+        assert!(remaining.is_empty());
+        assert_eq!(dropped.len(), 4);
+        // A spec that matches nothing fails the whole correction
+        // and names itself for the refusal message.
+        let err = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9999})],
+        )
+        .unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(dep_label(&err[0]), "issue developing-today/code#9999");
+        assert_eq!(dep_label(&self_loop), "task 20408");
+        // parse_drop_deps: the broker-side validation of the
+        // wire shape — strict refs, identity-only specs, and
+        // None for the classic full override.
+        assert_eq!(parse_drop_deps(&json!({})).expect("no field"), None);
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": []})).expect("empty list"),
+            None
+        );
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 20408}]}))
+                .expect("task spec"),
+            Some(vec![json!({"kind": "task", "task_id": 20408})])
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": "task:20408"})).is_err());
+        assert!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "issue", "repo": "bad", "number": 1}]}))
+                .is_err()
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 0}]})).is_err());
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "bogus", "task_id": 1}]})).is_err());
+        // Wiring: the client flag and parser, the broker's
+        // audit kind for a partial drop.
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        assert!(client_src.contains("drop-dep"), "client flag drop-dep");
+        assert!(client_src.contains("parse_drop_dep_list"));
+        assert!(client_src.contains("\"drop_deps\""));
+        let src = test_source();
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"dep_entry_dropped\""));
+        assert!(impl_src.contains("parse_drop_deps"));
+        assert!(impl_src.contains("unblock_drop"));
+    }
+
+    #[test]
     fn quarantine_atomic_sql_10671() {
         // Oracle: synthetic interleavings execute the exact production SQL
         // against SQLite, not a mocked affected-row count or live broker.
@@ -2296,6 +3584,29 @@ mod tests {
     }
 
     #[test]
+    fn health_malformed_parked_includes_null_not_before_9179() {
+        // Oracle: stored not_before values must pass the same validator
+        // used by the hygiene fold; NULL is not an RFC 3339 timestamp.
+        // Health must therefore fetch NULL rows rather than filtering
+        // them out before the fold can report them.
+        let src = &test_source();
+        let sql = src
+            .split("SELECT queue, not_before FROM tasks")
+            .nth(1)
+            .and_then(|s| s.split("let hrows").next())
+            .unwrap_or("");
+        assert!(sql.contains("status = 'parked'"), "{sql}");
+        assert!(
+            !sql.contains("not_before IS NOT NULL"),
+            "NULL not_before rows must reach the malformed-row validator: {sql}"
+        );
+        let mut by_queue: Map<String, Value> = Map::new();
+        by_queue.insert("q1".to_string(), health_entry("q1"));
+        apply_malformed_parked(&mut by_queue, &[json!({"queue": "q1", "not_before": null})]);
+        assert_eq!(by_queue["q1"]["malformed_parked"], 1);
+    }
+
+    #[test]
     fn health_entry_defaults_at_cap_queued_to_zero() {
         let e = health_entry("repo-health-code-pilot");
         assert_eq!(e.get("at_cap_queued"), Some(&json!(0)));
@@ -2303,6 +3614,90 @@ mod tests {
         // #8234: the sink is its own health bucket — 'parked' in
         // health output means genuine waits only.
         assert_eq!(e.get("handed_off"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn health_entry_defaults_failed_events_to_zero() {
+        // #1233 criterion 1 ("zero dead-in-queue over a rolling 7
+        // days") is unmeasured today: health lumps failed terminal
+        // events into terminal_events_24h/7d together with completed
+        // ones, so a queue can show 2846 terminal events in 7d with
+        // no way to tell whether any were failures. The failed-only
+        // counters default to zero here and are filled by the
+        // terminal-events fold.
+        let e = health_entry("repo-health-code-pilot");
+        assert_eq!(e.get("failed_events_24h"), Some(&json!(0)));
+        assert_eq!(e.get("failed_events_7d"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn terminal_events_fold_splits_failed_from_completed() {
+        // Fixture for #1233: queue-mixed had 5 terminal events in
+        // 7d (3 in 24h), of which 2 were failures (1 in 24h);
+        // queue-clean had terminal events but zero failures;
+        // queue-quiet had none.
+        let mut by_queue: Map<String, Value> = Map::new();
+        for q in ["queue-mixed", "queue-clean", "queue-quiet"] {
+            by_queue.insert(q.to_string(), health_entry(q));
+        }
+        let rows = vec![
+            json!({"queue": "queue-mixed", "n24": 3, "n7": 5, "f24": 1, "f7": 2}),
+            json!({"queue": "queue-clean", "n24": 4, "n7": 9, "f24": 0, "f7": 0}),
+        ];
+        apply_terminal_events(&mut by_queue, &rows);
+        let mixed = &by_queue["queue-mixed"];
+        assert_eq!(mixed.get("terminal_events_24h"), Some(&json!(3)));
+        assert_eq!(mixed.get("terminal_events_7d"), Some(&json!(5)));
+        assert_eq!(mixed.get("failed_events_24h"), Some(&json!(1)));
+        assert_eq!(mixed.get("failed_events_7d"), Some(&json!(2)));
+        // Completed-only rows leave the failed counters at zero,
+        // and a queue with no terminal events at all keeps every
+        // default.
+        assert_eq!(
+            by_queue["queue-clean"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("terminal_events_7d"),
+            Some(&json!(0))
+        );
+    }
+
+    #[test]
+    fn health_failed_events_count_terminal_failures_only() {
+        // Codex review on #12682 (discussion 4660035001): the
+        // failed-only sums counted every 'failed' event, so a
+        // transient requeue or a block read as a dead-in-queue
+        // failure, while a terminal lease expiry at cap read as
+        // zero. The terminal-events query must distinguish
+        // dispositions: requeued and blocked 'failed' events are
+        // live retries, lease_expired_at_cap is a terminal failure.
+        let src = &test_source();
+        let seg = seg8217(src, "fn verb_health(", "Merge-intent stack storage");
+        assert!(
+            seg.contains("'lease_expired_at_cap'"),
+            "the kind filter includes terminal lease-expiry events"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.requeued')"),
+            "the failed sums read the requeued disposition from the event detail"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.reason_class')"),
+            "the failed sums read the reason_class disposition from the event detail"
+        );
+        assert!(
+            seg.contains("'blocked'"),
+            "blocked failures are excluded from the terminal failed sums"
+        );
+        assert!(
+            !seg.contains("e.kind = 'failed' THEN 1"),
+            "the failed sums no longer count every 'failed' event"
+        );
     }
 
     #[test]
@@ -2424,6 +3819,98 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn completion_gate_slice_class_requires_evidence() {
+        // #12233 F2c: a feature_slice completion with no artifact is
+        // rejected, exactly like a fix — the gate is the actual
+        // completion path (verb_complete runs gate_completion before
+        // any mutation), not just the class mapping.
+        let slice = CompletionClass::Slice;
+        assert!(gate(&slice, &json!({})).is_err());
+        assert!(gate(&slice, &json!({"note": "did stuff"})).is_err());
+        assert!(gate(&slice, &json!({"evidence": ""})).is_err());
+        assert!(gate(&slice, &json!({"evidence": []})).is_err());
+        // Evidence of the delivered slice completes — and, unlike a
+        // fix, needs no verified disposition: the parent issue stays
+        // open while slices land, so an open parent with no
+        // disposition is not a rejection.
+        let evidence = json!({"pr_url": "https://github.com/developing-today/code/pull/12570"});
+        assert!(gate(&slice, &evidence).is_ok());
+        assert!(
+            gate_with(&slice, Some(1062), false, &[], &evidence).is_ok(),
+            "an open parent issue must not block a slice completion"
+        );
+        assert!(
+            gate(&slice, &json!({"commit": "abc123"})).is_ok(),
+            "a commit is slice evidence too"
+        );
+    }
+
+    #[test]
+    fn suspect_completion_stamp_14268() {
+        // #14268 ask 2 oracle: the stamp fires exactly on the
+        // false-completion signature — the completion carries no
+        // result and no worker activity was recorded since the
+        // claim. Any result content, or any recorded activity,
+        // clears it.
+        let stamp = suspect_completion_stamp(&json!({}), 0)
+            .expect("empty result + no activity is the suspect shape");
+        assert_eq!(
+            stamp["reason"],
+            "done_with_no_result_and_no_activity_history"
+        );
+        assert!(suspect_completion_stamp(&json!(null), 0).is_some());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 0).is_none());
+        assert!(suspect_completion_stamp(&json!({}), 1).is_none());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 3).is_none());
+        // A non-object result is content, never the empty shape.
+        assert!(suspect_completion_stamp(&json!("done"), 0).is_none());
+    }
+
+    #[test]
+    fn verb_complete_surfaces_suspect_completions_14268() {
+        // #14268 ask 2, source oracle: verb_complete counts the
+        // task's activity, stamps the stored result with the
+        // verdict, flags the completed event and writes the
+        // dedicated suspect_completion event. The activity count
+        // excludes the claim ceremony's own writes, so a bare
+        // claim can never clear the shape by itself.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_complete(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("activity_event_count(t, task_id)"),
+            "verb_complete counts prior activity before mutating"
+        );
+        assert!(
+            seg.contains("suspect_completion_stamp(&result, n)"),
+            "verb_complete stamps the suspect shape on the result"
+        );
+        assert!(
+            seg.contains("\"suspect_completion\""),
+            "verb_complete writes the suspect_completion event"
+        );
+        let counter = src
+            .split("fn activity_event_count(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        for kind in [
+            "'claimed'",
+            "'session_bound'",
+            "'lane_session_bound'",
+            "'model_stamp'",
+        ] {
+            assert!(
+                counter.contains(kind),
+                "activity count excludes claim-ceremony kind {kind}"
+            );
+        }
     }
 
     #[test]
@@ -3021,6 +4508,10 @@ mod tests {
             completion_class(&json!({"kind": "triage"})),
             CompletionClass::Triage
         );
+        assert_eq!(
+            completion_class(&json!({"kind": "feature_slice"})),
+            CompletionClass::Slice
+        );
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.
         assert_eq!(gate(&CompletionClass::Ungated, &json!({})).unwrap(), None);
@@ -3181,6 +4672,124 @@ mod tests {
         }
     }
 
+    // -- /coverage PR half (#12280): a ready PR is covered iff a LIVE
+    // -- task's dedupe key names it. The parser decides which keys name
+    // -- a PR; the live-status rule is the same SQL filter as issues.
+
+    #[test]
+    fn pr_number_parses_warden_and_merge_watch_keys() {
+        let repo = "developing-today/code";
+        // The stale-PR warden's shepherd key.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12206", repo),
+            Some(12206)
+        );
+        // The coverage reconciliation's merge-watch key (#4951) — a live
+        // merge-watch is a live pr_shepherd naming the PR, so it must
+        // count as coverage or the fallback would double-file.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:merge-watch:developing-today/code:pr:12206",
+                repo
+            ),
+            Some(12206)
+        );
+        // Dispatch-suffixed variants parse like the issue classes do.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today/code:pr:12206:dispatch:abc123",
+                repo
+            ),
+            Some(12206)
+        );
+    }
+
+    #[test]
+    fn pr_number_rejects_other_repos_and_non_pr_keys() {
+        let repo = "developing-today/code";
+        // A different repo's PR is not coverage for this one.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today-forks/opencode:pr:2496",
+                repo
+            ),
+            None
+        );
+        // An issue key never reads as PR coverage: triage for issue 5
+        // does not name PR 5.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:5", repo),
+            None
+        );
+        // And a PR key never reads as issue coverage.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:5", repo),
+            None
+        );
+        // No number at all, and the malformed-tail rule.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:", repo),
+            None
+        );
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12abc", repo),
+            None
+        );
+    }
+
+    #[test]
+    fn pr_number_matches_legacy_repo_aliases() {
+        // A shepherd filed under the pre-rename repo name is coverage
+        // when the caller names the current one, and vice versa.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:2496",
+                "developing-today-forks/opencode"
+            ),
+            Some(2496)
+        );
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:merge-watch:developing-today-forks/openchamber:pr:81",
+                "developing-today/openchamber"
+            ),
+            Some(81)
+        );
+        // Aliases never cross into a different repo.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:1",
+                "developing-today/code"
+            ),
+            None
+        );
+    }
+
+    proptest! {
+        /// Canonical PR keys round-trip for both PR-naming classes,
+        /// with or without a dispatch suffix.
+        #[test]
+        fn prop_pr_number_round_trips(
+            n in 1i64..10_000_000i64,
+            class in prop::sample::select(vec!["pr", "merge-watch"]),
+            suffix in prop::option::of("[a-z0-9]{1,12}"),
+        ) {
+            let repo = "developing-today/code";
+            let mut key = format!("repo-health:v1:{class}:{repo}:pr:{n}");
+            if let Some(s) = &suffix {
+                key.push_str(&format!(":dispatch:{s}"));
+            }
+            prop_assert_eq!(pr_number_from_dedupe(&key, repo), Some(n));
+        }
+
+        /// A PR key for a different repo never matches.
+        #[test]
+        fn prop_pr_other_repo_never_matches(n in 1i64..10_000_000i64) {
+            let key = format!("repo-health:v1:pr:developing-today-forks/opencode:pr:{n}");
+            prop_assert_eq!(pr_number_from_dedupe(&key, "developing-today/code"), None);
+        }
+    }
+
     // ---- #8217: batch claim, platform limitation in the pick,
     // ---- and the release verb ----
 
@@ -3191,6 +4800,85 @@ mod tests {
             .split(to)
             .next()
             .unwrap_or("")
+    }
+
+    #[test]
+    fn bundle_cap_refusal_boundary_11333() {
+        // #11333 oracle: the broker's own claim count for a
+        // (lane, session) launch. Below the cap there is no
+        // refusal; at the cap the next ordinary claim is refused
+        // with a message naming the cap, the launch and the
+        // count — enforcement lives in this decision, not in any
+        // lane prompt.
+        assert_eq!(BUNDLE_CLAIM_CAP, 10);
+        for n in [0, 1, 9] {
+            assert_eq!(bundle_cap_refusal(n, "any-n", "ses_x"), None, "count {n}");
+        }
+        for n in [10, 11, 25] {
+            let msg = bundle_cap_refusal(n, "any-n", "ses_x").expect("refusal at cap");
+            assert!(msg.contains("bundle cap"), "{msg}");
+            assert!(msg.contains("10"), "{msg}");
+            assert!(msg.contains("any-n") && msg.contains("ses_x"), "{msg}");
+            assert!(msg.contains(&n.to_string()), "{msg}");
+            assert!(msg.starts_with("claim_repo_task:"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn bundle_cap_count_sql_counts_only_ordinary_picks_11333() {
+        // The counting oracle counts 'claimed' events carrying
+        // the ordinary-pick mark for exactly this (lane,
+        // session): handoff picks (pick="handed_off") and by-id
+        // / transfer claims (no pick mark) can never enter the
+        // count. The behavioural run of this SQL against
+        // fabricated events lives in tests/bundle_cap_sql.py.
+        let sql = BUNDLE_CLAIM_COUNT_SQL;
+        assert!(sql.contains("kind = 'claimed'"), "{sql}");
+        assert!(
+            sql.contains("json_extract(detail, '$.pick') = 'default'"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("json_extract(detail, '$.lane_id') = ?"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("json_extract(detail, '$.session_id') = ?"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn bundle_cap_gate_sits_in_pick_and_batch_paths_11333() {
+        let src = &test_source();
+        // The gate runs inside the pick path, before the pick
+        // loop, and handoff picks skip it.
+        let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
+        let gate = pick.find("bundle_cap_gate").expect("gate in pick path");
+        let loop_start = pick.find("let mut row: Value;").expect("pick loop");
+        assert!(gate < loop_start, "gate precedes the pick loop");
+        assert!(pick.contains("if !handoff_pick"), "handoff picks exempt");
+        // The batch loop clamps to the launch's remaining
+        // allowance so a batch stops at exactly the cap.
+        let batch = seg8217(src, "fn verb_claim_batch(", "\nfn verb_claim(");
+        assert!(
+            batch.contains("bundle_claim_count"),
+            "batch consults the count"
+        );
+        assert!(
+            batch.contains("bundle_cap_refusal"),
+            "batch refuses at the cap"
+        );
+        assert!(
+            batch.contains("count.min(BUNDLE_CLAIM_CAP - claimed)"),
+            "batch clamps to the allowance"
+        );
+        // Exempt by construction: by-id and transfer claims
+        // never call the gate.
+        let by_id = seg8217(src, "fn claim_by_id(", "\n/// The pick path's claim UPDATE");
+        assert!(!by_id.contains("bundle_cap"), "by-id exempt");
+        let transfer = seg8217(src, "fn claim_transfer(", "\n/// By-id claim:");
+        assert!(!transfer.contains("bundle_cap"), "transfer exempt");
     }
 
     #[test]
@@ -3508,7 +5196,12 @@ mod tests {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
         // session binding cleared and a `released` audit event;
-        // attempts are NOT handed back.
+        // attempts are NOT handed back. #12901 exception: a
+        // release whose claim consumed the last attempt fails the
+        // row at the cap instead (the #6463 expiry_disposition
+        // oracle, sink rows exempt), with the reason in last_error
+        // and a `failed` audit event — a queued return there is
+        // the unclaimable churn zombie.
         let src = &test_source();
         let seg = seg8217(
             src,
@@ -3522,12 +5215,59 @@ mod tests {
             "DELETE FROM leases",
             "attempt change",
             "SET status = 'queued'",
+            "expiry_disposition(attempts, max_attempts)",
+            "expired_claim_returns_to_sink(&progress)",
+            "SET status = 'failed'",
+            "released at attempt cap",
+            "\"released_at_cap\": true",
         ] {
             assert!(seg.contains(needle), "verb_release misses {needle}");
         }
         assert!(
             src.contains("\"/release\" => verb_release(t, req),"),
             "release is dispatched"
+        );
+    }
+
+    #[test]
+    fn release_platform_limit_contract_14993() {
+        // Oracle (#14993): a release can record a platform
+        // limitation -- the route-mismatch hand-back -- so the
+        // claim pick stops offering the task to seats of the wrong
+        // family (the five redraws of laptop-routed task 23528).
+        // verb_release validates the pair with the lane verb's own
+        // validator before anything mutates, writes it to the lane
+        // ledger the pick clause reads (upserting a minimal row
+        // when the claim never created one), records it on the
+        // `released` event, and the client passes both flags
+        // through under the lane verb's field names.
+        let src = &test_source();
+        let seg = seg8217(
+            src,
+            "pub(crate) fn verb_release(",
+            "\npub(crate) fn verb_wake(",
+        );
+        for needle in [
+            "platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())",
+            "UPDATE repo_task_lane_ledger SET platform_limit = ?",
+            "INSERT INTO repo_task_lane_ledger",
+            "\"platform_limit\": limit_family",
+            "\"platform_limit_reason\": limit_reason",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        let client_src = [
+            include_str!("client/support.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+        ]
+        .concat();
+        assert!(
+            client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"),
+            "the release client passes --limit-platform through"
+        );
+        assert!(
+            client_src.contains("\"platform_limit_reason\": args.get(\"limit-reason\")"),
+            "the release client passes --limit-reason through"
         );
     }
 

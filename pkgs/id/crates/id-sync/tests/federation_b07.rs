@@ -23,6 +23,10 @@
 #[path = "../src/federation/slices/b32_ingest_gate.rs"]
 mod b32_ingest_gate;
 
+#[path = "../src/federation/record_join.rs"]
+#[allow(dead_code)]
+mod record_join;
+
 #[path = "../src/federation/slices/b07_conflict_report.rs"]
 mod b07;
 
@@ -675,7 +679,7 @@ fn gate_and_shape_refusals_store_nothing() {
         store.ingest(IngressPath::Local, &foreign, "self", NOW),
         Err(IngestError::ForeignParent(event(6)))
     );
-    assert!(store.heads(&doc).is_empty());
+    assert_eq!(store.heads(&doc), [] as [EventId; 0]);
 }
 
 #[test]

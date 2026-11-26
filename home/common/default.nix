@@ -7,6 +7,7 @@
   ...
 }:
 let
+  opencodeServerPort = 13420;
   # Local proxy ports, each defined ONCE. Each value flows to the systemd
   # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
   # and — for the proxies opencode talks to — into opencode.jsonc's
@@ -52,7 +53,7 @@ let
   atlasSearchPort = 18760;
   # The atlas-search package (pkgs/atlas-search), built with the
   # toolchain pinned by its own rust-toolchain.toml (channel
-  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # 1.99.1) through the fleet's rust-overlay lock — the pkgs/id
   # pattern (cf. rustToolchain in nixos/environment/default.nix).
   # Used as the atlas-search unit's ExecStart below and, since
   # the step-6 cutover (#5356), as a home package below so the
@@ -83,11 +84,18 @@ let
   # standalone artifact until the proxy step's shim dir (design
   # note §4) supersedes the hand-maintained symlinks.
   fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  # Crane's dependency derivation keeps Fleet's registry compile lane
+  # reusable across source changes, using the same pinned Rust toolchain.
+  fleetCraneLib = (inputs.crane.mkLib pkgs).overrideToolchain fleetToolchain;
   fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
     rustPlatform = pkgs.makeRustPlatform {
       cargo = fleetToolchain;
       rustc = fleetToolchain;
     };
+    craneLib = fleetCraneLib;
+    # The fleet Rust workspace has a dedicated CI test workflow. Avoid
+    # compiling its test binaries as part of every system activation.
+    doCheck = false;
     sourceRev = inputs.self.rev or "dirty";
   };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
@@ -128,11 +136,18 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
+  # supergateway: the stdio <-> streamable-HTTP bridge that fronts the
+  # packaged Desktop Commander for the self-hosted endpoint (#13404).
+  # See pkgs/supergateway; the desktop-commander-bridge unit below runs it.
+  supergateway = pkgs.callPackage ../../pkgs/supergateway { };
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
-  # mcpx MCP gateway and Code Mode execution runner.
-  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  # mcpx MCP gateway and Code Mode execution runner. Its standalone package
+  # still runs Go checks; profile rebuilds skip the separate test phase.
+  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix {
+    doCheck = false;
+  };
   # The cascade's opencode build -- openchamber's nested opencode
   # input, which is exactly the derivation services.opencode.package
   # defaults to (the fork's module wrapper mkDefaults the fork
@@ -881,29 +896,14 @@ in
     };
   };
 
-  # Fleet broker roles (epic #5412 step 2, #5430): the secrets
-  # broker as a `fleet serve <role>` unit, as it has run since
-  # code#5362. This is the home-module pattern ported from
-  # dezren39/nix PR #1459 (closed as superseded by ruling D1) into
-  # this tree, now consuming this flake's own pkgs/fleet instead of
-  # a vendored copy. The queue-broker unit that used to sit beside
-  # it moved to the deploy registry on 2026-11-17 (#5769 M2:
-  # pkgs/deploy/services.nix owns queue-broker; the deploy tool
-  # activates it on the laptop). The secrets-broker definition
-  # stays here until its deploy activation can pass the deploy
-  # health probe (code#11170), then it follows queue-broker.
-  systemd.user.services.secrets-broker = {
-    Unit = {
-      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
-      After = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
-      Restart = "on-failure";
-      RestartSec = 5;
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Fleet broker roles (epic #5412 step 2, #5430) moved to the
+  # deploy registry (#5769 M2): pkgs/deploy/services.nix owns the
+  # secrets-broker and queue-broker definitions, and the deploy
+  # tool activates them on the laptop. The home-manager units that
+  # ran the brokers since code#5362 are removed — queue-broker in
+  # #11172 (2026-11-17), secrets-broker here, after its deploy
+  # activation passed the 120s health probe (code#11170) on
+  # 2026-11-22.
 
   systemd.user.services.sync-models = {
     Unit = {
@@ -1073,6 +1073,37 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  # Self-hosted Desktop Commander endpoint (#13404): the local half of
+  # commander.security.cab. supergateway wraps the packaged Desktop
+  # Commander (stdio) as a streamable-HTTP MCP server on
+  # 127.0.0.1:8931/mcp; the sandbox-link Cloudflare Tunnel carries it to
+  # the bridge door (commander-link.security.cab, Access service-token
+  # only), where the desktop-commander Worker picks it up. This unit
+  # replaces nothing: the vendor device agent above stays until the
+  # self-hosted endpoint is verified and is stood down separately.
+  #
+  # PATH matters for the same reason it does in
+  # desktop-commander-remote above: the wrapped server exists to run
+  # arbitrary user commands, so it needs the real user PATH.
+  systemd.user.services.desktop-commander-bridge = {
+    Unit = {
+      Description = "Desktop Commander local MCP bridge (stdio to streamable HTTP, 127.0.0.1:8931)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "desktop-commander-bridge-start" ''
+          export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
+          exec ${supergateway}/bin/supergateway --stdio ${desktop-commander}/bin/desktop-commander --outputTransport streamableHttp --streamableHttpPath /mcp --port 8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz --logFormat json
+        ''
+      );
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   # ── Service cascade (2026-11-03) ─────────────────────────────────
   # The three standing services are defined by the fleet's layered
   # modules now, not by hand-rolled units in this file:
@@ -1097,6 +1128,16 @@ in
   # for single-file merges (home/root).
   imports = [ inputs.openchamber.homeManagerModules.openchamber ];
 
+  # Stable deploy entrypoint (code#14187): for the laptop user, the
+  # generated unit's ExecStart is force-overridden to
+  # %h/.local/state/openchamber/start by
+  # nixos/home/stable-entrypoints.nix (wired in
+  # nixos/hosts/default.nix), and Home Manager activation keeps that
+  # link pointing at this module's start wrapper, so the launch
+  # semantics below are unchanged. A deploy app may repoint the link
+  # and restart the service; it must not write the unit file. The
+  # contract: nixos/home/stable-entrypoints.nix and
+  # doc/fleet/services.md; the consumer is dezren39/darwin-nix#1393.
   services.openchamber = {
     enable = true;
     # uiPasswordFile (the browser-UI password the old serve script
@@ -1174,6 +1215,34 @@ in
   # EnvironmentFile at every server start — it is never stored in this
   # repo or the Nix store. The quota gatherer reads the same file (see
   # nixos/services/pm-stack) so its `opencode quota` refresh works too.
+  # Helper-only unit changes must not interrupt the server (#10639).
+  # Home Manager still reloads the unit; the activation below owns build
+  # changes explicitly, using only the serving package's store path as key.
+  systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  # The package launcher forwards TERM from the systemd main process to the
+  # serving child. With the default control-group kill mode, systemd also
+  # signals that child directly, so one stop becomes two TERM deliveries and
+  # the fork's second-TERM drain escape ends the grace window early (#10639).
+  # Signal only the launcher; it forwards exactly one TERM to the child.
+  systemd.user.services.opencode.Service.KillMode = "process";
+  # Keep the listening port outside the server process so it survives a
+  # service handover. The OpenCode fork adopts systemd's fd 3 via
+  # LISTEN_FDS/LISTEN_PID; the socket is enabled through sockets.target.
+  systemd.user.sockets.opencode = {
+    Unit.Description = "OpenCode server listener (handover-safe)";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString opencodeServerPort}";
+      Service = "opencode.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
+  home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
+      '${opencodeCascade}' \
+      "''${XDG_STATE_HOME:-$HOME/.local/state}/opencode/deployed-build" \
+      '${pkgs.systemd}/bin/systemctl' /proc
+  '';
+
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''
@@ -1195,18 +1264,15 @@ in
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # package: deliberately unset. There is one mcpx — the
-    # cascade's (the fork's build, via the module wrapper's
-    # mkDefault) — and this config takes that one (Drew's ruling,
-    # 2026-11-03; code#5027). The former pin to this repo's own
-    # pkgs/mcpx build made two mcpx builds coexist and collided
-    # with the fork package's bin/mcpx in the home profile.
-    #
-    # addPackageToProfile: off. The profile's bin/mcpx comes from
-    # exactly one provider — the opencode package's bundled
-    # symlink. The module also adding cfg.package to home.packages
-    # would put a second mcpx entry in the profile (Drew's ruling,
-    # 2026-11-03; code#5027).
+    # Use the same source and test-disabled derivation already in the
+    # system package set. The mcpx Go/e2e suite runs in CI; running its
+    # 30-minute process tests during every NixOS switch has repeatedly
+    # blocked activation. This changes build checks only, not runtime
+    # code or the profile's binary provider.
+    package = mcpx;
+    # Keep the single profile provider selected in code#5027:
+    # OpenCode's bundled symlink supplies bin/mcpx; this service's
+    # package is executed directly and is not added to home.packages.
     addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
@@ -1217,12 +1283,26 @@ in
     # ~/.config/mcpx/config.json to the rendered file, and points
     # MCPX_CONFIG at it for other clients.
     settings = mcpxSettings;
+    # Runtime env for mcpx servers (mode 600, never copied into
+    # the store): carries ATLAS_SEARCH_GATE_TOKEN for the atlas
+    # remote server in mcpx-settings.nix, whose auth token is a
+    # ${ATLAS_SEARCH_GATE_TOKEN} expansion the daemon resolves
+    # from its own environment.
+    environmentFile = "/home/user/.config/mcpx/env";
   };
 
   # Consumer refinements on the module's mcpx unit: the parts of the
   # hand-rolled unit the module does not express. (Description,
-  # ExecStart, Restart = always and the 20 s stop window are the
-  # module's own.)
+  # Restart = always and the 20 s stop window are the module's own.
+  # ExecStart and ExecReload are the stable entrypoint's, code#14187:
+  # for the laptop user, nixos/home/stable-entrypoints.nix
+  # force-overrides both to %h/.local/state/mcpx/bin/mcpx — ExecStart
+  # with this daemon's rendered --config, ExecReload with `reload` —
+  # and activation keeps that link pointing at the daemon's package.
+  # The ExecReload definition below is the fallback for configs
+  # without the entrypoint module. Contract:
+  # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
+  # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
       After = [ "network-online.target" ];

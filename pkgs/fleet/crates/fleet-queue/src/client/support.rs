@@ -188,31 +188,40 @@ usage: repo-queue <verb> ...\n\
 \n\
 Run `repo-queue <verb> --help` for flags:\n\
   validate <packet-path>\n\
-  enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\
-  list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\
+  enqueue <packet-path> [--queue <name>] [--platform <p>] [--meta key=json]... [--dry-run] [--shadow-intent]\n\
+  list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--meta key=value]... [--label <name|prefix*>] [--json]\n\
+  meta <get|set|unset|keys> ...\n\
+  staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
+  needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
   claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
-  release <task-id> [--worker <id>] [--reason <text>]\n\
+  release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
-  heartbeat <task-id> [--worker <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
-  checkpoint <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\
-  park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\
+  heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
+  checkpoint <task-id> [--worker <id>] [--lane <id>] --stage <s> [--progress <p>] [--progress-file <f>]\n\
+  reprioritize <task-id> <priority> [--worker <id>] [--reason <text>]\n\
+  park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\
   wake <task-id> [--worker <id>] [--reason <text>]\n\
-  block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\
-  unblock <task-id> [--worker <id>] [--reason <text>]\n\
+  block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\
+  unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
-  cancel <task-id> [--worker <id>] [--reason <text>]\n\
+  repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\
+  resolution-backfill\n\
+  cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
-  fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\
-  complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\
+  fail <task-id> [--worker <id>] [--lane <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\
+  complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--resolution <name>] [--substatus <name>] [--reason <text>] [--ref <target>]\n\
   verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
+  show <task-id> [--limit <n>] [--json]\n\
+  note <add|list|edit|remove> ...\n\
+  link <add|remove|list> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
-  fallback <scan|status|claim|heartbeat|release> ...\n\
+  fallback <scan|status|claim|heartbeat|release|complete|unblock> ...\n\
   outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\
   dispatch|session|surfaces ...\n\
   stack <record|list|transition|restack|replay> ...";
@@ -226,16 +235,25 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue validate <packet-path>\n\nValidates a task packet without enqueuing it."
         }
         "enqueue" => {
-            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\nEnqueues a task packet."
+            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--meta key=json]... [--dry-run] [--shadow-intent]\n\nEnqueues a task packet with optional metadata."
         }
         "list" => {
-            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work."
+            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--meta key=value]... [--label <name|prefix*>] [--json]\n\nLists tasks; repeat --meta for ANDed JSON equality filters. --label filters on cached GitHub labels (a trailing * matches a prefix, e.g. user/*). A bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked."
+        }
+        "meta" => {
+            "usage: repo-queue meta get <task-id> [key] | set <task-id> <key> <json-value> | set <task-id> [--json '{...}'] | unset <task-id> <key> | keys\n\nReads or merge-patches queue metadata. Null values delete keys; metadata writes are audited in task history."
+        }
+        "staleness" => {
+            "usage: repo-queue staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\nThe stewardship staleness read: one broker query returns actionable tasks whose last task_history transition is older than --older-than-seconds (default 86400), oldest first, plus claimed tasks whose lease expires within --lease-cap-seconds (default 900). Tasks with no history row fall back to their updated_at and report a null last_history_id."
+        }
+        "needs-user" => {
+            "usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\nThe stewardship needs-user read: blocked/parked tasks carrying a question metadata entry, oldest last transition first, with the question object and a blocked-by count read from the blocked_deps cache (superseded by task_deps counts when Q6 lands)."
         }
         "claim" => {
             "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
         }
         "release" => {
-            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] [--reason <text>]\n\nReleases a held claim."
+            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
         }
         "lane" => {
             "usage: repo-queue lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\nReports lane progress on a task."
@@ -247,19 +265,22 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\nRefreshes a claim lease."
         }
         "checkpoint" => {
-            "usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
+            "usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] --stage <s> [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
+        }
+        "reprioritize" => {
+            "usage: repo-queue reprioritize <task-id> <priority> [--worker <id>] [--reason <text>]\n\nChanges a live task priority (one of 10, 20, 30, 40, 50, 70, 90) and synchronizes its linked issue category."
         }
         "park" => {
-            "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\nParks a task."
+            "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\nParks a task. A park that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
         }
         "wake" => {
             "usage: repo-queue wake <task-id> [--worker <id>] [--reason <text>]\n\nWakes a parked task."
         }
         "block" => {
-            "usage: repo-queue block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\nMarks a task blocked."
+            "usage: repo-queue block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\nMarks a task blocked. A block that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
         }
         "unblock" => {
-            "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>]\n\nClears a task's blocked state."
+            "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\nClears a task's blocked state. With --drop-dep, only the named dep entries are dropped from the task's record: a comma-separated list of kind:ref — issue:owner/repo#N, pr:owner/repo#N, ci:owner/repo#RUN, task:ID. The task stays blocked on the remaining deps; dropping the last one releases it."
         }
         "dep-recheck" => {
             "usage: repo-queue dep-recheck [--task <id>] [--limit <n>]\n\nRechecks task dependencies."
@@ -267,17 +288,23 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         "quarantine-recheck" => {
             "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks."
         }
+        "repair" => {
+            "usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\nRepairs a quarantined or malformed task packet in place: re-runs the packet validators and applies the deterministic repairs whose correct value can be re-derived (today the dedupe stamp, re-performed live — a live duplicate refuses). Unrepairable defects fail with the defect list and change nothing. --dry-run reports defects and planned repairs, writing nothing."
+        }
+        "resolution-backfill" => {
+            "usage: repo-queue resolution-backfill\n\nRuns the idempotent Q2 terminal-resolution backfill and prints the terminal census, proven rows, and unresolved rows. Only verdicts evidenced by existing result data or a unique dedupe twin are written."
+        }
         "cancel" => {
-            "usage: repo-queue cancel <task-id> [--worker <id>] [--reason <text>]\n\nCancels a task."
+            "usage: repo-queue cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\nCancels a task with a required redirection or rejection resolution. Rejections require a reason; redirections require a reference. Without --worker, the cancellation is recorded under the default worker fleet-monitor."
         }
         "revive" => {
             "usage: repo-queue revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\nRevives a terminal task."
         }
         "fail" => {
-            "usage: repo-queue fail <task-id> [--worker <id>] [--lane <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\nFails a task."
+            "usage: repo-queue fail <task-id> [--worker <id>] [--lane <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\nFails a task. --reason-class is one of transient (the default), deterministic, blocked."
         }
         "complete" => {
-            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
+            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--resolution <name>] [--substatus <name>] [--reason <text>] [--ref <target>]\n\nCompletes a task. Defaults to resolution done/unverified; a verified disposition readback stamps done/verified."
         }
         "verify-disposition" => {
             "usage: repo-queue verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\nReads the issue and its linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it."
@@ -287,6 +314,36 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "history" => {
             "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
+        }
+        "show" => {
+            "usage: repo-queue show <task-id> [--limit <n>] [--json]\n\nShows one task's current details and recent history."
+        }
+        "note" => {
+            "usage: repo-queue note <add|list|edit|remove> ...\n\nA task's notes: an append-only, authored stream (#14170 Q4). Run `repo-queue note <sub> --help` for flags."
+        }
+        "link" => {
+            "usage: repo-queue link <add|remove|list> ...\n\nManages normalized relationships for a queue task."
+        }
+        "link add" => {
+            "usage: repo-queue link add <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nAdds an issue, pull request, or task relationship. Exactly one target option is required."
+        }
+        "link remove" => {
+            "usage: repo-queue link remove <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nSoft-removes a relationship. Exactly one target option is required."
+        }
+        "link list" => {
+            "usage: repo-queue link list <task-id> [--include-removed] [--json]\n\nLists a task's relationships."
+        }
+        "note add" => {
+            "usage: repo-queue note add <task-id> --text <text> [--worker <id>] [--kind agent|human|system] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nAppends a note to a task. The worker is the author. The body is at most 4096 characters. Without marks, a note by the task's claim holder copies the claim's session and model."
+        }
+        "note list" => {
+            "usage: repo-queue note list <task-id> [--latest <n>] [--include-removed] [--json]\n\nLists a task's notes, oldest first, with the count of live notes. --latest keeps the newest n."
+        }
+        "note edit" => {
+            "usage: repo-queue note edit <note-id> --text <text> [--worker <id>]\n\nReplaces a note's body. Only the note's author may edit it; the old body is kept in the task's history."
+        }
+        "note remove" => {
+            "usage: repo-queue note remove <note-id> [--worker <id>]\n\nRemoves a note. The removal is soft: the row stays, hidden from list unless --include-removed. Only the note's author may remove it."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
@@ -325,7 +382,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue stack restack --stack <id> --position <n> --base <b> [--head-sha <sha>] [--worker <id>]\n\nRestacks intents."
         }
         "stack replay" => {
-            "usage: repo-queue stack replay [--stack <id>] [--worker <id>] [--repo-dir <dir>] [--dry-run]\n\nReplays a stack plan."
+            "usage: repo-queue stack replay --stack <id> [--worker <id>] [--repo-dir <dir>] [--dry-run]\n\nReplays a stack plan."
         }
         _ => TOP_USAGE,
     }
@@ -451,6 +508,9 @@ pub(super) fn parse_args_inner(
 }
 
 impl Args {
+    pub(super) fn pos(&self, idx: usize) -> Option<String> {
+        self.pos.get(idx).cloned()
+    }
     pub(super) fn get(&self, name: &str) -> Option<String> {
         self.opts
             .get(name)
@@ -584,14 +644,6 @@ pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
             "queue-broker /list reply had no rows array — refusing to report an empty list"
                 .to_string()
         })
-}
-
-/// The total in a PostgREST `Content-Range` header (#10376):
-/// `0-49/237` -> 237, `*/0` -> 0. A `*` total (no count was
-/// requested) or an unparseable header yields None — unknown,
-/// never a fabricated zero.
-pub(crate) fn content_range_total(content_range: &str) -> Option<i64> {
-    content_range.rsplit('/').next()?.trim().parse::<i64>().ok()
 }
 
 /// The /list reply envelope (#10376; contract #6622 rule 3 —
@@ -1315,7 +1367,11 @@ pub(super) fn session_declared_pool(session: &Value) -> Option<String> {
 /// (there is no cost readout to source it from, so it stays null).
 ///
 /// - `model`: the claim stamp's serving leaf, else the session
-///   record's serving leaf.
+///   record's serving leaf. A claim stamped through the route
+///   provider names the pool (route id) in `claim_model`, not a
+///   leaf — that alias is skipped, exactly as
+///   `session_model_stamp` refuses it, so the session leaf or an
+///   honest null supplies the model instead.
 /// - `effort`: the claim stamp's variant (a real one — the server
 ///   writes "default" when none was chosen), else the session
 ///   record's variant.
@@ -1331,7 +1387,18 @@ pub(super) fn derive_completion_telemetry(
     session: Option<&Value>,
 ) -> Map<String, Value> {
     let leaf: Option<(String, String, Option<String>)> = session.and_then(session_model_stamp);
-    let model = nonempty_str(claim, "claim_model")
+    // #4919: a route-provider claim stamp (the transfer path stamps
+    // the session's declared route) holds the route id in
+    // claim_model — the pool, not a serving leaf. Recording it as
+    // the completion's model would write the alias this derivation
+    // exists to avoid (measured on real rows: result.model =
+    // "workhorse"), so skip it and let the session leaf — or null —
+    // speak.
+    let claim_model = match nonempty_str(claim, "claim_provider") {
+        Some(p) if p == ROUTE_PROVIDER => None,
+        _ => nonempty_str(claim, "claim_model"),
+    };
+    let model = claim_model
         .map(str::to_string)
         .or_else(|| leaf.as_ref().map(|s| s.1.clone()));
     let effort = nonempty_str(claim, "claim_variant")

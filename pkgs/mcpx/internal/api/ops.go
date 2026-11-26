@@ -239,8 +239,9 @@ func Ops() []Op {
 			Description: "One entry per live instance across every pool, as the same " +
 				"InstanceStatus snapshot /v1/status embeds per server: id, pid, " +
 				"holders, key, calls, uptime and idle seconds. An empty inventory " +
-				"is an empty list. Reading only -- killing, detaching or resuming " +
-				"a session is a later operation (#1931).",
+				"is an empty list. Reading only -- ending one is POST " +
+				"/v1/session/kill, detaching one is POST /v1/session/release, " +
+				"resuming one is a later operation (#1931).",
 		},
 		{
 			// The plugin-session operations carry a CLI name because
@@ -594,6 +595,31 @@ func Ops() []Op {
 			}, callContextParams()...),
 		},
 		{
+			Name: "call_history_begin", Method: "POST", Path: "/v1/calls/{run}",
+			CLI:        "calls begin",
+			Permission: PermissionRun,
+			Summary:    "Start keeping the tool calls of one run",
+			Description: "Opens the call history for a run id, so the calls that run makes " +
+				"through this daemon are kept for its outcome hooks to read back from " +
+				"GET /v1/calls/{run}.",
+			Mutating: true,
+			Params: []Param{
+				{Name: "run", In: InPath, Type: "string", Required: true, Desc: "the run id whose calls are kept"},
+			},
+		},
+		{
+			Name: "call_history", Method: "GET", Path: "/v1/calls/{run}",
+			CLI:        "calls get",
+			Permission: PermissionRead,
+			Summary:    "The tool calls one run has made",
+			Description: "The calls kept for a run id since its history was opened, or a 404 " +
+				"when the history was never opened or has expired. truncated is true " +
+				"when older calls were dropped.",
+			Params: []Param{
+				{Name: "run", In: InPath, Type: "string", Required: true, Desc: "the run id whose calls are read"},
+			},
+		},
+		{
 			Name: "batch", Method: "POST", Path: "/v1/batch",
 			Permission:  PermissionRun,
 			Command:     "batch",
@@ -666,6 +692,22 @@ func Ops() []Op {
 			Admin: true, Mutating: true,
 			Params: []Param{
 				{Name: "session", In: InBody, Type: "string", Required: true, Desc: "the session whose instances should be released"},
+			},
+		},
+		{
+			Name: "session_kill", Method: "POST", Path: "/v1/session/kill",
+			Permission: PermissionAdmin,
+			Summary:    "End the instances a session created, even when busy",
+			Description: "Release detaches the caller: the lease is dropped and only " +
+				"the owned instances that are already idle are stopped. Kill is the " +
+				"force path for the same caller session handle: the lease is dropped " +
+				"and every owned instance is ended even while held, its client closed " +
+				"with its streams and subscriptions. Killing somebody else's session " +
+				"ends servers they are still using, which is why it is privileged " +
+				"and destructive: it cannot be undone.",
+			Admin: true, Mutating: true, Destructive: true,
+			Params: []Param{
+				{Name: "session", In: InBody, Type: "string", Required: true, Desc: "the session whose instances should end"},
 			},
 		},
 		{

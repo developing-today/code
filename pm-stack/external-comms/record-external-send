@@ -5,11 +5,7 @@ Implements Drew's ratified rule (2026-11-05): EXTERNAL COMMS ARE NEVER
 SILENT. Every send outside our own repos/channels under Drew's identity
 or a fleet identity is recorded at send time in the ledger table
 `agent_external_comms` in the Turso database fleet-platform
-(repointed 2026-11-07 from `agent.external_comms` in Supabase
-muse-dev2, whose data plane has been down since 2026-11-06,
-code#6619; DDL: migration-0002-agent-external-comms-turso.sql.
-The 58 rows recorded in Postgres before the repoint stay there
-until the finalize pass tops this table up by id.)
+(DDL: migration-0002-agent-external-comms-turso.sql).
 
 Write pattern (the pm-stack durability pattern, cf. aggregator
 events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.
@@ -72,6 +68,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -88,7 +85,13 @@ HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
 QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
 LOCK = os.path.join(STATE_DIR, "pusher.lock")
 TABLE = "agent_external_comms"
-DB_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+# FLEET_PLATFORM_URL may name another https origin (the Turso store) to
+# stage or roll back the move to D1.
+DB_URL = (
+    os.environ.get("FLEET_PLATFORM_URL", "").strip()
+    if re.fullmatch(r"https://[^/@\s]+(/[^@\s]*)?", os.environ.get("FLEET_PLATFORM_URL", "").strip())
+    else "https://d1-gateway.developing-today.workers.dev/db/fleet-platform"
+)
 TIMEOUT = 8  # seconds; a send-time caller must never hang on the ledger
 
 
@@ -163,7 +166,9 @@ def _pipeline(base, key, stmts):
         data=body.encode(),
         method="POST",
         headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+                 "User-Agent": "fleet-d1-client/1"})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         if resp.status != 200:
             raise RuntimeError(f"turso pipeline HTTP {resp.status}")

@@ -9,7 +9,10 @@
 //! roles run for real below; step 3 (#5431) the proxy domain; step 4
 //! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb;
 //! step 5 (#5433) the search client domain, with its serve role
-//! (`fleet serve search`, the Atlas service) following in #5604. A
+//! (`fleet serve search`, the Atlas service) following in #5604.
+//! The cert domain (#9157, fleet CA program #9155) landed later:
+//! `fleet cert` (alias `fleet pki`) — PKI/X.509 roots, issuers,
+//! leaves, chains and bundles over the fleet-cert library crate. A
 //! compiled-in domain that has
 //! not landed yet answers with the "not implemented yet" form of
 //! the stub — but the *surface* is complete and honest: every
@@ -48,10 +51,45 @@ mod secrets;
 #[cfg(feature = "gh")]
 mod gh;
 
+#[cfg(feature = "actions")]
+mod actions;
+#[cfg(feature = "commander")]
+mod commander;
+#[cfg(any(
+    feature = "commander",
+    feature = "http",
+    feature = "ssh",
+    feature = "laptop"
+))]
+mod forms;
 #[cfg(feature = "gh")]
 mod gh_cache;
+#[cfg(feature = "gh")]
 mod gh_closure;
+#[cfg(feature = "gh")]
+mod gh_content_ledger;
+#[cfg(feature = "gh")]
+mod gh_guard;
+#[cfg(feature = "gh")]
+mod gh_metadata;
+#[cfg(feature = "gh")]
+mod gh_sync;
+#[cfg(feature = "http")]
+mod http;
+#[cfg(feature = "id")]
+mod id_key;
+#[cfg(feature = "id")]
+mod id_proxy;
 mod invocation_ledger;
+#[cfg(feature = "kv")]
+mod kv;
+#[cfg(feature = "laptop")]
+mod laptop;
+#[cfg(feature = "host")]
+mod host;
+mod session_state;
+#[cfg(feature = "ssh")]
+mod ssh;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -96,17 +134,47 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "dispatch") {
         caps.insert(Capability::Dispatch);
     }
+    if cfg!(feature = "orgs") {
+        caps.insert(Capability::Orgs);
+    }
+    if cfg!(feature = "kv") {
+        caps.insert(Capability::Kv);
+    }
     if cfg!(feature = "dispatch-test") {
         caps.insert(Capability::DispatchTest);
     }
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
     }
+    if cfg!(feature = "commander") {
+        caps.insert(Capability::Commander);
+    }
+    if cfg!(feature = "http") {
+        caps.insert(Capability::LaptopHttp);
+    }
+    if cfg!(feature = "ssh") {
+        caps.insert(Capability::LaptopSsh);
+    }
+    if cfg!(feature = "laptop") {
+        caps.insert(Capability::Laptop);
+    }
     if cfg!(feature = "secrets") {
         caps.insert(Capability::Secrets);
     }
     if cfg!(feature = "gh") {
         caps.insert(Capability::Gh);
+    }
+    if cfg!(feature = "bridge") {
+        caps.insert(Capability::Bridge);
+    }
+    if cfg!(feature = "agent") {
+        caps.insert(Capability::Agent);
+    }
+    if cfg!(feature = "cert") {
+        caps.insert(Capability::Cert);
+    }
+    if cfg!(feature = "actions") {
+        caps.insert(Capability::Actions);
     }
     caps
 }
@@ -243,14 +311,13 @@ fn stub(surface: &Surface, domain_name: &str, state: &CapState, invoked_as: &str
             ));
         }
         CapState::Available => {
-            // The step-1 form: compiled in, nothing behind it yet.
+            // Compiled in, nothing behind it yet: the not-implemented state.
             out.push_str(&format!(
                 "fleet: '{domain_name}' is included in this build but not implemented yet.\n"
             ));
             out.push_str(&format!("Enabled capabilities: {caps}.\n"));
             out.push_str(&format!(
-                "This is the {build} build ({VERSION}) — the step-1 skeleton of epic #5412; \
-                 the '{domain_name}' domain lands in a later step.\n"
+                "This is the {build} build ({VERSION}). '{domain_name}' is not implemented in this build.\n"
             ));
         }
     }
@@ -365,6 +432,9 @@ fn help_text(surface: &Surface) -> String {
     out.push_str(
         "  init           Autostart this host's roles per the [host] manifest (no-op when running)\n",
     );
+    out.push_str(
+        "  session bind   Validate and persist an explicit or inherited session identity\n",
+    );
     out.push_str("  version        Print version, enabled capabilities, and source rev\n");
     out.push_str("  capabilities   Print the registry and this build's capabilities as JSON\n");
     out.push_str("  help [domain]  Show this help, or one domain's help\n\n");
@@ -390,12 +460,18 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "dispatch" => "included in this build",
             "dispatch-test" => "included in this build",
             "secrets" => "included in this build",
-            "search" => "included in this build",
+            "search" => "included in this build (options: fleet search --help)",
             "proxy" => "included in this build",
+            "bridge" => "included in this build (options: fleet bridge <command> --help)",
+            "cert" => "included in this build (options: fleet cert <command> --help)",
+            "agent" => "included in this build (options: fleet agent --help)",
+            "shell" => "included in this build (options: fleet shell --help)",
+            "gh" => "included in this build",
+            "laptop-agent" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker, secrets-broker, search and proxy roles)"
             }
-            _ => "included in this build (implementation lands in a later step of epic #5412)",
+            _ => "included in this build",
         },
         CapState::NotInBuild => {
             "not in this build — invoking it prints the capability stub (exit 69)"
@@ -406,6 +482,18 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         CapState::DisabledByConfig => "disabled by config on this host (exit 69 if invoked)",
     };
     println!("Status: {status}");
+}
+
+/// Resolve a root-level subcommand name to its domain. Canonical
+/// names come from the registry; `pki` is the cert domain's
+/// documented alias (spec §6: `fleet pki ...` ≡ `fleet cert ...`),
+/// the same name the argv0 map routes to cert.
+fn resolve_domain(name: &str) -> Option<&'static Domain> {
+    match domain(name) {
+        Some(d) => Some(d),
+        None if name == "pki" => domain("cert"),
+        None => None,
+    }
 }
 
 fn usage_error(message: &str) -> i32 {
@@ -442,12 +530,11 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             let sub = args.first().map(|s| s.as_str());
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
-                Some("connect") | Some("init") | Some("ssh") | Some("get") | Some("put") => {
-                    Ok(Capability::ProxyConnect)
-                }
+                Some("connect") | Some("init") | Some("ssh") | Some("get") | Some("put")
+                | Some("copy") => Ok(Capability::ProxyConnect),
                 Some("splice") => Ok(Capability::ProxyRawSplice),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, init, ssh, splice, get, or put",
+                    "'fleet proxy' needs a command: serve, connect, init, ssh, splice, get, put, or copy",
                 )),
             }
         }
@@ -723,6 +810,16 @@ fn run_serve_list(surface: &Surface, roles: &[ServeRole], invoked_as: &str) -> i
 
 /// Run one domain invocation (also the argv0-alias landing pad).
 fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) -> i32 {
+    run_domain_with_initializer(surface, d, args, invoked_as, session_state::initialize)
+}
+
+fn run_domain_with_initializer(
+    surface: &Surface,
+    d: &Domain,
+    args: &[String],
+    invoked_as: &str,
+    initialize: impl FnOnce(Option<&str>) -> Result<Option<String>, String>,
+) -> i32 {
     // The search role takes real flags, so its own usage answers
     // `--help` wherever the role is actually usable; elsewhere the
     // flag falls through to the registry's domain help below.
@@ -732,6 +829,43 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         && surface.cap_state(Capability::SearchServe, d.name) == CapState::Available
     {
         println!("{}", fleet_search::serve::SERVE_USAGE);
+        return EXIT_OK;
+    }
+    // The search client's own usage answers `fleet search --help`
+    // (#12782): the registry's domain help names the verbs but not
+    // the flags a cold session needs, and the client surface is
+    // the documented one — the same carve-out the search serve
+    // role gets above (#6400).
+    #[cfg(feature = "search")]
+    if d.name == "search"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Search, d.name) == CapState::Available
+    {
+        println!("{}", fleet_search::SEARCH_USAGE);
+        return EXIT_OK;
+    }
+    // The cert domain's own usage answers `fleet cert --help`:
+    // the registry's domain help names the verb groups but not the
+    // flags, and the cert usage is the documented surface — the
+    // same carve-out the search client gets above (#12782).
+    #[cfg(feature = "cert")]
+    if d.name == "cert"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Cert, d.name) == CapState::Available
+    {
+        println!("{}", fleet_cert::cli::CERT_USAGE);
+        return EXIT_OK;
+    }
+    // The actions domain's own usage answers `fleet actions
+    // --help` (#13774): the registry help names the leaves but not
+    // the lease contract — the same carve-out the cert domain
+    // gets above.
+    #[cfg(feature = "actions")]
+    if d.name == "actions"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Actions, d.name) == CapState::Available
+    {
+        println!("{}", actions::ACTIONS_USAGE);
         return EXIT_OK;
     }
     // The proxy role under its serve spelling has its own usage
@@ -746,6 +880,59 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         println!("{SERVE_PROXY_USAGE}");
         return EXIT_OK;
     }
+    // The broker roles have their own usage too (#13175): `fleet
+    // serve queue-broker --help` asks for the role's help, not the
+    // serve domain's — the same carve-out the proxy role gets above.
+    if d.name == "serve" && args.get(1).is_some_and(|a| is_help_flag(a)) {
+        match args.first().map(|s| s.as_str()) {
+            Some("queue-broker") => {
+                println!("{SERVE_QUEUE_BROKER_USAGE}");
+                return EXIT_OK;
+            }
+            Some("secrets-broker") => {
+                println!("{SERVE_SECRETS_BROKER_USAGE}");
+                return EXIT_OK;
+            }
+            _ => {}
+        }
+    }
+    // A serve LIST has no single role to name: `fleet serve
+    // queue-broker secrets-broker --help` used to die in the list
+    // parser ("a serve list is role tokens only"). The serve
+    // domain help answers it (#13175).
+    if d.name == "serve"
+        && args.len() > 2
+        && ServeRole::from_token(&args[0]).is_some()
+        && ServeRole::from_token(&args[1]).is_some()
+        && args[2..].iter().any(|a| is_help_flag(a))
+    {
+        print_domain_help(surface, d);
+        return EXIT_OK;
+    }
+    // The shell domain's own usage answers `fleet shell --help`
+    // (#13175): the registry's domain help names only the `targets`
+    // subcommand and hides every flag, while fleet-agent's shell
+    // usage is the documented surface — the same carve-out the
+    // search client gets above (#12782). Routing through run_shell
+    // lets its own help handling print that usage.
+    #[cfg(feature = "agent")]
+    if d.name == "shell"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Agent, d.name) == CapState::Available
+    {
+        return fleet_agent::run_shell(&surface.config, args);
+    }
+    // The kv domain's own parser answers `fleet kv --help`, usage
+    // errors and the --force-blob refusal before session resolution, so
+    // a malformed command line touches nothing (code#13314) — the
+    // same carve-out the actions domain gets above.
+    #[cfg(feature = "kv")]
+    if d.name == "kv"
+        && surface.cap_state(Capability::Kv, d.name) == CapState::Available
+        && let Some(code) = kv::preflight(args)
+    {
+        return code;
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {
@@ -759,19 +946,45 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         Ok(c) => c,
         Err(code) => return code,
     };
+    // These dispatcher-owned forms are validated before session resolution:
+    // malformed invocations must not inspect (or update) the worktree marker.
+    let serve_list = if d.name == "serve" {
+        match parse_serve_list(args) {
+            Some(Ok(roles)) => Some(roles),
+            Some(Err(message)) => return usage_error(&message),
+            None => None,
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "queue")]
+    if d.name == "queue"
+        && matches!(
+            args.first().map(|s| s.as_str()),
+            Some("--version") | Some("-V")
+        )
+        && let Some(extra) = args.get(1)
+    {
+        return usage_error(&format!(
+            "unexpected argument '{extra}' for 'fleet queue {}'",
+            args.first().map(|s| s.as_str()).unwrap_or("--version")
+        ));
+    }
     match surface.cap_state(cap, d.name) {
         CapState::Available => {
+            // proxy init is dispatched through run_init_call, which validates
+            // its leaf arguments and resolves session identity exactly once.
+            let init_leaf = d.name == "proxy" && args.first().is_some_and(|arg| arg == "init");
+            if !init_leaf && let Err(error) = initialize(None) {
+                eprintln!("fleet {}: {error}", d.name);
+                return EXIT_USAGE;
+            }
             // #6264 (design #5698 option (i)): a multi-role serve
             // list runs every listed role in this one process. The
             // parse returns None for single-role invocations, which
             // keep the paths below unchanged.
-            if d.name == "serve" {
-                if let Some(list) = parse_serve_list(args) {
-                    match list {
-                        Ok(roles) => return run_serve_list(surface, &roles, invoked_as),
-                        Err(message) => return usage_error(&message),
-                    }
-                }
+            if let Some(roles) = serve_list {
+                return run_serve_list(surface, &roles, invoked_as);
             }
             // Step 2 (#5430): the queue domain runs for real — the
             // repo-queue client surface and the two broker roles.
@@ -787,12 +1000,6 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
                     // like the root built-ins (#5572), a trailing argument
                     // is a usage error naming it, not silently discarded
                     // success (#5603).
-                    if let Some(extra) = args.get(1) {
-                        return usage_error(&format!(
-                            "unexpected argument '{extra}' for 'fleet queue {}'",
-                            args.first().map(|s| s.as_str()).unwrap_or("--version")
-                        ));
-                    }
                     println!(
                         "{} {VERSION}",
                         if invoked_as == "repo-queue" {
@@ -854,12 +1061,83 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "laptop-agent" {
                 return fleet_laptop_agent::cli::run(&surface.config, args);
             }
+            // developing-today/code#13717: the laptop route forms -
+            // T1 commander, T2 http, T3 ssh, and T0, the tiered
+            // walker (`fleet laptop`).
+            #[cfg(feature = "commander")]
+            if d.name == "commander" {
+                return commander::run(&surface.config, args);
+            }
+            #[cfg(feature = "http")]
+            if d.name == "http" {
+                return http::run(&surface.config, args);
+            }
+            #[cfg(feature = "ssh")]
+            if d.name == "ssh" {
+                return ssh::run(&surface.config, args);
+            }
+            #[cfg(feature = "laptop")]
+            if d.name == "laptop" {
+                return laptop::run(&surface.config, args);
+            }
+            // developing-today/code#14716: host resolution and
+            // selection over the #13717 forms, through fleet-pool.
+            #[cfg(feature = "host")]
+            if d.name == "host" {
+                return host::run(args);
+            }
+            // #13774: the actions domain runs for real — live exec
+            // sessions inside Actions runners (seat + agent + put).
+            #[cfg(feature = "actions")]
+            if d.name == "actions" {
+                return actions::run(&surface.config, args);
+            }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token
-            // rotation (personal, then App installations).
+            // rotation (App installations, then personal last).
             #[cfg(feature = "gh")]
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
+            }
+            #[cfg(feature = "orgs")]
+            if d.name == "orgs" {
+                return fleet_orgs::run(&surface.config, args);
+            }
+            #[cfg(feature = "kv")]
+            if d.name == "kv" {
+                return kv::run(args);
+            }
+            // code#15430 (design #10391 §4.1): the id domain runs
+            // for real — session key lifecycle + stamping. Later
+            // slices add the proxy/initiator/serve-ws verbs.
+            #[cfg(feature = "id")]
+            if d.name == "id" {
+                return id_key::run(args);
+            }
+            // The bridge domain runs for real: fleet mailboxes on the
+            // message bridge (central send/agents/log/pipeline/
+            // directory/credentials/revoke; agent hello/inbox/post/ack).
+            #[cfg(feature = "bridge")]
+            if d.name == "bridge" {
+                return fleet_bridge::run(&surface.config, args);
+            }
+            // The agent's front door: enrolment, the intake ladder and
+            // `fleet shell`. Both domains compose the verbs above
+            // through this same binary.
+            #[cfg(feature = "agent")]
+            if d.name == "agent" {
+                return fleet_agent::run(&surface.config, args);
+            }
+            #[cfg(feature = "agent")]
+            if d.name == "shell" {
+                return fleet_agent::run_shell(&surface.config, args);
+            }
+            // The cert domain (#9157): PKI/X.509 roots, issuers,
+            // leaves, chains and bundles — the fleet-cert library
+            // crate's CLI shell (full build only).
+            #[cfg(feature = "cert")]
+            if d.name == "cert" {
+                return fleet_cert::run(args);
             }
             // Step 5 (#5433): the search domain runs for real —
             // the atlas-search client surface over the live Atlas
@@ -883,6 +1161,23 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         state => stub(surface, d.name, &state, invoked_as),
     }
 }
+
+const SERVE_QUEUE_BROKER_USAGE: &str = "\
+Usage: fleet serve queue-broker
+
+Run the queue broker in the foreground. The role takes no
+arguments; configuration is by environment: QUEUE_BROKER_BIND
+(default 100.99.113.103:4801), QUEUE_BROKER_TOKEN_FILE,
+QUEUE_BROKER_BACKEND and the QUEUE_BROKER_TURSO_URL /
+QUEUE_BROKER_TURSO_TOKEN_FILE pair for the Turso backend.";
+
+const SERVE_SECRETS_BROKER_USAGE: &str = "\
+Usage: fleet serve secrets-broker
+
+Run the secrets broker in the foreground. The role takes no
+arguments; configuration is by environment: SECRETS_BROKER_BIND
+(default 100.99.113.103:4800), SECRETS_BROKER_TOKEN_FILE and
+SECRETS_BROKER_TTL_S.";
 
 const SERVE_PROXY_USAGE: &str = "\
 Usage: fleet serve proxy
@@ -1068,6 +1363,29 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
                 }
             };
             match fleet_proxy::files::run_put(&parsed, config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
+        Some("copy") => {
+            if args[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--help" | "-h"))
+            {
+                println!("{}", fleet_proxy::copy::COPY_USAGE);
+                return EXIT_OK;
+            }
+            let parsed = match fleet_proxy::copy::CopyArgs::parse(&args[1..]) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    return e.exit_code();
+                }
+            };
+            match fleet_proxy::copy::run_copy(&parsed, config, &client, &capabilities) {
                 Ok(code) => code,
                 Err(e) => {
                     eprintln!("fleet: {e}");
@@ -1273,6 +1591,17 @@ fn run_proxy_ssh(tail: &[String], config: &fleet_config::Config) -> i32 {
 }
 
 fn run_init_call(surface: &Surface, argv: &[String]) -> i32 {
+    if argv.iter().any(|arg| is_help_flag(arg)) {
+        println!("{}", fleet_proxy::client::INIT_USAGE);
+        return EXIT_OK;
+    }
+    if let Some(extra) = argv.first() {
+        return usage_error(&format!("fleet init takes no arguments (got {extra:?})"));
+    }
+    if let Err(error) = session_state::initialize(None) {
+        eprintln!("fleet init: {error}");
+        return EXIT_USAGE;
+    }
     let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
     let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
     match fleet_proxy::client::run_init(argv, &surface.config, &client, &capabilities) {
@@ -1308,6 +1637,33 @@ fn reject_extra_args(args: &[String]) -> Option<i32> {
     })
 }
 
+const VERSION_USAGE: &str = "\
+usage: fleet version
+
+Print the version, build, source revision and enabled
+capabilities of this fleet binary. Takes no arguments.";
+
+const CAPABILITIES_USAGE: &str = "\
+usage: fleet capabilities
+
+Print this invocation's capability report as JSON: every domain
+with its state in this build, and the usable capability set.
+Takes no arguments.";
+
+const HELP_USAGE: &str = "\
+usage: fleet help <domain>
+
+Print one domain's registry help: its summary, commands and
+status in this build. With no argument, `fleet --help` prints
+the full registry.";
+
+/// True when a built-in's tail is exactly one help flag: `fleet
+/// version --help` asks what the built-in does (#13175) — it is
+/// not an unexpected argument.
+fn is_help_only_tail(tail: &[String]) -> bool {
+    tail.len() == 1 && is_help_flag(&tail[0])
+}
+
 fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     let first = args.first().map(|s| s.as_str());
     match first {
@@ -1323,7 +1679,11 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             print_help(surface);
             EXIT_OK
         }
-        Some("help") => match args.get(1).and_then(|name| domain(name)) {
+        Some("help") if is_help_only_tail(&args[1..]) => {
+            println!("{HELP_USAGE}");
+            EXIT_OK
+        }
+        Some("help") => match args.get(1).and_then(|name| resolve_domain(name)) {
             Some(d) => {
                 // `help` takes exactly one argument — the domain name.
                 // Anything after it is a usage error naming the first
@@ -1350,6 +1710,10 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("version") => {
+            if is_help_only_tail(&args[1..]) {
+                println!("{VERSION_USAGE}");
+                return EXIT_OK;
+            }
             if let Some(code) = reject_extra_args(args) {
                 return code;
             }
@@ -1357,6 +1721,10 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("capabilities") => {
+            if is_help_only_tail(&args[1..]) {
+                println!("{CAPABILITIES_USAGE}");
+                return EXIT_OK;
+            }
             if let Some(code) = reject_extra_args(args) {
                 return code;
             }
@@ -1364,7 +1732,8 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("init") => cmd_init(surface, &args[1..], invoked_as),
-        Some(name) => match domain(name) {
+        Some("session") => session_state::run(&args[1..]),
+        Some(name) => match resolve_domain(name) {
             Some(d) => run_domain(surface, d, &args[1..], invoked_as),
             None => usage_error(&format!("unrecognized subcommand '{name}'")),
         },
@@ -1834,6 +2203,75 @@ mod tests {
     }
 
     #[test]
+    fn builtin_help_flags_print_usage_instead_of_erroring() {
+        // #13175: the root built-ins rejected --help as an unexpected
+        // argument (exit 2). A lone help flag now prints the built-in's
+        // own usage and exits 0; a further argument still errors.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for cmd in ["version", "capabilities", "help"] {
+            assert_eq!(
+                run_root(&surface, &args(&[cmd, "--help"]), "fleet"),
+                EXIT_OK,
+                "{cmd} --help must print its usage"
+            );
+            assert_eq!(
+                run_root(&surface, &args(&[cmd, "--help", "extra"]), "fleet"),
+                EXIT_USAGE,
+                "{cmd} --help with a further argument still errors"
+            );
+        }
+    }
+
+    #[test]
+    fn serve_broker_role_help_prints_the_role_usage() {
+        // #13175: `fleet serve <broker-role> --help` used to print the
+        // generic serve domain help; the role's own usage now answers,
+        // like the proxy and search roles.
+        let serve = domain("serve").expect("serve domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for role in ["queue-broker", "secrets-broker"] {
+            assert_eq!(
+                run_domain(&surface, serve, &args(&[role, "--help"]), "fleet"),
+                EXIT_OK,
+                "fleet serve {role} --help must print the role usage"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_help_prints_the_shell_usage() {
+        // #13175: `fleet shell --help` used to print the registry's
+        // domain help, which names only the `targets` subcommand and
+        // hides every flag; the shell's own usage now answers.
+        let shell = domain("shell").expect("shell domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_domain(&surface, shell, &args(&["--help"]), "fleet"),
+            EXIT_OK,
+            "fleet shell --help must print the shell usage"
+        );
+    }
+
+    #[test]
+    fn serve_list_help_prints_domain_help_instead_of_erroring() {
+        // #13175: a role list plus --help was the list parser's hard
+        // error ("a serve list is role tokens only"); the serve
+        // domain help now answers it.
+        let serve = domain("serve").expect("serve domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_domain(
+                &surface,
+                serve,
+                &args(&["queue-broker", "secrets-broker", "--help"]),
+                "fleet"
+            ),
+            EXIT_OK,
+            "a serve list with --help must print help, not the list error"
+        );
+    }
+
+    #[test]
     fn serve_list_parses_two_or_more_distinct_roles() {
         let list = parse_serve_list(&args(&["queue-broker", "secrets-broker"]))
             .expect("two role tokens are a list")
@@ -1858,6 +2296,65 @@ mod tests {
             .expect("leading role tokens are a list")
             .expect_err("a stray token is an error");
         assert!(stray.contains("--bogus"), "{stray}");
+    }
+
+    #[test]
+    fn malformed_serve_list_does_not_resolve_session_state() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let serve = domain("serve").expect("serve domain exists");
+        let initialized = std::cell::Cell::new(false);
+        let code = run_domain_with_initializer(
+            &surface,
+            serve,
+            &args(&["queue-broker", "queue-broker"]),
+            "fleet",
+            |_| {
+                initialized.set(true);
+                Ok(None)
+            },
+        );
+        assert_eq!(code, EXIT_USAGE);
+        assert!(
+            !initialized.get(),
+            "invalid argv must not inspect the marker"
+        );
+    }
+
+    #[test]
+    fn malformed_proxy_init_does_not_resolve_session_state_twice() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let proxy = domain("proxy").expect("proxy domain exists");
+        let initialized = std::cell::Cell::new(false);
+        let code = run_domain_with_initializer(
+            &surface,
+            proxy,
+            &args(&["init", "--bogus"]),
+            "fleet",
+            |_| {
+                initialized.set(true);
+                Ok(None)
+            },
+        );
+        assert_eq!(code, EXIT_USAGE, "proxy init rejects leaf arguments");
+        assert!(
+            !initialized.get(),
+            "proxy init validates its leaf before session resolution"
+        );
+    }
+
+    #[test]
+    fn root_init_help_and_extra_args_return_before_session_resolution() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_init_call(&surface, &args(&["--help"])),
+            EXIT_OK,
+            "help must be available even with a stale marker"
+        );
+        assert_eq!(
+            run_init_call(&surface, &args(&["--bogus"])),
+            EXIT_USAGE,
+            "extra arguments must be rejected before marker access"
+        );
     }
 
     #[test]
@@ -1896,10 +2393,24 @@ mod tests {
         let surface = Surface::new(None, fleet_config::Config::default());
         let queue = domain("queue").expect("queue domain exists");
         for flag in ["--version", "-V"] {
+            let initialized = std::cell::Cell::new(false);
             assert_eq!(
-                run_domain(&surface, queue, &args(&[flag, "--bogus"]), "fleet"),
+                run_domain_with_initializer(
+                    &surface,
+                    queue,
+                    &args(&[flag, "--bogus"]),
+                    "fleet",
+                    |_| {
+                        initialized.set(true);
+                        Ok(None)
+                    },
+                ),
                 EXIT_USAGE,
                 "{flag} must reject a trailing argument"
+            );
+            assert!(
+                !initialized.get(),
+                "malformed {flag} must not inspect marker"
             );
             assert_eq!(
                 run_domain(&surface, queue, &args(&[flag]), "fleet"),

@@ -7,9 +7,11 @@ package e2e_test
 // registry surface — and evaluates the ledger against it where the
 // full suite's rows exist (guardedMain, after m.Run()). A registry
 // entry with no ledger row needs a reasoned exemption in
-// feature_coverage_exemptions.txt; anything else is a violation and
-// fails the run. Partial runs (-run filters) skip the evaluation:
-// their ledger is incomplete by construction.
+// feature_coverage_exemptions.txt; a feature with no ledger row on
+// one GOOS only needs one in feature_coverage_exemptions_<goos>.txt
+// instead, so the other platforms still block on it. Anything else
+// is a violation and fails the run. Partial runs (-run filters) skip
+// the evaluation: their ledger is incomplete by construction.
 
 import (
 	"encoding/json"
@@ -67,11 +69,11 @@ func requiredFeatures() []coverageFeature {
 // pluginOpNames reads the plugin op surface — plugin/core/ops.gen.ts,
 // generated from api.Ops() — and returns the op names it declares.
 func pluginOpNames() ([]string, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, fmt.Errorf("cannot locate the e2e package source")
+	root, err := moduleRoot()
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(filepath.Dir(file), "..", "..", "plugin", "core", "ops.gen.ts")
+	path := filepath.Join(root, "plugin", "core", "ops.gen.ts")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read plugin op surface: %w", err)
@@ -133,24 +135,66 @@ const featureExemptionsFile = "feature_coverage_exemptions.txt"
 // coverageViolations treats an empty one as a violation, as it does
 // an exemption for a feature that is covered or unknown.
 func loadFeatureExemptions() (map[coverageFeature]string, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, fmt.Errorf("cannot locate the e2e package source")
+	return loadFeatureExemptionsForGOOS(runtime.GOOS)
+}
+
+// platformFeatureExemptionsFile names the optional per-platform
+// exemption overlay: features with no integration-test ledger row on
+// that GOOS only (linux-tagged tests, /proc-gated skips), with a
+// reasoned one-line entry each. The file may be absent — a platform
+// with no ineligible features needs no overlay — but when present it
+// parses like the base file and must not repeat a base entry.
+func platformFeatureExemptionsFile(goos string) string {
+	return fmt.Sprintf("feature_coverage_exemptions_%s.txt", goos)
+}
+
+// loadFeatureExemptionsForGOOS merges the base exemption file with
+// the per-platform overlay for goos. The overlay lets a platform
+// excuse its genuinely ineligible features truthfully while every
+// other platform still blocks on them.
+func loadFeatureExemptionsForGOOS(goos string) (map[coverageFeature]string, error) {
+	root, err := moduleRoot()
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(filepath.Dir(file), featureExemptionsFile)
+	base, err := parseFeatureExemptionsFile(filepath.Join(root, "internal", "e2e", featureExemptionsFile))
+	if err != nil {
+		return nil, err
+	}
+	overlay, err := parseFeatureExemptionsFile(filepath.Join(root, "internal", "e2e", platformFeatureExemptionsFile(goos)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return base, nil
+		}
+		return nil, err
+	}
+	for feature, reason := range overlay {
+		if _, dup := base[feature]; dup {
+			return nil, fmt.Errorf("%s: duplicate exemption for %s %s (already exempt in %s)", platformFeatureExemptionsFile(goos), feature.Kind, feature.Name, featureExemptionsFile)
+		}
+		base[feature] = reason
+	}
+	return base, nil
+}
+
+func parseFeatureExemptionsFile(path string) (map[coverageFeature]string, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read feature coverage exemptions: %w", err)
+		return nil, err
 	}
+	return parseFeatureExemptions(string(body), filepath.Base(path))
+}
+
+func parseFeatureExemptions(body, source string) (map[coverageFeature]string, error) {
 	exemptions := make(map[coverageFeature]string)
-	for i, line := range strings.Split(string(body), "\n") {
+	for i, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
-			return nil, fmt.Errorf("%s:%d: exemption line needs at least a kind and a name: %q", featureExemptionsFile, i+1, line)
+			return nil, fmt.Errorf("%s:%d: exemption line needs at least a kind and a name: %q", source, i+1, line)
 		}
 		reason := ""
 		if len(fields) > 2 {
@@ -158,11 +202,31 @@ func loadFeatureExemptions() (map[coverageFeature]string, error) {
 		}
 		feature := coverageFeature{Kind: fields[0], Name: fields[1]}
 		if _, dup := exemptions[feature]; dup {
-			return nil, fmt.Errorf("%s:%d: duplicate exemption for %s %s", featureExemptionsFile, i+1, feature.Kind, feature.Name)
+			return nil, fmt.Errorf("%s:%d: duplicate exemption for %s %s", source, i+1, feature.Kind, feature.Name)
 		}
 		exemptions[feature] = reason
 	}
 	return exemptions, nil
+}
+
+// moduleRoot finds the source module from the package test's working
+// directory. runtime.Caller is not suitable here: Nix Go builds use
+// -trimpath, which turns source paths into import paths rather than files.
+func moduleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get e2e test working directory: %w", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found from e2e test working directory %s", dir)
+		}
+		dir = parent
+	}
 }
 
 // evaluateFeatureCoverage is the guard's whole evaluation: the
@@ -328,5 +392,58 @@ func TestFeatureCoverageGuardSkipsPartialExecutionModes(t *testing.T) {
 	// A failing run is never evaluated either.
 	if violations := featureCoverageGuardViolations(1, nil); violations != nil {
 		t.Fatalf("failing run: guard returned %v, want nil", violations)
+	}
+}
+
+// TestFeatureCoveragePlatformExemptionsAreScopedToDarwin pins the
+// macOS stress-leg gap: `cli explore` is exercised only by a
+// linux-tagged pty test (cli_inspection_explore_linux_test.go, via
+// /dev/ptmx ioctls with no darwin equivalent) and `cli supervise`
+// only by a test that skips without /proc
+// (TestSuperviseKeepsTheChildAcrossADaemonStop) — so a full-suite
+// darwin ledger legitimately lacks both rows while the linux ledger
+// has them. Platform-scoped exemptions must excuse the two features
+// on darwin only; linux coverage stays blocking.
+func TestFeatureCoveragePlatformExemptionsAreScopedToDarwin(t *testing.T) {
+	platformIneligible := map[coverageFeature]bool{
+		{Kind: "cli", Name: "explore"}:   true,
+		{Kind: "cli", Name: "supervise"}: true,
+	}
+	// Simulate a darwin full-suite ledger: every required feature is
+	// covered except the two platform-ineligible ones — and except the
+	// base-exempt features, which no ledger covers (marking them
+	// covered would trip the "both exercised and exempt" violation).
+	baseExempt, err := loadFeatureExemptionsForGOOS("linux")
+	if err != nil {
+		t.Fatalf("load base exemptions: %v", err)
+	}
+	var rows []featureCoverageRow
+	for _, feature := range requiredFeatures() {
+		if _, ok := baseExempt[feature]; platformIneligible[feature] || ok {
+			continue
+		}
+		rows = append(rows, featureCoverageRow{Test: "TestSyntheticCoverage", Kind: feature.Kind, Name: feature.Name})
+	}
+	violationsFor := func(goos string) []string {
+		exemptions, err := loadFeatureExemptionsForGOOS(goos)
+		if err != nil {
+			t.Fatalf("load exemptions for %s: %v", goos, err)
+		}
+		return coverageViolations(requiredFeatures(), rows, exemptions)
+	}
+	var linuxNames []string
+	for _, violation := range violationsFor("linux") {
+		for _, name := range []string{"explore", "supervise"} {
+			if strings.Contains(violation, "cli "+name) {
+				linuxNames = append(linuxNames, name)
+			}
+		}
+	}
+	sort.Strings(linuxNames)
+	if strings.Join(linuxNames, ",") != "explore,supervise" {
+		t.Fatalf("linux must still block both platform-gated features, got %v", violationsFor("linux"))
+	}
+	if violations := violationsFor("darwin"); len(violations) != 0 {
+		t.Fatalf("darwin should excuse both platform-ineligible features, got %v", violations)
 	}
 }

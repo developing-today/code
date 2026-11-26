@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck } from "../deploy-lib.mjs";
+import { join } from "node:path";
+import { HomeUnsetError, listItems, newestWithTag, parseArgs, parseJsonOutput, resolveBrokerTokenFile, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload } from "../deploy-lib.mjs";
 
 test("parseArgs accepts the three shapes", () => {
   assert.deepEqual(parseArgs([]), { dryRun: false, deployVersion: null });
@@ -57,4 +58,56 @@ test("servingCheck requires the latest deployment to serve the version at 100%",
   assert.equal(servingCheck(deployments, "v1").ok, false);
   const split = [{ created_on: "2026-11-19T03:00:00Z", versions: [{ version_id: "v2", percentage: 50 }, { version_id: "v3", percentage: 50 }] }];
   assert.match(servingCheck(split, "v2").serving, /v2@50%, v3@50%/);
+});
+
+test("code-only upload inheritance requires one serving baseline at 100%", () => {
+  assert.equal(singleServingVersion([{ created_on: "2026-11-19T01:00:00Z", versions: [{ version_id: "base", percentage: 100 }] }]), "base");
+  assert.equal(singleServingVersion([]), null);
+  assert.equal(singleServingVersion([{ versions: [{ version_id: "a", percentage: 50 }, { version_id: "b", percentage: 50 }] }]), null);
+  assert.equal(singleServingVersion([{ versions: [{ version_id: "a", percentage: 0 }] }]), null);
+});
+
+test("GHA handoff requires the pinned exact-worker UUID and immutable full-run label", () => {
+  const worker = "queue-transport-alert";
+  const id = "00000000-0000-4000-8000-000000000001";
+  const record = { type: "version-upload", version: 1, worker_name: worker, worker_name_overridden: false, version_id: id };
+  const sha = "a".repeat(40);
+  const upload = ghaUploadIdentity({ sha, runId: "123", attempt: "1" });
+  assert.equal(upload.tag, sha);
+  assert.equal(uploadedVersionId(JSON.stringify(record), worker), id);
+  for (const wrong of [{ version_id: "latest" }, { worker_name: "other" }, { worker_name_overridden: true }, { version: 2 }, { wrangler_environment: "other" }]) {
+    assert.throws(() => uploadedVersionId(JSON.stringify({ ...record, ...wrong }), worker), /exact Worker/);
+  }
+  assert.throws(() => ghaUploadIdentity({ sha: sha.slice(0, 12), runId: "123", attempt: "1" }), /provenance/);
+  const item = { id, annotations: { "workers/tag": upload.tag, "workers/message": upload.message } };
+  assert.equal(hasExactUpload([item], id, upload), true);
+  assert.equal(hasExactUpload([item, item], id, upload), false);
+  assert.equal(hasExactUpload([item], id, ghaUploadIdentity({ sha, runId: "123", attempt: "2" })), false);
+  assert.equal(hasExactUpload([item], id.replace(/1$/, "2"), upload), false);
+});
+
+// Home-resolution contract probes for the deploy's broker token file
+// (#5762/#8220 unit 3, #14757).
+test("resolveBrokerTokenFile: the default is under HOME", () => {
+  assert.equal(
+    resolveBrokerTokenFile({ HOME: "/home/op" }),
+    join("/home/op", ".config", "queue-broker", "token"),
+  );
+});
+
+test("resolveBrokerTokenFile: HOME unset or empty is a named error", () => {
+  for (const env of [{}, { HOME: "" }]) {
+    assert.throws(
+      () => resolveBrokerTokenFile(env),
+      (e) =>
+        e instanceof HomeUnsetError &&
+        /HOME is not set or is empty/.test(e.message) &&
+        /QTA_BROKER_TOKEN_FILE/.test(e.message),
+    );
+  }
+});
+
+test("resolveBrokerTokenFile: the override needs no HOME", () => {
+  assert.equal(resolveBrokerTokenFile({ QTA_BROKER_TOKEN_FILE: "/run/token" }), "/run/token");
+  assert.equal(resolveBrokerTokenFile({ HOME: "", QTA_BROKER_TOKEN_FILE: "/run/token" }), "/run/token");
 });

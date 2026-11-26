@@ -239,6 +239,7 @@ fn group_events(group: &GroupSpec) -> Vec<Event> {
         author: group.creator,
         after: Vec::new(),
         group: None,
+        at: None,
         body: Body::Create(Create {
             template: Template::Custom,
             policy: Policy::default(),
@@ -253,6 +254,7 @@ fn group_events(group: &GroupSpec) -> Vec<Event> {
             author: group.creator,
             after: vec![after],
             group: Some(group.id),
+            at: None,
             body: Body::Member(MemberOp::Add {
                 member: *member,
                 role: *role,
@@ -417,6 +419,7 @@ mod tests {
             author: key(1),
             after: vec![last],
             group: Some(team),
+            at: None,
             body: Body::Member(MemberOp::Remove {
                 member: key(2),
                 mode: id_events::groups::RemoveMode::Revoke,
@@ -438,7 +441,7 @@ mod tests {
         );
         let (state, result) = apply(&text);
         assert_eq!(result.unwrap().groups_created, 1);
-        assert!(!state.events().is_empty());
+        assert_ne!(state.events(), [] as [Event; 0]);
     }
 
     #[test]
@@ -599,6 +602,7 @@ mod tests {
             author: who,
             after: Vec::new(),
             group: None,
+            at: None,
             body: Body::Create(id_events::groups::Create {
                 template: id_events::groups::Template::Custom,
                 policy: id_events::groups::Policy::default(),

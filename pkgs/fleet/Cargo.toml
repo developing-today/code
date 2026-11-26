@@ -16,6 +16,7 @@
 # atlas-proto by path, ../atlas-search/crates/*, untouched).
 [workspace]
 members = [
+  "crates/fleet-pool",
   "crates/fleet-registry",
   "crates/fleet-config",
   "crates/fleet-secrets",
@@ -26,6 +27,12 @@ members = [
   "crates/fleet-proxy",
   "crates/fleet-laptop-agent",
   "crates/fleet-search",
+  "crates/fleet-bridge",
+  "crates/fleet-transport",
+  "crates/fleet-agent",
+  "crates/fleet-kv",
+  "crates/fleet-cert",
+  "crates/fleet-orgs",
   "crates/fleet",
 ]
 resolver = "2"
@@ -37,6 +44,7 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+fleet-pool = { path = "crates/fleet-pool" }
 fleet-registry = { path = "crates/fleet-registry" }
 fleet-config = { path = "crates/fleet-config" }
 fleet-secrets = { path = "crates/fleet-secrets" }
@@ -47,6 +55,12 @@ fleet-dispatch-test = { path = "crates/fleet-dispatch-test" }
 fleet-proxy = { path = "crates/fleet-proxy" }
 fleet-laptop-agent = { path = "crates/fleet-laptop-agent" }
 fleet-search = { path = "crates/fleet-search", default-features = false }
+fleet-bridge = { path = "crates/fleet-bridge" }
+fleet-transport = { path = "crates/fleet-transport" }
+fleet-agent = { path = "crates/fleet-agent" }
+fleet-cert = { path = "crates/fleet-cert" }
+fleet-orgs = { path = "crates/fleet-orgs" }
+fleet-kv = { path = "crates/fleet-kv" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

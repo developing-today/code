@@ -43,16 +43,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use id_store::event_rows::RowRead;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
-use redb::{ReadableDatabase, ReadableTable};
 
 use super::range::{
     self, Entry, Id, Key, Params, Party, all_skip, check_bounds, decode_frame, frames,
 };
-use super::{
-    EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, decode_stored,
-    position_key,
-};
+use super::{EventStore, Ingest, StoreError, corrupt, decode_stored, position_key};
 use crate::pull_policy::{PullGate, PullRefused};
 use id_store::chain::{self, Event};
 use id_store::store_traits::SharedEventStore;
@@ -252,6 +249,43 @@ pub async fn sync_over(
     }
 }
 
+/// Runs one range-sync session over `conn` against a shared store:
+/// [`sync_over`] with the store behind the shared handle. The session
+/// takes the handle's lock per step ([`RangeStore`] for [`Shared`]),
+/// never for the session's whole life, so other users of the store —
+/// the node's own writes, the relay gate's frontier reads — are not
+/// blocked behind a network wait. This is the entry `LocalEvents`
+/// uses since it began holding the store through the handle (#5534).
+pub async fn sync_over_shared(
+    store: &mut Shared,
+    conn: &Connection,
+    initiator: bool,
+    params: Params,
+    now_ms: u64,
+    deadline: Duration,
+    gate: &PullGate,
+) -> Result<Outcome> {
+    match tokio::time::timeout(
+        deadline,
+        run(
+            store,
+            conn,
+            initiator,
+            params,
+            now_ms,
+            Cut::Never,
+            gate,
+            None,
+            BATCH_BYTES,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => bail!("the range session did not finish within {deadline:?}"),
+    }
+}
+
 /// The store access one range session needs, one step at a time.
 ///
 /// A session touches its store in short steps — the sync set once at the start, one
@@ -360,33 +394,45 @@ pub async fn sync_on_streams<S: RangeStore>(
     .await
 }
 
-impl EventStore {
+impl<B: super::EventStoreStorage> EventStore<B> {
     /// The sync set, sorted by key: each stored event, and each fork proof header, once.
+    ///
+    /// Compacted events are not advertised (#13401): a compacted event is
+    /// present — its `hashes` row stays — but its bytes are reclaimed, and
+    /// the advertisement is exactly the set whose bytes [`EventStore::sync_bytes`]
+    /// can serve. An offer the sender cannot serve aborts the session, so
+    /// advertising a compacted ID would break sync with any peer that lacks
+    /// the event. A peer that holds the event anyway still offers it here,
+    /// and ingest answers Duplicate from the `hashes` row.
     ///
     /// # Errors
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub(crate) fn sync_entries(&self) -> Result<Vec<(Key, Id)>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let hashes = txn.open_table(HASHES)?;
-        let headers = txn.open_table(PROOF_HEADERS)?;
-        let mut entries: Vec<(Key, Id)> = Vec::new();
-        for row in hashes.iter()? {
-            let (id, position) = row?;
-            let id = id_of(id.value())?;
-            entries.push((sync_key(position.value(), &id)?, id));
-        }
-        for row in headers.iter()? {
-            let (_id, bytes) = row?;
-            let header = decode_stored(bytes.value())?;
-            let author = *header.header.verifying_key.as_bytes();
-            let position = position_key(&author, header.header.seq_num);
-            let id = *header.id.as_bytes();
-            entries.push((sync_key(&position, &id)?, id));
-        }
-        entries.sort_unstable_by_key(|e| e.0);
-        entries.dedup_by(|a, b| a.0 == b.0);
-        Ok(entries)
+        self.db.with_read(|rows| {
+            let compacted: HashSet<Vec<u8>> = super::compaction::load_residue_rows(rows)?
+                .iter()
+                .map(|item| position_key(&item.author, item.seq).to_vec())
+                .collect();
+            let mut entries: Vec<(Key, Id)> = Vec::new();
+            for (id_bytes, position) in rows.scan_all("hashes")? {
+                if compacted.contains(&position) {
+                    continue;
+                }
+                let id = id_of(&id_bytes)?;
+                entries.push((sync_key(&position, &id)?, id));
+            }
+            for (_id, bytes) in rows.scan_all("proof_headers")? {
+                let header = decode_stored(&bytes)?;
+                let author = *header.header.verifying_key.as_bytes();
+                let position = position_key(&author, header.header.seq_num);
+                let id = *header.id.as_bytes();
+                entries.push((sync_key(&position, &id)?, id));
+            }
+            entries.sort_unstable_by_key(|e| e.0);
+            entries.dedup_by(|a, b| a.0 == b.0);
+            Ok(entries)
+        })
     }
 
     /// The encoded bytes of the event with this ID, if the store holds it as a stored event or as
@@ -396,16 +442,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub(crate) fn sync_bytes(&self, id: &Id) -> Result<Option<Vec<u8>>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let hashes = txn.open_table(HASHES)?;
-        if let Some(position) = hashes.get(id.as_slice())? {
-            let events = txn.open_table(EVENTS)?;
-            let stored = events.get(position.value())?;
-            return Ok(stored.map(|bytes| bytes.value().to_vec()));
-        }
-        let headers = txn.open_table(PROOF_HEADERS)?;
-        let kept = headers.get(id.as_slice())?;
-        Ok(kept.map(|bytes| bytes.value().to_vec()))
+        self.db.with_read(|rows| {
+            if let Some(position) = rows.get("hashes", id)? {
+                return rows.get("events", &position);
+            }
+            rows.get("proof_headers", id)
+        })
     }
 }
 
@@ -431,6 +473,12 @@ fn sync_key(position: &[u8], id: &Id) -> Result<Key, StoreError> {
 /// empty rest. The header commits to the body by hash and size, and the receiver checks
 /// the body against that commitment before storing it, so a body can never be attached
 /// to the wrong event.
+///
+/// An empty rest cannot hide a present empty body (#14907): a header whose payload size
+/// is 0 carries no payload hash on the wire (p2panda's header encoding writes the hash
+/// only for a non-zero size, and its decoder reads it back as `None`), so no header can
+/// commit to an empty body, and the store refuses one at ingest. A stored body is never
+/// empty, and "no body" is the only thing an empty rest can mean.
 fn encode_record(event: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut record = Vec::with_capacity(4 + event.len() + body.map_or(0, <[u8]>::len));
     record.extend_from_slice(&u32::try_from(event.len())?.to_be_bytes());
@@ -601,8 +649,8 @@ fn apply_batch<S: RangeStore>(
     Ok(())
 }
 
-async fn run(
-    store: &mut EventStore,
+async fn run<S: RangeStore>(
+    store: &mut S,
     conn: &Connection,
     initiator: bool,
     params: Params,
@@ -876,6 +924,7 @@ mod tests {
     use id_core::waiting::WaitingLimits;
     use id_store::chain::ChainExt;
     use p2panda_core::{Hash, SigningKey};
+    use redb::{ReadableDatabase, ReadableTable};
     use std::sync::Arc;
 
     use iroh::endpoint::{Endpoint, presets};
@@ -948,6 +997,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -1212,6 +1262,55 @@ mod tests {
         }
     }
 
+    /// The invariant behind the record framing (#14907): an event with an empty payload has
+    /// no payload hash, so the store refuses an empty body for it rather than keeping one.
+    /// An empty record rest can therefore only mean "no body", and the event syncs as the
+    /// header-only event it is stored as.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_empty_body_is_never_stored_so_an_empty_record_rest_means_no_body() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let empty = chain_of(81, 1, b"").remove(0);
+        assert_eq!(empty.header.payload_size, 0);
+        assert_eq!(
+            empty.header.payload_hash, None,
+            "a zero-size payload carries no hash, so no header commits to an empty body"
+        );
+        let decoded = chain::decode(&empty.bytes).unwrap();
+        assert_eq!(decoded.header.payload_hash, None);
+
+        assert!(matches!(
+            a.ingest_with_body(&empty.bytes, Some(b""), NOW).unwrap(),
+            Ingest::Refused(crate::event_store::Refusal::Malformed(_))
+        ));
+        assert!(matches!(
+            a.ingest_with_body(&empty.bytes, None, NOW).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        assert_eq!(a.stored_body(&empty.id).unwrap(), None);
+        assert_eq!(
+            encode_record(&empty.bytes, None).unwrap(),
+            encode_record(&empty.bytes, Some(b"")).unwrap()
+        );
+
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        da.unwrap();
+        db.unwrap();
+        assert!(b.event_by_id(&empty.id).unwrap().is_some());
+        assert!(matches!(
+            b.event_body(&empty.id),
+            Err(StoreError::MissingBody { .. })
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_range_sync_ingests_device_operation_body_on_receiver() {
         let (_da, mut a) = open();
@@ -1223,6 +1322,7 @@ mod tests {
             author: *key.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *signer(72).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1247,6 +1347,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1303,6 +1404,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1351,6 +1453,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1374,11 +1477,11 @@ mod tests {
     /// not store (Codex finding on PR 2214: the tally had a voided count the outcome dropped).
     ///
     /// The shape matters. An event above its author's fork point that arrives *after* the
-    /// fork is refused as frozen (`ingest.rs`, "Known limit: a rival refused as frozen"), so
-    /// it is counted as refused, and the voided count stays zero: voided labels an event the
-    /// store keeps without applying, not an arrival it turns away.
+    /// fork is kept as voided evidence (#12050; `ingest.rs`, "Events above a fork point are
+    /// kept as evidence"), so it is counted as voided, and the refused count stays zero:
+    /// voided labels an event the store keeps without applying.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_a_range_session_counts_frozen_arrivals_as_refused() {
+    async fn test_a_range_session_counts_post_fork_arrivals_as_voided() {
         let (_da, mut a) = open();
         let (_db, mut b) = open();
         let events = chain_of(1, 5, b"x");
@@ -1404,6 +1507,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1422,16 +1526,21 @@ mod tests {
         assert_eq!(da.sent, 2, "events 4 and 5 are missing on B's side");
         assert_eq!(
             db.received, 2,
-            "both above the fork point are received and turned away: {db:?}"
+            "both above the fork point are received and kept: {db:?}"
         );
         assert_eq!(
-            db.refused, 2,
-            "events 4 and 5 arrive above the fork point, so they are frozen: {db:?}"
+            db.refused, 0,
+            "no arrival is refused: the fork no longer turns its later events away: {db:?}"
         );
-        assert_eq!(db.accepted, 0, "a frozen arrival is not accepted: {db:?}");
+        assert_eq!(db.accepted, 0, "a post-fork arrival is not applied: {db:?}");
         assert_eq!(
-            db.voided, 0,
-            "voided counts stored-but-unapplied events, not refused arrivals: {db:?}"
+            db.voided, 2,
+            "events 4 and 5 arrive above the fork point, so they are kept as voided evidence: {db:?}"
+        );
+        assert!(
+            b.event_by_id(&events[3].id).unwrap().is_some()
+                && !b.event_applied(&events[3].id).unwrap(),
+            "the kept arrival is present on B but does not apply"
         );
     }
 
@@ -1440,9 +1549,9 @@ mod tests {
     /// that names a voided group operation in its `after` set: the membership
     /// layer voids an event that names a voided event when its author is not a
     /// member of the group at that position (resolve rule 3), so the receiver
-    /// keeps the event without applying it. This is the stored-but-unapplied
-    /// shape the frozen-arrival test above cannot reach: a frozen arrival is
-    /// turned away, while this one is kept.
+    /// keeps the event without applying it. This is a second stored-but-unapplied
+    /// shape, beside the post-fork one above: there the fork voids the arrival,
+    /// here the membership layer does.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
         use id_core::membership::AuthId;
@@ -1470,6 +1579,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             }
         }
         // The group create, by A, listing A, B and C as managers. The group is
@@ -2179,5 +2289,127 @@ mod tests {
             "{refused:#}"
         );
         assert_eq!(ids(&b), before, "the refused pull sent nothing");
+    }
+
+    /// Oracle (#13401): the advertised sync set is exactly the set whose
+    /// bytes `sync_bytes` can serve. After compaction the compacted IDs are
+    /// absent from the advertisement and unservable, the surviving stored
+    /// event is advertised and servable, and the store's invariants hold.
+    #[test]
+    fn test_compacted_events_are_not_advertised() {
+        let (_dir, mut store) = open();
+        let events = chain_of(1, 6, b"body");
+        fill(&mut store, &events);
+        let policy = crate::event_store::CompactionPolicy {
+            live_kinds: ["message".to_owned()].into_iter().collect(),
+            retain_recent: 1,
+        };
+        assert_eq!(store.compact(&policy).unwrap(), 5);
+        let advertised = ids(&store);
+        assert_eq!(
+            advertised,
+            HashSet::from([*events[5].id.as_bytes()]),
+            "only the surviving stored event is advertised"
+        );
+        for id in &advertised {
+            assert!(
+                store.sync_bytes(id).unwrap().is_some(),
+                "an advertised ID has no servable bytes"
+            );
+        }
+        for event in &events[..5] {
+            assert!(
+                store.sync_bytes(event.id.as_bytes()).unwrap().is_none(),
+                "a compacted event still has servable bytes"
+            );
+        }
+        store.check_invariants().unwrap();
+    }
+
+    /// Oracle (#13401): the two session outcomes and the receiver's tally.
+    /// A compacted store completes a session with a peer that lacks the
+    /// compacted events (before the fix the session died on the first
+    /// unservable offer): the one servable event crosses and waits at the
+    /// receiver on its reclaimed backlink, and nothing else moves.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_compacted_store_syncs_with_peer_missing_compacted_events() {
+        let (_dir_a, mut a) = open();
+        let events = chain_of(1, 6, b"body");
+        fill(&mut a, &events);
+        let policy = crate::event_store::CompactionPolicy {
+            live_kinds: ["message".to_owned()].into_iter().collect(),
+            retain_recent: 1,
+        };
+        assert_eq!(a.compact(&policy).unwrap(), 5);
+        let (_dir_b, mut b) = open();
+        let (dialer, acceptor) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        let dialer = dialer.expect("the compacted store's session failed");
+        let acceptor = acceptor.expect("the empty peer's session failed");
+        assert_eq!(dialer.sent, 1, "only the servable event is offered");
+        assert_eq!(acceptor.received, 1);
+        assert_eq!(
+            acceptor.waiting, 1,
+            "the received tail waits on its reclaimed backlink"
+        );
+        assert!(
+            ids(&b).is_empty(),
+            "a waiting event is not stored at the receiver"
+        );
+        a.check_invariants().unwrap();
+        b.check_invariants().unwrap();
+    }
+
+    /// Oracle (#13401): the session outcomes and the holder's residue. A
+    /// peer that holds the events the compacted store reclaimed offers
+    /// them back; ingest answers Duplicate from the `hashes` rows, no
+    /// bytes are re-stored over residue positions, and both stores keep
+    /// their invariants.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_compacted_store_syncs_with_peer_holding_the_events() {
+        let events = chain_of(1, 6, b"body");
+        let (_dir_a, mut a) = open();
+        fill(&mut a, &events);
+        let policy = crate::event_store::CompactionPolicy {
+            live_kinds: ["message".to_owned()].into_iter().collect(),
+            retain_recent: 1,
+        };
+        assert_eq!(a.compact(&policy).unwrap(), 5);
+        let (_dir_b, mut b) = open();
+        fill(&mut b, &events);
+        let (dialer, acceptor) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        let dialer = dialer.expect("the compacted store's session failed");
+        let acceptor = acceptor.expect("the full peer's session failed");
+        assert_eq!(
+            acceptor.sent, 5,
+            "the peer offers what the holder reclaimed"
+        );
+        assert_eq!(dialer.received, 5);
+        assert_eq!(
+            dialer.duplicates, 5,
+            "re-offered compacted events answer Duplicate, not a re-store"
+        );
+        assert_eq!(
+            ids(&a),
+            HashSet::from([*events[5].id.as_bytes()]),
+            "the holder's advertised set is unchanged by the re-offers"
+        );
+        a.check_invariants().unwrap();
+        b.check_invariants().unwrap();
     }
 }

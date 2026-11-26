@@ -55,8 +55,8 @@ Open http://localhost:3000 in your browser (default port).
 │         │     └───────────┘ └───────────┘                   │
 │         ▼                                                    │
 │  Embedded Assets (rust-embed)                                │
-│  - CSS: main.css (DaisyUI + Tailwind v4)                     │
-│  - JS: main.js (bundled with Bun)                            │
+│  - CSS: styles.<hash>.css (DaisyUI + Tailwind v4)            │
+│  - JS: main.<hash>.js (bundled with Bun)                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,27 +101,48 @@ web/
 │   ├── goto-line.ts      # Go-to-line dialog (Ctrl+G)
 │   ├── indent.ts         # Tab indentation (2-space)
 │   ├── active-line.ts    # Active line highlight plugin
-│   └── wrap.ts           # Word wrap toggle (Alt+Z)
-└── dist/                 # Built assets (embedded in binary)
+│   ├── wrap.ts           # Word wrap toggle (Alt+Z)
+│   ├── home.ts           # Home page (world list, tagged documents, global chat)
+│   ├── navigation.ts     # SPA navigation
+│   ├── world.ts          # World surface (bridge client, forms, records)
+│   ├── world-*.ts        # World helpers (http, keyboard, seed, surface)
+│   └── *.test.ts         # Unit tests alongside the modules they cover
+└── dist/                 # Built assets (embedded in binary; contents git-ignored,
+                          # the directory itself is tracked with a .gitkeep)
 
-src/web/
-├── mod.rs                # Module exports, AppState
-├── routes.rs             # Axum route handlers (file CRUD, tags, rename, copy)
+crates/id-web/src/
+├── lib.rs                # Router construction (Explorer, per-app, program-only)
+├── routes.rs, routes/    # Axum route handlers (file CRUD, tags, rename, copy)
+├── security.rs           # Host allow-list, Origin check, token gate (every route)
 ├── collab.rs             # WebSocket collaboration server
 ├── tags_ws.rs            # WebSocket tag change broadcast
+├── world_ws.rs           # World session bridge WebSocket
 ├── templates.rs          # HTML template rendering
 ├── assets.rs             # rust-embed static serving
 ├── content_mode.rs       # Content type detection
-└── markdown.rs           # Markdown rendering with syntax highlighting
+├── markdown.rs, markdown/ # Markdown rendering with syntax highlighting
+├── home.rs               # Home page and feed
+├── explore.rs            # Script-free directory explorer (/explore)
+├── gallery.rs            # Program gallery routes
+├── runs.rs               # POST /v1/runs: argv parity, SSE output, app loader
+├── sessions.rs           # /v1/sessions: event log, input frames, replay, socket
+├── presentation.rs       # App assets, offline bundles, single-file HTML
+├── groups.rs             # Groups page
+├── identity.rs           # Web client identity routes
+├── seitan.rs             # Seitan admission (invite / admit)
+├── transport_ad.rs       # Transport advertisement document
+└── app_interface.rs      # Per-app interface surface
 
 e2e/
 ├── playwright.config.ts        # 3-mode config: local / nix sandbox / VM test
 └── tests/
-    ├── basic.spec.ts           # 19 UI fundamental tests
-    ├── editor-features.spec.ts # 31 editor feature tests (syntax, lines, wrap, search, etc.)
-    ├── file-operations.spec.ts # 18 tag CRUD, rename, copy, delete, search, theme tests
+    ├── autosave.spec.ts        # 7 autosave tests
+    ├── basic.spec.ts           # 20 UI fundamental tests
+    ├── editor-features.spec.ts # 47 editor feature tests (syntax, lines, wrap, search, etc.)
+    ├── file-operations.spec.ts # 20 tag CRUD, rename, copy, delete, search, theme tests
     ├── navigation.spec.ts      # 17 settings, peers, SPA nav, browser history tests
-    └── websocket.spec.ts       # 19 WS + collaboration tests
+    ├── websocket.spec.ts       # 22 WS + collaboration tests
+    └── world-surface.spec.ts   # 5 world surface tests
 ```
 
 ### Justfile Commands
@@ -136,6 +157,23 @@ just test-e2e-chromium   # Run Playwright tests (chromium only)
 just test-e2e-firefox    # Run Playwright tests (firefox only)
 just test-e2e-report     # Show Playwright HTML report
 ```
+
+## Security Layer
+
+Every router is wrapped by the security layer (`crates/id-web/src/security.rs`),
+which applies to every route below, in this order:
+
+1. **Bind**: loopback by default (`--bind` defaults to `127.0.0.1`).
+2. **Host allow-list**: on loopback binds, the request `Host` must be
+   `localhost`, `127.0.0.1` or `::1`, plus any operator-configured extras.
+3. **Origin check**: any request carrying an `Origin` header must be
+   same-origin (scheme, host and port must match).
+4. **Token gate**: when a token is configured (`--web-token` or the
+   `ID_WEB_TOKEN` environment variable), it is accepted as the `id_token`
+   cookie, an `Authorization: Bearer` header, or a `?token=` query parameter
+   (the query form sets the cookie and redirects to the clean path). When no
+   token is configured this gate is open, and `id serve` prints a warning at
+   startup when a web listener is bound without `--web-token`.
 
 ## Pages
 
@@ -209,10 +247,10 @@ Tags are key-value pairs attached to files. The web UI provides:
 The `/ws/tags` endpoint broadcasts `TagEvent` messages (JSON) when tags change:
 
 ```json
-{"type": "Set", "ns": "global", "subject": "readme.md", "key": "author", "value": "Jane"}
-{"type": "Del", "ns": "global", "subject": "readme.md", "key": "author"}
-{"type": "DelAll", "ns": "global", "subject": "readme.md"}
-{"type": "Transfer", "ns": "global", "from_subject": "old.md", "to_subject": "new.md"}
+{"type": "set", "ns": "global", "subject": "readme.md", "key": "author", "value": "Jane"}
+{"type": "del", "ns": "global", "subject": "readme.md", "key": "author"}
+{"type": "del_all", "ns": "global", "subject": "readme.md"}
+{"type": "transfer", "ns": "global", "from": "old.md", "to": "new.md", "count": 3}
 ```
 
 ## Themes
@@ -236,31 +274,143 @@ Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch 
 
 ## API Routes
 
-| Route                 | Method | Description                                               |
-| --------------------- | ------ | --------------------------------------------------------- |
-| `/`                   | GET    | File browser (main page)                                  |
-| `/peers`              | GET    | Discovered peers (auto-refreshes)                         |
-| `/settings`           | GET    | Settings page                                             |
-| `/edit/{hash}`        | GET    | Editor/viewer for file by hash                            |
-| `/file/{name}`        | GET    | Editor/viewer for file by name                            |
-| `/blob/{hash}`        | GET    | Raw blob content with Content-Type                        |
-| `/api/files`          | GET    | File list (HTML partial)                                  |
-| `/api/save`           | POST   | Save file content                                         |
-| `/api/new`            | POST   | Create new file                                           |
-| `/api/rename`         | POST   | Rename file (with optional archive)                       |
-| `/api/copy`           | POST   | Copy file to new name                                     |
-| `/api/files/send`     | POST   | Send file to another server (server-side transfer, #5346) |
-| `/api/download`       | POST   | Download file content                                     |
-| `/api/delete`         | POST   | Soft-delete file                                          |
-| `/api/restore`        | POST   | Restore deleted file (404 if missing, 409 if not deleted) |
-| `/api/hard-delete`    | POST   | Permanently delete file                                   |
-| `/api/tags`           | GET    | Get tags for a file                                       |
-| `/api/tags`           | POST   | Set a tag                                                 |
-| `/api/tags`           | DELETE | Delete a tag                                              |
-| `/api/tags/search`    | GET    | Search tags                                               |
-| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket                                   |
-| `/ws/tags`            | WS     | Tag change broadcast                                      |
-| `/assets/*`           | GET    | Static assets                                             |
+The main router registers 54 paths with 58 method bindings; a second,
+program-only router (one listener pinned to one world) registers 10 more.
+
+### Pages
+
+| Route                                     | Method | Description                                             |
+| ----------------------------------------- | ------ | ------------------------------------------------------- |
+| `/`                                       | GET    | Index / home: world list, tagged documents, global chat |
+| `/.well-known/id-transport-advertisement` | GET    | Transport advertisement document                        |
+| `/files`                                  | GET    | File browser page                                       |
+| `/world`                                  | GET    | World page (the hosted world's adapter surface)         |
+| `/settings`                               | GET    | Settings page                                           |
+| `/peers`                                  | GET    | Discovered peers (auto-refreshes)                       |
+| `/blocks`                                 | GET    | Operator block-list page                                |
+| `/groups`                                 | GET    | Groups page                                             |
+| `/edit/{*name}`                           | GET    | Editor/viewer for a file by name (wildcard)             |
+| `/hash/{hash}`                            | GET    | Redirect from a content hash to its named file          |
+| `/view/{*name}`                           | GET    | Read-only view of a file by name                        |
+| `/blob/{hash}`                            | GET    | Raw blob content with Content-Type                      |
+
+### HTTP API and partials
+
+| Route                    | Method    | Description                                               |
+| ------------------------ | --------- | --------------------------------------------------------- |
+| `/api/files`             | GET       | File list (HTML partial)                                  |
+| `/api/home/feed`         | GET       | Home feed partial                                         |
+| `/api/peers`             | GET       | Peers partial                                             |
+| `/api/blocks`            | GET, POST | List blocks / create a block                              |
+| `/api/blocks/remove`     | POST      | Remove a block                                            |
+| `/api/save`              | POST      | Save file content                                         |
+| `/api/new`               | POST      | Create new file                                           |
+| `/api/rename`            | POST      | Rename file (with optional archive)                       |
+| `/api/copy`              | POST      | Copy file to new name                                     |
+| `/api/files/send`        | POST      | Send file to another server (server-side transfer, #5346) |
+| `/api/download`          | POST      | Download file content                                     |
+| `/api/delete`            | POST      | Soft-delete file                                          |
+| `/api/restore`           | POST      | Restore deleted file (404 if missing, 409 if not deleted) |
+| `/api/hard-delete`       | POST      | Permanently delete file                                   |
+| `/api/upload`            | POST      | Image upload (multipart, route-scoped body limit)         |
+| `/api/images`            | GET       | Image listing, paged                                      |
+| `/api/tags`              | GET       | Get tags for a file                                       |
+| `/api/tags`              | POST      | Set a tag                                                 |
+| `/api/tags`              | DELETE    | Delete a tag                                              |
+| `/api/tags/search`       | GET       | Search tags                                               |
+| `/api/identity/register` | POST      | Register a web client identity                            |
+| `/api/identity/me`       | GET       | The current identity                                      |
+| `/api/identity/name`     | POST      | Update the identity display name                          |
+| `/api/seitan/invite`     | POST      | Seitan admission: create an invite                        |
+| `/api/seitan/admit`      | POST      | Seitan admission: admit with an invite                    |
+| `/assets/{*path}`        | GET       | Static assets                                             |
+
+### World bridge
+
+| Route                  | Method    | Description                                              |
+| ---------------------- | --------- | -------------------------------------------------------- |
+| `/api/world/invite`    | POST      | Mint a world guest invite                                |
+| `/api/world/host-view` | GET       | Host view: snapshot, surface, and paged records          |
+| `/api/world/metrics`   | GET       | World host metrics                                       |
+| `/api/world/directory` | GET, POST | Directory read / signed directory write action           |
+| `/explore`             | GET       | Script-free HTML directory explorer (forms only)         |
+| `/explore/login`       | POST      | Explorer login (admin token for the `id_explore` cookie) |
+| `/explore/act`         | POST      | Explorer directory action                                |
+| `/invite`              | GET       | Invite landing page                                      |
+| `/ws/world`            | WS        | World session bridge (default socket path)               |
+
+### Program gallery
+
+Every gallery route answers 404 unless a gallery was wired in with
+`--gallery-dir` or `ID_GALLERY_DIR`.
+
+| Route                                        | Method | Description                           |
+| -------------------------------------------- | ------ | ------------------------------------- |
+| `/api/gallery/records`                       | GET    | Signed bundle records list            |
+| `/api/gallery/bundles/{content_hash}`        | GET    | Bundle bytes, immutable cache         |
+| `/api/gallery/search`                        | GET    | Search bundles                        |
+| `/api/gallery/authors/{author}`              | GET    | Author page by key                    |
+| `/api/gallery/collections`                   | GET    | Operator-signed featured collections  |
+| `/api/gallery/collections/{operator}/{name}` | GET    | One collection                        |
+| `/api/gallery/transparency`                  | GET    | Removals, refusals and reinstatements |
+
+### Runs
+
+`POST /v1/runs` runs one subcommand of the serving binary with the request's
+argv, allowlisted env and stdin (`none`, or `body` with `data` or
+`data_base64`), and answers with its exit code, stdout and stderr: the same
+result as the CLI with that argv (#10392 §6.1). Loopback clients only; a
+request forwarded by a proxy is refused.
+
+With `Accept: text/event-stream` the run answers as server-sent events while
+it runs (§6.2): `id: <seq>` from 1, `event: app | out | err | exit`, and a
+JSON `data:` object. `out` and `err` carry `{encoding, data}` chunks; `exit`
+comes last with the exit code, signal, timeout and truncation flags. The
+events of a run with `stdin.mode = none` add up to the plain JSON answer.
+
+App runs name an `app` from the served `app.toml` manifests, announce a
+`client` (`kind`, `features`) and list the `capabilities` they grant (§6.4).
+A run missing a required capability is refused with 403 naming it, and never
+starts.
+
+Sessions (§6.3) hold a run's numbered event log. `POST /v1/sessions` answers
+`{id}` at once; a run joins one by naming `session`, and a streamed run with
+input gets one (its first event is `app` with `{session}`). With
+`stdin.mode = session`, input arrives as frames `{seq, bytes, close}` (`bytes`
+base64, `seq` from 1): in order, a gap or a conflicting repeat refused with
+`kind` `gap` or `conflict`, an identical repeat answered `repeated`. Readers
+attach with `since`, `after`, `before` + `after` or `all=1`; when retention
+(16 MiB per session, one hour idle) dropped events below the cursor, an `app`
+event `{truncated, first_retained_seq}` comes first. The socket carries the
+same event and input objects.
+
+Presentation (§6.5): an app lists its client-side files in
+`[interfaces.web] assets` and picks `pages = "multi"` (default) or `"single"`.
+The manifest answer adds `assets`, each with a content-hashed URL; a request
+with the current `?v=` is cached as immutable, a stale one is 404. Only
+declared files inside the app folder are served. `bundle?format=tar.zst` (or
+`zip`) packs every asset and `manifest.json` for offline use, and
+`bundle.html` inlines scripts, styles and images into one file, each page in
+a `<template data-page>`.
+
+| Route                           | Method | Description                                  |
+| ------------------------------- | ------ | -------------------------------------------- |
+| `/v1/runs`                      | POST   | Run one subcommand; JSON when done, or SSE   |
+| `/v1/apps/{app}/manifest`       | GET    | An app's run manifest (capabilities, assets) |
+| `/v1/sessions`                  | POST   | Create a session; answers `{id}`             |
+| `/v1/sessions/{id}/input`       | POST   | One numbered input frame                     |
+| `/v1/sessions/{id}/events`      | GET    | Attach or replay as SSE                      |
+| `/v1/sessions/{id}/socket`      | GET    | Attach over a WebSocket (events and input)   |
+| `/v1/apps/{app}/assets/{*path}` | GET    | One declared asset, by content hash          |
+| `/v1/apps/{app}/bundle`         | GET    | Offline bundle (`format=tar.zst` or `zip`)   |
+| `/v1/apps/{app}/bundle.html`    | GET    | The web version as one HTML file             |
+
+### WebSocket
+
+| Route                 | Method | Description             |
+| --------------------- | ------ | ----------------------- |
+| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket |
+| `/ws/tags`            | WS     | Tag change broadcast    |
 
 ## Configuration
 
@@ -293,12 +443,12 @@ just test-unit
 
 ### E2E Tests
 
-Playwright tests run against both Chromium and Firefox (104 tests × 2 browsers = 208 total):
+Playwright tests run against both Chromium and Firefox (138 tests × 2 browsers = 276 total):
 
 ```bash
-just test-e2e          # Both browsers (208 tests)
-just test-e2e-chromium # Chromium only (104 tests)
-just test-e2e-firefox  # Firefox only (104 tests)
+just test-e2e          # Both browsers (276 tests)
+just test-e2e-chromium # Chromium only (138 tests)
+just test-e2e-firefox  # Firefox only (138 tests)
 ```
 
 Tests cover: home page elements, file creation, editor features (syntax highlighting, line numbers, word wrap, find/replace, go-to-line, active line, tab indentation), navigation, themes, WebSocket connection/disconnect/reconnect, collaborative editing, multi-user scenarios, tag CRUD, file rename/copy/delete, search filtering.

@@ -1,0 +1,46 @@
+[package]
+name = "id-tui-shell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Terminal (TUI) shell for id (more-shells v2 slice 2, #12818): the text-native world-session client on the F13.1 shell contract, capability statement recorded per decision D3"
+license = "MIT OR Apache-2.0"
+
+# TUI shell (#12818, design more-shells v2 §2): a workspace member but
+# deliberately NOT a default member, like id-native-shell and
+# id-hw-shell, so the ordinary `id` build never acquires this shell's
+# dependencies. Per decision D3 of the v2 outline, the crate's first
+# recorded content is its capability statement (capability-statement.json),
+# recorded before implementation starts; the frame-layer implementation
+# (feature completion on #12818) builds on it in this crate.
+
+[dependencies]
+id = { path = "../..", default-features = false, features = ["world"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Deny critical issues - these indicate bugs or serious problems
+# (mirrors pkgs/id/Cargo.toml and the other shell crates).
+# Test modules should add: #[allow(clippy::unwrap_used, clippy::expect_used)]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"

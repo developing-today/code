@@ -46,6 +46,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import type { BoardDef } from "./board-registry.ts";
 import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
@@ -130,6 +131,10 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
+  /** Per-board audits for the registry-driven Projects pool (#9062). */
+  projectAudits?: Record<string, ProjectAudit>;
+  /** Stable board identities and hierarchy used to produce the Projects pool. */
+  projectBoardRegistry?: BoardDef[];
   /** Collector-cached Projects #4/#5, including draft ideas and dates. */
   designBoards?: BoardSnapshot[];
   /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
@@ -138,9 +143,9 @@ export interface FleetFeed {
    * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
-   * by the collector from Supabase, plus pool/catalog coverage computed
+   * by the collector from Turso, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
-   * ({status:"absent", reason}) when Supabase was unreachable — the
+   * ({status:"absent", reason}) when Turso was unreachable — the
    * section degrades, the feed never fails over it. */
   aa?: AaFeedSection;
   /** Optional collector outcomes. Older feeds have no metadata and keep
@@ -466,11 +471,16 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
-// The collector is scheduled every five minutes. No grace is possible if a
-// stop just after a write must be visible by the next interval: slow runs,
-// scheduler jitter and transport delays can therefore cause transient alarms.
-// This is evaluated on request, not pushed to an already-open browser.
-export const FEED_STALE_MS = 5 * 60_000;
+// The collector is scheduled every five minutes, so a healthy feed is up to
+// one cadence old plus the run's own time and scheduler jitter. #14062: a
+// threshold of one cadence was crossed on nearly every read (the page's
+// degraded banner never cleared), so the feed is stale only once a whole
+// write has been missed: two cadences, which is also the feed-age SLO's
+// "bad minute" bound (slo-sampler.ts), so the health page and the SLO table
+// agree. A stopped collector still shows within two cadences of its last
+// write. This is evaluated on request, not pushed to an already-open browser.
+export const FEED_COLLECTOR_CADENCE_MS = 5 * 60_000;
+export const FEED_STALE_MS = 2 * FEED_COLLECTOR_CADENCE_MS;
 
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;

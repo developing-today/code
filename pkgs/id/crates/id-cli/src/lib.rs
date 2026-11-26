@@ -1,4 +1,4 @@
-//! The id command-line application layer: `cli` (argument parsing),
+//! The id command-line application layer and command dispatch: `cli` (argument parsing),
 //! `commands` (subcommand implementations), `repl`, and
 //! `server_config`, plus the support modules they share (`local`,
 //! `protocol`, `meta_client`, `helpers`, `chat_presence`,
@@ -40,6 +40,7 @@ pub mod local_events {
 }
 pub mod app_manifest;
 pub mod boundary_evidence;
+pub mod boundary_gate;
 pub mod chat_presence;
 pub mod cli;
 pub mod commands;
@@ -84,9 +85,10 @@ pub use crate::protocol::{
 };
 pub use crate::repl::run_repl;
 pub use id_core::discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
-    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
-    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, DefaultsMode,
+    DefaultsProvenance, DefaultsSource, MAX_PEER_NAME_BYTES, MAX_PEERS, PeerAnnouncement,
+    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
+    defaults_provenance, resolve_config,
 };
 pub use id_store::store::{StoreType, load_or_create_keypair, open_store};
 

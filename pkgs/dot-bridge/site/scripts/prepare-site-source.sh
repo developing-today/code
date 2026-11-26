@@ -7,7 +7,10 @@ fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 target=$(cd "$2" && pwd -P)
 id=$1
-[[ "$target" != "$root" && -d "$target/.git" ]] || { echo "Use a separate native Sites checkout" >&2; exit 2; }
+[[ $target != "$root" && -d "$target/.git" ]] || {
+  echo "Use a separate native Sites checkout" >&2
+  exit 2
+}
 # Validate source, target identity, and existing checkout paths before writes.
 for file in worker/index.js scripts/build.sh scripts/validate-artifact.mjs package.json test.mjs; do
   [[ -f "$root/$file" && ! -L "$root/$file" && ! -L "$target/$file" ]] || exit 2

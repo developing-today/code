@@ -3,9 +3,13 @@
 //! This crate defines the pipeline contract and its table-shaped records. A
 //! persistent adapter (the Turso submission DB is the system of record) can
 //! implement [`SubmissionStore`]; this crate deliberately does not create a
-//! competing local database or infer placement policy. Classification and the
-//! destination are supplied by the caller, then must be confirmed by a named
-//! human before [`promote`] can publish anything.
+//! competing local database. Placement classification is the #7717
+//! classifier ([`classify`]): it applies the #6022 decision table to the
+//! submission's declared class, the caller-supplied routing context, and
+//! the sensitivity ceiling, and fails closed whenever classification or
+//! sensitivity is uncertain. A caller may still supply a
+//! [`PlacementDecision`] directly; either way the exact decision must be
+//! confirmed by a named human before [`promote`] can publish anything.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -773,8 +777,10 @@ fn validate_sensitivity_ceiling(
     placement: &PlacementDecision,
 ) -> Result<(), PipelineError> {
     let permitted = match ceiling {
-        // Source-classification ceilings are not Atlas tiers. These checks
-        // are deliberately conservative until #7717 supplies the classifier.
+        // Source-classification ceilings are not Atlas tiers. The #7717
+        // classifier resolves physical tiers under exactly these rules;
+        // this check remains the staging backstop for caller-supplied
+        // decisions.
         SensitivityCeiling::Shareable => true,
         SensitivityCeiling::Internal => placement.sensitivity != SensitivityTier::Public,
         SensitivityCeiling::SecretBearing => placement.sensitivity == SensitivityTier::Secret,
@@ -833,4 +839,346 @@ fn record_attempt<S: SubmissionStore>(
         status,
         detail: detail.to_owned(),
     });
+}
+
+// ---------------------------------------------------------------------------
+// #7717: policy-aware placement classification and routing.
+//
+// The classifier consumes the submission's declared §2 class (the #8204
+// declaration), the registry/routing context a caller supplies, and the
+// submission's sensitivity ceiling, and produces exactly one outcome: a
+// complete [`PlacementDecision`] ready for the human gate, a certain
+// classification into a home this pipeline does not publish, or a
+// fail-closed refusal that leaves the submission unpublished in the
+// submission DB. It invents no destination: Zettel routing needs the
+// registry-selected corpus, repo routing needs the owning repo, and
+// ID-native routing needs the §5 eligibility evidence — all supplied by
+// the caller. Atlas physical tiers are resolved only after the
+// source/caller sensitivity ceiling is applied; the default physical
+// tier is internal, and public/secret are explicit requests. Nothing
+// here publishes: [`promote`]'s human gate still decides publication,
+// and its approval/control rechecks run on classifier decisions exactly
+// as on caller-supplied ones.
+// ---------------------------------------------------------------------------
+
+/// Destination name for ID-native publication. The graph object is
+/// canonical (§5 of the placement design); repo/Zettel copies of an
+/// ID-native note are projections that link back to the object id.
+pub const ID_GRAPH_DESTINATION: &str = "id-graph";
+
+/// §5 ID-native eligibility evidence, supplied by the caller. All three
+/// conditions must hold. The writer-set is named under the existing
+/// #5545 authority — this crate introduces no parallel permission
+/// schema — and the object encoding stays #6062's format.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdNativeEligibility {
+    /// (a) The note is meant to be cited and related across systems,
+    /// not just read.
+    pub cited_across_systems: bool,
+    /// (b) The note has a stable identity worth addressing.
+    pub stable_identity: bool,
+    /// (c) The #5545 writer-set that can be named for the object.
+    pub writer_set: Option<String>,
+    /// The graph object id; it is the note's canonical identity.
+    pub object_id: Option<String>,
+}
+
+/// Registry and routing facts the classifier cannot infer: the
+/// registry-selected Zettelkasten corpus, the owning repo for
+/// repo-coupled classes, an explicit physical-tier request, the §5
+/// eligibility evidence, and an optional canonical-identity override.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingContext {
+    pub zettel_corpus: Option<String>,
+    pub owning_repo: Option<String>,
+    pub requested_tier: Option<SensitivityTier>,
+    pub id_native: Option<IdNativeEligibility>,
+    pub canonical_identity: Option<String>,
+}
+
+/// The classifier's verdict for one submission (#7717).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Classification {
+    /// A complete routing decision, ready to stage for human approval.
+    Routed {
+        declaration: EffectiveDeclaration,
+        decision: PlacementDecision,
+    },
+    /// Classified with certainty into a home this pipeline does not
+    /// publish (workspace scratch, memory, the requesting surface, or
+    /// the owning system's store). The submission stays in the
+    /// submission DB as the staging record; nothing is promoted.
+    NotPublished {
+        declaration: EffectiveDeclaration,
+        reason: String,
+    },
+    /// Fail-closed: classification or sensitivity is uncertain, a
+    /// required routing fact is missing, or the ceiling forbids the
+    /// route. The submission stays unpublished until a human resolves
+    /// the reason; nothing auto-commits or auto-promotes.
+    StaysStaged {
+        declaration: Option<EffectiveDeclaration>,
+        reason: String,
+    },
+}
+
+impl Classification {
+    /// The routing decision, when the verdict is `Routed`.
+    #[must_use]
+    pub fn decision(&self) -> Option<&PlacementDecision> {
+        match self {
+            Self::Routed { decision, .. } => Some(decision),
+            Self::NotPublished { .. } | Self::StaysStaged { .. } => None,
+        }
+    }
+}
+
+/// Classify one submission against the #6022 decision table (#7717).
+///
+/// Pure and deterministic: the same submission and context always
+/// produce the same verdict, and nothing is written anywhere. Apply a
+/// `Routed` verdict with [`stage_classified`] (or stage the decision
+/// through [`stage`] directly); the human gate in [`promote`] still
+/// decides publication.
+#[must_use]
+pub fn classify(submission: &Submission, context: &RoutingContext) -> Classification {
+    let Some(declaration) = submission.effective_declaration() else {
+        return Classification::StaysStaged {
+            declaration: None,
+            reason: "submission declares no §2 placement class; classification is uncertain"
+                .to_owned(),
+        };
+    };
+    let staged = |reason: String| Classification::StaysStaged {
+        declaration: Some(declaration),
+        reason,
+    };
+    match declaration.home {
+        PlacementHome::WorkspaceScratch => Classification::NotPublished {
+            declaration,
+            reason: "ephemeral working notes live in workspace scratch for the task lifetime \
+                     and are not published"
+                .to_owned(),
+        },
+        PlacementHome::MemoryDailyLog | PlacementHome::AgentMemory => {
+            Classification::NotPublished {
+                declaration,
+                reason: "memory homes are written through the memory system, never published \
+                         by this pipeline; Atlas sees provenance only"
+                    .to_owned(),
+            }
+        }
+        PlacementHome::OwningSystemStore => Classification::NotPublished {
+            declaration,
+            reason: "machine state snapshots live in the owning system's store; Atlas reads \
+                     that system of record"
+                .to_owned(),
+        },
+        PlacementHome::RequestingSurface => Classification::NotPublished {
+            declaration,
+            reason: "user-facing documents are delivered on the requesting surface; a \
+                     canonicalized copy is submitted as its own note"
+                .to_owned(),
+        },
+        PlacementHome::Zettel => {
+            let Some(corpus) = non_empty(context.zettel_corpus.as_deref()) else {
+                return staged("Zettel routing needs the registry-selected corpus".to_owned());
+            };
+            route(
+                submission,
+                &declaration,
+                context,
+                corpus.to_owned(),
+                "registry-selected Zettelkasten corpus",
+                context.canonical_identity.clone(),
+                None,
+            )
+        }
+        PlacementHome::RepoDoc => {
+            let Some(repo) = non_empty(context.owning_repo.as_deref()) else {
+                return staged("repo-document routing needs the owning repo".to_owned());
+            };
+            route(
+                submission,
+                &declaration,
+                context,
+                repo.to_owned(),
+                "owning repo doc/",
+                context.canonical_identity.clone(),
+                None,
+            )
+        }
+        PlacementHome::OwningRepo => {
+            let Some(repo) = non_empty(context.owning_repo.as_deref()) else {
+                return staged("runbook routing needs the owning repo".to_owned());
+            };
+            route(
+                submission,
+                &declaration,
+                context,
+                repo.to_owned(),
+                "owning repo",
+                context.canonical_identity.clone(),
+                None,
+            )
+        }
+        PlacementHome::IdGraph => classify_id_native(submission, &declaration, context, staged),
+    }
+}
+
+fn classify_id_native(
+    submission: &Submission,
+    declaration: &EffectiveDeclaration,
+    context: &RoutingContext,
+    staged: impl Fn(String) -> Classification,
+) -> Classification {
+    if submission.sensitivity_ceiling == SensitivityCeiling::SecretBearing {
+        return staged(
+            "secret-bearing material is banned from every note home and is never ID-native (§5)"
+                .to_owned(),
+        );
+    }
+    let Some(eligibility) = &context.id_native else {
+        return staged("ID-native routing needs the §5 eligibility evidence".to_owned());
+    };
+    if !eligibility.cited_across_systems {
+        return staged(
+            "§5 condition (a) unmet: the note is not meant to be cited and related across systems"
+                .to_owned(),
+        );
+    }
+    if !eligibility.stable_identity {
+        return staged("§5 condition (b) unmet: no stable identity worth addressing".to_owned());
+    }
+    let Some(writer_set) = non_empty(eligibility.writer_set.as_deref()) else {
+        return staged("§5 condition (c) unmet: no #5545 writer-set can be named".to_owned());
+    };
+    let Some(object_id) = non_empty(eligibility.object_id.as_deref()) else {
+        return staged(
+            "ID-native routing needs the graph object id as canonical identity".to_owned(),
+        );
+    };
+    route(
+        submission,
+        declaration,
+        context,
+        ID_GRAPH_DESTINATION.to_owned(),
+        "ID graph",
+        Some(object_id.to_owned()),
+        Some(format!(
+            "graph object {object_id} is canonical and copies are projections; writer-set \
+             {writer_set} under #5545 authority; publication format per #6062"
+        )),
+    )
+}
+
+/// Build the `Routed` verdict for a publishable home: resolve the
+/// physical tier under the ceiling, then bind the destination, the
+/// canonical identity (supplied for ID-native notes and by context
+/// override, else `note:<submission id>`), and the submission's
+/// content hash as the source revision/hash pin.
+fn route(
+    submission: &Submission,
+    declaration: &EffectiveDeclaration,
+    context: &RoutingContext,
+    destination: String,
+    destination_kind: &str,
+    canonical_identity: Option<String>,
+    rationale_note: Option<String>,
+) -> Classification {
+    let sensitivity =
+        match resolve_physical_tier(submission.sensitivity_ceiling, context.requested_tier) {
+            Ok(tier) => tier,
+            Err(reason) => {
+                return Classification::StaysStaged {
+                    declaration: Some(*declaration),
+                    reason,
+                };
+            }
+        };
+    let canonical_identity =
+        canonical_identity.unwrap_or_else(|| format!("note:{}", submission.id));
+    let mut rationale = format!(
+        "§2 decision table: {:?} -> {:?} via {destination_kind}; Atlas {:?}; physical tier \
+         {sensitivity:?} under {:?} ceiling",
+        declaration.note_class,
+        declaration.home,
+        declaration.atlas_tier,
+        submission.sensitivity_ceiling,
+    );
+    if let Some(note) = rationale_note {
+        rationale.push_str("; ");
+        rationale.push_str(&note);
+    }
+    Classification::Routed {
+        declaration: *declaration,
+        decision: PlacementDecision {
+            destination,
+            canonical_identity,
+            source_revision: submission.content_sha256.clone(),
+            sensitivity,
+            rationale,
+        },
+    }
+}
+
+/// Resolve the Atlas physical tier for a routed note, applying the
+/// source/caller sensitivity ceiling first (#7717; design §2 of the
+/// 2026-11-08 placement record). The default is `internal`; `public`
+/// and `secret` are explicit requests, never defaults. Ceilings are
+/// not tier aliases: an internal ceiling forbids a public tier,
+/// secret-bearing material requires an explicit secret tier, and
+/// personal/local-only material is never routed by this pipeline.
+fn resolve_physical_tier(
+    ceiling: SensitivityCeiling,
+    requested: Option<SensitivityTier>,
+) -> Result<SensitivityTier, String> {
+    match ceiling {
+        SensitivityCeiling::Personal => Err(
+            "personal-ceiling material stays in agent memory; a shareable extract needs its \
+             own reviewed submission"
+                .to_owned(),
+        ),
+        SensitivityCeiling::LocalOnly => {
+            Err("local-only material never leaves its machine".to_owned())
+        }
+        SensitivityCeiling::SecretBearing => match requested {
+            Some(SensitivityTier::Secret) => Ok(SensitivityTier::Secret),
+            _ => Err("secret-bearing ceiling requires an explicit secret tier request".to_owned()),
+        },
+        SensitivityCeiling::Internal => match requested {
+            Some(SensitivityTier::Public) => {
+                Err("internal ceiling does not permit a public physical tier".to_owned())
+            }
+            Some(tier) => Ok(tier),
+            None => Ok(SensitivityTier::Internal),
+        },
+        SensitivityCeiling::Shareable => Ok(requested.unwrap_or(SensitivityTier::Internal)),
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+/// Classify a stored submission and, when the verdict is `Routed`,
+/// stage the classifier's decision for human approval. `NotPublished`
+/// and `StaysStaged` verdicts change nothing: the submission remains
+/// in the submission DB, unpublished. The returned verdict is the
+/// audit record of why.
+pub fn stage_classified<S: SubmissionStore>(
+    store: &mut S,
+    submission_id: &str,
+    context: &RoutingContext,
+    staged_at: impl Into<String>,
+) -> Result<Classification, PipelineError> {
+    let submission = store
+        .submission(submission_id)
+        .cloned()
+        .ok_or_else(|| PipelineError::UnknownSubmission(submission_id.to_owned()))?;
+    let classification = classify(&submission, context);
+    if let Classification::Routed { decision, .. } = &classification {
+        stage(store, submission_id, decision.clone(), staged_at)?;
+    }
+    Ok(classification)
 }

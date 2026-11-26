@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance, RefKey } from "../src/model.ts";
 import type { CoverageSnapshotFile } from "../src/coverage.ts";
 import { PAGES, pageByRoute } from "../src/pages.ts";
 import {
@@ -14,7 +14,7 @@ import {
   type ProjectRepoCard,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
-import { projectsBodyHtml, renderProgram, renderProgramProject } from "../src/render.ts";
+import { projectsBodyHtml, renderProgram, renderProgramProject, renderRoadmap } from "../src/render.ts";
 import { FIXTURE_ROADMAP, fixtureSource } from "../src/sources/fixtures.ts";
 
 const PROV: Provenance = {
@@ -85,6 +85,27 @@ describe("stale issue coverage panel", () => {
     expect(html).toContain("Collection error: search 503 &lt;retry&gt;");
     expect(html).toContain("Unavailable — collection failed or not collected");
     expect(html).toContain(">—</td>");
+  });
+
+  test("stale-count cell carries the week-over-week delta like every other count (#1224)", () => {
+    const row = (stale: number | null) => ({
+      repo: "org/nix",
+      openIssues: 55,
+      gateNow: 0,
+      gateNext: 0,
+      poolItems: null,
+      poolUnsetStatus: null,
+      poolUnsetArea: null,
+      staleOpenIssues: stale,
+      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      staleIssuesError: null,
+    });
+    const coverage: CoverageSnapshotFile = {
+      baseline: { generatedAt: "2026-10-25T12:00:00.000Z", repos: [row(267)] },
+      current: { generatedAt: "2026-11-01T12:00:00.000Z", repos: [row(0)] },
+    };
+    const html = projectsBodyHtml([], { coverage });
+    expect(html).toContain('>0 <span class="muted">(-267)</span></td>');
   });
 });
 
@@ -483,6 +504,27 @@ describe("project registry", () => {
     expect(unsetPoolCount(pool)).toBe(1);
   });
 
+  test("project weighted progress counts each canonical issue once across board memberships", () => {
+    const closed = poolItem({
+      ref: "developing-today/code#500" as RefKey,
+      state: "closed",
+      area: "pm-dashboard",
+      labels: ["effort/s"],
+    });
+    const open = poolItem({
+      ref: "developing-today/code#501" as RefKey,
+      state: "open",
+      area: "pm-dashboard",
+      labels: ["effort/s"],
+    });
+    const duplicateClosed = { ...closed, boardId: "satellite" };
+    const summary = buildProjectSummaries(PROJECT_CONFIGS, [closed, duplicateClosed, open], [])[0]!;
+
+    expect(summary.poolTotal).toBe(3); // raw board memberships remain visible
+    expect(summary.weights.weightedPct).toBe(50);
+    expect(summary.weights.count).toBe(2);
+  });
+
   test("allProjectRefs covers every project's tracked + editorial refs, de-duplicated", () => {
     const refs = allProjectRefs();
     for (const r of TRACKED_REFS) expect(refs).toContain(r);
@@ -496,6 +538,32 @@ describe("project registry", () => {
 // --- Per-project pages (#1121) --------------------------------------------------
 
 describe("renderProgramProject", () => {
+  test("program timeline keeps escaped notes and reference text without changing the shared default (#12078)", () => {
+    const config = projectConfigById("pm-dashboard")!;
+    const base = FIXTURE_ROADMAP.find((row) => row.area === config.roadmapArea)!;
+    const notes = 'See https://github.com/example/widget/pull/42 & <legacy> "notes"';
+    const escaped = "See https://github.com/example/widget/pull/42 &amp; &lt;legacy&gt; &quot;notes&quot;";
+    const row = { ...base, notes, links: [] };
+    const blank = { ...row, id: 9001, subject: "grist:blank", title: "Blank notes row", notes: "   " };
+    const other = { ...row, id: 9002, subject: "grist:other", area: "Other", notes: "Other area notes" };
+    const items = new Map();
+    const html = renderProgramProject(buildProjectDetail(config, items, [], [row, blank, other]), items, PROV);
+
+    // Oracle: the old project card showed Notes as escaped text, not
+    // parsed markup or a substitute link badge.
+    expect(html).toContain("Roadmap timeline by theme");
+    expect(html).toContain("Blank notes row");
+    expect(html).toContain('<p class="notes">' + escaped + "</p>");
+    expect(html.split('<p class="notes">')).toHaveLength(2);
+    expect(html).not.toContain(notes);
+    expect(html).not.toContain("Other area notes");
+    expect(renderRoadmap([row], items, PROV)).not.toContain(escaped);
+    const drill = new Map([[row.subject, { children: [] }]]);
+    const sharedHtml = renderRoadmap([row], items, PROV, "quarter", undefined, undefined, undefined, drill);
+    expect(sharedHtml).toContain('<p class="notes">' + escaped + "</p>");
+    expect(sharedHtml.split('<p class="notes">')).toHaveLength(2);
+  });
+
   test("every configured project renders from fixtures, nulls stated honestly", async () => {
     const src = fixtureSource();
     const items = await src.items(allProjectRefs());

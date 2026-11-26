@@ -39,6 +39,7 @@ mod core;
 mod handle;
 mod handoff_operations;
 pub mod hotness;
+mod http_fetch;
 mod journal;
 mod metrics;
 mod provider_broker;
@@ -46,7 +47,9 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+pub mod spill_controller;
 pub mod spill_gate;
+pub mod spill_pool;
 mod upgrade;
 mod util;
 
@@ -79,13 +82,15 @@ pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 /// The F12.14 portal policy types (code#1068), re-exported so the
 /// handle/hub portal surface names the same types the kernel checks.
 pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
-pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
-    CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_OPEN_PRESENCE,
-    JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
-    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
-    JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
+    CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_BLOB,
+    JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
+    JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV, JOURNAL_VERSION_LEASE_POSITION,
+    JOURNAL_VERSION_NOTIFY, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
+    JOURNAL_VERSION_PRESENTATION_POLICY, JOURNAL_VERSION_PROGRAM_BUNDLE,
+    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
+    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
+    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
     JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
     journal_version_required_by,
 };
@@ -115,9 +120,9 @@ pub use upgrade::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode, hex_decode_32, is_pre_fix_mint_display_name,
-    legacy_sanitize_display_name, pre_fix_sanitize_display_name, sanitize_chat,
-    sanitize_display_name, token_digest,
+    blob_decode, blob_encode, blob_id, constant_time_eq, hex_decode, hex_decode_32,
+    is_pre_fix_mint_display_name, legacy_sanitize_display_name, pre_fix_sanitize_display_name,
+    sanitize_chat, sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -172,6 +177,14 @@ pub struct WorldLimits {
     /// Trim the journal behind a program snapshot once this many events were
     /// committed since the last one. `0` disables checkpointing.
     pub checkpoint_every: u64,
+    /// When the world's journal acknowledges an append relative to the
+    /// sync that makes it durable (#557). Runtime configuration, not
+    /// journaled; the default [`JournalAckMode::Sync`] is the original
+    /// durability-before-ack contract. The relaxed modes trade a
+    /// bounded (or, for `Async`, sync-point-bounded) loss window for
+    /// fewer syncs on the input ack path — see [`JournalAckMode`] for
+    /// the guarantees and when to choose each.
+    pub journal_ack_mode: JournalAckMode,
     /// Minimum tick interval a program may subscribe to, in milliseconds.
     /// Subscriptions below this floor are refused at subscription time.
     pub min_tick_ms: u64,
@@ -180,6 +193,13 @@ pub struct WorldLimits {
     /// Capabilities the server allows any world to use. Runtime configuration,
     /// not journaled; a world's own ceiling and grants only narrow it.
     pub server_caps: BTreeSet<String>,
+    /// Hosts the `http.fetch` provider may fetch from (#1062): the
+    /// admin allowlist. Runtime configuration, not journaled; empty
+    /// by default, which refuses every fetch. Entries are matched
+    /// exactly against the URL's normalized host — no wildcards, no
+    /// implied subdomains. A bare host admits only the scheme's
+    /// default port; `host:port` admits that port only.
+    pub http_fetch_hosts: BTreeSet<String>,
 }
 
 impl Default for WorldLimits {
@@ -193,9 +213,11 @@ impl Default for WorldLimits {
             presentation_bytes: 8192,
             snapshot_bytes: 512 * 1024,
             checkpoint_every: 1000,
+            journal_ack_mode: JournalAckMode::Sync,
             min_tick_ms: 1000,
             grant_on_use: false,
             server_caps: crate::world_caps::default_ceiling_names(),
+            http_fetch_hosts: BTreeSet::new(),
         }
     }
 }
@@ -303,6 +325,20 @@ pub enum WorldEventKind {
     System {
         /// The event's JSON.
         event: String,
+    },
+    /// A user-visible outbound notification from the world's program,
+    /// sent through the `notify` provider (#1062, F12.5). Host-authored:
+    /// `participant_id` is zero, the host commits it on the program's
+    /// behalf once the grant/ceiling decision and the rate bound pass.
+    /// Broadcast to participant sessions and retained like any committed
+    /// event, but it is not a chat line: it never enters chat history,
+    /// and the join projection shows it to every participant, not only
+    /// chat readers. Journals carrying one require
+    /// [`JOURNAL_VERSION_NOTIFY`].
+    Notification {
+        /// Notification text, UTF-8 and control-character sanitized,
+        /// bounded by the world's `chat_bytes` limit.
+        text: String,
     },
     /// A world admin installed a new program. `participant_id` is zero for
     /// this host-authored event.
@@ -660,7 +696,11 @@ pub const WRITE_LEASE_RENEWAL_INTERVAL_MS: u64 = 10_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum LeaseRejectionReason {
-    /// The writer is not the current lease holder (or there is none).
+    /// No holder stands while the authority is fencing and selecting a
+    /// successor. The caller should retry with backoff against the pool.
+    #[error("world write rejected: holder_lost (retryable)")]
+    HolderLost,
+    /// The writer is not the current lease holder in steady state.
     #[error("world write rejected: not_holder (retryable)")]
     NotHolder,
     /// The writer presented an epoch other than the current one.
@@ -707,6 +747,13 @@ pub struct WriteLeaseTransition {
     /// Why a revocation happened; absent for other kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The transition's durable per-world journal position (#13711):
+    /// strictly increasing across the lease history in journal order.
+    /// `0` means unstamped: a transition recorded before positions
+    /// existed. A checkpoint carries this whole history, so a
+    /// position survives compaction exactly when its transition does.
+    #[serde(default)]
+    pub position: u64,
 }
 
 /// One rejected stale append attempt, as the append authority audited
@@ -729,6 +776,10 @@ pub struct LeaseWriteRejection {
     /// When the authority received the attempt, in unix milliseconds
     /// on the authority's clock.
     pub received_at_ms: u64,
+    /// The audit's durable per-world journal position (#13711);
+    /// `0` means unstamped (pre-positions entry).
+    #[serde(default)]
+    pub position: u64,
 }
 
 /// One entry in a [`WriteLease`]'s audit history, in journal order.
@@ -816,6 +867,27 @@ impl WriteLease {
         *self == Self::bootstrap()
     }
 
+    /// The highest stamped journal position in the lease history
+    /// (#13711): the replay watermark — a successor that has
+    /// replayed this history has replayed through this position.
+    /// `0` when no transition or audit in the history carries a
+    /// stamped position (a world that never spilled, or a legacy
+    /// journal whose lease entries predate positions). History is
+    /// append-only and positions strictly increase in journal order,
+    /// so this is also the position the next live lease record
+    /// must exceed.
+    #[must_use]
+    pub fn last_position(&self) -> u64 {
+        self.history
+            .iter()
+            .map(|entry| match entry {
+                WriteLeaseHistory::Transition(transition) => transition.position,
+                WriteLeaseHistory::Rejection(rejection) => rejection.position,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Whether `now_ms` is past the current term. An untermed holder
     /// never expires; a world with no holder has nothing to expire.
     #[must_use]
@@ -839,6 +911,9 @@ impl WriteLease {
         presented_epoch: u64,
         now_ms: u64,
     ) -> Result<(), LeaseRejectionReason> {
+        if self.holder.is_none() {
+            return Err(LeaseRejectionReason::HolderLost);
+        }
         if self.holder.as_deref() != Some(writer) {
             return Err(LeaseRejectionReason::NotHolder);
         }
@@ -848,6 +923,20 @@ impl WriteLease {
         if self.is_expired(now_ms) {
             return Err(LeaseRejectionReason::Expired);
         }
+        Ok(())
+    }
+
+    /// A stamped journal position must advance past every stamped
+    /// position already in the history (#13711); `0` is the
+    /// unstamped legacy marker and neither advances the order nor
+    /// violates it. Checked after the domain validation, so a bad
+    /// epoch or holder reports its own error first.
+    fn ensure_position_advances(&self, position: u64) -> Result<()> {
+        ensure!(
+            position == 0 || position > self.last_position(),
+            "journal lease position {position} does not advance past {}",
+            self.last_position()
+        );
         Ok(())
     }
 
@@ -863,6 +952,7 @@ impl WriteLease {
         holder: &str,
         epoch: u64,
         expires_at_ms: Option<u64>,
+        position: u64,
     ) -> Result<()> {
         ensure!(
             self.holder.is_none(),
@@ -870,6 +960,7 @@ impl WriteLease {
             self.holder
         );
         self.advance_epoch(epoch, "grant")?;
+        self.ensure_position_advances(position)?;
         self.holder = Some(holder.to_owned());
         self.expires_at_ms = expires_at_ms;
         self.history
@@ -880,6 +971,7 @@ impl WriteLease {
                 epoch,
                 expires_at_ms,
                 reason: None,
+                position,
             }));
         Ok(())
     }
@@ -891,7 +983,13 @@ impl WriteLease {
     ///
     /// A renewal by a non-holder, under a different epoch, or moving
     /// the expiry backwards.
-    pub fn apply_renew(&mut self, holder: &str, epoch: u64, expires_at_ms: u64) -> Result<()> {
+    pub fn apply_renew(
+        &mut self,
+        holder: &str,
+        epoch: u64,
+        expires_at_ms: u64,
+        position: u64,
+    ) -> Result<()> {
         ensure!(
             self.holder.as_deref() == Some(holder),
             "journal renews the write lease for {holder:?}, held by {:?}",
@@ -907,6 +1005,7 @@ impl WriteLease {
                 .is_none_or(|current| expires_at_ms >= current),
             "journal renewal moves the write lease expiry backwards"
         );
+        self.ensure_position_advances(position)?;
         self.expires_at_ms = Some(expires_at_ms);
         self.history
             .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
@@ -916,6 +1015,7 @@ impl WriteLease {
                 epoch,
                 expires_at_ms: Some(expires_at_ms),
                 reason: None,
+                position,
             }));
         Ok(())
     }
@@ -934,6 +1034,7 @@ impl WriteLease {
         to: &str,
         epoch: u64,
         expires_at_ms: Option<u64>,
+        position: u64,
     ) -> Result<()> {
         ensure!(
             self.holder.as_deref() == Some(from),
@@ -941,6 +1042,7 @@ impl WriteLease {
             self.holder
         );
         self.advance_epoch(epoch, "handoff")?;
+        self.ensure_position_advances(position)?;
         self.holder = Some(to.to_owned());
         self.expires_at_ms = expires_at_ms;
         self.history
@@ -951,6 +1053,7 @@ impl WriteLease {
                 epoch,
                 expires_at_ms,
                 reason: None,
+                position,
             }));
         Ok(())
     }
@@ -963,13 +1066,20 @@ impl WriteLease {
     ///
     /// A revocation of a non-holder, or an epoch that is not
     /// `current + 1`.
-    pub fn apply_revoke(&mut self, former_holder: &str, epoch: u64, reason: &str) -> Result<()> {
+    pub fn apply_revoke(
+        &mut self,
+        former_holder: &str,
+        epoch: u64,
+        reason: &str,
+        position: u64,
+    ) -> Result<()> {
         ensure!(
             self.holder.as_deref() == Some(former_holder),
             "journal revokes the write lease from {former_holder:?}, held by {:?}",
             self.holder
         );
         self.advance_epoch(epoch, "revocation")?;
+        self.ensure_position_advances(position)?;
         self.holder = None;
         self.expires_at_ms = None;
         self.history
@@ -980,6 +1090,7 @@ impl WriteLease {
                 epoch,
                 expires_at_ms: None,
                 reason: Some(reason.to_owned()),
+                position,
             }));
         Ok(())
     }
@@ -1023,6 +1134,7 @@ impl WriteLease {
             "journal audits rejected write {:?} twice",
             rejection.operation_id
         );
+        self.ensure_position_advances(rejection.position)?;
         self.history.push(WriteLeaseHistory::Rejection(rejection));
         Ok(())
     }
@@ -1048,6 +1160,7 @@ impl WriteLease {
                             .context("lease grant transition names no holder")?,
                         transition.epoch,
                         transition.expires_at_ms,
+                        transition.position,
                     )?,
                     LeaseTransitionKind::Renewed => replayed.apply_renew(
                         transition
@@ -1058,6 +1171,7 @@ impl WriteLease {
                         transition
                             .expires_at_ms
                             .context("lease renewal transition names no expiry")?,
+                        transition.position,
                     )?,
                     LeaseTransitionKind::HandedOff => replayed.apply_handoff(
                         transition
@@ -1070,6 +1184,7 @@ impl WriteLease {
                             .context("lease handoff transition names no target")?,
                         transition.epoch,
                         transition.expires_at_ms,
+                        transition.position,
                     )?,
                     LeaseTransitionKind::Revoked => replayed.apply_revoke(
                         transition
@@ -1081,6 +1196,7 @@ impl WriteLease {
                             .reason
                             .as_deref()
                             .context("lease revocation transition names no reason")?,
+                        transition.position,
                     )?,
                 },
                 WriteLeaseHistory::Rejection(rejection) => {
@@ -1366,6 +1482,38 @@ impl<'de> serde::Deserialize<'de> for CheckpointSchedule {
     }
 }
 
+/// One live entry of the world's `kv` store as a checkpoint declares
+/// it (#1062). The writer also emits one `KvSet` journal entry per
+/// live entry before the checkpoint, and replay refuses a checkpoint
+/// whose declared entries disagree with them — the schedule treatment
+/// ([`CheckpointSchedule`]) applied to the store.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointKvEntry {
+    /// The entry's key.
+    pub key: String,
+    /// The entry's value, as its JSON encoding: the store keeps the
+    /// encoding, not a parsed `Value`, so journal and checkpoint
+    /// records stay `Eq` and the byte charge is the string's length.
+    pub value: String,
+}
+
+/// One live blob of the world as a checkpoint declares it (#1062):
+/// the blob's index entry, not its content. The writer also emits
+/// one `BlobStored` journal entry per live blob before the
+/// checkpoint, and replay refuses a checkpoint whose declared index
+/// disagrees with them — the schedule treatment
+/// ([`CheckpointSchedule`]) applied to the blob set. Only the index
+/// is declared because the content would exceed the checkpoint
+/// scalar bound on its own; the entries carry the bytes, and the
+/// declared size pins what each entry must hold.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointBlobEntry {
+    /// The blob's content address: its hash as lowercase hex.
+    pub hash: String,
+    /// The content's length, in bytes.
+    pub size: usize,
+}
+
 /// This world's schedule-delivery consent for one peer world (#1355
 /// part 2): the pair must be reciprocal across the two worlds for a
 /// cross-world fire to happen — the source holds `send` for the target,
@@ -1539,6 +1687,11 @@ pub(crate) fn schedule_fired_event_from(id: &str, late: bool, source: Option<&st
 /// waits while the program cannot take a fire (`deliverable` is false): a due
 /// schedule that cannot be delivered would otherwise wake the loop without end.
 ///
+/// A due schedule whose fire was refused at the account's fuel rate waits
+/// until `not_before` instead (#1067): without this the loop retries the same
+/// refused fire, scans schedules and warns on every pass until rollover. A
+/// schedule that is not due yet keeps its own wake.
+///
 /// The deadline is anchored to `now_instant` (the injected clock's monotonic
 /// face), so a manual clock advancing `now_ms` past a schedule also advances
 /// this deadline.
@@ -1547,13 +1700,21 @@ pub(crate) fn next_schedule_wake(
     now_ms: u64,
     now_instant: std::time::Instant,
     deliverable: bool,
+    not_before: Option<std::time::Instant>,
 ) -> Option<std::time::Instant> {
     if !deliverable {
         return None;
     }
     let earliest = schedules.values().map(|schedule| schedule.at_ms).min()?;
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
-    Some(now_instant + wait)
+    let wake = now_instant + wait;
+    Some(if wait.is_zero() {
+        not_before
+            .filter(|deadline| *deadline > wake)
+            .unwrap_or(wake)
+    } else {
+        wake
+    })
 }
 
 /// The newest `count` chat lines in `events`, oldest first, each carrying its
@@ -1754,6 +1915,8 @@ pub(crate) struct AdminEventHistory {
 ///   program whose hidden state derives from `init(seed)` must not leak that
 ///   state to every participant.
 /// - A host-originated `System` event is never part of a participant stream.
+/// - A `Notification` is returned as is: it is addressed to the world's
+///   users, not to its chat readers, so the chat-read scope does not gate it.
 /// - Anything else is returned as is.
 ///
 /// The journal, the core's retained events and the admin paths keep the real

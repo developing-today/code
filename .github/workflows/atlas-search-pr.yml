@@ -5,6 +5,9 @@ name: atlas-search
 # No `cargo fmt --check` step: the policy is that formatting is not a
 # merge gate (formatting is auto-fixed on main by auto-format.yml), so
 # this basic-tier job runs tests only.
+#
+# Despite the filename, there is no pull-request trigger: this runs
+# nightly and on dispatch only (the -pr suffix is historical).
 
 on:
   schedule:
@@ -31,20 +34,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Toolchain pin lives in pkgs/atlas-search/rust-toolchain.toml;
+      # keep this install in step with its channel.
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.99.0 --profile minimal
+        run: rustup toolchain install 1.99.1 --profile minimal
 
       - name: Test atlas-search
-        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search --all-targets
+        run: cargo +1.99.1 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search --all-targets
 
       - name: Test atlas-core
-        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-core --all-targets
+        run: cargo +1.99.1 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-core --all-targets
 
       - name: Test atlas-proto
-        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-proto --all-targets
+        run: cargo +1.99.1 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-proto --all-targets
 
       # gate_a's model test stays #[ignore]d here: it requires
       # ATLAS_ORT_LIB and the pinned model snapshot (see the test's
       # file docs) — the venue runs the crate's remaining targets.
       - name: Test atlas-embed
-        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-embed --all-targets
+        run: cargo +1.99.1 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-embed --all-targets

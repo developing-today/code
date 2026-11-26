@@ -13,21 +13,29 @@ license = "MIT OR Apache-2.0"
 # Step 2 (this feature set) adds the window/render plugins
 # (bevy_window/bevy_winit/bevy_render) together with their flake
 # system-library wiring in pkgs/id/nix-common.nix (wayland, X11,
-# libxkbcommon, vulkan-loader).
+# libxkbcommon, vulkan-loader). The #12657 step-2a scene renderer
+# adds bevy_pbr (standard 3D materials) on top of the same wiring.
+# The #12657 step-2b audio renderer adds no features: it derives its
+# schedule and tones in-crate and owns presentation state only (this
+# feature set carries no audio output backend).
+# The #15022 clipboard paste slice adds `system_clipboard`: Bevy's
+# `bevy_clipboard` plugin over arboard (X11 and, with the Linux
+# `wayland` feature below, Wayland data-control), already in the
+# lockfile through bevy_text. It is read only on the paste chord.
 
 [dependencies]
 anyhow = "1"
 bevy = { version = "0.19", default-features = false, features = [
   "std",
   "bevy_core_pipeline",
+  "bevy_pbr",
   "bevy_render",
   "bevy_text",
   "bevy_ui",
   "bevy_window",
   "bevy_winit",
   "default_font",
-  "x11",
-  "wayland",
+  "system_clipboard",
 ] }
 id = { path = "../..", default-features = false, features = ["world"] }
 iroh = "1"
@@ -35,6 +43,15 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The X11/Wayland windowing backends are Linux-only: gate them to this
+# target table (features are additive across target tables, so Linux
+# resolves the same Bevy feature set as before) so the crate's
+# dependency graph for other targets — macOS next (#12817) — carries
+# no wayland-sys/x11 crates at all.
+bevy = { version = "0.19", default-features = false, features = [
+  "x11",
+  "wayland",
+] }
 # Linux `openat2(2)` with RESOLVE_BENEATH for the file-read open (#11420).
 libc = "0.2"
 

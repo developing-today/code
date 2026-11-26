@@ -25,18 +25,12 @@ rec {
       lib.make-mcpx-overlay
       lib.make-mcpx-modules
       lib.make-pm-stack
+      lib.make-archer-slack
       lib.make-laptop-backups-checks
       lib.make-fleet
       lib.make-deploy
     ];
   inputs = {
-    nixgl = {
-      url = "github:nix-community/nixGL";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-utils.follows = "flake-utils";
-    };
     roc = {
       # old flake.nix was removed from roc-lang/roc main; official flake moved to roc-overlay
       url = "github:roc-lang/roc-overlay"; # ?shallow=1";
@@ -77,7 +71,6 @@ rec {
     esp-dev.url = "github:mirrexagon/nixpkgs-esp-dev/5287d6e1ca9e15ebd5113c41b9590c468e1e001b";
     # ESP-IDF 6.0.1 packaging candidate; kept separate from the supported 5.5 toolchain.
     esp-dev-6.url = "github:dvdvgt/nixpkgs-esp-dev/f9b1e211262a4cc9c1a265b227def56ef01c2d56";
-    nix-flatpak.url = "github:gmodena/nix-flatpak"; # ?shallow=1";
     # Antigravity CLI (agy), newest-upstream tracking (2026-11-16):
     # nixpkgs' antigravity-cli lags Google (fleet pin carries 1.4.8,
     # nixpkgs master carries 1.5.6, upstream is 1.5.9). selfhost-it's
@@ -160,23 +153,12 @@ rec {
       # package flake pins the same rev.
       url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
     };
-    waybar = {
-      # TODO: use this?
-      url = "github:Alexays/Waybar"; # ?shallow=1";
-    };
     flake-parts = {
       # TODO: use this?
       url = "github:hercules-ci/flake-parts"; # ?shallow=1";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       # inputs.nixpkgs-lib.follows = "nixpkgs";
       inputs.nixpkgs-lib.follows = "nixpkgs-unstable";
-    };
-    hercules-ci-effects = {
-      url = "github:hercules-ci/hercules-ci-effects"; # ?shallow=1";
-      inputs.flake-parts.follows = "flake-parts";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     neovim-src = {
       url = "github:neovim/neovim"; # ?shallow=1";
@@ -190,20 +172,6 @@ rec {
       inputs.flake-parts.follows = "flake-parts";
       inputs.neovim-src.follows = "neovim-src";
     };
-    git-hooks = {
-      url = "github:cachix/git-hooks.nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-compat.follows = "flake-compat";
-    };
-    zig-overlay = {
-      url = "github:mitchellh/zig-overlay"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-compat.follows = "flake-compat";
-    };
     nixvim = {
       # url = "github:nix-community/nixvim"; # ?shallow=1";
       url = "github:nix-community/nixvim/main"; # ?shallow=1";
@@ -212,34 +180,6 @@ rec {
       # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-parts.follows = "flake-parts";
-    };
-    nix-darwin = {
-      # TODO: use this?
-      url = "github:lnl7/nix-darwin"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
-    treefmt-nix = {
-      # TODO: use this?
-      url = "github:numtide/treefmt-nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
-    nix-topology = {
-      url = "github:oddlama/nix-topology"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
-    pre-commit-hooks = {
-      # TODO: use this?
-      url = "github:cachix/pre-commit-hooks.nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-compat.follows = "flake-compat";
     };
     # hyprlang = {
     #   url = "github:hyprwm/hyprlang";
@@ -254,7 +194,6 @@ rec {
       # inputs.flake-utils.follows = "flake-utils";
       # inputs.rust-overlay.follows = "rust-overlay";
     };
-    omnix.url = "github:juspay/omnix"; # ?shallow=1"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hypr.land/nix/installing-hyprland-on-nixos/
     # hypr-dynamic-cursors = {
     #   url = "github:VirtCode/hypr-dynamic-cursors"; #?shallow=1";
@@ -362,10 +301,6 @@ rec {
     # that break against a pure store path.
     claude-desktop = {
       url = "github:aaddrick/claude-desktop-debian";
-    };
-    omasnap = {
-      url = "github:tobi/omasnap";
-      flake = false;
     };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
     id-nixpkgs.follows = "nixpkgs-unstable";

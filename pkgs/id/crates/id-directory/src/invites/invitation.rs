@@ -5,6 +5,14 @@ use iroh_tickets::endpoint::EndpointTicket;
 
 const SCHEME: &str = "id:join?";
 
+/// The most characters a paste form may occupy (§1).
+///
+/// The budget keeps a paste form intact in any chat. Minting refuses a longer
+/// form; a ticket that would exceed the budget is not minted — the minter
+/// drops direct addresses (the relay path still works) rather than emitting
+/// a link chat clients will mangle.
+pub const MAX_PASTE_CHARS: usize = 512;
+
 /// A pasted ticket, or a link that names the inviter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invitation {
@@ -22,6 +30,40 @@ pub enum Invitation {
 }
 
 impl Invitation {
+    /// Mints a bare-ticket invitation, refusing a paste form over the
+    /// [`MAX_PASTE_CHARS`] budget.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the ticket's paste form exceeds the budget.
+    pub fn bare(ticket: EndpointTicket) -> Result<Self> {
+        let invitation = Self::Ticket(ticket);
+        invitation.check_paste_budget()?;
+        Ok(invitation)
+    }
+
+    /// Mints a link invitation naming the inviter, refusing a paste form over
+    /// the [`MAX_PASTE_CHARS`] budget.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the link's paste form exceeds the budget.
+    pub fn link(group: [u8; 32], by: [u8; 32], ticket: EndpointTicket) -> Result<Self> {
+        let invitation = Self::Link { group, by, ticket };
+        invitation.check_paste_budget()?;
+        Ok(invitation)
+    }
+
+    /// The §1 paste budget, checked at mint: the rendered form must fit.
+    fn check_paste_budget(&self) -> Result<()> {
+        let chars = self.to_string().chars().count();
+        ensure!(
+            chars <= MAX_PASTE_CHARS,
+            "an invitation's paste form is {chars} characters, over the {MAX_PASTE_CHARS}-character budget"
+        );
+        Ok(())
+    }
+
     /// Reads a pasted ticket or an `id:join?` link. Surrounding whitespace is ignored.
     ///
     /// # Errors
@@ -127,7 +169,7 @@ fn parse_hex32(text: &str, what: &str) -> Result<[u8; 32]> {
         "{what} must be 64 hex characters"
     );
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
         *slot = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(out)

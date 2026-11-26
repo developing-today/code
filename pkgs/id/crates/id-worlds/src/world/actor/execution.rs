@@ -12,6 +12,8 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap};
 use tokio::sync::oneshot;
 
+mod portal;
+
 impl WorldActor {
     /// Durably record `entry`, or turn the world read-only.
     pub(super) fn persist(&mut self, entry: JournalEntry) -> Result<()> {
@@ -138,6 +140,7 @@ impl WorldActor {
             JoinCapability,
             Vec<u8>,
             Option<SessionId>,
+            Option<serde_json::Value>,
             oneshot::Sender<Result<WorldEvent>>,
         );
         let mut items: std::collections::VecDeque<InputParts> = batch
@@ -147,16 +150,17 @@ impl WorldActor {
                     token,
                     input,
                     session_id,
+                    device_input,
                     signed_move: None,
                     reply,
-                } => Some((token, input, session_id, reply)),
+                } => Some((token, input, session_id, device_input, reply)),
                 // The run loop only drains unsigned Inputs into a batch.
                 _ => None,
             })
             .collect();
         if let Err(error) = self.check_writable() {
             let message = format!("{error:#}");
-            for (_, _, _, reply) in items {
+            for (_, _, _, _, reply) in items {
                 let _ = reply.send(Err(anyhow::anyhow!(message.clone())));
             }
             return;
@@ -169,7 +173,7 @@ impl WorldActor {
         let mut staged: Vec<Staged> = Vec::new();
         let mut staged_spends: HashMap<u64, u32> = HashMap::new();
         let mut failed: Option<(oneshot::Sender<Result<WorldEvent>>, anyhow::Error)> = None;
-        while let Some((token, input, session_id, reply)) = items.pop_front() {
+        while let Some((token, input, session_id, device_input, reply)) = items.pop_front() {
             let sequence = self.core.sequence + staged.len() as u64 + 1;
             let candidate =
                 match self
@@ -198,6 +202,7 @@ impl WorldActor {
             }
             self.acting = Some(candidate.participant_id);
             self.acting_session = session_id;
+            self.acting_device_input = device_input;
             match self
                 .program
                 .update(&candidate)
@@ -213,8 +218,21 @@ impl WorldActor {
                     });
                 }
                 Err(error) => {
-                    self.program_healthy = false;
-                    failed = Some((reply, error.context("world program rejected input")));
+                    if super::is_fuel_rate_refusal(&error) {
+                        // Recoverable admission refusal (#1067): the
+                        // program never ran and stays healthy, so the
+                        // failing input is answered with the refusal and
+                        // the inputs after it go through the single
+                        // path, where the same refusal — not an
+                        // unavailable program — answers them too.
+                        failed = Some((
+                            reply,
+                            error.context("world program refused input at its fuel rate"),
+                        ));
+                    } else {
+                        self.program_healthy = false;
+                        failed = Some((reply, error.context("world program rejected input")));
+                    }
                     break;
                 }
             }
@@ -264,11 +282,12 @@ impl WorldActor {
         }
         // Whatever the batch did not stage goes through the single-command
         // path, in order, with its semantics untouched.
-        for (token, input, session_id, reply) in items {
+        for (token, input, session_id, device_input, reply) in items {
             self.handle(WorldCommand::Input {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move: None,
                 reply,
             })
@@ -681,14 +700,39 @@ impl WorldActor {
     pub(super) fn republished(&mut self, records: Records, sequence: u64) {
         publish_records(&self.records_sender, sequence, records);
     }
+}
 
+/// What one host-event delivery did (#1067). A bare `bool` conflates the
+/// recoverable case with every other drop, which is exactly how a
+/// fuel-refused capability result used to be lost: only `FuelRefused`
+/// guarantees the program never ran, so only it may be retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeliveryOutcome {
+    /// The program ran the event and it was journaled.
+    Delivered,
+    /// The account's fuel-rate window is exhausted: the program never
+    /// ran and stays healthy, so the event may be retried once the
+    /// window rolls.
+    FuelRefused,
+    /// Any other drop: the program is unhealthy, storage failed, the
+    /// event was too large, or the program rejected it.
+    Failed,
+}
+
+impl DeliveryOutcome {
+    /// Whether the event reached the program and was journaled.
+    pub(super) const fn delivered(self) -> bool {
+        matches!(self, Self::Delivered)
+    }
+}
+
+impl WorldActor {
     /// Deliver a host-originated event to the program: journal it first is
     /// impossible (the program must accept it for the journal to be true), so
     /// the order is update, then journal, exactly like participant input.
-    /// Returns whether the program accepted the event and it was journaled.
     /// A read-only replica never delivers: host events are authoritative
     /// program effects and must not originate from a replica.
-    pub(super) async fn deliver(&mut self, text: String) -> bool {
+    pub(super) async fn deliver(&mut self, text: String) -> DeliveryOutcome {
         self.deliver_system(text, None).await
     }
 
@@ -698,7 +742,7 @@ impl WorldActor {
         &mut self,
         text: String,
         participant_id: Option<u64>,
-    ) -> bool {
+    ) -> DeliveryOutcome {
         self.deliver_system(text, participant_id).await
     }
 
@@ -706,16 +750,16 @@ impl WorldActor {
         &mut self,
         text: String,
         participant_id: Option<u64>,
-    ) -> bool {
+    ) -> DeliveryOutcome {
         if self.read_only {
-            return false;
+            return DeliveryOutcome::Failed;
         }
         if !self.program_healthy || self.storage_failed {
-            return false;
+            return DeliveryOutcome::Failed;
         }
         if text.len() > crate::world_caps::MAX_EVENT_BYTES {
             tracing::error!("world event exceeds the delivery bound; dropped");
-            return false;
+            return DeliveryOutcome::Failed;
         }
         let event = WorldEvent {
             sequence: 0,
@@ -723,9 +767,17 @@ impl WorldActor {
             kind: WorldEventKind::System { event: text },
         };
         if let Err(error) = self.program.update(&event) {
+            if super::is_fuel_rate_refusal(&error) {
+                // Recoverable admission refusal (#1067): the program
+                // never ran and stays healthy; this host event is
+                // dropped and the next tick or capability result is
+                // delivered as usual once the window rolls.
+                tracing::warn!("world program refused a host event at its fuel rate: {error:#}");
+                return DeliveryOutcome::FuelRefused;
+            }
             self.program_healthy = false;
             tracing::error!("world program rejected a host event: {error:#}");
-            return false;
+            return DeliveryOutcome::Failed;
         }
         match program_records(self.program.as_mut()) {
             Ok(records) => {
@@ -735,7 +787,7 @@ impl WorldActor {
             Err(error) => {
                 self.program_healthy = false;
                 tracing::error!("world program records failed: {error:#}");
-                return false;
+                return DeliveryOutcome::Failed;
             }
         }
         let journaled = self
@@ -751,7 +803,69 @@ impl WorldActor {
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
         let _ = self.view_changed.send(self.core.sequence);
-        journaled
+        if journaled {
+            DeliveryOutcome::Delivered
+        } else {
+            DeliveryOutcome::Failed
+        }
+    }
+
+    /// Record that a delivery was refused at the account's fuel rate
+    /// (#1067): no refused delivery is retried before one full window
+    /// past now, which is guaranteed to land in a fresh budget window
+    /// — the refused window started no later than the refusal. The
+    /// actor clock's instant face shares the wall clock's domain
+    /// (`SystemClock::now_instant` is `Instant::now()`; a manual clock
+    /// is anchored to it at construction), so this bound holds on
+    /// either clock.
+    fn note_fuel_refusal(&mut self) {
+        self.fuel_retry_not_before =
+            Some(self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW);
+    }
+
+    /// Deliver a capability result, or queue it when the account's fuel
+    /// rate refuses it (#1067, Codex review on #12557): the side effect
+    /// already ran, so the result event must not be re-executed — it
+    /// waits in `pending_results` until the window rolls, when
+    /// [`Self::retry_pending_results`] delivers it. Any other failure
+    /// drops the event, as a host event is dropped today: only a fuel
+    /// refusal guarantees the program never ran.
+    async fn deliver_result(&mut self, event: String) {
+        if let DeliveryOutcome::FuelRefused = self.deliver(event.clone()).await {
+            self.note_fuel_refusal();
+            self.pending_results.push_back(event);
+        }
+    }
+
+    /// Retry queued capability results once the fuel-rate window has
+    /// rolled (#1067). Stops at the first refusal — the rest stay
+    /// queued behind it, in order — and drops a result any other
+    /// failure discards. A result is delivered at most once: the
+    /// program never ran on a refused attempt, so a retry cannot
+    /// duplicate it.
+    async fn retry_pending_results(&mut self) {
+        if self.pending_results.is_empty()
+            || !self.program_healthy
+            || self.storage_failed
+            || self
+                .fuel_retry_not_before
+                .is_some_and(|deadline| self.core.clock().now_instant() < deadline)
+        {
+            return;
+        }
+        while let Some(event) = self.pending_results.pop_front() {
+            match self.deliver(event.clone()).await {
+                DeliveryOutcome::Delivered | DeliveryOutcome::Failed => {}
+                DeliveryOutcome::FuelRefused => {
+                    self.note_fuel_refusal();
+                    self.pending_results.push_front(event);
+                    break;
+                }
+            }
+        }
+        if self.pending_results.is_empty() {
+            self.fuel_retry_not_before = None;
+        }
     }
 
     /// Pending forms intentionally are not durable. On reopen, tell a program
@@ -782,6 +896,10 @@ impl WorldActor {
         if self.read_only || !self.holds_live_do_lease() {
             return;
         }
+        // Capability results a fuel-rate refusal queued (see
+        // `deliver_result`) go first, so the program reacts to them
+        // in this same pass.
+        self.retry_pending_results().await;
         for _ in 0..64 {
             if !self.program_healthy || self.storage_failed {
                 break;
@@ -858,7 +976,7 @@ impl WorldActor {
                         &request.id,
                         Err(CapError::actor_denied_with("restarted")),
                     );
-                    self.deliver(refusal).await;
+                    self.deliver_result(refusal).await;
                     continue;
                 }
                 if crate::world_caps::PROVIDER_REGISTRY
@@ -876,13 +994,13 @@ impl WorldActor {
                         Ok(()) => {}
                         Err(error) => {
                             let refusal = crate::world_caps::result_event(&request.id, Err(error));
-                            self.deliver(refusal).await;
+                            self.deliver_result(refusal).await;
                         }
                     }
                     continue;
                 }
                 let outcome = self.execute(&request);
-                self.deliver(crate::world_caps::result_event(&request.id, outcome))
+                self.deliver_result(crate::world_caps::result_event(&request.id, outcome))
                     .await;
             }
         }
@@ -943,7 +1061,7 @@ impl WorldActor {
                     &completion.guest_request_id,
                     completion.outcome,
                 );
-                self.deliver(event).await;
+                self.deliver_result(event).await;
             }
             self.after_change().await;
         }
@@ -1127,9 +1245,19 @@ impl WorldActor {
     /// fire is delivered as a tick is, and its schedule is consumed only after
     /// that delivery is journaled. A refused fire, or one that could not be
     /// journaled, leaves its schedule pending, so the next run delivers it.
-    /// A read-only replica never fires: schedules are writer authority.
+    /// A fuel-rate refusal backs the next attempt off until the window
+    /// rolls (see `fuel_retry_not_before`): without the backoff the run
+    /// loop would retry the same refused fire on every pass until
+    /// rollover. A read-only replica never fires: schedules are writer
+    /// authority.
     pub(crate) async fn fire_schedules(&mut self) {
         if self.read_only || !self.holds_live_do_lease() {
+            return;
+        }
+        if self
+            .fuel_retry_not_before
+            .is_some_and(|deadline| self.core.clock().now_instant() < deadline)
+        {
             return;
         }
         let now = self.core.clock().now_ms();
@@ -1148,7 +1276,14 @@ impl WorldActor {
                 continue;
             };
             let delivered = match &schedule.target {
-                None => self.deliver(schedule_fired_event(&id, late)).await,
+                None => match self.deliver(schedule_fired_event(&id, late)).await {
+                    DeliveryOutcome::Delivered => true,
+                    DeliveryOutcome::FuelRefused => {
+                        self.note_fuel_refusal();
+                        false
+                    }
+                    DeliveryOutcome::Failed => false,
+                },
                 Some(target) => {
                     // Cross-world (#1355 part 2): consent is re-checked at
                     // fire time — a grant revoked or an isolation change
@@ -1266,6 +1401,14 @@ impl WorldActor {
                 }))
             }
             "records.read" => self.execute_records_read(&request.args),
+            "kv.get" => self.execute_kv_get(&request.args),
+            "kv.set" => self.execute_kv_set(&request.args),
+            "kv.delete" => self.execute_kv_delete(&request.args),
+            "blob.put" => self.execute_blob_put(&request.args),
+            "blob.get" => self.execute_blob_get(&request.args),
+            "blob.delete" => self.execute_blob_delete(&request.args),
+            "http.fetch" => self.execute_http_fetch(&request.args),
+            "notify" => self.execute_notify(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1398,13 +1541,18 @@ impl WorldActor {
         if args_size > crate::world_caps::MAX_ARGS_BYTES {
             return Err(CapError::bad_args_with("args_too_large"));
         }
-        if let Some(manifest) = &self.device_manifest
-            && manifest
-                .display
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("headless")
-            && let Err(error) = form.validate_device_input(&manifest.input)
+        let presenter_input = self.acting_device_input.as_ref().or_else(|| {
+            self.device_manifest.as_ref().and_then(|manifest| {
+                (manifest
+                    .display
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("headless"))
+                .then_some(&manifest.input)
+            })
+        });
+        if let Some(input) = presenter_input
+            && let Err(error) = form.validate_device_input(input)
         {
             let reason = if format!("{error:#}").contains("text entry unavailable") {
                 "text_entry_unavailable"
@@ -1562,7 +1710,9 @@ impl WorldActor {
         self.acting = participant_id;
         self.acting_session = participant_id.and(session_id);
         ensure!(
-            self.deliver_form_result(event, participant_id).await,
+            self.deliver_form_result(event, participant_id)
+                .await
+                .delivered(),
             "form.result event was not delivered"
         );
         if valid {
@@ -1706,6 +1856,259 @@ impl WorldActor {
         }))
     }
 
+    /// `kv.get` (#1062): the value stored under the key, or `null`
+    /// when the key is absent. The store keeps each value's JSON
+    /// encoding; a stored encoding that no longer parses means the
+    /// journal is corrupt, so it fails rather than answering `null`.
+    pub(super) fn execute_kv_get(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_kv_key(key).is_err() {
+            return Err(CapError::bad_args());
+        }
+        let value = match self.core.kv.get(key) {
+            None => serde_json::Value::Null,
+            Some(stored) => {
+                serde_json::from_str(stored).map_err(|_| CapError::failed_with("kv_corrupt"))?
+            }
+        };
+        Ok(serde_json::json!({"key": key, "value": value}))
+    }
+
+    /// `kv.set` (#1062): store a JSON value under a key, replacing any
+    /// value already there. The write is journaled before the result
+    /// is delivered, and bounds are checked against the store as it
+    /// will be after the write.
+    pub(super) fn execute_kv_set(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let value = args.get("value").ok_or(CapError::bad_args())?;
+        let encoded = serde_json::to_string(value).map_err(|_| CapError::failed())?;
+        if let Err(error) = self.core.check_kv_set(key, encoded.len()) {
+            tracing::debug!("world {}: kv set refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        let value_bytes = encoded.len();
+        if self
+            .persist(JournalEntry::KvSet {
+                key: key.to_owned(),
+                value: encoded.clone(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.kv.insert(key.to_owned(), encoded);
+        Ok(serde_json::json!({"key": key, "value_bytes": value_bytes}))
+    }
+
+    /// `kv.delete` (#1062): remove the entry under a key. `deleted` is
+    /// false when nothing was stored under it, and nothing is
+    /// journaled in that case.
+    pub(super) fn execute_kv_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_kv_key(key).is_err() {
+            return Err(CapError::bad_args());
+        }
+        if !self.core.kv.contains_key(key) {
+            return Ok(serde_json::json!({"key": key, "deleted": false}));
+        }
+        if self
+            .persist(JournalEntry::KvDeleted {
+                key: key.to_owned(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.kv.remove(key);
+        Ok(serde_json::json!({"key": key, "deleted": true}))
+    }
+
+    /// `blob.put` (#1062): store content under its iroh-blobs
+    /// address. The write is journaled before the result is
+    /// delivered; putting content the world already holds is a
+    /// no-op that journals nothing, because the address is the same.
+    pub(super) fn execute_blob_put(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let encoded = args
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
+        let hash = super::super::blob_id(&bytes);
+        self.check_blob_boundary()?;
+        if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
+            tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        let size = bytes.len();
+        if !self.core.blobs.contains_key(&hash) {
+            if self
+                .persist(JournalEntry::BlobStored {
+                    hash: hash.clone(),
+                    data: super::super::blob_encode(&bytes),
+                })
+                .is_err()
+            {
+                return Err(CapError::failed());
+            }
+            self.core.blobs.insert(hash.clone(), bytes);
+        }
+        Ok(serde_json::json!({"hash": hash, "size": size}))
+    }
+
+    /// `blob.get` (#1062): the content stored under the address, or
+    /// `null` data when the world holds no such blob.
+    pub(super) fn execute_blob_get(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let hash = args
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_blob_hash(hash).is_err() {
+            return Err(CapError::bad_args());
+        }
+        self.check_blob_boundary()?;
+        let data = match self.core.blobs.get(hash) {
+            None => serde_json::Value::Null,
+            Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
+        };
+        Ok(serde_json::json!({"hash": hash, "data": data}))
+    }
+
+    /// `blob.delete` (#1062): remove the blob under an address.
+    /// `deleted` is false when the world held no such blob, and
+    /// nothing is journaled in that case.
+    pub(super) fn execute_blob_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let hash = args
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_blob_hash(hash).is_err() {
+            return Err(CapError::bad_args());
+        }
+        self.check_blob_boundary()?;
+        if !self.core.blobs.contains_key(hash) {
+            return Ok(serde_json::json!({"hash": hash, "deleted": false}));
+        }
+        if self
+            .persist(JournalEntry::BlobRemoved {
+                hash: hash.to_owned(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.blobs.remove(hash);
+        Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    fn check_blob_boundary(&self) -> Result<(), CapError> {
+        self.core
+            .check_blob_boundary_for(self.acting)
+            .map_err(|error| CapError::bad_args_with(format!("{error:#}")))
+    }
+
+    /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
+    /// check refuses a malformed URL, a host outside the admin
+    /// allowlist, and an exhausted rate window before any
+    /// connection is made; the attempt is then recorded (failed
+    /// fetches spend the budget too) and the fetch runs on its own
+    /// thread. No fetch state is journaled: a fetch is an effect
+    /// against the live network, not world state, so replay
+    /// applies nothing for one.
+    pub(super) fn execute_http_fetch(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let url = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if let Err(error) = self.core.check_http_fetch(url) {
+            tracing::debug!(
+                "world {}: http fetch refused: {error:#}",
+                self.core.world_id
+            );
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_http_fetch_attempt();
+        let allowed_hosts = self.core.limits.http_fetch_hosts.clone();
+        let outcome = super::super::http_fetch::fetch(url, &allowed_hosts)?;
+        Ok(serde_json::json!({
+            "url": outcome.url,
+            "status": outcome.status,
+            "body": super::super::blob_encode(&outcome.body),
+            "body_bytes": outcome.body.len(),
+        }))
+    }
+
+    /// `notify` (#1062): a user-visible outbound notification,
+    /// committed to the world's event stream as a `Notification`
+    /// event. The core check refuses an oversized or
+    /// empty-after-sanitizing text and an exhausted rate window
+    /// before anything is committed; the attempt is then recorded
+    /// (a notification whose commit fails spends the budget too)
+    /// and the event is journaled before the result is delivered,
+    /// in the `chat.say` discipline — so a sent notification is a
+    /// durable fact of the world's history, and the stale-wants
+    /// rule keeps it at-most-once across a reopen.
+    pub(super) fn execute_notify(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
+            return Err(CapError::bad_args());
+        };
+        if let Err(error) = self.core.check_notify(text) {
+            tracing::debug!("world {}: notify refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_notify_attempt();
+        match self.core.prepare_notification(text) {
+            Ok(event) => {
+                if self
+                    .persist(JournalEntry::Committed {
+                        event: event.clone(),
+                    })
+                    .is_err()
+                {
+                    return Err(CapError::failed());
+                }
+                if self.core.commit_prepared(event.clone()).is_err() {
+                    return Err(CapError::failed());
+                }
+                let _ = self.event_sender.send(event.clone());
+                Ok(serde_json::json!({"sequence": event.sequence}))
+            }
+            Err(_) => Err(CapError::bad_args()),
+        }
+    }
+
     /// `chat.say` commits a host chat line; its result is the new sequence.
     pub(super) fn execute_chat(
         &mut self,
@@ -1769,6 +2172,7 @@ impl WorldActor {
         if !self
             .deliver(schedule_fired_event_from(id, late, Some(source)))
             .await
+            .delivered()
         {
             return false;
         }
@@ -1784,257 +2188,6 @@ impl WorldActor {
         }
         self.core.schedule_receipts.insert(key);
         true
-    }
-
-    /// Record one F12.14 portal audit shape (code#1068 wiring
-    /// slice) in this world's retained audit log, in the exact
-    /// fields the kernel built it in.
-    pub(super) fn audit_portal_shape(&self, shape: &id_caps::portal::PortalAuditShape) {
-        self.audit_record(
-            "portal",
-            shape.action,
-            shape.parameters.clone(),
-            shape.outcome,
-        );
-    }
-
-    /// Refuse a portal send on this (sending) world: record the
-    /// refusal shape in this world's audit log and return it.
-    pub(super) fn refuse_portal_send(
-        &self,
-        refusal: id_caps::portal::PortalRefusal,
-        from_world: &str,
-        to_world: &str,
-        message_bytes: usize,
-    ) -> PortalSendError {
-        self.audit_portal_shape(&id_caps::portal::audit_for_refusal(
-            id_caps::portal::PORTAL_SEND_ACTION,
-            &refusal,
-            from_world,
-            to_world,
-            message_bytes,
-        ));
-        PortalSendError::Refused(refusal)
-    }
-
-    /// Phase 1 of a portal send (F12.14, code#1068 wiring slice):
-    /// this world must be writable — a read-only replica, a
-    /// storage-failed writer, or an actor that handed off its write
-    /// lease originates no portal effects (CodeRabbit finding on
-    /// PR #10840) — and must itself grant `target`. Writability is a
-    /// transport/fencing fact, so it answers `Unavailable` (no
-    /// policy decision, no audit entry); a missing or revoked local
-    /// grant is the kernel's refusal, audited here. This phase is
-    /// actor-local: it runs no cross-world await, so the command
-    /// loop is never held while waiting on a peer actor.
-    pub(super) fn portal_send_precheck(
-        &self,
-        target: &str,
-        bytes: usize,
-    ) -> Result<(), PortalSendError> {
-        if let Err(error) = self.check_writable() {
-            return Err(PortalSendError::Unavailable(format!(
-                "portal send fenced: {error}"
-            )));
-        }
-        let from_world = self.core.world_id().to_owned();
-        match self.core.portal_grants.state(target) {
-            Some(id_caps::portal::PortalGrantState::Granted) => Ok(()),
-            Some(id_caps::portal::PortalGrantState::Revoked) => Err(self.refuse_portal_send(
-                id_caps::portal::PortalRefusal::SenderRevoked {
-                    peer: target.to_owned(),
-                },
-                &from_world,
-                target,
-                bytes,
-            )),
-            None => Err(self.refuse_portal_send(
-                id_caps::portal::PortalRefusal::SenderNotGranted {
-                    peer: target.to_owned(),
-                },
-                &from_world,
-                target,
-                bytes,
-            )),
-        }
-    }
-
-    /// Phase 3 of a portal send: the full mutual check, run by the
-    /// actor against the peer book the handle fetched through the
-    /// transport while this loop was free (phase 2). Re-runs the
-    /// writability fence and the local grant check (a revocation
-    /// between phases refuses here), then `check_portal_message`
-    /// in full, then the delivered-envelope bound, then the
-    /// per-ordered-pair rate admission. On success replies with
-    /// this world's id, the source name the transport delivers
-    /// under. Every refusal is audited as `portal.send` refused.
-    pub(super) fn portal_send_admit(
-        &mut self,
-        target: &str,
-        peer_grants: &id_caps::portal::PortalGrants,
-        message: &str,
-    ) -> Result<String, PortalSendError> {
-        let from_world = self.core.world_id().to_owned();
-        let bytes = message.len();
-        if let Err(error) = self.check_writable() {
-            return Err(PortalSendError::Unavailable(format!(
-                "portal send fenced: {error}"
-            )));
-        }
-        if let Err(refusal) = id_caps::portal::check_portal_message(
-            &self.core.portal_grants,
-            peer_grants,
-            &from_world,
-            target,
-            bytes,
-        ) {
-            return Err(self.refuse_portal_send(refusal, &from_world, target, bytes));
-        }
-        // The 16 KiB bound is on the raw message; the delivered
-        // envelope is the serialized host event, whose escaping can
-        // carry it past the world event ceiling (a 16 KiB message
-        // of control characters escapes to ~96 KiB). Measure the
-        // envelope here so an undeliverable message refuses as
-        // message-too-large on the send side, with the envelope
-        // size and the event ceiling it exceeded, instead of being
-        // dropped by delivery as a bare Unavailable.
-        let envelope_bytes = portal_message_event(&from_world, message).len();
-        if envelope_bytes > crate::world_caps::MAX_EVENT_BYTES {
-            return Err(self.refuse_portal_send(
-                id_caps::portal::PortalRefusal::MessageTooLarge {
-                    bytes: envelope_bytes,
-                    max: crate::world_caps::MAX_EVENT_BYTES,
-                },
-                &from_world,
-                target,
-                bytes,
-            ));
-        }
-        let now_ms = self.core.clock().now_ms();
-        if let Err(refusal) = self
-            .portal_rate
-            .entry(target.to_owned())
-            .or_default()
-            .admit(now_ms)
-        {
-            return Err(self.refuse_portal_send(refusal, &from_world, target, bytes));
-        }
-        Ok(from_world)
-    }
-
-    /// Phase 5 of a portal send: record the send-side audit shape
-    /// for the delivery outcome the handle observed in phase 4.
-    /// `None` records `portal.send` accepted; `Some(refusal)`
-    /// records the refusal shape and replies `Refused`, mirroring
-    /// the target's verdict back to the caller.
-    pub(super) fn portal_send_record(
-        &self,
-        target: &str,
-        bytes: usize,
-        refusal: Option<id_caps::portal::PortalRefusal>,
-    ) -> Result<(), PortalSendError> {
-        let from_world = self.core.world_id().to_owned();
-        match refusal {
-            Some(refusal) => Err(self.refuse_portal_send(refusal, &from_world, target, bytes)),
-            None => {
-                self.audit_portal_shape(&id_caps::portal::audit_for_send(
-                    &from_world,
-                    target,
-                    bytes,
-                ));
-                Ok(())
-            }
-        }
-    }
-
-    /// Accept (or refuse) one portal message arriving from `source`
-    /// (F12.14, code#1068 wiring slice). The receiving side re-checks
-    /// its own book — the send-side check read a snapshot, and a
-    /// grant revoked in between must refuse here as revoked — and
-    /// the size bound, then delivers the message to the program as a
-    /// host event naming its source. Acceptance records
-    /// `portal.deliver` accepted in this world's audit log; refusal
-    /// records `portal.deliver` refused with the refusal's code.
-    pub(super) async fn accept_portal_delivery(
-        &mut self,
-        source: &str,
-        message: String,
-    ) -> Result<(), PortalSendError> {
-        let to_world = self.core.world_id().to_owned();
-        let bytes = message.len();
-        let refuse = |actor: &Self, refusal: id_caps::portal::PortalRefusal| {
-            actor.audit_portal_shape(&id_caps::portal::audit_for_refusal(
-                id_caps::portal::PORTAL_DELIVER_ACTION,
-                &refusal,
-                source,
-                &to_world,
-                bytes,
-            ));
-            PortalSendError::Refused(refusal)
-        };
-        match self.core.portal_grants.state(source) {
-            Some(id_caps::portal::PortalGrantState::Granted) => {}
-            Some(id_caps::portal::PortalGrantState::Revoked) => {
-                return Err(refuse(
-                    self,
-                    id_caps::portal::PortalRefusal::PeerRevoked {
-                        peer: source.to_owned(),
-                    },
-                ));
-            }
-            None => {
-                return Err(refuse(
-                    self,
-                    id_caps::portal::PortalRefusal::PeerNotGranted {
-                        peer: source.to_owned(),
-                    },
-                ));
-            }
-        }
-        if bytes > id_caps::portal::MAX_PORTAL_MESSAGE_BYTES {
-            return Err(refuse(
-                self,
-                id_caps::portal::PortalRefusal::MessageTooLarge {
-                    bytes,
-                    max: id_caps::portal::MAX_PORTAL_MESSAGE_BYTES,
-                },
-            ));
-        }
-        // The delivered envelope is the serialized host event: a
-        // raw message inside the 16 KiB bound can still escape past
-        // the world event ceiling, in which case delivery would
-        // drop it and misreport the cause as Unavailable. Refuse
-        // it here as message-too-large, carrying the envelope size
-        // and the event ceiling it exceeded (the send side runs
-        // the same measurement in PortalSendAdmit).
-        let event = portal_message_event(source, &message);
-        if event.len() > crate::world_caps::MAX_EVENT_BYTES {
-            return Err(refuse(
-                self,
-                id_caps::portal::PortalRefusal::MessageTooLarge {
-                    bytes: event.len(),
-                    max: crate::world_caps::MAX_EVENT_BYTES,
-                },
-            ));
-        }
-        // Full writability fence, not just the replica flag: an
-        // actor that handed off its write lease (or whose storage
-        // failed) must not acknowledge a mutation past the
-        // ownership boundary (CodeRabbit finding on PR #10840).
-        if let Err(error) = self.check_writable() {
-            return Err(PortalSendError::Unavailable(format!(
-                "portal delivery fenced: {error}"
-            )));
-        }
-        if !self.deliver(event).await {
-            return Err(PortalSendError::Unavailable(
-                "target program did not accept the portal message".to_owned(),
-            ));
-        }
-        self.audit_portal_shape(&id_caps::portal::audit_for_deliver(
-            source, &to_world, bytes,
-        ));
-        Ok(())
     }
 
     /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With
@@ -2228,6 +2381,30 @@ impl WorldActor {
         } else {
             Err(crate::directory::Refusal::Forbidden(format!(
                 "only an admin or a moderator {what}"
+            ))
+            .into())
+        }
+    }
+
+    /// The world's owner (an account holding an admin seat in one of its
+    /// groups) or the operator (the process admin) may change its
+    /// lifecycle; everyone else gets the same forbidden refusal any other
+    /// owner-only act gives (#10694).
+    pub(super) fn require_ownership(&self, authority: &Authority, what: &str) -> Result<()> {
+        let directory = self.core.directory();
+        let allowed = match authority {
+            Authority::Admin => true,
+            Authority::Signed(key) => directory.account_for_key(key).is_some_and(|account| {
+                directory.groups().any(|group| {
+                    directory.level_in(&account, group.id) == Some(crate::directory::Level::Admin)
+                })
+            }),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(crate::directory::Refusal::Forbidden(format!(
+                "only the world's owner or the operator {what}"
             ))
             .into())
         }

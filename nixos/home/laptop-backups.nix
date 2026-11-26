@@ -12,7 +12,8 @@
 # Jobs:
 # - pm-dashboard-backup (daily ~04:30): the PM dashboard / orchestration
 #   state set as a dated tar.zst with a sha256 manifest to the local
-#   backup dir, Cloudflare R2 (supabase-backups) and Google Drive
+#   backup dir, Cloudflare R2 (bucket supabase-backups, a legacy R2
+#   bucket name) and Google Drive
 #   (Cloud/cold-store/db-backups/pm-aggregator/<date>/), every copy
 #   sha256-verified, 30-day retention. Runs the code#1514 DB-dump script
 #   first when it exists at ~/tools/pm-stack-db-backup.sh, and its dumps
@@ -46,12 +47,6 @@
 #   The agent state DB is snapshotted with sqlite3 .backup so the
 #   archived copy is transaction-consistent. Script:
 #   ./openclaw-backup.sh (vendored here; same credential pattern).
-# - supabase-backup (twice daily 04:42 + 16:42): pg_dump of the muse-dev
-#   Supabase project to R2 (supabase-backups), content-hashed names.
-#   Migrated from the sandbox 2026-10-28 (developing-today/code#1723);
-#   the unit is declared here per Drew's all-services-in-nix rule the
-#   same day. Script: ~/tools/supabase-backup.sh (wrapper; the dump
-#   program + config live in ~/tools/supabase-backup/).
 # - atlas-backup (daily ~04:47): the canonical local atlas.db
 #   (~/atlas/turso-atlas/data/atlas.db) snapshotted with sqlite3
 #   .backup, gzipped deterministically, and filed to the local backup
@@ -88,6 +83,11 @@
 #   last-trigger time ONLY: its script (~/tools/repo-archive-
 #   backup.sh) and its restic credentials live outside this repo, so
 #   no run record is required of it.
+#   With watchdog.meshEnable (code#13463), it also reads the backup
+#   mesh's restore-verification records: one per leg x store pair
+#   under ~/backups/mesh/restore-verification, each successful and no
+#   older than watchdog.meshMaxAgeHours (a quarter), so a stalled
+#   rotation is named by leg and store.
 #
 # Pruning discipline: each job prunes only the dated directories it
 # created itself. The sandbox's backup job writes into its own tree under
@@ -125,6 +125,7 @@ let
     ++ (lib.optional cfg.state.enable "state")
     ++ (lib.optional cfg.opencodeDb.enable "opencode-db")
     ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
+    ++ (lib.optional cfg.watchdog.meshEnable "mesh")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
@@ -141,7 +142,7 @@ let
 in
 {
   options.services.laptop-backups = {
-    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store, atlas)";
+    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, cold-store, atlas)";
 
     dashboard = {
       enable = lib.mkOption {
@@ -184,27 +185,6 @@ in
         type = lib.types.str;
         default = "04:05";
         description = "Daily run time (local) for the OpenClaw backup.";
-      };
-    };
-
-    supabase = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Twice-daily pg_dump backup of the muse-dev Supabase project to R2 (code#1723).";
-      };
-      onCalendar = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [
-          "04:42"
-          "16:42"
-        ];
-        description = "Daily run times (local) for the Supabase backup.";
-      };
-      script = lib.mkOption {
-        type = lib.types.str;
-        default = "${home}/tools/supabase-backup.sh";
-        description = "Path of the Supabase backup wrapper script to run.";
       };
     };
 
@@ -299,6 +279,16 @@ in
         default = "*-*-* 06,12,18:30:00";
         description = "Times of day the watchdog runs (systemd calendar).";
       };
+      meshEnable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Also report the backup mesh's restore-verification rotation records (code#13463): every leg x store pair under ~/backups/mesh/restore-verification must have a successful record no older than a quarter. Off until the rotation runners exist; enabling it before then fails naming every unverified pair, which is the intended reading.";
+      };
+      meshMaxAgeHours = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 2200;
+        description = "Maximum age (hours) of a leg x store restore-verification record before the watchdog names it (default 2200h, a little over a quarter).";
+      };
     };
   };
 
@@ -334,16 +324,6 @@ in
             Type = "oneshot";
             ExecStart = "${openclawPkg}/bin/openclaw-backup";
             Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
-          };
-        };
-      })
-      (lib.mkIf cfg.supabase.enable {
-        supabase-backup = {
-          Unit.Description = "Twice-daily Supabase muse-dev pg_dump backup to R2 (code#1723)";
-          Service = {
-            Type = "oneshot";
-            ExecStart = cfg.supabase.script;
-            TimeoutStartSec = "30m";
           };
         };
       })
@@ -388,11 +368,16 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;
-            # 120m, not 30m: the Turso export leg alone ran past
-            # 30m on 2026-11-08/09/10, and systemd's timeout kill
-            # leaked its scratch directory each night
+            # 360m, not 120m: on 2026-11-20 the atlas Turso dump
+            # (past 10 GB) was still downloading when the 120m
+            # timeout killed the run, and nothing after it was
+            # filed. export-turso.sh now keeps itself inside a 3h
+            # budget (TURSO_EXPORT_DEADLINE_SECONDS) and exports
+            # atlas last; this leaves room for that plus the D1
+            # backup, prune, manifest sync and status steps.
+            # Earlier: 30m -> 120m after 2026-11-08/09/10
             # (darwin-nix#373).
-            TimeoutStartSec = "120m";
+            TimeoutStartSec = "360m";
           };
         };
       })
@@ -418,6 +403,7 @@ in
             Environment = [
               "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
               "LAPTOP_BACKUPS_OFFSITE_CHECK=1"
+              "LAPTOP_BACKUPS_MESH_MAX_AGE_HOURS=${toString cfg.watchdog.meshMaxAgeHours}"
             ];
           };
         };
@@ -452,17 +438,6 @@ in
           Unit.Description = "Run the OpenClaw backup daily";
           Timer = {
             OnCalendar = cfg.openclaw.onCalendar;
-            Persistent = true;
-            RandomizedDelaySec = "15m";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
-      })
-      (lib.mkIf cfg.supabase.enable {
-        supabase-backup = {
-          Unit.Description = "Run the Supabase muse-dev backup twice daily";
-          Timer = {
-            OnCalendar = cfg.supabase.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
           };

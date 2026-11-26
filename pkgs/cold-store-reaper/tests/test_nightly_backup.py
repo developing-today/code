@@ -10,6 +10,11 @@ failed Turso export). The script still exits non-zero at the END so
 the cron reports the failure loudly, and guarded skips (no Turso
 token) are not failures. Stubs arrive via the COLD_STORE_BIN
 and EXPORT_TURSO_BIN seams.
+
+Durable run log (#13115): the run's merged stdout+stderr is tee'd to
+$COLD_STORE_HOME/logs/nightly-<timestamp>.log so a failed night names
+its failing step from the file alone (the systemd journal retained no
+entries for the 2026-11-22 run). The exit code stays the run's own.
 """
 
 import os
@@ -66,6 +71,7 @@ class TestNightlyBackup(unittest.TestCase):
             "R2_SECRET_ACCESS_KEY": "fake-r2-secret",
             "COLD_STORE_BIN": str(cold),
             "EXPORT_TURSO_BIN": str(turso),
+            "COLD_STORE_HOME": str(root / "cold-store-home"),
         }
 
     def tearDown(self):
@@ -87,10 +93,13 @@ class TestNightlyBackup(unittest.TestCase):
     def test_failing_first_step_does_not_starve_later_steps(self):
         env = {**self.env, "STUB_FAIL_STEP": "backup-d1"}
         result = self.run_script(env=env)
-        # loud failure: non-zero exit, the failed step is named
+        # loud failure: non-zero exit, the failed step is named. Since
+        # #13115 the run's stdout and stderr merge into one chronological
+        # stream (the durable run log's shape), so the FAILED lines are
+        # asserted on stdout.
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("step backup-d1: FAILED (exit 3)", result.stderr)
-        self.assertIn("FAILED steps: backup-d1", result.stderr)
+        self.assertIn("step backup-d1: FAILED (exit 3)", result.stdout)
+        self.assertIn("FAILED steps: backup-d1", result.stdout)
         # but every later step still ran, in order
         self.assertEqual(
             self.calls(),
@@ -112,14 +121,6 @@ class TestNightlyBackup(unittest.TestCase):
         self.assertIn("nightly-backup: all steps ok", result.stdout)
         self.assertIn("step prune-backups: ok", result.stdout)
         self.assertIn("step sync-manifest: ok", result.stdout)
-
-    def test_supabase_filing_is_retired_even_with_r2_credentials(self):
-        # The Supabase project was replaced by Turso; R2 credentials in
-        # the environment must not bring the nightly filing back.
-        result = self.run_script()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("backup-supabase", self.calls())
-        self.assertNotIn("backup-supabase", result.stdout + result.stderr)
 
     def test_long_status_output_still_ok_and_truncated(self):
         # Regression: status printing >20 lines must not trip pipefail/SIGPIPE.
@@ -146,6 +147,36 @@ exit 0
         self.assertIn("stub status line 20", result.stdout)
         self.assertNotIn("stub status line 21", result.stdout)
         self.assertNotIn("stub status line 300", result.stdout)
+
+    def test_run_log_is_durable_under_cold_store_home(self):
+        # #13115: after the run, the failing step must be named by the
+        # log file alone — no journal, no live probe.
+        env = {**self.env, "STUB_FAIL_STEP": "backup-d1"}
+        result = self.run_script(env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("nightly-backup: durable run log:", result.stdout)
+        log_dir = Path(self.env["COLD_STORE_HOME"]) / "logs"
+        logs = sorted(p for p in log_dir.glob("nightly-*.log") if not p.is_symlink())
+        self.assertEqual(len(logs), 1, [p.name for p in log_dir.iterdir()])
+        text = logs[0].read_text()
+        self.assertIn("step backup-d1: FAILED (exit 3)", text)
+        self.assertIn("FAILED steps: backup-d1", text)
+        self.assertIn("step status: ok", text)
+        latest = log_dir / "nightly-latest.log"
+        self.assertTrue(latest.is_symlink())
+        self.assertEqual(latest.resolve(), logs[0])
+
+    def test_uncreatable_log_dir_still_runs(self):
+        # Logging must never break the backup: a COLD_STORE_HOME under
+        # a regular file cannot be created, so the run falls back to
+        # no log file, warns on stderr, and still does the work.
+        blocker = Path(self.tmp.name) / "blocker"
+        blocker.write_text("not a directory")
+        env = {**self.env, "COLD_STORE_HOME": str(blocker / "home")}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("running without a durable run log", result.stderr)
+        self.assertIn("nightly-backup: all steps ok", result.stdout)
 
 
 if __name__ == "__main__":

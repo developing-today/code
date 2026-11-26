@@ -87,12 +87,10 @@ pub struct PeersOptions {
     pub topic: Option<String>,
     /// Shared secret for topic access control.
     pub topic_secret: Option<String>,
-    /// Skip default bootstrap nodes from `defaults.conf`.
+    /// Skip default bootstrap nodes from `defaults.json`.
     pub no_default_bootstrap: bool,
-    /// Skip default topic/secret from `defaults.conf`.
+    /// Skip default topic/secret from `defaults.json`.
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-    pub replace_defaults: bool,
     /// Disable relay servers.
     pub no_relay: bool,
     /// Disable mDNS local peer discovery.
@@ -621,7 +619,6 @@ async fn discover_via_gossip(
         &options.bootstrap,
         options.topic.as_deref(),
         options.topic_secret.as_deref(),
-        options.replace_defaults,
         options.no_default_bootstrap,
         options.no_default_topic,
     )?;
@@ -944,7 +941,10 @@ mod tests {
     #[test]
     fn test_parse_bootstrap_ids_all_invalid_yields_empty() {
         let entries = vec!["nope".to_string(), "123".to_string(), String::new()];
-        assert!(parse_bootstrap_ids(&entries).is_empty());
+        assert_eq!(
+            parse_bootstrap_ids(&entries),
+            [] as [iroh_base::PublicKey; 0]
+        );
     }
 
     #[test]
@@ -1067,7 +1067,6 @@ mod tests {
             topic_secret: None,
             no_default_bootstrap: false,
             no_default_topic: false,
-            replace_defaults: false,
             no_relay: false,
             no_mdns: false,
             abuse: false,
@@ -1094,7 +1093,6 @@ mod tests {
             topic_secret: Some("my-secret".to_owned()),
             no_default_bootstrap: false,
             no_default_topic: false,
-            replace_defaults: false,
             no_relay: true,
             no_mdns: false,
             abuse: false,
@@ -1258,7 +1256,7 @@ mod tests {
         let zero = crawl_peers(&seeds, 0, 0, 1, true, true)
             .await
             .expect("crawl succeeds");
-        assert!(zero.is_empty());
+        assert_eq!(zero, [] as [id_core::discovery::PeerAnnouncement; 0]);
     }
 
     fn abuse_row(local: u8, remote: u8, seed: u64) -> AbuseCountersRow {

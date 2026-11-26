@@ -80,7 +80,7 @@ python3 $GB/bin/app_setup.py webhook-secret   # webhook secret -> Bitwarden by n
 python3 $GB/bin/app_setup.py install-report
 ```
 
-Owners where Drew is only a member (NixOS, vertexinc) cannot install the
+Owners where the user is only a member (NixOS, vertexinc) cannot install the
 App — they stay sweep-only; that is expected and recorded in config.json.
 
 ## 4. Adding a new owner/org to the mirror set + sweep
@@ -89,7 +89,7 @@ App — they stay sweep-only; that is expected and recorded in config.json.
 # 1. config edit only — add the login to "owners" in:
 $EDITOR $GB/config.json
 # 2. commit + PR the config change (developing-today/code), merge, pull on laptop.
-# 3. install the App on the new org (§3) if Drew is an admin there.
+# 3. install the App on the new org (§3) if the user is an admin there.
 # 4. pick up the new owner immediately instead of waiting for Sunday:
 python3 $GB/bin/reconcile.py
 ```
@@ -120,6 +120,42 @@ around a TypeScript `cf/config` project (tool gap recorded on #3215).
 The deploy also (re)sets the Worker secrets `DRAIN_BEARER` and
 `GITHUB_WEBHOOK_SECRET` from Bitwarden by name; no secret is written
 to disk or printed.
+
+### Optional GitHub Actions release path
+
+The manual `github-backup Worker release` workflow is an additional
+release path; it does not replace the operator command above. It has
+two separate actions: `upload` creates a version and prints its UUID,
+while `promote` requires that full UUID, verifies the version has both
+secret bindings and the existing `GHB_EVENTS` KV namespace, then creates
+a deployment at 100%. Upload does not change traffic. Promotion verifies
+the latest deployment and `/health` afterward. It does not create,
+delete, or migrate storage, and it does not edit Worker routes.
+
+Before enabling the workflow, configure the GitHub environment
+`developing-today-backup-production` in repository settings with at
+least one required reviewer and restrict deployments to `main`. Add:
+
+- Environment variable `CLOUDFLARE_ACCOUNT_ID`.
+- Environment secret `CLOUDFLARE_API_TOKEN`, using the Workers `Editor`
+  role scoped to this existing Worker. The workflow does not need
+  Workers Routes write permission or direct KV access.
+- Environment secrets `BACKUP_WORKER_BEARER` and
+  `BACKUP_WEBHOOK_SECRET`, populated from the existing Bitwarden entries
+  `github-app.backup-worker-bearer` and
+  `github-app.backup-webhook-secret`.
+
+Then use Actions → `github-backup Worker release`, select `main`, and
+run `upload`. Copy the resulting version UUID into a second manual run
+with operation `promote`. The environment approval is required for both
+operations. The workflow runs only on manual dispatch from `main`; it
+does not receive credentials on pull requests.
+
+The workflow pins `cf@1.0.0-rc.1`, Wrangler `4.163.0`, and Node.js
+`24.22.0`. The TypeScript `cloudflare.config.ts` is the `cf` config for
+the same Worker; the existing `wrangler.toml` remains in place for the
+operator tool and local Wrangler workflows. Keep the worker name,
+compatibility date, and KV namespace ID in those two configs aligned.
 
 First time only — the KV namespace the Worker binds:
 
@@ -159,6 +195,41 @@ $GB/systemd/install-units.sh
 
 ## 8. Restore from a mirror
 
+Create and locally verify a cold bundle for a planned mirror:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_cold.py \
+  --repo developing-today/code --root ~/backups/github
+git clone ~/backups/github/cold-bundles/developing-today/code.bundle ./code-cold
+```
+
+The local command verifies the bundle in an empty repository and confirms the
+restored HEAD matches the mirror before publishing the bundle. It writes only
+to the local backup tree; use the separate uploader below for R2.
+
+To upload one planned mirror to an existing R2 bucket, configure rclone's
+`r2bak` remote using the runtime-only credentials pattern in
+`nixos/home/atlas-backup.sh`, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_r2.py \
+  --repo developing-today/code --bucket supabase-backups \
+  --root ~/backups/github
+```
+
+The uploader first completes the local empty-repository verification and
+clone-HEAD comparison, then uploads with `rclone copyto`, downloads that exact
+remote object with a second `rclone copyto`, and compares its SHA-256 against
+the local bundle. The content-addressed key is under
+`github-backup/cold-bundles/<owner>/<repo>/<head>-<sha256>.bundle`, so a newer
+artifact does not replace an earlier one. A non-zero upload or read-back check
+is a failed run. This command handles one repository only; the daily
+`github-backup-r2.timer` runs the four-fleet-repository uploader through the
+existing runtime-only Bitwarden/R2 credential path. A failed fleet repository makes
+the scheduled run fail; disable the timer until the cause is fixed and a full
+run succeeds. This does not provide a freshness/lag status record or automatic
+issue filing.
+
 ```sh
 # normal repo:
 git clone ~/backups/github/<owner>/<repo>.git ./<repo>
@@ -168,7 +239,32 @@ git bundle verify /tmp/<repo>.bundle
 git clone /tmp/<repo>.bundle ./<repo>
 ```
 
-## 9. Disaster recovery (tree lost, GitHub intact)
+## 9. Synchronize a plain Git mirror
+
+The plain mirror target for `OWNER/REPO` is the pre-created
+`developing-today/<repo>-mirror` repository. Create it under the approved
+organization before the first sync, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/plain_mirror.py \
+  --repo developing-today/code --root ~/backups/github
+```
+
+The command pushes all branches and tags from the valid local mirror, prunes
+branches/tags removed from the source, then compares remote ref names and
+object IDs with the local source. GitHub's reserved `refs/pull/*` namespace is
+not pushed. It never creates or deletes a GitHub repository. The daily
+`github-backup-mirror.timer` runs the four-repository synchronizer and fails
+if any destination cannot be synced and verified. Install it with
+`systemd/install-units.sh`; inspect or run it with:
+
+```sh
+systemctl --user list-timers github-backup-mirror.timer --no-pager
+systemctl --user start github-backup-mirror.service
+systemctl --user status github-backup-mirror.service --no-pager
+```
+
+## 10. Disaster recovery (tree lost, GitHub intact)
 
 Config (this repo) + Bitwarden are the only inputs. §7 Option B rebuilds
 the entire tree; MANIFEST.json regenerates at the end. Exclusions and
@@ -182,7 +278,7 @@ copy, and a failed owner's repos stay planned rather than silently
 dropping out of the manifest. Read that section before treating any
 status surface here as coverage.
 
-## 10. Health checks
+## 11. Health checks
 
 ```sh
 systemctl --user list-timers 'github-backup-*'
@@ -192,3 +288,55 @@ python3 $GB/bin/manifest.py   # refresh totals after any manual change
 gh api rate_limit --jq '.resources.core'   # personal-token pool (sweep)
 python3 $GB/bin/app_setup.py install-report  # App installations
 ```
+
+## 12. Five-copy freshness probe (#8584)
+
+`github-backup-freshness.timer` (daily 04:10 + delay, after the copy
+jobs) runs `bin/freshness_probe.py` via `systemd/run-freshness.sh`. The
+probe verifies all five #8584 copies — the Turso→D1 export (via the D1
+export meta record), the D1 copy (same record: the export succeeds
+only after D1 read-back counts match), the plain mirrors and the R2
+bundles (HEAD equality against the local backup mirrors), and the
+Cloudflare rehost (HEAD equality between the rehost Worker's live
+advertisement and the local mirror — see §13) — rewrites
+`~/backups/github/freshness-status.json`, and judges it with
+`bin/freshness_readout.py`. A copy behind its 26h target keeps exactly
+one alert issue open in developing-today/code (title prefix
+`Backup freshness:`); the probe updates it while copies stay behind
+and closes it on recovery. A failed check never refreshes a copy's
+stamp: the previous `last_success` carries forward and ages out.
+
+Read the current state at any time:
+
+```sh
+python3 $GB/bin/freshness_readout.py --status-json ~/backups/github/freshness-status.json
+```
+
+## 13. Cloudflare rehost (Workers + R2 smart-HTTP, #8584)
+
+The rehost copy: `git clone https://git.security.cab/<owner>/<repo>`
+served by the `fleet-git-rehost` Worker from pre-generated packs in
+the `fleet-git-rehost` R2 bucket. Design and protocol notes:
+`infra/github-backup/rehost/README.md`; the surface decision record
+is in `docs/CLOUDFLARE-REHOST-EVALUATION.md`.
+
+```sh
+# Publish all four fleet repos now (or wait for the 03:20 timer):
+$GB/systemd/run-rehost.sh
+# Publish one repo by hand (r2bak rclone remote must be configured):
+python3 $GB/bin/rehost_publish.py --repo developing-today/fleet
+
+# Deploy / redeploy the Worker (token fetched by vault name):
+$GB/rehost/worker/deploy.sh            # add --dry-run to validate only
+
+# Clone drill — HEAD must equal the source repo's head:
+git clone https://git.security.cab/developing-today/fleet /tmp/rehost-drill
+git -C /tmp/rehost-drill rev-parse HEAD
+```
+
+The publish is verified in-band: the pack is read back from R2 and
+SHA-256-compared, then refs.json is uploaded last and byte-compared;
+a failed publish leaves the previous generation serving. The
+freshness probe (§12) stamps this copy only when the live
+advertisement's HEAD equals the local mirror HEAD for every fleet
+repo.

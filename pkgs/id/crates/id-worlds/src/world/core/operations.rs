@@ -11,6 +11,27 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 impl WorldCore {
+    /// Release journal bytes to a spilled holder only after its authenticated
+    /// replay cursor reaches the current lease boundary. This check runs on
+    /// the serialized world actor against its live lease, not a host snapshot.
+    pub(crate) fn dispatch_spill_copy(
+        &self,
+        holder: &str,
+        epoch: u64,
+        replayed_position: u64,
+        journal_copy: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        super::spill_gate::check_spill_admission(
+            self.write_lease(),
+            holder,
+            epoch,
+            replayed_position,
+            self.clock().now_ms(),
+        )
+        .map_err(|reason| anyhow::anyhow!("spill admission refused: {reason:?}"))?;
+        Ok(journal_copy)
+    }
+
     /// The world's active (non-revoked) participants.
     #[must_use]
     pub(crate) fn participants(&self) -> Vec<Participant> {
@@ -50,6 +71,95 @@ impl WorldCore {
             participant_id: 0,
             kind: WorldEventKind::Chat(text),
         })
+    }
+
+    /// Prepare a host-authored notification event as participant 0
+    /// (#1062): the `notify` provider's committed event, in the
+    /// [`prepare_system_chat`](Self::prepare_system_chat) mould —
+    /// same byte bound (the world's `chat_bytes` limit), same
+    /// sanitizer, same refusal of a text that sanitizes away to
+    /// nothing. The event is a `Notification`, not a `Chat`: it
+    /// never enters chat history, and the join projection shows
+    /// it to every participant.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the text is empty, oversized, or entirely sanitized away.
+    pub(crate) fn prepare_notification(&self, text: &str) -> Result<WorldEvent> {
+        ensure!(
+            text.len() <= self.limits.chat_bytes,
+            "notification exceeds {} bytes",
+            self.limits.chat_bytes
+        );
+        let text = sanitize_chat(text);
+        ensure!(!text.is_empty(), "notification must not be empty");
+        Ok(WorldEvent {
+            sequence: self
+                .sequence
+                .checked_add(1)
+                .context("world event sequence exhausted")?,
+            participant_id: 0,
+            kind: WorldEventKind::Notification { text },
+        })
+    }
+
+    /// Whether a `notify` of `text` may be attempted (#1062). The
+    /// error says why; the program sees only `bad_args`. Two
+    /// refusals, in order: the text's form (the
+    /// [`prepare_notification`](Self::prepare_notification) rule —
+    /// the `chat_bytes` bound, sanitized, non-empty) and the
+    /// rolling rate window. Checking spends nothing: the executor
+    /// records the attempt with
+    /// [`note_notify_attempt`](Self::note_notify_attempt) once the
+    /// check passes, so a refused notification costs no budget
+    /// and an attempted one always does.
+    ///
+    /// # Errors
+    ///
+    /// An oversized or empty-after-sanitizing text, or a rate
+    /// window already holding `MAX_NOTIFY_BURST` attempts.
+    pub(crate) fn check_notify(&self, text: &str) -> Result<()> {
+        ensure!(
+            text.len() <= self.limits.chat_bytes,
+            "notification exceeds {} bytes",
+            self.limits.chat_bytes
+        );
+        ensure!(
+            !sanitize_chat(text).is_empty(),
+            "notification must not be empty"
+        );
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::NOTIFY_RATE_WINDOW_MS);
+        let recent = self
+            .notify_attempts
+            .iter()
+            .filter(|attempt| **attempt > window_start)
+            .count();
+        ensure!(
+            recent < crate::world_caps::MAX_NOTIFY_BURST,
+            "notify rate exceeds {} attempts per {} ms",
+            crate::world_caps::MAX_NOTIFY_BURST,
+            crate::world_caps::NOTIFY_RATE_WINDOW_MS
+        );
+        Ok(())
+    }
+
+    /// Record one `notify` attempt against the rate window,
+    /// pruning attempts the window has aged out. Called by the
+    /// executor after [`check_notify`](Self::check_notify) passes
+    /// and before the event is committed, so a notification whose
+    /// commit then fails spends the budget too.
+    pub(crate) fn note_notify_attempt(&mut self) {
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::NOTIFY_RATE_WINDOW_MS);
+        while self
+            .notify_attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= window_start)
+        {
+            self.notify_attempts.pop_front();
+        }
+        self.notify_attempts.push_back(now);
     }
 
     /// Whether a `schedule.at` for `id` may be pended, given the host clock
@@ -93,6 +203,153 @@ impl WorldCore {
         now_ms: u64,
     ) -> Result<()> {
         self.check_schedule_inner(id, at_ms, interval_ms, count, target, now_ms, false)
+    }
+
+    /// The `kv` store's total charge, in bytes: key bytes plus value
+    /// bytes (the stored JSON encoding's length) per entry (#1062).
+    pub(crate) fn kv_bytes(&self) -> usize {
+        self.kv
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum()
+    }
+
+    /// Whether a `kv.set` of `key` to a value of `value_len` serialized
+    /// bytes may be stored. The error says why; the program sees only
+    /// `bad_args`. A set of an existing key is a replacement: it is
+    /// validated against the store as it will be after the write, so
+    /// it consumes neither a second entry slot nor a second byte
+    /// charge.
+    ///
+    /// # Errors
+    ///
+    /// A malformed key, an oversized value, a full store, or a store
+    /// whose total byte budget the write would exceed.
+    pub(crate) fn check_kv_set(&self, key: &str, value_len: usize) -> Result<()> {
+        crate::world_caps::validate_kv_key(key)?;
+        ensure!(
+            value_len <= crate::world_caps::MAX_KV_VALUE_BYTES,
+            "kv value exceeds {} bytes",
+            crate::world_caps::MAX_KV_VALUE_BYTES
+        );
+        let replaced = self.kv.get(key);
+        ensure!(
+            replaced.is_some() || self.kv.len() < crate::world_caps::MAX_KV_ENTRIES,
+            "world already has {} kv entries",
+            crate::world_caps::MAX_KV_ENTRIES
+        );
+        let replaced_charge = replaced.map_or(0, |value| key.len() + value.len());
+        let total = self
+            .kv_bytes()
+            .saturating_sub(replaced_charge)
+            .saturating_add(key.len() + value_len);
+        ensure!(
+            total <= crate::world_caps::MAX_KV_TOTAL_BYTES,
+            "kv store would exceed {} total bytes",
+            crate::world_caps::MAX_KV_TOTAL_BYTES
+        );
+        Ok(())
+    }
+
+    /// The blob set's total charge, in bytes: content bytes per blob
+    /// (#1062).
+    pub(crate) fn blob_bytes(&self) -> usize {
+        self.blobs.values().map(|bytes| bytes.len()).sum()
+    }
+
+    /// Whether a `blob.put` of the content addressed by `hash`, of
+    /// `data_len` bytes, may be stored. The error says why; the
+    /// program sees only `bad_args`. Content the world already holds
+    /// is always accepted: its address is the same, so the put is a
+    /// no-op that consumes neither a second slot nor a second byte
+    /// charge.
+    ///
+    /// # Errors
+    ///
+    /// A malformed hash, oversized content, a full set, or a set
+    /// whose total byte budget the put would exceed.
+    pub(crate) fn check_blob_put(&self, hash: &str, data_len: usize) -> Result<()> {
+        crate::world_caps::validate_blob_hash(hash)?;
+        ensure!(
+            data_len <= crate::world_caps::MAX_BLOB_BYTES,
+            "blob exceeds {} bytes",
+            crate::world_caps::MAX_BLOB_BYTES
+        );
+        if self.blobs.contains_key(hash) {
+            return Ok(());
+        }
+        ensure!(
+            self.blobs.len() < crate::world_caps::MAX_BLOBS,
+            "world already has {} blobs",
+            crate::world_caps::MAX_BLOBS
+        );
+        ensure!(
+            self.blob_bytes() + data_len <= crate::world_caps::MAX_BLOB_TOTAL_BYTES,
+            "blob set would exceed {} total bytes",
+            crate::world_caps::MAX_BLOB_TOTAL_BYTES
+        );
+        Ok(())
+    }
+
+    /// Whether an `http.fetch` of `url` may be attempted (#1062),
+    /// and the normalized host it would connect to. The error says
+    /// why; the program sees only `bad_args`. Three refusals, in
+    /// order: the URL's form (the `id-caps` rule), the admin
+    /// allowlist (`limits.http_fetch_hosts`, exact match on the
+    /// normalized host — no wildcards, no implied subdomains — and
+    /// on the port: a bare host admits only the scheme's default
+    /// port, `host:port` admits that port), and
+    /// the rolling rate window. Checking spends nothing: the
+    /// executor records the attempt with
+    /// [`note_http_fetch_attempt`](Self::note_http_fetch_attempt)
+    /// once the check passes, so a refused fetch costs no budget
+    /// and an attempted one always does.
+    ///
+    /// # Errors
+    ///
+    /// A malformed URL, a host outside the allowlist, or a rate
+    /// window already holding `MAX_HTTP_FETCH_BURST` attempts.
+    pub(crate) fn check_http_fetch(&self, url: &str) -> Result<String> {
+        let host = crate::world_caps::validate_http_fetch_url(url)?;
+        ensure!(
+            self.limits
+                .http_fetch_hosts
+                .iter()
+                .any(|listed| crate::world_caps::http_fetch_entry_admits(listed, url)),
+            "http fetch host {host} at this port is not in the allowlist"
+        );
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        let recent = self
+            .http_fetch_attempts
+            .iter()
+            .filter(|attempt| **attempt > window_start)
+            .count();
+        ensure!(
+            recent < crate::world_caps::MAX_HTTP_FETCH_BURST,
+            "http fetch rate exceeds {} attempts per {} ms",
+            crate::world_caps::MAX_HTTP_FETCH_BURST,
+            crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS
+        );
+        Ok(host)
+    }
+
+    /// Record one `http.fetch` attempt against the rate window,
+    /// pruning attempts the window has aged out. Called by the
+    /// executor after [`check_http_fetch`](Self::check_http_fetch)
+    /// passes and before any connection is made, so failed fetches
+    /// spend the budget too.
+    pub(crate) fn note_http_fetch_attempt(&mut self) {
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        while self
+            .http_fetch_attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= window_start)
+        {
+            self.http_fetch_attempts.pop_front();
+        }
+        self.http_fetch_attempts.push_back(now);
     }
 
     /// Apply one fire of a pending schedule: re-arm it in place while
@@ -239,6 +496,29 @@ impl WorldCore {
     #[must_use]
     pub(crate) fn write_lease(&self) -> &WriteLease {
         &self.write_lease
+    }
+
+    /// The replay watermark (#13711): the highest stamped lease
+    /// position this world has replayed — `0` when no lease record
+    /// in the journal carries a position. A successor that reports
+    /// this value has replayed through the grant at that position;
+    /// the failover barrier (#7572) admits writes only once the
+    /// watermark reaches the grant's position. History is
+    /// append-only, so the watermark never decreases within a
+    /// journal, and a checkpoint carries the whole history, so it
+    /// survives compaction.
+    #[must_use]
+    pub(crate) fn lease_position_watermark(&self) -> u64 {
+        self.write_lease.last_position()
+    }
+
+    /// The position the next live lease record must carry (#13711):
+    /// one past the watermark. The append authority stamps it in
+    /// the same serialized operation as the append; callers never
+    /// choose a position.
+    #[must_use]
+    pub(crate) fn next_lease_position(&self) -> u64 {
+        self.write_lease.last_position().saturating_add(1)
     }
 
     /// The per-world resource requests, independent of current server ceilings.
@@ -460,6 +740,10 @@ impl WorldCore {
         subject: Option<String>,
         bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
+        self.check_world_boundary(
+            EnforcementPoint::WorldMembership,
+            subject.as_deref().unwrap_or("guest"),
+        )?;
         let active = self
             .capabilities
             .values()
@@ -506,6 +790,26 @@ impl WorldCore {
             },
         );
         Ok((participant, JoinCapability(token)))
+    }
+
+    fn check_world_boundary(&self, point: EnforcementPoint, subject: &str) -> Result<()> {
+        if let Some(gate) = &self.world_boundary_gate {
+            let outcome = gate.check(point, subject);
+            ensure!(
+                outcome.is_allow(),
+                "world operation refused by boundary ({})",
+                outcome.name()
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_blob_boundary_for(&self, participant: Option<u64>) -> Result<()> {
+        let subject = participant
+            .and_then(|id| self.capabilities.get(&id))
+            .and_then(|record| record.subject.as_deref())
+            .unwrap_or("guest");
+        self.check_world_boundary(EnforcementPoint::BlobStorage, subject)
     }
 
     /// Revoke a capability and every capability delegated from it. Returns
@@ -591,6 +895,15 @@ impl WorldCore {
     /// The directory of accounts, groups and friends this world is held to.
     pub const fn directory_mut(&mut self) -> &mut crate::directory::Directory {
         &mut self.directory
+    }
+
+    /// Install the serving app's world boundary gate for membership and blob
+    /// operations. This is runtime wiring and is not part of the journal.
+    pub fn set_world_boundary_gate(
+        &mut self,
+        gate: Arc<dyn id_directory::directory::BoundaryGate>,
+    ) {
+        self.world_boundary_gate = Some(super::WorldBoundaryGateHandle(gate));
     }
 
     /// The directory and the private petnames, borrowed together.

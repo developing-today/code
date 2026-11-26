@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use id::groups::log::GroupLog;
 use id::groups::policy::Delegation;
-use id::groups::{Event, GroupView, Outcome, Projection, Refusal};
+use id::groups::{Body, Delegate, DeviceOp, Event, GroupView, Outcome, Projection, Refusal, Role};
 use p2panda_core::Hash;
 use tempfile::TempDir;
 
@@ -197,4 +197,256 @@ fn test_delegate_sets_the_delegation_mode_that_policy_shows() {
         group_view(&log, &group).policy.delegation_mode(),
         Delegation::KeepPrior
     );
+}
+
+/// A refused grant with `--mode` records neither event (#14877): the mode change and the grant
+/// are one atomic pair, so the group's delegation mode never changes under a grant that did not
+/// happen. A grant to oneself is refused by the fold as `BadGrantee`.
+#[test]
+fn test_a_refused_grant_with_a_mode_change_records_neither_event() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let group = group_with_reader(&owner, &ann);
+    let before = GroupLog::open(&log).unwrap().events().len();
+
+    let refused = owner.run(&[
+        "delegate",
+        &group,
+        &owner.key(),
+        "--scope",
+        "read",
+        "--mode",
+        "keep_prior",
+    ]);
+    assert!(!refused.status.success(), "a grant to oneself was accepted");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("BadGrantee"), "{stderr}");
+    assert!(
+        !String::from_utf8_lossy(&refused.stdout).contains("policy"),
+        "a mode change was reported for a refused grant"
+    );
+    assert_eq!(
+        GroupLog::open(&log).unwrap().events().len(),
+        before,
+        "a refused grant with --mode recorded an event"
+    );
+    assert_eq!(
+        group_view(&log, &group).policy.delegation_mode(),
+        Delegation::Cascade,
+        "the mode change stayed in the log after the grant was refused"
+    );
+}
+
+/// Attenuation (design §7.2): a grantor passes on no more than it holds at that position. Ann
+/// holds a delegated Read, so the real `id delegate ... --scope write` is refused by the fold as
+/// `Attenuated`, and no grant is recorded for Bob.
+#[test]
+fn test_a_delegate_may_not_grant_above_its_scope() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let bob = node(root.path(), "bob", &log);
+    let group = group_with_reader(&owner, &ann);
+    owner.ok(&[
+        "delegate",
+        &group,
+        &ann.key(),
+        "--scope",
+        "read",
+        "--redelegate",
+    ]);
+
+    let refused = ann.run(&["delegate", &group, &bob.key(), "--scope", "write"]);
+    assert!(
+        !refused.status.success(),
+        "a grant above the grantor's scope was accepted"
+    );
+    let event = last_event_by(&log, &key_bytes(&ann.key()));
+    assert_eq!(
+        projection(&log).outcome(&event.id),
+        Some(&Outcome::Refused(Refusal::Attenuated)),
+        "the refusal is attenuation: Ann holds Read and asked to grant Write"
+    );
+}
+
+/// A veto (design §7) needs Manage. Bob is an ordinary reader, so the real `id revoke` of the
+/// owner's grant to Ann is refused as `NotManager`, and the grant stays in force.
+#[test]
+fn test_revoke_by_a_non_manager_is_refused() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let bob = node(root.path(), "bob", &log);
+    let group = group_with_reader(&owner, &ann);
+    owner.ok(&["group", "add", &group, &bob.key(), "--role", "read"]);
+    let grant = field(
+        &owner.ok(&["delegate", &group, &ann.key(), "--scope", "read"]),
+        "event",
+    );
+
+    let refused = bob.run(&["revoke", &group, &grant]);
+    assert!(
+        !refused.status.success(),
+        "a reader without Manage revoked a grant"
+    );
+    let event = last_event_by(&log, &key_bytes(&bob.key()));
+    assert_eq!(
+        projection(&log).outcome(&event.id),
+        Some(&Outcome::Refused(Refusal::NotManager)),
+        "the refusal is standing: Bob holds no Manage at the veto's position"
+    );
+    assert!(
+        projection(&log).grant_in_force(&hash(&grant)),
+        "a refused veto took the grant out of force"
+    );
+}
+
+/// A crossing (design §7.2, P2.7) may carry Write at most and must name a world. `id delegate`
+/// has no cross-world flag yet, so the events are recorded through the same `GroupLog` the CLI
+/// writes, and the fold's refusal is asserted by name for both halves of the rule.
+#[test]
+fn test_a_cross_world_grant_above_write_is_refused() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &path);
+    let ann = node(root.path(), "ann", &path);
+    let group = field(&owner.ok(&["group", "create"]), "group");
+    let mut log = GroupLog::open(&path).unwrap();
+    let author = key_bytes(&owner.key());
+    let grantee = key_bytes(&ann.key());
+
+    let over = log
+        .record(
+            author,
+            Some(hash(&group)),
+            Body::Cross {
+                delegate: Delegate {
+                    grantee,
+                    scope: Role::Manage,
+                    can_redelegate: false,
+                    expires_at: None,
+                },
+                world: "another-world".to_owned(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        over.outcome,
+        Outcome::Refused(Refusal::NotCrossable),
+        "a crossing above Write was accepted"
+    );
+
+    let unnamed = log
+        .record(
+            author,
+            Some(hash(&group)),
+            Body::Cross {
+                delegate: Delegate {
+                    grantee,
+                    scope: Role::Read,
+                    can_redelegate: false,
+                    expires_at: None,
+                },
+                world: String::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        unnamed.outcome,
+        Outcome::Refused(Refusal::NotCrossable),
+        "a crossing that names no world was accepted"
+    );
+}
+
+/// A device acts with its account's authority capped by its own scope (design §8.3). A
+/// Read-scoped device of the owner may not grant Write: the fold refuses it as `Attenuated`.
+/// There is no CLI surface for acting as a device, so the events go through the CLI's own
+/// `GroupLog`, as `id group` and `id delegate` write them.
+#[test]
+fn test_a_device_may_not_grant_above_its_scope() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &path);
+    let bob = node(root.path(), "bob", &path);
+    let group = field(&owner.ok(&["group", "create"]), "group");
+    let mut log = GroupLog::open(&path).unwrap();
+    let account = key_bytes(&owner.key());
+    let device: [u8; 32] = [7; 32];
+
+    let added = log
+        .record(
+            account,
+            Some(hash(&group)),
+            Body::Device(DeviceOp::Add {
+                device,
+                scope: Role::Read,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        added.outcome,
+        Outcome::Applied,
+        "the device was not authorised"
+    );
+
+    let refused = log
+        .record(
+            device,
+            Some(hash(&group)),
+            Body::Delegate(Delegate {
+                grantee: key_bytes(&bob.key()),
+                scope: Role::Write,
+                can_redelegate: false,
+                expires_at: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        refused.outcome,
+        Outcome::Refused(Refusal::Attenuated),
+        "a Read-scoped device granted Write"
+    );
+}
+
+#[test]
+fn test_delegate_prints_the_expiry_bound_and_refuses_a_past_one() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let group = group_with_reader(&owner, &ann);
+
+    // A future bound is recorded and shown in the confirmation (#14221 C1).
+    let line = owner.ok(&[
+        "delegate",
+        &group,
+        &ann.key(),
+        "--scope",
+        "read",
+        "--expires-at",
+        "99999999999",
+    ]);
+    assert_eq!(field(&line, "expires_at"), "99999999999");
+    let grant = hash(&field(&line, "event"));
+    assert_eq!(projection(&log).outcome(&grant), Some(&Outcome::Applied));
+
+    // A bound that has already passed is refused before anything is written (#14221 C2).
+    let before = GroupLog::open(&log).unwrap().events().len();
+    let output = owner.run(&[
+        "delegate",
+        &group,
+        &ann.key(),
+        "--scope",
+        "read",
+        "--expires-at",
+        "1",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not after now"), "{stderr}");
+    assert_eq!(GroupLog::open(&log).unwrap().events().len(), before);
 }

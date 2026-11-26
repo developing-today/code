@@ -101,7 +101,7 @@ describe("roadmap handler wiring (#8723 regression pin)", () => {
   });
 
   test("the unfiltered JSON branch stays untouched by view filtering", () => {
-    const unfiltered = jsonBlock.slice(0, jsonBlock.indexOf("const pool = await source.projects()"));
+    const unfiltered = jsonBlock.slice(jsonBlock.indexOf("if (!resolved)"), jsonBlock.indexOf("const poolByRef"));
     expect(unfiltered).toContain("items: [...items.values()]");
     expect(unfiltered).not.toContain("filterRoadmapForView");
   });

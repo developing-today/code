@@ -7,7 +7,7 @@ This directory contains the slice-1 implementation for the OpenCode execution la
 The claimant/executor is responsible for:
 
 1. **Supervision**: Checking bound sessions for recovery candidates (stuck/zero-message sessions)
-2. **Candidate Discovery**: Finding unbound opencode-lane tasks across four queues
+2. **Candidate Discovery**: Finding unbound opencode-lane tasks in the fleet queue
 3. **Session Management**: Creating and binding worker sessions with atomic operations
 4. **Prompt Delivery**: Sending execution prompts to bound sessions
 5. **Logging**: Recording fire execution results
@@ -53,7 +53,7 @@ Main execution script that implements the 6-step process:
 
 Candidate discovery and system state reporting:
 
-- **get_candidates()**: Discovers unbound opencode-lane tasks from all four queues
+- **get_candidates()**: Discovers unbound opencode-lane tasks from the fleet queue's four streams
 - **get_stuck_bound()**: Identifies bound tasks with stuck sessions (placeholder implementation)
 - **get_active_root_session_count()**: Queries OpenCode server for the
   active claimant root session count (scheduled fleet sessions excluded)
@@ -105,7 +105,8 @@ If the mode file doesn't exist or is unreadable, defaults to `shadow`.
 
 ## Queues
 
-The claimant monitors four queues:
+The claimant monitors the one fleet queue (Drew's one-queue model,
+#8097), reading its four streams in this order:
 
 - `repo-health-code-pilot`
 - `repo-health-opencode-pilot`
@@ -118,6 +119,46 @@ The claimant monitors four queues:
 - Monitored via OpenCode server API (`GET /api/session`)
 - Only root sessions without terminal markers count toward cap
 - Cap room = 36 - active_count
+
+## Hand-Back on Saturation (#1187)
+
+When a live fire finds the cap saturated with launchable
+candidates waiting, it hands the **next** candidate back in the
+same fire instead of leaving it silently queued:
+
+1. The claimant targeted-claims the candidate (the broker's park
+   verb only parks a task its caller holds).
+2. It parks the task with reason class `executor-saturated` and
+   the broker's capacity ready-condition (`{"kind": "capacity"}` —
+   a capacity wait: floored at the capacity scale, and the pick
+   may take it early when a slot frees).
+3. It posts a hand-back agent-note on the candidate's issue
+   naming the release path (the queue `wake` verb, or an owner's
+   explicit order).
+
+One hand-back per fire. Shadow fires mutate nothing. The fire
+log records the outcome under its `hand_back` key; a hand-back
+whose claim does not land parks nothing. Saturation is a success
+state, not a failure — a Claude lane can still claim the task if
+urgent.
+
+## Babysitter Rounds (#1338)
+
+Every fire also runs one babysitter round (`babysitter.py`):
+every root session at the location — bound or unbound; unbound
+sessions are observed, never driven — gets a verdict
+(progressing / stalled / done-unreported / blocked / walled /
+idle) under #1338's stall rule (suspect at ≥20 min silent with
+no live CI on the bound PR; confirmed on a second suspect round
+or on expiry-equivalent silence). The round record rides the
+fire log under its `babysitter` key; live fires also append it
+to `babysitter-rounds.jsonl` in the claimant state dir and
+persist the round state (`babysitter-state.json`) that stall
+confirmation reads next fire. Shadow fires compute the round
+and mutate nothing. Pool wall state is read from
+`pool-state.json` in the state dir (operator/tooling-written;
+unread is recorded, never invented). Nudges are not here — they
+are #1187's next slice, consuming this round's confirmed stalls.
 
 ## Recovery Rules (#4758, Phase 3 of #4912)
 
@@ -132,7 +173,7 @@ For bound sessions with:
 
 Process:
 
-1. Verify zero messages via (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/messages`
+1. Verify zero messages via (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/message`
 2. Delete session via `DELETE /api/session/{id}`
 3. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:zero-message-deleted`
 4. Task becomes unbound and eligible for next fire

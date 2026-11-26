@@ -15,9 +15,24 @@ import {
   pageByRoute,
 } from "../src/pages.ts";
 import { navLinks } from "../src/render.ts";
+import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
-const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
+// The #13052 split moved the route families into the server-*.ts seam
+// modules; reachability is a property of the whole server layer, so the
+// scan covers every module the split produced.
+const serverSource = [
+  "server.ts",
+  "server-alert-routes.ts",
+  "server-contexts.ts",
+  "server-decision-routes.ts",
+  "server-pages.ts",
+  "server-respond.ts",
+  "server-wiring.ts",
+  "server-write-routes.ts",
+]
+  .map((f) => readFileSync(join(SRC, f), "utf8"))
+  .join("\n");
 const renderSource = readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 /** The CSS rule body for a selector in the stylesheet string. */
@@ -36,10 +51,11 @@ function serverPaths(): { exact: string[]; prefixes: string[] } {
 }
 
 /** Routes that are not pages a person navigates to: JSON twins, POST
- * endpoints, datastar fragments, static assets, the /board alias, and
- * the /freshness/stream SSE endpoint (machine-consumed, never navigated to). */
+ * endpoints, datastar fragments, static assets, the /board alias, the
+ * /freshness/stream SSE endpoint (machine-consumed, never navigated to),
+ * and the /webhooks/* GitHub delivery endpoints (#9076, machine POST only). */
 const NON_PAGE =
-  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$/;
+  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$|^\/webhooks\//;
 
 describe("the manifest groups every page (#1135)", () => {
   test("every page names one of PAGE_GROUPS, and groups have no page-less id", () => {
@@ -84,6 +100,21 @@ describe("the nav bar renders the groups (#1135)", () => {
     expect(sub.match(/aria-current="page"/g)?.length).toBe(1);
     expect(sub.match(/data-current="true"/g)?.length).toBe(1);
     expect(pageByRoute(manifestRouteFor("/program/abc") ?? "")?.group).toBe("work");
+  });
+});
+
+describe("console-gated navigation (#12416)", () => {
+  test("adds the Console link only for the configured public Host", async () => {
+    const response = (host: string) =>
+      addConsoleShortcut(
+        new Response('<nav class="navbar">Dashboard</nav>', { headers: { "content-type": "text/html" } }),
+        new Request("http://aggregator/", { headers: { host } }),
+        "pm.security.cab",
+      );
+    expect(await (await response("pm.security.cab")).text()).toContain('<a href="/console/">Console</a>');
+    for (const host of ["100.64.0.1", "127.0.0.1:4870", "localhost"]) {
+      expect(await (await response(host)).text()).not.toContain("/console/");
+    }
   });
 });
 

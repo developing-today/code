@@ -10,6 +10,45 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # Affinity Photo/Publisher/Designer, built from affinity-nix's own
+  # outputs function and pinned nixpkgs, but with that nixpkgs imported
+  # with allowUnfree. The flake's `packages` output uses
+  # `nixpkgs.legacyPackages`, whose config comes from the caller's
+  # environment (NIXPKGS_ALLOW_UNFREE, honoured because the hosts set
+  # pure-eval = false). An interactive ./rebuild evaluates as the user,
+  # who has that variable; agent-rebuild-switch evaluates as root from
+  # a systemd unit, which does not, so evaluation refused the unfree
+  # Affinity packages there. Same nixpkgs rev and inputs, so the same
+  # derivations, without depending on who runs the evaluation.
+  affinityPackages =
+    let
+      affinity = inputs.affinity-nix;
+      affinityPkgs = import affinity.inputs.nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+        overlays = [ ];
+      };
+      affinityOutputs = (import "${affinity}/flake.nix").outputs {
+        self = affinity;
+        nixpkgs = affinity.inputs.nixpkgs // {
+          legacyPackages = {
+            ${system} = affinityPkgs;
+          };
+        };
+        inherit (affinity.inputs) elemental-wine-source winetricks-source;
+      };
+    in
+    affinityOutputs.packages.${system};
+  # nixpkgs-unstable with allowUnfree, for the same reason: its
+  # `legacyPackages` takes its config from the caller's environment, so
+  # unfree packages taken from it (antigravity-ide and others) evaluated
+  # for ./rebuild as the user but were refused under agent-rebuild-switch
+  # as root. Same nixpkgs rev, so the same derivations.
+  unstablePkgs = import inputs.nixpkgs-unstable {
+    inherit system;
+    config.allowUnfree = true;
+    overlays = [ ];
+  };
   # TEMPORARY (developing-today/code#5447, found via #2715): the
   # nixpkgs-25 segment below takes activitywatch and
   # haskellPackages.misfortune from this input, and on the current
@@ -273,7 +312,7 @@ let
   # launches alike. Wrapper flags precede caller args, so
   # automation passing its own --remote-debugging-port
   # (playwright/puppeteer via mcpx) still wins.
-  chromiumPkg = inputs.nixpkgs-unstable.legacyPackages.${system}.chromium;
+  chromiumPkg = unstablePkgs.chromium;
   chromiumCdp = pkgs.symlinkJoin {
     name = "${chromiumPkg.name}-cdp";
     paths = [ chromiumPkg ];
@@ -399,8 +438,11 @@ let
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
 
-  # mcpx MCP gateway and Code Mode execution runner.
-  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") { };
+  # mcpx MCP gateway and Code Mode execution runner. The standalone package
+  # still runs the Go checks; a system rebuild skips that duplicate test phase.
+  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") {
+    doCheck = false;
+  };
 
   # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
@@ -412,7 +454,7 @@ let
   latestCli = pkgs.callPackage (lib.from-root "pkgs/latest-cli") { };
 
   # Rust toolchain for the whole system, matching the devshell exactly: the
-  # same pkgs/id/rust-toolchain.toml (channel 1.99.0) resolved through the same
+  # same pkgs/id/rust-toolchain.toml (channel 1.99.1) resolved through the same
   # rust-overlay lock. This is what places clippy, rust-analyzer, rustfmt and
   # llvm-tools on the system, which the plain nixpkgs rustc/cargo cannot.
   #
@@ -534,8 +576,7 @@ in
     variables = {
       EDITOR = "nvim";
       NIX_REMOTE = "daemon";
-      PLAYWRIGHT_BROWSERS_PATH = "${inputs.nixpkgs-unstable.legacyPackages.${system}.playwright-driver.browsers
-      }";
+      PLAYWRIGHT_BROWSERS_PATH = "${unstablePkgs.playwright-driver.browsers}";
     };
     # things should end up in systempackages if
     # they are required for boot or login or
@@ -603,7 +644,7 @@ in
       (scaleElectron2x inputs.chatgpt-desktop.packages.${system}.codex-desktop-remote-mobile-control)
     ]
     ++ (with inputs.roc.packages.${system}; [ nightly ])
-    ++ (with inputs.affinity-nix.packages.${system}; [
+    ++ (with affinityPackages; [
       photo
       publisher
       designer
@@ -869,7 +910,7 @@ in
       androidSdk.androidsdk
     ])
     ++ (with nixpkgs-25-fixed; [ activitywatch ])
-    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
+    ++ (with unstablePkgs; [
       # AI coding agents. Kept on the unstable channel rather than master
       # because unstable is cached (see the chromium note below) and these
       # are large node/electron closures.
@@ -897,12 +938,12 @@ in
     # profile gets the overlay's auto-tracked release (1.5.9 today) instead of
     # nixpkgs-unstable's unoverlaid 1.4.8.
     ++ (with pkgs; [ antigravity-cli ])
-    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
+    ++ (with unstablePkgs; [
       ghostty
       zed-editor
       # opencode
     ])
-    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
+    ++ (with unstablePkgs; [
       # rclone   # fish completions broke 2025-04-03
       # rclone-browser   # fish completions broke 2025-04-03
       # rclone-ui   # fish completions broke 2025-04-03
@@ -1092,7 +1133,7 @@ in
       # libxkbcommon
       # lsix
       # mesa.drivers
-      # cargo / rustc come from `rustToolchain` below (1.99.0 + clippy /
+      # cargo / rustc come from `rustToolchain` below (1.99.1 + clippy /
       # rust-analyzer / llvm-tools), not the nixpkgs build.
       rustup
       # simple-http-server
@@ -1353,7 +1394,7 @@ in
       #cypress # electron 37 eol: insecure in this nixpkgs
       chromiumCdp # chromium + structural CDP on 127.0.0.1:19224 (code#5924); nixos-unstable channel: cached (master chromium is not)
       firefoxBidi # firefox + structural WebDriver BiDi on 127.0.0.1:19225 (code#5924); also the HM programs.firefox package (home/common)
-      inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
+      unstablePkgs.chromedriver
       playwright-driver
       direnv
       rofi
@@ -1402,7 +1443,7 @@ in
       # VR
       #immersed
     ])
-    # Pinned Rust toolchain (1.99.0) shared with the devshell. Replaces the
+    # Pinned Rust toolchain (1.99.1) shared with the devshell. Replaces the
     # nixpkgs cargo/rustc/rustfmt above so PATH stays on one version.
     ++ [ rustToolchain ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

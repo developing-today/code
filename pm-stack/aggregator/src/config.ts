@@ -2,11 +2,24 @@
 // only — never committed, never printed. Everything has a fixture-safe
 // default, except the default Source: implicit fixtures require the
 // explicit PM_AGG_DEV=1 switch (#1195).
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { requireHome } from "./home.ts";
 import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
 
-const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
+// A default may be a thunk, so a HOME-derived default is resolved only when its
+// setting is not given (#8220): an explicit override never needs HOME.
+const s = (v: string | undefined, d: string | (() => string)): string =>
+  v && v.trim() !== "" ? v.trim() : typeof d === "function" ? d() : d;
+
+// The default path for `setting` under HOME, resolved lazily. An unset or empty
+// HOME is HomeUnresolvedError naming the setting (#5762 contract), not the
+// passwd entry. HOME is read from the process, as before; the env passed to
+// loadConfig carries only the overrides.
+const fromHome =
+  (setting: string, ...segments: string[]) =>
+  (): string =>
+    join(requireHome(setting, process.env), ...segments);
+const AGG_STATE = [".local", "state", "pm-aggregator"] as const;
 
 function parseAggregatorPort(value: string | undefined, name = "PM_AGG_PORT", defaultValue = "4870"): number {
   const normalized = s(value, defaultValue);
@@ -38,8 +51,8 @@ function parseAggregatorHosts(value: string | undefined): string[] {
 }
 
 export interface Config {
-  /** #6815: where the four Supabase-migrated stores live. "file" is the
-   *  dev/test path and rollback target; "supabase" is the deployed
+  /** #6815: where the four remote-capable stores live. "file" is the
+   *  dev/test path and rollback target; "turso" is the deployed
    *  canonical backend. Exactly one is active — never both. */
   storeBackend: StoreBackendKind;
   /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
@@ -54,6 +67,16 @@ export interface Config {
   feedFile: string;
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
+  promptsFile: string;
+  /** Prompt attachment blobs (#10036 S7, design #9539 §6): the storage
+   *  decision of record puts them in the pm-stack host data dir, next to
+   *  the prompts file by default (PM_AGG_PROMPT_ATTACHMENTS_DIR). */
+  promptAttachmentsDir: string;
+  /** Sync-mode answer wait for prompt submissions (#10033 S3, design
+   *  #9539 §3.5): a sync-block request blocks at most this long, and a
+   *  sync-ws channel closes with a typed timeout outcome after it.
+   *  120s default, configured by PM_AGG_PROMPT_SYNC_TIMEOUT_MS. */
+  promptSyncTimeoutMs: number;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
   /** Checkout of developing-today/code on the aggregator host; the
@@ -64,12 +87,23 @@ export interface Config {
   nixCheckout: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
+  /** Per-class trust rulings for the source-conflict inbox (#1282 slice 2). */
+  conflictRulingsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
   eventsFile: string;
   /** Identity-to-role registry (#9604), separate from the session registry. */
   identityRegistryFile: string;
+  /** Shared HS256 secret used only to mint short-lived brokered-write tokens. */
+  stackTokenSecret: string | null;
+  /** Break-glass owner token store (#9608) — written only by the local
+   * owner CLI (scripts/issue-break-glass-token.ts); hashes only. */
+  breakGlassFile: string;
+  /** Outage-queued action writes (#9608, design #1253 section 6):
+   * writes queued unverified during an Access/IdP outage, held out
+   * of the actions store until a fresh login confirms the claim. */
+  outageQueueFile: string;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -82,6 +116,13 @@ export interface Config {
    * dispatch credential. */
   queueBrokerTokenFile: string;
   activityFile: string;
+  /** Append-only outcome-fact ledger (#10910): the outcome consumer
+   *  projects the GitHub hot list into it on the activity cadence. */
+  outcomeFile: string;
+  /** JSONL queue/session binding records (#10910) the outcome consumer
+   *  joins hot-list events through; an absent file means no bindings
+   *  exist yet, so facts land explicitly unattributed. */
+  outcomeBindingsFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -122,9 +163,6 @@ export interface Config {
   /** Tracker of evaluated free services without automated quota cards (#1172). */
   freeServicesTrackerFile: string;
   cloudflareExportFile: string;
-  /** The Supabase usage exporter's document (#1050): the gathered live read
-   * preferred over the quota view's Supabase prose when fresh. */
-  supabaseExportFile: string;
   /** The provider quota registry; the hub's second dated-read source
    * (billing incidents) for the same fallback path. */
   quotaRegistryFile: string;
@@ -189,6 +227,18 @@ export interface Config {
     ackWindowMin: number;
     tickMs: number;
   };
+  /** Notify relay (#8569 Phase 2 step 1): the Cloudflare edge
+   * dead-man's switch the aggregator heartbeats to and mirrors
+   * its push subscriptions into. `url` is null until the relay is
+   * deployed and PM_AGG_NOTIFY_RELAY_URL is set — the client is a
+   * no-op while unset, so this config is safe to ship ahead of
+   * the deploy. `stateFile` persists the subscription snapshot
+   * seq (the edge keeps only the highest; a lost counter would
+   * regress loudly, and the client re-adopts from /status). */
+  notifyRelay: {
+    url: string | null;
+    stateFile: string;
+  };
 }
 
 function parseAggregatorSource(env: Record<string, string | undefined>): "fixtures" | "live" {
@@ -208,6 +258,7 @@ function parseAggregatorSource(env: Record<string, string | undefined>): "fixtur
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const promptsFile = s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json"));
   return {
     storeBackend: parseStoreBackend(env),
     source: parseAggregatorSource(env),
@@ -215,20 +266,40 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    promptsFile,
+    promptAttachmentsDir: s(env.PM_AGG_PROMPT_ATTACHMENTS_DIR, join(dirname(promptsFile), "prompt-attachments")),
+    promptSyncTimeoutMs: parseAggregatorCount(
+      env.PM_AGG_PROMPT_SYNC_TIMEOUT_MS,
+      "PM_AGG_PROMPT_SYNC_TIMEOUT_MS",
+      "120000",
+    ),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
-    codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
-    nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),
+    codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, fromHome("PM_AGG_CODE_CHECKOUT", "git", "code")),
+    nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, fromHome("PM_AGG_NIX_CHECKOUT", "code", "dezren39-nix")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
+    conflictRulingsFile: s(env.PM_AGG_CONFLICT_RULINGS_FILE, join(process.cwd(), "conflict-rulings.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
     identityRegistryFile: s(
       env.PM_AGG_IDENTITY_REGISTRY_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
+      fromHome("PM_AGG_IDENTITY_REGISTRY_FILE", ...AGG_STATE, "identity-registry.json"),
     ),
-    freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
+    stackTokenSecret: env.PM_AGG_STACK_TOKEN_SECRET?.trim() || null,
+    breakGlassFile: s(
+      env.PM_AGG_BREAK_GLASS_FILE,
+      fromHome("PM_AGG_BREAK_GLASS_FILE", ...AGG_STATE, "break-glass-tokens.json"),
+    ),
+    outageQueueFile: s(
+      env.PM_AGG_OUTAGE_QUEUE_FILE,
+      fromHome("PM_AGG_OUTAGE_QUEUE_FILE", ...AGG_STATE, "outage-queue.json"),
+    ),
+    freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, fromHome("PM_AGG_FRESHNESS_FILE", ...AGG_STATE, "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
     queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
-    queueBrokerTokenFile: s(env.PM_AGG_QUEUE_BROKER_TOKEN_FILE, join(homedir(), ".config", "queue-broker", "token")),
+    queueBrokerTokenFile: s(
+      env.PM_AGG_QUEUE_BROKER_TOKEN_FILE,
+      fromHome("PM_AGG_QUEUE_BROKER_TOKEN_FILE", ".config", "queue-broker", "token"),
+    ),
     // Default is the state dir, NOT cwd (#5389): aggregator runtime state
     // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
     // cwd default let an env-less run write this store into whatever
@@ -237,53 +308,60 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     // to this same path for the unit.
     activityFile: s(
       env.PM_AGG_ACTIVITY_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "activity-ingestion.json"),
+      fromHome("PM_AGG_ACTIVITY_FILE", ...AGG_STATE, "activity-ingestion.json"),
+    ),
+    outcomeFile: s(env.PM_AGG_OUTCOME_FILE, fromHome("PM_AGG_OUTCOME_FILE", ...AGG_STATE, "outcome-facts.jsonl")),
+    outcomeBindingsFile: s(
+      env.PM_AGG_OUTCOME_BINDINGS_FILE,
+      fromHome("PM_AGG_OUTCOME_BINDINGS_FILE", ...AGG_STATE, "outcome-bindings.jsonl"),
     ),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     digestsDir: s(env.PM_AGG_DIGESTS_DIR, join(process.cwd(), "digests")),
     notificationsFile: s(
       env.PM_AGG_NOTIFICATIONS_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "notifications.jsonl"),
+      fromHome("PM_AGG_NOTIFICATIONS_FILE", ...AGG_STATE, "notifications.jsonl"),
     ),
-    needsDrewFile: s(
-      env.PM_AGG_NEEDS_DREW_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
-    ),
-    decisionsFile: s(env.PM_AGG_DECISIONS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "decisions.json")),
+    needsDrewFile: s(env.PM_AGG_NEEDS_DREW_FILE, fromHome("PM_AGG_NEEDS_DREW_FILE", ...AGG_STATE, "needs-drew.json")),
+    decisionsFile: s(env.PM_AGG_DECISIONS_FILE, fromHome("PM_AGG_DECISIONS_FILE", ...AGG_STATE, "decisions.json")),
     decisionsEventsFile: s(
       env.PM_AGG_DECISION_EVENTS_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "decision-events.jsonl"),
+      fromHome("PM_AGG_DECISION_EVENTS_FILE", ...AGG_STATE, "decision-events.jsonl"),
     ),
     decisionsOutboxFile: s(
       env.PM_AGG_DECISION_OUTBOX_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "decision-events-outbox.jsonl"),
+      fromHome("PM_AGG_DECISION_OUTBOX_FILE", ...AGG_STATE, "decision-events-outbox.jsonl"),
     ),
     stackHealthFile: s(
       env.PM_AGG_STACK_HEALTH_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),
+      fromHome("PM_AGG_STACK_HEALTH_FILE", ...AGG_STATE, "stack-health.json"),
     ),
     hostHealthFile: s(
       env.PM_AGG_HOST_HEALTH_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
+      fromHome("PM_AGG_HOST_HEALTH_FILE", ...AGG_STATE, "host-health.json"),
     ),
-    lastGoodDir: s(env.PM_AGG_LAST_GOOD_DIR, join(homedir(), ".local", "state", "pm-aggregator", "last-good-pages")),
+    lastGoodDir: s(env.PM_AGG_LAST_GOOD_DIR, fromHome("PM_AGG_LAST_GOOD_DIR", ...AGG_STATE, "last-good-pages")),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
-      join(
-        homedir(),
+      fromHome(
+        "PM_AGG_QUOTA_VIEW",
         "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
       ),
     ),
     freeServicesTrackerFile: s(
       env.PM_AGG_FREE_SERVICES_TRACKER,
-      join(homedir(), "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md"),
+      fromHome("PM_AGG_FREE_SERVICES_TRACKER", "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md"),
     ),
-    cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
-    supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
+    cloudflareExportFile: s(
+      env.PM_AGG_CLOUDFLARE_EXPORT,
+      fromHome("PM_AGG_CLOUDFLARE_EXPORT", "atlas/cloudflare-export/latest.json"),
+    ),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,
-      join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
+      fromHome(
+        "PM_AGG_QUOTA_REGISTRY",
+        "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md",
+      ),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
     quotaHeartbeatFile: s(
@@ -295,29 +373,35 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ),
     opencodeConfigFile: s(
       env.PM_AGG_OPENCODE_CONFIG_FILE,
-      join(homedir(), "git", "code", ".opencode", "opencode.jsonc"),
+      fromHome("PM_AGG_OPENCODE_CONFIG_FILE", "git", "code", ".opencode", "opencode.jsonc"),
     ),
     itemHistoryFile: s(
       env.PM_AGG_ITEM_HISTORY_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
+      fromHome("PM_AGG_ITEM_HISTORY_FILE", ...AGG_STATE, "item-history.jsonl"),
     ),
     sloJournalFile: s(
       env.PM_AGG_SLO_JOURNAL_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "slo-journal.jsonl"),
+      fromHome("PM_AGG_SLO_JOURNAL_FILE", ...AGG_STATE, "slo-journal.jsonl"),
     ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
-      join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
+      fromHome("PM_AGG_OPENCHAMBER_STATE", ".config", "openchamber", "managed-opencode", "state.json"),
     ),
     opencodeServerStateFile: s(
       env.PM_AGG_OPENCODE_SERVER_STATE,
-      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
+      fromHome("PM_AGG_OPENCODE_SERVER_STATE", ".local", "state", "opencode", "service-prod.json"),
     ),
-    mcpxCallLedgerDir: s(env.PM_AGG_MCPX_CALL_LEDGER_DIR, join(homedir(), ".local", "state", "mcpx", "call-ledger")),
-    fleetInvocationLedgerFile: s(
-      env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE,
-      join(env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state"), "fleet", "invocations.jsonl"),
+    mcpxCallLedgerDir: s(
+      env.PM_AGG_MCPX_CALL_LEDGER_DIR,
+      fromHome("PM_AGG_MCPX_CALL_LEDGER_DIR", ".local", "state", "mcpx", "call-ledger"),
+    ),
+    fleetInvocationLedgerFile: s(env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE, () =>
+      join(
+        env.XDG_STATE_HOME?.trim() || fromHome("PM_AGG_FLEET_INVOCATION_LEDGER_FILE", ".local", "state")(),
+        "fleet",
+        "invocations.jsonl",
+      ),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),
@@ -354,6 +438,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     alerts: {
       ackWindowMin: parseAggregatorCount(env.ALERT_ACK_WINDOW_MIN, "ALERT_ACK_WINDOW_MIN", "15"),
       tickMs: 60_000,
+    },
+    notifyRelay: {
+      url: env.PM_AGG_NOTIFY_RELAY_URL?.trim() ? env.PM_AGG_NOTIFY_RELAY_URL.trim().replace(/\/+$/, "") : null,
+      stateFile: s(
+        env.PM_AGG_NOTIFY_RELAY_STATE_FILE,
+        fromHome("PM_AGG_NOTIFY_RELAY_STATE_FILE", ...AGG_STATE, "notify-relay.json"),
+      ),
     },
   };
 }

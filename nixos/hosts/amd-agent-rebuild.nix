@@ -113,6 +113,16 @@ let
         unset token
       fi
 
+      # The hosts evaluate unfree packages from inputs whose nixpkgs
+      # config comes from the environment (Affinity via affinity-nix's
+      # legacyPackages, antigravity-ide, and others); /etc/nix/nix.conf
+      # sets pure-eval = false so the variable is honoured. ./rebuild
+      # evaluates as `user`, whose session sets NIXPKGS_ALLOW_UNFREE=1
+      # (nixos/environment), and CI's host eval sets it too. This command
+      # evaluates as root from sudo or a systemd unit, where it is unset,
+      # so evaluation refused those packages. Set it here for parity.
+      export NIXPKGS_ALLOW_UNFREE=1
+
       logger -t agent-rebuild-switch "switch to ${flakeRef} started by ''${SUDO_USER:-unknown}; log: ''${log_file:-none}"
       # Nix resolves an installable that contains a slash against the
       # cwd, following a symlink there into the store. Run from root-owned
@@ -182,6 +192,12 @@ in
     restartIfChanged = false;
     stopIfChanged = false;
   };
+
+  # CF-9 (#14949, #14107 M2): the laptop PM edition follows main hourly
+  # through this switch. The timer itself, pm-stack-follow-main, is
+  # defined once, in nixos/services/pm-stack (its schedule of record is
+  # the doc/fleet-schedule-registry.md row); defining it here too made
+  # the amd evaluation fail on conflicting values.
 
   security.polkit.extraConfig = ''
     polkit.addRule(function (action, subject) {

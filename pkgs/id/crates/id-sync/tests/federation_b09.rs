@@ -25,6 +25,10 @@
 #[path = "../src/federation/slices/b32_ingest_gate.rs"]
 mod b32_ingest_gate;
 
+#[path = "../src/federation/record_join.rs"]
+#[allow(dead_code)]
+mod record_join;
+
 #[path = "../src/federation/slices/b31_peer_classes.rs"]
 #[allow(dead_code)]
 mod b31_peer_classes;
@@ -443,7 +447,7 @@ fn run(steps: &[Step], final_order: &[(usize, usize)]) {
                     withheld.sort_unstable();
                     assert_eq!(transfer.offer.send, send);
                     assert_eq!(transfer.offer.withheld, withheld);
-                    assert!(transfer.offer.refused_by_remote.is_empty());
+                    assert_eq!(transfer.offer.refused_by_remote, [] as [EventId; 0]);
                     assert_eq!(transfer.outcomes.len(), send.len());
                     assert!(transfer.outcomes.iter().all(|(_, r)| r.is_ok()));
                 }
@@ -654,7 +658,7 @@ fn out_of_bounds_versions_are_withheld_with_the_b08_reason() {
         w.sort_unstable();
         w
     });
-    assert!(exchange.forward.offer.send.is_empty());
+    assert_eq!(exchange.forward.offer.send, [] as [EventId; 0]);
     assert!(b.inventory().objects().next().is_none());
 
     // Within retention the shared version crosses; the private one never.
@@ -674,7 +678,10 @@ fn equal_sets_have_equal_digests_and_report_no_divergence() {
     a.produce(&envelope, START).unwrap();
     b.produce(&envelope, START).unwrap();
     assert_eq!(a.inventory().summary(), b.inventory().summary());
-    assert!(divergence(&a.inventory(), &b.inventory()).is_empty());
+    assert_eq!(
+        divergence(&a.inventory(), &b.inventory()),
+        [] as [ObjectDivergence; 0]
+    );
     assert!(reconcile(&mut a, &mut b, &config(), START).is_quiet());
     let ids = BTreeSet::from([event(1)]);
     assert_eq!(

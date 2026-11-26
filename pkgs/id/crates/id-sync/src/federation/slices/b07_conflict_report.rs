@@ -183,8 +183,10 @@ impl VersionHeader {
         }
         let (parent_bytes, body) = rest.split_at(parent_bytes);
         let parents: Vec<EventId> = parent_bytes
-            .chunks_exact(32)
-            .map(|chunk| chunk.try_into().unwrap_or([0; 32]))
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|chunk| *chunk)
             .collect();
         if parents.windows(2).any(|pair| pair[0] >= pair[1]) {
             return None;
@@ -401,6 +403,10 @@ pub enum IngestOutcome {
 pub enum IngestError {
     /// The ingest gate refused the envelope.
     Rejected(RejectReason),
+    /// The version claims the record join and breaks it; refused at
+    /// admission by `federation::record_join` before the store saw
+    /// it (#12279).
+    JoinRefused(super::record_join::JoinRefusal),
     /// The payload is not a canonical version header, or names itself
     /// as a parent.
     MalformedVersion,
@@ -574,6 +580,18 @@ impl ConflictStore {
             VersionHeader::decode(&envelope.payload).ok_or(IngestError::MalformedVersion)?;
         if header.parents.contains(&envelope.event_id) {
             return Err(IngestError::MalformedVersion);
+        }
+        // #12279: a joined record is checked against its body here,
+        // after the gate (whose refusals keep their precedence) and
+        // before any store state changes.
+        if super::record_join::is_joined_record(&envelope.event_id, &header.body) {
+            super::record_join::check_join(
+                &envelope.event_id,
+                &envelope.verifying_key,
+                &header.object_id,
+                &header.body,
+            )
+            .map_err(IngestError::JoinRefused)?;
         }
         let version = VersionRef {
             event_id: envelope.event_id,

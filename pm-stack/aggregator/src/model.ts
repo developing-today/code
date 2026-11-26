@@ -63,6 +63,19 @@ export interface MilestoneRef {
   closedAt: string | null;
 }
 
+export interface SubIssuesSummary {
+  total: number;
+  completed: number;
+}
+
+export interface SpawnRollup {
+  total: number;
+  done: number;
+  inProgress: number;
+  /** Direct spawned designs that block this design's tracking issue. */
+  blocking: RefKey[];
+}
+
 /**
  * One item of the org GitHub Project pool (#910 stage 5): a Project
  * item plus its linked issue/PR, as read by the fleet-feed collector
@@ -72,6 +85,8 @@ export interface MilestoneRef {
  * linked issue's state) but not arbitrary issues.
  */
 export interface ProjectPoolItem {
+  /** Stable local board-registry key; refs remain board-agnostic. */
+  boardId?: string;
   /** Project item node id (PVTI_…). */
   id: string;
   /** Project item database id, used in the item URL's itemId param. */
@@ -102,6 +117,10 @@ export interface ProjectPoolItem {
   mergedAt?: string;
   /** The linked issue's GitHub milestone, when it has one (#9067). */
   milestone?: MilestoneRef;
+  /** GitHub's authoritative direct-child counts for this issue. */
+  subIssuesSummary?: SubIssuesSummary;
+  /** Derived design-spawn counts, added to the projects API projection. */
+  spawnRollup?: SpawnRollup;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -130,6 +149,8 @@ export interface ProjectPoolItem {
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+  /** Former parent refs retained by the PM metadata record after a split. */
+  historicalParentRefs?: RefKey[];
 }
 
 export interface ProjectPoolEdgeDiagnostic {
@@ -162,6 +183,9 @@ export interface ProjectAudit {
   url: string;
   generatedAt: string;
   totalItems: number;
+  /** Total across all registered boards in a multi-board feed. The audit's
+   *  distributions and totalItems remain scoped to its own board. */
+  poolTotalItems?: number;
   fields: ProjectAuditField[];
   views: ProjectAuditView[];
   counts: {
@@ -241,6 +265,10 @@ export interface RoadmapRow {
   source: string;
   notes: string;
   links: Link[];
+  /** Genealogy overlay from the Project pool; absent when no linked item resolves. */
+  priority?: RefKey | null;
+  afterRefs?: RefKey[];
+  releaseRef?: RefKey | null;
   /** Grist UI link for this row's document (#1136), when known. */
   gristUrl?: string;
   /** Repo-file link for this row's source file + heading (#1738), when
@@ -272,10 +300,27 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "partial-fixtures" | "fixtures" | "stale" | "absent" | "invalid" | "error";
+  /** "unavailable" (#14065): live mode could not read the source and
+   * withheld the fixtures rather than render invented rows.
+   * "partial-unavailable" (#14065 slice 3): items served live for the
+   * project pool, with refs outside it left unresolved. */
+  state:
+    | "live"
+    | "partial-fixtures"
+    | "partial-unavailable"
+    | "fixtures"
+    | "stale"
+    | "absent"
+    | "invalid"
+    | "error"
+    | "unavailable";
   ageMs?: number;
   count?: number;
   countLabel?: string;
+  /** #14065: when the facet last turned "unavailable" or
+   * "partial-unavailable" in this process (ISO time). Set only while it
+   * still is, so a reader can say since when the source has been gone. */
+  unavailableSince?: string;
 }
 
 /** Per-facet freshness detail, keyed exactly like Provenance. */
@@ -869,8 +914,8 @@ export interface DnsSection {
 }
 
 // ---------------------------------------------------------------------------
-// AA cost explorer: the Artificial Analysis import data (Supabase
-// `ainventory`, latest import batch) as the collector embeds it in the
+// AA cost explorer: the Artificial Analysis import data (Turso
+// `ainventory_*`, latest import batch) as the collector embeds it in the
 // fleet feed. The figures are the import snapshot's — AA Intelligence
 // Index v4.3.2, Test_Runs snapshots of Sep–Oct 2026 — not a live AA pull;
 // the section's provenance says exactly which batch and files they are.
@@ -1215,7 +1260,7 @@ export interface AaSection {
   staleReason?: string;
 }
 
-/** The section's degraded form: the collector could not reach Supabase
+/** The section's degraded form: the collector could not reach Turso
  * (or the payload failed its check) and no last good payload exists
  * to fall back to (code#3332) — the page renders the reason, and the
  * feed never fails over it. */
@@ -1251,6 +1296,9 @@ export interface DashAuthor {
 /** How a comment's author was established (#1253 §5). */
 export type CommentProvenance = "verified" | "asserted-legacy";
 
+/** How a registry record's author identity was established (#1253 §5). */
+export type RegistryProvenance = "verified" | "asserted-legacy";
+
 export interface DashComment {
   id: string;
   /** The object ref the thread hangs on (see above). */
@@ -1267,6 +1315,8 @@ export interface DashComment {
    * on old records; read it through commentProvenance().
    */
   provenance?: CommentProvenance;
+  /** Owner-confirmed display link only; never changes author or provenance. */
+  linkedIdentity?: { source: RegistrySource; id: string };
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1309,6 +1359,8 @@ export interface SessionRecord {
   agentId: string;
   /** Display name for the agent identity. */
   agentLabel: string;
+  /** Missing on pre-migration rows; those remain asserted-legacy. */
+  provenance?: RegistryProvenance;
   /** Parent session id for sub-sessions, else null. */
   parentId: string | null;
   startedAt?: string;

@@ -305,7 +305,7 @@ mod tests {
         let payload = vec![0; MAX_ENTITY_TRANSFER_PAYLOAD_BYTES + 1];
         let (mut actor, _, journal, _, _) = transfer_actor(payload, false);
         assert!(export(&mut actor).await.is_err());
-        assert!(actor.core.handoff_transfers().is_empty());
+        assert_eq!(actor.core.handoff_transfers(), []);
         assert!(
             !journal
                 .entries()
@@ -535,7 +535,7 @@ mod tests {
         );
 
         assert_eq!(journal.entries().len(), before);
-        assert!(actor.core.handoff_transfers().is_empty());
+        assert_eq!(actor.core.handoff_transfers(), []);
         assert!(applied.lock().unwrap().is_empty());
     }
 
@@ -667,7 +667,10 @@ mod tests {
             })
             .await;
         assert!(response.await.unwrap().is_ok());
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert!(actor.program_healthy);
         assert_eq!(
             *applied_after_install.lock().unwrap(),
@@ -694,7 +697,10 @@ mod tests {
             *applied_first.lock().unwrap(),
             vec!["add-entity".to_owned()]
         );
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert!(actor.program_healthy);
 
         // A live reinstall of the same module must hand the replacement
@@ -724,7 +730,10 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert_eq!(
             *applied_after_install.lock().unwrap(),
             vec!["add-entity".to_owned()],
@@ -784,6 +793,8 @@ mod tests {
                     execution_profile: None,
                     caps_ceiling: None,
                     schedules: None,
+                    kv: None,
+                    blobs: None,
                     transfers: Some(vec![receipt.clone()]),
                     lease: None,
                     snapshot: "snapshot".to_owned(),
@@ -904,7 +915,10 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
     }
 
     #[tokio::test]
@@ -1196,6 +1210,8 @@ mod tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
+                blobs: None,
                 transfers: None,
                 lease: None,
                 snapshot: "s".to_owned(),
@@ -1275,6 +1291,8 @@ mod tests {
                     execution_profile: None,
                     caps_ceiling: None,
                     schedules: None,
+                    kv: None,
+                    blobs: None,
                     transfers: None,
                     lease: None,
                     snapshot: "s".to_owned(),
@@ -1459,6 +1477,8 @@ mod tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
+                blobs: None,
                 transfers: Some(transfers),
                 lease: None,
                 snapshot: "state".to_owned(),
@@ -1525,6 +1545,8 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             admin_history: None,
@@ -1623,9 +1645,12 @@ mod tests {
     }
 
     fn lease_header() -> JournalEntry {
+        // Stamped lease entries (#13711) require version 16; the
+        // unstamped legacy header (version 7) is covered by
+        // `unstamped_lease_entries_still_restore_at_version_7`.
         JournalEntry::Created {
             world_id: "w".to_owned(),
-            version: JOURNAL_VERSION_WRITE_LEASE,
+            version: JOURNAL_VERSION_LEASE_POSITION,
         }
     }
 
@@ -1635,6 +1660,7 @@ mod tests {
             to: "native-1".to_owned(),
             epoch: 1,
             expires_at_ms: Some(30_000),
+            position: 1,
         }
     }
 
@@ -1643,6 +1669,7 @@ mod tests {
             holder: "native-1".to_owned(),
             epoch: 1,
             expires_at_ms: 40_000,
+            position: 2,
         }
     }
 
@@ -1656,6 +1683,7 @@ mod tests {
             observed_epoch: 1,
             reason: LeaseRejectionReason::StaleEpoch,
             received_at_ms: 35_000,
+            position: 3,
         }
     }
 
@@ -1664,25 +1692,54 @@ mod tests {
         // Design #2819 phase 2 (#3804): lease kinds are the first
         // entries a version-6 binary cannot read, so they pin the
         // header to version 7 under the #227 bump-on-first-write
-        // contract.
+        // contract. Unstamped (position 0) entries still require
+        // exactly 7; a stamped position (#13711) requires 16.
         for entry in [
             JournalEntry::LeaseGranted {
                 holder: "native-1".to_owned(),
                 epoch: 1,
                 expires_at_ms: Some(30_000),
+                position: 0,
             },
-            spill_renewal(),
-            spill_handoff(),
+            JournalEntry::LeaseRenewed {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: 40_000,
+                position: 0,
+            },
+            JournalEntry::LeaseHandedOff {
+                from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                to: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+                position: 0,
+            },
             JournalEntry::LeaseRevoked {
                 former_holder: "native-1".to_owned(),
                 epoch: 2,
                 reason: "expired".to_owned(),
+                position: 0,
             },
-            stale_rejection(),
+            JournalEntry::LeaseWriteRejected {
+                writer: "native-1".to_owned(),
+                presented_epoch: 0,
+                operation_id: "op-1".to_owned(),
+                observed_epoch: 1,
+                reason: LeaseRejectionReason::StaleEpoch,
+                received_at_ms: 35_000,
+                position: 0,
+            },
         ] {
             assert_eq!(
                 journal_version_required_by(&entry),
                 JOURNAL_VERSION_WRITE_LEASE,
+                "{entry:?}"
+            );
+        }
+        for entry in [spill_handoff(), spill_renewal(), stale_rejection()] {
+            assert_eq!(
+                journal_version_required_by(&entry),
+                JOURNAL_VERSION_LEASE_POSITION,
                 "{entry:?}"
             );
         }
@@ -1691,13 +1748,23 @@ mod tests {
         // wiring, code#1068), version 9 for signed play (#4346) and
         // version 8 for recurring schedules (#1355); the lease entries
         // still require exactly 7.
-        // Version 12 (#11960) records join and revoke times.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_JOIN_TIMES);
+        // Version 12 (#11960) records join and revoke times, version
+        // 13 the kv store entries, version 14 the blob store entries,
+        // and version 15 the notify provider's `Notification` events
+        // (all #1062). Version 16 (#13711) stamps lease positions, and
+        // version 17 (#14731) records the presentation policy.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
+        // A checkpoint whose lease history carries stamped positions
+        // requires version 16.
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000), 0)
+            .unwrap();
+        let mut stamped = WriteLease::bootstrap();
+        stamped
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000), 1)
             .unwrap();
         let checkpoint = |lease: Option<WriteLease>| JournalEntry::Checkpoint {
             sequence: 0,
@@ -1707,6 +1774,8 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease,
             snapshot: "s".to_owned(),
@@ -1717,6 +1786,10 @@ mod tests {
         assert_eq!(
             journal_version_required_by(&checkpoint(Some(lease))),
             JOURNAL_VERSION_WRITE_LEASE
+        );
+        assert_eq!(
+            journal_version_required_by(&checkpoint(Some(stamped))),
+            JOURNAL_VERSION_LEASE_POSITION
         );
         assert_eq!(
             journal_version_required_by(&checkpoint(None)),
@@ -1734,8 +1807,10 @@ mod tests {
                 "{json}"
             );
         }
-        // A lease entry in a journal whose header predates version 7 is
-        // refused at restore, never applied mid-read.
+        // A lease entry in a journal whose header predates the
+        // version it requires is refused at restore, never applied
+        // mid-read. The handoff helper carries a stamped position
+        // (#13711), so it requires version 16.
         let error = WorldCore::restore(
             "w",
             WorldLimits::default(),
@@ -1749,7 +1824,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            error.to_string().contains("requires version 7"),
+            error.to_string().contains("requires version 16"),
             "{error:#}"
         );
     }
@@ -1786,11 +1861,13 @@ mod tests {
                     former_holder: "native-1".to_owned(),
                     epoch: 2,
                     reason: "term expired without renewal".to_owned(),
+                    position: 3,
                 },
                 JournalEntry::LeaseGranted {
                     holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                     epoch: 3,
                     expires_at_ms: None,
+                    position: 4,
                 },
             ],
         )
@@ -1812,6 +1889,14 @@ mod tests {
                 LeaseTransitionKind::Granted,
             ]
         );
+        // Positions ride the history in journal order (#13711), and
+        // the watermark is the highest position replayed.
+        let positions: Vec<u64> = lease
+            .transitions()
+            .map(|transition| transition.position)
+            .collect();
+        assert_eq!(positions, [1, 2, 3, 4]);
+        assert_eq!(restored.core.lease_position_watermark(), 4);
         // The ex-holder is fenced at the new epoch, and the returned
         // holder presenting an old epoch is stale.
         assert_eq!(
@@ -1864,7 +1949,7 @@ mod tests {
         assert_eq!(lease.rejections().count(), 1);
         assert_eq!(lease.rejections().next().unwrap().operation_id, "op-1");
         assert_eq!(restored.core.current_sequence(), 0);
-        assert!(restored.replay.is_empty());
+        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
 
         // A second audit of the same attempt is a duplicate.
         let error = WorldCore::restore(
@@ -1890,6 +1975,7 @@ mod tests {
             observed_epoch: 1,
             reason: LeaseRejectionReason::Expired,
             received_at_ms: 35_000,
+            position: 2,
         };
         let error = WorldCore::restore(
             "w",
@@ -1913,6 +1999,7 @@ mod tests {
                     to: "native-1".to_owned(),
                     epoch: 2,
                     expires_at_ms: Some(30_000),
+                    position: 1,
                 }],
                 "advances the write lease epoch from 0 to 2",
             ),
@@ -1922,6 +2009,7 @@ mod tests {
                     holder: "native-1".to_owned(),
                     epoch: 1,
                     expires_at_ms: None,
+                    position: 1,
                 }],
                 "while",
             ),
@@ -1933,6 +2021,7 @@ mod tests {
                         holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                         epoch: 1,
                         expires_at_ms: 50_000,
+                        position: 2,
                     },
                 ],
                 "held by",
@@ -1946,6 +2035,7 @@ mod tests {
                         holder: "native-1".to_owned(),
                         epoch: 1,
                         expires_at_ms: 35_000,
+                        position: 3,
                     },
                 ],
                 "backwards",
@@ -1958,6 +2048,7 @@ mod tests {
                         former_holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                         epoch: 2,
                         reason: "operator".to_owned(),
+                        position: 2,
                     },
                 ],
                 "held by",
@@ -1969,6 +2060,7 @@ mod tests {
                     to: "native-1".to_owned(),
                     epoch: 1,
                     expires_at_ms: None,
+                    position: 1,
                 }],
                 "held by",
             ),
@@ -2002,11 +2094,13 @@ mod tests {
                     former_holder: "native-1".to_owned(),
                     epoch: 2,
                     reason: "term expired without renewal".to_owned(),
+                    position: 4,
                 },
                 JournalEntry::LeaseGranted {
                     holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                     epoch: 3,
                     expires_at_ms: None,
+                    position: 5,
                 },
             ],
         )
@@ -2039,16 +2133,17 @@ mod tests {
         let lease = restored.core.write_lease().clone();
 
         // Compaction carries the lease whole on the checkpoint: the
-        // header rises to version 7 and a restore of the compacted
-        // journal rebuilds the identical lease — epoch, holder, term,
-        // transition history and rejection audit all preserved.
+        // header rises to version 16 (stamped positions, #13711) and
+        // a restore of the compacted journal rebuilds the identical
+        // lease — epoch, holder, term, transition history and
+        // rejection audit all preserved.
         let mut core = restored.core;
         core.active_module_hash = Some("h".to_owned());
         let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
         assert!(matches!(
             compacted[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_WRITE_LEASE,
+                version: JOURNAL_VERSION_LEASE_POSITION,
                 ..
             }
         ));
@@ -2074,6 +2169,253 @@ mod tests {
         }
         let error = WorldCore::restore("w", WorldLimits::default(), tampered).unwrap_err();
         assert!(error.to_string().contains("write lease"), "{error:#}");
+    }
+
+    #[test]
+    fn lease_position_watermark_reports_the_grant_position_after_replay() {
+        // #13711 oracle: a successor replaying a journal with a
+        // grant at position P reports watermark >= P before it may
+        // accept writes. Bootstrap has no stamped position.
+        let bootstrap = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            }],
+        )
+        .unwrap();
+        assert_eq!(bootstrap.core.lease_position_watermark(), 0);
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                JournalEntry::LeaseRevoked {
+                    former_holder: "native-1".to_owned(),
+                    epoch: 2,
+                    reason: "term expired without renewal".to_owned(),
+                    position: 2,
+                },
+                JournalEntry::LeaseGranted {
+                    holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    epoch: 3,
+                    expires_at_ms: None,
+                    position: 3,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(restored.core.write_lease().last_position(), 3);
+
+        // Compaction preserves the watermark: the checkpoint carries
+        // the whole lease history, positions included.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+    }
+
+    #[test]
+    fn unstamped_lease_entries_still_restore_at_version_7() {
+        // #13711 back-compat: lease entries written before positions
+        // existed parse with position 0, restore under a version-7
+        // header, and report watermark 0 — the barrier simply has
+        // no stamped grant to name yet.
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION_WRITE_LEASE,
+                },
+                JournalEntry::LeaseHandedOff {
+                    from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    to: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: Some(30_000),
+                    position: 0,
+                },
+                JournalEntry::LeaseRenewed {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: 40_000,
+                    position: 0,
+                },
+            ],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(restored.core.lease_position_watermark(), 0);
+        assert!(
+            lease
+                .transitions()
+                .all(|transition| transition.position == 0)
+        );
+    }
+
+    #[test]
+    fn lease_positions_that_do_not_advance_are_refused() {
+        // #13711: a stamped position that does not advance past the
+        // highest stamped position already replayed is a corrupt
+        // journal, refused at restore — not silently reordered.
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                JournalEntry::LeaseRenewed {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: 40_000,
+                    position: 1,
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("does not advance past"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn lease_positions_are_strictly_increasing_across_appends_and_compaction() {
+        // #13711 property test. Oracle: the lease history after
+        // restore (and after compaction + restore) carries exactly
+        // the positions the appends stamped, in order — one per
+        // lease record, strictly increasing. The generator folds
+        // op bytes through the lease state machine (holder, epoch,
+        // expiry), so every sequence is one the append authority
+        // could legally have written: handoff/renew/revoke while a
+        // holder stands, grant only while none does.
+        use proptest::prelude::*;
+        proptest!(|(ops in proptest::collection::vec(0u8..=255, 1..=12))| {
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum ModelHolder {
+                Do,
+                Native,
+            }
+            let mut holder = Some(ModelHolder::Do);
+            let mut epoch = 0u64;
+            let mut expiry: Option<u64> = None;
+            let mut entries = vec![lease_header()];
+            let mut position = 0u64;
+            for op in ops {
+                position += 1;
+                match holder {
+                    Some(current) => match op % 3 {
+                        0 => {
+                            let (from, to) = match current {
+                                ModelHolder::Do => (DO_WRITE_LEASE_HOLDER, "native-1"),
+                                ModelHolder::Native => ("native-1", DO_WRITE_LEASE_HOLDER),
+                            };
+                            epoch += 1;
+                            let next_expiry = if current == ModelHolder::Do {
+                                Some(30_000 + epoch * 1_000)
+                            } else {
+                                None
+                            };
+                            entries.push(JournalEntry::LeaseHandedOff {
+                                from: from.to_owned(),
+                                to: to.to_owned(),
+                                epoch,
+                                expires_at_ms: next_expiry,
+                                position,
+                            });
+                            holder = Some(if current == ModelHolder::Do {
+                                ModelHolder::Native
+                            } else {
+                                ModelHolder::Do
+                            });
+                            expiry = next_expiry;
+                        }
+                        1 => {
+                            let next_expiry = expiry.map_or(40_000, |e| e + 1_000);
+                            let holder_name = match current {
+                                ModelHolder::Do => DO_WRITE_LEASE_HOLDER,
+                                ModelHolder::Native => "native-1",
+                            };
+                            entries.push(JournalEntry::LeaseRenewed {
+                                holder: holder_name.to_owned(),
+                                epoch,
+                                expires_at_ms: next_expiry,
+                                position,
+                            });
+                            expiry = Some(next_expiry);
+                        }
+                        _ => {
+                            let former = match current {
+                                ModelHolder::Do => DO_WRITE_LEASE_HOLDER,
+                                ModelHolder::Native => "native-1",
+                            };
+                            epoch += 1;
+                            entries.push(JournalEntry::LeaseRevoked {
+                                former_holder: former.to_owned(),
+                                epoch,
+                                reason: "term expired without renewal".to_owned(),
+                                position,
+                            });
+                            holder = None;
+                            expiry = None;
+                        }
+                    },
+                    None => {
+                        epoch += 1;
+                        if op % 2 == 0 {
+                            entries.push(JournalEntry::LeaseGranted {
+                                holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                                epoch,
+                                expires_at_ms: None,
+                                position,
+                            });
+                            holder = Some(ModelHolder::Do);
+                            expiry = None;
+                        } else {
+                            entries.push(JournalEntry::LeaseGranted {
+                                holder: "native-1".to_owned(),
+                                epoch,
+                                expires_at_ms: Some(30_000 + epoch * 1_000),
+                                position,
+                            });
+                            holder = Some(ModelHolder::Native);
+                            expiry = Some(30_000 + epoch * 1_000);
+                        }
+                    }
+                }
+            }
+            let expected: Vec<u64> = (1..=position).collect();
+            let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+            let positions: Vec<u64> = restored
+                .core
+                .write_lease()
+                .transitions()
+                .map(|transition| transition.position)
+                .collect();
+            prop_assert_eq!(positions, expected.clone());
+            prop_assert_eq!(restored.core.lease_position_watermark(), position);
+
+            let mut core = restored.core;
+            core.active_module_hash = Some("h".to_owned());
+            let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+            let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+            let positions: Vec<u64> = restored
+                .core
+                .write_lease()
+                .transitions()
+                .map(|transition| transition.position)
+                .collect();
+            prop_assert_eq!(positions, expected);
+            prop_assert_eq!(restored.core.lease_position_watermark(), position);
+        });
     }
 
     #[test]
@@ -2393,6 +2735,8 @@ mod tests {
             }),
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2412,6 +2756,8 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2847,7 +3193,9 @@ mod tests {
                     self.asks += 1;
                 }
                 WorldEventKind::System { event } => self.received.push(event.clone()),
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -2893,6 +3241,62 @@ mod tests {
         let handle = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
         let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
         (handle, token)
+    }
+
+    /// A fuel-rate admission refusal is recoverable at the actor level
+    /// (#1067, Codex review on #12557): exhausting the budget must not
+    /// mark the program unhealthy, so the same input succeeds once the
+    /// window rolls instead of requiring a program replacement.
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
+        use crate::sandbox::{Sandbox, SandboxLimits};
+
+        // The same echo program as the sandbox tests: `plaza_update`
+        // returns the participant id and never traps.
+        const ECHO: &str = r#"
+        (module
+          (memory (export "memory") 1 1)
+          (data (i32.const 32) "hello")
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            local.get 0)
+          (func (export "plaza_view") (param i32) (result i32)
+            (i32.const 32))
+          (func (export "plaza_out_len") (result i32) (i32.const 5)))
+    "#;
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let runner = Sandbox::compile(&wasm, limits).unwrap();
+        let mut program = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        program.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let core = WorldCore::new("fuel-rate", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(program));
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"event".to_vec()).await.unwrap();
+        // The next input is refused at admission — but the actor stays
+        // healthy: the error names the fuel rate, not an unavailable
+        // program.
+        let refusal = world
+            .input(token.clone(), b"event".to_vec())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("fuel rate"), "{refusal}");
+        assert!(
+            !refusal.contains("unavailable after a previous failure"),
+            "{refusal}"
+        );
+        // Once the window rolls, the same input succeeds: the refusal
+        // did not poison the program.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        world.input(token, b"event".to_vec()).await.unwrap();
     }
 
     #[tokio::test]
@@ -3047,7 +3451,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0]["text"], "first");
         assert_eq!(all[2]["text"], "third");
-        assert!(chat_history(&core.events, 0).is_empty());
+        assert_eq!(chat_history(&core.events, 0), [] as [serde_json::Value; 0]);
     }
 
     /// Asks the bounded-read questions of #796 item 9-5 once each and
@@ -3596,7 +4000,7 @@ mod tests {
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "grant-on-use");
         assert!(report.granted.contains(&"time.now".to_owned()));
-        assert!(report.missing.is_empty());
+        assert_eq!(report.missing, [] as [String; 0]);
     }
 
     #[test]
@@ -3701,6 +4105,8 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             snapshot: "snapshot".to_owned(),
             events,
@@ -4432,7 +4838,7 @@ mod tests {
         ));
         let restored =
             WorldCore::restore("empty-presence", WorldLimits::default(), entries).unwrap();
-        assert!(restored.replay.is_empty());
+        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
         assert!(restored.core.open_presence.is_empty());
     }
 
@@ -6653,7 +7059,7 @@ mod tests {
         }
         let page = core.events_after(&token, 0).unwrap();
         assert!(page.needs_snapshot);
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 3);
         assert_eq!(snapshot.oldest_retained_sequence, 2);
@@ -6721,7 +7127,10 @@ mod tests {
         revoked.sort_unstable();
         assert_eq!(revoked, vec![owner.id, child.id]);
         // Revoking a revoked capability again changes no recorded time.
-        assert!(core.revoke_tree_at(owner.id, None, Some(9_999)).is_empty());
+        assert_eq!(
+            core.revoke_tree_at(owner.id, None, Some(9_999)),
+            [] as [u64; 0]
+        );
 
         let expected = vec![
             (owner.id, Some(1_000), Some(4_000)),
@@ -6851,9 +7260,9 @@ mod tests {
         assert_eq!(core.revoke_tree_by(by_admin.id, None), vec![by_admin.id]);
         // A second revoke of a revoked capability changes nothing, the
         // recorded actor included.
-        assert!(
-            core.revoke_tree_by(moderated.id, Some(by_admin.id))
-                .is_empty()
+        assert_eq!(
+            core.revoke_tree_by(moderated.id, Some(by_admin.id)),
+            [] as [u64; 0]
         );
 
         let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
@@ -6874,7 +7283,7 @@ mod tests {
         let mut core = world(8);
         let (participant, token) = join(&mut core, "Ada");
         assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
-        assert!(core.revoke_tree(participant.id).is_empty());
+        assert_eq!(core.revoke_tree(participant.id), [] as [u64; 0]);
         assert!(core.snapshot(&token).is_err());
         assert!(core.chat(&token, "hello").is_err());
     }
@@ -7355,7 +7764,7 @@ mod tests {
         // Only chat so far: nothing to show, yet the cursor moves to the end
         // and retention is judged on the world, not the viewer.
         let page = core.events_after(&watcher, 0).unwrap();
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
         assert!(!page.needs_snapshot);
         assert_eq!(page.current_sequence, 2);
         assert_eq!(page.oldest_retained_sequence, 1);
@@ -7393,7 +7802,7 @@ mod tests {
         assert!(page.needs_snapshot, "the cursor fell behind retention");
         assert_eq!(page.oldest_retained_sequence, 2);
         let snapshot = core.snapshot(&watcher).unwrap();
-        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.events, [] as [WorldEvent; 0]);
         assert_eq!(snapshot.current_sequence, 4);
         assert_eq!(snapshot.oldest_retained_sequence, 5, "carries no events");
     }
@@ -7605,7 +8014,10 @@ mod tests {
             chat_texts(&core.snapshot(&reader).unwrap().events),
             ["hello"]
         );
-        assert!(chat_texts(&core.snapshot(&watcher).unwrap().events).is_empty());
+        assert_eq!(
+            chat_texts(&core.snapshot(&watcher).unwrap().events),
+            [] as [String; 0]
+        );
         assert!(core.chat(&reader, "hi").is_err());
     }
 
@@ -7688,7 +8100,9 @@ mod tests {
                             self.read_key = key.to_owned();
                         }
                     }
-                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                    WorldEventKind::Chat(_)
+                    | WorldEventKind::ProgramInstalled { .. }
+                    | WorldEventKind::Notification { .. } => {}
                 }
                 Ok(())
             }
@@ -7898,7 +8312,7 @@ mod tests {
         }
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 20);
-        assert!(!snapshot.events.is_empty());
+        assert_ne!(snapshot.events, [] as [WorldEvent; 0]);
         assert!(
             serde_json::to_vec(&snapshot.events).unwrap().len() <= 1024,
             "events fit the budget"
@@ -7912,11 +8326,11 @@ mod tests {
         assert_eq!(snapshot.events.last().unwrap().sequence, 20);
         // The snapshot is a valid rebase point: continuing from its cursor
         // yields only new events.
-        assert!(
+        assert_eq!(
             core.events_after(&token, snapshot.current_sequence)
                 .unwrap()
-                .events
-                .is_empty()
+                .events,
+            [] as [WorldEvent; 0]
         );
     }
 
@@ -8747,8 +9161,13 @@ mod tests {
         let entries = w.journal.entries();
         assert!(matches!(
             entries.last(),
-            Some(JournalEntry::LeaseHandedOff { from, to, epoch: 1, .. })
-                if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
+            Some(JournalEntry::LeaseHandedOff {
+                from,
+                to,
+                epoch: 1,
+                position: 1,
+                ..
+            }) if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
         ));
         assert!(
             !entries
@@ -8814,6 +9233,14 @@ mod tests {
                 LeaseTransitionKind::HandedOff
             ]
         );
+        // Live handoffs stamp successive positions (#13711): the
+        // first handoff is position 1, the handback position 2, and
+        // the successor's watermark is 2.
+        assert_eq!(
+            lease.transitions().map(|t| t.position).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(restored.core.lease_position_watermark(), 2);
     }
 
     #[tokio::test]
@@ -8845,6 +9272,421 @@ mod tests {
         let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
         assert!(refused_again.is_err());
         assert_eq!(committed_inputs(&w.journal), 0);
+    }
+
+    #[tokio::test]
+    async fn failover_after_expiry_grants_the_caught_up_pool_successor() {
+        // Oracle: design #5787 §7 — the holder dies mid-term with a
+        // caught-up replica in the pool. The grantor fences first
+        // (revoke at e+1), grants the successor at e+2, and the grant's
+        // journal position is the barrier the successor resumes at.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // The term lapses on the authority clock (start 1_000 + 60_000).
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        assert_eq!(execution.grant_position(), 3);
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The journal carries the fence before the grant, positions
+        // continuing the lease chain (handoff 1, revoke 2, grant 3).
+        let entries = w.journal.entries();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            } if former_holder == "native-1"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseGranted {
+                holder,
+                epoch: 3,
+                position: 3,
+                ..
+            }) if holder == "native-2"
+        ));
+
+        // Replay is the oracle: the journal alone rebuilds native-2
+        // holding epoch 3, watermark at the grant position, and the
+        // dead holder fenced.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-2"));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(
+            lease.check_writer("native-1", 1, 61_000),
+            Err(LeaseRejectionReason::NotHolder)
+        );
+
+        // The DO executor no longer holds the lease: its commands are
+        // refused, exactly as after a handoff.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_measurements_match_the_q2_design_bounds() {
+        // Q2 measurements (design #5787 Q2, #7572): the §7
+        // holder-death walkthrough on the authority clock with the
+        // standing defaults (30 s term, 10 s renewal), measuring
+        // detection, grant, and replay-to-ready instead of only the
+        // outcome. The clock starts at 1_000; the holder's term is
+        // stamped to expire at 31_000 and the holder dies at the
+        // stamp — the worst case for detection.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // Detection: one millisecond before expiry the failover is
+        // still refused — no fence can exist before the term lapses,
+        // and the refused attempt journals nothing (the successful
+        // failover below still lands at positions 2 and 3). At
+        // expiry it proceeds. Measured detection latency for a death
+        // at the stamp: 31_000 - 1_000 = 30_000 ms — exactly one
+        // term, the design's stated worst-case bound.
+        w.clock.advance(29_999);
+        assert!(
+            w.handle
+                .failover_write_lease(pool.clone(), 2, 0, 30_000)
+                .await
+                .is_err()
+        );
+        w.clock.advance(1);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+
+        // Grant: the fence and the grant are two consecutive journal
+        // appends (positions 2 and 3) — the grant lands one append
+        // after the fence, at the same authority instant.
+        assert_eq!(execution.entries().len(), 2);
+        assert_eq!(execution.grant_position(), 3);
+        assert_eq!(execution.grant_epoch(), 3);
+
+        // Replay-to-ready: the caught-up successor, observed at
+        // position 2, replays exactly one entry — far less than a
+        // cold replay — before it may write: the grant record
+        // itself is its barrier.
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The successor's fresh term runs a full 30 s from the
+        // failover instant.
+        assert_eq!(execution.resulting_lease().expires_at_ms, Some(61_000));
+    }
+
+    #[tokio::test]
+    async fn spill_copy_dispatch_waits_for_live_successor_replay_and_epoch() {
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+
+        let stale_replay = w
+            .handle
+            .dispatch_spill_copy("native-2", 3, 2, b"journal-copy".to_vec())
+            .await;
+        assert!(
+            stale_replay
+                .unwrap_err()
+                .to_string()
+                .contains("ReplayPending")
+        );
+        assert_eq!(
+            w.handle
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"journal-copy".to_vec()
+                )
+                .await
+                .unwrap(),
+            b"journal-copy"
+        );
+
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        assert!(
+            w.handle
+                .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"stale".to_vec())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn spill_controller_dispatches_only_an_authenticated_cursor_at_the_boundary() {
+        // Oracle: #7572 successor slice (design #5787 §1 step 4) — the
+        // production host/controller path must send journal bytes only
+        // for a cursor that (a) authenticates for its exact
+        // holder/epoch/position triple, (b) passes the residency gate,
+        // and (c) still passes the actor's serialized live
+        // holder/epoch/term/replay check at dispatch time. Every
+        // refusal sends zero bytes.
+        use id_core::residency::{
+            Evidence, EvidenceVerifier, Hop, Jurisdiction, Plane, Policy, ResourceId, Scope,
+        };
+        use spill_controller::{CursorAuthenticator, SpillController, SpillDispatchRefusal};
+        use std::cell::RefCell;
+
+        struct MintingAuthenticator;
+        fn minted_proof(holder: &str, epoch: u64, position: u64) -> Vec<u8> {
+            format!("proof:{holder}:{epoch}:{position}").into_bytes()
+        }
+        impl CursorAuthenticator for MintingAuthenticator {
+            fn authenticate_cursor(
+                &self,
+                holder: &str,
+                epoch: u64,
+                replayed_position: u64,
+                proof: &[u8],
+            ) -> bool {
+                proof == minted_proof(holder, epoch, replayed_position).as_slice()
+            }
+        }
+        struct AcceptingVerifier;
+        impl EvidenceVerifier for AcceptingVerifier {
+            fn signature_valid(&self, _evidence: &Evidence) -> bool {
+                true
+            }
+            fn revoked(&self, _evidence: &Evidence) -> bool {
+                false
+            }
+        }
+
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        let boundary = execution.grant_position();
+
+        let controller = SpillController::new(&MintingAuthenticator);
+        let verifier = AcceptingVerifier;
+        let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
+        macro_rules! dispatch {
+            ($holder:expr, $epoch:expr, $position:expr, $proof:expr, $scope:expr, $hops:expr) => {
+                controller
+                    .dispatch_presented_copy(
+                        &w.handle,
+                        $scope,
+                        $hops,
+                        1_000_000,
+                        &verifier,
+                        $holder,
+                        $epoch,
+                        $position,
+                        $proof,
+                        b"journal-copy".to_vec(),
+                        |copy| sent.borrow_mut().push(copy.to_vec()),
+                    )
+                    .await
+            };
+        }
+
+        // Forged proof at the boundary position: no cursor, no bytes.
+        let forged = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            b"forged".as_slice(),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            forged,
+            Err(SpillDispatchRefusal::UnauthenticatedCursor { .. })
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated but stale cursor (below the ownership
+        // boundary): the actor's final gate refuses, no bytes.
+        let stale = dispatch!(
+            "native-2",
+            3,
+            2,
+            &minted_proof("native-2", 3, 2),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(
+            matches!(&stale, Err(SpillDispatchRefusal::Authority(reason)) if reason.contains("ReplayPending")),
+            "stale cursor must hit the replay gate, got {stale:?}"
+        );
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated cursor for the wrong epoch: no bytes.
+        let wrong_epoch = dispatch!(
+            "native-2",
+            2,
+            boundary,
+            &minted_proof("native-2", 2, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            wrong_epoch,
+            Err(SpillDispatchRefusal::Authority(_))
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated cursor at the boundary, but the residency gate
+        // denies the path (expired host evidence): no bytes.
+        let policy = Policy::new(["operator-ca".to_string()])
+            .allow(Plane::Processing, &["eu"], &["spill-eu"])
+            .trust_evidence_source(Plane::Processing, "provider-control-plane");
+        let expired = Evidence {
+            issuer: "operator-ca".to_string(),
+            resource: ResourceId("spill-eu".to_string()),
+            plane: Plane::Processing,
+            jurisdiction: Jurisdiction("eu".to_string()),
+            source: "provider-control-plane".to_string(),
+            expires_at: 999_999,
+            serial: "spill-eu-1".to_string(),
+            signature: vec![1],
+        };
+        let hops = [Hop {
+            plane: Plane::Processing,
+            resource: ResourceId("spill-eu".to_string()),
+            evidence: Some(&expired),
+        }];
+        let residency = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Scoped(policy),
+            &hops
+        );
+        assert!(matches!(residency, Err(SpillDispatchRefusal::Residency(_))));
+        assert!(sent.borrow().is_empty());
+
+        // The cursor at the current ownership boundary dispatches:
+        // exactly one send, with the actor-released bytes.
+        let dispatched = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert_eq!(dispatched, Ok(()));
+        assert_eq!(sent.borrow().as_slice(), [b"journal-copy".to_vec()]);
+
+        // After handback, the previously valid epoch-3 cursor is stale
+        // at the actor's serialized gate: no further bytes.
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        let after_handback = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            after_handback,
+            Err(SpillDispatchRefusal::Authority(_))
+        ));
+        assert_eq!(sent.borrow().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failover_with_no_eligible_successor_recovers_to_the_do() {
+        // Oracle: design #5787 §7 — no eligible successor: the DO
+        // grants to itself rather than to a lagging replica, and the
+        // world resumes under its authority.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(spill_pool::SpillPool::default(), 0, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), DO_WRITE_LEASE_HOLDER);
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
     }
 
     #[tokio::test]
@@ -9554,6 +10396,8 @@ mod isolation_tests {
 mod schedule_tests {
     use super::*;
     use crate::world::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn world(retained_events: usize) -> WorldCore {
         WorldCore::new(
@@ -9610,7 +10454,9 @@ mod schedule_tests {
                         _ => {}
                     }
                 }
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -9709,6 +10555,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             })
@@ -9779,6 +10626,14 @@ mod schedule_tests {
         id: &str,
         bounds: CapabilityBounds,
     ) -> (WorldActor, JoinCapability, BatchJournal) {
+        batch_actor_with(id, bounds, Box::new(BatchProgram))
+    }
+
+    fn batch_actor_with(
+        id: &str,
+        bounds: CapabilityBounds,
+        program: Box<dyn WorldProgram>,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
         let journal = BatchJournal::for_world(id);
         let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
         let (ann, token) = core
@@ -9786,11 +10641,7 @@ mod schedule_tests {
             .unwrap();
         let issued = core.issued_entry(ann.id).unwrap();
         journal.entries.lock().unwrap().push(issued);
-        let actor = WorldActor::for_test(
-            core,
-            Box::new(BatchProgram),
-            Some(Box::new(journal.clone())),
-        );
+        let actor = WorldActor::for_test(core, program, Some(Box::new(journal.clone())));
         (actor, token, journal)
     }
 
@@ -9809,6 +10660,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             });
@@ -9866,6 +10718,361 @@ mod schedule_tests {
         assert!(!actor.program_healthy);
     }
 
+    /// A program that refuses the input `limited` at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedBatchProgram;
+
+    impl WorldProgram for FuelLimitedBatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                if input == b"limited" {
+                    return Err(anyhow::Error::new(
+                        id_caps::account_quota::FuelRateRefusal {
+                            limit_per_second: 10_000,
+                            charged_in_window: 10_000,
+                            requested_fuel: 10_000,
+                        },
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal inside a batch is recoverable -
+    // the staged prefix commits, the refused input is answered with the
+    // refusal, and the input after it goes through the single path, where
+    // the still-healthy program accepts it instead of refusing it as
+    // unavailable.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_in_a_batch_keeps_the_actor_healthy() {
+        let (mut actor, token, journal) = batch_actor_with(
+            "batch-fuel-rate",
+            CapabilityBounds::default(),
+            Box::new(FuelLimitedBatchProgram),
+        );
+        let results = batch_replies(&mut actor, &token, &[b"one", b"limited", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let refused = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(refused.contains("fuel rate"), "{refused}");
+        assert!(
+            !refused.contains("unavailable after a previous failure"),
+            "{refused}"
+        );
+        assert!(results[2].is_ok(), "{:?}", results[2]);
+        assert!(actor.program_healthy);
+        assert_eq!(journal.committed().len(), 2);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+    }
+
+    /// A program that refuses host (system) events at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedSystemProgram;
+
+    impl WorldProgram for FuelLimitedSystemProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { .. } = &event.kind {
+                return Err(anyhow::Error::new(
+                    id_caps::account_quota::FuelRateRefusal {
+                        limit_per_second: 10_000,
+                        charged_in_window: 10_000,
+                        requested_fuel: 10_000,
+                    },
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal of a host event is
+    // recoverable — a refused schedule fire leaves the schedule
+    // pending and the program healthy, and the next participant
+    // input still succeeds.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
+        let journal = Recorded::for_world("system-fuel-rate");
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock("system-fuel-rate", WorldLimits::default(), clock.clone())
+                .unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(FuelLimitedSystemProgram),
+            Some(Box::new(journal.clone())),
+        );
+        actor
+            .core
+            .schedules
+            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        let results = batch_replies(&mut actor, &token, &[b"after"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+    }
+
+    /// A program for the #1067 fuel-window tests: it asks for one
+    /// `time.now` result, records every result and schedule fire it
+    /// receives, and refuses system events at the account's fuel rate
+    /// while the manual clock is before `refuse_until_ms` — so the
+    /// test drives the rollover by advancing the clock, not the wall.
+    /// The attempt counters are shared with the test, so a refused
+    /// delivery that must not have been attempted is observable.
+    struct FuelWindowProgram {
+        clock: Arc<ManualClock>,
+        refuse_until_ms: u64,
+        requests: Vec<serde_json::Value>,
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+        result_deliveries: Arc<AtomicUsize>,
+        fire_attempts: Arc<AtomicUsize>,
+        fires: Vec<serde_json::Value>,
+    }
+
+    impl FuelWindowProgram {
+        fn fuel_refusal() -> anyhow::Error {
+            anyhow::Error::new(id_caps::account_quota::FuelRateRefusal {
+                limit_per_second: 10_000,
+                charged_in_window: 10_000,
+                requested_fuel: 10_000,
+            })
+        }
+    }
+
+    impl WorldProgram for FuelWindowProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            match &event.kind {
+                WorldEventKind::Input(bytes) => {
+                    let document: serde_json::Value = serde_json::from_slice(bytes)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::System { event: text } => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+                        return Ok(());
+                    };
+                    let refused = self.clock.now_ms() < self.refuse_until_ms;
+                    match value["cap"].as_str() {
+                        Some("result") => {
+                            if refused {
+                                return Err(Self::fuel_refusal());
+                            }
+                            if let Some(id) = value["id"].as_str() {
+                                self.answered.insert(id.to_owned());
+                                self.results.insert(id.to_owned(), value.clone());
+                                self.result_deliveries.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        Some("schedule") => {
+                            self.fire_attempts.fetch_add(1, Ordering::SeqCst);
+                            if refused {
+                                return Err(Self::fuel_refusal());
+                            }
+                            self.fires.push(value.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let pending: Vec<&serde_json::Value> = self
+                .requests
+                .iter()
+                .filter(|request| {
+                    !request["id"]
+                        .as_str()
+                        .is_some_and(|id| self.answered.contains(id))
+                })
+                .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": pending}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"fired": self.fires, "results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    /// A `FuelWindowProgram` actor on a manual clock, with `time.now`
+    /// granted and one participant. Mirrors the
+    /// `FuelLimitedSystemProgram` setup above; the test drives
+    /// [`WorldActor::handle`], [`WorldActor::after_change`] and
+    /// [`WorldActor::fire_schedules`] directly.
+    #[allow(clippy::type_complexity)]
+    fn fuel_window_actor(
+        id: &str,
+        refuse_until_ms: u64,
+    ) -> (
+        WorldActor,
+        Arc<ManualClock>,
+        JoinCapability,
+        Recorded,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.now".to_owned()]));
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let result_deliveries = Arc::new(AtomicUsize::new(0));
+        let fire_attempts = Arc::new(AtomicUsize::new(0));
+        let program = FuelWindowProgram {
+            clock: clock.clone(),
+            refuse_until_ms,
+            requests: Vec::new(),
+            answered: BTreeSet::new(),
+            results: BTreeMap::new(),
+            result_deliveries: result_deliveries.clone(),
+            fire_attempts: fire_attempts.clone(),
+            fires: Vec::new(),
+        };
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (
+            actor,
+            clock,
+            token,
+            journal,
+            result_deliveries,
+            fire_attempts,
+        )
+    }
+
+    /// How many capability results for request `id` the journal
+    /// delivered to the program: the exactly-once oracle for a
+    /// fuel-refused result.
+    fn journaled_results(journal: &Recorded, id: &str) -> usize {
+        journal
+            .entries()
+            .into_iter()
+            .filter(|entry| match entry {
+                JournalEntry::System { event } => match &event.kind {
+                    WorldEventKind::System { event: text } => {
+                        serde_json::from_str::<serde_json::Value>(text)
+                            .is_ok_and(|value| value["cap"] == "result" && value["id"] == id)
+                    }
+                    _ => false,
+                },
+                _ => false,
+            })
+            .count()
+    }
+
+    // #1067 oracle (Codex review on #12557): a capability result
+    // whose delivery is refused at the fuel rate is queued, not
+    // lost — the side effect already ran, so the result must not be
+    // re-executed — and is delivered exactly once after the window
+    // rolls, without another attempt before then.
+    #[tokio::test]
+    async fn a_fuel_refused_capability_result_is_queued_and_retried_after_rollover() {
+        let (mut actor, clock, token, journal, result_deliveries, _) =
+            fuel_window_actor("fuel-result", EPOCH_MS + 1_000);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "now-1", "cap": "time.now"},
+            ]}),
+        )
+        .await;
+        // The request executed — its id is handled — but the program
+        // never saw the result: it waits in the queue instead.
+        assert!(actor.program_healthy);
+        assert!(actor.handled_requests.contains("now-1"));
+        assert_eq!(actor.pending_results.len(), 1);
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 0);
+        assert_eq!(journaled_results(&journal, "now-1"), 0);
+        // No retry before the window rolls, however often the actor
+        // settles: the queue is not a hot loop.
+        actor.after_change().await;
+        clock.advance(500);
+        actor.after_change().await;
+        assert_eq!(actor.pending_results.len(), 1);
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 0);
+        // Past the rollover the queued result is delivered, exactly
+        // once, and the program answers with it — no re-execution, no
+        // duplicate on a further settle.
+        clock.advance(600);
+        actor.after_change().await;
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 1);
+        assert!(actor.pending_results.is_empty());
+        assert!(actor.fuel_retry_not_before.is_none());
+        let result = schedule_result(&actor, "now-1").expect("the result arrived");
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(journaled_results(&journal, "now-1"), 1);
+        actor.after_change().await;
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 1);
+        assert_eq!(journaled_results(&journal, "now-1"), 1);
+    }
+
+    // #1067 oracle (Codex review on #12557): a schedule fire refused
+    // at the fuel rate backs off until the window rolls instead of
+    // waking the loop now — no retry is attempted before the retry
+    // deadline — and the same occurrence then fires exactly once.
+    #[tokio::test]
+    async fn a_fuel_refused_schedule_fire_backs_off_until_rollover() {
+        let (mut actor, clock, _token, _journal, _, fire_attempts) =
+            fuel_window_actor("fuel-schedule", EPOCH_MS + 1_500);
+        actor
+            .core
+            .schedules
+            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        // Before any refusal the overdue schedule wakes the loop now.
+        assert_eq!(actor.next_deadline(), Some(clock.now_instant()));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 1);
+        // The refusal backs the next attempt off a full window.
+        assert_eq!(
+            actor.next_deadline(),
+            Some(clock.now_instant() + Duration::from_secs(1))
+        );
+        // A second fire without advancing the clock attempts nothing.
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 1);
+        assert!(actor.core.schedules.contains_key("tick"));
+        // At the retry deadline the fire is attempted again — refused
+        // again while the window is still closed — and backs off
+        // another full window.
+        clock.advance(1_000);
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            actor.next_deadline(),
+            Some(clock.now_instant() + Duration::from_secs(1))
+        );
+        // Once the window rolls, the same occurrence fires exactly once.
+        clock.advance(1_000);
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 3);
+        assert!(!actor.core.schedules.contains_key("tick"));
+        assert_eq!(schedule_fires(&actor).len(), 1);
+    }
+
     // #8239 oracle: staged spends count against the uses limit before
     // commit - a batch of three from a participant with two uses left
     // admits exactly two, and the third is refused at prepare time with
@@ -9900,6 +11107,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    device_input: None,
                     signed_move: None,
                     reply,
                 })
@@ -10149,6 +11357,1556 @@ mod schedule_tests {
                 .all(|entry| !matches!(entry, JournalEntry::ScheduleSet { .. })),
             "a ceiling-refused request journals no schedule set"
         );
+    }
+
+    // ---- F12.5 kv provider (#1062) ----
+
+    #[test]
+    fn kv_bounds_refuse_each_violation_with_a_reason() {
+        let core = world(8);
+        assert!(core.check_kv_set("ok", 4).is_ok());
+        assert!(
+            core.check_kv_set(&"x".repeat(crate::world_caps::MAX_KV_KEY_BYTES), 4)
+                .is_ok()
+        );
+        let long = "x".repeat(crate::world_caps::MAX_KV_KEY_BYTES + 1);
+        for bad in ["", "tab\there", long.as_str()] {
+            let error = core.check_kv_set(bad, 4).unwrap_err();
+            assert!(error.to_string().contains("kv key"), "{error}");
+        }
+        assert!(
+            core.check_kv_set("ok", crate::world_caps::MAX_KV_VALUE_BYTES)
+                .is_ok()
+        );
+        let error = core
+            .check_kv_set("ok", crate::world_caps::MAX_KV_VALUE_BYTES + 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("kv value"), "{error}");
+
+        // Entry cap: a new key is refused at the cap; replacing an
+        // existing key is not — it frees its own slot.
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_KV_ENTRIES {
+            full.kv.insert(format!("k{index}"), "1".to_owned());
+        }
+        assert!(
+            full.check_kv_set("k0", 4).is_ok(),
+            "a replacement at capacity fits: it frees its own slot"
+        );
+        let error = full.check_kv_set("one-more", 4).unwrap_err();
+        assert!(error.to_string().contains("kv entries"), "{error}");
+
+        // Total byte cap, charged as key + value bytes and net of the
+        // entry a replacement displaces.
+        let mut store = world(8);
+        store.kv.insert("a".to_owned(), "v".repeat(40_000));
+        store.kv.insert("b".to_owned(), "v".repeat(20_000));
+        let error = store.check_kv_set("c", 6_000).unwrap_err();
+        assert!(error.to_string().contains("kv store"), "{error}");
+        assert!(
+            store.check_kv_set("a", 8).is_ok(),
+            "shrinking an entry makes room under the total cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn kv_set_get_delete_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("kv-round-trip", &["kv.get", "kv.set", "kv.delete"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "w1", "cap": "kv.set", "args": {"key": "score", "value": {"best": 7}}},
+            ]}),
+        )
+        .await;
+        let written = schedule_result(&actor, "w1").unwrap();
+        assert_eq!(written["ok"], true, "{written}");
+        assert_eq!(actor.core.kv["score"], "{\"best\":7}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "r1", "cap": "kv.get", "args": {"key": "score"}},
+                {"id": "r2", "cap": "kv.get", "args": {"key": "missing"}},
+                {"id": "d1", "cap": "kv.delete", "args": {"key": "score"}},
+            ]}),
+        )
+        .await;
+        let read = schedule_result(&actor, "r1").unwrap();
+        assert_eq!(
+            read["value"]["value"],
+            serde_json::json!({"best": 7}),
+            "{read}"
+        );
+        let missing = schedule_result(&actor, "r2").unwrap();
+        assert_eq!(
+            missing["value"]["value"],
+            serde_json::Value::Null,
+            "{missing}"
+        );
+        let deleted = schedule_result(&actor, "d1").unwrap();
+        assert_eq!(deleted["value"]["deleted"], true, "{deleted}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "r3", "cap": "kv.get", "args": {"key": "score"}},
+                {"id": "d2", "cap": "kv.delete", "args": {"key": "score"}},
+            ]}),
+        )
+        .await;
+        let gone = schedule_result(&actor, "r3").unwrap();
+        assert_eq!(gone["value"]["value"], serde_json::Value::Null, "{gone}");
+        let deleted_again = schedule_result(&actor, "d2").unwrap();
+        assert_eq!(deleted_again["value"]["deleted"], false, "{deleted_again}");
+        let entries = journal.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::KvSet { .. }))
+                .count(),
+            1,
+            "one set journals one entry"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::KvDeleted { .. }))
+                .count(),
+            1,
+            "deleting an absent key journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_kv_write_is_refused_and_counted() {
+        let (mut actor, _clock, token, journal) = scheduling_actor("kv-refused", &[], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "w1", "cap": "kv.set", "args": {"key": "score", "value": 7}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "w1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["kv.set"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(actor.core.kv.is_empty(), "a refused write stores nothing");
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::KvSet { .. })),
+            "a refused write journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_kv_write_outside_the_ceiling_is_refused_and_stores_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("kv-ceiling", &["kv.set"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "w1", "cap": "kv.set", "args": {"key": "score", "value": 7}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "w1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["kv.set"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.kv.is_empty(),
+            "a ceiling-refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::KvSet { .. })),
+            "a ceiling-refused write journals nothing"
+        );
+    }
+
+    #[test]
+    fn kv_entries_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_KV,
+        };
+        let set = |key: &str, value: &str| JournalEntry::KvSet {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        };
+        assert_eq!(
+            journal_version_required_by(&set("a", "1")),
+            JOURNAL_VERSION_KV
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                header(),
+                set("a", "1"),
+                set("b", "{\"x\":2}"),
+                set("a", "3"),
+                JournalEntry::KvDeleted {
+                    key: "b".to_owned(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.kv.len(), 1);
+        assert_eq!(restored.core.kv["a"], "3", "the last write to a key stands");
+        // A delete of a key that is not stored refuses the restore.
+        let bad = [
+            header(),
+            JournalEntry::KvDeleted {
+                key: "ghost".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad).is_err());
+        // Compaction: a core carrying entries re-emits them before its
+        // checkpoint, so a restored core sees the same store.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.kv.insert("a".to_owned(), "3".to_owned());
+        core.kv.insert("c".to_owned(), "[1,2]".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.contains(&set("a", "3")),
+            "a compacted journal keeps the kv entry"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.kv, core.kv);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_kv_entries_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_KV,
+        };
+        let set = || JournalEntry::KvSet {
+            key: "a".to_owned(),
+            value: "1".to_owned(),
+        };
+        let checkpoint = |kv: Option<Vec<CheckpointKvEntry>>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv,
+            blobs: None,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        };
+        let declared = || CheckpointKvEntry {
+            key: "a".to_owned(),
+            value: "1".to_owned(),
+        };
+        let agreed = [header(), set(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), set(), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let duplicated = [
+            header(),
+            set(),
+            checkpoint(Some(vec![declared(), declared()])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    #[test]
+    fn a_journal_past_the_kv_bounds_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_KV,
+        };
+        // A key the writer would never accept.
+        let bad_key = [
+            header(),
+            JournalEntry::KvSet {
+                key: String::new(),
+                value: "1".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad_key).is_err());
+        // A journal value must contain the JSON encoding promised by KvSet.
+        let malformed_json = [
+            header(),
+            JournalEntry::KvSet {
+                key: "a".to_owned(),
+                value: "{\"x\":".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), malformed_json).is_err());
+        // A value past the serialized cap.
+        let big_value = [
+            header(),
+            JournalEntry::KvSet {
+                key: "a".to_owned(),
+                value: "v".repeat(crate::world_caps::MAX_KV_VALUE_BYTES + 1),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), big_value).is_err());
+        // More entries than the store may hold.
+        let mut entries = vec![header()];
+        for index in 0..=crate::world_caps::MAX_KV_ENTRIES {
+            entries.push(JournalEntry::KvSet {
+                key: format!("k{index}"),
+                value: "1".to_owned(),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
+    // ---- F12.5 blob provider (#1062) ----
+
+    #[test]
+    fn blob_bounds_refuse_each_violation_with_a_reason() {
+        let core = world(8);
+        let hash = blob_id(b"content");
+        assert!(core.check_blob_put(&hash, 7).is_ok());
+        assert!(
+            core.check_blob_put(&blob_id(b"max"), crate::world_caps::MAX_BLOB_BYTES)
+                .is_ok()
+        );
+        let error = core.check_blob_put("not-a-hash", 4).unwrap_err();
+        assert!(error.to_string().contains("blob hash"), "{error}");
+        let error = core
+            .check_blob_put(&hash, crate::world_caps::MAX_BLOB_BYTES + 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("blob exceeds"), "{error}");
+
+        // Entry cap: a new blob is refused at the cap; re-putting
+        // content the world already holds is not — it is a no-op.
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_BLOBS {
+            let content = vec![index as u8];
+            full.blobs.insert(blob_id(&content), content);
+        }
+        assert!(
+            full.check_blob_put(&blob_id(&[0u8]), 1).is_ok(),
+            "a re-put at capacity fits: it frees no slot because it takes none"
+        );
+        let error = full.check_blob_put(&blob_id(b"one-more"), 8).unwrap_err();
+        assert!(error.to_string().contains("blobs"), "{error}");
+
+        // Total byte cap: 64 maximal blobs exactly fill it; one more
+        // byte under a new address is refused, a re-put is not.
+        let mut store = world(8);
+        for index in 0..64u8 {
+            let content = vec![index; crate::world_caps::MAX_BLOB_BYTES];
+            store.blobs.insert(blob_id(&content), content);
+        }
+        assert_eq!(store.blob_bytes(), crate::world_caps::MAX_BLOB_TOTAL_BYTES);
+        assert!(
+            store
+                .check_blob_put(&blob_id(&vec![0u8; crate::world_caps::MAX_BLOB_BYTES]), 4)
+                .is_ok(),
+            "a re-put at the total cap fits: it charges nothing new"
+        );
+        let error = store.check_blob_put(&blob_id(b"overflow"), 8).unwrap_err();
+        assert!(error.to_string().contains("total bytes"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn blob_put_get_delete_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-round-trip",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let data = blob_encode(b"hello blob");
+        let hash = blob_id(b"hello blob");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": data}},
+            ]}),
+        )
+        .await;
+        let written = schedule_result(&actor, "p1").unwrap();
+        assert_eq!(written["ok"], true, "{written}");
+        assert_eq!(written["value"]["hash"], hash, "{written}");
+        assert_eq!(written["value"]["size"], 10, "{written}");
+        assert_eq!(actor.core.blobs[&hash], b"hello blob");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p2", "cap": "blob.put", "args": {"data": data}},
+                {"id": "g1", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "g2", "cap": "blob.get", "args": {"hash": blob_id(b"never stored")}},
+                {"id": "g3", "cap": "blob.get", "args": {"hash": "not-a-hash"}},
+                {"id": "p3", "cap": "blob.put", "args": {"data": "!!! not base64 !!!"}},
+            ]}),
+        )
+        .await;
+        let again = schedule_result(&actor, "p2").unwrap();
+        assert_eq!(again["ok"], true, "{again}");
+        assert_eq!(again["value"]["hash"], hash, "{again}");
+        let read = schedule_result(&actor, "g1").unwrap();
+        assert_eq!(read["value"]["data"], data, "{read}");
+        let missing = schedule_result(&actor, "g2").unwrap();
+        assert_eq!(
+            missing["value"]["data"],
+            serde_json::Value::Null,
+            "{missing}"
+        );
+        assert_eq!(
+            schedule_result(&actor, "g3").unwrap()["error"],
+            "bad_args",
+            "a malformed hash is refused"
+        );
+        assert_eq!(
+            schedule_result(&actor, "p3").unwrap()["error"],
+            "bad_args",
+            "malformed base64 is refused"
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "d1", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+        let deleted = schedule_result(&actor, "d1").unwrap();
+        assert_eq!(deleted["value"]["deleted"], true, "{deleted}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "g4", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "d2", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+        let gone = schedule_result(&actor, "g4").unwrap();
+        assert_eq!(gone["value"]["data"], serde_json::Value::Null, "{gone}");
+        let deleted_again = schedule_result(&actor, "d2").unwrap();
+        assert_eq!(deleted_again["value"]["deleted"], false, "{deleted_again}");
+        let entries = journal.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::BlobStored { .. }))
+                .count(),
+            1,
+            "two puts of one content journal one entry"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::BlobRemoved { .. }))
+                .count(),
+            1,
+            "deleting an absent blob journals nothing"
+        );
+    }
+
+    struct DenyBlobGate;
+
+    impl id_directory::directory::BoundaryGate for DenyBlobGate {
+        fn check(
+            &self,
+            point: id_core::boundary::EnforcementPoint,
+            _: &str,
+        ) -> id_core::boundary_surfaces::FrameworkOutcome {
+            if point == id_core::boundary::EnforcementPoint::BlobStorage {
+                id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                    placement: Vec::new(),
+                    assurance: Vec::new(),
+                }
+            } else {
+                id_core::boundary_surfaces::FrameworkOutcome::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blob_boundary_denial_blocks_put_get_and_delete_before_effects() {
+        // Oracle: a denied BlobStorage outcome refuses all three actor
+        // operations and leaves both the in-memory blob set and journal intact.
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-boundary-denied",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let bytes = b"protected blob".to_vec();
+        let hash = blob_id(&bytes);
+        actor.core.blobs.insert(hash.clone(), bytes.clone());
+        actor.core.set_world_boundary_gate(Arc::new(DenyBlobGate));
+
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "put", "cap": "blob.put", "args": {"data": blob_encode(b"new blob")}},
+                {"id": "get", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "delete", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+
+        for id in ["put", "get", "delete"] {
+            assert_eq!(schedule_result(&actor, id).unwrap()["error"], "bad_args");
+        }
+        assert_eq!(actor.core.blobs.get(&hash), Some(&bytes));
+        assert_eq!(
+            journal
+                .entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. }
+                ))
+                .count(),
+            0,
+            "refused blob operations have no journal effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_blob_write_is_refused_and_counted() {
+        let (mut actor, _clock, token, journal) = scheduling_actor("blob-refused", &[], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": blob_encode(b"content")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "p1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["blob.put"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.blobs.is_empty(),
+            "a refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::BlobStored { .. })),
+            "a refused write journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blob_write_outside_the_ceiling_is_refused_and_stores_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("blob-ceiling", &["blob.put"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": blob_encode(b"content")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "p1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["blob.put"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.blobs.is_empty(),
+            "a ceiling-refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::BlobStored { .. })),
+            "a ceiling-refused write journals nothing"
+        );
+    }
+
+    #[test]
+    fn blob_entries_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        let stored = |content: &[u8]| JournalEntry::BlobStored {
+            hash: blob_id(content),
+            data: blob_encode(content),
+        };
+        assert_eq!(
+            journal_version_required_by(&stored(b"a")),
+            JOURNAL_VERSION_BLOB
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                header(),
+                stored(b"alpha"),
+                stored(b"beta"),
+                JournalEntry::BlobRemoved {
+                    hash: blob_id(b"beta"),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.blobs.len(), 1);
+        assert_eq!(restored.core.blobs[&blob_id(b"alpha")], b"alpha");
+        // A remove of a blob that is not stored refuses the restore.
+        let bad = [
+            header(),
+            JournalEntry::BlobRemoved {
+                hash: blob_id(b"ghost"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad).is_err());
+        // Content that does not hash to its stated address refuses
+        // the restore: the journal is self-verifying.
+        let tampered = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(b"alpha"),
+                data: blob_encode(b"forged"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), tampered).is_err());
+        // Content that is not base64 at all refuses it too.
+        let garbled = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(b"alpha"),
+                data: "!!! not base64 !!!".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), garbled).is_err());
+        // Compaction: a core carrying blobs re-emits them before its
+        // checkpoint, so a restored core sees the same set.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.blobs.insert(blob_id(b"alpha"), b"alpha".to_vec());
+        core.blobs.insert(blob_id(b"gamma"), b"gamma".to_vec());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.contains(&stored(b"alpha")),
+            "a compacted journal keeps the blob entry"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.blobs, core.blobs);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_blob_index_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        let stored = || JournalEntry::BlobStored {
+            hash: blob_id(b"alpha"),
+            data: blob_encode(b"alpha"),
+        };
+        let checkpoint = |blobs: Option<Vec<CheckpointBlobEntry>>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        };
+        let declared = || CheckpointBlobEntry {
+            hash: blob_id(b"alpha"),
+            size: 5,
+        };
+        let agreed = [header(), stored(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), stored(), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let wrong_size = [
+            header(),
+            stored(),
+            checkpoint(Some(vec![CheckpointBlobEntry {
+                hash: blob_id(b"alpha"),
+                size: 4,
+            }])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), wrong_size).is_err());
+        let duplicated = [
+            header(),
+            stored(),
+            checkpoint(Some(vec![declared(), declared()])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    #[test]
+    fn a_journal_past_the_blob_bounds_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        // A hash the writer would never accept.
+        let bad_hash = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: "not-a-hash".to_owned(),
+                data: blob_encode(b"a"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad_hash).is_err());
+        // A blob past the content cap, under its true address.
+        let big = vec![7u8; crate::world_caps::MAX_BLOB_BYTES + 1];
+        let big_blob = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(&big),
+                data: blob_encode(&big),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), big_blob).is_err());
+        // More blobs than the set may hold.
+        let mut entries = vec![header()];
+        for index in 0..=crate::world_caps::MAX_BLOBS {
+            let content = (index as u32).to_le_bytes();
+            entries.push(JournalEntry::BlobStored {
+                hash: blob_id(&content),
+                data: blob_encode(&content),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+        // More content in total than the set may hold.
+        let mut entries = vec![header()];
+        for index in 0..65u8 {
+            let content = vec![index; crate::world_caps::MAX_BLOB_BYTES];
+            entries.push(JournalEntry::BlobStored {
+                hash: blob_id(&content),
+                data: blob_encode(&content),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
+    // ---- F12.5 http.fetch provider (#1062) ----
+
+    /// A hermetic HTTP/1.1 server on a loopback port: one canned
+    /// response per path, `Connection: close` on every reply, and
+    /// a hit count so refusal tests can prove no request arrived.
+    /// No test in this section touches the live internet.
+    struct FetchServer {
+        port: u16,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FetchServer {
+        fn hits(&self) -> usize {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+
+        /// The allowlist entry for this server: its host and port.
+        /// A bare `127.0.0.1` would admit only port 80.
+        fn entry(&self) -> String {
+            format!("127.0.0.1:{}", self.port)
+        }
+    }
+
+    fn fetch_server() -> FetchServer {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            request.extend_from_slice(&buffer[..read]);
+                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                let (status, headers, body): (&str, String, Vec<u8>) = match path.as_str() {
+                    "/hello" => ("200 OK", String::new(), b"hello fetch".to_vec()),
+                    "/hop" => ("302 Found", "Location: /hello\r\n".to_owned(), Vec::new()),
+                    "/away" => (
+                        "302 Found",
+                        format!("Location: http://localhost:{port}/hello\r\n"),
+                        Vec::new(),
+                    ),
+                    "/default-port" => (
+                        "302 Found",
+                        "Location: http://127.0.0.1/hello\r\n".to_owned(),
+                        Vec::new(),
+                    ),
+                    "/loop" => ("302 Found", "Location: /loop\r\n".to_owned(), Vec::new()),
+                    "/big" => (
+                        "200 OK",
+                        String::new(),
+                        vec![b'x'; crate::world_caps::MAX_HTTP_FETCH_RESPONSE_BYTES + 1],
+                    ),
+                    _ => ("404 Not Found", String::new(), b"nope".to_vec()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        FetchServer { port, hits }
+    }
+
+    /// An actor for `http.fetch` tests, on `scheduling_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn http_fetch_actor(
+        id: &str,
+        grants: &[&str],
+        hosts: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("http.fetch".to_owned());
+        }
+        limits.http_fetch_hosts = hosts.iter().map(|host| (*host).to_owned()).collect();
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("http.fetch".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn http_fetch_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        // An unnormalized entry still matches: entries and URL
+        // hosts pass through the same normalization.
+        limits.http_fetch_hosts = ["EXAMPLE.com."].into_iter().map(str::to_owned).collect();
+        let mut core = WorldCore::new_with_clock("w", limits, clock.clone()).unwrap();
+
+        let host = core.check_http_fetch("https://example.com/a?b=1").unwrap();
+        assert_eq!(host, "example.com");
+        let error = core.check_http_fetch("not a url").unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+        let error = core.check_http_fetch("ftp://example.com/").unwrap_err();
+        assert!(error.to_string().contains("scheme"), "{error}");
+        let error = core
+            .check_http_fetch("https://user@example.com/")
+            .unwrap_err();
+        assert!(error.to_string().contains("credentials"), "{error}");
+        let error = core.check_http_fetch("https://other.example/").unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Subdomains are not implied by listing the parent.
+        let error = core
+            .check_http_fetch("https://api.example.com/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // A bare host admits only the scheme's default port.
+        assert!(core.check_http_fetch("https://example.com:443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8443/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Listing `host:port` opens that port and no other.
+        core.limits
+            .http_fetch_hosts
+            .insert("example.com:8443".to_owned());
+        assert!(core.check_http_fetch("https://example.com:8443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8444/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_HTTP_FETCH_BURST {
+            core.check_http_fetch("https://example.com/").unwrap();
+            core.note_http_fetch_attempt();
+        }
+        let error = core.check_http_fetch("https://example.com/").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS + 1);
+        assert!(core.check_http_fetch("https://example.com/").is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_fetch_is_off_by_default() {
+        let server = fetch_server();
+        // Granted, and the host allowlisted — but the operator
+        // never named the provider in a ceiling, so the default
+        // ceiling refuses it before any provider code runs.
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-default-off",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            false,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_http_fetch_is_refused_and_counted() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-ungranted", &[], &[server.entry().as_str()], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["http.fetch"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_host_is_refused() {
+        let server = fetch_server();
+        // Enabled and granted, but the allowlist names another
+        // host: the fetch is refused before any connection.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-unlisted", &["http.fetch"], &["example.org"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted host is never contacted");
+    }
+
+    #[tokio::test]
+    async fn a_bare_host_entry_refuses_a_non_default_port() {
+        let server = fetch_server();
+        // The host is listed without a port, so only port 80 is
+        // open; the server's own port is refused before any
+        // connection is made.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-bare-host", &["http.fetch"], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted port is never contacted");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_round_trip_through_the_actor() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-round-trip",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/hop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/missing")}},
+            ]}),
+        )
+        .await;
+        let fetched = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(fetched["ok"], true, "{fetched}");
+        assert_eq!(fetched["value"]["status"], 200, "{fetched}");
+        assert_eq!(fetched["value"]["url"], server.url("/hello"), "{fetched}");
+        assert_eq!(
+            fetched["value"]["body"],
+            blob_encode(b"hello fetch"),
+            "{fetched}"
+        );
+        assert_eq!(fetched["value"]["body_bytes"], 11, "{fetched}");
+        // An on-list redirect is followed to its target.
+        let hopped = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(hopped["ok"], true, "{hopped}");
+        assert_eq!(hopped["value"]["status"], 200, "{hopped}");
+        assert_eq!(hopped["value"]["url"], server.url("/hello"), "{hopped}");
+        assert_eq!(hopped["value"]["body"], blob_encode(b"hello fetch"));
+        // A status is a result, not a refusal: only policy and
+        // transport failures refuse a fetch.
+        let missing = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(missing["ok"], true, "{missing}");
+        assert_eq!(missing["value"]["status"], 404, "{missing}");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_refuses_redirects_off_the_list_and_past_the_hop_cap() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-redirects",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/away")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/loop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/big")}},
+                {"id": "f4", "cap": "http.fetch", "args": {"url": server.url("/default-port")}},
+            ]}),
+        )
+        .await;
+        // /away redirects to localhost, which is not allowlisted:
+        // refused before the second connection is made.
+        let away = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(away["error"], "bad_args", "{away}");
+        assert!(
+            away["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{away}"
+        );
+        let looping = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(looping["error"], "failed", "{looping}");
+        assert!(
+            looping["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("too_many_redirects"),
+            "{looping}"
+        );
+        let big = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(big["error"], "failed", "{big}");
+        assert!(
+            big["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("response_too_large"),
+            "{big}"
+        );
+        // /default-port redirects to the same host on port 80,
+        // which the `host:port` entry does not list: refused.
+        let other_port = schedule_result(&actor, "f4").unwrap();
+        assert_eq!(other_port["error"], "bad_args", "{other_port}");
+        assert!(
+            other_port["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{other_port}"
+        );
+        // Exactly the requests made: /away once (the redirect was
+        // not followed), /loop for the initial fetch plus the hop
+        // cap of follows, /big once, /default-port once.
+        assert_eq!(
+            server.hits(),
+            1 + (1 + crate::world_caps::MAX_HTTP_FETCH_REDIRECTS) + 1 + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn http_fetches_journal_nothing_and_replay_is_unaffected() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, journal) = http_fetch_actor(
+            "fetch-replay",
+            &["kv.set", "http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "k1", "cap": "kv.set", "args": {"key": "a", "value": 1}},
+            ]}),
+        )
+        .await;
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["ok"],
+            true,
+            "the fetch itself succeeded"
+        );
+        // The fetch ask adds only the entries every request adds:
+        // the input's committed event and the result's system
+        // event (the delivery replay feeds the program, as for a
+        // `kv.get`). No entry describes the fetch as state for
+        // replay to apply — there is no fetch entry kind at all.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a fetch journals no state of its own: {added:?}"
+        );
+        // And the journal — written across the fetch — restores
+        // exactly the state the journaled writes describe.
+        let restored = WorldCore::restore("fetch-replay", WorldLimits::default(), after).unwrap();
+        assert_eq!(restored.core.kv["a"], "1");
+        assert!(restored.core.blobs.is_empty());
+    }
+
+    /// An actor for `notify` tests, on `http_fetch_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn notify_actor(
+        id: &str,
+        grants: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("notify".to_owned());
+        }
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("notify".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn notify_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+
+        core.check_notify("the match has ended").unwrap();
+        // Oversized: past the world's chat byte limit — the bound
+        // a notification shares with the host's own chat lines.
+        let big = "x".repeat(core.limits.chat_bytes + 1);
+        let error = core.check_notify(&big).unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        // Empty, and empty once the sanitizer strips it.
+        let error = core.check_notify("").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+        let error = core.check_notify("\u{1}\u{2}").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_NOTIFY_BURST {
+            core.check_notify("again").unwrap();
+            core.note_notify_attempt();
+        }
+        let error = core.check_notify("again").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::NOTIFY_RATE_WINDOW_MS + 1);
+        assert!(core.check_notify("again").is_ok());
+    }
+
+    #[tokio::test]
+    async fn notify_is_off_by_default() {
+        // Granted — but the operator never named the provider in a
+        // ceiling, so the default ceiling refuses it before any
+        // provider code runs, and nothing is committed.
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-default-off", &["notify"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_notify_is_refused_and_counted() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-ungranted", &[], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["notify"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-round-trip", &["notify"], true);
+        let mut broadcast = actor.event_sender.subscribe();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "the match has ended\u{7}"}},
+            ]}),
+        )
+        .await;
+        let sent = schedule_result(&actor, "n1").unwrap();
+        assert_eq!(sent["ok"], true, "{sent}");
+        let sequence = sent["value"]["sequence"].as_u64().unwrap();
+        // The committed event is in the world's log, host-authored,
+        // carrying the sanitized text (the bell is stripped).
+        let event = actor
+            .core
+            .events
+            .iter()
+            .find(|event| event.sequence == sequence)
+            .expect("the notification is in the event log");
+        assert_eq!(event.participant_id, 0);
+        match &event.kind {
+            WorldEventKind::Notification { text } => {
+                assert_eq!(text, "the match has ended");
+            }
+            other => panic!("expected a notification event, got {other:?}"),
+        }
+        // And it went out on the broadcast channel the sessions
+        // read (the ask's own input event may precede it there).
+        let mut aired = None;
+        while let Ok(event) = broadcast.try_recv() {
+            if matches!(event.kind, WorldEventKind::Notification { .. }) {
+                aired = Some(event);
+            }
+        }
+        let aired = aired.expect("the notification was broadcast");
+        assert_eq!(aired.sequence, sequence);
+    }
+
+    #[tokio::test]
+    async fn notify_refuses_past_the_rate_bound() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-rate", &["notify"], true);
+        // One wants document, burst + 1 requests: the window
+        // admits the burst and refuses the next in the same change.
+        let requests: Vec<serde_json::Value> = (1..=crate::world_caps::MAX_NOTIFY_BURST + 1)
+            .map(|index| {
+                serde_json::json!({"id": format!("n{index}"), "cap": "notify", "args": {"text": "ping"}})
+            })
+            .collect();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": requests}),
+        )
+        .await;
+        for index in 1..=crate::world_caps::MAX_NOTIFY_BURST {
+            assert_eq!(
+                schedule_result(&actor, &format!("n{index}")).unwrap()["ok"],
+                true,
+                "attempt {index} is inside the burst"
+            );
+        }
+        let refused = schedule_result(
+            &actor,
+            &format!("n{}", crate::world_caps::MAX_NOTIFY_BURST + 1),
+        )
+        .unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("rate"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_journals_a_committed_event_and_replay_restores_it() {
+        let (mut actor, _clock, token, journal) = notify_actor("notify-replay", &["notify"], true);
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "server restarting soon"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(schedule_result(&actor, "n1").unwrap()["ok"], true);
+        // The notify ask adds the entries every request adds (the
+        // input's committed event, the result's system event) plus
+        // exactly one of its own: the committed notification.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        let notifications: Vec<&JournalEntry> = added
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    JournalEntry::Committed { event }
+                        if matches!(event.kind, WorldEventKind::Notification { .. })
+                )
+            })
+            .collect();
+        assert_eq!(notifications.len(), 1, "{added:?}");
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a notify journals no state of its own beyond its event: {added:?}"
+        );
+        // The notification entry is a version-15 entry: a journal
+        // carrying one is refused by older binaries at the header
+        // check, never failed mid-replay.
+        assert_eq!(
+            journal_version_required_by(notifications[0]),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // Restoring from the journal rebuilds the event log with
+        // the notification intact at its sequence.
+        let restored = WorldCore::restore("notify-replay", WorldLimits::default(), after).unwrap();
+        assert!(
+            restored.core.events.iter().any(|event| matches!(
+                &event.kind,
+                WorldEventKind::Notification { text } if text == "server restarting soon"
+            )),
+            "{:?}",
+            restored.core.events
+        );
+    }
+
+    #[test]
+    fn notify_events_require_journal_version_15() {
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::Notification {
+                text: "hi".to_owned(),
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&JournalEntry::Committed {
+                event: event.clone()
+            }),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // A checkpoint retaining one requires it too.
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs: None,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: vec![event],
+            open_presence: None,
+            admin_history: None,
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // Version 17 (#14731, the presentation policy) is the newest
+        // version this binary reads.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
     }
 
     #[tokio::test]
@@ -10627,6 +13385,8 @@ mod schedule_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -10704,16 +13464,50 @@ mod schedule_tests {
         let mut schedules = BTreeMap::new();
         schedules.insert("a".to_owned(), PendingSchedule::one_shot(2_000));
         let now = std::time::Instant::now();
-        assert!(next_schedule_wake(&schedules, 1_000, now, true).is_some());
+        assert!(next_schedule_wake(&schedules, 1_000, now, true, None).is_some());
         assert!(
-            next_schedule_wake(&schedules, 3_000, now, true).is_some(),
+            next_schedule_wake(&schedules, 3_000, now, true, None).is_some(),
             "an overdue schedule wakes the loop now"
         );
         assert!(
-            next_schedule_wake(&schedules, 3_000, now, false).is_none(),
+            next_schedule_wake(&schedules, 3_000, now, false, None).is_none(),
             "a program that refuses fires never wakes the loop for one"
         );
-        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true).is_none());
+        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true, None).is_none());
+        // #1067: a due schedule whose fire was refused at the fuel rate
+        // waits until the retry deadline instead of waking the loop now.
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                3_000,
+                now,
+                true,
+                Some(now + Duration::from_secs(1))
+            ),
+            Some(now + Duration::from_secs(1)),
+        );
+        // A schedule that is not due yet keeps its own wake, and a
+        // spent retry deadline holds nothing back.
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                1_000,
+                now,
+                true,
+                Some(now + Duration::from_secs(1))
+            ),
+            Some(now + Duration::from_millis(1_000)),
+        );
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                3_000,
+                now,
+                true,
+                Some(now - Duration::from_secs(1))
+            ),
+            Some(now),
+        );
     }
 
     #[test]
@@ -11463,8 +14257,8 @@ mod schedule_tests {
         assert_eq!(delivers.len(), 1);
         assert_eq!(delivers[0].outcome, "accepted");
         assert_eq!(delivers[0].parameters, sends[0].parameters);
-        assert!(portal_audit(&b, "portal.send").is_empty());
-        assert!(portal_audit(&a, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.send"), [] as [AuditRecord; 0]);
+        assert_eq!(portal_audit(&a, "portal.deliver"), [] as [AuditRecord; 0]);
 
         for handle in [&a, &b] {
             let grants = portal_audit(handle, "AdminSetPortalGrant");
@@ -11498,7 +14292,7 @@ mod schedule_tests {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].outcome, "refused");
         assert_eq!(sends[0].parameters["refusal"], "portal.sender_not_granted");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -11523,7 +14317,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.peer_not_granted");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -11593,7 +14387,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "unreadable peer book must be Unavailable, got {error:?}"
         );
-        assert!(portal_audit(&a, "portal.send").is_empty());
+        assert_eq!(portal_audit(&a, "portal.send"), [] as [AuditRecord; 0]);
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a granted send
@@ -11615,7 +14409,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "sinkless send must be Unavailable, got {error:?}"
         );
-        assert!(portal_audit(&handle, "portal.send").is_empty());
+        assert_eq!(portal_audit(&handle, "portal.send"), [] as [AuditRecord; 0]);
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a message at the
@@ -11644,7 +14438,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.message_too_large");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
     /// Oracle: revoking mid-conversation refuses the next message as
@@ -11892,9 +14686,11 @@ mod audit_tests {
     // id on every line, admin commands included.
     #[test]
     fn audit_records_carry_target_correlation_and_schema_v2() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-correlation", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -11949,9 +14745,11 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new(
             "audit-test",
@@ -12065,9 +14863,11 @@ mod audit_tests {
 
     #[test]
     fn issuance_is_audited_alongside_revocation_without_the_token() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -12123,9 +14923,11 @@ mod audit_tests {
 
     #[test]
     fn install_program_writability_refusal_is_audited_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -12215,9 +15017,11 @@ mod audit_tests {
 
     #[test]
     fn participant_readable_queries_emit_no_admin_audit_record() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -12248,6 +15052,12 @@ mod audit_tests {
             let (reply, response) = tokio::sync::oneshot::channel();
             actor.handle(WorldCommand::PolicyInfo { reply }).await;
             let _policy = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::PresentationPolicyInfo { reply })
+                .await;
+            let _presentation = response.await.unwrap();
         });
 
         let captured = records.lock().unwrap().clone();
@@ -12322,9 +15132,11 @@ mod audit_tests {
 
     #[test]
     fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -12388,6 +15200,7 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replay_matches_live_state_for_generated_sequences() {
+        crate::test_tracing::register_audit_callsite();
         // Oracle: the audit records themselves (model-based replay).
         // Folding the accepted records — plus first-use grants — over
         // the initial state must reproduce the live ledger grants and
@@ -12403,6 +15216,7 @@ mod audit_tests {
             let records = Arc::new(Mutex::new(Vec::new()));
             let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
             let _guard = tracing::subscriber::set_default(subscriber);
+            crate::test_tracing::rebuild_interest_cache();
 
             let core = WorldCore::new(
                 "audit-test",
@@ -12646,4 +15460,235 @@ fn presence_change_refuses_a_duplicated_key() {
     // A lenient parse keeps the last "event" and reads a join (#8794).
     let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
     assert_eq!(presence_change(&duplicated), None);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod presentation_policy_tests {
+    //! The world's stored presentation policy (#14731 slice 2b): the
+    //! journal entry, its version requirement, restore and compaction,
+    //! and the actor's set and read commands.
+    use super::*;
+    use id_core::presentation_policy::{MAX_POLICY_ENTRIES, PresentationPolicy};
+
+    fn world() -> WorldCore {
+        WorldCore::new("test-world", WorldLimits::default()).unwrap()
+    }
+
+    fn opted_in() -> PresentationPolicy {
+        PresentationPolicy::from_json(
+            r#"{"assets":{"user_uploads":"deny","max_rung":"static"},
+                "filters":{"allowed":["tint@1","fx/*"],"denied":["fx/strobe"],"disguise":"allow"},
+                "shaders":{"enabled":true,"formats":["shadertoy.glsl.fragment/v1"]},
+                "fallback":{"world_glyphs":{"tree":"T"}}}"#,
+        )
+        .unwrap()
+    }
+
+    /// A policy past its size bounds, built without the parser's check.
+    fn oversized() -> PresentationPolicy {
+        let many: Vec<String> = (0..=MAX_POLICY_ENTRIES)
+            .map(|i| format!("\"f{i}\""))
+            .collect();
+        let text = format!(r#"{{"filters":{{"denied":[{}]}}}}"#, many.join(","));
+        let policy: PresentationPolicy = serde_json::from_str(&text).unwrap();
+        assert!(policy.validate().is_err());
+        policy
+    }
+
+    fn header(version: u32) -> JournalEntry {
+        JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version,
+        }
+    }
+
+    #[test]
+    fn the_entry_requires_version_17_and_it_is_the_newest() {
+        for policy in [PresentationPolicy::default(), opted_in()] {
+            assert_eq!(
+                journal_version_required_by(&JournalEntry::PresentationPolicy { policy }),
+                JOURNAL_VERSION_PRESENTATION_POLICY
+            );
+        }
+        assert_eq!(JOURNAL_VERSION_PRESENTATION_POLICY, 17);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+    }
+
+    #[test]
+    fn the_entry_round_trips_in_its_wire_shape() {
+        let entry = JournalEntry::PresentationPolicy { policy: opted_in() };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["entry"], "presentation_policy");
+        assert_eq!(json["policy"]["shaders"]["enabled"], true);
+        let back: JournalEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn a_new_world_holds_the_default_policy() {
+        assert_eq!(world().presentation, PresentationPolicy::default());
+        let restored = WorldCore::restore("w", WorldLimits::default(), [header(1)]).unwrap();
+        assert_eq!(restored.core.presentation, PresentationPolicy::default());
+    }
+
+    #[test]
+    fn restore_applies_the_last_entry() {
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy: opted_in() },
+            JournalEntry::PresentationPolicy {
+                policy: PresentationPolicy::default(),
+            },
+            JournalEntry::PresentationPolicy { policy: opted_in() },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.presentation, opted_in());
+    }
+
+    #[test]
+    fn restore_refuses_an_oversized_policy() {
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy {
+                policy: oversized(),
+            },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn compaction_keeps_a_set_policy_and_raises_the_header() {
+        let mut core = world();
+        core.presentation = opted_in();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_PRESENTATION_POLICY,
+                ..
+            }
+        ));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
+                .count(),
+            1
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.presentation, opted_in());
+    }
+
+    #[test]
+    fn compaction_omits_the_default_policy() {
+        let mut core = world();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
+        );
+        let JournalEntry::Created { version, .. } = entries[0] else {
+            panic!("a checkpoint journal starts with its header");
+        };
+        assert!(version < JOURNAL_VERSION_PRESENTATION_POLICY);
+    }
+
+    #[tokio::test]
+    async fn the_actor_sets_and_reads_the_policy() {
+        let handle = WorldHandle::spawn(world());
+        assert_eq!(
+            handle.presentation_policy().await.unwrap(),
+            PresentationPolicy::default()
+        );
+        assert_eq!(
+            handle.set_presentation_policy(opted_in()).await.unwrap(),
+            opted_in()
+        );
+        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
+    }
+
+    #[tokio::test]
+    async fn the_actor_refuses_an_oversized_policy_and_keeps_the_old_one() {
+        let handle = WorldHandle::spawn(world());
+        handle.set_presentation_policy(opted_in()).await.unwrap();
+        let error = handle
+            .set_presentation_policy(oversized())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid presentation policy"),
+            "{error:#}"
+        );
+        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
+    }
+    /// The largest policy the parser accepts: every list and map full,
+    /// every name and key at its longest, and keys and glyphs made of
+    /// quotes so JSON escaping doubles them.
+    fn largest() -> PresentationPolicy {
+        use id_core::presentation_asset::MAX_NAME_LEN;
+        use id_core::presentation_policy::{MAX_CELL_KIND_BYTES, MAX_GLYPH_BYTES};
+        let name = |i: usize| format!("{i:03}{}", "n".repeat(MAX_NAME_LEN - 3));
+        let reference = |i: usize| format!("{}@{}", name(i), u32::MAX);
+        let refs: Vec<String> = (0..MAX_POLICY_ENTRIES).map(reference).collect();
+        let glyphs: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| {
+                let kind = format!("{i:03}{}", "\"".repeat(MAX_CELL_KIND_BYTES - 3));
+                (kind, "\"".repeat(MAX_GLYPH_BYTES).into())
+            })
+            .collect();
+        let substitutes: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| (name(i), reference(i).into()))
+            .collect();
+        let policy: PresentationPolicy = serde_json::from_value(serde_json::json!({
+            "filters": {"allowed": refs, "denied": refs, "disguise": "allow"},
+            "shaders": {
+                "enabled": true,
+                "formats": vec!["shadertoy.glsl.fragment/v1"; MAX_POLICY_ENTRIES],
+            },
+            "fallback": {
+                "world_glyphs": glyphs,
+                "world_substitutes": substitutes,
+                "tileset": reference(0),
+            },
+        }))
+        .unwrap();
+        policy.validate().unwrap();
+        policy
+    }
+
+    #[test]
+    fn the_largest_valid_policy_fits_one_replication_payload() {
+        let entry = JournalEntry::PresentationPolicy { policy: largest() };
+        let line = serde_json::to_vec(&entry).unwrap().len() + 1;
+        assert!(
+            line <= crate::world::replication::MAX_REPLICATION_PAYLOAD_BYTES,
+            "the largest policy's journal line is {line} bytes"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_policy_with_an_overlong_cell_kind() {
+        let kind = "k".repeat(id_core::presentation_policy::MAX_CELL_KIND_BYTES + 1);
+        let policy: PresentationPolicy = serde_json::from_value(
+            serde_json::json!({"fallback": {"world_glyphs": {(kind): "T"}}}),
+        )
+        .unwrap();
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
 }

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Prune fleet-platform `ci_events` past the 90-day hot retention (#5693).
 
-The ci.events ledger moved from Supabase Postgres to Turso
-`fleet-platform.ci_events` (cutover completed 2026-11-14: dedupe diff
-clean, Postgres write-silent since 2026-11-06, the Supabase Edge
-Function receiver retired). The design's retention rule is 90 days
-hot in Turso; this script is the prune that enforces it:
+The ci events ledger lives in Turso `fleet-platform.ci_events`. The
+design's retention rule is 90 days hot; this script is the prune that
+enforces it:
 
     DELETE FROM ci_events WHERE received_at < datetime('now', '-90 days')
 
@@ -54,6 +52,8 @@ def execute(token, sql):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+            "User-Agent": "fleet-d1-client/1",
         },
     )
     with urllib.request.urlopen(req, timeout=120) as resp:

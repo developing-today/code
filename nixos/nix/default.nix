@@ -18,6 +18,15 @@
     # package = pkgs.nixVersions.nix_2_24;
     package = pkgs.nixVersions.git;
 
+    # Keep the store from filling the disk. On Nov 21, 2026 /nix (which also
+    # holds /home, /var and /tmp under impermanence) reached 100% with no GC
+    # configured, and every service that writes state crash-looped on ENOSPC.
+    # When free space drops under min-free during a build, the daemon collects
+    # dead store paths until max-free is free. It only removes unreferenced
+    # paths, never a profile generation or anything a GC root still holds.
+    settings.min-free = 64 * 1024 * 1024 * 1024; # 64 GiB
+    settings.max-free = 256 * 1024 * 1024 * 1024; # 256 GiB
+
     # Batch store deduplication, off the critical path.
     #
     # This is the GOOD knob. Do not re-enable `auto-optimise-store` in
