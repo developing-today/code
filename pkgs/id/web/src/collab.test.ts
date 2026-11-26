@@ -736,7 +736,9 @@ describe("UPDATE/CURSOR frame validation (#7873)", () => {
       socket.deliver([MSG_UPDATE, [unappliable], [9999]]);
       expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
       if (i < 2) {
-        vi.advanceTimersToNextTimer();
+        // The reconnect fires within ~300ms (the budget resets on Init),
+        // before the new socket's 2s connect timeout.
+        vi.advanceTimersByTime(1_000);
         socket = FakeWebSocket.instances.at(-1)!;
       }
     }
@@ -758,7 +760,7 @@ describe("UPDATE/CURSOR frame validation (#7873)", () => {
       socket.deliver([MSG_UPDATE, [remoteStepJson(conn.editor!.view)], [9999]]);
       socket.deliver([MSG_UPDATE, [unappliable], [9999]]);
       expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
-      vi.advanceTimersToNextTimer();
+      vi.advanceTimersByTime(1_000);
       socket = FakeWebSocket.instances.at(-1)!;
       socket.open();
       socket.deliver(validInit());
