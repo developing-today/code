@@ -928,6 +928,21 @@ pub(crate) fn by_id_claimable(row: &Value, now: &str) -> bool {
     }
 }
 
+/// #9178 §2 slice 1: a manual by-ID override admits only a genuine
+/// parked row below its attempt cap. Attempt-capped, blocked, live,
+/// and terminal rows remain excluded; other sections own those cases.
+pub(crate) fn by_id_manual_claimable(row: &Value) -> bool {
+    if row.get("status").and_then(|v| v.as_str()) != Some("parked") {
+        return false;
+    }
+    let attempts = row.get("attempts").and_then(Value::as_i64).unwrap_or(0);
+    let max_attempts = row
+        .get("max_attempts")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    attempts >= 0 && max_attempts > 0 && attempts < max_attempts
+}
+
 /// Session-to-session transfer (#8210): claim task_id DIRECTLY
 /// from its current holder, named by from_session, in one
 /// operation — the task never passes through queued or parked,
@@ -1171,6 +1186,7 @@ pub(crate) fn claim_by_id(
     model: &Option<ClaimModel>,
     claim_session: Option<&str>,
     pool: &Option<String>,
+    manual_override: Option<&str>,
 ) -> Result<Option<Value>, TErr> {
     let Some(row) = get_task(t, task_id)? else {
         return Ok(None);
@@ -1217,7 +1233,9 @@ pub(crate) fn claim_by_id(
         .to_string();
     let now_unix = now_unix();
     let now = iso(now_unix);
-    if !by_id_claimable(&row, &now) {
+    let manual_reason = manual_override.map(str::trim).filter(|reason| !reason.is_empty());
+    let manual = manual_reason.is_some() && by_id_manual_claimable(&row);
+    if (manual_reason.is_some() && !manual) || (!manual && !by_id_claimable(&row, &now)) {
         // #6985: a by-id claim refused because a live claim stands
         // leaves a claim-transition event naming the holder's lease
         // (worker, lane, lease_until from the row) and the refused
@@ -1261,6 +1279,25 @@ pub(crate) fn claim_by_id(
     if task_requirements_unmet(&row, &claimer).is_some() {
         return Ok(None);
     }
+    // Capture every prior park value before the compare-and-swap claim.
+    // They remain in the audit record after the live wait fields are cleared.
+    let manual_audit = manual_reason.map(|reason| {
+        json!({
+            "reason": reason,
+            "claimed_at": now,
+            "worker_id": worker,
+            "lane_id": lane,
+            "session_id": claim_session,
+            "previous_status": status,
+            "previous_attempts": row.get("attempts").cloned().unwrap_or(Value::Null),
+            "previous_max_attempts": row.get("max_attempts").cloned().unwrap_or(Value::Null),
+            "previous_not_before": row.get("not_before").cloned().unwrap_or(Value::Null),
+            "previous_park_reason": row.get("result").and_then(|r| r.get("park_reason")).cloned().unwrap_or(Value::Null),
+            "previous_park_kind": row.get("park_kind").cloned().unwrap_or(Value::Null),
+            "previous_wait_kind": row.get("wait_kind").cloned().unwrap_or(Value::Null),
+            "previous_ready_condition": row.get("ready_condition").cloned().unwrap_or(Value::Null),
+        })
+    });
     let lease_until = claim_lease_until(now_unix, lease_seconds);
     let upd = t.exec(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
@@ -1268,18 +1305,37 @@ pub(crate) fn claim_by_id(
            attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') THEN 0 ELSE 1 END), \
            lane_id = ?, platform = COALESCE(?, platform), \
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           ready_condition = CASE WHEN ? IS NULL THEN ready_condition ELSE NULL END, \
+           result = CASE WHEN ? IS NULL THEN result ELSE json_set(COALESCE(result, '{}'), '$.manual_override', json(?)) END, \
            updated_at = ? \
-         WHERE id = ? AND status = ? AND queue = ?",
+         WHERE id = ? AND status = ? AND queue = ? \
+           AND (? IS NULL OR (attempts = ? AND max_attempts = ? AND not_before IS ? \
+           AND park_kind IS ? AND wait_kind IS ? \
+           AND (ready_condition IS ? OR json(ready_condition) IS json(?)) \
+           AND (result IS ? OR json(result) IS json(?))))",
         &[
             Arg::Text(worker.to_string()),
             Arg::Text(now.clone()),
             Arg::Text(lease_until.clone()),
             arg_str(lane.as_deref()),
             arg_str(family),
+            manual_audit.as_ref().map(|_| Arg::Int(1)).unwrap_or(Arg::Null),
+            manual_audit.as_ref().map(|_| Arg::Int(1)).unwrap_or(Arg::Null),
+            manual_audit.as_ref().map(|audit| Arg::Text(audit.to_string())).unwrap_or(Arg::Null),
             Arg::Text(now.clone()),
             Arg::Int(task_id),
             Arg::Text(status),
             Arg::Text(row_queue.clone()),
+            manual_audit.as_ref().map(|_| Arg::Int(1)).unwrap_or(Arg::Null),
+            Arg::Int(row.get("attempts").and_then(Value::as_i64).unwrap_or(0)),
+            Arg::Int(row.get("max_attempts").and_then(Value::as_i64).unwrap_or(0)),
+            arg_str(row.get("not_before").and_then(Value::as_str)),
+            arg_str(row.get("park_kind").and_then(Value::as_str)),
+            arg_str(row.get("wait_kind").and_then(Value::as_str)),
+            arg_json(row.get("ready_condition").unwrap_or(&Value::Null)),
+            arg_json(row.get("ready_condition").unwrap_or(&Value::Null)),
+            arg_json(row.get("result").unwrap_or(&Value::Null)),
+            arg_json(row.get("result").unwrap_or(&Value::Null)),
         ],
     )?;
     if upd.affected == 0 {
@@ -1343,22 +1399,23 @@ pub(crate) fn claim_by_id(
     if let Some(old) = &cleared {
         on_binding_cleared(t, worker, task_id, old, "claim_repo_task")?;
     }
+    let mut detail = json!({
+        "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+        "cleared_session_id": cleared, "lane_id": lane,
+        "by_id": true, "task_id": task_id, "platform": family,
+        "model_provider": model.as_ref().map(|m| m.provider.clone()),
+        "model_id": model.as_ref().and_then(|m| m.model.clone()),
+        "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+    });
+    if let Some(audit) = manual_audit {
+        detail["manual_override"] = audit;
+    }
     event(
         t,
         Some(worker),
         Some(task_id),
         "claimed",
-        &with_marks(
-            &json!({
-                "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
-                "cleared_session_id": cleared, "lane_id": lane,
-                "by_id": true, "task_id": task_id, "platform": family,
-                "model_provider": model.as_ref().map(|m| m.provider.clone()),
-                "model_id": model.as_ref().and_then(|m| m.model.clone()),
-                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-            }),
-            &row,
-        ),
+        &with_marks(&detail, &row),
     )?;
     Ok(Some(row))
 }

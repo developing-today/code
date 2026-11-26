@@ -108,6 +108,8 @@ required-features = ["client"]
 # Property-based tests for the client parser invariants (#5939),
 # the same proptest version pkgs/id uses.
 proptest = "1.12"
+# Existing queue-broker HTTP double tests use tiny_http (#9178 remote suite).
+tiny_http = "0.12"
 # BT-3 tests (#14401): mint the broker host's key + CSR the way a
 # real host does before fleet-cert issues its broker-server leaf.
 rcgen = { version = "0.14.10", default-features = false, features = [

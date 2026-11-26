@@ -848,6 +848,28 @@ pub(crate) fn verb_claim_batch(
 }
 
 pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
+    // Reject malformed manual-override intent before the claim preamble
+    // can expire leases, touch lanes, or otherwise mutate the test/store.
+    if let Some(reason) = req.get("manual_override") {
+        if reason.as_str().map_or(true, |s| s.trim().is_empty()) {
+            return fail(
+                2,
+                "claim_repo_task: manual_override requires a non-empty reason",
+            );
+        }
+        if req_i64(req, "task_id").filter(|id| *id > 0).is_none()
+            || req.get("from_session").is_some()
+            || req.get("pick").is_some()
+            || req
+                .get("count")
+                .is_some_and(|count| count.as_i64() != Some(1))
+        {
+            return fail(
+                2,
+                "claim_repo_task: manual_override requires one --task and cannot combine with transfer, handoff, or batch",
+            );
+        }
+    }
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     // One-queue model (#8097, 2026-11-10): the request's queue
     // is OPTIONAL. Absent, empty, "*" or "all" names no stream:
@@ -1002,6 +1024,7 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 &model,
                 claim_session.as_deref(),
                 &pool,
+                req_str(req, "manual_override"),
             );
         }
         claim_pick_once(
@@ -3753,8 +3776,8 @@ mod task_labels_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod manual_claim_override_tests {
-    use super::reprioritize_tests::fake_backend;
+mod manual_claim_override_audit_tests {
+    use super::reprioritize_tests::{events_for, fake_backend};
     use super::*;
     use serde_json::{Value, json};
 
@@ -3785,9 +3808,10 @@ mod manual_claim_override_tests {
     }
 
     #[test]
-    fn manual_override_claims_parked_task_and_preserves_attempts_9178() {
-        // Oracle: a parked row under its cap is claimed with an explicit
-        // reason, but its historical attempts and cap remain unchanged.
+    fn manual_override_records_full_audit_9178() {
+        // Oracle: the prior park state and explicit actor are auditable on
+        // both the task result and the claimed event; unrelated result data
+        // and historical attempt counts survive.
         let (t, _) = fake_backend();
         let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91781)}));
         assert_eq!(enqueued["ok"], true, "{enqueued}");
@@ -3798,11 +3822,15 @@ mod manual_claim_override_tests {
              wait_kind = 'dependency', ready_condition = ?, result = ? WHERE id = ?",
             &[
                 Arg::Text(json!({"kind": "time", "until": "2099-01-01T00:00:00Z"}).to_string()),
-                Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
+                Arg::Text(
+                    json!({"park_reason": "waiting on dependency", "unrelated": {"keep": true}})
+                        .to_string(),
+                ),
                 Arg::Int(id),
             ],
         )
         .unwrap();
+        let before = get_task(&t, id).unwrap().expect("parked task");
 
         let out = verb_claim(
             &t,
@@ -3812,7 +3840,7 @@ mod manual_claim_override_tests {
                 "lane": "manual-override-lane",
                 "task_id": id,
                 "session_id": "ses_manual_override",
-                "manual_override": "dependency independently verified"
+                "manual_override": "  dependency independently verified  "
             }),
         );
         assert_eq!(out["ok"], true, "{out}");
@@ -3821,6 +3849,61 @@ mod manual_claim_override_tests {
         assert_eq!(row["status"], "claimed");
         assert_eq!(row["attempts"], 2);
         assert_eq!(row["max_attempts"], 5);
+        for field in ["not_before", "park_kind", "wait_kind", "ready_condition"] {
+            assert!(row[field].is_null(), "{field}: {row}");
+        }
+        let expected_audit = json!({
+            "reason": "dependency independently verified",
+            "claimed_at": row["claimed_at"],
+            "worker_id": "manual-override-worker",
+            "lane_id": "manual-override-lane",
+            "session_id": "ses_manual_override",
+            "previous_status": "parked",
+            "previous_attempts": before["attempts"],
+            "previous_max_attempts": before["max_attempts"],
+            "previous_not_before": before["not_before"],
+            "previous_park_reason": before["result"]["park_reason"],
+            "previous_park_kind": before["park_kind"],
+            "previous_wait_kind": before["wait_kind"],
+            "previous_ready_condition": before["ready_condition"]
+        });
+        assert_eq!(row["result"]["manual_override"], expected_audit);
+        let mut expected_result = before["result"].clone();
+        expected_result["manual_override"] = expected_audit.clone();
+        assert_eq!(row["result"], expected_result);
+        let events = events_for(&t, id, "claimed");
+        assert_eq!(events.len(), 1);
+        let detail: Value = serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["manual_override"], expected_audit);
+    }
+
+    #[test]
+    fn parked_by_id_claim_without_manual_override_still_refuses_9178() {
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91782)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 3, max_attempts = 5, \
+             not_before = '2099-01-01T00:00:00Z', park_kind = 'backoff', \
+             result = ? WHERE id = ?",
+            &[
+                Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
+                Arg::Int(id),
+            ],
+        )
+        .unwrap();
+
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "ordinary-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(out["ok"], true, "refusal is a clean no-claim result: {out}");
+        assert!(out.get("row").is_none_or(Value::is_null), "{out}");
+        let row = get_task(&t, id).unwrap().expect("parked task row");
+        assert_eq!(row["status"], "parked");
+        assert_eq!(row["attempts"], 3);
+        assert_eq!(row["result"]["park_reason"], "waiting on dependency");
     }
 }
 
