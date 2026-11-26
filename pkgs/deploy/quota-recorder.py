@@ -233,6 +233,32 @@ def get_turso_token(env):
     return val
 
 
+def _pipeline_response_error(out):
+    """Return an error unless the execute and close requests both succeeded."""
+    if not isinstance(out, dict):
+        return "invalid pipeline response: expected an object"
+    results = out.get("results")
+    expected = ("execute", "close")
+    if not isinstance(results, list) or len(results) != len(expected):
+        return f"invalid pipeline result count: expected {len(expected)} results"
+    for i, (result, response_type) in enumerate(zip(results, expected)):
+        if not isinstance(result, dict):
+            return f"invalid pipeline result {i}: expected an object"
+        if result.get("type") == "error":
+            error = result.get("error")
+            if isinstance(error, dict):
+                error = error.get("message", error)
+            return f"turso: {error if error is not None else result}"[:300]
+        if result.get("type") != "ok":
+            return f"invalid pipeline result {i}: expected type 'ok'"
+        response = result.get("response")
+        if not isinstance(response, dict) or response.get("type") != response_type:
+            return f"invalid pipeline response {i}: expected {response_type}"
+        if response_type == "execute" and not isinstance(response.get("result"), dict):
+            return "invalid pipeline execute response: missing result"
+    return None
+
+
 def run_flush(records, now_ts):
     """Insert one chunk of records into Turso via the libsql HTTP
     pipeline. Returns (ok, error_text)."""
@@ -254,6 +280,7 @@ def run_flush(records, now_ts):
         p = subprocess.run(
             [
                 "curl",
+                "-f",
                 "-sS",
                 "-m",
                 "120",
@@ -276,12 +303,12 @@ def run_flush(records, now_ts):
             err = (p.stderr or p.stdout or "").strip().splitlines()
             return False, f"curl exit {p.returncode}: {err[-1] if err else ''}"[:300]
         try:
-            out = json.loads(p.stdout)
+            out = json.loads(p.stdout or "")
         except json.JSONDecodeError:
-            return False, f"unparseable pipeline response: {p.stdout[:120]}"
-        for res in out.get("results", []):
-            if res.get("type") == "error":
-                return False, f"turso: {res.get('error', {}).get('message', res)}"[:300]
+            return False, f"unparseable pipeline response: {(p.stdout or '')[:120]}"
+        error = _pipeline_response_error(out)
+        if error:
+            return False, error
         return True, ""
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"[:300]
