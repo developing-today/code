@@ -343,6 +343,7 @@ test("manifest: D1 placement preserves the tenant database id", () => {
   const base = createManifest({
     unit: A,
     backend: "d1",
+    databaseId: "d1-tenant-a",
     recordedAt: "2026-11-26T00:00:00.000Z",
   });
   const checked = validateManifest({ ...base, database_id: "d1-tenant-a" }, A);
@@ -359,6 +360,7 @@ test("manifest: D1 placement without a database id fails closed", () => {
   const base = createManifest({
     unit: A,
     backend: "d1",
+    databaseId: "d1-tenant-a",
     recordedAt: "2026-11-26T00:00:00.000Z",
   });
   const checked = validateManifest({ ...base, database_id: undefined }, A);
@@ -387,13 +389,9 @@ test("manifest: D1 cutover records its database id and clears it on cutover away
     databaseId: "d1-tenant-a",
     cutoverSeq: 10,
     recordedAt: "2026-11-27T00:00:00.000Z",
-  } as Parameters<typeof advanceManifest>[1]);
+  });
   assert.equal(toD1.ok, true);
-  if (!toD1.ok) return;
-  assert.equal(
-    (toD1.value as unknown as { database_id?: string }).database_id,
-    "d1-tenant-a",
-  );
+  if (toD1.ok) assert.equal(toD1.value.database_id, "d1-tenant-a");
 
   const awayFromD1 = advanceManifest(toD1.value, {
     backend: "turso",
@@ -408,12 +406,18 @@ test("manifest: missing, malformed or conflicting placement fails closed as plac
   // #5867 §2.4: "Missing, invalidly signed, conflicting, or too-stale
   // placement data fails closed with a typed unavailable/placement-
   // unknown result"; a newer record is a #5863 §5.3 version refusal.
-  const good = createManifest({ unit: A, backend: "d1", recordedAt: "2026-11-26T00:00:00.000Z" });
+  const good = createManifest({
+    unit: A,
+    backend: "d1",
+    databaseId: "d1-tenant-a",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
   const bad: unknown[] = [
     null,
     "manifest",
     [],
     { ...good, backend: "postgres" },
+    { ...good, backend: "turso" },
     { ...good, generation: 0 },
     { ...good, generation: 1.5 },
     { ...good, cutover_seq: -1 },

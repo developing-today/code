@@ -603,6 +603,9 @@ export interface BackendManifest {
   /** The unit placed: a binding id (tenant), shard or deployment. */
   unit: string;
   backend: BackendId;
+  /** D1's tenant-scoped database selector; never a credential. Required
+   * for `d1` placements and omitted for other backends (#15538). */
+  database_id?: string;
   /** Monotonic placement generation, ≥ 1. */
   generation: number;
   /** The journal sequence at which this backend became the unit's
@@ -647,6 +650,13 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
   if (!isBackendId(m.backend)) {
     return { ok: false, refusal: placementUnknown("backend manifest names no known backend") };
   }
+  if (m.backend === "d1") {
+    if (typeof m.database_id !== "string" || m.database_id.trim() === "") {
+      return { ok: false, refusal: placementUnknown("D1 backend manifest has no tenant database_id") };
+    }
+  } else if (m.database_id !== undefined && m.database_id !== null) {
+    return { ok: false, refusal: placementUnknown("non-D1 backend manifest carries a D1 database_id") };
+  }
   if (typeof m.generation !== "number" || !Number.isSafeInteger(m.generation) || m.generation < 1) {
     return { ok: false, refusal: placementUnknown("backend manifest generation is not a positive integer") };
   }
@@ -671,6 +681,7 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
       manifest_version: MANIFEST_VERSION,
       unit: m.unit,
       backend: m.backend,
+      ...(m.backend === "d1" ? { database_id: m.database_id as string } : {}),
       generation: m.generation,
       cutover_seq: m.cutover_seq,
       contract_version: m.contract_version as number,
@@ -684,6 +695,7 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
 export function createManifest(input: {
   unit: string;
   backend: BackendId;
+  databaseId?: string;
   recordedAt: string;
   cutoverSeq?: number;
 }): BackendManifest {
@@ -691,6 +703,7 @@ export function createManifest(input: {
     manifest_version: MANIFEST_VERSION,
     unit: input.unit,
     backend: input.backend,
+    database_id: input.databaseId,
     generation: 1,
     cutover_seq: input.cutoverSeq ?? 0,
     contract_version: CONTRACT_VERSION,
@@ -705,7 +718,7 @@ export function createManifest(input: {
  * from fence `cutoverSeq`, which may not move backwards. */
 export function advanceManifest(
   current: BackendManifest,
-  next: { backend: BackendId; cutoverSeq: number; recordedAt: string },
+  next: { backend: BackendId; databaseId?: string; cutoverSeq: number; recordedAt: string },
 ): Checked<BackendManifest> {
   if (!Number.isSafeInteger(next.cutoverSeq) || next.cutoverSeq < current.cutover_seq) {
     return {
@@ -719,6 +732,10 @@ export function advanceManifest(
   return validateManifest({
     ...current,
     backend: next.backend,
+    database_id:
+      next.backend === "d1"
+        ? next.databaseId ?? (current.backend === "d1" ? current.database_id : undefined)
+        : undefined,
     generation: current.generation + 1,
     cutover_seq: next.cutoverSeq,
     recorded_at: next.recordedAt,
