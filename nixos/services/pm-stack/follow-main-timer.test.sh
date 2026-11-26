@@ -10,8 +10,16 @@ fi
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-timer="$(cd "$repo_root" && NIXPKGS_ALLOW_UNFREE=1 nix eval --json \
-  .#nixosConfigurations.amd.config.systemd.timers.pm-stack-follow-main)"
+timer_expr='let
+  flake = builtins.getFlake (builtins.getEnv "PWD");
+  timer = flake.nixosConfigurations.amd.config.systemd.timers.pm-stack-follow-main;
+in {
+  description = timer.description;
+  wantedBy = timer.wantedBy;
+  timerConfig = timer.timerConfig;
+}'
+timer="$(cd "$repo_root" && NIXPKGS_ALLOW_UNFREE=1 nix eval --json --impure \
+  --extra-experimental-features 'nix-command flakes' --expr "$timer_expr")"
 
 jq -e '
   .description == "Follow main for the laptop PM stack"
