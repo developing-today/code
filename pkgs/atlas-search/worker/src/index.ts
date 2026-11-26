@@ -12,7 +12,7 @@
  *
  * Routes:
  *   GET  /health                    (open; liveness only)
- *   POST /v1/search  {query, k?}    (gated) -> miss or hit envelope
+ *   POST /v1/search  {query, k?, session?} (gated) -> miss or hit envelope
  *   GET  /v1/cache/inspect?query=&k= (gated) -> DO metadata readback
  *   POST /v1/cache/purge {query, k?} (gated) -> delete one cached query
  *   POST /mcp                       (gated) -> MCP endpoint (#8625; src/mcp.ts)
@@ -22,6 +22,7 @@ import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
 import { handleMcp } from "./mcp";
 import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
+import { recordSearch, validSession } from "./search_history";
 import { CONTEXT } from "./space";
 
 export { QueryCache };
@@ -34,6 +35,9 @@ export interface Env {
   HOT_CACHE?: D1Database;
   /** Hot-cache master flag; only the literal "true" enables it. */
   HOT_CACHE_ENABLED?: string;
+  /** Retained objects (#9140): search history for callers that name a
+   * session, kept only while its class is enabled there. */
+  RETAINED?: D1Database;
   GATE_TOKEN: string;
   SERVICE_BASE: string;
   SERVICE_TOKEN: string;
@@ -79,7 +83,7 @@ export default {
       if (raw === null) {
         return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
       }
-      let body: { query?: unknown; k?: unknown };
+      let body: { query?: unknown; k?: unknown; session?: unknown };
       try {
         body = JSON.parse(raw) as typeof body;
       } catch {
@@ -97,8 +101,28 @@ export default {
       }
       const query = normalizeQuery(body.query);
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
+      const session = body.session === undefined ? undefined : validSession(body.session) ? body.session : null;
+      if (session === null) {
+        return errorJson(400, "bad_request", "session must be 1 to 128 of A-Z, a-z, 0-9, '.', '_', ':' or '-'");
+      }
       const k = clampK(body.k);
       const { status, payload } = await executeSearch(env, query, k);
+      if (status === 200 && session !== undefined) {
+        // Search history (#9140 slice 3) is best effort: it never changes
+        // or fails the answer.
+        try {
+          await recordSearch(env.RETAINED, {
+            session,
+            query,
+            k,
+            key: String(payload.key),
+            cache: payload.cache === "hit" ? "hit" : "miss",
+            result: payload.result,
+          });
+        } catch (error) {
+          console.warn(`search history not recorded: ${(error as Error).message}`);
+        }
+      }
       return Response.json(payload, { status });
     }
 
