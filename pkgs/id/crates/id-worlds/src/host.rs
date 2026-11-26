@@ -1081,6 +1081,12 @@ pub struct LiveWorld {
     pub report: OpenReport,
 }
 
+/// The refusal anyone but the operator gets for a restore.
+fn restore_refusal() -> anyhow::Error {
+    crate::directory::Refusal::Forbidden("only the operator restores an archived world".to_owned())
+        .into()
+}
+
 /// A lifecycle change one authority may ask of a world (#10694).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LifecycleAct {
@@ -1377,10 +1383,7 @@ impl Supervisor {
             return Ok(());
         }
         if act == LifecycleAct::Restore {
-            return Err(crate::directory::Refusal::Forbidden(
-                "only the operator restores an archived world".to_owned(),
-            )
-            .into());
+            return Err(restore_refusal());
         }
         if let Some(held) = self.live.get(name) {
             return held
@@ -1511,6 +1514,11 @@ impl Supervisor {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[path = "host_parity_tests.rs"]
+mod parity_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::world::{Authority, Isolation};
@@ -1637,7 +1645,7 @@ mod tests {
         // Append a durable entry to alpha, then stop: the journal now
         // proves replay on the next open.
         sup.start("alpha", actor()).await.unwrap();
-        let world = sup.live.get("alpha").unwrap().service.world();
+        let world = sup.live["alpha"].service.world();
         world
             .set_isolation(Authority::Admin, Isolation::Unisolated)
             .await
@@ -1688,7 +1696,7 @@ mod tests {
         let root = data_root_with(&["alpha"]);
         let mut sup = Supervisor::open(root.path()).await.unwrap();
         sup.start("alpha", actor()).await.unwrap();
-        let world = sup.live.get("alpha").unwrap().service.world();
+        let world = sup.live["alpha"].service.world();
         let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
         let (bo_id, bo) = world.issue("bo", WorldScopes::GUEST).await.unwrap();
         world.chat(ann.clone(), "before sleep").await.unwrap();
@@ -1699,7 +1707,7 @@ mod tests {
         // A connection to the asleep world wakes it; membership comes back
         // from the journal before anything is served.
         sup.start("alpha", actor()).await.unwrap();
-        let woken = sup.live.get("alpha").unwrap().service.world();
+        let woken = sup.live["alpha"].service.world();
         assert!(
             woken
                 .chat(JoinCapability::from_wire("not-a-member".into()), "hi")
@@ -1717,12 +1725,15 @@ mod tests {
     }
 
     fn key_hex(seed: u8) -> String {
+        use std::fmt::Write as _;
         SigningKey::from_bytes(&[seed; 32])
             .verifying_key()
             .as_bytes()
             .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            })
     }
 
     async fn directory_as(
@@ -1754,7 +1765,7 @@ mod tests {
         let owner = key_hex(1);
         let guest = key_hex(2);
         {
-            let service = &sup.live.get("alpha").unwrap().service;
+            let service = &sup.live["alpha"].service;
             for (key, name) in [(&owner, "Owner"), (&guest, "Guest")] {
                 directory_as(
                     service,
@@ -1898,7 +1909,7 @@ mod tests {
         let journal_a = std::fs::read(root.path().join("a").join("journal.jsonl")).unwrap();
         let mut sup = Supervisor::open(root.path()).await.unwrap();
         sup.start("a", actor()).await.unwrap();
-        let world = sup.live.get("a").unwrap().service.world();
+        let world = sup.live["a"].service.world();
         world
             .set_isolation(Authority::Admin, Isolation::Isolated)
             .await
@@ -2163,7 +2174,7 @@ mod tests {
         let (held, ann) = doomed.block_on(async {
             let mut sup = Supervisor::open(root.path()).await.unwrap();
             sup.start("alpha", actor()).await.unwrap();
-            let world = sup.live.get("alpha").unwrap().service.world();
+            let world = sup.live["alpha"].service.world();
             let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
             for line in &acknowledged {
                 world.chat(ann.clone(), line.as_str()).await.unwrap();
@@ -2182,7 +2193,7 @@ mod tests {
             assert_eq!(sup.live_names(), vec!["alpha".to_owned()]);
             let recovery = sup.file().worlds["alpha"].last_recovery.clone().unwrap();
             assert_eq!(recovery.error, None);
-            let world = sup.live.get("alpha").unwrap().service.world();
+            let world = sup.live["alpha"].service.world();
             let chats: Vec<String> = world
                 .snapshot(ann)
                 .await
