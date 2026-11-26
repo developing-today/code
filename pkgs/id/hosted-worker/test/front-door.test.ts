@@ -154,6 +154,32 @@ test("with no ceiling, normal writes pass and the hard body bound still applies 
   assert.equal(calls.stub, 1, "only the normal write reached the DO");
 });
 
+test("the front door consults the central registry and refuses a missing binding", async () => {
+  const { env, calls } = makeEnv();
+  let lookups = 0;
+  const TENANCY_DB = {
+    prepare(_query: string) {
+      return {
+        bind(_bindingId: string) {
+          return {
+            async first() {
+              lookups++;
+              return null;
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const response = await worker.fetch(front("/v1/state"), { ...env, TENANCY_DB } as never);
+
+  assert.equal(response.status, 403);
+  assert.equal(((await response.json()) as { error: string }).error, "registry_binding_missing");
+  assert.equal(lookups, 1);
+  assert.equal(calls.stub, 0, "the namespace is never reached for an unregistered binding");
+});
+
 // Oracle for #3399: only an existing stable row matching the upstream
 // binding/jurisdiction may reach ANY namespace method. Requests are reads
 // of the directory: the complete before/after table snapshots must agree.
