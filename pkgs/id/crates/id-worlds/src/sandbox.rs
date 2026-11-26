@@ -183,12 +183,13 @@ fn module_cache_dir() -> Option<PathBuf> {
 /// the whole key.
 fn module_cache_key(wasm: &[u8]) -> String {
     use sha2::Digest as _;
+    use std::fmt::Write as _;
     let digest = sha2::Sha256::digest(wasm);
     let mut key = String::with_capacity(MODULE_CACHE_SALT.len() + 1 + digest.len() * 2 + 6);
     key.push_str(MODULE_CACHE_SALT);
     key.push('-');
     for byte in digest {
-        key.push_str(&format!("{byte:02x}"));
+        let _ = write!(key, "{byte:02x}");
     }
     key.push_str(".cwasm");
     key
@@ -240,10 +241,8 @@ fn store_cached_module(engine: &Engine, wasm: &[u8], path: &Path) {
     // Write beside the entry and rename over it, so a concurrent
     // reader never sees a partial file.
     let staging = dir.join(format!(".staging-{}", std::process::id()));
-    if std::fs::write(&staging, &framed).is_ok() {
-        if std::fs::rename(&staging, path).is_err() {
-            let _ = std::fs::remove_file(&staging);
-        }
+    if std::fs::write(&staging, &framed).is_ok() && std::fs::rename(&staging, path).is_err() {
+        let _ = std::fs::remove_file(&staging);
     }
 }
 
@@ -265,7 +264,9 @@ fn evict_cache_to_fit(dir: &Path, incoming: u64) {
             continue;
         };
         total += metadata.len();
-        let modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         files.push((modified, metadata.len(), path));
     }
     files.sort_by_key(|(modified, _, _)| *modified);
@@ -282,12 +283,17 @@ fn evict_cache_to_fit(dir: &Path, incoming: u64) {
 /// Obtain the compiled module for `wasm`: a cache hit when
 /// `cache_dir` names an entry that loads, otherwise a fresh compile
 /// whose precompiled form is then cached best-effort.
-fn load_or_compile_module(engine: &Engine, wasm: &[u8], cache_dir: Option<&Path>) -> Result<Module> {
+fn load_or_compile_module(
+    engine: &Engine,
+    wasm: &[u8],
+    cache_dir: Option<&Path>,
+) -> Result<Module> {
     let entry = cache_dir.map(|dir| dir.join(module_cache_key(wasm)));
-    if let Some(entry) = &entry {
-        if let Some(module) = load_cached_module(engine, entry) {
-            return Ok(module);
-        }
+    if let Some(module) = entry
+        .as_ref()
+        .and_then(|entry| load_cached_module(engine, entry))
+    {
+        return Ok(module);
     }
     let module =
         Module::new(engine, wasm).map_err(|e| anyhow::anyhow!("compile Wasm module: {e}"))?;
