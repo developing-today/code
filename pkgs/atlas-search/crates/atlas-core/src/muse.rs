@@ -67,7 +67,7 @@ pub fn parse_muse_session(path: &Path, bytes: &[u8]) -> Option<SessionRecord> {
                     .flatten()
                     .filter_map(Value::as_object)
                     .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .map(|part| part.get("text").and_then(Value::as_str).unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !text.trim().is_empty() {
@@ -121,7 +121,12 @@ pub fn ingest_muse_root(
         let bytes = fs::read(&path).map_err(|error| {
             Error::backend(format!("Muse adapter: reading {}: {error}", path.display()))
         })?;
-        if let Some(session) = parse_muse_session(&path, &bytes) {
+        if let Some(mut session) = parse_muse_session(&path, &bytes) {
+            // The Python ingest driver applies KEEP_ROLES before store_session
+            // enumerates messages. Preserve that order for identical IDs.
+            session
+                .messages
+                .retain(|message| matches!(message.role.as_str(), "user" | "assistant" | "human"));
             add_report(&mut total, stage_session(conn, unit_id, &session, now)?);
         }
     }
@@ -149,6 +154,9 @@ fn discover_muse_files(root: &Path) -> Result<Vec<PathBuf>> {
             ))
         })?;
         if !agent.file_name().to_string_lossy().starts_with("agent-") {
+            continue;
+        }
+        if !agent.path().is_dir() {
             continue;
         }
         let sessions = agent.path().join("sessions");
@@ -193,6 +201,7 @@ fn add_report(total: &mut SessionStageReport, next: SessionStageReport) {
 mod tests {
     use super::*;
     use crate::stage::{list_staged_items, provision_staging_db};
+    use proptest::prelude::*;
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -217,7 +226,7 @@ mod tests {
             "{\"type\":\"session_header\",\"created_at\":\"first\"}\n",
             "not-json\n",
             "{\"type\":\"item\",\"created_at\":\"t1\",\"item\":{\"type\":\"message\",\"role\":\"user\",\"text\":\"hello\"}}\n",
-            "{\"created_at\":\"t2\",\"item\":{\"type\":\"message_parts\",\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"one\"},{\"type\":\"file_ref\",\"text\":\"ignored\"},null,{\"type\":\"text\",\"text\":\"two\"}]}}\n",
+            "{\"created_at\":\"t2\",\"item\":{\"type\":\"message_parts\",\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"one\"},{\"type\":\"text\",\"text\":\"\"},{\"type\":\"text\"},{\"type\":\"file_ref\",\"text\":\"ignored\"},null,{\"type\":\"text\",\"text\":\"two\"}]}}\n",
             "{\"item\":{\"type\":\"message_parts\",\"role\":\"user\",\"parts\":[{\"type\":\"file_ref\"}]}}\n",
             "{\"type\":\"session_header\",\"created_at\":\"last\"}\n",
             "{\"type\":\"session_header\"}\n"
@@ -242,7 +251,7 @@ mod tests {
                 SessionMessage {
                     role: "assistant".into(),
                     timestamp: Some("t2".into()),
-                    text: "one\ntwo".into(),
+                    text: "one\n\n\ntwo".into(),
                 }
             ]
         );
@@ -288,6 +297,7 @@ mod tests {
             "{\"item\":{\"type\":\"message\",\"role\":\"user\",\"text\":\"ignored\"}}\n",
         )
         .unwrap();
+        fs::write(dir.join("agent-not-a-directory"), "ignore this file").unwrap();
 
         let db_dir = temp_dir("db");
         let db = db_dir.join("stage.db");
@@ -295,15 +305,26 @@ mod tests {
         let mut conn = Connection::open(&db).unwrap();
         let report = ingest_muse_root(&mut conn, "unit-1", &dir, "ingested").unwrap();
         assert_eq!(report.messages_staged, 2);
-        assert_eq!(report.messages_skipped, 1);
+        assert_eq!(
+            report.messages_skipped, 0,
+            "roles are filtered by ingest driver"
+        );
         assert_eq!(report.chunks_staged, 2);
         let items = list_staged_items(&conn, Some("unit-1")).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].text, "first");
         assert_eq!(items[1].text, "second");
         let first_meta: Value = serde_json::from_str(items[0].meta.as_deref().unwrap()).unwrap();
-        assert_eq!(first_meta["sequence"], 1, "role filtering is downstream");
+        assert_eq!(
+            first_meta["sequence"], 0,
+            "Python filters roles before enumeration"
+        );
         assert_eq!(first_meta["session_id"], "a");
+        assert_eq!(
+            first_meta["message_id"],
+            "54c5d3ceeb778d059a1037580cc72a08608b6aeb77ead5671673ecbc6dd39ce6",
+            "message identity matches Python's pre-filter sequence"
+        );
 
         let replay = ingest_muse_root(&mut conn, "unit-1", &dir, "later").unwrap();
         assert_eq!(replay.messages_already_staged, 2);
@@ -312,6 +333,8 @@ mod tests {
 
     #[test]
     fn missing_root_is_an_empty_input_and_invalid_utf8_is_replaced() {
+        // Oracle: Python glob returns no files for a missing root and UTF-8
+        // decoding uses errors="replace" for unreadable byte sequences.
         let missing = temp_dir("missing").join("no-root");
         let mut conn = Connection::open_in_memory().unwrap();
         let report = ingest_muse_root(&mut conn, "unit-1", &missing, "now").unwrap();
@@ -323,5 +346,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(session.messages[0].text, "bad\u{fffd}byte");
+    }
+
+    proptest! {
+        /// Oracle: Python's ordered join model, including separators for
+        /// empty/missing text parts and no contribution from attachments.
+        #[test]
+        fn text_parts_match_python_join_model(parts in prop::collection::vec(prop::option::of("[a-z\\n ]{0,20}"), 0..20)) {
+            let expected = parts.iter().map(|part| part.as_deref().unwrap_or_default()).collect::<Vec<_>>().join("\n");
+            let json_parts: Vec<Value> = parts.iter().map(|part| match part {
+                Some(text) => serde_json::json!({"type":"text", "text":text}),
+                None => serde_json::json!({"type":"text"}),
+            }).chain(std::iter::once(serde_json::json!({"type":"file_ref", "text":"ignored"}))).collect();
+            let line = serde_json::json!({"item":{"type":"message_parts", "role":"user", "parts":json_parts}}).to_string();
+            let session = parse_muse_session(Path::new("session.jsonl"), line.as_bytes());
+            if expected.trim().is_empty() {
+                prop_assert!(session.is_none());
+            } else {
+                prop_assert_eq!(&session.unwrap().messages[0].text, &expected);
+            }
+        }
     }
 }
