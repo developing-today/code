@@ -309,9 +309,9 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	})
 	deadline := time.Now().Add(a.Settings().Duration("daemon.inlineStartTimeout"))
 	poll := a.Settings().Duration("daemon.inlineStartPoll")
-	attempts := 0
+	probes := 0
 	for time.Now().Before(deadline) {
-		attempts++
+		probes++
 		if inlineDaemonPing(c, ctx) {
 			return c, nil
 		}
@@ -334,7 +334,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	a.inlineStop()
-	return nil, fmt.Errorf("the in-process daemon did not answer after %d readiness probes", attempts)
+	return nil, fmt.Errorf("the in-process daemon did not answer after %d readiness probes", probes)
 }
 
 // inProcessTransport carries HTTP requests to a handler hosted in this
