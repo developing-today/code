@@ -421,7 +421,17 @@ impl Sweeper<'_> {
         // An error here drops the transaction: nothing local changes, the
         // intent stays pending, and the next sweep retransmits it.
         let receipt = match &reference {
-            None => central::cas_with_retry(self.primary, &request, &mut *self.sleep)?,
+            None => match central::cas_with_retry(self.primary, &request, &mut *self.sleep) {
+                Ok(receipt) => receipt,
+                // Central's threshold is lower than the definition this
+                // sweep resolved: the next sweep resolves again and places
+                // the value as a blob.
+                Err(CentralError::Refused {
+                    code: central::INLINE_ABOVE_CEILING,
+                    ..
+                }) => return Ok(Step::Wait(central::INLINE_ABOVE_CEILING)),
+                Err(error) => return Err(error.into()),
+            },
             Some(reference) => match blob_central::publish_cas_with_retry(
                 self.primary,
                 &request,
@@ -1003,6 +1013,24 @@ mod tests {
         let report = sweep(&primary, &primary, &store, &me).unwrap();
         assert_eq!(report.committed(), 1);
         assert_eq!(report.waiting[0].reason, "pending_needs_phase3");
+        assert_eq!(head(&primary, &shared("big")).unwrap(), None);
+        assert_eq!(pending(&store, &me, "status", "big"), 1);
+    }
+
+    #[test]
+    fn central_sweep_waits_when_central_holds_a_lower_threshold() {
+        // The host resolved the default threshold; central has narrowed it.
+        let resolver = primary_with_namespaces();
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut tight = Namespace::shared("status", "shared:team");
+        tight.blob_threshold = 4;
+        define_namespace(&primary, &tight).unwrap();
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        let report = sweep(&primary, &resolver, &store, &me).unwrap();
+        assert_eq!(report.committed(), 0);
+        assert_eq!(report.waiting[0].reason, "inline_above_ceiling");
         assert_eq!(head(&primary, &shared("big")).unwrap(), None);
         assert_eq!(pending(&store, &me, "status", "big"), 1);
     }

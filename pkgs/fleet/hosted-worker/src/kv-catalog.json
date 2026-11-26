@@ -15,7 +15,7 @@
       "namespace": 3,
       "owner": null,
       "writer": 8,
-      "sql": "INSERT OR IGNORE INTO idem_receipts (\n        writer, host_incarnation, outbox_id, request_fingerprint, attempt,\n        scope_id, registry_id, namespace, key, expected_version,\n        outcome, version, recorded_at_ms)\n    SELECT ?8, ?9, ?10, ?11, ?12, ?1, ?2, ?3, ?4, ?5,\n        CASE WHEN head.version = ?5 THEN 'committed' ELSE 'conflict' END,\n        CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,\n        ?13\n    FROM (SELECT COALESCE((SELECT version FROM kv_heads\n        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head"
+      "sql": "INSERT OR IGNORE INTO idem_receipts (\n        writer, host_incarnation, outbox_id, request_fingerprint, attempt,\n        scope_id, registry_id, namespace, key, expected_version,\n        outcome, version, recorded_at_ms)\n    SELECT ?8, ?9, ?10, ?11, ?12, ?1, ?2, ?3, ?4, ?5,\n        CASE WHEN head.version = ?5 THEN 'committed' ELSE 'conflict' END,\n        CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,\n        ?13\n    FROM (SELECT COALESCE((SELECT version FROM kv_heads\n        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head\n    WHERE NOT EXISTS (SELECT 1 FROM kv_namespaces AS ns\n        WHERE ns.registry_id = ?2 AND ns.namespace = ?3\n          AND IFNULL(length(?7), 0) > ns.blob_threshold)"
     },
     {
       "name": "cas.conflict_insert",
