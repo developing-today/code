@@ -690,6 +690,10 @@ pub struct DirectoryInputSystems;
 /// Share of the window reserved for the accessible world directory.
 pub(crate) const DIRECTORY_PANEL_PERCENT: f32 = 28.0;
 
+#[derive(Resource)]
+pub(crate) struct DirectoryPanelLayout;
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PanelBounds {
     left: f32,
@@ -698,6 +702,7 @@ struct PanelBounds {
     bottom: f32,
 }
 
+#[cfg(test)]
 fn directory_session_bounds(width: f32, height: f32) -> (PanelBounds, PanelBounds) {
     let split = width * DIRECTORY_PANEL_PERCENT / 100.0;
     (

@@ -332,15 +332,26 @@ impl Plugin for ShellRenderPlugin {
     }
 }
 
-fn spawn_root(mut commands: Commands<'_, '_>) {
+fn spawn_root(
+    mut commands: Commands<'_, '_>,
+    directory_layout: Option<Res<'_, crate::directory::DirectoryPanelLayout>>,
+) {
+    let (left, width) = if directory_layout.is_some() {
+        (
+            Val::Percent(crate::directory::DIRECTORY_PANEL_PERCENT),
+            Val::Percent(100.0 - crate::directory::DIRECTORY_PANEL_PERCENT),
+        )
+    } else {
+        (Val::Percent(0.0), Val::Percent(100.0))
+    };
     commands.spawn((
         ScreenRoot,
         bevy::prelude::Node {
             position_type: PositionType::Absolute,
-            left: Val::Percent(crate::directory::DIRECTORY_PANEL_PERCENT),
+            left,
             top: Val::Percent(0.0),
             flex_direction: bevy::prelude::FlexDirection::Column,
-            width: Val::Percent(100.0 - crate::directory::DIRECTORY_PANEL_PERCENT),
+            width,
             height: Val::Percent(100.0),
             overflow: bevy::prelude::Overflow::clip(),
             ..Default::default()

@@ -53,7 +53,7 @@ use bevy::window::{PrimaryWindow, Window};
 use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::directory::{
     DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus,
-    DirectoryInputSystems, DirectoryMarks, DirectoryPlugin,
+    DirectoryInputSystems, DirectoryMarks, DirectoryPanelLayout, DirectoryPlugin,
 };
 use id_native_shell::events::{
     KeyModifiers, NativeEvent, ResizeTracker, is_paste_chord, key_input_bytes, native_event_frame,
@@ -748,6 +748,7 @@ fn main() {
         match spawn_directory_probe(&args) {
             Ok(probe) => {
                 app.insert_resource(DirectoryApp::with_marks(load_marks()))
+                    .insert_resource(DirectoryPanelLayout)
                     .insert_resource(probe)
                     .insert_resource(WorldSessions::default())
                     .insert_resource(args)
