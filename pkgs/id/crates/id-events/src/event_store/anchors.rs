@@ -15,12 +15,11 @@
 use std::collections::{HashMap, HashSet};
 
 use p2panda_core::Hash;
-use redb::{ReadableDatabase, ReadableTable};
+use redb::ReadableDatabase;
 
 use super::resolve::{self, author_of};
 use super::{
     ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
-    decode_stored,
 };
 use crate::groups::policy::History;
 use id_core::waiting::AuthorKey;

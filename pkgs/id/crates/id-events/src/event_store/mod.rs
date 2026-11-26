@@ -104,6 +104,12 @@ pub const MAX_CACHED_ROSTER_AUTHORS: usize = 128;
 /// Maximum key and author payload bytes retained by the roster memo.
 pub const MAX_ROSTER_CACHE_PAYLOAD_BYTES: usize = MAX_ROSTER_CACHE_ENTRIES
     * (std::mem::size_of::<Hash>() + MAX_CACHED_ROSTER_AUTHORS * std::mem::size_of::<AuthorKey>());
+/// Maximum stored-event decodes retained by the per-generation memo.
+const MAX_STORED_EVENT_CACHE_ENTRIES: usize = 256;
+/// Maximum encoded event bytes retained by the stored-event memo.
+const MAX_STORED_EVENT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+/// Larger events are verified on every read and are never memoized.
+const MAX_CACHED_STORED_EVENT_BYTES: usize = 64 * 1024;
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
@@ -114,6 +120,64 @@ use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
 impl<B: EventStoreStorage> EventStore<B> {
+    /// Decode a store row through a bounded, generation-aware memo. The
+    /// digest is always recomputed from the bytes read, so a rewritten row
+    /// misses the memo and still takes the full verified decode path.
+    fn decode_stored_event(&self, bytes: &[u8]) -> Result<Event, StoreError> {
+        let digest = Hash::digest(bytes);
+        {
+            let mut cache = self.lock_stored_event_cache();
+            if cache.generation != self.generation {
+                cache.entries.clear();
+                cache.order.clear();
+                cache.encoded_bytes = 0;
+                cache.generation = self.generation;
+            }
+            if let Some(event) = cache.entries.get(&digest).map(|(event, _)| event.clone()) {
+                cache.cache_hits = cache.cache_hits.saturating_add(1);
+                return Ok(event);
+            }
+        }
+
+        let event = decode_stored(bytes)?;
+        let encoded_len = bytes.len();
+        let mut cache = self.lock_stored_event_cache();
+        if cache.generation != self.generation {
+            cache.entries.clear();
+            cache.order.clear();
+            cache.encoded_bytes = 0;
+            cache.generation = self.generation;
+        }
+        cache.verified_decodes = cache.verified_decodes.saturating_add(1);
+        if let Some(cached) = cache.entries.get(&digest).map(|(event, _)| event.clone()) {
+            // A concurrent reader verified and inserted the same bytes while
+            // this reader was decoding. Prefer the cache for all future reads.
+            cache.cache_hits = cache.cache_hits.saturating_add(1);
+            return Ok(cached);
+        }
+        if encoded_len <= MAX_CACHED_STORED_EVENT_BYTES {
+            while cache.entries.len() >= MAX_STORED_EVENT_CACHE_ENTRIES
+                || cache.encoded_bytes.saturating_add(encoded_len) > MAX_STORED_EVENT_CACHE_BYTES
+            {
+                let Some(oldest) = cache.order.pop_front() else {
+                    break;
+                };
+                if let Some((_, old_len)) = cache.entries.remove(&oldest) {
+                    cache.encoded_bytes = cache.encoded_bytes.saturating_sub(old_len);
+                }
+            }
+            cache.order.push_back(digest);
+            cache.entries.insert(digest, (event.clone(), encoded_len));
+            cache.encoded_bytes = cache.encoded_bytes.saturating_add(encoded_len);
+        }
+        Ok(event)
+    }
+
+    fn lock_stored_event_cache(&self) -> std::sync::MutexGuard<'_, StoredEventCache> {
+        self.stored_event_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
     /// Adds `block` to the operator block list, replacing any row that names
     /// the same kind and value.
     ///
@@ -432,6 +496,8 @@ pub struct EventStore<B = Database> {
     generation: u64,
     /// Group rosters memoized at a store generation (#13043).
     roster_cache: Mutex<RosterCache>,
+    /// Full verified stored-event decodes memoized by byte digest and generation (#15328).
+    stored_event_cache: Mutex<StoredEventCache>,
 }
 
 /// Event-store semantics over a tenant-backed row transaction driver.
@@ -499,6 +565,7 @@ impl<B: EventStoreStorage> EventStore<B> {
             unusable: false,
             generation: 0,
             roster_cache: Mutex::new(RosterCache::default()),
+            stored_event_cache: Mutex::new(StoredEventCache::default()),
         };
         store.reload(now_ms)?;
         Ok(store)
@@ -590,6 +657,17 @@ struct RosterCache {
     resolutions: u64,
 }
 
+/// Full verified event decodes memoized by the digest of the bytes actually read.
+#[derive(Debug, Default)]
+struct StoredEventCache {
+    generation: u64,
+    entries: HashMap<Hash, (Event, usize)>,
+    order: VecDeque<Hash>,
+    encoded_bytes: usize,
+    verified_decodes: u64,
+    cache_hits: u64,
+}
+
 impl BlockList for EventStore {
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
         // The bool seam fails open (see the trait docs): a read error
@@ -675,6 +753,7 @@ impl EventStore<Database> {
             unusable: false,
             generation: 0,
             roster_cache: Mutex::new(RosterCache::default()),
+            stored_event_cache: Mutex::new(StoredEventCache::default()),
         };
         store.reload(now_ms)?;
         Ok(store)
@@ -845,7 +924,7 @@ impl<B: EventStoreStorage> EventStore<B> {
         let key = position_key(author, seq);
         self.db.with_read(|rows| {
             rows.get("events", &key)?
-                .map(|bytes| decode_stored(&bytes))
+                .map(|bytes| self.decode_stored_event(&bytes))
                 .transpose()
         })
     }
@@ -861,7 +940,7 @@ impl<B: EventStoreStorage> EventStore<B> {
                 return Ok(None);
             };
             rows.get("events", &position)?
-                .map(|bytes| decode_stored(&bytes))
+                .map(|bytes| self.decode_stored_event(&bytes))
                 .transpose()
         })
     }
@@ -1197,7 +1276,7 @@ impl EventStore<Database> {
             let mut events_by_id: HashMap<Hash, StoredMeta> = HashMap::new();
             for row in events_table.iter()? {
                 let (pos_bytes, event_bytes) = row?;
-                let event = decode_stored(event_bytes.value())?;
+                let event = self.decode_stored_event(event_bytes.value())?;
                 let (author, seq) = split_position(pos_bytes.value())?;
                 let mut position = [0u8; POSITION_LEN];
                 position.copy_from_slice(pos_bytes.value());
@@ -1418,7 +1497,7 @@ impl EventStore<Database> {
 
         txn.commit()?;
         // Pruned events leave the stored set, so memoized reads (the
-        // roster cache, #13043) must re-resolve on their next read.
+        // roster cache, #13043, and stored decodes, #15328) must re-resolve.
         self.generation = self.generation.wrapping_add(1);
         Ok(count)
     }
@@ -1437,6 +1516,7 @@ impl EventStore<Database> {
         let txn = self.db.begin_read()?;
         let events = txn.open_table(EVENTS)?;
         let hashes = txn.open_table(HASHES)?;
+        let applied = txn.open_table(APPLIED)?;
         let chains = txn.open_table(CHAINS)?;
         let forks = txn.open_table(FORKS)?;
         let groups = txn.open_multimap_table(GROUPS)?;
@@ -1447,11 +1527,17 @@ impl EventStore<Database> {
             .iter()
             .map(|item| (position_key(&item.author, item.seq).to_vec(), item))
             .collect();
+        let mut after_by_position: HashMap<[u8; POSITION_LEN], Vec<Hash>> = HashMap::new();
 
         for row in events.iter()? {
             let (position, bytes) = row?;
             let (author, seq) = split_position(position.value())?;
             let event = decode_stored(bytes.value())?;
+            let mut position_key = [0; POSITION_LEN];
+            position_key.copy_from_slice(position.value());
+            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
+                after_by_position.insert(position_key, event.header.extensions.after.clone());
+            }
             if *event.header.verifying_key.as_bytes() != author || event.header.seq_num != seq {
                 return Err(corrupt("an event is stored under another position"));
             }
@@ -1507,8 +1593,13 @@ impl EventStore<Database> {
             for seq in 0..chain.next_seq {
                 let key = position_key(&author, seq);
                 if let Some(stored) = events.get(key.as_slice())? {
-                    for dep in decode_stored(stored.value())?.header.extensions.after {
-                        if !present_in(&hashes, &proof_ids, &dep)? {
+                    // The first pass decoded and verified the same row in this
+                    // read transaction. Reuse just its dependency list here.
+                    let Some(deps) = after_by_position.get(&key) else {
+                        return Err(corrupt("an applied event was not decoded"));
+                    };
+                    for dep in deps {
+                        if !present_in(&hashes, &proof_ids, dep)? {
                             return Err(corrupt(
                                 "an applied event rests on an event that is not present",
                             ));
@@ -1730,8 +1821,8 @@ impl EventStore<Database> {
         })?;
         if changed {
             // A committed change moves the stored-state generation, so
-            // memoized reads (the roster cache, #13043) re-resolve on
-            // their next read instead of serving a stale snapshot.
+            // memoized reads (the roster cache, #13043, and stored decodes,
+            // #15328) re-resolve on the next read.
             self.generation = self.generation.wrapping_add(1);
         }
         Ok(value)
@@ -2092,7 +2183,7 @@ impl<B: EventStoreStorage> EventStore<B> {
             while seq <= last && found.len() < limit {
                 let key = position_key(author, seq);
                 if let Some(bytes) = rows.get("events", &key)? {
-                    let event = decode_stored(&bytes)?;
+                    let event = self.decode_stored_event(&bytes)?;
                     if rows.get("applied", event.id.as_bytes())?.is_some() {
                         found.push(event);
                     }
@@ -2261,6 +2352,106 @@ mod tests {
             [] as [([u8; 32], p2panda_core::SeqNum); 0]
         );
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_stored_event_decode_is_memoized_for_unchanged_bytes_15328() {
+        // Oracle: byte-identical reads in one store generation reuse the prior
+        // full verified decode instead of verifying and canonicalizing again.
+        let (_dir, store) = open_temp();
+        let signer = key(38);
+        let event = chain_of(&signer, 1).remove(0);
+        store.write(|txn| store_event(txn, &event)).unwrap();
+        let who = author(&signer);
+
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
+        {
+            let cache = store.stored_event_cache.lock().unwrap();
+            assert_eq!(cache.entries.len(), 1);
+            assert_eq!(cache.verified_decodes, 1);
+            assert_eq!(cache.cache_hits, 0);
+        }
+
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.verified_decodes, 1);
+        assert_eq!(cache.cache_hits, 1);
+    }
+
+    #[test]
+    fn test_stored_event_decode_cache_resets_after_ingest_15328() {
+        // Oracle: a committed ingest advances the store generation, so a
+        // subsequent read verifies bytes again instead of using stale memo data.
+        let (_dir, mut store) = open_temp();
+        let signer = key(39);
+        let events = chain_of(&signer, 2);
+        let who = author(&signer);
+        store.ingest(&events[0].bytes, 0).unwrap();
+        assert_eq!(store.event(&who, 0).unwrap(), Some(events[0].clone()));
+        assert_eq!(store.event(&who, 0).unwrap(), Some(events[0].clone()));
+        {
+            let cache = store.stored_event_cache.lock().unwrap();
+            assert_eq!(cache.verified_decodes, 1);
+            assert_eq!(cache.cache_hits, 1);
+        }
+
+        store.ingest(&events[1].bytes, 0).unwrap();
+        assert_eq!(store.event(&who, 0).unwrap(), Some(events[0].clone()));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.verified_decodes, 2);
+        assert_eq!(cache.cache_hits, 1);
+    }
+
+    #[test]
+    fn test_applied_event_reads_reuse_verified_stored_decode_15328() {
+        // Oracle: repeated reads of the same applied row in one generation
+        // reuse the full verified decode.
+        let (_dir, mut store) = open_temp();
+        let signer = key(41);
+        let event = chain_of(&signer, 1).remove(0);
+        store.ingest(&event.bytes, 0).unwrap();
+
+        assert_eq!(
+            store
+                .applied_events(&author(&signer), None, None, 10)
+                .unwrap(),
+            vec![event.clone()]
+        );
+        assert_eq!(
+            store
+                .applied_events(&author(&signer), None, None, 10)
+                .unwrap(),
+            vec![event]
+        );
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.verified_decodes, 1);
+        assert_eq!(cache.cache_hits, 1);
+    }
+
+    #[test]
+    fn test_stored_event_decode_cache_does_not_hide_rewritten_bytes_15328() {
+        // Oracle: the digest is recomputed from actual row bytes; tampering
+        // changes the key, misses the memo, and still fails full verification.
+        let (_dir, store) = open_temp();
+        let signer = key(40);
+        let event = chain_of(&signer, 1).remove(0);
+        store.write(|txn| store_event(txn, &event)).unwrap();
+        let who = author(&signer);
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event));
+
+        store
+            .write(|txn| {
+                let mut events = txn.open_table(EVENTS)?;
+                events.insert(position_key(&who, 0).as_slice(), b"tampered".as_slice())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(store.event(&who, 0), Err(StoreError::Corrupt(_))));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.cache_hits, 0);
+        assert_eq!(cache.verified_decodes, 1);
     }
 
     #[test]
