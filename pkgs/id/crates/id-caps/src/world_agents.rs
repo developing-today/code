@@ -37,6 +37,8 @@ use crate::mcp_bridge::BridgeSession;
 use crate::mcp_policy::{
     AuditEvent, CapabilityCeiling, PolicyOutcome, PolicyRefusal, PolicySession, Quota, RoleGrant,
 };
+use crate::owner_review::{OfferRefusal, ReviewError, ReviewQueue, WorldReview};
+use crate::role_config::ReviewPolicy;
 
 /// World event kind for an agent joining.
 pub const EVENT_AGENT_JOIN: &str = "agent.join";
@@ -331,6 +333,68 @@ impl WorldAgents {
         Ok(session.refresh_ceiling(ceiling))
     }
 
+    /// The owner's review view of the agents present (#8302), built
+    /// from their audit logs alone; `recent` caps each agent's
+    /// recent-action list.
+    #[must_use]
+    pub fn review(&self, recent: usize) -> WorldReview {
+        WorldReview::from_audit(
+            &self.world,
+            self.sessions.values().map(PolicySession::audit_events),
+            recent,
+        )
+    }
+
+    /// Hold the call `agent`'s ceiling just refused in `queue` for
+    /// the owner's one-shot decision (#8302), under the agent's role
+    /// review `policy`.
+    ///
+    /// # Errors
+    ///
+    /// [`NotPresent`], or the queue's [`OfferRefusal`].
+    pub fn offer_review(
+        &self,
+        queue: &mut ReviewQueue,
+        agent: &[u8; 32],
+        policy: &ReviewPolicy,
+        name: &str,
+        arguments: &serde_json::Value,
+        now: u64,
+    ) -> Result<Result<u64, OfferRefusal>, NotPresent> {
+        let session = self
+            .sessions
+            .get(agent)
+            .ok_or(NotPresent { agent_key: *agent })?;
+        Ok(queue.offer(session, policy, name, arguments, now))
+    }
+
+    /// Approve review request `request_id` once, running the held
+    /// call in its agent's own session under `approver`'s authority
+    /// (#8302). The host calls it; no tool call reaches it, and it
+    /// never edits the agent's role.
+    ///
+    /// # Errors
+    ///
+    /// [`ReviewError::AgentNotPresent`] when the agent left the world,
+    /// or the queue's own [`ReviewError`].
+    pub fn approve_review(
+        &mut self,
+        queue: &mut ReviewQueue,
+        request_id: u64,
+        approver: &str,
+        now: u64,
+    ) -> Result<PolicyOutcome, ReviewError> {
+        let agent = queue
+            .request(request_id)
+            .ok_or(ReviewError::NotPending { request_id })?
+            .agent_key;
+        let session = self
+            .sessions
+            .get_mut(&agent)
+            .ok_or(ReviewError::AgentNotPresent { request_id })?;
+        queue.approve(request_id, approver, session, now)
+    }
+
     /// End an agent's session, handing its ledger back to `store`, and
     /// return its audit events. Frees the agent's role slot.
     ///
@@ -422,6 +486,7 @@ mod tests {
     const ARCHIVIST: [u8; 32] = [3; 32];
     const PLAYER: [u8; 32] = [4; 32];
     const PLAYER_TWO: [u8; 32] = [5; 32];
+    const EDITOR: [u8; 32] = [6; 32];
 
     fn host_key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])
@@ -479,6 +544,16 @@ mod tests {
             agent,
             "participant",
             &["world.join", "world.leave", "screen.read", "chat.post"],
+            ROOMY,
+        )
+    }
+
+    /// A third, distinct role for the integrated #8303 citizenship run.
+    fn editor() -> RoleGrant {
+        grant(
+            EDITOR,
+            "editor",
+            &["world.join", "world.leave", "screen.read", "object.inspect"],
             ROOMY,
         )
     }
@@ -789,5 +864,275 @@ mod tests {
                     ) && event.tool == "chat.post")
             );
         }
+    }
+
+    /// #8302: the owner approves one above-ceiling call for one agent;
+    /// it runs in that agent's session alone, the role is untouched,
+    /// and the world review shows it from the audit logs.
+    #[test]
+    fn owner_review_approves_one_call_for_one_agent_only() {
+        let (mut world, mut store) = two_agents();
+        let policy = ReviewPolicy {
+            queue_above_ceiling: true,
+            digest_every_refusals: 5,
+        };
+        let mut queue = ReviewQueue::default();
+        let subscribe = json!({ "event_classes": ["chat_posted"] });
+        let ceiling_before = world.session(&PLAYER).unwrap().grant().ceiling.clone();
+        assert!(matches!(
+            world
+                .act(&PLAYER, "screen.subscribe", &subscribe, NOW)
+                .unwrap(),
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Ceiling,
+                ..
+            })
+        ));
+        let id = world
+            .offer_review(
+                &mut queue,
+                &PLAYER,
+                &policy,
+                "screen.subscribe",
+                &subscribe,
+                NOW,
+            )
+            .unwrap()
+            .unwrap();
+        let archivist_events = world.session(&ARCHIVIST).unwrap().audit_events().len();
+
+        let outcome = world
+            .approve_review(&mut queue, id, "drew", NOW + 1)
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Executed(ToolAction::SendFrame(_))
+        ));
+        assert_eq!(
+            world.session(&PLAYER).unwrap().grant().ceiling,
+            ceiling_before
+        );
+        assert_eq!(
+            world.session(&ARCHIVIST).unwrap().audit_events().len(),
+            archivist_events
+        );
+
+        let review = world.review(5);
+        let player = review.agent(&PLAYER).unwrap();
+        assert_eq!(player.role, "participant");
+        assert_eq!(player.owner_approved, 1);
+        assert_eq!(review.agent(&ARCHIVIST).unwrap().owner_approved, 0);
+
+        // A request whose agent left can no longer run.
+        assert!(matches!(
+            world
+                .act(&PLAYER, "screen.subscribe", &subscribe, NOW + 2)
+                .unwrap(),
+            PolicyOutcome::Refused(_)
+        ));
+        let late = world
+            .offer_review(
+                &mut queue,
+                &PLAYER,
+                &policy,
+                "screen.subscribe",
+                &subscribe,
+                NOW + 2,
+            )
+            .unwrap()
+            .unwrap();
+        world.leave(&PLAYER, &mut store, NOW + 3).unwrap();
+        assert_eq!(
+            world.approve_review(&mut queue, late, "drew", NOW + 4),
+            Err(ReviewError::AgentNotPresent { request_id: late })
+        );
+    }
+
+    /// Reproducible #8303 integrated run: three distinct roles share one
+    /// world, one agent parks at its persistent quota, and a different
+    /// agent's above-ceiling request runs once under owner approval.
+    ///
+    /// The artifact emitted below contains every per-agent signed audit
+    /// event (including refusals), each independent hash chain, the world
+    /// presence log, and the owner review resolution. The presence log is
+    /// explicitly separate from the hash-chained action ledgers.
+    #[test]
+    fn three_agents_run_citizenship_spike_with_complete_hash_chains() {
+        let mut store = QuotaLedgerStore::new();
+        let mut world = WorldAgents::new(WORLD, ConcurrencyCaps::none());
+        let grants = [archivist(), player(PLAYER), editor()];
+
+        for role_grant in grants {
+            world
+                .join(role_grant, bridge(), host_key(), &mut store, NOW)
+                .unwrap();
+        }
+        for agent in [ARCHIVIST, PLAYER, EDITOR] {
+            join_frame(&mut world, &agent);
+        }
+
+        assert_eq!(
+            world
+                .presence()
+                .iter()
+                .map(|presence| presence.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["archivist", "participant", "editor"]
+        );
+
+        assert!(matches!(
+            world
+                .act(&PLAYER, "chat.post", &json!({ "text": "hello" }), NOW)
+                .unwrap(),
+            PolicyOutcome::Executed(ToolAction::SendFrame(_))
+        ));
+        assert!(matches!(
+            world.act(&EDITOR, "screen.read", &json!({}), NOW).unwrap(),
+            PolicyOutcome::Executed(_)
+        ));
+
+        // The observer's above-ceiling refusal is recorded, and its
+        // quota refusal parks only the observer's session.
+        assert!(matches!(
+            world
+                .act(
+                    &ARCHIVIST,
+                    "chat.post",
+                    &json!({ "text": "not allowed" }),
+                    NOW
+                )
+                .unwrap(),
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Ceiling,
+                ..
+            })
+        ));
+        let mut quota_parked = false;
+        for tick in 1..=4 {
+            if matches!(
+                world
+                    .act(&ARCHIVIST, "screen.read", &json!({}), NOW + tick)
+                    .unwrap(),
+                PolicyOutcome::Refused(PolicyRefusal {
+                    kind: RefusalKind::Quota,
+                    ..
+                })
+            ) {
+                quota_parked = true;
+                break;
+            }
+        }
+        assert!(quota_parked);
+        assert!(world.session(&ARCHIVIST).unwrap().is_parked());
+        assert!(!world.session(&PLAYER).unwrap().is_parked());
+        assert!(!world.session(&EDITOR).unwrap().is_parked());
+
+        // The participant's subscription is denied by its ceiling, then
+        // the owner approves exactly that refused action once.
+        let review_policy = ReviewPolicy {
+            queue_above_ceiling: true,
+            digest_every_refusals: 5,
+        };
+        let mut review_queue = ReviewQueue::default();
+        let subscription = json!({ "event_classes": ["chat_posted"] });
+        let participant_ceiling = world.session(&PLAYER).unwrap().grant().ceiling.clone();
+        assert!(matches!(
+            world
+                .act(&PLAYER, "screen.subscribe", &subscription, NOW + 5)
+                .unwrap(),
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Ceiling,
+                ..
+            })
+        ));
+        let request_id = world
+            .offer_review(
+                &mut review_queue,
+                &PLAYER,
+                &review_policy,
+                "screen.subscribe",
+                &subscription,
+                NOW + 5,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            world
+                .approve_review(&mut review_queue, request_id, "drew", NOW + 6)
+                .unwrap(),
+            PolicyOutcome::Executed(ToolAction::SendFrame(_))
+        ));
+        assert_eq!(
+            world.session(&PLAYER).unwrap().grant().ceiling,
+            participant_ceiling
+        );
+        assert!(matches!(
+            world
+                .act(&PLAYER, "screen.subscribe", &subscription, NOW + 7)
+                .unwrap(),
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Ceiling,
+                ..
+            })
+        ));
+        assert_eq!(review_queue.resolutions().len(), 1);
+
+        let review = world.review(16);
+        assert!(review.agent(&ARCHIVIST).unwrap().parked);
+        assert_eq!(review.agent(&PLAYER).unwrap().owner_approved, 1);
+        assert_eq!(review.agent(&EDITOR).unwrap().owner_approved, 0);
+
+        for agent in [ARCHIVIST, PLAYER, EDITOR] {
+            let session = world.session(&agent).unwrap();
+            session.verify_audit().unwrap();
+            assert!(
+                session
+                    .audit_events()
+                    .iter()
+                    .all(|event| event.agent_key == agent),
+                "an audit chain contains another agent's events"
+            );
+        }
+
+        // Stable JSON-lines output is captured as the Fleet artifact for
+        // the parent issue. AuditEvent includes its previous hash, event
+        // hash and host signature; presence events and review resolutions
+        // remain separately labelled records.
+        let mut audit_lines = Vec::new();
+        for event in world.events() {
+            audit_lines.push(
+                serde_json::to_string(&json!({"type":"presence_event","event":event})).unwrap(),
+            );
+        }
+        for (agent, role) in [
+            (ARCHIVIST, "archivist"),
+            (PLAYER, "participant"),
+            (EDITOR, "editor"),
+        ] {
+            let session = world.session(&agent).unwrap();
+            for event in session.audit_events() {
+                audit_lines.push(
+                    serde_json::to_string(&json!({
+                        "type":"agent_audit_event",
+                        "chain_agent":agent,
+                        "chain_role":role,
+                        "event":event
+                    }))
+                    .unwrap(),
+                );
+            }
+        }
+        for resolution in review_queue.resolutions() {
+            audit_lines.push(
+                serde_json::to_string(
+                    &json!({"type":"owner_review_resolution","event":resolution}),
+                )
+                .unwrap(),
+            );
+        }
+        eprintln!(
+            "CITIZENSHIP_SPIKE_JSONL_BEGIN\n{}\nCITIZENSHIP_SPIKE_JSONL_END",
+            audit_lines.join("\n")
+        );
     }
 }

@@ -27,6 +27,7 @@
 #   -h, --help             print usage and exit 0
 set -uo pipefail
 
+STORE="all"
 WRITER_CONTAINERS="pm-stack-kaneo-1 pm-stack-postgres-1 pm-grist pm-pad"
 WRITER_UNITS="docker-pm-grist.service docker-pm-pad.service"
 
@@ -36,7 +37,13 @@ UNREACHABLE=0
 
 usage() {
   cat <<'USAGE'
-usage: fence-check.sh [--units-dir DIR] [--containers-file FILE] [--unreachable] [-h|--help]
+usage: fence-check.sh [--store all|kaneo|grist|pad] [--units-dir DIR] [--containers-file FILE] [--unreachable] [-h|--help]
+
+  --store STORE   check all writers (default), or only kaneo, grist or pad
+  --units-dir DIR read per-unit ActiveState from DIR/<unit> files (fixture mode)
+  --containers-file FILE read Docker-style name/state lines (fixture mode)
+  --unreachable   old host is unreachable: fenced by definition
+  -h, --help      print usage and exit 0
 
 Verifies the old pm-stack writer is fenced (runbook step 1, #3989
 criterion 3). Prints FENCED or UNFENCED with a reason.
@@ -54,7 +61,7 @@ while [ "$#" -gt 0 ]; do
     UNREACHABLE=1
     shift
     ;;
-  --units-dir | --containers-file)
+  --store | --units-dir | --containers-file)
     opt="$1"
     [ "$#" -ge 2 ] || {
       echo "fence-check: $opt requires a value" >&2
@@ -66,12 +73,13 @@ while [ "$#" -gt 0 ]; do
       exit 2
     }
     case "$opt" in
+    --store) STORE="$val" ;;
     --units-dir) UNITS_DIR="$val" ;;
     --containers-file) CONTAINERS_FILE="$val" ;;
     esac
     shift 2
     ;;
-  --units-dir=* | --containers-file=*)
+  --store=* | --units-dir=* | --containers-file=*)
     opt="${1%%=*}"
     val="${1#*=}"
     [ -n "$val" ] || {
@@ -79,6 +87,7 @@ while [ "$#" -gt 0 ]; do
       exit 2
     }
     case "$opt" in
+    --store) STORE="$val" ;;
     --units-dir) UNITS_DIR="$val" ;;
     --containers-file) CONTAINERS_FILE="$val" ;;
     esac
@@ -96,6 +105,30 @@ while [ "$#" -gt 0 ]; do
     ;;
   esac
 done
+
+case "$STORE" in
+all)
+  WRITER_CONTAINERS="pm-stack-kaneo-1 pm-stack-postgres-1 pm-grist pm-pad"
+  WRITER_UNITS="docker-pm-grist.service docker-pm-pad.service"
+  ;;
+kaneo)
+  WRITER_CONTAINERS="pm-stack-kaneo-1 pm-stack-postgres-1"
+  WRITER_UNITS=""
+  ;;
+grist)
+  WRITER_CONTAINERS="pm-grist"
+  WRITER_UNITS="docker-pm-grist.service"
+  ;;
+pad)
+  WRITER_CONTAINERS="pm-pad"
+  WRITER_UNITS="docker-pm-pad.service"
+  ;;
+*)
+  echo "fence-check: --store must be all, kaneo, grist or pad (got '$STORE')" >&2
+  usage >&2
+  exit 2
+  ;;
+esac
 
 if [ "$UNREACHABLE" -eq 1 ]; then
   echo "FENCED: old host unreachable — fenced by definition (runbook step 1); keep its writers disabled before it rejoins"
@@ -134,7 +167,9 @@ else
 fi
 
 # --- units ---
-if [ -n "$UNITS_DIR" ]; then
+if [ -z "$WRITER_UNITS" ]; then
+  : # This store has no named systemd writer unit.
+elif [ -n "$UNITS_DIR" ]; then
   if [ ! -d "$UNITS_DIR" ]; then
     echo "UNFENCED: units dir '$UNITS_DIR' is missing — refusing to report fenced when it cannot tell"
     exit 1

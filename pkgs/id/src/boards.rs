@@ -2613,7 +2613,7 @@ fn is_public_key(value: &str) -> bool {
         return false;
     }
     let mut bytes = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = (pair[0] as char).to_digit(16);
         let low = (pair[1] as char).to_digit(16);
         let (Some(high), Some(low)) = (high, low) else {
@@ -2634,7 +2634,25 @@ mod tests {
     use crate::world::hex_encode;
 
     fn key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32])
+        // Derived once per seed per process. `SigningKey::from_bytes`
+        // pays a scalar multiplication to derive the verifying key, and
+        // the generated game-post properties ask for the same seeds
+        // thousands of times across their cases (`participant` derives
+        // one key per generated participant — up to 32 per case); at
+        // the test profile's opt-level 0 that repeated derivation is a
+        // large share of the boards family's time (#15142). The cached
+        // key is byte-identical to a fresh derivation, so every object
+        // the tests sign or verify is unchanged.
+        static CACHE: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<u8, SigningKey>>,
+        > = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        cache
+            .lock()
+            .unwrap()
+            .entry(seed)
+            .or_insert_with(|| SigningKey::from_bytes(&[seed; 32]))
+            .clone()
     }
 
     fn board(key: &SigningKey) -> SignedBoardObject {
@@ -3077,10 +3095,14 @@ mod tests {
             additional in prop::collection::vec((1_u64..=3, "[a-z0-9]{0,8}"), 0..6)
         ) {
             let owner = key(41);
+            // One signed board object for both graphs: signing it twice
+            // produced identical bytes and paid the sign + verify bundle
+            // twice per case for no extra coverage (#15142).
+            let board_object = board(&owner);
             let mut first_graph = BoardGraph::default();
-            let board_hash = first_graph.insert(board(&owner)).unwrap();
+            let board_hash = first_graph.insert(board_object.clone()).unwrap();
             let mut reverse_graph = BoardGraph::default();
-            prop_assert_eq!(reverse_graph.insert(board(&owner)).unwrap(), board_hash.clone());
+            prop_assert_eq!(reverse_graph.insert(board_object).unwrap(), board_hash.clone());
 
             // Always include two different revision-1 rules so the regression
             // property covers the adopted legal-duplicate case.
@@ -3578,7 +3600,7 @@ mod tests {
         };
         assert_eq!(view.theme, Some(expected));
         assert!(view.objects.contains(&root_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
 
         // Board bodies written before theme_ref existed still decode.
         let legacy: Board =
@@ -3640,7 +3662,7 @@ mod tests {
             .compose_view(&root_hash, &ViewLayers::default())
             .unwrap();
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
         assert_eq!(view.moderation_log.len(), 2);
 
         // A second hide outnumbers the restore and hides it again.
@@ -3688,7 +3710,7 @@ mod tests {
             .insert(hex_encode(&alice.verifying_key().to_bytes()));
         layers.host_hidden.insert(bob_post.clone());
         let view = graph.compose_view(&root_hash, &layers).unwrap();
-        assert!(view.moderation_log.is_empty());
+        assert_eq!(view.moderation_log, [] as [ArtifactHash; 0]);
         assert_eq!(view.hidden.len(), 2);
         let by_object: BTreeMap<_, _> = view
             .hidden
@@ -3705,7 +3727,7 @@ mod tests {
             .unwrap();
         assert!(view.objects.contains(&alice_post));
         assert!(view.objects.contains(&bob_post));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
     }
 
     #[test]
@@ -3770,7 +3792,7 @@ mod tests {
             .unwrap();
         // The revoked moderator's hide no longer has an effect...
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
         // ...but it stays in the public moderation log.
         assert_eq!(view.moderation_log, vec![hide_hash]);
     }
@@ -3927,7 +3949,7 @@ mod tests {
             .compose_view(&root_hash, &ViewLayers::default())
             .unwrap();
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
         assert_eq!(view.moderation_log.len(), 1);
     }
 
@@ -3995,7 +4017,7 @@ mod tests {
             .compose_view(&root_hash, &ViewLayers::default())
             .unwrap();
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
 
         // Nullify the revocation with a generic Supersede whose
         // replacement is an unrelated attestation: the original grant
@@ -4278,7 +4300,7 @@ mod tests {
 
         // A second pass is a no-op: the hosts have converged.
         let again = replica.replicate_board_from(&source, &root).unwrap();
-        assert!(again.transferred.is_empty());
+        assert_eq!(again.transferred, [] as [ArtifactHash; 0]);
         assert_eq!(again.status.state, ReplicaState::Complete);
     }
 
@@ -7254,10 +7276,9 @@ mod tests {
         let mut expected_backlinks = vec![post_hash.clone(), plain_hash.clone()];
         expected_backlinks.sort();
         assert_eq!(graph.note_backlinks(&note_object), expected_backlinks);
-        assert!(
-            graph
-                .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
-                .is_empty()
+        assert_eq!(
+            graph.note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap()),
+            [] as [ArtifactHash; 0]
         );
         assert_ne!(plain_hash, post_hash);
 
@@ -7302,8 +7323,7 @@ mod tests {
             .unwrap();
         // Anchored reply: an anchors edge to the note, plus a
         // discusses edge through the thread — one backlink, not two.
-        let anchor =
-            sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
+        let anchor = sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
         let anchored_hash = graph
             .insert(reply_with_note(
                 &creator,
@@ -7370,11 +7390,10 @@ mod tests {
             graph.note_edges_from(&plain_reply_hash),
             vec![NoteEdge::Discusses(note_object.clone())]
         );
-        assert!(graph.note_edges_from(&elsewhere_hash).is_empty());
-        assert!(
-            graph
-                .note_edges_from(&ArtifactHash::new("d".repeat(64)).unwrap())
-                .is_empty()
+        assert_eq!(graph.note_edges_from(&elsewhere_hash), [] as [NoteEdge; 0]);
+        assert_eq!(
+            graph.note_edges_from(&ArtifactHash::new("d".repeat(64)).unwrap()),
+            [] as [NoteEdge; 0]
         );
     }
 
@@ -7473,10 +7492,13 @@ mod tests {
         )
         .unwrap();
         let tombstone_hash = graph.insert(tombstone).unwrap();
-        assert!(graph.note_backlinks(&note_object).is_empty());
-        assert!(graph.note_embeds().is_empty());
-        assert!(graph.note_discussions().is_empty());
-        assert!(graph.note_edges_from(&share_hash).is_empty());
+        assert_eq!(graph.note_backlinks(&note_object), [] as [ArtifactHash; 0]);
+        assert_eq!(graph.note_embeds(), [] as [(ArtifactHash, &NoteRef); 0]);
+        assert_eq!(
+            graph.note_discussions(),
+            [] as [(ArtifactHash, ArtifactHash); 0]
+        );
+        assert_eq!(graph.note_edges_from(&share_hash), [] as [NoteEdge; 0]);
 
         // Superseding the tombstone restores the share: the tombstone
         // loses effect, so the embeds edge — and the backlink — come
@@ -7506,10 +7528,7 @@ mod tests {
         )
         .unwrap();
         graph.insert(supersede).unwrap();
-        assert_eq!(
-            graph.note_backlinks(&note_object),
-            vec![share_hash.clone()]
-        );
+        assert_eq!(graph.note_backlinks(&note_object), vec![share_hash.clone()]);
         assert_eq!(
             graph.note_edges_from(&share_hash),
             vec![NoteEdge::Embeds(note_ref)]

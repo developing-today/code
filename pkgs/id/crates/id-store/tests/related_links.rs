@@ -360,7 +360,7 @@ fn adding_a_link_changes_the_snapshot_but_not_the_subject() {
         envelope_links(&linked).unwrap(),
         canonical_links(&sample_links()).unwrap()
     );
-    assert!(envelope_links(&bare).unwrap().is_empty());
+    assert_eq!(envelope_links(&bare).unwrap(), [] as [RelatedLink; 0]);
 }
 
 #[test]
@@ -369,9 +369,12 @@ fn empty_link_set_removes_the_view_entry() {
     assert!(view.contains_key(LINKS_VIEW_KEY));
     set_view_links(&mut view, &[]).unwrap();
     assert!(!view.contains_key(LINKS_VIEW_KEY));
-    assert!(view_links(&view).unwrap().is_empty());
+    assert_eq!(view_links(&view).unwrap(), [] as [RelatedLink; 0]);
     // A view that never had links reads as empty, not an error.
-    assert!(view_links(&BTreeMap::new()).unwrap().is_empty());
+    assert_eq!(
+        view_links(&BTreeMap::new()).unwrap(),
+        [] as [RelatedLink; 0]
+    );
 }
 
 // ---------------------------------------------------------------- §5

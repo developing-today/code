@@ -35,10 +35,7 @@ test("requireHome: a set HOME is returned unchanged", () => {
 });
 
 test("callerTokenFile: the default path is derived from HOME unchanged", () => {
-  assert.equal(
-    callerTokenFile({ HOME: "/home/caller" }),
-    join("/home/caller", ".config", "fleet-hosted", "token"),
-  );
+  assert.equal(callerTokenFile({ HOME: "/home/caller" }), join("/home/caller", ".config", "fleet-hosted", "token"));
 });
 
 test("callerTokenFile: HOME unset or empty without the override is a named error", () => {
@@ -52,8 +49,5 @@ test("callerTokenFile: HOME unset or empty without the override is a named error
 
 test("callerTokenFile: the override needs no HOME", () => {
   assert.equal(callerTokenFile({ FLEET_HOSTED_TOKEN_FILE: "/run/token" }), "/run/token");
-  assert.equal(
-    callerTokenFile({ HOME: "", FLEET_HOSTED_TOKEN_FILE: "/run/token" }),
-    "/run/token",
-  );
+  assert.equal(callerTokenFile({ HOME: "", FLEET_HOSTED_TOKEN_FILE: "/run/token" }), "/run/token");
 });

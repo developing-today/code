@@ -16,7 +16,10 @@ uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 rollback=""
 if [[ ${1-} == --deploy-version ]]; then
   rollback="${2-}"
-  [[ $rollback =~ $uuid_re ]] || { echo "--deploy-version needs a version id" >&2; exit 2; }
+  [[ $rollback =~ $uuid_re ]] || {
+    echo "--deploy-version needs a version id" >&2
+    exit 2
+  }
 elif [[ $# -ne 0 ]]; then
   echo "usage: $0 [--deploy-version <id>]" >&2
   exit 2
@@ -43,7 +46,10 @@ else
   else
     out=$(wrangler versions upload --tag "git-${sha:0:12}" --message "$sha" 2>&1 | tee /dev/stderr)
     vid=$(grep -oE 'Worker Version ID: [0-9a-f-]{36}' <<<"$out" | awk '{print $4}' | tail -1)
-    [[ $vid =~ $uuid_re ]] || { echo "could not read the uploaded version id" >&2; exit 1; }
+    [[ $vid =~ $uuid_re ]] || {
+      echo "could not read the uploaded version id" >&2
+      exit 1
+    }
     wrangler versions deploy "$vid@100%" --yes --message "$sha"
   fi
 fi

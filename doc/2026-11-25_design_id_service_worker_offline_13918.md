@@ -66,7 +66,8 @@ Pages are versioned with the shell because a cached page references the hashed a
 | Request                                                         | Strategy                                                                                                                    |
 | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Not `GET`, or another origin                                    | Not intercepted                                                                                                             |
-| `/api/*`, `/ws/*`, `/blob/*`, `/.well-known/*`, `/sw.js`        | Not intercepted (online only)                                                                                               |
+| `/blob/<hash>` (slice 3) without `token` or a `Range` header    | Cache first, then network; kept only when immutable and within the size cap                                                 |
+| `/api/*`, `/ws/*`, other `/blob/*`, `/.well-known/*`, `/sw.js`  | Not intercepted (online only)                                                                                               |
 | `/assets/main.<hash>.js`, `/assets/styles.<hash>.css`           | Cache first, then network (immutable)                                                                                       |
 | Navigation (`mode: navigate`) without a `token` query parameter | Network first; a cacheable response is stored; on network failure, the stored copy for that exact URL, else an offline page |
 | Anything else (partials, manifest, other assets)                | Not intercepted                                                                                                             |
@@ -78,7 +79,7 @@ An unvisited page requested offline gets a small `503` offline page with a link 
 ## 5. Offline contract
 
 - **Fully offline:** opening the app; reading any page visited on this browser since the current build was installed, as last rendered; reading worlds through the world snapshot store.
-- **Online only (slice 1):** every write (`/api/*` POST, collab and tag WebSockets), search and listing refreshes, blob downloads, identity registration.
+- **Online only (slice 1):** every write (`/api/*` POST, collab and tag WebSockets), search and listing refreshes, identity registration. Since slice 3, a blob already fetched in full on this browser (up to 1 MiB, the 64 most recent) also opens offline; larger blobs and range reads stay online only.
 - **On reconnect:** the next navigation goes to the network and replaces the stored copy. The world shell resumes from its last applied sequence (#10927). No write is replayed by the worker.
 - **Conflicts:** none can arise from the worker, because it never queues writes. Offline drafting belongs to slice 4 and goes through the store layer, where conflicts surface as store conflicts.
 - **Privacy:** cached pages stay in this browser profile under this origin, the same exposure as the browser's HTTP cache. The server can exclude any page with `Cache-Control: no-store`.
@@ -95,7 +96,9 @@ An unvisited page requested offline gets a small `503` offline page with a link 
 1. **Slice 1 (this change): offline shell and visited pages.** `sw.ts` + `sw-policy.ts`, registration from `main.ts`, the `/sw.js` route in `id-web`, the build-manifest injection step.
    Acceptance: unit tests for request classification, response cacheability, versioned cache names, install/activate cleanup, network-first fallback and the offline page; Rust tests for the `/sw.js` headers; the build-manifest fixture covers injection and idempotency.
 2. **Slice 2: real-browser offline pass.** A Playwright test in `pkgs/id/e2e` that loads the app, goes offline through the browser context, reloads a visited page and an unvisited one, then reconnects. Acceptance: the visited page renders from cache, the unvisited one shows the offline page, and a new build replaces the shell caches.
-3. **Slice 3: content-addressed blobs.** Cache-first for `/blob/<hash>` under a size cap, since blob responses are immutable by hash.
+3. **Slice 3: content-addressed blobs (done, #14774).** Cache-first for `/blob/<hash>` under a size cap, since blob responses are immutable by hash.
+   A blob response is kept only when it is a plain `200`, not redirected, marked `immutable` and not `no-store`, and declares a `Content-Length` of at most 1 MiB; the cache keeps the 64 most recent, so it stays under 64 MiB. The cache key keeps the query, because `?filename=` selects the served content type. Requests carrying `?token=` or a `Range` header are not intercepted, so a credential never becomes a cache key and media seeking still reaches the server. The blob cache `id-blobs-v1` is not tied to a build, since content addressing never goes stale; the kill switch still deletes it. An unkept blob requested offline gets a plain `503`.
+   Acceptance: unit tests for blob classification (whole, token, range, nested path), cacheability (status, `immutable`, `no-store`, missing or oversized length, redirect), offline reuse, the 64-entry trim and kill-switch cleanup.
 4. **Slice 4: offline drafts.** Through the IndexedDB store adapter (item 21) once wired: drafts are written locally and synced by the store layer; the worker stays a cache.
 5. **Slice 5: PM console.** Apply the same worker contract to the PM console.
 

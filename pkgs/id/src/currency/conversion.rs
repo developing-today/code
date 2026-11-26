@@ -76,13 +76,13 @@
 //! [`ConversionVerifier::verify_quoted`].
 //!
 //! Scope boundary: this module verifies and quotes; it does
-//! not settle. Composing the verified conversion into the
-//! linked transfer chain and wiring this flow into the
-//! gateway service's request pipeline is the execution
-//! programme beyond #3802 — the F3 `Convert` op carries no
-//! authorisation reference, so the submission shape here
-//! (presented chain objects plus named liquidity accounts)
-//! is the input that work will adapt.
+//! not settle. The gateway service composes a verified
+//! conversion into the linked transfer chain and executes it
+//! (#14393, `GatewayService::handle_convert`); because the F3
+//! `Convert` op carries no authorisation reference, the
+//! request presents the chain objects alongside the signed
+//! envelope, as the issue and transfer ops present their
+//! graph objects.
 
 use std::collections::BTreeMap;
 
@@ -163,6 +163,14 @@ pub struct BindingRecord {
     pub owner_id: String,
     /// The factory derivation salt the account was created with.
     pub salt: String,
+    /// The factory account kind the binding re-derives under:
+    /// [`AccountKind::Liquidity`] for an LP's shared liquidity
+    /// account, or [`AccountKind::Holder`] where the control
+    /// plane binds the LP's constrained holder account as its
+    /// conversion inventory (#2063 §2.3; the gateway service's
+    /// production binding does, see
+    /// [`super::gateway_service::GatewayConversionControl`]).
+    pub kind: AccountKind,
     /// The account's control-plane lifecycle status.
     pub status: AccountStatus,
 }
@@ -592,6 +600,18 @@ impl ConversionUsage {
         self.posted
             .insert((*issuer, authorisation_id), used.saturating_add(amount));
     }
+
+    /// Return `amount` of volume to `authorisation_id` of
+    /// `issuer`. The gateway service commits volume when it
+    /// writes a conversion's intent ahead of submission (the cap
+    /// reservation of #2063 §2.4) and calls this when the
+    /// cluster definitely refuses the chain, so a failed
+    /// conversion never consumes the cap.
+    pub fn release(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
+        let used = self.used_volume(issuer, authorisation_id);
+        self.posted
+            .insert((*issuer, authorisation_id), used.saturating_sub(amount));
+    }
 }
 
 /// The gateway's conversion verifier: the verification flow
@@ -634,6 +654,12 @@ impl ConversionVerifier {
     /// [`ConversionUsage::record_posted`]).
     pub fn record_posted(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
         self.usage.record_posted(issuer, authorisation_id, amount);
+    }
+
+    /// Return reserved volume (execution layer only; see
+    /// [`ConversionUsage::release`]).
+    pub fn release(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
+        self.usage.release(issuer, authorisation_id, amount);
     }
 
     /// Verify one conversion submission, composing the checks
@@ -775,7 +801,9 @@ impl ConversionVerifier {
                 max_amount: authorisation.max_amount,
             });
         }
-        let used = self.usage.used_volume(&submission.issuer, submission.authorisation_id);
+        let used = self
+            .usage
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let remaining_volume = authorisation.total_cap.saturating_sub(used);
         if submission.amount > remaining_volume {
             return Err(FailedPreSubmit::CapExhausted { remaining_volume });
@@ -990,7 +1018,7 @@ fn check_binding(
         .ok_or(FailedPreSubmit::UnboundAccount { side })?;
     let factory = account_spec(
         binding.ledger_id,
-        AccountKind::Liquidity,
+        binding.kind,
         &binding.owner_id,
         &binding.salt,
     );
@@ -1084,6 +1112,7 @@ mod tests {
             ledger_id,
             owner_id: owner,
             salt: String::new(),
+            kind: AccountKind::Liquidity,
             status: AccountStatus::Open,
         }
     }
@@ -1127,7 +1156,9 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
+        let used_before = verifier
+            .usage()
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify(control, submission)
             .expect_err("submission must be refused pre-flight");
@@ -1138,7 +1169,9 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
+            verifier
+                .usage()
+                .used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1169,7 +1202,12 @@ mod tests {
         assert_eq!(verified.dest_amount, 81);
         assert_eq!(verified.remaining_volume, 1_000_000 - 100);
         // Verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]
@@ -1239,6 +1277,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1491,7 +1530,9 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
+        let used_before = verifier
+            .usage()
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify_quoted(control, submission, quote_id)
             .expect_err("quoted submission must be refused pre-flight");
@@ -1502,7 +1543,9 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
+            verifier
+                .usage()
+                .used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1550,7 +1593,12 @@ mod tests {
         // The gateway's book holds the issued quote; issuance
         // committed no usage.
         assert_eq!(verifier.quote(42), Some(&quote));
-        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]
@@ -1776,7 +1824,12 @@ mod tests {
         assert_eq!(executed.fee(), 1);
         assert_eq!(executed.remaining_volume, 1_000_000 - 100);
         // Execution verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]

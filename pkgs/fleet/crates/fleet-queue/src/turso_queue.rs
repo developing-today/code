@@ -41,7 +41,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::validate::{task_from_packet, validate_packet};
+use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
@@ -49,8 +49,11 @@ mod claim;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
+#[cfg(all(test, feature = "queue-broker"))]
+mod hrana_double;
 mod label_enrich;
 mod lifecycle;
+mod links;
 mod notes;
 mod placement_coord;
 mod placement_sessions;
@@ -66,6 +69,7 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use links::*;
 pub use notes::*;
 pub use placement_coord::*;
 pub use placement_sessions::*;
@@ -298,6 +302,122 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn enqueue_route_declaration_15070() {
+        // #15070 oracle (validation + dry-run halves): a packet whose
+        // payload carries a valid structured route declaration
+        // enqueues (dry-run) with the declaration intact on the row
+        // shape; packets with a malformed declaration — unknown
+        // family, blank reason, unknown field, non-object — are
+        // refused at validation, naming payload.route. A packet
+        // without a route is untouched by all of this.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let base = packet_12744(15070, 30);
+        let mut routed = base.clone();
+        routed["payload"]["route"] = json!({
+            "platform": "openchamber",
+            "reason": "works in the laptop checkout of openchamber"
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": routed,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["route"]["platform"], "openchamber",
+            "{out}"
+        );
+        assert_eq!(
+            crate::validate::route_declaration(&out["task"]["payload"]),
+            Some((
+                "openchamber".to_string(),
+                "works in the laptop checkout of openchamber".to_string()
+            )),
+            "{out}"
+        );
+        for bad in [
+            json!({"platform": "code-a", "reason": "r"}),
+            json!({"platform": "muse", "reason": "  "}),
+            json!({"platform": "muse"}),
+            json!({"platform": "muse", "reason": "r", "lane": "xaltha"}),
+            json!("openchamber"),
+        ] {
+            let mut packet = base.clone();
+            packet["payload"]["route"] = bad.clone();
+            let req = json!({
+                "queue": "repo-health-code-pilot",
+                "packet": packet,
+                "dry_run": true
+            });
+            let out = verb_enqueue(&backend, &req);
+            assert_eq!(out["ok"], false, "route {bad} must be refused: {out}");
+            assert!(
+                out["errors"]
+                    .as_array()
+                    .map(|errs| {
+                        errs.iter()
+                            .any(|e| e.as_str().unwrap_or("").contains("payload.route"))
+                    })
+                    .unwrap_or(false),
+                "route {bad} refusal names payload.route: {out}"
+            );
+        }
+        // No route: route_declaration reads None (unrouted, legacy).
+        assert_eq!(
+            crate::validate::route_declaration(&base["payload"]),
+            None
+        );
+    }
+
+    #[test]
+    fn enqueue_translates_route_to_ledger_platform_limit_15070() {
+        // #15070 oracle (broker half): verb_enqueue translates the
+        // declaration into the lane ledger's platform limitation at
+        // creation — the INSERT names platform_limit and
+        // platform_limit_reason and sits in verb_enqueue's own
+        // segment, after the task INSERT (the row it limits must
+        // exist first), and the translation is gated on the parsed
+        // declaration so unrouted packets create no ledger row.
+        let src = &test_source();
+        let seg = src
+            .split("pub(crate) fn verb_enqueue(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\npub(crate) fn ")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("route_declaration"),
+            "verb_enqueue parses the route declaration"
+        );
+        assert!(
+            seg.contains("platform_limit_error("),
+            "verb_enqueue rechecks the declaration as a platform limitation"
+        );
+        let task_insert = seg
+            .find("INSERT INTO tasks")
+            .expect("verb_enqueue inserts the task row");
+        let ledger_insert = seg
+            .find("INSERT INTO repo_task_lane_ledger")
+            .expect("verb_enqueue inserts the ledger limitation row");
+        assert!(
+            task_insert < ledger_insert,
+            "the ledger limitation is stamped after the task row exists"
+        );
+        let ledger_seg = &seg[ledger_insert..];
+        assert!(ledger_seg.contains("platform_limit, platform_limit_reason"));
+        assert!(
+            seg.contains("\"route_declared\""),
+            "the translation leaves a route_declared audit event"
+        );
     }
 
     /// A one-shot stub of the Turso pipeline endpoint for the
@@ -629,48 +749,42 @@ mod tests {
     }
 
     /// One task row in TASK_COLS order for the #13091 stub replies.
+    /// Cells are keyed by column name and emitted in TASK_COLS
+    /// order, so a column added to TASK_COLS cannot silently shift
+    /// the row again (#14873: manual_only, metadata and the
+    /// resolution block did exactly that to the positional row).
     fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
         let text = |v: &str| json!({"type": "text", "value": v});
         let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
         let null = json!({"type": "null"});
-        json!([
-            int(id),
-            text("repo-health-code-pilot"),
-            text("probe"),
-            null,
-            text(&payload.to_string()),
-            text(dedupe_key),
-            int(30),
-            text(status),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            int(1),
-            int(1000),
-            null,
-            null,
-            null,
-            null,
-            text("{}"),
-            text("{}"),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            text("2026-11-20T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            null,
-            null,
-            null,
-            null
-        ])
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("manual_only", int(0));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text(&payload.to_string()));
+        cells.insert("dedupe_key", text(dedupe_key));
+        cells.insert("priority", int(30));
+        cells.insert("status", text(status));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-21T00:00:00Z"));
+        cells.insert("completed_at", text("2026-11-21T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        for key in cells.keys() {
+            assert!(
+                cols.iter().any(|c| c == key),
+                "stub cell {key} is not a task column"
+            );
+        }
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
     }
 
     fn insert_ok_13091(id: i64) -> String {
@@ -865,6 +979,111 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
+        // The fleet monitor's 2026-11-25 finding on #10627: a fresh
+        // filing under a standard key whose task already completed
+        // got the DONE row back with no signal it was a terminal
+        // return rather than a creation, so `queue/queued` issues
+        // silently held no live task. The absorption stands
+        // (#13091); the envelope must now name it.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![done]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "done", "{out}");
+        assert_eq!(
+            out["dedupe_match"]["dedupe_key"],
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_live_key_match_reports_dedupe_match_10627() {
+        // The live half of the same report: a filing absorbed by a
+        // live holder of the key names the match as live, so a
+        // caller can tell "attach to the holder" apart from both a
+        // creation and a terminal return.
+        let live = task_row_13091(
+            4242,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![live]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_live", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "queued", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_fresh_filing_carries_no_dedupe_match_10627() {
+        // Negative space: a filing that creates its row (here the
+        // revive-on-enqueue path over a failed predecessor) must
+        // NOT carry the absorption report — the field means
+        // "absorbed", never "filed".
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, _captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
+    }
+
+    #[test]
     fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
         // The parked half, at the exact SQL the serve path runs:
         // the default pick predicate (shared verbatim by the pick
@@ -877,7 +1096,7 @@ mod tests {
         // its timer release, and a completed row is never servable.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, payload TEXT,
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, manual_only INTEGER NOT NULL DEFAULT 0, payload TEXT,
                status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
                priority INTEGER, created_at TEXT, progress TEXT);
@@ -1016,11 +1235,14 @@ mod tests {
             .unwrap();
         };
         let predicate = default_pick_predicate();
+        // The predicate binds four arguments (now x2 for the
+        // queued/parked branches, the declared budget x2 for the
+        // bypass + gate). This harness runs it bare — the two
+        // platform-clause arguments of the full production pick
+        // SELECT do not belong here (#14873).
         let args = vec![
             rusqlite::types::Value::Text(now.to_string()),
             rusqlite::types::Value::Text(now.to_string()),
-            rusqlite::types::Value::Null,
-            rusqlite::types::Value::Null,
             rusqlite::types::Value::Null,
             rusqlite::types::Value::Null,
         ];
@@ -2069,7 +2291,10 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
-        assert!(pred.starts_with("manual_only = 0 AND"), "automatic pick excludes manual-only: {pred}");
+        assert!(
+            pred.starts_with("manual_only = 0 AND"),
+            "automatic pick excludes manual-only: {pred}"
+        );
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),
@@ -3624,6 +3849,71 @@ mod tests {
     }
 
     #[test]
+    fn suspect_completion_stamp_14268() {
+        // #14268 ask 2 oracle: the stamp fires exactly on the
+        // false-completion signature — the completion carries no
+        // result and no worker activity was recorded since the
+        // claim. Any result content, or any recorded activity,
+        // clears it.
+        let stamp = suspect_completion_stamp(&json!({}), 0)
+            .expect("empty result + no activity is the suspect shape");
+        assert_eq!(
+            stamp["reason"],
+            "done_with_no_result_and_no_activity_history"
+        );
+        assert!(suspect_completion_stamp(&json!(null), 0).is_some());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 0).is_none());
+        assert!(suspect_completion_stamp(&json!({}), 1).is_none());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 3).is_none());
+        // A non-object result is content, never the empty shape.
+        assert!(suspect_completion_stamp(&json!("done"), 0).is_none());
+    }
+
+    #[test]
+    fn verb_complete_surfaces_suspect_completions_14268() {
+        // #14268 ask 2, source oracle: verb_complete counts the
+        // task's activity, stamps the stored result with the
+        // verdict, flags the completed event and writes the
+        // dedicated suspect_completion event. The activity count
+        // excludes the claim ceremony's own writes, so a bare
+        // claim can never clear the shape by itself.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_complete(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("activity_event_count(t, task_id)"),
+            "verb_complete counts prior activity before mutating"
+        );
+        assert!(
+            seg.contains("suspect_completion_stamp(&result, n)"),
+            "verb_complete stamps the suspect shape on the result"
+        );
+        assert!(
+            seg.contains("\"suspect_completion\""),
+            "verb_complete writes the suspect_completion event"
+        );
+        let counter = src
+            .split("fn activity_event_count(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        for kind in [
+            "'claimed'",
+            "'session_bound'",
+            "'lane_session_bound'",
+            "'model_stamp'",
+        ] {
+            assert!(
+                counter.contains(kind),
+                "activity count excludes claim-ceremony kind {kind}"
+            );
+        }
+    }
+
+    #[test]
     fn completion_gate_rejects_disposition_for_another_issue() {
         // #10611: the readback must describe the packet's issue — a
         // stale readback for a sibling issue is not closure evidence.
@@ -4906,7 +5196,12 @@ mod tests {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
         // session binding cleared and a `released` audit event;
-        // attempts are NOT handed back.
+        // attempts are NOT handed back. #12901 exception: a
+        // release whose claim consumed the last attempt fails the
+        // row at the cap instead (the #6463 expiry_disposition
+        // oracle, sink rows exempt), with the reason in last_error
+        // and a `failed` audit event — a queued return there is
+        // the unclaimable churn zombie.
         let src = &test_source();
         let seg = seg8217(
             src,
@@ -4920,12 +5215,59 @@ mod tests {
             "DELETE FROM leases",
             "attempt change",
             "SET status = 'queued'",
+            "expiry_disposition(attempts, max_attempts)",
+            "expired_claim_returns_to_sink(&progress)",
+            "SET status = 'failed'",
+            "released at attempt cap",
+            "\"released_at_cap\": true",
         ] {
             assert!(seg.contains(needle), "verb_release misses {needle}");
         }
         assert!(
             src.contains("\"/release\" => verb_release(t, req),"),
             "release is dispatched"
+        );
+    }
+
+    #[test]
+    fn release_platform_limit_contract_14993() {
+        // Oracle (#14993): a release can record a platform
+        // limitation -- the route-mismatch hand-back -- so the
+        // claim pick stops offering the task to seats of the wrong
+        // family (the five redraws of laptop-routed task 23528).
+        // verb_release validates the pair with the lane verb's own
+        // validator before anything mutates, writes it to the lane
+        // ledger the pick clause reads (upserting a minimal row
+        // when the claim never created one), records it on the
+        // `released` event, and the client passes both flags
+        // through under the lane verb's field names.
+        let src = &test_source();
+        let seg = seg8217(
+            src,
+            "pub(crate) fn verb_release(",
+            "\npub(crate) fn verb_wake(",
+        );
+        for needle in [
+            "platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())",
+            "UPDATE repo_task_lane_ledger SET platform_limit = ?",
+            "INSERT INTO repo_task_lane_ledger",
+            "\"platform_limit\": limit_family",
+            "\"platform_limit_reason\": limit_reason",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        let client_src = [
+            include_str!("client/support.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+        ]
+        .concat();
+        assert!(
+            client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"),
+            "the release client passes --limit-platform through"
+        );
+        assert!(
+            client_src.contains("\"platform_limit_reason\": args.get(\"limit-reason\")"),
+            "the release client passes --limit-reason through"
         );
     }
 

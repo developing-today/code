@@ -33,6 +33,8 @@ import {
   openD1QueueStore,
   type D1Client,
   type D1DatabaseLike,
+  type D1MetaLike,
+  type D1PreparedStatementLike,
   type D1Result,
   type D1Statement,
 } from "../src/d1-queue-store.ts";
@@ -461,4 +463,131 @@ test("wiring: buildDeps selects the D1 store when the QUEUE_D1 binding is presen
     db.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Real D1 (gated, #14870): the production D1DatabaseClient over a
+// D1Database-shaped binding whose statements travel the D1 HTTP API
+// to the deployed fleet-queue database — the same code path a
+// deployed Worker runs, against the real database, before any
+// cutover. The Hrana wire suite's gating pattern: with
+// HOSTED_WORKER_D1_DATABASE_ID / CLOUDFLARE_ACCOUNT_ID /
+// CLOUDFLARE_API_TOKEN unset this is a skip, never a failure. The
+// suite works only in its own queue (d1-parity-smoke) and leaves
+// its completed task there as the run's record.
+// ---------------------------------------------------------------------------
+
+interface RealD1Config {
+  accountId: string;
+  databaseId: string;
+  token: string;
+}
+
+function realD1Config(): RealD1Config | null {
+  const databaseId = process.env["HOSTED_WORKER_D1_DATABASE_ID"];
+  const accountId = process.env["CLOUDFLARE_ACCOUNT_ID"];
+  const token = process.env["CLOUDFLARE_API_TOKEN"];
+  if (!databaseId || !accountId || !token) return null;
+  return { accountId, databaseId, token };
+}
+
+class HttpD1PreparedStatement implements D1PreparedStatementLike {
+  private values: unknown[] = [];
+
+  constructor(
+    private readonly cfg: RealD1Config,
+    private readonly sqlText: string,
+  ) {}
+
+  bind(...values: unknown[]): D1PreparedStatementLike {
+    this.values = values;
+    return this;
+  }
+
+  private async query(): Promise<{ results: Record<string, unknown>[]; meta: D1MetaLike }> {
+    const params = this.values.map((v) => {
+      if (v === null || typeof v === "number" || typeof v === "string") return v;
+      throw new Error(`real-D1 gate: unsupported bind value of type ${typeof v}`);
+    });
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${this.cfg.accountId}/d1/database/${this.cfg.databaseId}/query`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.cfg.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ sql: this.sqlText, params }),
+      },
+    );
+    const body = (await res.json()) as {
+      success: boolean;
+      errors?: unknown;
+      result?: { results: Record<string, unknown>[]; meta: D1MetaLike }[];
+    };
+    if (!body.success || !body.result || body.result.length === 0) {
+      throw new Error(`real-D1 query failed: ${JSON.stringify(body.errors)}`);
+    }
+    return body.result[0] as { results: Record<string, unknown>[]; meta: D1MetaLike };
+  }
+
+  async all(): Promise<{ results: Record<string, unknown>[]; meta: D1MetaLike }> {
+    const r = await this.query();
+    return { results: r.results, meta: r.meta };
+  }
+
+  async run(): Promise<{ meta: D1MetaLike }> {
+    const r = await this.query();
+    return { meta: r.meta };
+  }
+}
+
+class HttpD1Database implements D1DatabaseLike {
+  constructor(private readonly cfg: RealD1Config) {}
+
+  prepare(sqlText: string): D1PreparedStatementLike {
+    return new HttpD1PreparedStatement(this.cfg, sqlText);
+  }
+}
+
+test("real D1: two doors over the production binding adapter enqueue, claim and complete on the deployed database", async (t) => {
+  const cfg = realD1Config();
+  if (!cfg) {
+    t.skip("no real D1 configured: HOSTED_WORKER_D1_DATABASE_ID / CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN unset");
+    return;
+  }
+  clock = T0;
+  const queue = "d1-parity-smoke";
+  // A run-unique synthetic issue keeps the dedupe key canonical and
+  // the suite re-runnable against the shared database.
+  const issue = 700000 + (Date.now() % 100000);
+  const doorA = openD1QueueStore(new HttpD1Database(cfg), { nowIso: () => iso(clock) });
+  const doorB = buildDeps({ QUEUE_D1: new HttpD1Database(cfg) } as HostedEnv).queueStore;
+
+  const enq = await executeQueueVerb(doorA, "enqueue", { queue, packet: fixPacket(issue) }, hostedEnv());
+  assert.equal(enq["ok"], true);
+  const claimed = await executeQueueVerb(doorB, "claim", { queue, worker: "worker-a" }, nativeEnv());
+  assert.equal(claimed["ok"], true);
+  const task = claimed["row"] as JsonObject;
+  assert.equal(task["title"], `fix issue ${issue}`);
+  const done = await verb(doorB, nativeEnv(), "complete", {
+    task_id: task["id"],
+    worker: "worker-a",
+    result: {
+      evidence: "real-D1 parity run (#14870)",
+      disposition: {
+        checked_at: iso(clock),
+        source: "test",
+        issue: { number: issue, state: "closed" },
+        pulls: [],
+        verdict: "closed_verified",
+      },
+    },
+  });
+  assert.equal(done["ok"], true);
+  const kinds = (await doorA.allEvents())
+    .filter((e) => e.task_id === task["id"])
+    .map((e) => e.kind)
+    .filter((k) => ["claimed", "completed"].includes(k));
+  assert.deepEqual(kinds, ["claimed", "completed"]);
+  assert.deepEqual(await doorA.describe(), { backend: "d1", projectSource: "fleet-queue", netloc: null });
+  const health = await verb(doorA, hostedEnv(), "health", {});
+  assert.equal(health["backend"], "d1");
 });

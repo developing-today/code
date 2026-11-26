@@ -3,6 +3,7 @@ import {
   buildResetDurationLedgerRows,
   deriveResetDurationRecords,
   resetDurationSubjectKey,
+  resetObservationsFor,
   type ResetObservation,
 } from "./quota-reset-duration.ts";
 import { PREDICTION_LEDGER_SOURCE } from "./quota-downtime.ts";
@@ -234,6 +235,41 @@ describe("deriveResetDurationRecords — rendered calendar form", () => {
     expect(records[0].prediction?.earliest).toBe(atMin(18 * 60 - 15));
     expect(records[0].prediction?.latest).toBe(atMin(18 * 60 + 15));
     expect(records[0].prediction?.rendered).toBe("between today 11 pm and tomorrow 12 am");
+  });
+});
+
+describe("resetObservationsFor — snapshot history joined per forecast window", () => {
+  const reading = (metricId: string, ts: string, resetsAt: string | null) => ({
+    ts,
+    serviceId: "_claude",
+    metricId,
+    value: 50,
+    unit: "pct" as const,
+    resetsAt,
+    source: "api" as const,
+    observedBy: "test",
+  });
+
+  test("keys each forecast window and drops non-percent and other-window readings", () => {
+    const history = [
+      reading("5h", at(-1), at(6)),
+      reading("5-hour", at(-0.5), at(6)),
+      reading("weekly", at(-0.5), at(100)),
+      { ...reading("5h", at(-0.25), at(6)), unit: "usd" as const },
+    ];
+    const obs = resetObservationsFor(fforecast({ claude: [fpool([fwindow()])] }), history);
+    expect(obs.get(KEY)).toEqual([
+      { ts: at(-1), resetsAt: at(6) },
+      { ts: at(-0.5), resetsAt: at(6) },
+    ]);
+    expect([...obs.keys()]).toEqual([KEY]);
+  });
+
+  test("no snapshot history yields an empty observation list, so the honesty state is no_basis", () => {
+    const forecast = fforecast({ claude: [fpool([fwindow()])] });
+    const obs = resetObservationsFor(forecast, []);
+    expect(obs.get(KEY)).toEqual([]);
+    expect(deriveResetDurationRecords(forecast, obs)[0].state).toBe("no_basis");
   });
 });
 

@@ -223,8 +223,9 @@ Rules every renderer keeps:
   does not name, so it cannot show more than the model let the viewer see.
 - `identify`, `identify-link`, `open` and `inspect-link` never change the frame.
 - Claimed times are always presented as claims.
-- The display form of a URI (what a person sees for `id://…`) is D1 slice 5's.
-  Until it lands, renderers show the label and keep the URI behind `open`.
+- The display form of a URI (what a person sees for `id://…`) is D1 slice 5's
+  (`doc/2026-11-25T01-20-40Z_design_id-apps_d1_id-uri-scheme/slice-5-display-forms.md`):
+  `identify` shows the short label and its state words, and `open` keeps the full URI.
 
 ## 6. The list/tree floor
 
