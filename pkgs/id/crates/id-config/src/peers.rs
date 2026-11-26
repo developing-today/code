@@ -17,16 +17,22 @@
 //! - `accept_signed_from` has no `sync.send` (it grants no outbound sends);
 //! - `unknown` has no operations.
 //!
-//! `peers[].overrides` (per-operation link selection, record §3.3) and
-//! `fanout.remotes[]` are later parts of the slice; until then an
-//! `overrides` key in a peer entry is an unknown key and rejects the
-//! document.
+//! `peers[].overrides` is the per-operation layer of record §3.3 and
+//! §6.2: a map from an operation name to the link adapter and timeout to
+//! use for that operation with this peer. An override may choose only
+//! those two things (record §3.3, Q9); class, gates, signature, replay and
+//! tenant checks are not keys, so naming one is an unknown key and rejects
+//! the document (§6.4). Load also rejects an override for an operation the
+//! entry does not grant (it could never apply), an adapter this build does
+//! not advertise (§6.5 step 4), and a timeout outside
+//! `1 ..= PER_PEER_TIMEOUT_MS_LIMIT`. The `relay` operation's timing
+//! belongs to the fan-out plane, so it takes no override.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigError, PER_PEER_TIMEOUT_MS_LIMIT};
+use crate::{ADVERTISED_LINK_ADAPTERS, ConfigError, PER_PEER_TIMEOUT_MS_LIMIT};
 
 /// A peer's trust class (#9141 §2). A directional policy label, never a
 /// cryptographic fact. Defaults to [`PeerClass::Unknown`].
@@ -95,6 +101,22 @@ impl PeerOperation {
     }
 }
 
+/// A per-operation override on one peer (record §3.3). Only the adapter
+/// and the timeout can be chosen; an absent key or `null` keeps the
+/// link-kind default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationOverride {
+    /// The link adapter for this operation with this peer. Must be one
+    /// this build advertises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    /// The timeout in milliseconds for this operation with this peer,
+    /// within `1 ..= PER_PEER_TIMEOUT_MS_LIMIT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// One peer relationship (record §3.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +155,11 @@ pub struct PeerEntry {
     /// Fan-out ask order (record §7.1). Default none: list position.
     #[serde(default)]
     pub priority: Option<u32>,
+    /// Per-operation overrides keyed by operation name (record §3.3).
+    /// Default none. Omitted from the canonical encoding when empty, so an
+    /// entry without overrides keeps its digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<PeerOperation, OperationOverride>,
 }
 
 impl PeerEntry {
@@ -182,6 +209,45 @@ impl PeerEntry {
                 limit: PER_PEER_TIMEOUT_MS_LIMIT,
             });
         }
+        self.validate_overrides()
+    }
+
+    /// Check each per-operation override.
+    fn validate_overrides(&self) -> Result<(), ConfigError> {
+        for (&operation, over) in &self.overrides {
+            let rule = if operation == PeerOperation::Relay {
+                Some("relay takes no override; its timing is in fanout")
+            } else if !self.operations.contains(&operation) {
+                Some("the entry does not grant this operation")
+            } else {
+                None
+            };
+            if let Some(rule) = rule {
+                return Err(ConfigError::InvalidOperationOverride {
+                    peer_id: self.peer_id.clone(),
+                    operation: operation.as_str(),
+                    rule,
+                });
+            }
+            if let Some(adapter) = &over.adapter
+                && !ADVERTISED_LINK_ADAPTERS.contains(&adapter.as_str())
+            {
+                return Err(ConfigError::UnadvertisedOverrideAdapter {
+                    peer_id: self.peer_id.clone(),
+                    operation: operation.as_str(),
+                    adapter: adapter.clone(),
+                });
+            }
+            if let Some(timeout) = over.timeout_ms
+                && (timeout == 0 || timeout > PER_PEER_TIMEOUT_MS_LIMIT)
+            {
+                return Err(ConfigError::OutOfRange {
+                    field: "peers[].overrides.timeout_ms",
+                    value: timeout,
+                    limit: PER_PEER_TIMEOUT_MS_LIMIT,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -219,10 +285,14 @@ impl PeerEntry {
         .transpose()
     }
 
-    /// The resolved form: operations in canonical order.
+    /// The resolved form: operations in canonical order, and overrides
+    /// that set nothing dropped.
     fn resolved(&self) -> Self {
         let mut entry = self.clone();
         entry.operations.sort();
+        entry
+            .overrides
+            .retain(|_, over| over.adapter.is_some() || over.timeout_ms.is_some());
         entry
     }
 }

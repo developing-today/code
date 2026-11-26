@@ -339,7 +339,7 @@ mod tests {
         let reply = receive_with_boundary_gate(&gate, Some(&DenyRelayBoundary), &sink, &body);
         assert!(matches!(reply, Reply::Refused { .. }));
         assert_eq!(gate.lock().unwrap().forwarded(), 0);
-        assert!(sink.received().is_empty());
+        assert_eq!(sink.received(), [] as [RelayedMessage; 0]);
     }
 
     #[tokio::test]
@@ -425,7 +425,7 @@ mod tests {
             matches!(outcome, Outcome::Refused(_)),
             "forged message must be refused at ingest, got {outcome:?}"
         );
-        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(bridge_protocol.forwarded(), 0);
     }
 
@@ -456,7 +456,7 @@ mod tests {
             }
             other => panic!("non-member origin must be refused at ingest, got {other:?}"),
         }
-        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(protocol.forwarded(), 0);
     }
 
@@ -528,6 +528,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -695,7 +696,7 @@ mod tests {
             }
             other => panic!("removed member must be refused at ingest, got {other:?}"),
         }
-        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(bridge_protocol.forwarded(), 0);
 
         let member = RelayedMessage::new(graph_envelope(1, &group, 0));
@@ -728,7 +729,7 @@ mod tests {
             forward_message(&origin, loopback_addr(&relay), &unauthorized).await,
             Outcome::Refused(_)
         ));
-        assert!(relay_sink.received().is_empty());
+        assert_eq!(relay_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(relay_protocol.forwarded(), 0);
 
         let member = RelayedMessage::new(graph_envelope(1, &group, 0));

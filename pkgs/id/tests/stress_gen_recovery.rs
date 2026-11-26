@@ -9,6 +9,8 @@
 //! schema version, both defined in `common::stress_output` — the
 //! same code the `stress_gen` bench profile runs.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

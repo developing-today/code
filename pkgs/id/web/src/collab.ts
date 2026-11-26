@@ -162,6 +162,13 @@ export function initCollab(
   let currentToken: string | null = token ?? null;
 
   let reconnectAttempts = 0;
+  // Consecutive Update frames whose well-shaped steps failed to apply,
+  // counted across reconnects (#1618). A successful Init resets
+  // reconnectAttempts, so a step the server stored but this client
+  // cannot apply would otherwise loop forever: Init, catch-up fails,
+  // reconnect, Init again. Only a successful apply resets this count.
+  let applyFailureStreak = 0;
+  const MAX_APPLY_FAILURES = 3;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const sendQueue: Uint8Array[] = [];
   let connected = false;
@@ -448,6 +455,7 @@ export function initCollab(
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
+            applyFailureStreak = 0;
             // If this update confirmed one of our batches and more steps are
             // still pending (an oversized transaction chunked by stepBatch),
             // send the next batch now - no new editor:change event fires for
@@ -456,13 +464,24 @@ export function initCollab(
             handleEditorChange();
           } catch (err) {
             // Step application failed — editor state is desynchronized.
-            // Trigger reconnect to get fresh Init + catch-up from server.
-            console.error("[collab] Failed to apply steps, reconnecting:", err);
+            // Trigger reconnect to get fresh Init + catch-up from server,
+            // unless the same failure keeps coming back after fresh Inits
+            // (#1618): then retrying cannot help, so stop and say so.
+            applyFailureStreak++;
             connected = false;
             intentionalClose = true;
             if (currentWs) {
               currentWs.close(4001, "Step apply failure");
             }
+            if (applyFailureStreak >= MAX_APPLY_FAILURES) {
+              console.error(
+                `[collab] Failed to apply steps ${applyFailureStreak} times in a row; not reconnecting:`,
+                err,
+              );
+              updateStatus("error");
+              break;
+            }
+            console.error("[collab] Failed to apply steps, reconnecting:", err);
             scheduleReconnect();
           }
         }

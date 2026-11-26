@@ -58,12 +58,12 @@ $ fleet queue history 19479 --json
 usage: repo-queue staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]
 ```
 
-| Flag                    | Argument     | Default | Meaning                                                                                          |
-| ----------------------- | ------------ | ------- | ------------------------------------------------------------------------------------------------ |
-| `--queue`               | queue name   | unset   | Restrict both reads to one queue. Unset = estate-wide.                                           |
-| `--older-than-seconds`  | seconds      | 86400   | Staleness threshold: a task is stale when its last status-history transition is older than this. |
-| `--lease-cap-seconds`   | seconds      | 900     | Lease-cap window: a claim is near its cap when its lease expires within this many seconds.       |
-| `--limit`               | row cap      | 200     | Maximum rows per read. Clamped to 1..=50000.                                                     |
+| Flag                   | Argument   | Default | Meaning                                                                                          |
+| ---------------------- | ---------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `--queue`              | queue name | unset   | Restrict both reads to one queue. Unset = estate-wide.                                           |
+| `--older-than-seconds` | seconds    | 86400   | Staleness threshold: a task is stale when its last status-history transition is older than this. |
+| `--lease-cap-seconds`  | seconds    | 900     | Lease-cap window: a claim is near its cap when its lease expires within this many seconds.       |
+| `--limit`              | row cap    | 200     | Maximum rows per read. Clamped to 1..=50000.                                                     |
 
 **Behaviour.** The stewardship cycle's staleness read (broker route `/staleness`), landed as a Q8 consumer of the queue-schema design (#14170). One call returns two canned reads as a single JSON object: `rows` — every actionable task (queued, claimed, parked, blocked, handed_off) whose last `task_history` transition is older than the threshold, oldest first, each with `last_history_id`, `last_kind`, `last_to_status`, `last_actor`, and `last_transition_at`; and `claims_near_lease_cap` — claimed tasks whose `lease_until` falls inside the lease-cap window (already-expired leases sort first). A task with no history row falls back to its `updated_at` as its last transition and reports a null `last_history_id`, so pre-history tasks stay visible instead of dropping out of the read. The response also carries the thresholds used and the broker's `now`, so a reader can age leases against the same clock the broker used.
 
@@ -80,11 +80,11 @@ $ fleet queue staleness --queue repo-health-code-pilot --older-than-seconds 3600
 usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]
 ```
 
-| Flag      | Argument   | Default | Meaning                                                                            |
-| --------- | ---------- | ------- | ---------------------------------------------------------------------------------- |
-| `--queue` | queue name | unset   | Restrict to one queue. Unset = estate-wide.                                        |
-| `--state` | text       | unset   | Restrict to questions whose metadata `question.state` equals this value.           |
-| `--limit` | row cap    | 200     | Maximum rows. Clamped to 1..=50000.                                                |
+| Flag      | Argument   | Default | Meaning                                                                  |
+| --------- | ---------- | ------- | ------------------------------------------------------------------------ |
+| `--queue` | queue name | unset   | Restrict to one queue. Unset = estate-wide.                              |
+| `--state` | text       | unset   | Restrict to questions whose metadata `question.state` equals this value. |
+| `--limit` | row cap    | 200     | Maximum rows. Clamped to 1..=50000.                                      |
 
 **Behaviour.** The stewardship cycle's needs-user read (broker route `/needs-user`): blocked and parked tasks carrying a `question` metadata entry (the registry shape `{ledger_id, state}`), oldest last transition first. Each row carries the question object lifted out of the task's metadata, the task's `last_transition_at` from the status-history table, and `blocked_by_count_cache` — the count of the task's `blocked_deps` cache entries. The count is cache-derived until the Q6 slice normalises dependencies into `task_deps`; the canned query then reads its counts from `task_deps` instead.
 

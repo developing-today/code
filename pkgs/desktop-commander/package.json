@@ -22,7 +22,7 @@
     "glob": "^10.3.10",
     "highlight.js": "^11.11.1",
     "isbinaryfile": "^5.0.4",
-    "markdown-it": "^14.1.0",
+    "markdown-it": "^14.3.3",
     "md-to-pdf": "^5.2.5",
     "open": "^10.2.0",
     "pdf-lib": "^1.17.1",

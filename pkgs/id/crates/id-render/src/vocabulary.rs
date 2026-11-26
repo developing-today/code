@@ -34,7 +34,8 @@ pub struct ElementSpec {
     pub enums: &'static [(&'static str, &'static [&'static str])],
 }
 
-/// The full v1 registry: #5849 §4.1–§4.4 plus `raw` (§3.1).
+/// The full v1 registry: #5849 §4.1–§4.4 plus `raw` (§3.1), and the
+/// `conditional` block of #5854 §5 (see [`CONDITIONAL`]).
 pub const REGISTRY: &[ElementSpec] = &[
     // §4.1 Document and structure.
     ElementSpec {
@@ -324,6 +325,18 @@ pub const REGISTRY: &[ElementSpec] = &[
         optional: &[],
         enums: &[],
     },
+    // #5854 §5 conditional block (issue #7920 slice 3): the one
+    // vocabulary addition after v1. It is not a rendered element —
+    // composition resolves it per target before the cascade runs —
+    // so it carries no role and accepts neither `assert` nor `show`.
+    ElementSpec {
+        name: "conditional",
+        purpose: "Embellishment included only on the targets its predicate names",
+        role: "none (resolved before rendering)",
+        required: &[],
+        optional: &["target", "form-factor", "capability"],
+        enums: &[],
+    },
     // §3.1 The one raw region.
     ElementSpec {
         name: "raw",
@@ -404,4 +417,49 @@ pub fn nearest_names(unknown: &str) -> Vec<&'static ElementSpec> {
     }
     out.truncate(3);
     out
+}
+
+/// The conditional-block element kind (#5854 §5). #5849 v1 had no
+/// representation for a conditional block; this is it:
+///
+/// ```text
+/// <conditional target="web">
+///   <text>Tip: see the <link to="docs.account">account guide</link>.</text>
+/// </conditional>
+/// ```
+///
+/// A block is part of the one shared source. Its predicate names
+/// target facts only — the three [`PREDICATE_ATTRS`], each a
+/// space-separated list of names — and the block is included on a
+/// target when every predicate attribute present lists a fact of
+/// that target (any listed name matches within one attribute). A
+/// block names at least one predicate attribute; blocks do not
+/// nest; `assert` and `show` do not apply, because the block is
+/// never rendered itself and its predicate is never state data.
+/// The block is transparent to the child rules of #5849 §4.5: its
+/// children are checked as children of the block's parent.
+pub const CONDITIONAL: &str = "conditional";
+
+/// The predicate attributes of a conditional block, each naming one
+/// kind of target fact (#5854 §5): the target name, the
+/// form-factor class, and a declared capability flag.
+pub const PREDICATE_ATTRS: &[&str] = &["target", "form-factor", "capability"];
+
+/// Element kinds that are embellishment, and so may sit inside a
+/// conditional block (#5854 §5: "a block may carry embellishment
+/// only"). Prose, inline emphasis, links, images and notes add to a
+/// screen without carrying its function; everything else in the
+/// registry — structure, forms, actions, chrome, bound inputs — is
+/// essential content. A `<raw kind="css">` region is embellishment
+/// too (it only restyles); raw HTML is not, since it can carry
+/// anything. The #5855 §4 lint reads this table.
+pub const CONDITIONAL_EMBELLISHMENT: &[&str] =
+    &["text", "strong", "emphasis", "link", "image", "note"];
+
+/// Whether `el` may sit inside a conditional block as embellishment
+/// (see [`CONDITIONAL_EMBELLISHMENT`]).
+#[must_use]
+pub fn is_embellishment(el: &crate::Element) -> bool {
+    CONDITIONAL_EMBELLISHMENT.contains(&el.name.as_str())
+        || (el.name == "raw" && el.attr("kind") == Some("css"))
 }

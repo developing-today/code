@@ -1,0 +1,467 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tutorial: enrol a new seat - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="tutorial-enrol-a-new-seat"><a class="header" href="#tutorial-enrol-a-new-seat">Tutorial: enrol a new seat</a></h1>
+<p>This tutorial takes a fresh seat — a new agent instance on a new sandbox or
+machine — from nothing to taking work. It assumes the <code>fleet</code> binary is
+already installed on the seat. If it is not, install it first by following
+<a href="../getting-started/installation.html">Installation and bootstrap</a>, then come
+back here.</p>
+<p>By the end, the seat will have its three broker token files, a registered
+bridge mailbox, a saved agent profile, and a checked answer from every leg
+of <code>fleet agent doctor</code>. Names, kinds and groups in the examples are
+illustrative: pick your own agent name, and use a kind from Step 4.</p>
+<p>Secrets in this tutorial are handled <strong>by name only</strong>. You never type,
+print or paste a secret value; the bootstrap fetches token files for you,
+and every later command resolves the values it needs by name.</p>
+<h2 id="step-1-run-the-seat-bootstrap"><a class="header" href="#step-1-run-the-seat-bootstrap">Step 1: Run the seat bootstrap</a></h2>
+<p>On a Muse sandbox seat, the bootstrap script rebuilds the whole seat —
+tools, tokens, the tailnet link, the binary, and the local init stack —
+from the pinned release. It is idempotent: re-running it skips work that
+is already done.</p>
+<pre><code class="language-bash">bash scripts/muse/bootstrap.sh
+</code></pre>
+<p>What the output means: the script runs named phases in order —
+<code>tools token restore tailnet fleet persist init check</code>. Each phase either
+reports that its work was already present or does it and moves on. The
+final <code>check</code> phase verifies the binary (including that the <code>bridge</code>
+domain is available), the laptop link, secret resolution by name, and a
+bridge hello/inbox probe as your agent.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>A phase fails and the script stops, naming the phase. Exit <code>1</code> means “a
+phase failed”; exit <code>2</code> means the command line itself was wrong. Fix the
+named phase’s cause (usually a missing download or a tailnet join that
+needs attention) and re-run the whole script — completed phases skip
+themselves.</li>
+<li>The check phase reports a missing token name. That is not fatal to
+enrolment itself, but the affected legs will fail in Step 5. Note which
+name is missing and continue to Step 2 to check the token files
+directly.</li>
+</ul>
+<p>Seats that are not Muse sandboxes do not run this script. If your seat
+was provisioned another way, continue at Step 2 and make sure the token
+files and the binary are in place by your provisioning route instead.</p>
+<h2 id="step-2-confirm-the-three-token-files-appeared"><a class="header" href="#step-2-confirm-the-three-token-files-appeared">Step 2: Confirm the three token files appeared</a></h2>
+<p>The bootstrap’s token phase fetches three Bitwarden Secrets Manager
+secrets — by the names <code>fleet.secrets-broker-token</code>,
+<code>fleet.queue-broker-token</code> and <code>fleet.laptop-agent-token</code> — into three
+files under <code>~/tools/</code>. These are client-side files the seat’s commands
+name when they talk to the brokers; the brokers read the files per
+request and never store or log their contents.</p>
+<pre><code class="language-bash">ls -l ~/tools/secrets-broker-token ~/tools/queue-broker-token ~/tools/laptop-agent-token
+</code></pre>
+<p>What the output means: three regular files, each with owner-only
+permissions (<code>-rw-------</code>, mode <code>0600</code>). Their contents are secret values
+— do not open, print or copy them anywhere. Only their presence, names
+and permissions matter here.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>A file is missing. The seat can still enrol (the bridge leg works over
+HTTPS with a by-name secret), but the queue, secrets and shell legs
+will fail with synthesised transport errors, because those legs read
+these shared files. Re-run the bootstrap’s token provisioning; if the
+missing Bitwarden name itself does not resolve, that is a provisioning
+problem to raise with whoever stood the seat up — do not substitute
+another secret’s value, and do not reuse the older, different name
+<code>secrets-broker.token</code>, which is a different value.</li>
+<li>Permissions are wider than <code>0600</code>. Tighten them:</li>
+</ul>
+<pre><code class="language-bash">chmod 600 ~/tools/secrets-broker-token ~/tools/queue-broker-token ~/tools/laptop-agent-token
+</code></pre>
+<p>Do not confuse these client-side <code>~/tools/*-token</code> files with the
+daemon-side token files under <code>~/.config/secrets-broker/token</code> and
+<code>~/.config/queue-broker/token</code>. The daemon-side files belong to the
+brokers themselves (see <a href="run-the-brokers.html">Tutorial: run the brokers</a>);
+a working seat needs its own <code>~/tools/</code> set.</p>
+<h2 id="step-3-say-hello-on-the-bridge"><a class="header" href="#step-3-say-hello-on-the-bridge">Step 3: Say hello on the bridge</a></h2>
+<p>Registering on the bridge is a single command. The bridge’s agent
+registry is exactly the set of agents that have said hello: name, groups
+and last-seen time all come from this call.</p>
+<pre><code class="language-bash">fleet bridge hello --agent &lt;your-agent-name&gt; --groups muse
+</code></pre>
+<p>Replace <code>&lt;your-agent-name&gt;</code> with the name you will enrol under in Step 4,
+and the groups with the groups your kind carries (Step 4 shows where
+groups come from; <code>--groups</code> here takes a comma-separated list). The
+command prints the bridge’s JSON answer.</p>
+<p>What the output means: your mailbox now exists on the bridge at
+<code>https://bridge.security.cab</code>, and central can address you as
+<code>agent:&lt;your-agent-name&gt;</code> or through any group you named. Re-running
+<code>hello</code> refreshes the registration and its groups; it is safe to repeat.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>Exit <code>3</code> — transport or credentials. The fleet token (secret name
+<code>message-bridge.fleet-token</code>) could not be resolved by name, or the
+bridge could not be reached. Check that secret resolution works at all
+by following <a href="resolve-a-secret.html">Tutorial: resolve a secret</a>, then
+retry.</li>
+<li>Exit <code>4</code> — the bridge refused the request; its JSON error is printed on
+stderr. A <code>404</code> here is reported as a wrong token, an old bridge
+without fleet mailboxes, or a wrong URL — check the bridge URL
+resolution (<code>$FLEET_BRIDGE_URL</code>, then <code>[bridge] url</code> in the fleet
+config, then the default above).</li>
+<li>Exit <code>2</code> — a usage error; fix the flags and retry. Note that <code>fleet bridge</code> has one shared usage text for the whole domain, so read the
+<code>hello</code> line in it carefully.</li>
+</ul>
+<p>If you omit <code>--agent</code>, the name defaults to <code>$FLEET_AGENT</code>, then
+<code>[bridge] agent</code> in the fleet config; groups default the same way via
+<code>$FLEET_AGENT_GROUPS</code> and <code>[bridge] groups</code>. For a first enrolment, pass
+both explicitly so the registration is the one you intend.</p>
+<h2 id="step-4-enrol-the-agent"><a class="header" href="#step-4-enrol-the-agent">Step 4: Enrol the agent</a></h2>
+<p>Enrolment validates the kind, adds any extra groups, probes the bridge in
+register mode (the <code>hello</code> from Step 3 is what actually registers the
+mailbox), probes the remaining legs, and saves a profile recording the
+agent, kind, groups and leg state.</p>
+<pre><code class="language-bash">fleet agent enroll --kind muse --name &lt;your-agent-name&gt; --groups muse
+</code></pre>
+<p><code>--kind</code> and <code>--name</code> are required. <code>--groups a,b</code> adds to the kind’s
+built-in groups. If you do not know which kind fits, list the table
+first:</p>
+<pre><code class="language-bash">fleet agent kinds
+</code></pre>
+<p>That prints one JSON object describing every kind: its name, summary,
+bridge groups, seat type (<code>binary</code>, <code>http</code> or <code>connector</code>) and enrolment
+note. Sixteen kinds are registered, including <code>muse</code>, <code>opencode</code>,
+<code>openchamber</code>, <code>openclaw</code>, <code>claude-code</code>, <code>codex</code>, <code>gemini</code>,
+<code>antigravity</code>, <code>grok</code> and the fallback kind <code>generic</code> for any other agent
+with a shell. Adding a kind is adding a row to that table; no verb
+changes.</p>
+<p>What the output means: one JSON object carrying the saved profile,
+<code>registered</code> (true only when this was not a dry run <strong>and</strong> the bridge
+leg answered), the four legs, the intake rungs this seat still has, and
+seat-specific next-step lines — for a binary seat, the run loop
+(<code>fleet agent next --agent &lt;name&gt;</code>, do the task, run its <code>then</code> lines,
+repeat) and the <code>fleet shell</code> line. Exit <code>0</code> means a dry run, or that at
+least one intake rung is live; exit <code>3</code> means no intake rung is live.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>Unknown kind: a usage error (exit <code>2</code>) listing all kinds. Pick one from
+the list, or use <code>generic</code> for anything with a shell.</li>
+<li><code>registered</code> is false even though enrolment exited <code>0</code>: the bridge leg
+did not answer, so the mailbox was not registered by this call. Re-run
+Step 3, fix what it reports, then enrol again.</li>
+<li>You only want to preview: add <code>--dry-run</code>. A dry run probes nothing and
+registers nothing, and always exits <code>0</code>.</li>
+<li>To save the profile somewhere other than the default path, pass
+<code>--profile PATH</code>.</li>
+</ul>
+<h2 id="step-5-read-all-four-legs-with-doctor"><a class="header" href="#step-5-read-all-four-legs-with-doctor">Step 5: Read all four legs with doctor</a></h2>
+<p>Doctor probes four legs <strong>in parallel</strong>, each with a real fleet verb run
+as this seat. The four legs are <code>bridge</code>, <code>queue</code>, <code>github</code> and <code>shell</code>.
+There is no separate secrets leg: secret resolution is folded into the
+bridge leg’s stated need.</p>
+<pre><code class="language-bash">fleet agent doctor --agent &lt;your-agent-name&gt;
+</code></pre>
+<p>Read the answer leg by leg:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Leg</th><th>Probe</th><th>“Up” means</th><th>It needs</th></tr>
+</thead>
+<tbody>
+<tr><td><code>bridge</code></td><td><code>bridge inbox --agent &lt;name&gt; --limit 1</code></td><td>“the mailbox answers”</td><td>HTTPS to the bridge, and the fleet token by name through fleet secrets</td></tr>
+<tr><td><code>queue</code></td><td><code>queue health</code></td><td>“answers”</td><td>The queue broker: its socket on the laptop, or the laptop transport from elsewhere</td></tr>
+<tr><td><code>github</code></td><td><code>gh api rate_limit</code> via <code>fleet gh</code>, falling back to a signed-in plain <code>gh</code></td><td>“answers”, with <code>route: "fleet"</code> or <code>"plain"</code> recorded</td><td>A <code>gh</code> token: the fleet rotation, or a signed-in <code>gh</code></td></tr>
+<tr><td><code>shell</code></td><td><code>laptop-agent health</code></td><td>“the laptop answers”</td><td>A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or ssh</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two details matter when reading the result:</p>
+<ul>
+<li>Doctor’s bridge probe with a known agent is a read that takes nothing
+(<code>inbox --limit 1</code>). Service health alone proves nothing about whether
+this seat holds the fleet token, so only a call made <em>as</em> an agent
+counts. With no agent name known, the bridge leg is reported <strong>not ok</strong>
+even when the service answers — enrol, or pass <code>--agent</code>.</li>
+<li>From the legs, doctor derives the <strong>rungs</strong> map: <code>push</code> follows the
+bridge leg, <code>queue</code> follows the queue leg, <code>priority</code> follows the
+github leg, and <code>shortlist</code> is always true because it is a local file.
+The answer also reports <code>builds</code>: whether <code>fleet shell</code> reaches the
+laptop from here, or will try a codespace and then run locally.</li>
+</ul>
+<p>Exit <code>0</code> means at least one intake rung (bridge, queue or github) is
+live; exit <code>3</code> means none is.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li><code>queue</code> down while <code>bridge</code> is up: the classic missing-token-file
+shape. Go back to Step 2 — a seat whose bootstrap skipped the token
+phase enrols fine and then fails exactly here.</li>
+<li><code>github</code> down: neither the fleet rotation nor a signed-in <code>gh</code>
+answered. Sign <code>gh</code> in on the seat, or check secret resolution by name
+as in <a href="resolve-a-secret.html">Tutorial: resolve a secret</a>.</li>
+<li><code>shell</code> down but the other legs up: the seat can still take work;
+builds will fall back as the <code>builds</code> line describes. Fix the laptop
+route when you need laptop builds.</li>
+</ul>
+<h2 id="step-6-take-the-first-piece-of-work"><a class="header" href="#step-6-take-the-first-piece-of-work">Step 6: Take the first piece of work</a></h2>
+<p><code>fleet agent next</code> walks the intake ladder in order — a pushed bridge
+command, a queue claim, the local shortlist, then the highest-priority
+open issue from GitHub — and returns the first rung that yields work. A
+rung that is <em>down</em> is recorded and skipped; a rung that is <em>empty</em> is
+different, and the answer’s <code>tried</code> log says which was which.</p>
+<pre><code class="language-bash">fleet agent next --agent &lt;your-agent-name&gt;
+</code></pre>
+<p>What the output means: one JSON object, <code>{agent, rung, task, then, tried}</code>. Do the task, then run the commands in <code>then</code> — for a queue task
+those lines name the lease deadline and the exact <code>fleet queue checkpoint</code> / <code>fleet queue complete</code> commands for the claim. The queue
+rung claims with a four-hour lease, overriding the queue’s 45-minute
+default, which would lapse mid-task. The full claim-and-complete flow is
+<a href="claim-and-complete.html">Tutorial: claim and complete a queue task</a>.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>Exit <code>5</code>: no rung had work. This is a normal, healthy answer for an
+idle fleet — the seat is enrolled and reachable, there is simply
+nothing to hand out right now. Read <code>tried</code> to confirm each rung was
+<code>empty</code> or <code>skipped</code> rather than <code>down</code>; a <code>down</code> rung points back at
+the matching doctor leg in Step 5.</li>
+<li>Exit <code>3</code>: a needed leg is down before the ladder could run. Fix it via
+Step 5.</li>
+<li>Exit <code>2</code>: a usage error in the flags.</li>
+</ul>
+<h2 id="you-are-done-when"><a class="header" href="#you-are-done-when">You are done when</a></h2>
+<p>All of the following hold:</p>
+<ul>
+<li><code>ls -l ~/tools/*-token</code> shows the three token files, each mode <code>0600</code>.</li>
+<li><code>fleet bridge hello --agent &lt;your-agent-name&gt;</code> exits <code>0</code>.</li>
+<li><code>fleet agent enroll --kind &lt;kind&gt; --name &lt;your-agent-name&gt;</code> printed a
+profile with <code>registered: true</code>.</li>
+<li><code>fleet agent doctor --agent &lt;your-agent-name&gt;</code> exits <code>0</code>, and you have
+read all four legs — <code>bridge</code>, <code>queue</code>, <code>github</code>, <code>shell</code> — and know
+which rungs they give you.</li>
+<li><code>fleet agent next --agent &lt;your-agent-name&gt;</code> either handed you a task
+with its <code>then</code> lines, or exited <code>5</code> with every rung <code>empty</code> or
+<code>skipped</code> in <code>tried</code> — never <code>down</code> for a reason you have not fixed.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../reference/actions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../tutorials/claim-and-complete.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../reference/actions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../tutorials/claim-and-complete.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

@@ -24,6 +24,7 @@ import {
   defaultRuntimeConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
+  parseModelsDev,
 } from './provider-catalog-sync.mjs';
 
 const FIXTURE = `{
@@ -562,4 +563,28 @@ test('runSync diffs the merged effective config when a runtime overlay exists (#
   });
   assert.equal(bare.report.runtime_overlay, null);
   assert.equal(bare.report.providers.google, undefined);
+});
+
+test('parseModelsDev accepts the catalog shape and rejects drift (#7983 item 8)', () => {
+  const good = { openai: { models: { 'gpt-x': { limit: { context: 1 } } } }, bare: {} };
+  assert.equal(parseModelsDev(good), good);
+  assert.deepEqual(parseModelsDev({}), {});
+  for (const [bad, re] of [
+    [null, /got null/],
+    [[], /got array/],
+    ['x', /got string/],
+    [{ openai: [] }, /"openai" must be an object, got array/],
+    [{ openai: null }, /"openai" must be an object, got null/],
+    [{ openai: { models: [] } }, /"openai"\.models must be an object keyed by model id, got array/],
+    [{ openai: { models: null } }, /"openai"\.models must be an object keyed by model id, got null/],
+  ]) {
+    assert.throws(() => parseModelsDev(bad), re, JSON.stringify(bad));
+  }
+});
+
+test('a drifted models.dev file is reported as unavailable, not read as zero models (#7983 item 8)', async () => {
+  const { configPath, sourceDir, modelsDev } = controlFixture();
+  fs.writeFileSync(modelsDev, JSON.stringify({ openai: { models: ['gpt-x'] } }));
+  const { report } = await runSync({ configPath, modelsDevSpec: modelsDev, sourceDir });
+  assert.match(report.models_dev, /^unavailable \(models\.dev provider "openai"\.models must be an object/);
 });

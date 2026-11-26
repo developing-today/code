@@ -35,7 +35,7 @@
 #     npmDepsHash from the build failure message.
 
 let
-  version = "4.2.2";
+  version = "4.2.4";
 in
 buildNpmPackage {
   pname = "supergateway";
@@ -43,7 +43,7 @@ buildNpmPackage {
 
   src = fetchurl {
     url = "https://registry.npmjs.org/supergateway/-/supergateway-${version}.tgz";
-    hash = "sha256-rtCCok8PXvloHOLLPEu2ZIp2DkB8f9EjvPwR5hsPxao=";
+    hash = "sha256-xyOK33kCZbBWHqGH35B9g2G/oatTp9qLkIWJViGLlGQ=";
   };
 
   postPatch = ''
@@ -60,7 +60,7 @@ buildNpmPackage {
     '
   '';
 
-  npmDepsHash = "sha256-ONHco8zwlWE0N1H8ibA/OLNECMmf1/d3tffxTkACa1c=";
+  npmDepsHash = "sha256-TGD66++apAE3L+wWUFDQi2MPptB4u5qFCPok8FAbnAA=";
 
   npmFlags = [
     "--ignore-scripts"

@@ -39,8 +39,27 @@
       "properties": {
         "deadline_ms": { "default": 5000, "maximum": 60000, "minimum": 1, "type": "integer" },
         "peer_breadth": { "default": 4, "maximum": 16, "minimum": 1, "type": "integer" },
-        "per_peer_timeout_ms": { "default": 2000, "maximum": 30000, "minimum": 1, "type": "integer" }
+        "per_peer_timeout_ms": { "default": 2000, "maximum": 30000, "minimum": 1, "type": "integer" },
+        "remotes": {
+          "default": [],
+          "description": "The peers fan-out queries may ask (record section 7.1). Default [] (local-only). Resolved output is sorted by priority, ties in list order, with each remote's effective timeout_ms and scope filled in.",
+          "items": { "$ref": "#/$defs/fanout_remote" },
+          "type": "array"
+        }
       },
+      "type": "object"
+    },
+    "fanout_remote": {
+      "additionalProperties": false,
+      "description": "One fan-out remote (#9111 record sections 7.1 to 7.3). peer_id must have a peers[] entry granting query.out whose class is fully_trusted or accept_signed_from, and appears at most once. relay true needs a fully_trusted peer with relay_granted. priority is ask order only, never authority. timeout_ms overrides the peer and fan-out per-peer timeout and is capped by deadline_ms; scope defaults to the peer's scope.",
+      "properties": {
+        "peer_id": { "minLength": 1, "type": "string" },
+        "priority": { "maximum": 4294967295, "minimum": 0, "type": "integer" },
+        "relay": { "default": false, "type": "boolean" },
+        "scope": { "minLength": 1, "type": ["string", "null"] },
+        "timeout_ms": { "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+      },
+      "required": ["peer_id", "priority"],
       "type": "object"
     },
     "fixed_gates": {
@@ -55,6 +74,70 @@
       },
       "type": "object"
     },
+    "link_adapter": { "default": "iroh", "enum": ["iroh", null], "type": ["string", "null"] },
+    "links": {
+      "additionalProperties": false,
+      "description": "The link plane (#9111 record section 3.3): per-kind link defaults. An absent key or null takes the built-in default: every configurable kind off, adapter iroh, retention_class default. Who may use a link stays with peers[]; no link setting widens a class. Load rejects an adapter this build does not advertise (record section 6.5 step 4); this build advertises iroh.",
+      "properties": {
+        "control": {
+          "additionalProperties": false,
+          "description": "Emergency peer disable and key revocation. Always on and not configurable: only {} or null is accepted.",
+          "properties": {},
+          "type": ["object", "null"]
+        },
+        "query": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "default": false, "type": ["boolean", "null"] },
+            "timeout_ms": { "description": "A direct query's timeout. Default: fanout.per_peer_timeout_ms.", "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+          },
+          "type": ["object", "null"]
+        },
+        "send_only": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "$ref": "#/$defs/link_adapter" },
+            "enabled": { "default": false, "type": ["boolean", "null"] },
+            "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] }
+          },
+          "type": ["object", "null"]
+        },
+        "sync": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "$ref": "#/$defs/link_adapter" },
+            "enabled": { "default": false, "type": ["boolean", "null"] },
+            "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] },
+            "sync_scope": { "description": "Default: behavior.sync_scope.", "enum": ["metadata", "full", null], "type": ["string", "null"] }
+          },
+          "type": ["object", "null"]
+        }
+      },
+      "type": "object"
+    },
+    "namespaces": {
+      "additionalProperties": false,
+      "description": "The namespace plane (#9111 record sections 3.1 and 7.4): which server-local namespace registry (#9116) names resolve in. An absent key or null takes the built-in default, the built-in registry only. The registry's records (core, handler, policies, shorthand_policy) are signed #9116 data and are never written here; there is no global registry and no fallback.",
+      "properties": {
+        "registry": {
+          "description": "builtin (the default), server:<id> or handle:<handle>, the id or handle 1 to 255 visible ASCII characters, written as a #9116 registry id displays itself.",
+          "oneOf": [
+            { "const": "builtin" },
+            { "pattern": "^(server|handle):[!-~]{1,255}$", "type": "string" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "operation_override": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": { "enum": ["iroh", null], "type": ["string", "null"] },
+        "timeout_ms": { "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+      },
+      "type": "object"
+    },
     "peer": {
       "additionalProperties": false,
       "description": "One peer relationship (#9111 record section 3.2; the #9141 PeerPolicy plus fan-out fields). The class is a ceiling and operations is the grant. Load rejects: relay_granted without fully_trusted; the relay operation without relay_granted; sync.accept on send_only; sync.send on accept_signed_from; any operation on unknown; a repeated operation; expires_at not after valid_from. peer_id is unique in the document.",
@@ -66,6 +149,18 @@
           "items": { "enum": ["sync.accept", "sync.send", "query.out", "query.answer", "relay"], "type": "string" },
           "type": "array",
           "uniqueItems": true
+        },
+        "overrides": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Per-operation overrides keyed by a granted operation (record section 3.3). Each may choose only a link adapter this build advertises and a timeout; relay takes none. Class, gates and checks are not keys and cannot be overridden.",
+          "properties": {
+            "query.answer": { "$ref": "#/$defs/operation_override" },
+            "query.out": { "$ref": "#/$defs/operation_override" },
+            "sync.accept": { "$ref": "#/$defs/operation_override" },
+            "sync.send": { "$ref": "#/$defs/operation_override" }
+          },
+          "type": "object"
         },
         "peer_id": { "minLength": 1, "type": "string" },
         "policy_version": { "minimum": 0, "type": "integer" },
@@ -86,6 +181,48 @@
         "scope": { "minLength": 1, "type": "string" }
       },
       "required": ["scope"],
+      "type": "object"
+    },
+    "storage": {
+      "additionalProperties": false,
+      "description": "The storage plane (#9111 record section 3.4): which adapter family backs each store. An absent key or null takes the built-in default. Load rejects an adapter or durability this build does not advertise (record section 6.5 step 4); this build advertises redb with fsync for local_store and event_log, and no object-store adapter.",
+      "properties": {
+        "event_log": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The event log. Default sync_participation none." },
+        "local_store": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The local persistent store. Default sync_participation full." },
+        "object_store": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "adapter": { "minLength": 1, "type": "string" },
+                "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] }
+              },
+              "required": ["adapter"],
+              "type": "object"
+            },
+            { "type": "null" }
+          ],
+          "description": "The object store. Absent or null means none."
+        }
+      },
+      "type": "object"
+    },
+    "store_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": { "default": "redb", "type": ["string", "null"] },
+        "durability": { "default": "fsync", "type": ["string", "null"] },
+        "sync_participation": { "enum": ["full", "none", null], "type": ["string", "null"] }
+      },
+      "type": "object"
+    },
+    "tier": {
+      "additionalProperties": false,
+      "description": "One tier's placement and retention (#9111 record section 3.5). An absent key or null takes the default. A tier label never authorizes access. Load rejects object_store placement unless storage.object_store is bound.",
+      "properties": {
+        "placement": { "default": "local", "enum": ["local", "object_store", null], "type": ["string", "null"] },
+        "retention": { "default": "indefinite", "pattern": "^(indefinite|[0-9]*[1-9][0-9]*d)$", "type": ["string", "null"] }
+      },
       "type": "object"
     }
   },
@@ -108,11 +245,13 @@
     },
     "fanout": { "$ref": "#/$defs/fanout" },
     "gates": { "$ref": "#/$defs/fixed_gates" },
+    "links": { "$ref": "#/$defs/links" },
     "mode": {
       "description": "Named mode: a coherent behavior bundle that contributes behavioral defaults only. A mode cannot confer identity or privilege.",
       "enum": ["single-node", "hosted-tenant", "federated-relay"],
       "type": "string"
     },
+    "namespaces": { "$ref": "#/$defs/namespaces" },
     "overrides": {
       "description": "Scoped overrides. Applied in scope-name order during resolution; two overrides for the same scope reject the document.",
       "items": { "$ref": "#/$defs/scoped_override" },
@@ -135,6 +274,13 @@
       "const": 1,
       "description": "Schema version. Only version 1 is accepted; any other version rejects the document.",
       "type": "integer"
+    },
+    "storage": { "$ref": "#/$defs/storage" },
+    "tiers": {
+      "additionalProperties": { "$ref": "#/$defs/tier" },
+      "description": "The tier map (#9111 record section 3.5): tier identifier to placement and retention. Absent means every record is in the built-in default tier (local, indefinite). A record whose tier the map does not name is held in default placement and refused for placement-dependent operations.",
+      "propertyNames": { "maxLength": 64, "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$" },
+      "type": "object"
     }
   },
   "required": ["schema_version", "config_id", "revision", "mode", "protocol_versions", "ceilings"],

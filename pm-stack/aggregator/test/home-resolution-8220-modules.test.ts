@@ -19,18 +19,38 @@ const STATE = ".local/state/pm-aggregator";
 
 // [setting the error names, override variable or null, default under HOME, resolver]
 const DEFAULTS: [string, string | null, string, (env: Record<string, string | undefined>) => string][] = [
-  ["PM_AGG_DECISION_EVENTS_FILE", "PM_AGG_DECISION_EVENTS_FILE", `${STATE}/decision-events.jsonl`, (env) =>
-    defaultDecisionEventsFile(env)],
-  ["PM_AGG_DECISION_OUTBOX_FILE", "PM_AGG_DECISION_OUTBOX_FILE", `${STATE}/decision-events-outbox.jsonl`, (env) =>
-    defaultDecisionOutboxFile(env)],
+  [
+    "PM_AGG_DECISION_EVENTS_FILE",
+    "PM_AGG_DECISION_EVENTS_FILE",
+    `${STATE}/decision-events.jsonl`,
+    (env) => defaultDecisionEventsFile(env),
+  ],
+  [
+    "PM_AGG_DECISION_OUTBOX_FILE",
+    "PM_AGG_DECISION_OUTBOX_FILE",
+    `${STATE}/decision-events-outbox.jsonl`,
+    (env) => defaultDecisionOutboxFile(env),
+  ],
   ["PM_AGG_DECISIONS_FILE", "PM_AGG_DECISIONS_FILE", `${STATE}/decisions.json`, (env) => defaultDecisionsFile(env)],
-  ["PM_AGG_HOST_HEALTH_FILE", "PM_AGG_HOST_HEALTH_FILE", `${STATE}/host-health.json`, (env) =>
-    defaultHostHealthFile(env)],
-  ["PM_AGG_NEEDS_DREW_FILE", "PM_AGG_NEEDS_DREW_FILE", `${STATE}/needs-drew.json`, (env) => defaultNeedsDrewFile(env)],
-  ["PM_AGG_REPORT_RECORDS_FILE", "PM_AGG_REPORT_RECORDS_FILE", `${STATE}/report-records.jsonl`, (env) =>
-    defaultReportRecordsFile(env)],
-  ["PM_AGG_STACK_HEALTH_FILE", "PM_AGG_STACK_HEALTH_FILE", `${STATE}/stack-health.json`, (env) =>
-    defaultStackHealthFile(env)],
+  [
+    "PM_AGG_HOST_HEALTH_FILE",
+    "PM_AGG_HOST_HEALTH_FILE",
+    `${STATE}/host-health.json`,
+    (env) => defaultHostHealthFile(env),
+  ],
+  ["PM_AGG_NEEDS_USER_FILE", "PM_AGG_NEEDS_USER_FILE", `${STATE}/needs-user.json`, (env) => defaultNeedsDrewFile(env)],
+  [
+    "PM_AGG_REPORT_RECORDS_FILE",
+    "PM_AGG_REPORT_RECORDS_FILE",
+    `${STATE}/report-records.jsonl`,
+    (env) => defaultReportRecordsFile(env),
+  ],
+  [
+    "PM_AGG_STACK_HEALTH_FILE",
+    "PM_AGG_STACK_HEALTH_FILE",
+    `${STATE}/stack-health.json`,
+    (env) => defaultStackHealthFile(env),
+  ],
   ["the OpenCode database path", null, ".local/share/opencode/opencode.db", () => opencodeDbDefault()],
   ["the meta quota export's latest.json", null, "atlas/meta-quota-export/latest.json", () => defaultLatestPath()],
 ];

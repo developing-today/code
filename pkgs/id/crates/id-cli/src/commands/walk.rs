@@ -156,7 +156,7 @@ pub fn parse_id(text: &str) -> anyhow::Result<[u8; 32]> {
         bail!("an id is 64 hex characters, got {}", bytes.len());
     }
     let mut out = [0u8; 32];
-    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+    for (index, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
         let pair = std::str::from_utf8(pair).context("id is not ASCII")?;
         out[index] = u8::from_str_radix(pair, 16)
             .with_context(|| format!("id has a non-hex pair: {pair}"))?;
@@ -780,7 +780,7 @@ fn print_transfer(label: &str, transfer: &id_sync::federation::slices::b09_anti_
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

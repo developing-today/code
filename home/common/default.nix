@@ -1264,18 +1264,15 @@ in
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # package: deliberately unset. There is one mcpx — the
-    # cascade's (the fork's build, via the module wrapper's
-    # mkDefault) — and this config takes that one (Drew's ruling,
-    # 2026-11-03; code#5027). The former pin to this repo's own
-    # pkgs/mcpx build made two mcpx builds coexist and collided
-    # with the fork package's bin/mcpx in the home profile.
-    #
-    # addPackageToProfile: off. The profile's bin/mcpx comes from
-    # exactly one provider — the opencode package's bundled
-    # symlink. The module also adding cfg.package to home.packages
-    # would put a second mcpx entry in the profile (Drew's ruling,
-    # 2026-11-03; code#5027).
+    # Use the same source and test-disabled derivation already in the
+    # system package set. The mcpx Go/e2e suite runs in CI; running its
+    # 30-minute process tests during every NixOS switch has repeatedly
+    # blocked activation. This changes build checks only, not runtime
+    # code or the profile's binary provider.
+    package = mcpx;
+    # Keep the single profile provider selected in code#5027:
+    # OpenCode's bundled symlink supplies bin/mcpx; this service's
+    # package is executed directly and is not added to home.packages.
     addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).

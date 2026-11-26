@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FailClosed, parseBindingId, parseJurisdiction, userStub } from "../src/routing.ts";
+import {
+  FailClosed,
+  blobsBindingFor,
+  parseBindingId,
+  parseJurisdiction,
+  userStub,
+} from "../src/routing.ts";
 import {
   createHostedAccountRecord,
   HostedAccountDirectory,
@@ -261,5 +267,35 @@ test("userStub fails closed when restriction is unavailable", () => {
   assert.throws(
     () => userStub(ns, BINDING, "us"),
     (e: unknown) => e instanceof FailClosed && e.status === 503,
+  );
+});
+
+function fakeBucket() {
+  return {
+    head: async () => null,
+    get: async () => null,
+    put: async () => {},
+    delete: async () => {},
+  };
+}
+
+test("blobsBindingFor picks the bucket strictly from the authoritative jurisdiction", () => {
+  const us = fakeBucket();
+  const eu = fakeBucket();
+  const fedramp = fakeBucket();
+  assert.equal(blobsBindingFor({ BLOBS_US: us }, "us"), us);
+  assert.equal(blobsBindingFor({ BLOBS_US: us, BLOBS_EU: eu }, "eu"), eu);
+  assert.equal(blobsBindingFor({ BLOBS_FEDRAMP: fedramp }, "fedramp"), fedramp);
+});
+
+test("blobsBindingFor fails closed on a missing binding with no fallback", () => {
+  const us = fakeBucket();
+  assert.throws(
+    () => blobsBindingFor({ BLOBS_US: us }, "eu"),
+    (e: unknown) => e instanceof FailClosed && (e as FailClosed).code === "blobs_unavailable",
+  );
+  assert.throws(
+    () => blobsBindingFor({}, "us"),
+    (e: unknown) => e instanceof FailClosed && (e as FailClosed).code === "blobs_unavailable",
   );
 });

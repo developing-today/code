@@ -1,9 +1,10 @@
-# Feature composition for pkgs/id — machine-readable design-of-record (S1)
+# Feature composition for pkgs/id — machine-readable design-of-record (S1 + S2)
 
 S1 of developing-today/code#14056 (§10 slice list): the §4 catalogue,
 the §5 manifest schema + canonical hashing spec, and the §0.2
 reconciliation — as data and specs, validated against today's tree.
-No implementation is authorized by this directory; S2–S13 build on it.
+S1 records the catalogue and composition contracts; S2 records immediate
+feature hygiene and the single source for shipped variant feature sets.
 
 Plan of record: `doc/2026-11-24T03-36-48Z_design_id-feature-composition/`
 (record PR #14055). S1 record note (validation result, amendment
@@ -21,7 +22,9 @@ Predecessor record: `doc/2026-11-09T04-43-05Z_design_id5788_build_variants.md`
 | `composition-hash-spec.md` | The §5.2 composition-hash spec: canonical CBOR profile + BLAKE3-256, the hashed field table, version stamp + registry + yank semantics, conventions boundary, worked example. |
 | `examples/` | Three valid manifests: `basement-store-node.toml` (plan §5.1 verbatim), `headless-alias.toml` (alias-invariance pair), `user-profile.toml` (open-set mechanism). |
 | `golden/` | `inputs.json` (worked-example inputs), `make_vector.py` (stdlib canonical encoder), `canonical.hex` (464 bytes), `hash.hex` (BLAKE3 identity), `recheck.sh` (reproduce both). |
-| `validate.py` | The S1 done-test, executable: catalogue ↔ tree checks (§1–7 in its header). Run `python3 -I validate.py` here. |
+| `validate.py` | S1 catalogue/tree checks plus the S2 variant-source pin (check 8). Run `python3 -I validate.py` here. |
+| `variants.toml` | S2 single source for the `web` and `lib` shipped build feature sets and root defaults. |
+| `../scripts/variant-features.sh` | Strict reader used by just/build.sh to obtain a variant's feature set. |
 
 ## The five amendments, and where each landed
 
@@ -56,11 +59,28 @@ Predecessor record: `doc/2026-11-09T04-43-05Z_design_id5788_build_variants.md`
 (5 shipped catalogued — `sandbox→sandbox-exec`, `world→world-state`,
 `ssh→ssh-serve`, `web`, `dht` — plus `currency-poc-tb` declared
 unrepresentable); every shipped forwarding exists in its seam crate today
-(`id-web/sandbox` gap recorded as `known_gap` on `web`, fixed in S2);
+(`id-web/sandbox` test-only gate removed in S2);
 requires acyclic; groups consistent; all 7 profiles resolve with at
 most one selected member per group; the golden vector's feature set
 equals the catalogue resolution of `basement-store-node.toml` with
 owning-crate versions matching today's workspace (`0.1.0`).
+
+## S2 feature hygiene (2026-11-24)
+
+`resolver = "3"` is explicit in the workspace manifest. The `id-web/sandbox`
+feature was removed rather than forwarded: all eight cfg sites gated only
+test helpers in `world_ws.rs`; production code used no such cfg, and the
+web crate's `id-worlds` dev-dependency already enables `sandbox` and
+`test-utils` for its tests. Member defaults intentionally remain divergent:
+`id-caps` defaults to `sandbox`, `id-cli` to `sandbox,world`, and `id-core`
+to `world,sandbox`; the root facade opts out with `default-features = false`
+for each member and owns the effective defaults (`sandbox,world`). The
+legacy, unreferenced `default.nix` is not a shipped variant consumer.
+
+Nix, just recipes and `scripts/build.sh` now read `variants.toml`; validation
+check 8 verifies its root defaults/features and those consumers. The S2
+done-check compares the Nix `id-web` and Cargo web feature graphs; it remains
+blocked by the upstream `cargo check -p id-store` failure tracked in #14315.
 
 ## For later slices
 

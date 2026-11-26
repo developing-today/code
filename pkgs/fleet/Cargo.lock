@@ -719,20 +719,24 @@ dependencies = [
  "fleet-config",
  "fleet-dispatch",
  "fleet-dispatch-test",
+ "fleet-kv",
  "fleet-laptop-agent",
  "fleet-orgs",
+ "fleet-pool",
  "fleet-proxy",
  "fleet-proxy-proto",
  "fleet-queue",
  "fleet-registry",
  "fleet-search",
  "fleet-secrets",
+ "getrandom 0.3.4",
  "libc",
  "proptest",
  "rusqlite",
  "serde_json",
  "sha2",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]
@@ -806,18 +810,25 @@ dependencies = [
 name = "fleet-kv"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "fleet-config",
+ "libc",
  "proptest",
  "rusqlite",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
 name = "fleet-laptop-agent"
 version = "0.1.0"
 dependencies = [
+ "fleet-cert",
  "fleet-config",
  "fleet-proxy",
  "fleet-secrets",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -834,6 +845,13 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "fleet-pool"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -867,15 +885,20 @@ name = "fleet-queue"
 version = "0.1.0"
 dependencies = [
  "chunked_transfer",
+ "fleet-cert",
  "fleet-config",
  "fleet-secrets",
  "libc",
  "proptest",
+ "rcgen",
  "ring",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
+ "tiny_http",
  "ureq",
 ]
 
@@ -907,6 +930,15 @@ dependencies = [
  "fleet-config",
  "fleet-proxy-proto",
  "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "fleet-transport"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
  "serde_json",
 ]
 
@@ -1715,6 +1747,7 @@ checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
  "aws-lc-rs",
  "pem",
+ "ring",
  "rustls-pki-types",
  "time",
  "x509-parser",
@@ -2676,6 +2709,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry",
+ "ring",
  "rusticata-macros",
  "thiserror",
  "time",
