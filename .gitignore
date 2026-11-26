@@ -134,6 +134,7 @@ events.redb.tmp
 groups.jsonl
 test.*
 !pkgs/mcpx/scripts/test.sh
+!pkgs/bedside-and-away/external/test.mjs
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
 **/codedb.snapshot

@@ -1,8 +1,8 @@
 //! `world.toml`: a world described as data.
 //!
 //! A manifest names the module (by hash or source), the seed, the granted
-//! capability set, the capability ceiling, the requested execution profile and
-//! the pending schedules. `id world apply` reconciles a live world to the
+//! capability set, the capability ceiling, the requested execution profile,
+//! the presentation policy and the pending schedules. `id world apply` reconciles a live world to the
 //! manifest through the existing admin operations, `--dry-run` prints the plan
 //! without applying it, and `id world diff` shows drift between the two.
 //!
@@ -22,6 +22,7 @@ use crate::world_caps::{
     default_ceiling_names, validate_ceiling_names, validate_grant_names,
 };
 use crate::world_limits::WorldExecutionProfile;
+use id_core::presentation_policy::PresentationPolicy;
 
 /// A declarative description of a world. Fields the manifest omits are left
 /// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
@@ -53,6 +54,11 @@ pub struct WorldManifest {
     /// Requested execution profile bounds. Omitted fields inherit the server,
     /// so the all-default profile leaves the live profile alone.
     pub profile: WorldExecutionProfile,
+    /// The world's presentation policy (design #5970 §5): what appearances
+    /// it lets render. `None` (the `[presentation]` table is omitted)
+    /// leaves the live policy alone; a present table replaces it whole,
+    /// with its omitted fields at their conservative defaults.
+    pub presentation: Option<PresentationPolicy>,
     /// Pending schedules: id to fire time, in unix milliseconds. `None` (the
     /// field is omitted) leaves the live schedules alone; a present map is
     /// reconciled exactly — missing ids are scheduled, undeclared ones
@@ -74,6 +80,8 @@ pub struct WorldState {
     pub ceiling: Option<Vec<String>>,
     /// The requested execution profile.
     pub profile: WorldExecutionProfile,
+    /// The world's presentation policy.
+    pub presentation: PresentationPolicy,
     /// Pending schedules: id to fire time, in unix milliseconds.
     pub schedules: BTreeMap<String, u64>,
 }
@@ -86,6 +94,7 @@ impl Default for WorldState {
             grants: Vec::new(),
             ceiling: None,
             profile: WorldExecutionProfile::default(),
+            presentation: PresentationPolicy::default(),
             schedules: BTreeMap::new(),
         }
     }
@@ -141,6 +150,11 @@ pub enum ApplyStep {
         /// The requested bounds.
         profile: WorldExecutionProfile,
     },
+    /// Replace the presentation policy.
+    SetPresentation {
+        /// The policy to hold.
+        policy: PresentationPolicy,
+    },
     /// Schedule a fire.
     ScheduleAt {
         /// The schedule's id.
@@ -164,6 +178,7 @@ impl ApplyStep {
             Self::SetGrants { .. } => "set_grants",
             Self::SetCeiling { .. } => "set_ceiling",
             Self::SetProfile { .. } => "set_profile",
+            Self::SetPresentation { .. } => "set_presentation",
             Self::ScheduleAt { .. } => "schedule_at",
             Self::CancelSchedule { .. } => "cancel_schedule",
         }
@@ -258,6 +273,11 @@ impl WorldManifest {
         // manifest must never parse and plan clean, then fail partway
         // through a live apply (#3015).
         self.profile.validate()?;
+        if let Some(policy) = &self.presentation {
+            policy
+                .validate()
+                .map_err(|error| anyhow::anyhow!("invalid presentation policy: {error}"))?;
+        }
         if let Some(schedules) = &self.schedules {
             ensure!(
                 schedules.len() <= MAX_PENDING_SCHEDULES,
@@ -378,6 +398,16 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
         });
     }
 
+    // Presentation: an omitted table leaves the live policy alone; a
+    // present one replaces it when it differs.
+    if let Some(policy) = &desired.presentation
+        && *policy != current.presentation
+    {
+        steps.push(ApplyStep::SetPresentation {
+            policy: policy.clone(),
+        });
+    }
+
     // Schedules: an omitted field leaves the live schedules alone; a present
     // map is reconciled exactly — add missing, cancel extra.
     if let Some(desired_schedules) = &desired.schedules {
@@ -453,6 +483,15 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
                 profile.validate()?;
                 if state.profile != *profile {
                     state.profile = *profile;
+                    changed += 1;
+                }
+            }
+            ApplyStep::SetPresentation { policy } => {
+                policy
+                    .validate()
+                    .map_err(|error| anyhow::anyhow!("invalid presentation policy: {error}"))?;
+                if state.presentation != *policy {
+                    state.presentation = policy.clone();
                     changed += 1;
                 }
             }
@@ -548,6 +587,13 @@ fn render_steps(steps: &[ApplyStep]) -> String {
             },
             ApplyStep::SetProfile { profile } => {
                 out.push_str(&format!("~ profile {profile:?}\n"));
+            }
+            ApplyStep::SetPresentation { policy } => {
+                // One line of JSON: the policy's own wire form, which is
+                // what an operator would write back into the manifest.
+                let json = serde_json::to_string(policy)
+                    .unwrap_or_else(|_| "(unrenderable policy)".to_owned());
+                out.push_str(&format!("~ presentation {json}\n"));
             }
             ApplyStep::ScheduleAt { id, at_ms } => {
                 out.push_str(&format!("+ schedule {id} at {at_ms}\n"));
@@ -745,7 +791,10 @@ native_memory_bytes = 16777216",
     fn an_empty_manifest_drifts_nothing() {
         let manifest = WorldManifest::default();
         // A default (empty) manifest leaves a default (empty) world alone.
-        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        assert_eq!(
+            plan(&manifest, &WorldState::default()),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
         // And it leaves a fully populated world alone too (#817): every field
         // is unspecified, so nothing is revoked, widened, or cancelled.
         let state = WorldState {
@@ -756,7 +805,10 @@ native_memory_bytes = 16777216",
             schedules: BTreeMap::from([("round".to_owned(), 5)]),
             ..WorldState::default()
         };
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -865,7 +917,10 @@ native_memory_bytes = 16777216",
         // None — and None means the default ceiling, so nothing drifts.
         state.ceiling = fold_reported_ceiling(state.ceiling.clone().unwrap());
         assert_eq!(state.ceiling, None);
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
         // A host report of exactly the default list (never folded by hand)
         // also converges from the start.
         let reported = WorldState {
@@ -876,7 +931,10 @@ native_memory_bytes = 16777216",
             ceiling: fold_reported_ceiling(reported.ceiling.clone().unwrap()),
             ..reported
         };
-        assert!(plan(&manifest, &folded).is_empty());
+        assert_eq!(
+            plan(&manifest, &folded),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -911,7 +969,10 @@ native_memory_bytes = 16777216",
             }]
         );
         let omitted = WorldManifest::default();
-        assert!(plan(&omitted, &current).is_empty());
+        assert_eq!(
+            plan(&omitted, &current),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -950,11 +1011,14 @@ native_memory_bytes = 16777216",
         let manifest = parse(manifest_toml()).unwrap();
         let mut state = WorldState::default();
         let steps = plan(&manifest, &state);
-        assert!(!steps.is_empty());
+        assert_ne!(steps, [] as [crate::world_manifest::ApplyStep; 0]);
         let changed = apply(&steps, &mut state).unwrap();
         assert_eq!(changed, steps.len());
         // A second plan against the reconciled state is empty.
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1186,7 +1250,10 @@ native_memory_bytes = 16777216",
         // Applying the step reconciles: a second plan is empty.
         let mut applied = state.clone();
         apply(&steps, &mut applied).unwrap();
-        assert!(plan(&manifest, &applied).is_empty());
+        assert_eq!(
+            plan(&manifest, &applied),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1237,12 +1304,18 @@ native_memory_bytes = 16777216",
         // #1519 ruling: no installed program and none desired -- there is
         // nothing whose seed could change.
         let manifest = parse("seed = 99").unwrap();
-        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        assert_eq!(
+            plan(&manifest, &WorldState::default()),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
         let state = WorldState {
             seed: 7,
             ..WorldState::default()
         };
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1254,7 +1327,10 @@ native_memory_bytes = 16777216",
             ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
             ..WorldState::default()
         };
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1297,5 +1373,82 @@ native_memory_bytes = 16777216",
             diff(&WorldManifest::default(), &WorldState::default()),
             "no drift"
         );
+    }
+
+    mod presentation {
+        use super::*;
+        use id_core::presentation_policy::{Permit, Rung};
+
+        const MANIFEST: &str = r#"
+[presentation.assets]
+user_uploads = "deny"
+max_rung = "tileset"
+
+[presentation.fallback.world_glyphs]
+tree = "T"
+"#;
+
+        #[test]
+        fn a_presentation_table_parses_and_round_trips() {
+            let manifest = parse(MANIFEST).unwrap();
+            let policy = manifest.presentation.as_ref().unwrap();
+            assert_eq!(policy.assets.user_uploads, Permit::Deny);
+            assert_eq!(policy.assets.max_rung, Rung::Tileset);
+            // Omitted sections keep their conservative defaults.
+            assert!(!policy.shaders.enabled);
+            assert_eq!(round_trip(&manifest).unwrap(), manifest);
+        }
+
+        #[test]
+        fn an_unknown_presentation_key_is_refused() {
+            for bad in [
+                "[presentation]\nasset = {}\n",
+                "[presentation.assets]\nuploads = \"deny\"\n",
+                "[presentation.shaders]\nenabled = true\nformats = [\"made.up/v9\"]\n",
+            ] {
+                assert!(parse(bad).is_err(), "{bad}");
+            }
+        }
+
+        #[test]
+        fn an_omitted_table_leaves_the_live_policy_alone() {
+            let mut state = WorldState::default();
+            state.presentation.assets.max_rung = Rung::Glyph;
+            assert_eq!(
+                plan(&WorldManifest::default(), &state),
+                [] as [ApplyStep; 0]
+            );
+        }
+
+        #[test]
+        fn a_present_table_replaces_the_policy_once() {
+            let manifest = parse(MANIFEST).unwrap();
+            let mut state = WorldState::default();
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert_eq!(steps[0].kind(), "set_presentation");
+            let rendered = diff(&manifest, &state);
+            assert!(rendered.starts_with("~ presentation {"), "{rendered}");
+            assert!(rendered.contains("\"max_rung\":\"tileset\""), "{rendered}");
+
+            assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+            assert_eq!(Some(&state.presentation), manifest.presentation.as_ref());
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
+            assert_eq!(diff(&manifest, &state), "no drift");
+        }
+
+        #[test]
+        fn an_empty_table_resets_a_changed_policy_to_the_default() {
+            // A present but empty table is authoritative: it is the
+            // default policy, so a live world that drifted is reset.
+            let manifest = parse("[presentation]\n").unwrap();
+            assert_eq!(manifest.presentation, Some(PresentationPolicy::default()));
+            let mut state = WorldState::default();
+            state.presentation.assets.user_uploads = Permit::Deny;
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            apply(&steps, &mut state).unwrap();
+            assert_eq!(state.presentation, PresentationPolicy::default());
+        }
     }
 }

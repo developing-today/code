@@ -59,12 +59,12 @@ Non-goals:
 
 Each surface records four fields in its design or README:
 
-| Field | Meaning |
-| --- | --- |
-| `db` | The named Turso database it reads or writes, and its owner |
-| `bucket` | The R2 bucket and prefix, or `none` |
-| `fallback` | What happens at a cap or outage: degrade to the local or Turso-direct path, never fail open |
-| `credential` | Purpose-scoped token name (C2), vaulted by name, never a shared broad key |
+| Field        | Meaning                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| `db`         | The named Turso database it reads or writes, and its owner                                  |
+| `bucket`     | The R2 bucket and prefix, or `none`                                                         |
+| `fallback`   | What happens at a cap or outage: degrade to the local or Turso-direct path, never fail open |
+| `credential` | Purpose-scoped token name (C2), vaulted by name, never a shared broad key                   |
 
 ### 4.3 Budget and cap rules
 

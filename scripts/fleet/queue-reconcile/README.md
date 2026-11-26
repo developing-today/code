@@ -34,15 +34,23 @@ idempotent by construction: an issue that already holds a live task is
 never uncovered, and an enqueue that races another lane's import dedupes
 onto the live row.
 
+If the canonical key belongs only to a completed task, that terminal
+row is not live coverage. The importer retries once with the queue's
+supported `:dispatch:<8-hex>` suffix, derived from the check timestamp
+and issue/PR identity. A simultaneous run with the same check timestamp
+dedupes onto that live retry; a second terminal hit is reported as an
+enqueue error rather than counted as covered.
+
 **Open-PR coverage (#4951):** the broker diff only knows tasks, so
 `check_coverage.py` additionally consults the repo's open PRs before
 declaring an issue uncovered (branch `queue/<task>-<issue>-*`, a
 closing keyword, or a trailing `(#n)` title reference). An issue with
 an open fix PR is in-flight: no triage packet. With `--import` it gets
 one merge-watch packet per PR (dedupe
-`repo-health:v1:merge-watch:<repo>:pr:<n>`) — the ~24h recheck that
-re-tests mergibility, refreshes the branch, merges, or closes the PR
-with a salvage note, instead of letting pr_opened work bit-rot.
+`repo-health:v1:pr:<repo>:pr:<n>`) — the ~24h recheck that re-tests
+mergibility, refreshes the branch, merges, or closes the PR with a
+salvage note, instead of letting pr_opened work bit-rot. If several
+open PRs cover one issue, each PR gets its own watch task.
 
 **Ready-PR shepherd fallback (#12280):** the stale-PR warden is the
 merge sweep, but it is one scheduled job — when its live job vanished
@@ -50,13 +58,12 @@ in the November 2026 environment recovery, ready PRs sat unmerged for
 days while the schedule registry still listed the job enabled. The
 reconciliation is the fallback that does not depend on it: the
 `/coverage` call also carries the repo's open PR numbers, and the
-broker answers which of them a **live** task names (either PR key
-class — the warden's `repo-health:v1:pr:<repo>:pr:<n>` or the
-merge-watch key above). With `--import`, any ready (non-draft) PR
-older than 6 hours with no live task naming it gets one `pr_shepherd`
-packet under the warden's own dedupe key, so the warden and this
-fallback dedupe onto a single live task whichever files first. The
-packet's done rule: merged, or closed with a reason recorded. A PR
+broker answers which of them a **live** task names (the canonical
+`repo-health:v1:pr:<repo>:pr:<n>` key shared by the warden and
+merge-watch). With `--import`, any ready (non-draft) PR older than 6
+hours with no live task naming it gets one `pr_shepherd` packet under
+that same key, so the warden and this fallback share one live task per PR.
+The packet's done rule: merged, or closed with a reason recorded. A PR
 already receiving a merge-watch packet in the same run is not
 double-filed.
 
@@ -99,7 +106,13 @@ to `~/.config/queue-reconcile/mode` — the same two-step rollout the
 sweeper's revalidator uses, so the first cycles can be reviewed before
 anything is enqueued automatically.
 
-Install (on the laptop, once the units are reviewed):
+On the AMD NixOS host, the hourly service and timer are declared by
+`nixos/home/queue-coverage-reconcile.nix` and enabled from
+`nixos/hosts/default.nix`. The mode file remains the switch from
+observe-only to import; the default first-run behavior enqueues nothing.
+
+On a non-NixOS user system, the repo-shipped units can be installed
+manually after review:
 
 ```bash
 mkdir -p ~/.config/systemd/user

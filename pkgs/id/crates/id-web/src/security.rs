@@ -552,7 +552,7 @@ mod tests {
     #[tokio::test]
     async fn public_bind_skips_host_check() {
         let sec = WebSecurity::for_bind("0.0.0.0".parse().unwrap(), None, &[]);
-        assert!(sec.allowed_hosts.is_empty());
+        assert_eq!(sec.allowed_hosts, [] as [String; 0]);
         let r = call(
             app(sec),
             get_req("anything.example").body(Body::empty()).unwrap(),

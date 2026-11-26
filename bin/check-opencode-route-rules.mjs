@@ -23,25 +23,21 @@ export const DESIGNATION_PURPOSES = [
 ];
 export const DESIGNATION_CAPABILITIES = ['visual', 'pdf', 'audio-in', 'audio-bidir', 'tts', 'stt'];
 
-// Class-level fallback layout (Drew 2026-11-13; full table in
-// .opencode/route-fallbacks.md). Semantics: a class route's own regular
-// chain always runs first and completely; the fallback targets appended
-// after it are a second pass that engages only on exhaustion, walked
-// transitively under a per-call visited set (a class already tried in
-// the call is never re-entered), terminating at specialist, the sink.
-// The pairs workhorse->scout / scout->workhorse are therefore legal
-// fallback edges, NOT cycles: the runtime route expander prunes
-// re-entry into a route already on the expansion path. scout's and
-// background's edges are proposals Drew has not ruled on yet
-// (2026-11-13); the rest are his confirmed edges. Keep this table and
-// the config in lockstep - check (a) below fails on drift.
+// Class-level fallback layout (Drew's route-pool suggestions on #14432,
+// applied 2026-11-26; full table in .opencode/route-fallbacks.md).
+// A class route's regular chain runs first and completely; its fallback
+// targets are a second pass, walked transitively under a per-call visited
+// set and terminating at specialist. The graph is intentionally acyclic:
+// workhorse no longer falls into scout, scout falls through background to
+// workhorse, and speed ends at the cheap last-resort pair before specialist.
+// Keep this table and config in lockstep - check (a) below fails on drift.
 export const CLASS_FALLBACKS = {
   small: ['speed'],
-  speed: ['workhorse', 'summit', 'specialist'],
-  workhorse: ['scout', 'specialist'],
+  speed: ['workhorse-last-resort', 'specialist'],
+  workhorse: ['specialist'],
   summit: ['specialist'],
   specialist: [],
-  scout: ['background', 'workhorse'],
+  scout: ['background'],
   background: ['workhorse'],
 };
 const CLASS_FALLBACK_PAIRS = new Set(
@@ -174,6 +170,10 @@ export function inspectFallbackLayout(modelRoutes, fallbacks = CLASS_FALLBACKS, 
 
   return issues;
 }
+// Time-of-day window classes (#9378 stage 2): the closed vocabulary
+// for a model-route window's optional `class` (absent means peak).
+export const WINDOW_CLASSES = ['peak', 'off-peak', 'preburn'];
+
 // Keep aligned with bin/opencode-route-proxy.mjs BUILTIN_PROVIDERS. These
 // concrete provider ids take precedence over a same-named provider route.
 const BUILTIN_PROVIDER_IDS = new Set(['opencode-go', 'openai', 'deepseek', 'groq', 'openrouter', 'meta']);
@@ -534,11 +534,11 @@ export function inspectRouteRules(config) {
         return [];
       }
       if (stack.includes(parsed.model)) {
-        // Re-entry through a declared class fallback edge (e.g.
-        // workhorse -> scout -> workhorse) is the designed per-call
-        // visited-set semantics, not a cycle: the runtime expander
-        // prunes the re-entry. The traversal itself is bounded by
-        // the seen set below either way.
+        // The runtime route expander prunes re-entry through a declared
+        // class-fallback edge. The canonical fallback graph is acyclic;
+        // this guard keeps future declared fallbacks from being reported
+        // as ordinary composition cycles. The traversal remains bounded
+        // by the seen set below either way.
         if (!CLASS_FALLBACK_PAIRS.has(`${stack.at(-1)}->${parsed.model}`)) {
           addIssue(`${tier}: model-route cycle ${[...stack, parsed.model].join(' -> ')}`);
         }
@@ -708,6 +708,37 @@ export function inspectRouteRules(config) {
 
   // Class fallback layout + whole-graph composition cycle pass.
   // Cycles the tier resolver already reported are not repeated.
+  // Time-of-day window metadata (#9378 stage 2): a window's `class`
+  // must be in the closed vocabulary, and a route's `windows`
+  // binding must be a list of known window names (the proxy ignores
+  // unknown binding names at record time).
+  if (isObject(modelRouteWindows)) {
+    for (const [name, window] of Object.entries(modelRouteWindows)) {
+      if (!isObject(window)) {
+        addIssue(`window: model-route window "${name}" must be an object with start/end`);
+        continue;
+      }
+      if (window.class !== undefined && !WINDOW_CLASSES.includes(window.class)) {
+        addIssue(
+          `window: model-route window "${name}" has unknown class ${JSON.stringify(window.class)} (expected one of ${WINDOW_CLASSES.join(', ')})`,
+        );
+      }
+    }
+  }
+  if (isObject(modelRoutes)) {
+    for (const [routeName, route] of Object.entries(modelRoutes)) {
+      if (!isObject(route) || route.windows === undefined) continue;
+      if (!Array.isArray(route.windows) || !route.windows.every((w) => typeof w === 'string' && w)) {
+        addIssue(`route "${routeName}": "windows" must be a list of model-route window names`);
+        continue;
+      }
+      for (const w of route.windows) {
+        if (!isObject(modelRouteWindows) || !Object.hasOwn(modelRouteWindows, w)) {
+          addIssue(`route "${routeName}": "windows" names unknown model-route window "${w}"`);
+        }
+      }
+    }
+  }
   const reportedCycleKeys = new Set();
   for (const issue of issues) {
     const match = /model-route cycle (.+)$/.exec(issue);

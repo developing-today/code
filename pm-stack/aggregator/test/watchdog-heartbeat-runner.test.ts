@@ -180,4 +180,24 @@ describe("watchdog heartbeat runner", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("publishes NEEDS_ORCHESTRATOR on stdout even when the aggregator alert intake is down", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "watchdog-heartbeat-runner-"));
+    try {
+      const fake = await fakePostAlertCommand(dir);
+      const file = join(dir, "journal.jsonl");
+      await new SloJournal(file).append([watchdogHeartbeatLine(Date.now() - 2 * WATCHDOG_HEARTBEAT_INTERVAL_MS)]);
+      const result = await runScript(["--journal", file], {
+        PATH: `${join(dir, "bin")}:${process.env.PATH ?? ""}`,
+        WATCHDOG_TEST_POST_ALERT_ARGS: fake.capture,
+        WATCHDOG_TEST_POST_ALERT_EXIT: "7",
+      });
+      expect(result.stdout).toContain("NEEDS_ORCHESTRATOR: PM-stack watchdog heartbeat missing");
+      expect(result.stdout).toContain("2 five-minute cycles");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("post-alert exited with status 7");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

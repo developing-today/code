@@ -1,6 +1,6 @@
 # fleet search
 
-`fleet search` is the atlas-search client surface over the live Atlas service contract: **hybrid FTS+vector search over the Atlas corpus**, with classification filters. Search "joins unchanged" after the service cutover; the service role itself is `fleet serve search` (see [fleet serve](serve.md)). Two verbs: `search` (the default) and `get-chunk`. `init` and `fetch-model` are usage errors naming the standalone artifact — they stay on the standalone atlas-search artifact.
+`fleet search` is the atlas-search client surface over the live Atlas service contract: **hybrid FTS+vector search over the Atlas corpus**, with classification filters. Search "joins unchanged" after the service cutover; the service role itself is `fleet serve search` (see [fleet serve](serve.md)). Three verbs: `search` (the default), `get-chunk`, and `backup` (the atlas-backup routine, #14129 — not part of the atlas-search client surface). `init` and `fetch-model` are usage errors naming the standalone artifact — they stay on the standalone atlas-search artifact.
 
 See also [Search: the Atlas corpus](../concepts/search.md).
 
@@ -109,3 +109,21 @@ $ fleet search get-chunk 112081 --neighbors 2 --text
 ```
 
 Fetches chunk 112081 with two neighbouring chunks on each side, rendered as text.
+
+## fleet search backup
+
+```console
+fleet search backup [--date YYYY-MM-DD] [--skip-dedupe] [DATE]
+```
+
+The daily backup of the canonical local atlas.db, ported from the `atlas-backup` shell routine (#14129, the #5670 §8 migration row). Each run snapshots the DB consistently (`sqlite3 .backup`), gzips it deterministically (mtime 0, no stored name), and files the same bytes to three destinations: the laptop backups root (`~/backups/atlas/<DATE>/`), R2 (bucket `supabase-backups`, key `atlas/<DATE>/…`), and Google Drive (`Cloud/cold-store/db-backups/local-atlas/`, via the laptop's rclone `drive` remote). Every offsite copy is sha256-verified against the local archive, and a manifest (`atlas-<DATE>.manifest.json`) files beside each archive. Dedupe is by content hash against the last OK verdict in `~/backups/atlas/backup-log.md`; rotation keeps the newest 7 dates on laptop + R2 and the newest 4 archives on Drive, touching only this routine's own artifacts. R2 credentials come from Bitwarden Secrets Manager at runtime, by key name only (`cloudflare.r2-backups-*`, `cloudflare.r2-endpoint`); they are never logged.
+
+### Behaviour
+
+Prints exactly one verdict line — `ATLAS-BACKUP <DATE> OK …`, `UNCHANGED …`, or `FAILED …` (the shell original's formats, unchanged) — and appends one line per run to `backup-log.md`. A second concurrent run prints the SKIP line and exits 0 (single-instance flock). Runs are idempotent per date; `--skip-dedupe` forces filing when the hash matches the last filed snapshot.
+
+### Exit codes
+
+- `0` — ok, unchanged, or skipped (another run holds the lock).
+- `1` — a leg failed, or an early failure (validation, tools, credentials, snapshot).
+- `2` — usage error.

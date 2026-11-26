@@ -14,6 +14,7 @@ const SECTIONS = [
   "questions",
   "prs",
   "priorities",
+  "done",
   "agents",
   "services",
   "more",

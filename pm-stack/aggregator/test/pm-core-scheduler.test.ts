@@ -63,6 +63,23 @@ describe("pm-core scheduler (#8570)", () => {
     expect(audits[0].job).toBe("quota");
   });
 
+  test("a job that reports a skip is audited as skipped with its reason, not ok", async () => {
+    const audits: SchedulerAudit[] = [];
+    const scheduler = createPmCoreScheduler({
+      runQuota: () => {},
+      runFleetFeed: () => ({ skipped: "paused for drill" }),
+      writeAudit: (record) => {
+        audits.push(record);
+      },
+    });
+
+    await scheduler.runNow("fleet-feed");
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.job).toBe("fleet-feed");
+    expect(audits[0]?.status).toBe("skipped");
+    expect(audits[0]?.reason).toBe("paused for drill");
+  });
+
   test("records a failed job without stopping the other scheduler", async () => {
     const audits: SchedulerAudit[] = [];
     const scheduler = createPmCoreScheduler({

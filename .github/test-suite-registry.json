@@ -71,12 +71,25 @@
     5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092, 6093, 6099, 5582, 5937, 5945, 5951, 6034,
     6081, 6090, 6094, 6095, 6178, 6179
   ],
-  "uncovered_count": 41,
+  "uncovered_count": 42,
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
+      "id": "id.rust.id-pg.integration",
+      "paths": ["pkgs/id/crates/id-pg/tests/*.rs"],
+      "invocation": "nix develop ./pkgs/id --command bash pkgs/id/scripts/test-postgrest-contract.sh",
+      "venue": {
+        "workflow": ".github/workflows/id-pg-postgrest-contract.yml",
+        "job_step": "postgrest-contract / Run injectable and real PostgREST container contracts",
+        "state": "not yet audited",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The script runs the offline integration tests and the ignored real-PostgREST contract target separately. Configuration is not evidence of a successful CI run."
+    },
+    {
       "id": "id.rust.unit",
-      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
+      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**", "pkgs/id/crates/id-store/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -283,13 +296,16 @@
       "id": "id.hosted-worker.routing",
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
+        "pkgs/id/hosted-worker/test/persistent-account-directory.test.ts",
         "pkgs/id/hosted-worker/test/admission-gate.test.ts",
         "pkgs/id/hosted-worker/test/provisioning.test.ts",
         "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
         "pkgs/id/hosted-worker/test/enablement.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/request-cap.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts",
         "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
@@ -300,11 +316,17 @@
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
         "pkgs/id/hosted-worker/test/bridge-do.test.ts",
         "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
+        "pkgs/id/hosted-worker/test/tenant-ops.test.ts",
+        "pkgs/id/hosted-worker/test/identity-link.test.ts",
+        "pkgs/id/hosted-worker/test/credentials.test.ts",
         "pkgs/id/hosted-worker/test/export.test.ts",
         "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
-        "pkgs/id/hosted-worker/test/migration-control.test.ts"
+        "pkgs/id/hosted-worker/test/migration-control.test.ts",
+        "pkgs/id/hosted-worker/test/object-plane-r2.test.ts",
+        "pkgs/id/hosted-worker/test/references.test.ts",
+        "pkgs/id/hosted-worker/test/reference-index.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -342,6 +364,20 @@
       "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
     },
     {
+      "id": "id.android-remote.session",
+      "paths": ["pkgs/id/crates/id-android-remote/src/lib.rs", "pkgs/id/crates/id-android-remote/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-android-remote runs cargo test -p id-android-remote)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [1831],
+      "notes": "The Android remote-drive bridge test uses the embedded shell contract and an in-process Iroh WorldService host; the crate is a non-default workspace member and has a dedicated Nix check."
+    },
+    {
       "id": "id.tui-shell.capability-statement",
       "paths": ["pkgs/id/crates/id-tui-shell/tests/*.rs"],
       "invocation": "nix flake check ./pkgs/id (check test-tui-shell runs cargo nextest -p id-tui-shell)",
@@ -366,6 +402,34 @@
       },
       "status": "mapped",
       "notes": "The hw-shell check runs the integration targets of this non-default workspace member, mirroring test-native-shell. live_wake is the live-host behavioral check for the hardware-shell spike (#10929); it ran nowhere until wired 2026-11-23 (#12230), verified green standalone first."
+    },
+    {
+      "id": "id.bevy-bridge.replay-oracle",
+      "paths": ["pkgs/id/crates/id-bevy-bridge/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-bridge runs cargo nextest -p id-bevy-bridge)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-bridge",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13702, 13703, 13704],
+      "notes": "The bevy-bridge check runs every integration target of this non-default workspace member: fixture projection (slice 1), the journal tail and intents (slice 2), and the replay oracle with its recorded corpus, soak and fault injection (slice 3). The replay oracle is the acceptance gate for a bump of the bridge's pinned bevy_ecs."
+    },
+    {
+      "id": "id.bevy-presenter.e2e",
+      "paths": ["pkgs/id/crates/id-bevy-presenter/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-bevy-presenter runs cargo nextest -p id-bevy-presenter)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-bevy-presenter",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13705, 13706],
+      "notes": "The bevy-presenter check runs the Bevy slice 4 presenter-client app headless against the demo world hosted as a separate process: projection, intents end to end, predicted presentation that reconciles or snaps back, the provider manifest and surface grants, and the replay oracle over the host's journal. It also runs slice 5, the host posture: the Bevy process hosting the world with its journal on disk, a second presenter (in process and as the app in its own process) seeing the same world as with an external host, the host's own presenter on the same path, admission by manifest up to capacity, and a reopened or killed host resuming from its last acknowledged position."
     },
     {
       "id": "id.bench.compare-script",
@@ -750,12 +814,38 @@
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
-        "job_step": "Test pm-service tenant-store suite",
+        "job_step": "Test pm-service suites",
         "state": "active",
         "dispatchable": true
       },
       "status": "mapped",
       "related_issues": [12825]
+    },
+    {
+      "id": "pm-service.collector",
+      "paths": ["pm-stack/pm-service/test/collector.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12826]
+    },
+    {
+      "id": "pm-service.read-api",
+      "paths": ["pm-stack/pm-service/test/read-api.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12828]
     },
     {
       "id": "opencode-claimant.install",
@@ -991,6 +1081,15 @@
       "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
     },
     {
+      "id": "doc.15340-gap-evidence",
+      "paths": ["doc/2026-11-26T07-46-31Z_verification_15340-monitoring-gaps/test_gap_evidence.py"],
+      "invocation": "python3 -m unittest discover -s doc/2026-11-26T07-46-31Z_verification_15340-monitoring-gaps -p 'test_*.py'",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 15340,
+      "reason": "Evidence-anchor checks for the #15340 criterion-1 verification record; no CI venue runs doc-folder suites yet, verified by remote dispatch on its PR."
+    },
+    {
       "id": "pm-stack.host-health-collector",
       "paths": ["pm-stack/tests/test_host_health_collector.py", "pm-stack/host-health-collector.py"],
       "invocation": "python3 -m unittest discover -s pm-stack/tests -p 'test_host_health_collector.py'",
@@ -1172,6 +1271,19 @@
       "related_issues": [1411]
     },
     {
+      "id": "ci.root-status-files",
+      "paths": [".github/scripts/check-root-status-files.test.sh"],
+      "invocation": "bash .github/scripts/check-root-status-files.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/root-status-guard.yml",
+        "job_step": "Guard contract tests (#12136)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12136]
+    },
+    {
       "id": "bin.node-tests",
       "paths": ["bin/*.test.mjs"],
       "invocation": "node --test bin/*.test.mjs",
@@ -1201,6 +1313,33 @@
       "status": "uncovered-in-fact",
       "phase3_issue": 6187,
       "reason": "The registered scripts-test workflow is disabled_manually."
+    },
+    {
+      "id": "scripts.nix-dep-gate",
+      "paths": ["scripts/tests/test_check_nix_dep_gate.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_nix_dep_gate.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/nix-dep-gate.yml",
+        "job_step": "Run gate contract tests (#14195)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14195],
+      "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
+    },
+    {
+      "id": "scripts.fleet-binary-keeper",
+      "paths": ["scripts/tests/test_fleet_binary_keeper.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run fleet binary keeper contract tests (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
     },
     {
       "id": "scripts.provider-retirement-gate",
@@ -1270,7 +1409,8 @@
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh",
-        "nixos/home/oc-password-sync.test.sh"
+        "nixos/home/oc-password-sync.test.sh",
+        "nixos/home/stable-entrypoints.test.sh"
       ],
       "invocation": "nix flake check (make-laptop-backups-checks)",
       "venue": {
@@ -1290,6 +1430,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
@@ -1317,6 +1458,23 @@
       "related_issues": [8941]
     },
     {
+      "id": "pmo.contract-conformance",
+      "paths": [
+        "pkgs/fleet/crates/fleet-queue/tests/pmo_contract_conformance.rs",
+        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**"
+      ],
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance, then cd pm-stack/projector && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts, reported per family by .github/scripts/pmo-contract-conformance.py",
+      "venue": {
+        "workflow": ".github/workflows/pmo-contract-conformance.yml",
+        "job_step": "pmo-contract-conformance / Run the conformance target",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9437],
+      "notes": "CEN-07 golden fixtures through the real adapters, one result per contract family; gated families (receipt, cursor, field ownership) are listed in the fixture manifest and never counted as passing. The same test file also runs inside fleet.rust's workspace run."
+    },
+    {
       "id": "fleet.smoke",
       "paths": ["pkgs/fleet/smoke.sh"],
       "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
@@ -1328,6 +1486,32 @@
       },
       "status": "mapped",
       "related_issues": [6400]
+    },
+    {
+      "id": "fleet.static-release",
+      "paths": [".github/scripts/check-fleet-static-release.test.sh"],
+      "invocation": "bash .github/scripts/check-fleet-static-release.sh && bash .github/scripts/check-fleet-static-release.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/fleet-static-release.yml",
+        "job_step": "publish / Contract — wiring matches registry and policy (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
+      "id": "cf.record-worker-deploy",
+      "paths": ["scripts/tests/test_record_worker_deploy.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_record_worker_deploy.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run cf worker record-deploy retry tests (#15041)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [15041]
     },
     {
       "id": "web-gen-api.e2e",
@@ -1385,6 +1569,15 @@
       "status": "uncovered",
       "phase2_issue": 6185,
       "reason": "Root-level device/connectivity probe has no venue; confirm whether it is a product test suite or a manual diagnostic in Phase 2."
+    },
+    {
+      "id": "id.android-shell.structure",
+      "paths": ["pkgs/id/android/check-android-shell.sh"],
+      "invocation": "bash pkgs/id/android/check-android-shell.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Structural Android shell smoke check; no CI venue is registered yet."
     },
     {
       "id": "deploy.flake-checks",
@@ -1516,6 +1709,22 @@
       },
       "status": "mapped",
       "notes": "Model-based append-admission state-machine oracle for A-GRAPH-9127-02 (#10237); deletion_state_machine is the model oracle for A-GRAPH-9130-01 (requests, moderation, projection hide and server-local true deletion stay distinct; batches idempotent; retained evidence verifiable)."
+    },
+    {
+      "id": "id.rust.e6-persistence.unit",
+      "paths": [
+        "pkgs/id/crates/id-events/src/event_store/persistence_tests.rs",
+        "pkgs/id/crates/id-store/src/turso.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (test-sandbox runs cargo nextest --all-features for default workspace members); targeted: cargo test -p id-events --lib event_store::persistence_tests; cargo test -p id-store --lib turso::tests",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Native-redb row oracle for E6 shared event/body/chain/fork persistence, generated keys/bodies and aborted partial writes; tenant protocol and row-layer tests. This is not EventStoreBackend conformance."
     },
     {
       "id": "id.rust.id-currency-registry.integration",

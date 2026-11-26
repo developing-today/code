@@ -12,8 +12,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use id_currency_registry::grants::{
-    GrantConfig, GrantError, GrantService, GrantState, InMemoryGrantStore, RegisterGrant,
-    StubLedger, steam_key_hash,
+    Grant, GrantConfig, GrantError, GrantService, GrantState, GrantStore, GrantStoreError,
+    InMemoryGrantStore, RegisterGrant, StubLedger, steam_key_hash,
 };
 
 const POOL: u128 = 1001;
@@ -473,4 +473,94 @@ fn late_refund_amount_must_be_within_the_grant() {
     assert_eq!(settled.state, GrantState::ClawbackSettled);
     assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
     assert_eq!(svc.ledger().credits_posted(POOL), 100);
+}
+
+#[test]
+fn chained_partial_refunds_void_each_predecessor() {
+    // Oracle (#14294): design section 4's void-and-reissue must
+    // compose. A second (and third) partial refund of the reissue
+    // succeeds; every predecessor stays voided, each tip carries
+    // the chain link, and the live hash resolves to the tip.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-chain", "user-1", 100), NOW)
+        .expect("register");
+    let (a, b) = svc
+        .refund_partial(grant.id, 10, POOL, HOLDER, NOW + 60)
+        .expect("first partial refund");
+    assert_eq!(a.state, GrantState::Voided);
+    assert_eq!(b.amount, 90);
+    assert_eq!(b.correction_of, Some(a.id));
+
+    let (b_row, c) = svc
+        .refund_partial(b.id, 10, POOL, HOLDER, NOW + 120)
+        .expect("second partial refund");
+    assert_eq!(b_row.state, GrantState::Voided);
+    assert_eq!(c.state, GrantState::Pending);
+    assert_eq!(c.amount, 80);
+    assert_eq!(c.correction_of, Some(b.id));
+    assert_eq!(svc.get(a.id).expect("A row").state, GrantState::Voided);
+
+    let (_, d) = svc
+        .refund_partial(c.id, 10, POOL, HOLDER, NOW + 180)
+        .expect("third partial refund");
+    assert_eq!(d.amount, 70);
+    assert_eq!(d.correction_of, Some(c.id));
+
+    // The live hash resolves to the tip: re-registering the key
+    // is idempotent on D, and no posted credit leaked.
+    let same = svc
+        .register(&request("key-chain", "user-1", 100), NOW + 240)
+        .expect("re-register");
+    assert_eq!(same.id, d.id);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 70);
+}
+
+#[test]
+fn duplicate_key_hash_still_rejects_non_chain_reuse() {
+    // Oracle (#14294): the chained-refund fix must not reopen
+    // key reuse. A fresh registration over a voided grant (no
+    // correction link) and a fork off a non-tip ancestor are
+    // both rejected at the store seam.
+    let hash = steam_key_hash("key-reuse");
+    let row = |id: u128, state: GrantState, correction_of: Option<u128>| Grant {
+        id,
+        steam_key_hash: hash,
+        user_id: "user-1".to_string(),
+        ledger: LEDGER,
+        amount: 100,
+        state,
+        pending_transfer_id: 10 + id,
+        resolution_transfer_id: None,
+        window_started_at: NOW,
+        window_ends_at: NOW + WINDOW_SECONDS,
+        created_at: NOW,
+        updated_at: NOW,
+        attempt_count: 0,
+        last_error: None,
+        correction_of,
+    };
+
+    let mut store = InMemoryGrantStore::new();
+    store
+        .insert_grant(&row(1, GrantState::Voided, None))
+        .expect("seed voided");
+    assert_eq!(
+        store.insert_grant(&row(2, GrantState::Pending, None)),
+        Err(GrantStoreError::DuplicateKeyHash),
+        "fresh registration over a voided grant stays rejected"
+    );
+
+    // A legitimate single reissue is accepted ...
+    store
+        .insert_grant(&row(3, GrantState::Pending, Some(1)))
+        .expect("reissue of the voided tip");
+    // ... but a second correction of the same non-tip ancestor
+    // (a fork while the tip is live) is rejected.
+    assert_eq!(
+        store.insert_grant(&row(4, GrantState::Pending, Some(1))),
+        Err(GrantStoreError::DuplicateKeyHash),
+        "fork off a non-tip ancestor stays rejected"
+    );
 }

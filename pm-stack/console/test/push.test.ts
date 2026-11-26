@@ -366,6 +366,25 @@ describe("when a notification is owed", () => {
     expect(changes(first.seen, state()).messages).toEqual([]); // and nothing is said twice
   });
 
+  test("the fleet's reply on a question is announced as its answer", () => {
+    const seen: Seen = changes(NOTHING_SEEN, state()).seen;
+    const out = changes(
+      seen,
+      state({
+        asks: [
+          { issue: 12601, intent: "question", replies: [reply("2026-11-22T08:00:00")] },
+          { issue: 12602, intent: "directive", replies: [reply("2026-11-22T08:00:00")] },
+          { issue: 12603, replies: [reply("2026-11-22T08:00:00")] },
+        ],
+      }),
+    );
+    expect(out.messages.map((m) => m.title)).toEqual([
+      "The fleet answered your question (#12601)",
+      "The fleet replied on #12602",
+      "The fleet replied on #12603",
+    ]);
+  });
+
   test("each new thing is announced once, with where to go", () => {
     const seen: Seen = changes(NOTHING_SEEN, state()).seen;
     const later = state({
@@ -448,7 +467,15 @@ describe("when a notification is owed", () => {
     try {
       let now = state();
       const still = { ttlMs: 1e12, load: async () => "x" };
-      const sections = { board: still, prs: still, priorities: still, agents: still, more: still, questions: still };
+      const sections = {
+        board: still,
+        prs: still,
+        priorities: still,
+        done: still,
+        agents: still,
+        more: still,
+        questions: still,
+      };
       const live = (name: string) => ({ ttlMs: 1e12, load: async () => (now as Record<string, unknown>)[name] });
       const docs = new Docs({
         ...sections,
@@ -598,6 +625,7 @@ test("a list of units that has stopped being read cannot make one failed run loo
           "questions",
           "prs",
           "priorities",
+          "done",
           "agents",
           "more",
         ].map((name) => [name, empty]),

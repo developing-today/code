@@ -1,0 +1,38 @@
+{
+  "about": "The PM stack's Cloudflare edge configuration, as the repository describes it. infra/pm-cloudflare/apply.py enforces this file through Cloudflare's API; pm-stack/console/scripts/expose.py on the laptop enforces the same things today, and its test model is the parity check that the two agree. Secret VALUES are never here: each names the environment variable apply.py reads it from, which Actions fills from the repository's secrets.",
+  "host": "pm.security.cab",
+  "tunnel": "amd-6-pm-stack",
+  "console_port": 4872,
+  "access": {
+    "about": "Sign-in gate. One Access application covers the hostname with an allow policy for the owner; five paths bypass sign-in at the edge and are served by the console itself.",
+    "session_duration": "24h",
+    "cookie": {
+      "same_site_cookie_attribute": "lax",
+      "http_only_cookie_attribute": true,
+      "session_duration": "720h"
+    },
+    "owner_email_env": "PMCF_OWNER_EMAIL",
+    "google_client_id_env": "PMCF_GOOGLE_CLIENT_ID",
+    "google_client_secret_env": "PMCF_GOOGLE_CLIENT_SECRET",
+    "public_paths": [
+      "/.well-known/assetlinks.json",
+      "/manifest.webmanifest",
+      "/icons",
+      "/console/device",
+      "/console/edge"
+    ]
+  },
+  "dns": {
+    "about": "The hostname is a proxied CNAME at the tunnel. apply.py refuses if the hostname already points anywhere else, like expose.py.",
+    "proxied": true
+  },
+  "worker": {
+    "about": "The hostname's traffic goes through this Worker once it answers its health check built for the hostname; otherwise straight to the tunnel, as expose.py decides.",
+    "name": "pm-console-edge",
+    "route": true,
+    "direct": "on",
+    "github_token_env": "PMCF_GITHUB_TOKEN",
+    "queue_token_env": "PMCF_QUEUE_TOKEN",
+    "bridge_token_env": "PMCF_BRIDGE_TOKEN"
+  }
+}

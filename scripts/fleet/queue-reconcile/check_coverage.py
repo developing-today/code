@@ -20,7 +20,10 @@ Two halves, deliberately split:
   owns the Turso connection. It is read-only and safe to run any time.
 - **The import** is done here, through the sanctioned CLI enqueue path,
   so packets are validated and dedupe-keyed exactly like every other
-  task. The dedupe key makes a re-run idempotent by construction.
+  task. The dedupe key makes a re-run idempotent by construction; when
+  the canonical key belongs only to a completed task, a terminal-dedupe
+  response is retried with a deterministic dispatch suffix so the still-
+  uncovered issue receives a new live task.
 
 Default is observe-only: the run reports what it *would* import and
 writes nothing. Pass `--import` to actually enqueue.
@@ -55,13 +58,12 @@ November 2026, when the warden's live job vanished in an environment
 recovery and ready PRs sat unmerged for days. So this reconciliation
 also diffs the repo's ready (non-draft) PRs against live queue tasks:
 the broker `/coverage` call carries the PR numbers and answers which
-of them a LIVE task names (the warden's `pr` dedupe key or the
-merge-watch key — done/cancelled tasks are not coverage, same rule
-as issues). In `--import` mode, any ready PR older than 6 hours with
-no live task naming it gets one `pr_shepherd` packet under the
-warden's own dedupe key, so the warden and this fallback dedupe onto
-a single live task whichever files first. A PR already receiving a
-merge-watch packet this run is not double-filed. Fixtures carry the
+of them a LIVE task names. Merge-watch and ready-PR shepherd packets
+use the same canonical key, `repo-health:v1:pr:<repo>:pr:<n>`, so the
+warden and reconciliation dedupe onto one live task whichever files
+first. In `--import` mode, any ready PR older than 6 hours with no
+live task naming it gets one `pr_shepherd` packet under that key. A PR
+already receiving a merge-watch packet this run is not double-filed. Fixtures carry the
 broker's PR answer as `"uncovered_pulls": [{"number": n}]` inside
 each repo's coverage object; a fixture without it treats every PR as
 uncovered (the pre-#12280 fixture semantics).
@@ -95,6 +97,7 @@ report names which; a failure never masquerades as "0 uncovered").
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -232,9 +235,9 @@ def pr_issue_numbers(pr: dict) -> set[int]:
     return numbers
 
 
-def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
-    """issue number -> the open PR covering it (first PR wins)."""
-    coverage: dict[int, dict] = {}
+def build_pr_coverage(prs: list[dict]) -> dict[int, list[dict]]:
+    """Issue number -> all open PRs covering it, in PR enumeration order."""
+    coverage: dict[int, list[dict]] = {}
     for pr in prs:
         info = {
             "number": pr["number"],
@@ -242,7 +245,7 @@ def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
             "branch": ((pr.get("head") or {}).get("ref") or ""),
         }
         for n in pr_issue_numbers(pr):
-            coverage.setdefault(n, info)
+            coverage.setdefault(n, []).append(info)
     return coverage
 
 
@@ -741,12 +744,17 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
             "note if main has superseded it."
         ),
         "priority": 30,
-        "dedupe_key": f"repo-health:v1:merge-watch:{repo}:pr:{pr_number}",
+        # Share the warden's canonical key so all shepherd paths dedupe
+        # onto one live task per PR and the broker's coverage matcher sees it.
+        "dedupe_key": f"repo-health:v1:pr:{repo}:pr:{pr_number}",
         "payload": {
             "schema": "repo-task/v1",
             "kind": "pr_shepherd",
             "repo": repo,
             "queue": None,  # filled by the caller with the pilot queue
+            "prs": [
+                {"number": pr_number, "url": pr_url, "title": pr.get("title") or ""}
+            ],
             "issue": {
                 "number": number,
                 "url": issue_url,
@@ -795,7 +803,7 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
                 "coverage reconciliation (#4951)."
             ),
             "timebox_minutes": 45,
-            "max_attempts": 4,
+            "max_attempts": 1000,
             "context_refs": [issue_url, pr_url],
             "dedupe": {
                 "checked_at": checked_at,
@@ -949,6 +957,48 @@ def ready_shepherd_candidates(
     return candidates
 
 
+def _enqueue_response(stdout: str) -> dict:
+    """Read the broker row JSON after the CLI's human status lines."""
+    start = stdout.find("{")
+    if start < 0:
+        return {}
+    try:
+        response = json.loads(stdout[start:])
+    except json.JSONDecodeError:
+        return {}
+    return response if isinstance(response, dict) else {}
+
+
+def _terminal_retry_key(packet: dict) -> str | None:
+    """Give a previously completed packet one new, deterministic key.
+
+    Coverage imports are keyed canonically per issue/PR. A completed row
+    still owns that key but is not live coverage; the queue explicitly
+    instructs producers to suffix the key for a later dispatch. Using the
+    packet's checked_at timestamp makes two workers in the same pass
+    dedupe together while allowing a later reconciliation pass to requeue
+    the still-open item.
+    """
+    key = packet.get("dedupe_key")
+    payload = packet.get("payload") or {}
+    subject = payload.get("issue") or payload.get("pr") or {}
+    repo = payload.get("repo")
+    number = subject.get("number")
+    dedupe = payload.get("dedupe") or {}
+    checked_at = dedupe.get("checked_at") or subject.get("state_checked_at")
+    if (
+        not isinstance(key, str)
+        or ":dispatch:" in key
+        or not isinstance(repo, str)
+        or not isinstance(number, int)
+        or not isinstance(checked_at, str)
+    ):
+        return None
+    seed = f"{key}:{repo}:{number}:{checked_at}".encode("utf-8")
+    suffix = hashlib.sha256(seed).hexdigest()[:8]
+    return f"{key}:dispatch:{suffix}"
+
+
 def enqueue_packet(
     packet: dict,
     queue: str,
@@ -964,40 +1014,70 @@ def enqueue_packet(
     file is unique per enqueue: an ad-hoc run overlapping the scheduled
     one must never overwrite or delete the other's packet.
     """
-    payload = packet["payload"]
-    repo_slug = payload["repo"].replace("/", "-")
-    # Issue packets key the temp file on the issue; PR packets
-    # (merge-watch, shepherd) key it on the PR.
-    number = (payload.get("issue") or payload["pr"])["number"]
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f"coverage-{repo_slug}-{number}-",
-        suffix=".json",
-        dir=os.environ.get("TMPDIR") or None,
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(packet, fh)
-        env = os.environ.copy()
-        env["REPO_QUEUE_BROKER_URL"] = broker_url
-        env["REPO_QUEUE_TOKEN_FILE"] = str(token_file)
+    def run_once(candidate: dict) -> subprocess.CompletedProcess:
+        payload = candidate["payload"]
+        repo_slug = payload["repo"].replace("/", "-")
+        # Issue packets key the temp file on the issue; PR packets
+        # (merge-watch, shepherd) key it on the PR.
+        number = (payload.get("issue") or payload["pr"])["number"]
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"coverage-{repo_slug}-{number}-",
+            suffix=".json",
+            dir=os.environ.get("TMPDIR") or None,
+        )
+        tmp = Path(tmp_name)
         try:
-            out = subprocess.run(
+            with os.fdopen(fd, "w") as fh:
+                json.dump(candidate, fh)
+            env = os.environ.copy()
+            env["REPO_QUEUE_BROKER_URL"] = broker_url
+            env["REPO_QUEUE_TOKEN_FILE"] = str(token_file)
+            return subprocess.run(
                 [fleet, "queue", "enqueue", str(tmp), "--queue", queue],
                 capture_output=True,
                 text=True,
                 timeout=120,
                 env=env,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            # A launch failure or timeout is an enqueue failure, not a
-            # reason to abandon the remaining issues and the report.
-            return False, f"could not run enqueue: {exc}"
-    finally:
-        tmp.unlink(missing_ok=True)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    try:
+        out = run_once(packet)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # A launch failure or timeout is an enqueue failure, not a
+        # reason to abandon the remaining issues and the report.
+        return False, f"could not run enqueue: {exc}"
     if out.returncode != 0:
         return False, (out.stderr or out.stdout).strip()[:300]
-    return True, out.stdout.strip()[:300]
+
+    response = _enqueue_response(out.stdout)
+    dedupe_match = response.get("dedupe_match") or {}
+    if dedupe_match.get("rule") != "dedupe_key_terminal":
+        return True, out.stdout.strip()[:300]
+
+    retry_key = _terminal_retry_key(packet)
+    if retry_key is None:
+        return False, (
+            "terminal dedupe hit, but packet has no safe dispatch suffix: "
+            f"{out.stdout.strip()[:240]}"
+        )
+    retry_packet = {**packet, "dedupe_key": retry_key}
+    try:
+        retry = run_once(retry_packet)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"terminal dedupe retry could not run: {exc}"
+    if retry.returncode != 0:
+        return False, (retry.stderr or retry.stdout).strip()[:300]
+    retry_match = (_enqueue_response(retry.stdout).get("dedupe_match") or {}).get(
+        "rule"
+    )
+    if retry_match == "dedupe_key_terminal":
+        return False, (
+            "dispatch-suffixed terminal dedupe retry was not filed: "
+            f"{retry.stdout.strip()[:240]}"
+        )
+    return True, retry.stdout.strip()[:300]
 
 
 # ---------------------------------------------------------------------------
@@ -1096,11 +1176,11 @@ def render_report(
             "",
         ]
         for r, i in pr_any:
-            pr = i.get("pr") or {}
-            lines.append(
-                f"- {r['repo']}#{i['number']} — PR #{pr.get('number')} "
-                f"({pr.get('branch') or 'branch unknown'})"
-            )
+            for pr in i.get("prs", []):
+                lines.append(
+                    f"- {r['repo']}#{i['number']} — PR #{pr.get('number')} "
+                    f"({pr.get('branch') or 'branch unknown'})"
+                )
         lines.append("")
     verdict_any = [(r, i) for r in results for i in r.get("verdict_covered_issues", [])]
     if verdict_any:
@@ -1243,7 +1323,7 @@ def main(argv: list[str] | None = None) -> int:
         broker_uncovered = cov.get("uncovered_issues", [])
         uncovered = [i for i in broker_uncovered if i["number"] not in pr_coverage]
         pr_covered = [
-            {**i, "pr": pr_coverage[i["number"]]}
+            {**i, "prs": pr_coverage[i["number"]]}
             for i in broker_uncovered
             if i["number"] in pr_coverage
         ]
@@ -1303,16 +1383,17 @@ def main(argv: list[str] | None = None) -> int:
         watch_imported = 0
         if do_import and pr_covered:
             for issue in pr_covered:
-                packet = merge_watch_packet(repo, issue, issue["pr"], checked_at)
-                ok, detail = enqueue_packet(
-                    packet, queue, args.fleet, args.broker_url, args.token_file
-                )
-                if ok:
-                    watch_imported += 1
-                else:
-                    errors.append(
-                        f"merge-watch enqueue failed for {repo}#{issue['number']}: {detail}"
+                for pr in issue["prs"]:
+                    packet = merge_watch_packet(repo, issue, pr, checked_at)
+                    ok, detail = enqueue_packet(
+                        packet, queue, args.fleet, args.broker_url, args.token_file
                     )
+                    if ok:
+                        watch_imported += 1
+                    else:
+                        errors.append(
+                            f"merge-watch enqueue failed for {repo}#{pr['number']}: {detail}"
+                        )
 
         # #12280: ready PRs older than 6h with no live task naming
         # them get a warden-keyed shepherd packet. The broker's PR
@@ -1342,7 +1423,7 @@ def main(argv: list[str] | None = None) -> int:
             ready_shepherd_candidates(
                 pulls,
                 uncovered_pull_numbers,
-                {i["pr"]["number"] for i in pr_covered},
+                {pr["number"] for i in pr_covered for pr in i["prs"]},
                 checked_at,
             )
             if pr_diff_known

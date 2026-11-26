@@ -215,9 +215,7 @@ fn parse_comment(
         Some("page_id") => {
             let parent_page = required_string(parent, "page_id")?;
             if parent_page != page_id {
-                bail!(
-                    "Notion comment {comment_id} belongs to page {parent_page}, not {page_id}"
-                );
+                bail!("Notion comment {comment_id} belongs to page {parent_page}, not {page_id}");
             }
             None
         }
@@ -266,10 +264,7 @@ fn chain_replies(mut parsed: Vec<ParsedComment>) -> Result<Vec<CommentClaim>> {
     for (order, item) in parsed.iter_mut().enumerate() {
         item.order = order;
         if !seen.insert(item.claim.comment_id.clone()) {
-            bail!(
-                "Notion comments repeat comment {}",
-                item.claim.comment_id
-            );
+            bail!("Notion comments repeat comment {}", item.claim.comment_id);
         }
     }
     // Stable by created_time: equal timestamps keep fetch order.
@@ -367,25 +362,16 @@ mod tests {
         let manifest = empty_manifest();
         let mut no_author = raw_comment("c1", "d1", "2026-11-20T10:00:00Z");
         no_author["created_by"] = json!({"object": "user", "name": "Ada"});
-        assert!(
-            parse_comment(&no_author, "note-1", "page-1", &manifest).is_err()
-        );
+        assert!(parse_comment(&no_author, "note-1", "page-1", &manifest).is_err());
         let mut foreign_page = raw_comment("c1", "d1", "2026-11-20T10:00:00Z");
         foreign_page["parent"] = json!({"type": "page_id", "page_id": "page-2"});
-        assert!(
-            parse_comment(&foreign_page, "note-1", "page-1", &manifest).is_err()
-        );
+        assert!(parse_comment(&foreign_page, "note-1", "page-1", &manifest).is_err());
         let mut unknown_block = raw_comment("c1", "d1", "2026-11-20T10:00:00Z");
-        unknown_block["parent"] =
-            json!({"type": "block_id", "block_id": "block-missing"});
-        assert!(
-            parse_comment(&unknown_block, "note-1", "page-1", &manifest).is_err()
-        );
+        unknown_block["parent"] = json!({"type": "block_id", "block_id": "block-missing"});
+        assert!(parse_comment(&unknown_block, "note-1", "page-1", &manifest).is_err());
         let mut not_a_comment = raw_comment("c1", "d1", "2026-11-20T10:00:00Z");
         not_a_comment["object"] = json!("page");
-        assert!(
-            parse_comment(&not_a_comment, "note-1", "page-1", &manifest).is_err()
-        );
+        assert!(parse_comment(&not_a_comment, "note-1", "page-1", &manifest).is_err());
         let first = parse_comment(
             &raw_comment("c1", "d1", "2026-11-20T10:00:00Z"),
             "note-1",

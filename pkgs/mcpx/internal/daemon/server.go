@@ -925,6 +925,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST /v1/batch", s.handleBatch)
 	s.route(mux, "POST /v1/resource", s.handleResource)
 	s.route(mux, "POST /v1/session/release", s.handleRelease)
+	s.route(mux, "POST /v1/session/kill", s.handleKill)
 	s.route(mux, "POST /v1/refresh", s.handleRefresh)
 	s.route(mux, "POST /v1/reload", s.handleReload)
 	s.route(mux, "POST /v1/restart", s.handleRestart)
@@ -1274,7 +1275,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := withRun(withCallSettings(withClientCaps(r.Context(), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	ctx := withRun(withCallSettings(withFleetCtx(withClientCaps(r.Context(), r), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 	reply := writeJSON
 	if req.Relay != nil {
 		rw := &relayWriter{w: w}
@@ -1400,7 +1401,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cc := callContext(r, req.Context, req.Session)
-	ctx := withRun(withCallSettings(withClientCaps(r.Context(), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	ctx := withRun(withCallSettings(withFleetCtx(withClientCaps(r.Context(), r), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 
 	results := make([]map[string]any, len(req.Calls))
 
@@ -1549,6 +1550,31 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		req.Session = r.Header.Get("X-Mcpx-Session")
 	}
 	writeJSON(w, 200, map[string]any{"released": s.reg.ReleaseCaller(req.Session)})
+}
+
+// handleKill ends the instances a caller session created, even when busy
+// (#1931 slice 2). The address is the caller session handle, the same lease
+// key release takes: release detaches and stops only what is already idle,
+// kill ends every owned instance. An unknown handle is a typed refusal, so
+// a caller cannot mistake a misspelled session for an empty success.
+func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
+	if req.Session == "" {
+		req.Session = r.Header.Get("X-Mcpx-Session")
+	}
+	if req.Session == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("session is required"))
+		return
+	}
+	killed, found := s.reg.KillCaller(req.Session)
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("unknown session %q", req.Session))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"killed": killed})
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -2006,6 +2032,25 @@ func (s *Server) reportCallFrame(ctx context.Context, server, tool, callerSessio
 		}
 		if callerSession != "" {
 			attrs["caller_session"] = callerSession
+		}
+		// Fleet attribution (build 4/5, #14190): the originating queue
+		// task id rides the ledger frame, resolved ctx-first with the
+		// process env as fallback (the stdio/no-header path). Absent
+		// stamps nothing, never an error.
+		if f := mcpclient.FleetCtxFrom(ctx); !f.Empty() {
+			if f.TaskID != "" {
+				attrs["fleet_task_id"] = f.TaskID
+			}
+			if f.TaskName != "" {
+				attrs["fleet_task_name"] = f.TaskName
+			}
+		} else if f := mcpclient.FleetCtxFromEnv(); !f.Empty() {
+			if f.TaskID != "" {
+				attrs["fleet_task_id"] = f.TaskID
+			}
+			if f.TaskName != "" {
+				attrs["fleet_task_name"] = f.TaskName
+			}
 		}
 		s.callLedger.Write(logging.Record{Time: time.Now(), Msg: "tool_call", Attrs: attrs}, nil)
 		now := time.Now()

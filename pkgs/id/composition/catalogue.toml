@@ -1,0 +1,408 @@
+# Feature catalogue for pkgs/id — machine-readable design-of-record.
+#
+# S1 of developing-today/code#14056 (§10 slice list). Human companion: the
+# plan of record doc/2026-11-24T03-36-48Z_design_id-feature-composition/
+# (§4), as amended by the five 2026-11-24 issue comments (amendments 1–5;
+# see README.md in this directory for the amendment index).
+#
+# Conventions:
+# - `name` is the catalogue handle. `tree` is the current root-cargo
+#   feature of the same capability, or absent when no wiring exists yet.
+# - `status`: shipped | seam | designed | placeholder.
+#   shipped     — the feature exists and works under its `tree` name.
+#   seam        — the code/seam exists; the catalogue wiring is the work.
+#   designed    — a design record exists; implementation is a later slice.
+#   placeholder — catalogued so compositions can name it; no design yet.
+# - `requires` names catalogue handles (never cargo features directly).
+# - `roles`: which role-acts need the feature (amendments 1 and 3 —
+#   compile a platform / host a platform / consume a platform; roles
+#   compose freely in one binary, they are not node classes):
+#   compile | host | consume. Core capabilities need no roles entry.
+# - `groups` lists exclusivity-group memberships (§4.4). Rule (§2.2):
+#   at most one explicitly selected member per group per composition;
+#   core defaults are implicit until S6 wires the switches (validator
+#   reports core-default overlap as a warning, two explicit members
+#   as a refusal).
+# - `forwards` lists seam-crate wirings: "crate/feature" gates that must
+#   exist in the named crate, "dep:name" names an optional root
+#   dependency, "crate" alone names a whole-crate dependency whose
+#   feature wiring is later-slice work. Shipped entries must have
+#   non-empty forwards and a `tree` name; other statuses document
+#   intent (their wiring lands in later slices).
+
+schema_version = 1
+catalogue_version = "1.0.0"
+
+# Root-cargo features that must NEVER appear in a composition manifest.
+# currency-poc-tb is the live-cluster PoC harness binding (§0.3). Test-only
+# features (test-*, *-test-utils, test-provider) are unrepresentable by rule.
+unrepresentable = ["currency-poc-tb"]
+
+# ---------------------------------------------------------------- core ---
+# Core (§4.1) is present in every profile; it is not a feature. Recorded
+# here so profiles-as-data resolve against one definition. world-state is
+# listed as a feature below (not inside core) only until S3 performs the
+# world split — after the split it moves into core and profiles drop it.
+
+[core]
+description = "Local identity and keysets; event log (redb); blob store (iroh-blobs FsStore/MemStore); graph index; sync base (iroh + gossip + mDNS + relay); client command set; REPL."
+ports = ["record-store", "blob-store", "event-log", "world-store", "object-bucket", "message-stream", "transport"]
+
+# ------------------------------------------------------------- features ---
+
+[[feature]]
+name = "world-state"
+status = "seam"
+tree = "world"
+adds = "World state: journal replay, read/render of world state, the #1066 unsupported-version degrade contract (read-only + receipt, never partial execution)."
+requires = []
+roles = ["host", "consume"]
+forwards = ["id-core/world", "id-cli/world", "dep:num-bigint"]
+note = "Today's `world` conflates state with the execution-adjacent command surface (§0.3). S3 (the world split) separates them; until then this entry tracks the conflated feature and `sandbox-exec` overlaps it."
+
+[[feature]]
+name = "sandbox-exec"
+status = "shipped"
+tree = "sandbox"
+adds = "wasmtime program execution: running world programs locally."
+requires = ["world-state"]
+roles = ["host", "consume"]
+forwards = ["id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox", "id-cli/sandbox"]
+note = "Renamed in effect from today's `sandbox` (plan §4.2); the rename lands with the S3 split. Defining omission of the plain profile."
+
+[[feature]]
+name = "serve"
+status = "seam"
+adds = "Hosting: file/world serving, the `serve` command's host halves."
+requires = []
+roles = ["host"]
+forwards = []
+note = "Today unconditional code with sub-gates; the root feature is the work (S4). No forwards yet by design — the seam crates it gates are named in S4."
+
+[[feature]]
+name = "web"
+status = "shipped"
+tree = "web"
+adds = "Axum web UI (id-web): gallery hosting, world serving over WS."
+requires = ["serve", "world-state"]
+roles = ["host"]
+forwards = ["dep:id-web", "id-core/web", "id-cli/web"]
+known_gap = "Resolved in S2: id-web's sandbox feature only gated test helpers; production code has no such cfg, and its tests obtain sandbox support from the id-worlds dev-dependency. The dead feature and cfg gates were removed."
+
+[[feature]]
+name = "ssh-serve"
+status = "shipped"
+tree = "ssh"
+adds = "World serving over SSH (russh in id-worlds)."
+requires = ["serve", "sandbox-exec"]
+roles = ["host"]
+forwards = ["id-worlds/ssh", "id-cli/ssh"]
+
+[[feature]]
+name = "dht"
+status = "shipped"
+tree = "dht"
+adds = "Mainline DHT address lookup (P7.3, decision 15)."
+requires = []
+roles = ["host", "consume"]
+forwards = ["id-sync/dht", "id-cli/dht"]
+
+[[feature]]
+name = "directory"
+status = "seam"
+adds = "Home-server directory: views, auth, mail, invites (id-directory)."
+requires = ["serve"]
+roles = ["host"]
+forwards = ["id-directory"]
+note = "Crate ships; no root feature exists. Wiring is later-slice work."
+
+[[feature]]
+name = "currency"
+status = "seam"
+adds = "Currency registry + gateways (id-currency-registry, facade currency modules)."
+requires = ["serve"]
+roles = ["host"]
+forwards = ["id-currency-registry"]
+note = "Crate ships; no root feature exists. The currency-poc-tb harness binding stays unrepresentable — it is not this feature."
+
+[[feature]]
+name = "rust"
+status = "designed"
+adds = "Rust toolchain capability (amendment 5): the baseline prerequisite for the compile act — ID needs it enabled to compile platforms at all — and, where a capability's platform implementation is Rust-based, the per-capability requirement for compiling a platform that selects it. One feature in both roles; the catalogue allows it."
+requires = []
+roles = ["compile"]
+forwards = []
+note = "Catalogue handle only; cargo wiring is later-slice work (S2/S10). `roc-composer` already depends on it so manifests name the prerequisite from S1."
+
+[[feature]]
+name = "roc-composer"
+status = "designed"
+adds = "The Roc platform composer (§8): manifest → composed platform → registry. Composer v0 scope (§8.7): manifest schema + canonical hashing, interface-package generation for the storage trio on the Cloudflare shape, profile-only composition, registry record beside the provisioner's grant records."
+requires = ["serve", "sandbox-exec", "rust"]
+roles = ["compile"]
+forwards = []
+note = "`serve` + `sandbox-exec` per plan §4.2; `rust` per amendment 5. Crate home: crates/id-composer (S10; needs the platform programme's shim prototype first)."
+
+[[feature]]
+name = "mcp-server"
+status = "designed"
+adds = "Standalone MCP server binary surface over the id-caps MCP bridge (book: library-only today, no server binary exists)."
+requires = ["serve"]
+roles = ["host"]
+forwards = []
+note = "Book records the bridge as library-only; the binary surface is the work."
+
+[[feature]]
+name = "import-notion"
+status = "seam"
+adds = "Notion importer CLI wiring (id-import-notion, orphan library today)."
+requires = []
+roles = ["consume"]
+forwards = ["id-import-notion"]
+
+[[feature]]
+name = "import-obsidian"
+status = "designed"
+adds = "Obsidian importer (#2048-model importer family, #5845–#5848)."
+requires = []
+roles = ["consume"]
+forwards = []
+
+[[feature]]
+name = "import-evernote"
+status = "designed"
+adds = "Evernote importer (#2048-model importer family, #5845–#5848)."
+requires = []
+roles = ["consume"]
+forwards = []
+
+[[feature]]
+name = "import-logseq"
+status = "designed"
+adds = "Logseq importer (#2048-model importer family, #5845–#5848)."
+requires = []
+roles = ["consume"]
+forwards = []
+
+[[feature]]
+name = "import-joplin"
+status = "designed"
+adds = "Joplin importer (#2048-model importer family, #5845–#5848)."
+requires = []
+roles = ["consume"]
+forwards = []
+
+[[feature]]
+name = "import-onenote"
+status = "designed"
+adds = "OneNote importer (#2048-model importer family, #5845–#5848)."
+requires = []
+roles = ["consume"]
+forwards = []
+
+[[feature]]
+name = "transport-mcp"
+status = "designed"
+adds = "MCP-door transport adapter (#13929)."
+requires = []
+roles = ["host", "consume"]
+forwards = []
+
+[[feature]]
+name = "transport-email"
+status = "designed"
+adds = "Email transport adapter (asymmetric levels per #13929)."
+requires = []
+roles = ["host", "consume"]
+forwards = []
+
+[[feature]]
+name = "transport-mqtt"
+status = "designed"
+adds = "MQTT adapter + device bridge (#2343)."
+requires = []
+roles = ["host", "consume"]
+forwards = []
+
+[[feature]]
+name = "transport-irc"
+status = "designed"
+adds = "IRC relay adapter."
+requires = []
+roles = ["host", "consume"]
+forwards = []
+
+[[feature]]
+name = "transport-overlay"
+status = "placeholder"
+adds = "Tor/Veilid-class overlay adapters (TODO-list candidates; licence-screened per item)."
+requires = []
+roles = ["host", "consume"]
+forwards = []
+note = "No design yet beyond the programme reference; catalogued so compositions can name the slot."
+
+[[feature]]
+name = "transport-sneakernet"
+status = "designed"
+adds = "Bundle-carried offline transport (ID-graph D4, #13889)."
+requires = []
+roles = ["host", "consume"]
+forwards = []
+
+[[feature]]
+name = "group-crypto-p2panda"
+status = "shipped"
+adds = "p2panda-encryption scheme v1: the core group-encryption scheme (vendored scheme-negotiation precedent)."
+requires = []
+roles = ["host", "consume"]
+groups = ["group-crypto"]
+forwards = ["id-groups"]
+unconditional = true
+note = "Core default for group-crypto: unconditional code today, so no `tree` name. Becomes a real switchable member in S6."
+
+[[feature]]
+name = "group-encryption-keyhive"
+status = "placeholder"
+adds = "BeeKEM/keyhive group encryption as the alternative scheme."
+requires = []
+roles = ["host", "consume"]
+groups = ["group-crypto"]
+forwards = []
+note = "No design yet (TODO long-term). Worlds name their scheme in their manifest; coexistence with the core scheme follows the vendored precedent until S6."
+
+# --------------------------------------------------- store backends ------
+# Store features select the backend BEHIND the existing port traits
+# (id-core::port, PORT_CONTRACT_VERSION = 2) — never a second store
+# abstraction. store-redb is the unconditional core default today.
+
+[[feature]]
+name = "store-redb"
+status = "shipped"
+adds = "Authoritative record + event backends as shipped: redb file for the event log, iroh-blobs FsStore/MemStore for blobs — behind the port traits, unmodified."
+requires = []
+roles = ["host", "consume"]
+groups = ["store-record", "store-events"]
+forwards = ["id-store"]
+unconditional = true
+note = "Core default for both groups: unconditional code today, so no `tree` name. Becomes a real switchable member in S6."
+
+[[feature]]
+name = "store-turso"
+status = "designed"
+adds = "Turso/libSQL-over-HTTP record-store adapter behind id-core::port (the §0.1 declared profile: declared, not wired), plus hosted-tenancy Turso event use (#9083)."
+requires = []
+roles = ["host"]
+groups = ["store-record", "store-events"]
+forwards = ["id-store"]
+note = "Wired in S6 (alt-store-node)."
+
+[[feature]]
+name = "store-postgres-http"
+status = "designed"
+adds = "Postgres-over-HTTP record backend (#5805)."
+requires = []
+roles = ["host"]
+groups = ["store-record"]
+forwards = ["id-store"]
+
+[[feature]]
+name = "store-d1"
+status = "designed"
+adds = "Hosted D1 record backend (hosted edition)."
+requires = []
+roles = ["host"]
+groups = ["store-record"]
+forwards = ["id-store"]
+note = "Gated on the hosted-edition slices (#2285/#3403 line); catalogued now so the composition has a name (S13)."
+
+[[feature]]
+name = "store-indexeddb"
+status = "placeholder"
+adds = "Browser-target IndexedDB adapter (the TS adapter in browser/)."
+requires = []
+roles = ["consume"]
+forwards = []
+targets = ["wasm32"]
+note = "Target-constrained: wasm32 only, never a member of the host-binary groups."
+
+# --------------------------------------------------- exclusivity groups ---
+# Each port's authoritative backend: exactly one member per composition.
+
+[groups.store-record]
+description = "Authoritative record-store backend behind id-core::port."
+members = ["store-redb", "store-turso", "store-postgres-http", "store-d1"]
+
+[groups.store-events]
+description = "Authoritative event-log backend."
+members = ["store-redb", "store-turso"]
+
+[groups.group-crypto]
+description = "Group-encryption scheme. Worlds name their scheme in their manifest."
+members = ["group-crypto-p2panda", "group-encryption-keyhive"]
+
+# ------------------------------------------------------------- profiles ---
+# The four #5788 levels as the registry's founding profiles, plus the
+# served-environment examples Drew named. `headless` is canonical;
+# `basement` is its alias (amendment 2) — aliases resolve before
+# hashing and never change a composition hash. `extends` names a base
+# profile; `features` are additions; `group_select` overrides the base's
+# member for a group. Built-ins and user profiles share this format and
+# one validation path (open profile sets, amendment 2).
+
+[[profile]]
+name = "plain"
+description = "The user download: core only — the dumbest client with a basic store (§3). `plain` is the absence of meta-features plus core."
+features = []
+aliases = []
+status = "active"
+
+[[profile]]
+name = "full"
+description = "Curated all-on backend/server build — a profile, never --all-features (§0.3, §6). Slower boot accepted, measured per §9."
+features = ["world-state", "sandbox-exec", "serve", "web", "ssh-serve", "dht", "directory", "currency", "rust", "roc-composer", "mcp-server", "import-notion", "import-obsidian", "import-evernote", "import-logseq", "import-joplin", "import-onenote", "transport-mcp", "transport-email", "transport-mqtt", "transport-irc", "transport-overlay", "transport-sneakernet"]
+aliases = []
+status = "active"
+note = "If a future feature is not in `full`, that is a catalogue decision recorded in the registry — never an accident of a flag list. `rust` is listed directly (compile capability of the server build) as well as arriving via `roc-composer`."
+
+[[profile]]
+name = "headless"
+description = "Headless service (≈ #5788 L2): core + serve + execution + directory + dht. No presenters (no web, no ssh-serve)."
+features = ["world-state", "sandbox-exec", "serve", "directory", "dht"]
+aliases = ["basement"]
+status = "active"
+
+[[profile]]
+name = "embedded"
+description = "Library composition, no binary: core minus CLI/REPL, provider link only (≈ #5788 L0)."
+features = []
+aliases = []
+library_only = true
+status = "active"
+note = "Core-minus-CLI is a composition-crate property (S4/S5), not a feature subtraction — features cannot subtract (§2.1)."
+
+[[profile]]
+name = "composer-host"
+description = "Served example: the platform-composition environment (headless + composer + turso)."
+extends = "headless"
+features = ["roc-composer", "store-turso"]
+aliases = []
+status = "example"
+
+[[profile]]
+name = "alt-store-node"
+description = "Served example: full with the record store switched to Turso."
+extends = "full"
+features = []
+aliases = []
+status = "example"
+
+[profile.group_select]
+store-record = "store-turso"
+
+[[profile]]
+name = "hosted-edge"
+description = "Hosted edition shape: web + directory + D1 against the hosted-worker surface."
+features = ["world-state", "serve", "web", "directory", "store-d1"]
+aliases = []
+status = "gated"
+note = "Aspirational — gated on the hosted-edition slices (#2285/#3403 line, S13). Catalogued now so the composition has a name."

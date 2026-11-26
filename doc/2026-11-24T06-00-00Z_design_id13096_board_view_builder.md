@@ -159,12 +159,12 @@ Entry criteria (built elsewhere, consumed here): #13094 token
 issue/check pure logic; #13095 `SocialObject` topic/comment types. Slice
 1 starts when both are available.
 
-| Slice | Work | Acceptance |
-| ----- | ---- | ---------- |
-| 1. Forest projection core | `board_view.rs`: topics read, per-topic comments read, parent_ref assembly, sibling seq order, pending structurally absent; fixture tests | Fixture append-lists: nested comments render in append order at each level (issue test 1) |
-| 2. Tombstone filtering | policy-state filter over tombstone revision; no-renumber property test (seqs stable across filter) | Tombstoned comment hides without disturbing sibling order or seqs (issue test 2) |
-| 3. Subtree tokens | per-topic + view token issue; folded-subtree token-only render; §6.3 check wiring via #13094 | Folded subtree token checks nothing-new against unchanged lists, delta after a new comment lands (issue test 3) |
-| 4. Bounded paging | depth/node/byte budgets, opaque cursor continuation, back-reference cycles, orphan/cross-topic rules; budget tests | 2,001-node fixture pages with cursor; 33-deep fixture folds at 32; cyclic fixture renders back-references |
+| Slice                     | Work                                                                                                                                      | Acceptance                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 1. Forest projection core | `board_view.rs`: topics read, per-topic comments read, parent_ref assembly, sibling seq order, pending structurally absent; fixture tests | Fixture append-lists: nested comments render in append order at each level (issue test 1)                       |
+| 2. Tombstone filtering    | policy-state filter over tombstone revision; no-renumber property test (seqs stable across filter)                                        | Tombstoned comment hides without disturbing sibling order or seqs (issue test 2)                                |
+| 3. Subtree tokens         | per-topic + view token issue; folded-subtree token-only render; §6.3 check wiring via #13094                                              | Folded subtree token checks nothing-new against unchanged lists, delta after a new comment lands (issue test 3) |
+| 4. Bounded paging         | depth/node/byte budgets, opaque cursor continuation, back-reference cycles, orphan/cross-topic rules; budget tests                        | 2,001-node fixture pages with cursor; 33-deep fixture folds at 32; cyclic fixture renders back-references       |
 
 Sequencing: 2←1, 3←2 (tokens cover filtered seqs), 4←1 (paging composes
 with the forest; token-per-page joins in 4←3 for token-bearing pages).

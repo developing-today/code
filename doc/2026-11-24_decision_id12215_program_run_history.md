@@ -71,7 +71,7 @@ its own format design first. Sketch of what that design must contain:
 
 - **Entry kind:** a coarse-grained record, not one entry per guest call —
   e.g. `ProgramRunSummary { instance_id, started_at_ms, ended_at_ms,
-  update_calls, fuel_total, exit: graceful|trapped|replaced }` written once per
+update_calls, fuel_total, exit: graceful|trapped|replaced }` written once per
   program-instance lifetime (restart, reinstall, crash), plus optionally
   error-only per-run records. Per-`update` entries are rejected: unbounded and
   hot-path.
@@ -86,7 +86,7 @@ its own format design first. Sketch of what that design must contain:
 - **Replay rule:** summaries are advisory — replay recomputes program state
   from inputs, never from summaries; a corrupt/missing summary degrades the
   report section to unavailable, never the world.
-- **Retention:** summaries age out by count *and* wall-clock window, stated in
+- **Retention:** summaries age out by count _and_ wall-clock window, stated in
   the report's `available_since` the same way join times do; no silent
   append-forever.
 
