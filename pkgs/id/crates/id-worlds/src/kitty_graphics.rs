@@ -299,11 +299,11 @@ pub fn encode_still(
     payload: StillPayload<'_>,
     action: Action,
 ) -> Result<String, KittyGraphicsError> {
-    let action = match action {
+    let verb = match action {
         Action::Store => 't',
         Action::Place(_) => 'T',
     };
-    let mut keys = format!("a={action}");
+    let mut keys = format!("a={verb}");
     let data = match payload {
         StillPayload::Png(bytes) => {
             PngInfo::parse(bytes)?;
