@@ -97,6 +97,12 @@ pub const MAX_CACHED_ROSTER_AUTHORS: usize = 128;
 /// Maximum key and author payload bytes retained by the roster memo.
 pub const MAX_ROSTER_CACHE_PAYLOAD_BYTES: usize = MAX_ROSTER_CACHE_ENTRIES
     * (std::mem::size_of::<Hash>() + MAX_CACHED_ROSTER_AUTHORS * std::mem::size_of::<AuthorKey>());
+/// Maximum stored-event decodes retained by the per-generation memo.
+const MAX_STORED_EVENT_CACHE_ENTRIES: usize = 256;
+/// Maximum encoded event bytes retained by the stored-event memo.
+const MAX_STORED_EVENT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+/// Larger events are verified on every read and are never memoized.
+const MAX_CACHED_STORED_EVENT_BYTES: usize = 64 * 1024;
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
@@ -425,6 +431,8 @@ pub struct EventStore {
     generation: u64,
     /// Group rosters memoized at a store generation (#13043).
     roster_cache: Mutex<RosterCache>,
+    /// Full verified stored-event decodes memoized by byte digest and generation (#15328).
+    stored_event_cache: Mutex<StoredEventCache>,
 }
 
 /// Group rosters memoized by [`EventStore::roster`]: resolving a roster
@@ -444,6 +452,17 @@ struct RosterCache {
     /// A diagnostic: it grows only when a roster is read at a generation
     /// no entry covers, never per cached read.
     resolutions: u64,
+}
+
+/// Full verified event decodes memoized by the digest of the bytes actually read.
+#[derive(Debug, Default)]
+struct StoredEventCache {
+    generation: u64,
+    entries: HashMap<Hash, (Event, usize)>,
+    order: VecDeque<Hash>,
+    encoded_bytes: usize,
+    verified_decodes: u64,
+    cache_hits: u64,
 }
 
 impl BlockList for EventStore {
@@ -531,6 +550,7 @@ impl EventStore {
             unusable: false,
             generation: 0,
             roster_cache: Mutex::new(RosterCache::default()),
+            stored_event_cache: Mutex::new(StoredEventCache::default()),
         };
         store.reload(now_ms)?;
         Ok(store)
@@ -1957,6 +1977,31 @@ mod tests {
             [] as [([u8; 32], p2panda_core::SeqNum); 0]
         );
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_stored_event_decode_is_memoized_for_unchanged_bytes_15328() {
+        // Oracle: byte-identical reads in one store generation reuse the prior
+        // full verified decode instead of verifying and canonicalizing again.
+        let (_dir, store) = open_temp();
+        let signer = key(38);
+        let event = chain_of(&signer, 1).remove(0);
+        store.write(|txn| store_event(txn, &event)).unwrap();
+        let who = author(&signer);
+
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
+        {
+            let cache = store.stored_event_cache.lock().unwrap();
+            assert_eq!(cache.entries.len(), 1);
+            assert_eq!(cache.verified_decodes, 1);
+            assert_eq!(cache.cache_hits, 0);
+        }
+
+        assert_eq!(store.event(&who, 0).unwrap(), Some(event));
+        let cache = store.stored_event_cache.lock().unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.verified_decodes, 1);
+        assert_eq!(cache.cache_hits, 1);
     }
 
     #[test]
