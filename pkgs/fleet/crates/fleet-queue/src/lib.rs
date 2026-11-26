@@ -57,6 +57,7 @@ pub mod creation_outbox;
 pub mod disposition;
 mod home;
 pub mod lane_share;
+pub mod live_overlay;
 pub mod log;
 pub mod merge_intent;
 pub mod token_file;
