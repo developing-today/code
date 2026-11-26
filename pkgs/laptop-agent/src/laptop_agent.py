@@ -8,9 +8,14 @@ closed when that token is missing, empty, or whitespace-only.
 
 API (JSON):
   GET  /health                    -> {ok, uptime_s, jobs, load1}
-  POST /exec   {cmds:[{cwd, argv|shell}], timeout_s?}
+  POST /exec   {cmds:[{cwd, argv|shell}], timeout_s?, grace_s?}
                                   -> {results:[{exit, stdout, stderr,
                                       duration_ms, truncated}]}
+                                      (grace_s 1-600 with one cmd:
+                                      the trip id is the job id, and
+                                      a dropped client can attach
+                                      with GET /jobs/<trip> within
+                                      grace_s, #15420)
   POST /jobs   {cwd, argv|shell, env?} -> {job_id}
   GET  /jobs                      -> {jobs:[{job_id, state, exit, ...}]}
   GET  /jobs/<id>?out_off&err_off -> {state, exit, stdout, stderr,
@@ -49,6 +54,15 @@ stderr pipes and writes the spool, so a daemon restart neither kills
 the job nor stops its spool, exactly as when the job wrote the files
 directly. The counts live next to the spool as stdout.dropped and
 stderr.dropped.
+
+Exec grace window (#15420, design #10356 section 3.4): an /exec
+with grace_s > 0 runs its one command as a spooled job named by the
+client's trip id. A client that drops leaves the command in state
+"grace" for grace_s seconds; GET /jobs/<trip> in that window turns
+it into an ordinary job (`fleet http attach <trip>`), and otherwise
+it is reaped TERM then KILL and stays listed with reaped=true and
+its spool intact. grace_s 0, the default, is the immediate reap
+described next.
 
 Timeout semantics (2026-11-10, live lineage): every /exec command runs
 in its OWN process group (start_new_session) and the whole group is
@@ -227,6 +241,12 @@ SPOOL_CAP = _parse_startup_int(
 PUMP_SETTLE_S = 2
 EXEC_TIMEOUT_DEFAULT = 120
 EXEC_TIMEOUT_MAX = 600
+# Exec grace window (#15420, design #10356 section 3.4): with
+# grace_s > 0 a dropped /exec client leaves its command running for
+# grace_s seconds, during which GET /jobs/<trip> attaches to it as an
+# ordinary job; after that it is reaped. 0 (the default, and what
+# every older client sends by omission) is the immediate reap.
+EXEC_GRACE_MAX = 600
 JOB_TTL_S = 24 * 3600
 REAP_INTERVAL_S = 3600  # background reaper cadence (#1504)
 KILL_GRACE_S = 5
@@ -1123,7 +1143,7 @@ def job_public(job, out_off=0, err_off=0):
     err_dropped = _read_dropped(d, "stderr")
     return {
         "job_id": job["id"],
-        "state": state,
+        "state": _public_state(job, state),
         "exit": job["exit"] if state == "done" else None,
         "cwd": job["cwd"],
         "cmd": job["cmd_repr"],
@@ -1142,6 +1162,7 @@ def job_public(job, out_off=0, err_off=0):
         "out_dropped": out_dropped,
         "err_dropped": err_dropped,
         "bytes_dropped": out_dropped + err_dropped,
+        "reaped": job.get("reaped", False),
     }
 
 
@@ -1180,7 +1201,7 @@ def job_summary(job):
     err_dropped = _read_dropped(d, "stderr")
     return {
         "job_id": job["id"],
-        "state": state,
+        "state": _public_state(job, state),
         "exit": job["exit"] if state == "done" else None,
         "cwd": job["cwd"],
         "cmd": job["cmd_repr"],
@@ -1197,7 +1218,221 @@ def job_summary(job):
         "out_dropped": out_dropped,
         "err_dropped": err_dropped,
         "bytes_dropped": out_dropped + err_dropped,
+        "reaped": job.get("reaped", False),
     }
+
+
+def _spawn_job(job_id, argv, cmd_repr, cwd, req_env, trip, t_received_ms, kind="job"):
+    """Start one spooled job under job_id and return its record.
+
+    The caller holds one SEMA slot; from here the job's watch thread
+    owns it and releases it when the process exits. On failure the
+    slot is released, the half-made spool removed, and the error
+    re-raised for the route to answer. Shared by POST /jobs and by
+    /exec with a grace window, which adopts the trip id as the job id
+    (#15420, design #10356 section 3.4). kind names the trip-log
+    record ("job" or "exec").
+    """
+    d = None
+    out_w = err_w = proc = pump = None
+    watch_thread = None
+    watch_started = False
+    try:
+        d = job_dir(job_id)
+        d.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        env.update(req_env or {})
+        # #14186: record the FLEET_CTX_* subset (merged daemon +
+        # request env, request wins) in the spool; ids only.
+        ctx = _extract_ctx(env)
+        # The spool files exist from the start so a reader sees
+        # empty output, not a missing spool; the pump appends
+        # to them up to SPOOL_CAP (#15420).
+        (d / "stdout").write_bytes(b"")
+        (d / "stderr").write_bytes(b"")
+        pump, out_w, err_w = _start_spool_pump(d)
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=out_w,
+            stderr=err_w,
+            start_new_session=True,
+        )
+        # Only the job holds the write ends now, so the pump
+        # sees EOF when the job (and anything it left holding
+        # them) exits.
+        for fd in (out_w, err_w):
+            os.close(fd)
+        out_w = err_w = None
+        job = {
+            "id": job_id,
+            "proc": proc,
+            "cwd": cwd,
+            "cmd_repr": cmd_repr,
+            "started_at": time.time(),
+            "ended_at": None,
+            "exit": None,
+            "state": "running",
+            "interrupted": False,
+            "ctx": ctx,
+            "_files": (),
+            "_pump": pump,
+            "_settled": False,
+            "trip": trip,
+            "t_received": t_received_ms,
+            "kind": kind,
+        }
+        _write_meta(job)
+        with JOBS_LOCK:
+            JOBS[job_id] = job
+
+        def watch(j=job):
+            try:
+                j["proc"].wait()
+            finally:
+                SEMA.release()
+            j["ended_at"] = time.time()
+            # Let the pump drain what the job wrote before the
+            # job reads as done, but never wait on a grandchild
+            # that keeps the pipes open (#15420).
+            try:
+                j["_pump"].wait(timeout=PUMP_SETTLE_S)
+            except subprocess.TimeoutExpired:
+                pass
+            j["_settled"] = True
+            job_state(j)
+            try:
+                d = job_dir(j["id"])
+                out_b = (d / "stdout").stat().st_size
+                err_b = (d / "stderr").stat().st_size
+            except (OSError, RuntimeError, ValueError):
+                out_b = err_b = 0
+            log_trip(
+                j["trip"],
+                j.get("kind", "job"),
+                j["cmd_repr"],
+                int((j["ended_at"] - j["started_at"]) * 1000),
+                j["proc"].returncode,
+                out_b,
+                err_b,
+                t_received=j.get("t_received"),
+            )
+
+        watch_thread = threading.Thread(target=watch, daemon=True)
+        watch_thread.start()
+        watch_started = True
+    except Exception:
+        # Thread.start() can raise after the new thread has begun.
+        # In that case its finally block owns the acquired slot.
+        if watch_thread is not None and watch_thread.ident is not None:
+            watch_started = True
+        if not watch_started:
+            try:
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                with JOBS_LOCK:
+                    JOBS.pop(job_id, None)
+                for fd in (out_w, err_w):
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                if pump is not None:
+                    # With the write ends closed the pump sees
+                    # EOF; kill it only if it lingers.
+                    try:
+                        pump.wait(timeout=PUMP_SETTLE_S)
+                    except subprocess.TimeoutExpired:
+                        pump.kill()
+                        pump.wait(timeout=5)
+                if d is not None:
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+            finally:
+                SEMA.release()
+        raise
+    return job
+
+
+def _exec_procs_discard(trip, proc):
+    with EXEC_PROCS_LOCK:
+        procs = EXEC_PROCS.get(trip)
+        if procs is not None:
+            procs.discard(proc)
+            if not procs:
+                EXEC_PROCS.pop(trip, None)
+
+
+def _grace_reap(job):
+    """Hold a dropped exec for its grace window, then reap it.
+
+    An attach (GET /jobs/<trip>) or the command finishing ends the
+    window early. Otherwise the group is killed TERM then KILL, as a
+    grace of 0 does at once, and the job stays listed with reaped
+    set and its spool intact (#15420, design #10356 §3.4).
+    """
+    proc = job["proc"]
+    try:
+        while time.time() < job["grace_until"]:
+            if job.get("attached") or job_state(job) == "done":
+                return
+            time.sleep(0.25)
+        if not job.get("attached") and job_state(job) == "running":
+            job["reaped"] = True
+            kill_group(proc)
+    finally:
+        _exec_procs_discard(job["trip"], proc)
+
+
+def _exec_job_result(job, timed_out):
+    """The /exec result for a finished exec job: run_one's shape.
+
+    Output is the tail of each spool (at most MAX_OUT per stream);
+    truncated is set when either tail was cut or the spool cap
+    dropped bytes.
+    """
+    try:
+        d = job_dir(job["id"])
+    except (RuntimeError, ValueError):
+        d = None
+    if d is not None:
+        out, out_cut = tail_file(d / "stdout")
+        err, err_cut = tail_file(d / "stderr")
+    else:
+        out, out_cut, err, err_cut = b"", False, b"", False
+    dropped = _read_dropped(d, "stdout") + _read_dropped(d, "stderr")
+    ended = job["ended_at"] or time.time()
+    result = {
+        "exit": job["exit"],
+        "stdout": out.decode("utf-8", "replace"),
+        "stderr": err.decode("utf-8", "replace"),
+        "duration_ms": int((ended - job["started_at"]) * 1000),
+        "truncated": out_cut or err_cut or dropped > 0,
+        "job_id": job["id"],
+    }
+    if timed_out:
+        result["exit"] = None
+        result["timeout"] = True
+    if job.get("cancelled"):
+        result["exit"] = None
+        result["timeout"] = True
+        result["cancelled"] = True
+    return result
+
+
+def _public_state(job, state):
+    """The state a reply shows: "grace" for a dropped exec in its
+    window, otherwise the job's own state (#15420)."""
+    if state == "running" and job.get("grace_until") and not job.get("attached"):
+        return "grace"
+    return state
 
 
 def reap_old_jobs():
@@ -1402,8 +1637,112 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("out_off/err_off must be integers")
             if out_off < 0 or err_off < 0:
                 raise ValueError("out_off/err_off must be >= 0")
+            if job.get("kind") == "exec":
+                # Reading an exec's spool is `fleet http attach`: it
+                # turns the exec into an ordinary job, so its grace
+                # reap and its exec timeout no longer apply (#15420).
+                job["attached"] = True
             return self._send(200, job_public(job, out_off, err_off))
         return self._send(404, {"error": "no such route"})
+
+    def _exec_with_grace(self, trip, cmds, timeout, grace, t_received_ms):
+        """POST /exec with a grace window (#15420, design #10356 §3.4).
+
+        The trip id becomes the job id and the command runs as a
+        spooled job from the start, so a client that drops keeps a
+        name to come back with. While the client is connected this
+        behaves like a plain /exec: the reply carries the exit and the
+        tail of each stream, the timeout and /exec/<trip>/cancel kill
+        the group. When the connection drops, the command gets grace
+        seconds; GET /jobs/<trip> in that window attaches to it as an
+        ordinary job, and otherwise it is reaped TERM then KILL and
+        left in the list as reaped, spool intact.
+        """
+        if len(cmds) != 1:
+            return self._send(400, {"error": "grace_s needs exactly one cmd"})
+        try:
+            job_dir(trip)
+        except (OSError, RuntimeError, ValueError):
+            return self._send(400, {"error": "trip is not a valid job id"})
+        with JOBS_LOCK:
+            exists = trip in JOBS
+        if exists:
+            return self._send(409, {"error": f"job {trip} already exists"})
+        c = cmds[0]
+        if c.get("shell") is not None:
+            argv = [BASH, "-lc", c["shell"]]
+            cmd_repr = c["shell"]
+        else:
+            argv = list(c["argv"])
+            cmd_repr = " ".join(str(a) for a in argv)
+        cwd = c.get("cwd") or str(Path.home())
+        if not SEMA.acquire(timeout=5):
+            return self._send(503, {"error": "busy"})
+        t0 = time.time()
+        try:
+            job = _spawn_job(
+                trip,
+                argv,
+                cmd_repr,
+                cwd,
+                c.get("env"),
+                trip,
+                t_received_ms,
+                kind="exec",
+            )
+        except Exception as e:  # cwd missing, argv[0] missing, ...
+            log_trip(
+                trip,
+                "exec",
+                cmd_repr,
+                int((time.time() - t0) * 1000),
+                None,
+                0,
+                0,
+                t_received=t_received_ms,
+            )
+            result = {
+                "exit": None,
+                "error": f"{type(e).__name__}: {e}",
+                "stdout": "",
+                "stderr": "",
+                "duration_ms": int((time.time() - t0) * 1000),
+                "truncated": False,
+            }
+            return self._send(
+                200, {"results": [result], "_t_received": t_received_ms}
+            )
+        proc = job["proc"]
+        with EXEC_PROCS_LOCK:
+            EXEC_PROCS.setdefault(trip, set()).add(proc)
+        deadline = time.time() + timeout
+        timed_out = False
+        dropped = False
+        ticks = 0
+        try:
+            while job_state(job) != "done":
+                if time.time() >= deadline and not job.get("attached"):
+                    timed_out = True
+                    kill_group(proc)
+                    settle = time.time() + PUMP_SETTLE_S + 5
+                    while job_state(job) != "done" and time.time() < settle:
+                        time.sleep(0.05)
+                    break
+                # The socket is checked at 4 Hz, as the plain path does.
+                if ticks % 5 == 0 and self._client_gone():
+                    dropped = True
+                    break
+                ticks += 1
+                time.sleep(0.05)
+        finally:
+            if not dropped:
+                _exec_procs_discard(trip, proc)
+        if dropped:
+            job["grace_until"] = time.time() + grace
+            threading.Thread(target=_grace_reap, args=(job,), daemon=True).start()
+            return None
+        result = _exec_job_result(job, timed_out)
+        return self._send(200, {"results": [result], "_t_received": t_received_ms})
 
     def do_POST(self):
         try:
@@ -1431,6 +1770,18 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, OverflowError):
                 return self._send(400, {"error": "timeout_s must be an integer"})
             timeout = max(1, min(timeout, EXEC_TIMEOUT_MAX))
+            grace = body.get("grace_s")
+            if grace is None:
+                grace = 0
+            if (
+                isinstance(grace, bool)
+                or not isinstance(grace, int)
+                or not 0 <= grace <= EXEC_GRACE_MAX
+            ):
+                return self._send(
+                    400,
+                    {"error": f"grace_s must be an integer 0-{EXEC_GRACE_MAX}"},
+                )
             cmds = body.get("cmds") or []
             if not isinstance(cmds, list) or not cmds:
                 return self._send(400, {"error": "cmds required"})
@@ -1444,6 +1795,8 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 if c.get("env") is not None and not isinstance(c.get("env"), dict):
                     return self._send(400, {"error": "cmd env must be an object"})
+            if grace > 0:
+                return self._exec_with_grace(trip, cmds, timeout, grace, t_received_ms)
             if not SEMA.acquire(timeout=5):
                 return self._send(503, {"error": "busy"})
             cancel_event = threading.Event()
@@ -1514,6 +1867,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "trip required"})
             with EXEC_PROCS_LOCK:
                 procs = list(EXEC_PROCS.get(trip, ()))
+            with JOBS_LOCK:
+                exec_job = JOBS.get(trip)
+            if exec_job is not None and exec_job.get("kind") == "exec" and procs:
+                exec_job["cancelled"] = True
             killed = 0
             for p in procs:
                 if p.poll() is None:
@@ -1538,130 +1895,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "argv or shell required"})
             if not SEMA.acquire(timeout=5):
                 return self._send(503, {"error": "busy"})
-            job_id = d = None
-            out_w = err_w = proc = pump = None
-            watch_thread = None
-            watch_started = False
+            job_id = secrets.token_hex(6)
             try:
-                job_id = secrets.token_hex(6)
-                d = job_dir(job_id)
-                d.mkdir(parents=True, exist_ok=True)
-                env = dict(os.environ)
-                env.update(body.get("env") or {})
-                # #14186: record the FLEET_CTX_* subset (merged daemon +
-                # request env, request wins) in the spool; ids only.
-                ctx = _extract_ctx(env)
-                # The spool files exist from the start so a reader sees
-                # empty output, not a missing spool; the pump appends
-                # to them up to SPOOL_CAP (#15420).
-                (d / "stdout").write_bytes(b"")
-                (d / "stderr").write_bytes(b"")
-                pump, out_w, err_w = _start_spool_pump(d)
-                proc = subprocess.Popen(
+                _spawn_job(
+                    job_id,
                     argv,
-                    cwd=cwd,
-                    env=env,
-                    stdout=out_w,
-                    stderr=err_w,
-                    start_new_session=True,
+                    cmd_repr,
+                    cwd,
+                    body.get("env"),
+                    trip,
+                    t_received_ms,
                 )
-                # Only the job holds the write ends now, so the pump
-                # sees EOF when the job (and anything it left holding
-                # them) exits.
-                for fd in (out_w, err_w):
-                    os.close(fd)
-                out_w = err_w = None
-                job = {
-                    "id": job_id,
-                    "proc": proc,
-                    "cwd": cwd,
-                    "cmd_repr": cmd_repr,
-                    "started_at": time.time(),
-                    "ended_at": None,
-                    "exit": None,
-                    "state": "running",
-                    "interrupted": False,
-                    "ctx": ctx,
-                    "_files": (),
-                    "_pump": pump,
-                    "_settled": False,
-                    "trip": trip,
-                    "t_received": t_received_ms,
-                }
-                _write_meta(job)
-                with JOBS_LOCK:
-                    JOBS[job_id] = job
-
-                def watch(j=job):
-                    try:
-                        j["proc"].wait()
-                    finally:
-                        SEMA.release()
-                    j["ended_at"] = time.time()
-                    # Let the pump drain what the job wrote before the
-                    # job reads as done, but never wait on a grandchild
-                    # that keeps the pipes open (#15420).
-                    try:
-                        j["_pump"].wait(timeout=PUMP_SETTLE_S)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    j["_settled"] = True
-                    job_state(j)
-                    try:
-                        d = job_dir(j["id"])
-                        out_b = (d / "stdout").stat().st_size
-                        err_b = (d / "stderr").stat().st_size
-                    except (OSError, RuntimeError, ValueError):
-                        out_b = err_b = 0
-                    log_trip(
-                        j["trip"],
-                        "job",
-                        j["cmd_repr"],
-                        int((j["ended_at"] - j["started_at"]) * 1000),
-                        j["proc"].returncode,
-                        out_b,
-                        err_b,
-                        t_received=j.get("t_received"),
-                    )
-
-                watch_thread = threading.Thread(target=watch, daemon=True)
-                watch_thread.start()
-                watch_started = True
             except Exception as e:
-                # Thread.start() can raise after the new thread has begun.
-                # In that case its finally block owns the acquired slot.
-                if watch_thread is not None and watch_thread.ident is not None:
-                    watch_started = True
-                if not watch_started:
-                    try:
-                        if proc is not None:
-                            try:
-                                proc.kill()
-                                proc.wait(timeout=5)
-                            except (OSError, subprocess.TimeoutExpired):
-                                pass
-                        with JOBS_LOCK:
-                            JOBS.pop(job_id, None)
-                        for fd in (out_w, err_w):
-                            if fd is not None:
-                                try:
-                                    os.close(fd)
-                                except OSError:
-                                    pass
-                        if pump is not None:
-                            # With the write ends closed the pump sees
-                            # EOF; kill it only if it lingers.
-                            try:
-                                pump.wait(timeout=PUMP_SETTLE_S)
-                            except subprocess.TimeoutExpired:
-                                pump.kill()
-                                pump.wait(timeout=5)
-                        if d is not None:
-                            shutil.rmtree(d, ignore_errors=True)
-                    except Exception:
-                        pass
-                    finally:
-                        SEMA.release()
                 return self._send(400, {"error": f"{type(e).__name__}: {e}"})
             reap_old_jobs()
             return self._send(200, {"job_id": job_id, "_t_received": t_received_ms})

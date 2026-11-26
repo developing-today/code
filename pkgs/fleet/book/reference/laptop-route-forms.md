@@ -97,6 +97,16 @@ are counted, and `attach` ends with an explicit
 `[spool cap reached: N bytes dropped]` line instead of truncating
 silently.
 
+`fleet http exec` has a grace window (design #10356 section 3.4). The
+client's trip id is the daemon job id, and if the connection drops
+the command keeps running for `--grace` seconds (0 to 600, default
+60). The error names the exact `fleet http attach <trip>` command;
+attaching inside the window turns the command into an ordinary job,
+and otherwise the daemon reaps it TERM then KILL and lists it as
+reaped with its spool intact. `--grace 0` is the immediate reap.
+Tier 0 always sends a grace of 0, because it moves on to the next
+form when this one fails and must not leave a copy running.
+
 ## fleet ssh — tier T3
 
 SSH's endpoint-grade shape is a binary-owned client contract: the

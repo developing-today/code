@@ -714,6 +714,219 @@ class SpoolCapTest(unittest.TestCase):
             os.unlink(token_path)
 
 
+class ExecGraceTest(unittest.TestCase):
+    """Issue #15420 (design #10356 section 3.4): the exec grace window.
+
+    With grace_s > 0 the client's trip id is the job id. A connected
+    client gets the usual /exec reply; a client that drops can attach
+    with GET /jobs/<trip> inside the window; otherwise the command is
+    reaped and stays listed as reaped. grace_s 0 keeps the old reap.
+    """
+
+    @contextlib.contextmanager
+    def _daemon(self):
+        token = "exec-grace-token"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(token + "\n")
+            token_path = f.name
+        port = free_port()
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+
+        def call(method, path, body=None, trip=None):
+            data = json.dumps(body).encode() if body is not None else None
+            h = dict(headers)
+            if trip:
+                h["X-Trip-Id"] = trip
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}", data=data, headers=h, method=method
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read() or b"{}")
+
+        def drop(path, body, trip):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps(body).encode()
+            conn.request(
+                "POST",
+                path,
+                body=payload,
+                headers=dict(headers, **{"X-Trip-Id": trip}),
+            )
+            time.sleep(0.5)
+            conn.close()
+
+        try:
+            deadline = time.time() + 10
+            while True:
+                try:
+                    if call("GET", "/health")[1].get("ok"):
+                        break
+                except Exception:
+                    pass
+                if time.time() > deadline:
+                    raise AssertionError("daemon did not start")
+                time.sleep(0.1)
+            yield call, drop
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+            os.unlink(token_path)
+
+    @staticmethod
+    def _listed(call, job_id):
+        status, listing = call("GET", "/jobs")
+        rows = [j for j in listing.get("jobs", []) if j["job_id"] == job_id]
+        return rows[0] if rows else None
+
+    def test_connected_client_gets_the_exec_reply_under_its_trip(self):
+        with self._daemon() as (call, _drop):
+            status, reply = call(
+                "POST",
+                "/exec",
+                {
+                    "cmds": [
+                        {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import sys; print('hi'); sys.exit(3)",
+                            ]
+                        }
+                    ],
+                    "timeout_s": 30,
+                    "grace_s": 30,
+                },
+                trip="gracetrip1",
+            )
+            self.assertEqual(status, 200, reply)
+            result = reply["results"][0]
+            self.assertEqual(result["exit"], 3)
+            self.assertEqual(result["stdout"], "hi\n")
+            self.assertEqual(result["job_id"], "gracetrip1")
+            self.assertFalse(result["truncated"])
+            row = self._listed(call, "gracetrip1")
+            self.assertIsNotNone(row)
+            self.assertEqual(row["state"], "done")
+            self.assertFalse(row["reaped"])
+            # The trip is now a job id: a second exec under it is refused.
+            status, reply = call(
+                "POST",
+                "/exec",
+                {"cmds": [{"argv": ["true"]}], "grace_s": 30},
+                trip="gracetrip1",
+            )
+            self.assertEqual(status, 409, reply)
+
+    def test_dropped_client_attaches_inside_the_window(self):
+        with self._daemon() as (call, drop):
+            drop(
+                "/exec",
+                {
+                    "cmds": [
+                        {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(3); print('after-drop')",
+                            ]
+                        }
+                    ],
+                    "timeout_s": 60,
+                    "grace_s": 60,
+                },
+                "gracedrop1",
+            )
+            deadline = time.time() + 10
+            row = None
+            while time.time() < deadline:
+                row = self._listed(call, "gracedrop1")
+                if row and row["state"] == "grace":
+                    break
+                time.sleep(0.1)
+            self.assertIsNotNone(row)
+            self.assertEqual(row["state"], "grace")
+            deadline = time.time() + 20
+            page = None
+            while time.time() < deadline:
+                status, page = call("GET", "/jobs/gracedrop1")
+                self.assertEqual(status, 200, page)
+                self.assertNotEqual(page["state"], "grace")
+                if page["state"] == "done":
+                    break
+                time.sleep(0.2)
+            self.assertEqual(page["state"], "done")
+            self.assertEqual(page["exit"], 0)
+            self.assertEqual(page["stdout"], "after-drop\n")
+            self.assertFalse(page["reaped"])
+
+    def test_dropped_client_past_the_window_is_reaped_with_its_spool(self):
+        with self._daemon() as (call, drop):
+            drop(
+                "/exec",
+                {
+                    "cmds": [
+                        {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import sys, time; print('before-reap'); "
+                                "sys.stdout.flush(); time.sleep(60)",
+                            ]
+                        }
+                    ],
+                    "timeout_s": 120,
+                    "grace_s": 1,
+                },
+                "gracereap1",
+            )
+            deadline = time.time() + 20
+            row = None
+            while time.time() < deadline:
+                row = self._listed(call, "gracereap1")
+                if row and row["state"] == "done":
+                    break
+                time.sleep(0.2)
+            self.assertIsNotNone(row)
+            self.assertEqual(row["state"], "done")
+            self.assertTrue(row["reaped"])
+            self.assertEqual(row["out_bytes"], len("before-reap\n"))
+
+    def test_bad_grace_is_a_usage_error(self):
+        with self._daemon() as (call, _drop):
+            for grace in (601, -1, "30", True, 1.5):
+                with self.subTest(grace_s=grace):
+                    status, reply = call(
+                        "POST",
+                        "/exec",
+                        {"cmds": [{"argv": ["true"]}], "grace_s": grace},
+                    )
+                    self.assertEqual(status, 400, reply)
+                    self.assertIn("grace_s", reply["error"])
+            status, reply = call(
+                "POST",
+                "/exec",
+                {"cmds": [{"argv": ["true"]}, {"argv": ["true"]}], "grace_s": 5},
+            )
+            self.assertEqual(status, 400, reply)
+            self.assertIn("exactly one cmd", reply["error"])
+
+
 class JobSlotsTest(unittest.TestCase):
     """Issue #1545: POST /jobs shares the LAPTOP_AGENT_SLOTS pool.
 
@@ -2139,6 +2352,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     "out_dropped": 0,
                     "err_dropped": 0,
                     "bytes_dropped": 0,
+                    "reaped": False,
                 },
             )
 
