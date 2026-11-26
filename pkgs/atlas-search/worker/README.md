@@ -119,6 +119,20 @@ event consumption is invoked by the ingest-completion consumer and
 the purge is operator-only, never called by automated paths;
 read-path integration (#13105) is what consults the recorded state.
 
+## Retained objects (#9140, writers off)
+
+`src/retained_object.ts` is build slice 1 of the recommendation, search
+history and retention record
+(`doc/2026-11-24T15-00-00Z_design_atlas_recommendations_history_retention/`):
+the shared envelope, the four retention classes (`hot-short`,
+`recommendation`, `search-history`, `snapshot-audit`) and an append-only
+store over migration `migrations/0003_retained_objects.sql`, in the same
+D1 database as the hot cache. A class may lengthen its window or raise its
+keep-newest floor, never go below the design default: the store and the
+table's CHECKs both refuse it. Every class starts disabled, so nothing is
+written until a family's writer lands and its class is enabled.
+Search-history query text is dropped unless the class allows it.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client
