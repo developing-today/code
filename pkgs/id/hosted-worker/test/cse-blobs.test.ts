@@ -67,7 +67,7 @@ function makeDO(name: string, bucket: ReturnType<typeof fakeBucket>) {
     storage: { sql: fakeSql() },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return new UserDO(state as never, { BLOBS: bucket } as never);
+  return new UserDO(state as never, { BLOBS_US: bucket } as never);
 }
 
 function routed(path: string, binding: string, cse: string | null = null, init: RequestInit = {}): Request {
@@ -190,7 +190,7 @@ function makeFrontEnv(bucket: ReturnType<typeof fakeBucket>) {
       storage: { sql: fakeSql() },
       blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
     } as never,
-    { BLOBS: bucket } as never,
+    { BLOBS_US: bucket } as never,
   );
   const ns = {
     jurisdiction() {

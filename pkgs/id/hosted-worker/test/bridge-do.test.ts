@@ -342,14 +342,14 @@ function makeHibernatingDO(opts: { evict?: boolean } = {}) {
       hibernated.push(ws);
       ws.host = () => {
         if (opts.evict) {
-          current = new UserDO(state as never, { BLOBS: bucket } as never);
+          current = new UserDO(state as never, { BLOBS_US: bucket } as never);
           evictions++;
         }
         return current;
       };
     },
   };
-  let current = new UserDO(state as never, { BLOBS: bucket } as never);
+  let current = new UserDO(state as never, { BLOBS_US: bucket } as never);
   return { doA: () => current, sql, hibernated, evictions: () => evictions };
 }
 
