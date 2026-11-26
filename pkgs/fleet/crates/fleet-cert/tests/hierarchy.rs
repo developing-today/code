@@ -674,3 +674,91 @@ fn revoked_issuer_invalidates_its_leaves_and_wrong_target_is_refused() {
     );
     assert!(report.checks.iter().any(|c| c.name == "revoked" && !c.ok));
 }
+
+#[test]
+fn signed_crl_contains_revoked_leaf_and_verifies() {
+    // Oracles: x509-parser checks CRL structure/serials, aws-lc-rs verifies
+    // the signature against the issuer certificate, and the chain validator
+    // confirms the same revocation record invalidates the leaf path.
+    let tmp = TempDir::new("crl");
+    let (root_dir, issuer_dir) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519]);
+    let leaf_dir = tmp.path().join("leaf");
+    engine::issue_leaf(
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "crl-leaf",
+            None,
+            None,
+            CalendarDuration::days(365),
+        ),
+        &leaf_dir,
+    )
+    .unwrap();
+    fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: leaf_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "key-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+
+    let issuer = load_bundle(&issuer_dir).unwrap();
+    let issuer_cert = issuer
+        .manifest
+        .certificates
+        .iter()
+        .find(|r| r.role == "issuer" && r.primary)
+        .unwrap();
+    let request = fleet_cert::crl::GenerateRequest {
+        issuer_bundle: issuer_dir.clone(),
+        signer: SignerSource {
+            key_dir: issuer_dir.join("private/keys"),
+        },
+        revocation_bundles: vec![leaf_dir.clone()],
+        this_update: ts(AT),
+        next_update: ts("2026-06-08T00:00:00Z"),
+        crl_number: 1,
+        previous_crl: None,
+    };
+    let der = fleet_cert::crl::generate(&request, Some(&issuer_cert.fingerprint_sha256)).unwrap();
+    let inspected = fleet_cert::crl::inspect(&der).unwrap();
+    let leaf = load_bundle(&leaf_dir).unwrap();
+    assert_eq!(inspected.revoked.len(), 1);
+    assert_eq!(
+        inspected.revoked[0].serial_hex,
+        leaf.manifest.certificates[0].serial_hex
+    );
+    let verified = fleet_cert::crl::verify(&der, &issuer_dir, &[leaf_dir.clone()], ts(AT)).unwrap();
+    assert!(
+        verified.valid,
+        "CRL verification failed: {:?}",
+        verified.checks
+    );
+
+    let mut tampered = der.clone();
+    *tampered.last_mut().unwrap() ^= 1;
+    let tampered_report =
+        fleet_cert::crl::verify(&tampered, &issuer_dir, &[leaf_dir.clone()], ts(AT)).unwrap();
+    assert!(!tampered_report.valid);
+    assert!(!tampered_report.signature_valid);
+
+    let duplicate_evidence = fleet_cert::crl::generate(
+        &fleet_cert::crl::GenerateRequest {
+            revocation_bundles: vec![leaf_dir.clone(), leaf_dir.clone()],
+            ..request
+        },
+        Some(&issuer_cert.fingerprint_sha256),
+    );
+    assert!(duplicate_evidence.is_err());
+
+    let report = engine::validate_leaf(
+        &leaf,
+        &[&issuer, &load_bundle(&root_dir).unwrap()],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(!report.valid);
+    assert!(report.checks.iter().any(|c| c.name == "revoked" && !c.ok));
+}
