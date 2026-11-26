@@ -15,6 +15,8 @@
 //! Oracle: p2panda-core's Hash (BLAKE3) and chain::decode /
 //! EventStore::ingest_batch — the native implementation itself.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::ingest::MemStorage;
