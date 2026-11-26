@@ -14,6 +14,9 @@
 //!                          flight, refresh_progress is {started_unix,
 //!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
+//!   GET /secrets?prefix=P -> {names: [...]} holding only names that
+//!                          start with `P.` (#10358 D6); an empty
+//!                          `prefix=` is refused (400)
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
 //!
@@ -826,7 +829,22 @@ fn handle_request(
     } else if !token_matches(provided_token, token) {
         (401, json!({"error": "unauthorized"}))
     } else if method == "GET" && path == "/secrets" {
-        let mut names: Vec<String> = state.secrets.read().unwrap().keys().cloned().collect();
+        // #10358 D6: a scoped caller sends `?prefix=P` and is answered
+        // only the cached names under `P.`, so unscoped names never
+        // cross the socket to it. The cache itself is unchanged.
+        let lead = match secrets_list_prefix(url) {
+            Ok(None) => None,
+            Ok(Some(prefix)) => Some(format!("{prefix}.")),
+            Err(message) => return (400, json!({"error": message})),
+        };
+        let mut names: Vec<String> = state
+            .secrets
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|name| lead.as_deref().is_none_or(|l| name.starts_with(l)))
+            .cloned()
+            .collect();
         names.sort();
         (200, json!({"names": names}))
     } else if method == "POST" && path == "/refresh" {
@@ -1131,6 +1149,26 @@ pub fn run() -> i32 {
     0
 }
 
+/// The `prefix` query parameter of a `GET /secrets` target (#10358
+/// D6): `Ok(None)` when absent, `Err` when present but empty. Only
+/// `%XX` decodes, as in a path segment.
+fn secrets_list_prefix(url: &str) -> Result<Option<String>, &'static str> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Ok(None);
+    };
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "prefix" {
+            let prefix = url_decode(value);
+            if prefix.is_empty() {
+                return Err("empty prefix");
+            }
+            return Ok(Some(prefix));
+        }
+    }
+    Ok(None)
+}
+
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1279,6 +1317,61 @@ mod tests {
         assert_eq!(body["fetched_at_unix"], 7);
         let (status, _) = handle_request(&state, "tok", "GET", "/secret/beta", Some("tok"));
         assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn secrets_list_answers_a_prefix_with_only_its_names() {
+        // #10358 S2 (D6): scoped list, refused empty prefix, unscoped
+        // list unchanged.
+        let state = empty_state();
+        install_list_refresh(
+            &state,
+            &[
+                ("1".to_string(), "alpha".to_string(), "v".to_string()),
+                ("2".to_string(), "42.alpha".to_string(), "v".to_string()),
+                ("3".to_string(), "42.42.x".to_string(), "v".to_string()),
+                ("4".to_string(), "420.y".to_string(), "v".to_string()),
+                ("5".to_string(), "43.z".to_string(), "v".to_string()),
+            ],
+            7,
+        );
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x", "42.alpha"]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets?prefix=", Some("tok"));
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "empty prefix");
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(
+            body["names"],
+            json!(["42.42.x", "42.alpha", "420.y", "43.z", "alpha"])
+        );
+        // A dotted prefix matches as a whole, and the token still gates
+        // the scoped form.
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42.42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x"]));
+        let (status, _) = handle_request(&state, "tok", "GET", "/secrets?prefix=42", None);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn secrets_list_prefix_parses_the_query() {
+        assert_eq!(secrets_list_prefix("/secrets"), Ok(None));
+        assert_eq!(secrets_list_prefix("/secrets?x=1"), Ok(None));
+        assert_eq!(
+            secrets_list_prefix("/secrets?prefix=42").as_deref(),
+            Ok(Some("42"))
+        );
+        assert_eq!(
+            secrets_list_prefix("/secrets?x=1&prefix=a%26b").as_deref(),
+            Ok(Some("a&b"))
+        );
+        assert_eq!(secrets_list_prefix("/secrets?prefix="), Err("empty prefix"));
+        assert_eq!(secrets_list_prefix("/secrets?prefix"), Err("empty prefix"));
     }
 
     #[test]

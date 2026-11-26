@@ -273,6 +273,71 @@ impl Scope {
     }
 }
 
+/// The pseudo-name a listing's errors carry: a listing has no single
+/// secret to name.
+const LIST_PSEUDO_NAME: &str = "names";
+
+/// The broker route a listing in `scope` asks for (#10358 D6). An
+/// unscoped listing never sends the parameter, so it works against old
+/// and new brokers alike.
+pub fn list_path(scope: &Scope) -> String {
+    match scope.prefix() {
+        None => "/secrets".to_string(),
+        Some(prefix) => format!("/secrets?prefix={}", query_encode(prefix)),
+    }
+}
+
+/// Percent-encode everything outside RFC 3986's unreserved set, so a
+/// prefix holding `&`, `=` or `+` stays one query value.
+fn query_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The names a broker listing answered. A scoped listing that the
+/// broker does not know (404) is unresolved and never retried
+/// unscoped (#10358 D6).
+fn names_from_listing(
+    status: u16,
+    body: &serde_json::Value,
+    scope: &Scope,
+) -> Result<Vec<String>, SecretError> {
+    let unavailable = |detail: String| SecretError::Unavailable {
+        source: "secrets-broker",
+        name: LIST_PSEUDO_NAME.to_string(),
+        detail,
+    };
+    match status {
+        200 => {
+            let names = body
+                .get("names")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| unavailable("200 response without a \"names\" array".to_string()))?;
+            names
+                .iter()
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        unavailable("\"names\" array holds a non-string entry".to_string())
+                    })
+                })
+                .collect()
+        }
+        404 if scope.prefix().is_some() => Err(unavailable(
+            "broker does not support scoped list".to_string(),
+        )),
+        status => Err(unavailable(format!(
+            "secrets-broker answered HTTP {status}"
+        ))),
+    }
+}
+
 /// One way to resolve a name. Sources are tried in chain order.
 pub trait SecretSource {
     /// Stable source name for error messages ("secrets-broker", "bws").
@@ -572,38 +637,16 @@ impl BrokerSource {
     /// Errors are [`SecretError::Unavailable`] under the pseudo-name
     /// `"names"` — a listing has no single secret to name.
     pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
-        let name = "names";
-        let response = self.request("/secrets", name)?;
-        match response.status {
-            200 => {
-                let names = response
-                    .body
-                    .get("names")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| SecretError::Unavailable {
-                        source: "secrets-broker",
-                        name: name.to_string(),
-                        detail: "200 response without a \"names\" array".to_string(),
-                    })?;
-                names
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| SecretError::Unavailable {
-                                source: "secrets-broker",
-                                name: name.to_string(),
-                                detail: "\"names\" array holds a non-string entry".to_string(),
-                            })
-                    })
-                    .collect()
-            }
-            status => Err(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
-            }),
-        }
+        self.list_names_in(&Scope::none())
+    }
+
+    /// The names listing for a scope (#10358 D6): a prefixed scope
+    /// asks the broker for `GET /secrets?prefix=P`; [`Scope::none`]
+    /// sends exactly today's `GET /secrets`. The names come back as
+    /// the broker stored them; the caller applies [`Scope::display`].
+    pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
+        let response = self.request(&list_path(scope), LIST_PSEUDO_NAME)?;
+        names_from_listing(response.status, &response.body, scope)
     }
 
     fn connect(&self, name: &str) -> Result<UnixStream, SecretError> {
@@ -806,37 +849,14 @@ impl DirectBrokerSource {
     /// same `GET /secrets` route [`BrokerSource::list_names`]
     /// reads through the session broker. Names only.
     pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
-        let name = "names";
-        let (status, body) = self.get("/secrets", name)?;
-        match status {
-            200 => {
-                let names = body
-                    .get("names")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| SecretError::Unavailable {
-                        source: "secrets-broker",
-                        name: name.to_string(),
-                        detail: "200 response without a \"names\" array".to_string(),
-                    })?;
-                names
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| SecretError::Unavailable {
-                                source: "secrets-broker",
-                                name: name.to_string(),
-                                detail: "\"names\" array holds a non-string entry".to_string(),
-                            })
-                    })
-                    .collect()
-            }
-            status => Err(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
-            }),
-        }
+        self.list_names_in(&Scope::none())
+    }
+
+    /// The scoped names listing over the direct socket, as
+    /// [`BrokerSource::list_names_in`].
+    pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
+        let (status, body) = self.get(&list_path(scope), LIST_PSEUDO_NAME)?;
+        names_from_listing(status, &body, scope)
     }
 }
 
@@ -1676,6 +1696,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_path_sends_a_query_only_when_scoped() {
+        assert_eq!(list_path(&Scope::none()), "/secrets");
+        assert_eq!(
+            list_path(&Scope::prefixed("42").unwrap()),
+            "/secrets?prefix=42"
+        );
+        assert_eq!(
+            list_path(&Scope::prefixed("team.4&2=+").unwrap()),
+            "/secrets?prefix=team.4%262%3D%2B"
+        );
+    }
+
+    #[test]
+    fn a_scoped_listing_the_broker_does_not_know_is_unresolved() {
+        let scoped = Scope::prefixed("42").unwrap();
+        let err = names_from_listing(404, &serde_json::Value::Null, &scoped).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("broker does not support scoped list"),
+            "{err}"
+        );
+        // Unscoped, a 404 keeps the generic status detail.
+        let err = names_from_listing(404, &serde_json::Value::Null, &Scope::none()).unwrap_err();
+        assert!(err.to_string().contains("HTTP 404"), "{err}");
+        let names =
+            names_from_listing(200, &serde_json::json!({"names": ["42.a"]}), &scoped).unwrap();
+        assert_eq!(names, ["42.a"]);
+    }
+
     /// A chain source that records the name it was asked for.
     struct RecordingSource(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -2209,6 +2259,46 @@ mod tests {
             source.resolve("missing.name"),
             Err(SecretError::NotFound { .. })
         ));
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broker_scoped_list_sends_the_prefix_and_never_retries_unscoped() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-secrets-scoped-list-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("broker.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            // Two exchanges: a broker that answers the scoped form,
+            // then an older broker that does not know it (404).
+            for status in [200u16, 404] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
+                assert_eq!(req.path, "/secrets?prefix=42");
+                let resp = Response {
+                    status,
+                    body: serde_json::json!({"names": ["42.a"]}),
+                    transport: None,
+                };
+                fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
+            }
+        });
+        let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"));
+        let scope = Scope::prefixed("42").unwrap();
+        assert_eq!(source.list_names_in(&scope).unwrap(), ["42.a"]);
+        let err = source.list_names_in(&scope).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("broker does not support scoped list"),
+            "{err}"
+        );
+        // Exactly two requests reached the broker: no unscoped retry.
         handle.join().unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
