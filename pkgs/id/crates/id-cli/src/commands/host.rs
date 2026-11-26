@@ -433,6 +433,20 @@ fn inspection_lines(seen: &WorldInspection) -> String {
         }
     }
     let _ = writeln!(out, "modules {}", seen.module_count);
+    let ceilings = &seen.ceilings;
+    let _ = writeln!(
+        out,
+        "ceilings participants={} chat-bytes={} input-bytes={} presentation-bytes={} \
+         snapshot-bytes={} retained-events={} checkpoint-every={} memory-bytes={}",
+        ceilings.participants,
+        ceilings.chat_bytes,
+        ceilings.input_bytes,
+        ceilings.presentation_bytes,
+        ceilings.snapshot_bytes,
+        ceilings.retained_events,
+        ceilings.checkpoint_every,
+        ceilings.total_memory_bytes
+    );
     let missing = if seen.storage.missing {
         " (directory missing)"
     } else {
@@ -557,6 +571,10 @@ mod tests {
         assert!(text.starts_with("world beta\nstate archived\n"), "{text}");
         assert!(text.contains("journal unreadable: "), "{text}");
         assert!(text.contains("modules 0\n"), "{text}");
+        assert!(
+            text.contains("\nceilings participants=256 chat-bytes=2048 input-bytes=16384 "),
+            "{text}"
+        );
         assert!(text.contains(" ops from asleep\n"), "{text}");
         let alpha = inspection_lines(&inspect_world(root.path(), &file, "alpha").unwrap());
         assert!(alpha.contains("history none\n"), "{alpha}");

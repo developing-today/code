@@ -903,6 +903,58 @@ pub struct WorldInspection {
     pub storage: WorldCensus,
     /// What the last restart replay found, when there was one.
     pub last_recovery: Option<RecoveryRecord>,
+    /// The ceilings `id host run` replays and serves the world under.
+    pub ceilings: HostCeilings,
+}
+
+/// The ceilings a [`Supervisor`] replays and serves every world under:
+/// the per-world bounds and the world's whole memory budget (#10696).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct HostCeilings {
+    /// Most active capabilities in the world.
+    pub participants: u64,
+    /// Longest chat message, in bytes.
+    pub chat_bytes: u64,
+    /// Largest game input, in bytes.
+    pub input_bytes: u64,
+    /// Largest presentation text a program returns, in bytes.
+    pub presentation_bytes: u64,
+    /// Largest snapshot frame, in bytes.
+    pub snapshot_bytes: u64,
+    /// Recent events kept for reconnect catch-up.
+    pub retained_events: u64,
+    /// Events between program checkpoints; `0` turns checkpoints off.
+    pub checkpoint_every: u64,
+    /// The world's whole memory budget, in bytes.
+    pub total_memory_bytes: u64,
+}
+
+impl HostCeilings {
+    /// The ceilings that `world` and `runtime` set.
+    pub fn of(world: &WorldLimits, runtime: &RuntimeLimits) -> Self {
+        let wide = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        Self {
+            participants: wide(world.participants),
+            chat_bytes: wide(world.chat_bytes),
+            input_bytes: wide(world.input_bytes),
+            presentation_bytes: wide(world.presentation_bytes),
+            snapshot_bytes: wide(world.snapshot_bytes),
+            retained_events: wide(world.retained_events),
+            checkpoint_every: world.checkpoint_every,
+            total_memory_bytes: runtime.total_memory_bytes,
+        }
+    }
+
+    /// The ceilings a [`Supervisor`] uses.
+    pub fn host() -> Self {
+        let (world, runtime) = host_limits();
+        Self::of(&world, &runtime)
+    }
+}
+
+/// The limits a [`Supervisor`] replays and serves every world under.
+fn host_limits() -> (WorldLimits, RuntimeLimits) {
+    (WorldLimits::default(), RuntimeLimits::default())
 }
 
 /// Inspect `name` in the data root `root` that `file` describes, reading
@@ -945,6 +997,7 @@ pub fn inspect_world(root: &Path, file: &HostFile, name: &str) -> Result<WorldIn
         module_count,
         storage,
         last_recovery: record.last_recovery.clone(),
+        ceilings: HostCeilings::host(),
     })
 }
 
@@ -1329,11 +1382,12 @@ impl Supervisor {
     async fn replay_live(&mut self, name: &str) -> Result<OpenReport> {
         let dir = self.root.join(name);
         let world_id = name.to_owned();
+        let (world_limits, runtime_limits) = host_limits();
         let (service, report) = open_world(
             &dir,
             &world_id,
-            WorldLimits::default(),
-            RuntimeLimits::default(),
+            world_limits,
+            runtime_limits,
             |handle: WorldHandle| WorldService::new(handle, None),
         )
         .await
@@ -1944,6 +1998,16 @@ mod tests {
         assert_eq!(file.worlds["fine"].last_recovery, None);
         let seen = inspect_world(root.path(), &file, "future").unwrap();
         assert!(seen.last_recovery.is_some());
+        let defaults = WorldLimits::default();
+        assert_eq!(
+            seen.ceilings.participants,
+            u64::try_from(defaults.participants).unwrap()
+        );
+        assert_eq!(seen.ceilings.checkpoint_every, defaults.checkpoint_every);
+        assert_eq!(
+            seen.ceilings.total_memory_bytes,
+            RuntimeLimits::default().total_memory_bytes
+        );
     }
 
     #[test]
