@@ -1,6 +1,6 @@
 /**
  * The hosted read API over the async store (CF-5c, #14969): the
- * same four routes, the same #9060 §6 shapes, and the same honest
+ * same #9060 §6 routes and shapes, and the same honest
  * rendering as api.ts — the only difference is that every load is
  * awaited from an AsyncSqlDb (the libSQL/Turso HTTP adapter), so
  * the handler can run where the synchronous bun:sqlite surface
@@ -18,7 +18,7 @@ import {
   loadReleaseSnapshotsAsync,
   loadRoadmapRowsAsync,
 } from "./async-store.ts";
-import { freshnessFromSummaries, overviewFromPool, queueFromPool } from "./waves.ts";
+import { freshnessFromSummaries, overviewFromPool, programFromPool, queueFromPool } from "./waves.ts";
 
 export interface AsyncReadApiDeps {
   db: AsyncSqlDb;
@@ -57,6 +57,13 @@ export async function roadmapJsonAsync(deps: AsyncReadApiDeps) {
   return { generatedAt: now(), rows: await loadRoadmapRowsAsync(deps.db, pool) };
 }
 
+/** CF-5d program view over Epic ancestry already present in the pool. */
+export async function programJsonAsync(deps: AsyncReadApiDeps) {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const [summaries, pool] = await Promise.all([loadBoardSummariesAsync(deps.db), loadPoolAsync(deps.db)]);
+  return { generatedAt: now(), freshness: freshnessFromSummaries(summaries), ...programFromPool(pool) };
+}
+
 /** CF-5d (#14970) wave, async twin of api.ts's overviewJson. */
 export async function overviewJsonAsync(deps: AsyncReadApiDeps) {
   const now = deps.now ?? (() => new Date().toISOString());
@@ -89,8 +96,8 @@ export async function releasesJsonAsync(deps: AsyncReadApiDeps) {
 const ITEM_PATH = /^\/api\/item\/(.+)\.json$/;
 
 /** The fetch handler the Worker entry mounts. Only the read API's
- * GET routes exist (the four §6 routes plus the CF-5d overview and
- * queue wave routes); anything else is a JSON 404. */
+ * GET routes exist (the §6 routes plus the CF-5d overview, queue and
+ * program wave routes); anything else is a JSON 404. */
 export function createAsyncReadApiHandler(deps: AsyncReadApiDeps): (req: Request) => Promise<Response> {
   return async (req) => {
     const path = new URL(req.url).pathname;
@@ -108,6 +115,7 @@ export function createAsyncReadApiHandler(deps: AsyncReadApiDeps): (req: Request
     }
     if (req.method === "GET" && path === "/api/roadmap.json") return json(await roadmapJsonAsync(deps));
     if (req.method === "GET" && path === "/api/releases.json") return json(await releasesJsonAsync(deps));
+    if (req.method === "GET" && path === "/api/program.json") return json(await programJsonAsync(deps));
     if (req.method === "GET" && path === "/api/overview.json") return json(await overviewJsonAsync(deps));
     if (req.method === "GET" && path === "/api/queue.json") return json(await queueJsonAsync(deps));
     return json({ error: `not found: ${path}` }, 404);
