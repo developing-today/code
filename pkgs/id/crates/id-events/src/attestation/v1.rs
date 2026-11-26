@@ -13,6 +13,12 @@ pub const VERSION: u8 = 1;
 pub const WITNESS_DECISION_KIND: &str = "attestation.witness_decision";
 pub const OBJECTION_KIND: &str = "attestation.objection";
 
+/// The frozen audit-report object schema and its honest-scope rules.
+pub mod audit;
+/// The v1 reducer: claim, concession, witness and dispute states with
+/// evidence-dependency and fork recomputation.
+pub mod reducer;
+
 /// Evidence a named witness considered when issuing a decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -162,9 +168,12 @@ fn sign_body(
     )?)
 }
 
-/// A reducer result. Agreed records matching player claims; the v1 reducer
-/// advances that result to Final immediately unless dependent evidence is
-/// invalid or an objection exists.
+/// A reducer result ([`reducer::reduce`]). `Agreed` is a mutual concession,
+/// `Witnessed` is witnessed-unopposed, `Disputed` holds any contradiction or
+/// objection, and `Void` means the evidence graph references forked history.
+/// `Final` is reserved for the receipt/closure flow (#2039 phase 5): without
+/// independent receipt evidence no state is protocol-final, so the phase-4
+/// reducer never emits it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum V1MatchState {
