@@ -176,7 +176,8 @@ pub enum HostCommand {
     },
     /// Show one world's record without opening it: lifecycle state and
     /// every recorded transition, journal entries, version and torn
-    /// tail, module count and storage bytes. Writes nothing.
+    /// tail, module count, storage bytes, and what the last restart
+    /// replay found. Writes nothing.
     Inspect {
         /// The data root.
         root: PathBuf,

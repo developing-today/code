@@ -150,6 +150,59 @@ pub struct WorldRecord {
     /// How the world wakes from asleep.
     #[serde(default, skip_serializing_if = "WakeMode::is_default")]
     pub wake: WakeMode,
+    /// What the host found the last time it replayed this world while
+    /// opening the data root, after a restart or a crash (#10696).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recovery: Option<RecoveryRecord>,
+}
+
+/// The result of replaying a world the host file recorded live, when a
+/// host opened the data root: the world was live when the last host
+/// stopped, by shutdown or by crash.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryRecord {
+    /// Unix seconds (UTC) when the replay finished.
+    pub at_secs: u64,
+    /// The journal ended in an incomplete line before the replay: the
+    /// last append was cut off, and only the complete entries replayed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub torn_tail: bool,
+    /// Last committed sequence after the replay.
+    pub sequence: u64,
+    /// Journal entries after the replay.
+    pub journal_entries: u64,
+    /// Inputs replayed into the restored program.
+    pub replayed_inputs: u64,
+    /// Why the program could not be restored, when the world opened
+    /// without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_error: Option<String>,
+    /// Why the replay failed, when it did; the world stays recorded live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl RecoveryRecord {
+    fn replayed(at_secs: u64, torn_tail: bool, report: &OpenReport) -> Self {
+        Self {
+            at_secs,
+            torn_tail,
+            sequence: report.sequence,
+            journal_entries: u64::try_from(report.journal_entries).unwrap_or(u64::MAX),
+            replayed_inputs: u64::try_from(report.replayed_inputs).unwrap_or(u64::MAX),
+            program_error: report.program_error.clone(),
+            error: None,
+        }
+    }
+
+    fn failed(at_secs: u64, torn_tail: bool, error: String) -> Self {
+        Self {
+            at_secs,
+            torn_tail,
+            error: Some(error),
+            ..Self::default()
+        }
+    }
 }
 
 /// The host file beside the data root: which worlds exist, their
@@ -253,6 +306,12 @@ impl HostFile {
         drop(f);
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+        // Make the rename itself durable: without it, a power loss can
+        // bring back the previous host file after this save returned.
+        #[cfg(unix)]
+        std::fs::File::open(root)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("fsync data root {}", root.display()))?;
         Ok(())
     }
 
@@ -848,6 +907,60 @@ pub struct WorldInspection {
     pub module_count: u64,
     /// The world's storage row, as `id host list` shows it.
     pub storage: WorldCensus,
+    /// What the last restart replay found, when there was one.
+    pub last_recovery: Option<RecoveryRecord>,
+    /// The ceilings `id host run` replays and serves the world under.
+    pub ceilings: HostCeilings,
+}
+
+/// The ceilings a [`Supervisor`] replays and serves every world under:
+/// the per-world bounds and the world's whole memory budget (#10696).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct HostCeilings {
+    /// Most active capabilities in the world.
+    pub participants: u64,
+    /// Longest chat message, in bytes.
+    pub chat_bytes: u64,
+    /// Largest game input, in bytes.
+    pub input_bytes: u64,
+    /// Largest presentation text a program returns, in bytes.
+    pub presentation_bytes: u64,
+    /// Largest snapshot frame, in bytes.
+    pub snapshot_bytes: u64,
+    /// Recent events kept for reconnect catch-up.
+    pub retained_events: u64,
+    /// Events between program checkpoints; `0` turns checkpoints off.
+    pub checkpoint_every: u64,
+    /// The world's whole memory budget, in bytes.
+    pub total_memory_bytes: u64,
+}
+
+impl HostCeilings {
+    /// The ceilings that `world` and `runtime` set.
+    pub fn of(world: &WorldLimits, runtime: &RuntimeLimits) -> Self {
+        let wide = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        Self {
+            participants: wide(world.participants),
+            chat_bytes: wide(world.chat_bytes),
+            input_bytes: wide(world.input_bytes),
+            presentation_bytes: wide(world.presentation_bytes),
+            snapshot_bytes: wide(world.snapshot_bytes),
+            retained_events: wide(world.retained_events),
+            checkpoint_every: world.checkpoint_every,
+            total_memory_bytes: runtime.total_memory_bytes,
+        }
+    }
+
+    /// The ceilings a [`Supervisor`] uses.
+    pub fn host() -> Self {
+        let (world, runtime) = host_limits();
+        Self::of(&world, &runtime)
+    }
+}
+
+/// The limits a [`Supervisor`] replays and serves every world under.
+fn host_limits() -> (WorldLimits, RuntimeLimits) {
+    (WorldLimits::default(), RuntimeLimits::default())
 }
 
 /// Inspect `name` in the data root `root` that `file` describes, reading
@@ -889,6 +1002,8 @@ pub fn inspect_world(root: &Path, file: &HostFile, name: &str) -> Result<WorldIn
         journal_error,
         module_count,
         storage,
+        last_recovery: record.last_recovery.clone(),
+        ceilings: HostCeilings::host(),
     })
 }
 
@@ -1012,10 +1127,27 @@ impl Supervisor {
             .map(|(name, _)| name.clone())
             .collect();
         let mut failures = Vec::new();
-        for name in live_names {
-            if let Err(error) = supervisor.replay_live(&name).await {
+        let mut recovered = supervisor.file.clone();
+        for name in &live_names {
+            let torn_tail = journal_facts(&supervisor.root.join(name).join(JOURNAL_FILE))
+                .is_ok_and(|facts| facts.torn_tail);
+            let outcome = supervisor.replay_live(name).await;
+            let record = match &outcome {
+                Ok(report) => RecoveryRecord::replayed(now_secs(), torn_tail, report),
+                Err(error) => RecoveryRecord::failed(now_secs(), torn_tail, format!("{error:#}")),
+            };
+            if let Some(world) = recovered.worlds.get_mut(name) {
+                world.last_recovery = Some(record);
+            }
+            if let Err(error) = outcome {
                 failures.push(format!("{name}: {error:#}"));
             }
+        }
+        if !live_names.is_empty() {
+            recovered
+                .save(&supervisor.root)
+                .context("recording the restart replay in the host file")?;
+            supervisor.file = recovered;
         }
         if !failures.is_empty() {
             bail!(
@@ -1256,11 +1388,12 @@ impl Supervisor {
     async fn replay_live(&mut self, name: &str) -> Result<OpenReport> {
         let dir = self.root.join(name);
         let world_id = name.to_owned();
+        let (world_limits, runtime_limits) = host_limits();
         let (service, report) = open_world(
             &dir,
             &world_id,
-            WorldLimits::default(),
-            RuntimeLimits::default(),
+            world_limits,
+            runtime_limits,
             |handle: WorldHandle| WorldService::new(handle, None),
         )
         .await
@@ -1421,6 +1554,7 @@ mod tests {
             std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         let sup2 = Supervisor::open(root.path()).await.unwrap();
         assert!(sup2.live_names().is_empty());
+        assert_eq!(sup2.file().worlds["alpha"].last_recovery, None);
         drop(sup2);
         assert_eq!(
             std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap(),
@@ -1439,6 +1573,10 @@ mod tests {
         assert_eq!(sup3.live_names(), vec!["alpha".to_owned()]);
         let reopened = sup3.live_report("alpha").unwrap();
         assert!(reopened.journal_entries >= before);
+        let recovery = sup3.file().worlds["alpha"].last_recovery.clone().unwrap();
+        assert!(!recovery.torn_tail);
+        assert_eq!(recovery.error, None);
+        assert_eq!(recovery.sequence, reopened.sequence);
         let replayed = std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         assert!(replayed.starts_with(&journal_before));
     }
@@ -1500,7 +1638,17 @@ mod tests {
         assert_eq!(sup2.file().worlds["sleepy"].state, LifecycleState::Asleep);
         assert_eq!(sup2.file().worlds["vault"].state, LifecycleState::Archived);
         assert!(sup2.live_report("live-one").unwrap().journal_entries >= 1);
-        assert_eq!(sup2.file(), &file_before);
+        // The only change is the restart replay the host now records.
+        let mut after = sup2.file().clone();
+        let recovery = after
+            .worlds
+            .get_mut("live-one")
+            .unwrap()
+            .last_recovery
+            .take()
+            .unwrap();
+        assert_eq!(recovery.error, None);
+        assert_eq!(after, file_before);
     }
 
     #[tokio::test]
@@ -1753,6 +1901,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_save_cut_off_before_its_rename_leaves_the_last_host_file() {
+        // #10695 power loss: the host died after writing `host.json.tmp`
+        // and before renaming it. The saved host file still stands, the
+        // half-written temp file is never read, and the next save
+        // replaces it.
+        let root = data_root_with(&["alpha", "beta"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        sup.shutdown().await.unwrap();
+        let saved = std::fs::read(HostFile::path_for(root.path())).unwrap();
+        let tmp = HostFile::path_for(root.path()).with_extension("json.tmp");
+        std::fs::write(&tmp, &saved[..saved.len() / 2]).unwrap();
+
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        assert_eq!(sup.live_names(), vec!["alpha".to_owned()]);
+        assert_eq!(sup.file().worlds["beta"].state, LifecycleState::Asleep);
+        sup.start("beta", actor()).await.unwrap();
+        assert!(!tmp.exists());
+        let file = HostFile::load(root.path()).unwrap();
+        assert_eq!(file.worlds["beta"].state, LifecycleState::Live);
+        assert_eq!(file.worlds.len(), 2);
+        sup.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_host_file_older_than_the_journal_loses_no_entries() {
+        // #10695 power loss: the host file came back older than the
+        // journal (a save that never reached the disk). The journal is the
+        // only authority on contents, so starting the world replays every
+        // fsynced entry, whatever state the old host file records.
+        let root = data_root_with(&["alpha"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        let stale = std::fs::read(HostFile::path_for(root.path())).unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        sup.live["alpha"]
+            .service
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        let want = sup.live_report("alpha").unwrap().clone();
+        sup.shutdown().await.unwrap();
+        let journal = root.path().join("alpha").join(JOURNAL_FILE);
+        let entries = journal_facts(&journal).unwrap().entries;
+        std::fs::write(HostFile::path_for(root.path()), &stale).unwrap();
+
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Asleep);
+        let got = sup.start("alpha", actor()).await.unwrap();
+        assert!(got.journal_entries >= want.journal_entries);
+        assert_eq!(
+            sup.live["alpha"].service.world().isolation().await.unwrap(),
+            Isolation::Unisolated
+        );
+        sup.shutdown().await.unwrap();
+        assert!(journal_facts(&journal).unwrap().entries >= entries);
+    }
+
+    #[tokio::test]
     async fn restart_after_a_torn_append_replays_exactly_the_fsynced_prefix() {
         // #10695 crash matrix: the host died mid-append, leaving an
         // incomplete final line after the last fsynced entry.
@@ -1803,6 +2011,17 @@ mod tests {
         );
         assert_eq!(want_isolation, Isolation::Unisolated);
         sup.shutdown().await.unwrap();
+        let recovery = HostFile::load(root.path()).unwrap().worlds["alpha"]
+            .last_recovery
+            .clone()
+            .unwrap();
+        assert!(recovery.torn_tail);
+        assert_eq!(recovery.error, None);
+        assert_eq!(recovery.sequence, want.sequence);
+        assert_eq!(
+            recovery.journal_entries,
+            u64::try_from(want.journal_entries).unwrap()
+        );
         // No partial application: the torn bytes were never kept as an
         // entry, and every fsynced byte survives.
         let after = std::fs::read(&journal).unwrap();
@@ -1848,6 +2067,23 @@ mod tests {
         let file = HostFile::load(root.path()).unwrap();
         assert_eq!(file.worlds["future"].state, LifecycleState::Live);
         assert_eq!(file.worlds["fine"].state, LifecycleState::Asleep);
+        // The failed replay is recorded for `id host inspect`.
+        let recovery = file.worlds["future"].last_recovery.clone().unwrap();
+        let recorded = recovery.error.unwrap();
+        assert!(recorded.contains(&future.to_string()), "{recorded}");
+        assert_eq!(file.worlds["fine"].last_recovery, None);
+        let seen = inspect_world(root.path(), &file, "future").unwrap();
+        assert!(seen.last_recovery.is_some());
+        let defaults = WorldLimits::default();
+        assert_eq!(
+            seen.ceilings.participants,
+            u64::try_from(defaults.participants).unwrap()
+        );
+        assert_eq!(seen.ceilings.checkpoint_every, defaults.checkpoint_every);
+        assert_eq!(
+            seen.ceilings.total_memory_bytes,
+            RuntimeLimits::default().total_memory_bytes
+        );
     }
 
     #[test]
@@ -1937,8 +2173,9 @@ mod tests {
             proptest::collection::vec(change, 0..4),
             proptest::bool::ANY,
             proptest::bool::ANY,
+            proptest::option::of((0u64..u32::MAX as u64, proptest::bool::ANY, 0u64..64)),
         )
-            .prop_map(|(state, history, pinned, operator)| WorldRecord {
+            .prop_map(|(state, history, pinned, operator, recovery)| WorldRecord {
                 state,
                 history,
                 pinned,
@@ -1947,6 +2184,15 @@ mod tests {
                 } else {
                     WakeMode::Connect
                 },
+                last_recovery: recovery.map(|(at_secs, torn_tail, entries)| RecoveryRecord {
+                    at_secs,
+                    torn_tail,
+                    sequence: entries,
+                    journal_entries: entries,
+                    replayed_inputs: 0,
+                    program_error: None,
+                    error: (entries % 2 == 1).then(|| "replay failed".to_owned()),
+                }),
             });
         let file = (
             proptest::collection::hash_map(name, record, 0..5),
