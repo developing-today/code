@@ -1748,10 +1748,13 @@
       "paths": [
         "pkgs/id/crates/id-render/tests/assertions.rs",
         "pkgs/id/crates/id-render/tests/compose.rs",
+        "pkgs/id/crates/id-render/tests/coverage_corpus.rs",
         "pkgs/id/crates/id-render/tests/lower.rs",
         "pkgs/id/crates/id-render/tests/lower_gui.rs",
         "pkgs/id/crates/id-render/tests/lower_native.rs",
+        "pkgs/id/crates/id-render/tests/parser_corpus.rs",
         "pkgs/id/crates/id-render/tests/pipeline.rs",
+        "pkgs/id/crates/id-render/tests/target_corpus.rs",
         "pkgs/id/crates/id-render/tests/tooling.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
