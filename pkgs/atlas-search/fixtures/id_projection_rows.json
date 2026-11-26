@@ -87,6 +87,8 @@
         "confidence": 0.7
       }
     ],
+    "tombstone": {"file_id":"file-alpha","note_create":{"file_id":"file-alpha","version_seq":1},"prior_head":{"file_id":"file-alpha","version_seq":4},"trigger":"source_deleted","rule":"source-authoritative-v1","run_id":"atlas-run-2026-11-24"},
+    "corrections": [{"replacement":{"newer":{"file_id":"file-alpha","version_seq":4},"prior":{"file_id":"file-beta","version_seq":1},"edge_kind":"merge","confidence":0.95},"superseded_claim_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]}],
     "media_type": "text/markdown",
     "content": "# Current alpha head\n",
     "path": "docs/renamed-alpha.md",
