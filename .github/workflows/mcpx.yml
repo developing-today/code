@@ -65,6 +65,11 @@ on:
         description: "Run seed override (#1949): replay a previous run exactly with this seed id"
         required: false
         default: ""
+      e2e_only:
+        description: "Skip nightly stress matrix for a focused basic-test measurement"
+        type: boolean
+        required: false
+        default: false
 
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification
@@ -268,6 +273,14 @@ jobs:
           for e in events():
               if e.get("Action") == "output" and not e.get("Test"):
                   print(e.get("Output", ""), end="")
+          slow = sorted(
+              (e for e in events()
+               if e.get("Package") == "github.com/developing-today/code/pkgs/mcpx/internal/e2e"
+               and e.get("Action") in ("pass", "fail") and e.get("Test")),
+              key=lambda e: e.get("Elapsed", 0), reverse=True,
+          )
+          for e in slow[:30]:
+              print(f"slow e2e test: {e.get('Elapsed', 0):.3f}s {e.get('Test')}")
           for e in events():
               if e.get("Action") == "output" and (e.get("Package", ""), e.get("Test", "")) in failed:
                   print(e.get("Output", ""), end="")
@@ -597,7 +610,7 @@ jobs:
     # like everywhere else: testsupport.Quarantine skips them until
     # their expiry and fails the suite after it, so the nightly log
     # and the failure issue are where quarantines surface.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.e2e_only != true)
     needs: seed
     strategy:
       fail-fast: false
