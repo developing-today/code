@@ -306,6 +306,12 @@ impl HostFile {
         drop(f);
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+        // Make the rename itself durable: without it, a power loss can
+        // bring back the previous host file after this save returned.
+        #[cfg(unix)]
+        std::fs::File::open(root)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("fsync data root {}", root.display()))?;
         Ok(())
     }
 
@@ -1882,6 +1888,66 @@ mod tests {
         file.transition(name, LifecycleState::Live, actor(), 1_700_000_200)
             .unwrap();
         file.save(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_save_cut_off_before_its_rename_leaves_the_last_host_file() {
+        // #10695 power loss: the host died after writing `host.json.tmp`
+        // and before renaming it. The saved host file still stands, the
+        // half-written temp file is never read, and the next save
+        // replaces it.
+        let root = data_root_with(&["alpha", "beta"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        sup.shutdown().await.unwrap();
+        let saved = std::fs::read(HostFile::path_for(root.path())).unwrap();
+        let tmp = HostFile::path_for(root.path()).with_extension("json.tmp");
+        std::fs::write(&tmp, &saved[..saved.len() / 2]).unwrap();
+
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        assert_eq!(sup.live_names(), vec!["alpha".to_owned()]);
+        assert_eq!(sup.file().worlds["beta"].state, LifecycleState::Asleep);
+        sup.start("beta", actor()).await.unwrap();
+        assert!(!tmp.exists());
+        let file = HostFile::load(root.path()).unwrap();
+        assert_eq!(file.worlds["beta"].state, LifecycleState::Live);
+        assert_eq!(file.worlds.len(), 2);
+        sup.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_host_file_older_than_the_journal_loses_no_entries() {
+        // #10695 power loss: the host file came back older than the
+        // journal (a save that never reached the disk). The journal is the
+        // only authority on contents, so starting the world replays every
+        // fsynced entry, whatever state the old host file records.
+        let root = data_root_with(&["alpha"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        let stale = std::fs::read(HostFile::path_for(root.path())).unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        sup.live["alpha"]
+            .service
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        let want = sup.live_report("alpha").unwrap().clone();
+        sup.shutdown().await.unwrap();
+        let journal = root.path().join("alpha").join(JOURNAL_FILE);
+        let entries = journal_facts(&journal).unwrap().entries;
+        std::fs::write(HostFile::path_for(root.path()), &stale).unwrap();
+
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        assert!(sup.live_names().is_empty());
+        assert_eq!(sup.file().worlds["alpha"].state, LifecycleState::Asleep);
+        let got = sup.start("alpha", actor()).await.unwrap();
+        assert!(got.journal_entries >= want.journal_entries);
+        assert_eq!(
+            sup.live["alpha"].service.world().isolation().await.unwrap(),
+            Isolation::Unisolated
+        );
+        sup.shutdown().await.unwrap();
+        assert!(journal_facts(&journal).unwrap().entries >= entries);
     }
 
     #[tokio::test]
