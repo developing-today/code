@@ -452,6 +452,8 @@ mod tests {
 
     #[test]
     fn overlapping_versions_are_rejected_without_mutating_catalog() {
+        // Oracle: each version has one canonical shard; a rejected
+        // registration changes neither the search targets nor resolution.
         let mut catalog = ColdCatalog::new();
         catalog
             .register(
@@ -465,7 +467,9 @@ mod tests {
             .register(
                 "rustfs://cold/shard-b",
                 sha("manifest-b"),
-                &manifest("shard-b", "code", "code", &[("file-1", 1), ("file-2", 2)]),
+                // The fresh key sorts before the overlap, catching a
+                // validation loop that writes entries before rejecting.
+                &manifest("shard-b", "code", "code", &[("file-0", 2), ("file-1", 1)]),
             )
             .expect_err("a version cannot belong to two canonical shards");
 
@@ -479,7 +483,7 @@ mod tests {
                 .shard_id,
             "shard-a"
         );
-        assert!(catalog.resolve("file-2", 2).is_none());
+        assert!(catalog.resolve("file-0", 2).is_none());
     }
 
     #[test]
