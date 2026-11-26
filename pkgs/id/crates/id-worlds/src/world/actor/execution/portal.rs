@@ -246,7 +246,7 @@ impl WorldActor {
                 "portal delivery fenced: {error}"
             )));
         }
-        if !self.deliver(event).await {
+        if !self.deliver(event).await.delivered() {
             return Err(PortalSendError::Unavailable(
                 "target program did not accept the portal message".to_owned(),
             ));

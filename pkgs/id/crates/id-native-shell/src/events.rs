@@ -10,6 +10,7 @@
 //! terminal builder would produce for the same logical action, which
 //! is what the parity tests assert. No new frame kinds are introduced.
 
+use bevy::input::keyboard::Key;
 use serde_json::Value;
 
 use crate::{
@@ -102,6 +103,141 @@ pub fn resize_frame_for_window(
     resize_frame(width, height)
 }
 
+/// Modifier keys held during one key press, as far as the terminal
+/// byte mapping and the paste chord care. Shift is already folded
+/// into the produced text by the platform, so the byte mapping
+/// ignores it; it only tells the paste chord apart from a plain
+/// Ctrl+V or Insert. Super/Meta have no terminal encoding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyModifiers {
+    /// A Control key is held.
+    pub ctrl: bool,
+    /// An Alt key is held.
+    pub alt: bool,
+    /// A Shift key is held.
+    pub shift: bool,
+}
+
+/// Whether a key press is the paste chord rather than a key to send.
+///
+/// The chords are the terminal emulators' own: Ctrl+Shift+V, since a
+/// plain Ctrl+V is the literal-next control byte a world may want,
+/// and Shift+Insert. Alt with either is not a paste, so the chords
+/// never shadow an Alt-prefixed key.
+#[must_use]
+pub fn is_paste_chord(key: &Key, modifiers: KeyModifiers) -> bool {
+    if modifiers.alt || !modifiers.shift {
+        return false;
+    }
+    match key {
+        Key::Character(character) => modifiers.ctrl && character.eq_ignore_ascii_case("v"),
+        Key::Insert => !modifiers.ctrl,
+        _ => false,
+    }
+}
+
+/// The native event for one clipboard read on the paste chord, or
+/// `None` for an empty clipboard (nothing to paste, so nothing is
+/// sent). Text over [`crate::MAX_PASTE_BYTES`] is still returned:
+/// [`native_event_frame`] refuses it, and the caller surfaces that
+/// refusal, because the contract delivers a paste as one bounded
+/// event and never as a split or truncated one.
+#[must_use]
+pub fn paste_event(clipboard_text: &str) -> Option<NativeEvent> {
+    (!clipboard_text.is_empty()).then(|| NativeEvent::Paste(clipboard_text.to_string()))
+}
+
+/// The control byte a terminal sends for Ctrl plus `c`, if any.
+fn control_byte(c: char) -> Option<u8> {
+    match c {
+        'a'..='z' | 'A'..='Z' => u8::try_from(c.to_ascii_lowercase())
+            .ok()
+            .map(|letter| letter - b'a' + 1),
+        '@' | ' ' | '2' => Some(0),
+        '[' | '3' => Some(0x1b),
+        '\\' | '4' => Some(0x1c),
+        ']' | '5' => Some(0x1d),
+        '^' | '6' => Some(0x1e),
+        '_' | '-' | '7' => Some(0x1f),
+        '?' | '8' => Some(0x7f),
+        _ => None,
+    }
+}
+
+/// Text the platform produced, if it is safe to forward as typed
+/// characters: non-empty and free of control characters (those are
+/// produced by this mapping alone, from the logical key).
+fn printable(text: Option<&str>) -> Option<&str> {
+    text.filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+}
+
+/// Map one key press from the native window to the bytes a terminal
+/// sends for the same key (xterm conventions), so a world in a
+/// native session sees exactly what it would see over the terminal
+/// shell (#15022, session-mode input).
+///
+/// `key` is the logical key (layout applied) and `text` the text
+/// the platform produced for the press, preferred for characters
+/// because it carries Shift and composed dead keys. Ctrl turns a
+/// character into its control byte; Alt prefixes ESC. Keys with no
+/// terminal encoding (modifiers alone, dead keys, media keys) and
+/// Ctrl chords with no control byte map to `None` rather than to a
+/// guess.
+#[must_use]
+pub fn key_input_bytes(key: &Key, text: Option<&str>, modifiers: KeyModifiers) -> Option<Vec<u8>> {
+    let base: Vec<u8> = match key {
+        Key::Enter => b"\r".to_vec(),
+        Key::Tab => b"\t".to_vec(),
+        Key::Backspace => vec![0x7f],
+        Key::Escape => vec![0x1b],
+        Key::Space if modifiers.ctrl => vec![0],
+        Key::Space => b" ".to_vec(),
+        Key::ArrowUp => b"\x1b[A".to_vec(),
+        Key::ArrowDown => b"\x1b[B".to_vec(),
+        Key::ArrowRight => b"\x1b[C".to_vec(),
+        Key::ArrowLeft => b"\x1b[D".to_vec(),
+        Key::Home => b"\x1b[H".to_vec(),
+        Key::End => b"\x1b[F".to_vec(),
+        Key::Insert => b"\x1b[2~".to_vec(),
+        Key::Delete => b"\x1b[3~".to_vec(),
+        Key::PageUp => b"\x1b[5~".to_vec(),
+        Key::PageDown => b"\x1b[6~".to_vec(),
+        Key::F1 => b"\x1bOP".to_vec(),
+        Key::F2 => b"\x1bOQ".to_vec(),
+        Key::F3 => b"\x1bOR".to_vec(),
+        Key::F4 => b"\x1bOS".to_vec(),
+        Key::F5 => b"\x1b[15~".to_vec(),
+        Key::F6 => b"\x1b[17~".to_vec(),
+        Key::F7 => b"\x1b[18~".to_vec(),
+        Key::F8 => b"\x1b[19~".to_vec(),
+        Key::F9 => b"\x1b[20~".to_vec(),
+        Key::F10 => b"\x1b[21~".to_vec(),
+        Key::F11 => b"\x1b[23~".to_vec(),
+        Key::F12 => b"\x1b[24~".to_vec(),
+        Key::Character(character) if modifiers.ctrl => {
+            let mut chars = character.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                return None;
+            };
+            vec![control_byte(c)?]
+        }
+        Key::Character(character) => printable(text)
+            .or_else(|| printable(Some(character.as_str())))?
+            .as_bytes()
+            .to_vec(),
+        Key::Dead(_) => return None,
+        _ if modifiers.ctrl => return None,
+        _ => printable(text)?.as_bytes().to_vec(),
+    };
+    if modifiers.alt {
+        let mut prefixed = Vec::with_capacity(base.len() + 1);
+        prefixed.push(0x1b);
+        prefixed.extend_from_slice(&base);
+        return Some(prefixed);
+    }
+    Some(base)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -169,6 +305,224 @@ mod tests {
         assert_eq!(
             resize_frame_for_window(800, 480, 10, 20).unwrap(),
             json!({"type": "resize", "width": 80, "height": 24})
+        );
+    }
+
+    fn character(text: &str) -> Key {
+        Key::Character(text.into())
+    }
+
+    const PLAIN: KeyModifiers = KeyModifiers {
+        ctrl: false,
+        alt: false,
+        shift: false,
+    };
+    const CTRL: KeyModifiers = KeyModifiers {
+        ctrl: true,
+        alt: false,
+        shift: false,
+    };
+    const ALT: KeyModifiers = KeyModifiers {
+        ctrl: false,
+        alt: true,
+        shift: false,
+    };
+
+    #[test]
+    fn characters_forward_the_platform_text() {
+        assert_eq!(
+            key_input_bytes(&character("a"), Some("a"), PLAIN),
+            Some(b"a".to_vec())
+        );
+        // Shift and dead keys are already in the text: the text
+        // wins over the logical key's character.
+        assert_eq!(
+            key_input_bytes(&character("a"), Some("A"), PLAIN),
+            Some(b"A".to_vec())
+        );
+        assert_eq!(
+            key_input_bytes(&character("e"), Some("\u{e9}"), PLAIN),
+            Some("\u{e9}".as_bytes().to_vec())
+        );
+        // No text: fall back to the logical character.
+        assert_eq!(
+            key_input_bytes(&character("z"), None, PLAIN),
+            Some(b"z".to_vec())
+        );
+        assert_eq!(
+            key_input_bytes(&Key::Space, Some(" "), PLAIN),
+            Some(b" ".to_vec())
+        );
+    }
+
+    #[test]
+    fn named_keys_send_xterm_sequences() {
+        // Oracle: the bytes xterm sends in normal cursor mode, so a
+        // world sees the same input from both shells.
+        let cases: [(Key, &[u8]); 16] = [
+            (Key::Enter, b"\r"),
+            (Key::Tab, b"\t"),
+            (Key::Backspace, b"\x7f"),
+            (Key::Escape, b"\x1b"),
+            (Key::ArrowUp, b"\x1b[A"),
+            (Key::ArrowDown, b"\x1b[B"),
+            (Key::ArrowRight, b"\x1b[C"),
+            (Key::ArrowLeft, b"\x1b[D"),
+            (Key::Home, b"\x1b[H"),
+            (Key::End, b"\x1b[F"),
+            (Key::Delete, b"\x1b[3~"),
+            (Key::PageUp, b"\x1b[5~"),
+            (Key::PageDown, b"\x1b[6~"),
+            (Key::F1, b"\x1bOP"),
+            (Key::F5, b"\x1b[15~"),
+            (Key::F12, b"\x1b[24~"),
+        ];
+        for (key, bytes) in cases {
+            assert_eq!(
+                key_input_bytes(&key, None, PLAIN),
+                Some(bytes.to_vec()),
+                "{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_chords_send_control_bytes() {
+        assert_eq!(
+            key_input_bytes(&character("c"), Some("\u{3}"), CTRL),
+            Some(vec![0x03])
+        );
+        assert_eq!(
+            key_input_bytes(&character("A"), None, CTRL),
+            Some(vec![0x01])
+        );
+        assert_eq!(
+            key_input_bytes(&character("["), None, CTRL),
+            Some(vec![0x1b])
+        );
+        assert_eq!(key_input_bytes(&Key::Space, None, CTRL), Some(vec![0x00]));
+        // A chord with no control byte, or on a non-character key
+        // with no encoding, sends nothing rather than a guess.
+        assert_eq!(key_input_bytes(&character("1"), None, CTRL), None);
+        assert_eq!(key_input_bytes(&character("ab"), None, CTRL), None);
+        // Named keys keep their sequence under Ctrl.
+        assert_eq!(
+            key_input_bytes(&Key::Enter, None, CTRL),
+            Some(b"\r".to_vec())
+        );
+    }
+
+    #[test]
+    fn alt_prefixes_escape() {
+        assert_eq!(
+            key_input_bytes(&character("x"), Some("x"), ALT),
+            Some(b"\x1bx".to_vec())
+        );
+        assert_eq!(
+            key_input_bytes(
+                &character("x"),
+                None,
+                KeyModifiers {
+                    ctrl: true,
+                    alt: true,
+                    shift: false,
+                }
+            ),
+            Some(vec![0x1b, 0x18])
+        );
+    }
+
+    #[test]
+    fn keys_without_an_encoding_send_nothing() {
+        assert_eq!(key_input_bytes(&Key::Shift, None, PLAIN), None);
+        assert_eq!(key_input_bytes(&Key::Control, None, CTRL), None);
+        assert_eq!(
+            key_input_bytes(&Key::Dead(Some('`')), Some("`"), PLAIN),
+            None
+        );
+        assert_eq!(key_input_bytes(&Key::AudioVolumeUp, None, PLAIN), None);
+        // Control characters in platform text never pass through.
+        assert_eq!(
+            key_input_bytes(&character("a"), Some("\u{1}"), PLAIN),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(
+            key_input_bytes(
+                &Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
+                Some("\u{7}"),
+                PLAIN
+            ),
+            None
+        );
+    }
+
+    const CTRL_SHIFT: KeyModifiers = KeyModifiers {
+        ctrl: true,
+        alt: false,
+        shift: true,
+    };
+    const SHIFT: KeyModifiers = KeyModifiers {
+        ctrl: false,
+        alt: false,
+        shift: true,
+    };
+
+    #[test]
+    fn paste_chords_are_ctrl_shift_v_and_shift_insert() {
+        assert!(is_paste_chord(&character("V"), CTRL_SHIFT));
+        assert!(is_paste_chord(&character("v"), CTRL_SHIFT));
+        assert!(is_paste_chord(&Key::Insert, SHIFT));
+        // Ctrl+V alone stays the literal-next byte, Insert alone and
+        // Shift+V stay keys, and Alt never makes a paste.
+        assert!(!is_paste_chord(&character("v"), CTRL));
+        assert_eq!(
+            key_input_bytes(&character("v"), None, CTRL),
+            Some(vec![0x16])
+        );
+        assert!(!is_paste_chord(&Key::Insert, PLAIN));
+        assert!(!is_paste_chord(&character("V"), SHIFT));
+        assert!(!is_paste_chord(&Key::Insert, CTRL_SHIFT));
+        assert!(!is_paste_chord(
+            &character("v"),
+            KeyModifiers {
+                alt: true,
+                ..CTRL_SHIFT
+            }
+        ));
+        assert!(!is_paste_chord(&character("b"), CTRL_SHIFT));
+    }
+
+    #[test]
+    fn a_clipboard_read_becomes_one_contract_paste_frame() {
+        assert_eq!(paste_event(""), None);
+        let text = "line one\nline two\t\u{e9}";
+        assert_eq!(
+            native_event_frame(&paste_event(text).unwrap()).unwrap(),
+            json!({"type": "paste", "text": text})
+        );
+        assert_eq!(
+            native_event_frame(&paste_event(text).unwrap()).unwrap(),
+            paste_frame(text).unwrap()
+        );
+        // At the bound it is one frame; one byte over is refused whole,
+        // never split into several pastes or truncated.
+        let at_bound = "x".repeat(crate::MAX_PASTE_BYTES);
+        assert!(native_event_frame(&paste_event(&at_bound).unwrap()).is_ok());
+        let over = format!("{at_bound}y");
+        assert_eq!(
+            native_event_frame(&paste_event(&over).unwrap()),
+            Err(FrameError::PasteTooLarge {
+                bytes: crate::MAX_PASTE_BYTES + 1
+            })
+        );
+    }
+
+    #[test]
+    fn mapped_bytes_build_the_terminal_input_frame() {
+        let bytes = key_input_bytes(&Key::ArrowUp, None, PLAIN).unwrap();
+        assert_eq!(
+            native_event_frame(&NativeEvent::KeyInput(bytes)).unwrap(),
+            input_frame(b"\x1b[A")
         );
     }
 }

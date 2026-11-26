@@ -34,11 +34,11 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload } from "./deploy-lib.mjs";
+import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload, resolveBrokerTokenFile } from "./deploy-lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "queue-transport-alert";
@@ -242,7 +242,7 @@ const workerSecrets = {
   GITHUB_TOKEN: byName(names.github),
   TELEGRAM_BOT_TOKEN: byName(names.telegram),
 };
-const brokerTokenFile = process.env.QTA_BROKER_TOKEN_FILE ?? join(homedir(), ".config/queue-broker/token");
+const brokerTokenFile = resolveBrokerTokenFile();
 const brokerToken = existsSync(brokerTokenFile) ? readFileSync(brokerTokenFile, "utf8").trim() : "";
 if (brokerToken) {
   workerSecrets.BROKER_AGENT_TOKEN = brokerToken;

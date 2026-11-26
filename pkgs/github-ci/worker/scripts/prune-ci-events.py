@@ -52,6 +52,8 @@ def execute(token, sql):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+            "User-Agent": "fleet-d1-client/1",
         },
     )
     with urllib.request.urlopen(req, timeout=120) as resp:

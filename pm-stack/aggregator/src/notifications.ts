@@ -27,13 +27,15 @@ import type { AttentionView } from "./derive.ts";
 import type { HealthView } from "./health.ts";
 import type { QuotaView, TierItem, TieredEntry } from "./model.ts";
 import type { NotificationSendRow } from "./alerts.ts";
+import { createHash } from "node:crypto";
 import type { NeedsDrewQuestion } from "./needs-drew.ts";
+import { questionOptions } from "./needs-user.ts";
 import { decisionSetProgress, type DecisionSet } from "./decisions.ts";
 import { SENTINEL_SERVICE_IDS, type StackHealthRecord } from "./stack-health.ts";
 
 export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   incident: true,
-  "needs-drew": true,
+  "needs-user": true,
   "quota-wall": true,
   "quota-near-wall": true,
   "section-risk": true,
@@ -61,9 +63,10 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     blurb: "A watchdog reports something down. Always immediate — quiet hours never hold an incident.",
   },
   {
-    id: "needs-drew",
-    label: "Needs Drew",
-    blurb: "An item enters the needs-Drew tier on the attention page.",
+    id: "needs-user",
+    label: "Needs user",
+    blurb:
+      "An item escalates to the needs-user stage: it was reviewed first and only you can decide it. Answerable from the notification.",
   },
   {
     id: "quota-wall",
@@ -90,7 +93,7 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     id: "blocked-age",
     label: "Blocked-age reminders",
     blurb:
-      "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
+      "A needs-user item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
   },
   {
     id: "prompt",
@@ -141,9 +144,9 @@ export function notificationTestLanding(
     case "stack-health":
       return `${origin}/health`;
     case "digest":
-      return `${origin}/attention?refs=${encodeURIComponent("test:needs-drew,test:blocked-age")}`;
-    case "needs-drew":
-      return `${origin}/attention#test-needs-drew`;
+      return `${origin}/attention?refs=${encodeURIComponent("test:needs-user,test:blocked-age")}`;
+    case "needs-user":
+      return `${origin}/attention#test-needs-user`;
     case "blocked-age":
       return `${origin}/attention#test-blocked-age`;
     case "prompt":
@@ -159,7 +162,7 @@ export const BLOCKED_AGE_BREAKTHROUGH_MS = 48 * 60 * 60_000;
 export const QUOTA_WELL_BEFORE_RESET_MS = 24 * 60 * 60_000;
 
 export interface NotificationCandidate {
-  class: "needs-drew" | "blocked-age" | "quota-wall" | "quota-near-wall" | "section-risk" | "stack-health";
+  class: "needs-user" | "blocked-age" | "quota-wall" | "quota-near-wall" | "section-risk" | "stack-health";
   objectRef: string;
   stateFingerprint: string;
   title: string;
@@ -173,7 +176,21 @@ export interface NotificationCandidate {
   actedRefs?: string[];
   /** #8568: a raised needs-Drew question rides its candidate so the
    * push payload can carry tappable answer actions. */
-  needsDrew?: { ledgerId: string; question: string; options: Array<{ id: string; label: string }> };
+  needsDrew?: {
+    ledgerId: string;
+    question: string;
+    options: Array<{ id: string; label: string }>;
+    /** #13469: what the edge relay needs to answer the question while
+     * the laptop is away — every answerable option (Send back
+     * included), the context, the answer type and links, and the
+     * sha256 hex of the answer token. The token itself never rides a
+     * candidate. */
+    answerOptions?: Array<{ id: string; label: string }>;
+    context?: string;
+    answerType?: string;
+    links?: string[];
+    tokenHash?: string;
+  };
   /** #8766: a decision set rides its candidate so the push payload can
    * point at the token-carrying decisions page (no tappable answers —
    * the page is the answer surface). */
@@ -337,10 +354,10 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     : (item.tierSince ?? item.lastActivityAt ?? item.createdAt ?? new Date(now).toISOString());
   const actedRefs = [objectRef, ...(itemId ? [`orch:${itemId}`] : []), ...(itemRef ? [`gh:${itemRef}`] : [])];
   const entry = candidate({
-    class: "needs-drew",
+    class: "needs-user",
     objectRef,
-    title: item.title ?? itemId ?? "Needs-Drew item",
-    body: "This item entered the needs-Drew tier.",
+    title: item.title ?? itemId ?? "Needs-user item",
+    body: "This item escalated to needs-user.",
     url,
     observedAt,
     actedRefs,
@@ -359,7 +376,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
       class: "blocked-age",
       objectRef,
       title: step === 48 ? `Blocked for 48 hours: ${item.title ?? itemId}` : `Needs attention: ${item.title ?? itemId}`,
-      body: "This needs-Drew item remains unacted.",
+      body: "This needs-user item remains unacted.",
       url,
       observedAt,
       actedRefs,
@@ -377,7 +394,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
           class: "blocked-age",
           objectRef,
           title: `Weekly reminder: ${item.title ?? itemId}`,
-          body: `This needs-Drew item remains unacted (week ${week} after the 48-hour breakthrough).`,
+          body: `This needs-user item remains unacted (week ${week} after the 48-hour breakthrough).`,
           url,
           observedAt,
           actedRefs,
@@ -654,7 +671,7 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
   for (const item of snapshot.needsDrewRaised ?? []) {
     candidates.push(
       candidate({
-        class: "needs-drew",
+        class: "needs-user",
         objectRef: `needs-drew:${item.ledgerId}`,
         title: item.question,
         body: item.context ?? "A fleet worker is blocked on your answer.",
@@ -663,7 +680,16 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         breakthrough: true,
         actedRefs: [`needs-drew:${item.ledgerId}`],
         state: { raisedAt: item.raisedAt },
-        needsDrew: { ledgerId: item.ledgerId, question: item.question, options: item.options },
+        needsDrew: {
+          ledgerId: item.ledgerId,
+          question: item.question,
+          options: item.options,
+          answerOptions: questionOptions(item),
+          ...(item.context ? { context: item.context } : {}),
+          answerType: item.answerType ?? "radio",
+          links: item.links,
+          ...(item.token ? { tokenHash: createHash("sha256").update(item.token).digest("hex") } : {}),
+        },
       }),
     );
   }
@@ -676,7 +702,7 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
     const progress = decisionSetProgress(set);
     candidates.push(
       candidate({
-        class: "needs-drew",
+        class: "needs-user",
         objectRef: `decision-set:${set.setId}`,
         title: `${progress.openItems} decision${progress.openItems === 1 ? "" : "s"} waiting for you`,
         body: `${set.title} — ${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open. Tap to open the decisions page.`,
@@ -722,11 +748,61 @@ export const ROLLING_WEEKS = 4;
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 export const PROPOSAL_THRESHOLD = 0.1;
 
-/** The send's timestamp: the ledger's insert-time column. Rows the
- * store writes carry no explicit timestamp, so the row's defaulted
- * created_at is the send time; sent_at wins when a row carries one. */
+/** #14419: normalize a ledger timestamp to ISO-8601 UTC, or null.
+ * Legacy rows carry the column-default format the live stores emit —
+ * `YYYY-MM-DD HH:MM:SS[.fff]` (space separator, no zone) from
+ * SQLite/Turso defaults, and Postgres-style `+00` offsets — which
+ * Date.parse does not reliably parse. Those are UTC by construction
+ * (the defaults are UTC), so normalize them explicitly instead of
+ * excluding the rows. Oracle: Date.parse on the normalized string. */
+export function normalizeSendTimestamp(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const value = raw.trim();
+  if (!value) return null;
+  const direct = Date.parse(value);
+  if (Number.isFinite(direct) && (value.includes("T") || value.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(value))) {
+    return new Date(direct).toISOString();
+  }
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(value);
+  if (m) {
+    const zone = m[3] ? (m[3] === "Z" ? "Z" : m[3]) : "Z";
+    const parsed = Date.parse(`${m[1]}T${m[2]}${zone}`);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.exec(value);
+  if (dateOnly) {
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+  return Number.isFinite(direct) ? new Date(direct).toISOString() : null;
+}
+
+/** The send's timestamp (#14419): sent_at (stamped explicitly by
+ * logSend in ISO-8601 UTC) wins; a legacy row's defaulted created_at
+ * is repaired by normalization when sent_at is absent/unusable; the
+ * live Turso ledger's defaulted `at` column (#15090) is the final
+ * fallback, with the same normalization applied. */
 export function sendTimestamp(row: NotificationSendRow): string | null {
-  return row.sent_at ?? row.created_at ?? null;
+  for (const raw of [row.sent_at, row.created_at, row.at]) {
+    if (!raw) continue;
+    const value = raw.trim();
+    if (!value) continue;
+    // Already-ISO values pass through verbatim (#15090's contract);
+    // legacy column-default formats are repaired by normalization.
+    if (value.includes("T") && Number.isFinite(Date.parse(value))) return value;
+    const normalized = normalizeSendTimestamp(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+/** #14419: backfill sent_at for a recoverable legacy row (its
+ * created_at normalizes); unrecoverable rows are returned unchanged
+ * and are counted as undated/excluded by the roll-up. */
+export function repairLegacySendRow(row: NotificationSendRow): NotificationSendRow {
+  if (normalizeSendTimestamp(row.sent_at)) return row;
+  const repaired = normalizeSendTimestamp(row.created_at) ?? normalizeSendTimestamp(row.at);
+  return repaired ? { ...row, sent_at: repaired } : row;
 }
 
 export interface NotificationWeekRollup {
@@ -758,6 +834,12 @@ export interface NotificationRollup {
   classes: NotificationClassRollup[];
   /** Ledger rows skipped because they carry no usable send timestamp. */
   undated: number;
+  /** Total outcome=sent ledger rows considered (dated + undated). */
+  total: number;
+  /** #14419 alarm: true when every sent row was excluded as undated
+   * (excluded == total and total > 0) — the measurement page would
+   * otherwise silently report no sends at all. */
+  alarm: boolean;
 }
 
 export function rollupNotificationSends(
@@ -769,8 +851,10 @@ export function rollupNotificationSends(
   const windowStartMs = asOfMs - weeks * WEEK_MS;
   const byClass = new Map<string, { sent: number[]; acted: number[] }>();
   let undated = 0;
+  let total = 0;
   for (const row of rows) {
     if (row.outcome !== "sent") continue;
+    total += 1;
     const tsRaw = sendTimestamp(row);
     const ts = tsRaw ? Date.parse(tsRaw) : Number.NaN;
     if (!Number.isFinite(ts)) {
@@ -819,5 +903,7 @@ export function rollupNotificationSends(
     windowStart: new Date(windowStartMs).toISOString(),
     classes,
     undated,
+    total,
+    alarm: total > 0 && undated === total,
   };
 }

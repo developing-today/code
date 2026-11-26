@@ -25,11 +25,14 @@
 //! Frame family (record §4):
 //!
 //! - `open` — client→broker: stream id (client-chosen, odd), target
-//!   port, method/path or raw-connect intent, trip id.
+//!   port, method/path or raw-connect intent, trip id, and for a
+//!   request stream the per-request routing fields of the pooled
+//!   [`crate::Request`] as [`RequestMeta`] (#15552).
 //! - `data` — either direction: stream id + payload chunk, bounded
 //!   by [`MAX_DATA_PAYLOAD_BYTES`]; `fin` marks end-of-data in the
 //!   sender's direction; the broker's first response frame of a
-//!   request stream also carries the HTTP `status`.
+//!   request stream also carries the HTTP `status`, the transport
+//!   that served it, and the open's trip id echoed back (#15552).
 //! - `window` — either direction: stream id + byte credit. A stream's
 //!   receive window starts at [`INITIAL_STREAM_WINDOW_BYTES`]; a
 //!   sender must not exceed granted credit. This is the backpressure
@@ -155,6 +158,39 @@ pub enum OpenIntent {
     RawConnect,
 }
 
+/// The per-request routing fields a request stream's `open` may
+/// carry (#15552, record §7 step 4): the pooled [`crate::Request`]'s
+/// `token_file`, `transport`, `cf_ok` and `ctx`, with the same
+/// meanings. On the wire it is the `open` frame's `meta` object,
+/// omitted when every field is absent, so an `open` without it is
+/// exactly the step-1 shape; unknown fields inside it are ignored,
+/// like everywhere else in this contract.
+///
+/// Without these a mux-dispatched request silently lost what the
+/// pooled path honours — a caller's named token file, its transport
+/// preference, its fleet context record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cf_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl RequestMeta {
+    /// No field set: the `open` frame carries no `meta` object.
+    pub fn is_empty(&self) -> bool {
+        self.token_file.is_none()
+            && self.transport.is_none()
+            && self.cf_ok.is_none()
+            && self.ctx.is_none()
+    }
+}
+
 /// One frame of the `proxy-mux` family, discriminated on the wire by
 /// its `kind` field. Frames are additive within protocol major 1:
 /// unknown fields are ignored, and a peer that never advertised
@@ -175,13 +211,21 @@ pub enum StreamFrame {
         path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trip: Option<String>,
+        /// Per-request routing fields of a request stream
+        /// ([`RequestMeta`]); empty for a raw connect.
+        #[serde(default, skip_serializing_if = "RequestMeta::is_empty")]
+        meta: RequestMeta,
     },
     /// A payload chunk. `data` is the base64 of at most
     /// [`MAX_DATA_PAYLOAD_BYTES`] raw bytes. `fin` marks the last
     /// chunk in the sender's direction. `status` is set only on the
     /// broker's first response frame of a request stream: the HTTP
     /// status of the routed service's reply (the mux analogue of
-    /// [`crate::Response`]'s status).
+    /// [`crate::Response`]'s status). The same first frame carries
+    /// `transport`, the leg that served (the pooled response's
+    /// field), and `trip`, the open's trip id echoed back so the
+    /// originating side can check the reply belongs to its call
+    /// (#15552, record §3's trip-id echo).
     Data {
         stream: StreamId,
         data: String,
@@ -189,6 +233,10 @@ pub enum StreamFrame {
         fin: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transport: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trip: Option<String>,
     },
     /// Grant `credit` more bytes of send window on a stream.
     Window { stream: StreamId, credit: u64 },
@@ -212,12 +260,26 @@ impl StreamFrame {
         path: impl Into<String>,
         trip: Option<String>,
     ) -> StreamFrame {
+        StreamFrame::open_request_with(stream, port, method, path, trip, RequestMeta::default())
+    }
+
+    /// An `open` for a request stream carrying the per-request
+    /// routing fields ([`RequestMeta`], #15552).
+    pub fn open_request_with(
+        stream: StreamId,
+        port: u16,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        trip: Option<String>,
+        meta: RequestMeta,
+    ) -> StreamFrame {
         StreamFrame::Open {
             stream,
             port,
             method: Some(method.into()),
             path: Some(path.into()),
             trip,
+            meta,
         }
     }
 
@@ -229,6 +291,7 @@ impl StreamFrame {
             method: None,
             path: None,
             trip,
+            meta: RequestMeta::default(),
         }
     }
 
@@ -244,6 +307,8 @@ impl StreamFrame {
             data: base64::engine::general_purpose::STANDARD.encode(payload),
             fin,
             status: None,
+            transport: None,
+            trip: None,
         })
     }
 
@@ -313,7 +378,15 @@ impl StreamFrame {
             }
         }
         match self {
-            StreamFrame::Open { .. } => self.intent().map(|_| ()),
+            StreamFrame::Open { meta, .. } => match self.intent()? {
+                // Request metadata routes an HTTP request; on a raw
+                // connect it would mean nothing, so it is refused
+                // rather than silently ignored.
+                Some(OpenIntent::RawConnect) if !meta.is_empty() => Err(ProtoError::BadFrame(
+                    "raw-connect open frame carries request meta".to_string(),
+                )),
+                _ => Ok(()),
+            },
             StreamFrame::Data { .. } => self.payload().map(|_| ()),
             StreamFrame::Window { credit, .. } => {
                 if *credit == 0 {
@@ -574,6 +647,8 @@ mod tests {
             data: base64::engine::general_purpose::STANDARD.encode(&over),
             fin: false,
             status: None,
+            transport: None,
+            trip: None,
         };
         assert!(big.validate().is_err());
         // Garbage payload encoding is a shape error, not a panic.
@@ -582,6 +657,8 @@ mod tests {
             data: "!!not-base64!!".to_string(),
             fin: false,
             status: None,
+            transport: None,
+            trip: None,
         };
         assert!(junk.validate().is_err());
     }
@@ -691,5 +768,70 @@ mod tests {
             assert!(is_stream_frame(&raw));
             assert_eq!(parse_stream_frame(&raw).unwrap(), frame);
         }
+    }
+
+    #[test]
+    fn open_meta_is_additive_and_round_trips_15552() {
+        let id = StreamId::client(1).unwrap();
+        // No meta: the step-1 wire shape exactly — no `meta` key.
+        let bare =
+            serde_json::to_value(StreamFrame::open_request(id, 4799, "GET", "/h", None)).unwrap();
+        assert!(bare.get("meta").is_none(), "{bare}");
+        // A step-1 frame (no meta) parses to an empty meta.
+        let parsed = parse_stream_frame(&bare).unwrap();
+        match &parsed {
+            StreamFrame::Open { meta, .. } => assert!(meta.is_empty()),
+            other => panic!("expected open, got {other:?}"),
+        }
+        let mut ctx = std::collections::BTreeMap::new();
+        ctx.insert("FLEET_CTX_ID".to_string(), "c-1".to_string());
+        let meta = RequestMeta {
+            token_file: Some("/run/tok".to_string()),
+            transport: Some("ts".to_string()),
+            cf_ok: Some(false),
+            ctx: Some(ctx),
+        };
+        let frame = StreamFrame::open_request_with(id, 4799, "POST", "/x", None, meta.clone());
+        let value = serde_json::to_value(&frame).unwrap();
+        assert_eq!(value["meta"]["token_file"], "/run/tok");
+        assert_eq!(value["meta"]["transport"], "ts");
+        assert_eq!(value["meta"]["cf_ok"], false);
+        assert_eq!(parse_stream_frame(&value).unwrap(), frame);
+        // Unknown fields inside meta are ignored (additive within
+        // the major).
+        let mut future = value.clone();
+        future["meta"]["later"] = serde_json::json!(7);
+        assert_eq!(parse_stream_frame(&future).unwrap(), frame);
+    }
+
+    #[test]
+    fn raw_connect_open_with_meta_is_refused_15552() {
+        let id = StreamId::client(1).unwrap();
+        let mut value = serde_json::to_value(StreamFrame::open_connect(id, 22, None)).unwrap();
+        value["meta"] = serde_json::json!({"token_file": "/run/tok"});
+        assert!(parse_stream_frame(&value).is_err());
+    }
+
+    #[test]
+    fn data_head_echo_fields_are_optional_15552() {
+        let id = StreamId::client(1).unwrap();
+        let plain = serde_json::to_value(StreamFrame::data(id, b"x", false).unwrap()).unwrap();
+        assert!(plain.get("transport").is_none() && plain.get("trip").is_none());
+        let mut frame = StreamFrame::data(id, b"x", true).unwrap();
+        if let StreamFrame::Data {
+            status,
+            transport,
+            trip,
+            ..
+        } = &mut frame
+        {
+            *status = Some(200);
+            *transport = Some("cf".to_string());
+            *trip = Some("trip-9".to_string());
+        }
+        let value = serde_json::to_value(&frame).unwrap();
+        assert_eq!(value["transport"], "cf");
+        assert_eq!(value["trip"], "trip-9");
+        assert_eq!(parse_stream_frame(&value).unwrap(), frame);
     }
 }

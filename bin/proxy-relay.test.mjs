@@ -330,6 +330,101 @@ test('bytes sent during the tunnel CONNECT window are forwarded byte-for-byte in
   oneShot.destroy();
 });
 
+test('a client reset tears down the tunnel socket, matching graceful close', async (t) => {
+  const sockets = new Set();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    return socket;
+  };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-relay-test-'));
+
+  const sink = net.createServer((socket) => {
+    track(socket);
+    socket.on('data', () => {});
+  });
+  sink.on('connection', track);
+  const sinkPort = await listen(sink);
+
+  let tunnelClosedResolve;
+  const tunnelClosed = new Promise((resolve) => { tunnelClosedResolve = resolve; });
+  const tunnelProxy = net.createServer((client) => {
+    track(client);
+    client.once('close', () => tunnelClosedResolve());
+    let request = Buffer.alloc(0);
+    const onData = (chunk) => {
+      request = Buffer.concat([request, chunk]);
+      if (request.indexOf('\r\n\r\n') === -1) return;
+      client.removeListener('data', onData);
+      const upstream = track(net.connect(sinkPort, '127.0.0.1'));
+      client.once('close', () => upstream.destroy());
+      client.once('error', () => upstream.destroy());
+      upstream.once('connect', () => {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      upstream.once('error', () => client.destroy());
+    };
+    client.on('data', onData);
+  });
+  const proxyPort = await listen(tunnelProxy);
+
+  const relayPort = await freePort();
+  const child = spawn(process.execPath, [path.join(binDir, 'proxy-relay.mjs')], {
+    env: {
+      ...process.env,
+      RELAY_LISTEN_HOST: '127.0.0.1',
+      RELAY_LISTEN_PORT: String(relayPort),
+      RELAY_TARGET_HOST: '127.0.0.1',
+      RELAY_TARGET_PORTS: String(sinkPort),
+      RELAY_PROXY_HOST: '127.0.0.1',
+      RELAY_PROXY_PORT: String(proxyPort),
+      RELAY_NAME: 'proxy-relay-test',
+      XDG_STATE_HOME: path.join(tmp, 'state')
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', (chunk) => { log += chunk; });
+  child.stderr.on('data', (chunk) => { log += chunk; });
+
+  const closeServer = (server) => new Promise((resolve) => {
+    if (!server.listening) return resolve();
+    server.close(() => resolve());
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    for (const socket of sockets) socket.destroy();
+    await Promise.all([closeServer(tunnelProxy), closeServer(sink)]);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  await within(new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`relay did not start:\n${log}`)), 10_000);
+    child.stdout.on('data', () => {
+      if (!log.includes('[proxy-relay-test] relay http://')) return;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`relay exited before listening (${code ?? signal}):\n${log}`));
+    });
+  }), 15_000, 'relay to listen');
+
+  const client = track(net.createConnection({ host: '127.0.0.1', port: relayPort }));
+  await within(new Promise((resolve, reject) => {
+    client.once('connect', resolve);
+    client.once('error', reject);
+  }), 5000, 'relay client connection');
+  client.write('POST /stream HTTP/1.1\r\nHost: sink\r\nContent-Length: 1000000\r\n\r\npartial');
+  await delay(500);
+  client.resetAndDestroy();
+
+  await within(tunnelClosed, 3000, 'tunnel socket to close after client reset');
+});
+
 test('endpoint.json is republished when failover changes the preferred target', async (t) => {
   const sockets = new Set();
   const track = (socket) => {
