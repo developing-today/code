@@ -240,8 +240,17 @@ fn mux_attempt(
         method: req.method.clone(),
         path: req.path.clone(),
     };
+    // The pooled frame's per-request routing fields ride the open
+    // (#15552): without them a mux request silently lost the
+    // caller's token file, transport preference and context.
+    let meta = fleet_proxy_proto::mux::RequestMeta {
+        token_file: req.token_file.clone(),
+        transport: req.transport.clone(),
+        cf_ok: req.cf_ok,
+        ctx: req.ctx.clone(),
+    };
     let stream = session
-        .open_stream(port, &intent, req.trip.clone())
+        .open_stream_with(port, &intent, req.trip.clone(), meta)
         .map_err(|e| fail(true, e))?;
     if let Some(body) = body {
         if !body.is_empty() {
@@ -288,6 +297,19 @@ fn mux_attempt(
             "mux response carried no status on its first frame".to_string(),
         ),
     })?;
+    // Trip-id echo (#15552): a broker that echoes a trip must echo
+    // ours. A different id means the reply is not for this call —
+    // never hand it to the caller as if it were.
+    if let (Some(sent), Some(echoed)) = (req.trip.as_deref(), stream.echoed_trip()) {
+        if sent != echoed {
+            return Err(AttemptFailure {
+                retryable: false,
+                error: ClientError::Transport(format!(
+                    "mux response echoed trip {echoed:?}, not this call's {sent:?}"
+                )),
+            });
+        }
+    }
     let body = if data.is_empty() {
         serde_json::Value::Null
     } else {
@@ -299,7 +321,7 @@ fn mux_attempt(
     Ok(Response {
         status,
         body,
-        transport: None,
+        transport: stream.transport(),
     })
 }
 
