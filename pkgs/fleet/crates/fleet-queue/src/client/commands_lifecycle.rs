@@ -1002,7 +1002,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
 pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
     let config = fleet_config::Config::load().unwrap_or_default();
     fleet_secrets::Resolver::default_chain(&config)
-        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
         .map(|v| v.expose().to_string())
         .map_err(|e| e.to_string())
 }
@@ -1010,7 +1010,7 @@ pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
 /// #8568: parse cmd_block's --options-json flag: a JSON array of
 /// {"id": ..., "label": ...} objects. Bad shapes are usage errors
 /// at the caller's terminal, like --progress.
-pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrewOption> {
+pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_user::NeedsUserOption> {
     let Some(raw) = args.get("options-json") else {
         return Vec::new();
     };
@@ -1026,7 +1026,7 @@ pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrew
             let id = o.get("id").and_then(|v| v.as_str());
             let label = o.get("label").and_then(|v| v.as_str());
             match (id, label) {
-                (Some(id), Some(label)) => crate::needs_drew::NeedsDrewOption {
+                (Some(id), Some(label)) => crate::needs_user::NeedsUserOption {
                     id: id.to_string(),
                     label: label.to_string(),
                 },
@@ -1128,7 +1128,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         .or_else(|| hands.as_ref().map(|h| h.action.clone()));
     let needs_drew = if rc == "escalated-to-user" {
         match (args.get("ledger-id"), question) {
-            (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
+            (Some(ledger_id), Some(question)) => Some(crate::needs_user::BlockNeedsUser {
                 ledger_id,
                 question,
                 context: args.get("context"),
@@ -1172,7 +1172,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     if let Some(nd) = &needs_drew {
         // Snake_case keys, matching the /block body's own style;
         // the broker (and, later, the broker-side raise) reads
-        // this shape back via needs_drew::from_block_request.
+        // this shape back via needs_user::from_block_request.
         let mut nd_json = json!({
             "ledger_id": nd.ledger_id,
             "question": nd.question,
@@ -1208,7 +1208,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     // above keeps its current JSON shape exactly.
     if let Some(nd) = &needs_drew {
         let raised = resolve_alerts_intake_token()
-            .and_then(|token| crate::needs_drew::post_needs_drew(&token, nd));
+            .and_then(|token| crate::needs_user::post_needs_user(&token, nd));
         match raised {
             Ok(_) => eprint(&format!(
                 "repo-queue: needs-drew raised for ledger item {}",

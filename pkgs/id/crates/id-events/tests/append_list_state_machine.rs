@@ -5,6 +5,8 @@
 //! membership and revocation; idempotency keys conflict on different bytes;
 //! and accepted order is append-only.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::collections::BTreeSet;
 
 use id_core::graph::append_list::{AdmissionOutcome, AttributeSubmission, PendingId};
@@ -45,7 +47,7 @@ fn invalid_signatures_never_enter_pending_or_accepted() {
         AdmissionError::InvalidSignature
     );
     assert!(admission.pending().is_empty());
-    assert!(admission.accepted().is_empty());
+    assert_eq!(admission.accepted(), [] as [std::string::String; 0]);
 }
 
 #[test]

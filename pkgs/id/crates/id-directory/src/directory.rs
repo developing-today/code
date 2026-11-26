@@ -3579,7 +3579,7 @@ mod tests {
         .unwrap();
         assert_eq!(away.receive_artifact(&future).unwrap(), Stored::New);
         assert_eq!(away.artifacts().head_seq(&ann), 1);
-        assert!(away.friends_of(&ann).is_empty());
+        assert_eq!(away.friends_of(&ann), [] as [String; 0]);
         assert_eq!(away.receive_artifact(&future).unwrap(), Stored::Duplicate);
     }
 
@@ -4046,7 +4046,7 @@ mod tests {
         assert_eq!(directory.friends_of(&ann), vec![bo.clone()]);
         assert_eq!(directory.friends_of(&bo), vec![ann.clone()]);
         directory.remove_friend(&ann_credential, &bo).unwrap();
-        assert!(directory.friends_of(&ann).is_empty());
+        assert_eq!(directory.friends_of(&ann), [] as [String; 0]);
     }
 
     #[test]

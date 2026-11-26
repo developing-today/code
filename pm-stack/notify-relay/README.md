@@ -37,10 +37,34 @@ NO-GO half of the ruling); the only read surface is `GET /status`.
 | `GET /status`                                                    | none (minimal)     | step 1 (this package)                                                                    |
 | `POST /mirror/event`                                             | shared secret      | step 2; append-only, deduped by `mirrorId`, pruned after 30 days, never sent at the edge |
 | `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3                                                                                   |
+| `GET /answers`, `POST /answers/ack`                              | shared secret      | step 3; the aggregator's drain of answers taken at the edge, acked by answer id          |
 
 Everything else 404s. The heartbeat response carries
-`pendingAnswers` — step 3's drain count, always 0 in step 1, so
-the client contract is stable from the first beat.
+`pendingAnswers`, the count of answers taken at the edge and not yet
+drained; the aggregator drains when it is above 0.
+
+## Answer intake (step 3)
+
+A needs-Drew question is answerable at the edge once the aggregator
+mirrors it with `payload.needsDrew` carrying the question, its
+options and `tokenHash` (sha256 hex of the per-question answer
+token). The edge never holds the token itself. A later `cleared`
+mirror event for the same `needs-drew:<ledgerId>` withdraws it, and
+a question raised more than 7 days ago is expired, the same window
+as the laptop's open list.
+
+- `GET /answer/:ledgerId?t=<token>` serves the answer page. A wrong
+  token and an unknown question get the same 403 page; a withdrawn
+  or expired question gets 410; an answered one shows the receipt.
+- `POST /api/needs-drew/:ledgerId/answer` takes `{token, optionId |
+optionIds | freeText}` under the laptop route's rules. The first
+  answer per question wins; a repeat (double tap, retry) returns the
+  first answer id with `duplicate: true` and stores nothing.
+- The aggregator drains with `GET /answers`, applies each answer to
+  its ledger exactly as the laptop route would, then
+  `POST /answers/ack {answerIds}`. An ack is idempotent.
+
+Oracles: `test/answers.test.ts`.
 
 `test/event.test.ts` is the event-mirror comparison harness: it keeps a
 source-ledger fixture for incident, needs-Drew, and quota-wall events,

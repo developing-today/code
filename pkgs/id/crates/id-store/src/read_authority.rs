@@ -292,7 +292,7 @@ impl<'a> NoteReader<'a> {
 mod tests {
     use super::*;
     use crate::documents::DocumentRef;
-    use crate::note_checkpoints::NoteGrant;
+    use crate::note_checkpoints::{NoteGrant, NotePolicyRecord};
 
     fn hash(byte: u8) -> Hash {
         Hash::from_bytes([byte; 32])
@@ -493,7 +493,7 @@ mod tests {
             log.policies().unwrap(),
         )
         .unwrap();
-        assert!(rebuilt.policies().unwrap().is_empty());
+        assert_eq!(rebuilt.policies().unwrap(), [] as [NotePolicyRecord; 0]);
         assert!(!may_read(
             &rebuilt,
             hash(10),
@@ -622,11 +622,16 @@ mod tests {
     mod across_projections {
         use super::*;
         use crate::note_blocks::{Block, BlockId, BlockKind, BlockTree};
-        use crate::note_projections::{
-            CalendarDate, CaptureTarget, DatabaseDefinition, NoteProperty, ProjectedNote,
-            PropertyFilter, PropertyValue, TransclusionRender, capture_target, database_view,
-            journal_view, render_transclusion,
+        use crate::note_links::{
+            AppliedLink, LinkProjection, LinkRecord, NoteLinkOp, project_links,
         };
+        use crate::note_projections::{
+            CalendarDate, CaptureTarget, DatabaseDefinition, NoteProperty, OutlineMode,
+            ProjectedNote, PropertyFilter, PropertyValue, TransclusionRender, capture_target,
+            database_view, journal_view, readable_outline, render_transclusion,
+        };
+        use crate::notes::{AppliedNote, NoteOp, fold_notes};
+        use std::collections::{BTreeSet, HashSet};
 
         const A: u8 = 1;
         const B: u8 = 2;
@@ -803,6 +808,198 @@ mod tests {
             let a = NoteReader::new(&log, author(A), &groups, &defaults, None);
             assert_eq!(render(&c), TransclusionRender::Unresolved);
             assert!(matches!(render(&a), TransclusionRender::Content { .. }));
+        }
+
+        fn outline_rows(
+            reader: &NoteReader<'_>,
+            note: u8,
+            tree: &BlockTree,
+            mode: OutlineMode<'_>,
+        ) -> Option<Vec<String>> {
+            readable_outline(&hash(note), tree, mode, &|n: &Hash| reader.may_read(n))
+                .map(|rows| rows.iter().map(|row| row.block.id.0.clone()).collect())
+        }
+
+        #[test]
+        fn test_outline_follows_the_same_order() {
+            let (log, _) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+            let body = tree();
+            let block = BlockId("b".to_owned());
+            let missing = BlockId("gone".to_owned());
+            let folded = BTreeSet::from([block.clone()]);
+            let c = NoteReader::new(&log, author(C), &groups, &defaults, None);
+            let a = NoteReader::new(&log, author(A), &groups, &defaults, None);
+            let rows = Some(vec!["b".to_owned()]);
+
+            // C sees the outline of A's shared note and B's public one,
+            // in every mode.
+            for note in [11, 12] {
+                assert_eq!(outline_rows(&c, note, &body, OutlineMode::Full), rows);
+                assert_eq!(
+                    outline_rows(&c, note, &body, OutlineMode::Folded(&folded)),
+                    rows
+                );
+                assert_eq!(
+                    outline_rows(&c, note, &body, OutlineMode::Hoisted(&block)),
+                    rows
+                );
+            }
+            // A note A's default keeps private, a note the log does not
+            // hold, and a hoist on a missing block all give the same
+            // answer, so the outline cannot tell C which one it hit.
+            for mode in [
+                OutlineMode::Full,
+                OutlineMode::Folded(&folded),
+                OutlineMode::Hoisted(&block),
+            ] {
+                assert_eq!(outline_rows(&c, 10, &body, mode), None);
+                assert_eq!(outline_rows(&c, 13, &body, mode), None);
+            }
+            assert_eq!(
+                outline_rows(&c, 12, &body, OutlineMode::Hoisted(&missing)),
+                None
+            );
+            // The owner reads the outline the default closes to others.
+            assert_eq!(outline_rows(&a, 10, &body, OutlineMode::Full), rows);
+            // Server config closes B's note, whose owner set no default.
+            let closed = NoteReader::new(
+                &log,
+                author(C),
+                &groups,
+                &defaults,
+                Some(NoteAccess::Scoped(vec![])),
+            );
+            assert_eq!(outline_rows(&closed, 11, &body, OutlineMode::Full), None);
+            assert_eq!(outline_rows(&closed, 12, &body, OutlineMode::Full), rows);
+        }
+
+        fn create_event(note: u8, owner: u8) -> AppliedNote {
+            AppliedNote {
+                id: hash(note),
+                author: author(owner),
+                op: NoteOp::Create {
+                    content: content(&[note]),
+                },
+            }
+        }
+
+        fn link_event(id: u8, source: u8, target: u8) -> AppliedLink {
+            AppliedLink {
+                id: hash(id),
+                author: author(A),
+                op: NoteLinkOp::Assert {
+                    source: hash(source),
+                    revision: hash(source),
+                    target: hash(target),
+                    surface: format!("[[note {target}]]"),
+                    pin: None,
+                },
+            }
+        }
+
+        /// Links among the four notes of [`world`]: B's public note 11
+        /// links to A's private note 10 and A's shared note 12; note 12
+        /// and note 13 (outside the log) link back to 11.
+        fn graph() -> LinkProjection {
+            let notes = fold_notes(&[
+                create_event(10, A),
+                create_event(11, B),
+                create_event(12, A),
+                create_event(13, B),
+            ])
+            .unwrap();
+            project_links(
+                &notes,
+                &[
+                    link_event(50, 11, 10),
+                    link_event(51, 11, 12),
+                    link_event(52, 12, 11),
+                    link_event(53, 13, 11),
+                ],
+            )
+            .unwrap()
+        }
+
+        fn ids(edges: &[&crate::note_links::LinkRecord]) -> Vec<Hash> {
+            edges.iter().map(|edge| edge.id).collect()
+        }
+
+        #[test]
+        fn test_graph_walks_follow_the_same_order() {
+            let (log, _) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+            let links = graph();
+            let c = NoteReader::new(&log, author(C), &groups, &defaults, None);
+            let a = NoteReader::new(&log, author(A), &groups, &defaults, None);
+            let c_reads = |n: &Hash| c.may_read(n);
+            let a_reads = |n: &Hash| a.may_read(n);
+
+            // C never sees the edge into A's private note, nor any edge
+            // out of note 13, which the log does not hold.
+            assert_eq!(
+                ids(&links.links_from_readable(hash(11), &c_reads)),
+                vec![hash(51)]
+            );
+            assert_eq!(
+                ids(&links.backlinks_to_readable(hash(11), &c_reads)),
+                vec![hash(52)]
+            );
+            assert_eq!(
+                links.links_from_readable(hash(10), &c_reads),
+                [] as [&LinkRecord; 0]
+            );
+            assert_eq!(
+                links.backlinks_to_readable(hash(10), &c_reads),
+                [] as [&LinkRecord; 0]
+            );
+            assert_eq!(
+                links.links_from_readable(hash(13), &c_reads),
+                [] as [&LinkRecord; 0]
+            );
+
+            // A reads both edges out of 11; 13 stays hidden from everyone.
+            assert_eq!(
+                ids(&links.links_from_readable(hash(11), &a_reads)),
+                vec![hash(50), hash(51)]
+            );
+            assert_eq!(
+                ids(&links.backlinks_to_readable(hash(10), &a_reads)),
+                vec![hash(50)]
+            );
+            assert_eq!(
+                ids(&links.backlinks_to_readable(hash(11), &a_reads)),
+                vec![hash(52)]
+            );
+
+            // Paging: a cursor on an edge C cannot see yields an empty
+            // page, exactly like an unknown cursor.
+            let first = links.links_from_readable_page(hash(11), &c_reads, 1, None);
+            assert_eq!(ids(&first.edges), vec![hash(51)]);
+            assert!(!first.has_next);
+            let hidden = links.links_from_readable_page(hash(11), &c_reads, 1, Some(hash(50)));
+            let unknown = links.links_from_readable_page(hash(11), &c_reads, 1, Some(hash(99)));
+            assert_eq!(hidden, unknown);
+            assert!(hidden.edges.is_empty() && !hidden.has_next);
+            let page = links.backlinks_to_readable_page(hash(11), &a_reads, 5, None);
+            assert_eq!(ids(&page.edges), vec![hash(52)]);
+            let hidden = links.backlinks_to_readable_page(hash(11), &a_reads, 5, Some(hash(53)));
+            assert!(hidden.edges.is_empty() && !hidden.has_next);
+
+            // The precomputed-set walk agrees with the predicate walk.
+            let visible: HashSet<Hash> = (10..=13).map(hash).filter(|n| c.may_read(n)).collect();
+            for note in 10..=13 {
+                assert_eq!(
+                    links.links_from_visible(hash(note), &visible),
+                    links.links_from_readable(hash(note), &c_reads)
+                );
+                assert_eq!(
+                    links.backlinks_to_visible(hash(note), &visible),
+                    links.backlinks_to_readable(hash(note), &c_reads)
+                );
+            }
         }
     }
 }

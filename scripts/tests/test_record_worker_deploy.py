@@ -40,13 +40,9 @@ REL_WORKERS_JSON = "pm-stack/platform/workers.json"
 
 
 def git(cwd, *args, check=True):
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if check and result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed in {cwd}: {result.stderr}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed in {cwd}: {result.stderr}")
     return result
 
 
@@ -128,9 +124,7 @@ class RecordWorkerDeployTest(unittest.TestCase):
     def assert_recorded(self, workers, name, commit):
         entry = workers[name]
         self.assertEqual(entry["deploy"], "actions", name)
-        self.assertEqual(
-            entry["workflow"], "cf-worker-versions-release.yml", name
-        )
+        self.assertEqual(entry["workflow"], "cf-worker-versions-release.yml", name)
         self.assertEqual(entry["lastDeployedCommit"], commit, name)
 
     def test_stale_clone_recovers_via_retry(self):
@@ -196,7 +190,9 @@ class RecordWorkerDeployTest(unittest.TestCase):
         blocked = self.tmp / "blocked.git"
         shutil.copytree(self.remote, blocked)
         hook = blocked / "hooks" / "pre-receive"
-        hook.write_text("#!/bin/sh\necho 'pushes are disabled in this fixture' >&2\nexit 1\n")
+        hook.write_text(
+            "#!/bin/sh\necho 'pushes are disabled in this fixture' >&2\nexit 1\n"
+        )
         hook.chmod(0o755)
 
         clone = self.tmp / "blocked-clone"

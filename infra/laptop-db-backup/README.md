@@ -43,8 +43,8 @@ database moving mid-run cannot smear the copy.
 
 ## Legs
 
-| Source (laptop-local) | Home | Token (Bitwarden name) | Schedule |
-| --- | --- | --- | --- |
+| Source (laptop-local)                      | Home                         | Token (Bitwarden name)                      | Schedule                                                                             |
+| ------------------------------------------ | ---------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `~/.local/state/pm-projector/projector.db` | `laptop-backup-pm-projector` | `turso.laptop-backup-pm-projector-rw-token` | `laptop-db-backup-pm-projector.timer`, Sundays 05:40 + up to 30 min randomized delay |
 
 The remaining qualifying databases from the #13459 inventory

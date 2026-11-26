@@ -21,14 +21,15 @@
 //! - **Attempt semantics.** `serve-failure` (the member never answered —
 //!   the walk advances) vs `served-failure` (the member answered; the
 //!   classifier decides whether the walk advances, demotes, or walls).
-//! - **Strategies.** Ordered, round-robin, and least-loaded in this
-//!   slice; unknown load is a first-class value that never sorts as
-//!   zero (#13611).
+//! - **Strategies.** Ordered, round-robin, least-loaded, weighted,
+//!   and free-first, composable through `Tiered`; unknown load is a
+//!   first-class value that never sorts as zero (#13611).
 //! - **Recovery.** A wall expires at its recorded reset, or — when no
 //!   reset was recorded — at a bounded inferred expiry; either way the
 //!   member re-enters through `probing`, and a successful probe
 //!   re-seats it at demoted weight before full traffic.
-//! - **The decision log.** Every selection records (member, state,
+//! - **The decision log.** Every selection, state transition, and
+//!   wall placement, narrowing, and removal records (member, state,
 //!   strategy, reason). A pool decision you cannot read back is a bug.
 //!
 //! What stays domain-specific (design §3.3): member identity and
@@ -40,13 +41,18 @@
 //! Time is a logical `u64` of seconds supplied by the caller (`now`),
 //! so the state machine is deterministic and testable without a clock.
 //!
-//! Slice 1 (#14721): crate scaffold, the four traits, the state
-//! machine, scope-keyed walls with widening/narrowing, the ordered /
-//! round-robin / least-loaded strategies, the decision log, and the
-//! first two named-oracle property tests (tests/oracles.rs). The
-//! remaining oracles (sibling success, served-failure advance),
-//! weighted and free-first strategies, and decision-log completeness
-//! follow in slice 2.
+//! Slice 1 (#14721) landed the scaffold, the four traits, the state
+//! machine, scope-keyed walls, the ordered / round-robin /
+//! least-loaded strategies, the selection log, and the first two
+//! named-oracle property tests. Slice 2 (#15066) completes the
+//! acceptance: the sibling-success and served-failure-advance
+//! oracles, the weighted and free-first strategies with `Tiered`
+//! composition, decision-log completeness (transitions and wall
+//! events are entries too, not only selections), and the #13717
+//! route-form walker's acceptance cases bound as oracle tests
+//! (tests/walker.rs).
+
+pub mod model_route;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -225,7 +231,30 @@ impl Wall {
     }
 }
 
-/// One decision-log entry: every selection the pool makes.
+/// What a decision-log entry records. Slice 1 wrote selections
+/// only; slice 2 (#15066) completes the log: every state transition
+/// and every wall placement, narrowing, and removal is an entry
+/// too, so a full outcome sequence can be reconstructed from the
+/// log alone (tests/log_completeness.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionKind {
+    /// A strategy picked (or failed to pick) a member.
+    Selection,
+    /// A member's base state changed: demotion, restore, probe
+    /// scheduling, or probe re-admission.
+    Transition,
+    /// A wall was placed or reinforced at the entry's scope.
+    WallPlaced,
+    /// A group wall narrowed: it was replaced by member walls on
+    /// its remaining supporters, each recorded as its own
+    /// `WallPlaced` entry.
+    WallNarrowed,
+    /// A wall was removed: it expired, or its last supporter
+    /// succeeded.
+    WallRemoved,
+}
+
+/// One decision-log entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decision {
     pub at: Seconds,
@@ -233,6 +262,7 @@ pub struct Decision {
     pub state: Option<MemberState>,
     pub strategy: String,
     pub reason: String,
+    pub kind: DecisionKind,
 }
 
 /// A candidate as a [`Strategy`] sees it.
@@ -247,9 +277,9 @@ pub struct Candidate {
     pub cost_class: u32,
 }
 
-/// Selection policy. Strategies compose in the domains (free-first
-/// then weighted, ordered then round-robin); this slice ships the
-/// three strategies the first oracles bind.
+/// Selection policy. The crate ships [`Ordered`], [`RoundRobin`],
+/// [`LeastLoaded`], [`Weighted`], and [`FreeFirst`]; [`Tiered`]
+/// composes any of them under free-first tiering (design §3.2).
 pub trait Strategy {
     fn name(&self) -> &str;
     /// Index into `candidates`, or `None` to select nothing.
@@ -318,6 +348,139 @@ fn load_key(load: Option<f64>) -> f64 {
     match load {
         Some(v) if v.is_finite() => v,
         _ => f64::INFINITY,
+    }
+}
+
+/// Weighted selection: smooth weighted round-robin over the
+/// candidates. Weights are policy (§3.3), supplied by the domain at
+/// construction and keyed by member id; a candidate with no
+/// declared weight weighs 1, and a weight of 0 parks the member —
+/// it is picked only when every candidate weighs 0, where the
+/// strategy degrades to declaration order. Over any window of
+/// `sum(weights)` consecutive selections against a constant
+/// candidate set, each member is picked exactly `weight` times:
+/// the shares are exact, not statistical.
+#[derive(Clone, Debug, Default)]
+pub struct Weighted {
+    weights: BTreeMap<NodeId, u32>,
+    current: BTreeMap<NodeId, i64>,
+}
+
+impl Weighted {
+    pub fn new(weights: impl IntoIterator<Item = (NodeId, u32)>) -> Self {
+        Self {
+            weights: weights.into_iter().collect(),
+            current: BTreeMap::new(),
+        }
+    }
+
+    pub fn weight_of(&self, id: &NodeId) -> u32 {
+        self.weights.get(id).copied().unwrap_or(1)
+    }
+}
+
+impl Strategy for Weighted {
+    fn name(&self) -> &str {
+        "weighted"
+    }
+
+    fn select(&mut self, candidates: &[Candidate]) -> Option<usize> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let total: i64 = candidates
+            .iter()
+            .map(|c| i64::from(self.weight_of(&c.id)))
+            .sum();
+        if total <= 0 {
+            return Some(0);
+        }
+        let mut best: Option<usize> = None;
+        let mut best_score: i64 = i64::MIN;
+        for (idx, candidate) in candidates.iter().enumerate() {
+            let weight = i64::from(self.weight_of(&candidate.id));
+            if weight == 0 {
+                continue;
+            }
+            let score = {
+                let entry = self.current.entry(candidate.id.clone()).or_insert(0);
+                *entry += weight;
+                *entry
+            };
+            if score > best_score {
+                best_score = score;
+                best = Some(idx);
+            }
+        }
+        let picked = best.expect("a positive total implies a weighted candidate");
+        *self
+            .current
+            .get_mut(&candidates[picked].id)
+            .expect("the picked candidate was just scored") -= total;
+        Some(picked)
+    }
+}
+
+/// Free-first: the lowest declared cost class wins; within the
+/// class, declaration order (design §3.2). Cost class is policy
+/// (§3.3), declared per member.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FreeFirst;
+
+impl Strategy for FreeFirst {
+    fn name(&self) -> &str {
+        "free-first"
+    }
+
+    fn select(&mut self, candidates: &[Candidate]) -> Option<usize> {
+        candidates
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, c)| c.cost_class)
+            .map(|(idx, _)| idx)
+    }
+}
+
+/// Composition: restrict the field to the lowest cost class
+/// present, then let the wrapped strategy choose within it. This
+/// is the design's composition shape (§3.2): *free-first then
+/// weighted within class* is the model-pool shape
+/// (`Tiered::new(Weighted::new(..))`); *ordered then round-robin
+/// within tier* is the host shape.
+#[derive(Clone, Debug)]
+pub struct Tiered<S> {
+    inner: S,
+    name: String,
+}
+
+impl<S: Strategy> Tiered<S> {
+    pub fn new(inner: S) -> Self {
+        Self {
+            name: format!("tiered({})", inner.name()),
+            inner,
+        }
+    }
+}
+
+impl<S: Strategy> Strategy for Tiered<S> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn select(&mut self, candidates: &[Candidate]) -> Option<usize> {
+        let best_class = candidates.iter().map(|c| c.cost_class).min()?;
+        let tier: Vec<Candidate> = candidates
+            .iter()
+            .filter(|c| c.cost_class == best_class)
+            .cloned()
+            .collect();
+        let within = self.inner.select(&tier)?;
+        candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.cost_class == best_class)
+            .nth(within)
+            .map(|(idx, _)| idx)
     }
 }
 
@@ -467,6 +630,37 @@ impl Pool {
         wall.evidence = cls.evidence.clone();
     }
 
+    /// Append a non-selection entry to the decision log.
+    fn log_event(
+        &mut self,
+        at: Seconds,
+        kind: DecisionKind,
+        member: Option<NodeId>,
+        state: Option<MemberState>,
+        reason: String,
+    ) {
+        self.log.push(Decision {
+            at,
+            member,
+            state,
+            strategy: "state-machine".to_owned(),
+            reason,
+            kind,
+        });
+    }
+
+    /// Record a wall placement (or reinforcement) in the log.
+    fn log_wall_placed(&mut self, scope: &NodeId, cls: &Classification, now: Seconds) {
+        let state = self.state_of(scope, now);
+        self.log_event(
+            now,
+            DecisionKind::WallPlaced,
+            Some(scope.clone()),
+            Some(state),
+            format!("wall placed at {scope}: {}", cls.evidence),
+        );
+    }
+
     /// Record a classified outcome for `member` at `now`.
     pub fn record_outcome(
         &mut self,
@@ -490,10 +684,20 @@ impl Pool {
             AttemptKind::ServeFailure => {
                 // One demotion step; a second strike walls.
                 match self.nodes.get(member).map(|n| n.base) {
-                    Some(BaseState::Serving) => self.set_base(member, BaseState::Demoted),
+                    Some(BaseState::Serving) => {
+                        self.set_base(member, BaseState::Demoted);
+                        self.log_event(
+                            now,
+                            DecisionKind::Transition,
+                            Some(member.clone()),
+                            Some(MemberState::Demoted),
+                            format!("serve-failure demoted {member}"),
+                        );
+                    }
                     _ => {
                         self.place_wall(&scope, member, cls, now);
                         walled_scope = Some(scope.clone());
+                        self.log_wall_placed(&scope, cls, now);
                     }
                 }
                 true
@@ -507,11 +711,19 @@ impl Pool {
                             Some(BaseState::Serving)
                         ) {
                             self.set_base(member, BaseState::Demoted);
+                            self.log_event(
+                                now,
+                                DecisionKind::Transition,
+                                Some(member.clone()),
+                                Some(MemberState::Demoted),
+                                format!("served-failure demoted {member}"),
+                            );
                         }
                     }
                     ServedDisposition::Wall => {
                         self.place_wall(&scope, member, cls, now);
                         walled_scope = Some(scope.clone());
+                        self.log_wall_placed(&scope, cls, now);
                     }
                 }
                 cls.advance
@@ -534,12 +746,23 @@ impl Pool {
             Some(BaseState::Demoted)
         ) {
             self.set_base(member, BaseState::Serving);
+            self.log_event(
+                now,
+                DecisionKind::Transition,
+                Some(member.clone()),
+                Some(MemberState::Serving),
+                format!("success restored {member} to serving"),
+            );
         }
 
-        // Narrowing: for each ancestor group wall, either this
-        // member's success removes it as a supporter, or — when the
-        // member was never a supporter — the group re-opens and the
-        // wall narrows to member walls on its supporters.
+        // Narrowing: a success under an active group wall
+        // re-opens the group for everyone but the members whose
+        // failures still support the wall — the wall narrows to
+        // member walls on exactly those members, whether or not
+        // the succeeding member was itself a supporter (oracle: *a
+        // sibling success never leaves a group wall wider than the
+        // failing member*). If no supporter remains, the wall is
+        // gone entirely.
         let ancestors = self.ancestors(member);
         for scope in ancestors {
             let Some(wall) = self.walls.get(&scope).cloned() else {
@@ -548,17 +771,28 @@ impl Pool {
             if !wall.is_active(now, self.inferred_wall_ttl) {
                 continue;
             }
-            if wall.supporters.contains(member) {
-                let mut wall = wall;
-                wall.supporters.remove(member);
-                if wall.supporters.is_empty() {
-                    self.walls.remove(&scope);
-                } else {
-                    self.walls.insert(scope, wall);
-                }
+            let mut remaining = wall.supporters.clone();
+            remaining.remove(member);
+            self.walls.remove(&scope);
+            if remaining.is_empty() {
+                self.log_event(
+                    now,
+                    DecisionKind::WallRemoved,
+                    Some(scope.clone()),
+                    None,
+                    format!("wall at {scope} removed: its last supporter succeeded"),
+                );
             } else {
-                self.walls.remove(&scope);
-                for supporter in &wall.supporters {
+                self.log_event(
+                    now,
+                    DecisionKind::WallNarrowed,
+                    Some(scope.clone()),
+                    None,
+                    format!(
+                        "success by {member} narrowed the wall at {scope} to its failing members"
+                    ),
+                );
+                for supporter in &remaining {
                     let narrowed = Wall {
                         scope: supporter.clone(),
                         until: wall.until,
@@ -567,6 +801,16 @@ impl Pool {
                         placed_at: wall.placed_at,
                     };
                     self.walls.insert(supporter.clone(), narrowed);
+                    self.log_event(
+                        now,
+                        DecisionKind::WallPlaced,
+                        Some(supporter.clone()),
+                        Some(MemberState::Walled),
+                        format!(
+                            "wall narrowed from {scope} to {supporter}: {}",
+                            wall.evidence
+                        ),
+                    );
                 }
             }
         }
@@ -589,11 +833,30 @@ impl Pool {
                 released.extend(wall.supporters.iter().cloned());
                 // A group wall also covered members who never
                 // failed; they simply return to availability.
+                self.log_event(
+                    now,
+                    DecisionKind::WallRemoved,
+                    Some(scope.clone()),
+                    None,
+                    format!("wall at {scope} expired"),
+                );
             }
         }
         for member in released {
-            if self.covering_wall(&member, now).is_none() {
+            if self.covering_wall(&member, now).is_none()
+                && !matches!(
+                    self.nodes.get(&member).map(|n| n.base),
+                    Some(BaseState::Probing)
+                )
+            {
                 self.set_base(&member, BaseState::Probing);
+                self.log_event(
+                    now,
+                    DecisionKind::Transition,
+                    Some(member.clone()),
+                    Some(MemberState::Probing),
+                    format!("wall expired; {member} awaits a re-admission probe"),
+                );
             }
         }
 
@@ -612,6 +875,13 @@ impl Pool {
             if probe.probe(&member) {
                 // Re-seated at demoted weight before full traffic.
                 self.set_base(&member, BaseState::Demoted);
+                self.log_event(
+                    now,
+                    DecisionKind::Transition,
+                    Some(member.clone()),
+                    Some(MemberState::Demoted),
+                    format!("re-admission probe passed; {member} re-seated at demoted weight"),
+                );
             } else {
                 let cls = Classification {
                     kind: AttemptKind::ServeFailure,
@@ -622,6 +892,7 @@ impl Pool {
                     evidence: "re-admission probe failed".to_owned(),
                 };
                 self.place_wall(&member, &member, &cls, now);
+                self.log_wall_placed(&member, &cls, now);
             }
         }
     }
@@ -678,6 +949,7 @@ impl Pool {
             state,
             strategy: strategy.name().to_owned(),
             reason,
+            kind: DecisionKind::Selection,
         });
         member
     }

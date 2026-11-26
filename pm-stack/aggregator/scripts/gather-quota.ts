@@ -188,6 +188,7 @@ import {
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
+import { fleetPlatformUrl } from "../src/decision-events-sync.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
 import { fetchOpenCodeProviderQuota } from "../src/opencode-provider-quota.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
@@ -196,6 +197,12 @@ import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
 import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
 import { buildDowntimeLedgerRows, deriveDowntimeWindowRecords } from "../src/quota-downtime.ts";
+import {
+  buildResetDurationLedgerRows,
+  deriveResetDurationRecords,
+  resetDurationSubjectKey,
+  resetObservationsFor,
+} from "../src/quota-reset-duration.ts";
 import { buildDayTypeShadowRecords, dayTypeShadowSubjectKey } from "../src/quota-daytype-adjustment.ts";
 import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import {
@@ -910,7 +917,7 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
 }
 
 const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
-const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+const TURSO_URL = fleetPlatformUrl();
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
@@ -1412,9 +1419,11 @@ export async function main(): Promise<number> {
   // previous forecast stands and ages, exactly as a failed tick
   // leaves the previous quota-current.json standing.
   let forecast: QuotaForecastFile | null = null;
+  let history: SnapshotRecord[] = [];
   try {
     const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
-    forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
+    history = [...stored, ...fresh];
+    forecast = buildQuotaForecast(file, history, new Date(tickAt));
     await writeAtomic(forecastPath, JSON.stringify(forecast, null, 2) + "\n");
     const forecastRows = buildForecastLedgerRows(forecast, tickAt);
     await writeTursoForecastRecords(forecastRows, tickAt);
@@ -1467,6 +1476,45 @@ export async function main(): Promise<number> {
     } catch (err) {
       console.error(
         `quota-gatherer: downtime failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // C4.2 (#13258, C4 design §1/§7): the reset-duration prediction
+  // records — derived by src/quota-reset-duration.ts for each walled
+  // or near-wall pool window from the forecast product and the
+  // snapshot history's resetsAt cadence, appended to the same C4
+  // prediction log and mirrored into the Turso ledger under source
+  // "quota-prediction". Advisory only; fail-soft like the downtime
+  // block. Honesty states (no_basis, insufficient_history) publish
+  // as records, never as invented ranges.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as { kind?: string; id?: string; subject?: { pool?: string; window?: string } };
+          if (parsed.kind === "reset_duration" && parsed.id && parsed.subject?.pool && parsed.subject.window) {
+            previous.set(resetDurationSubjectKey(parsed.subject.pool, parsed.subject.window), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = deriveResetDurationRecords(forecast, resetObservationsFor(forecast, history), previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildResetDurationLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: reset-duration predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: reset-duration failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
       );
     }
   }

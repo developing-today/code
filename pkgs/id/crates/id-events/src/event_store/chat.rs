@@ -297,6 +297,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -324,6 +325,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -481,6 +483,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -515,7 +518,7 @@ mod tests {
         store.ingest(&forged.bytes, 0).unwrap();
         assert!(!store.event_applied(&forged.id).unwrap());
         let timeline = store.chat_timeline(&group, &author(&alice)).unwrap();
-        assert!(timeline.is_empty());
+        assert_eq!(timeline, [] as [id_store::chat::ChatRecord; 0]);
     }
 
     #[test]

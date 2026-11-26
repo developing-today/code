@@ -14,12 +14,15 @@
 //!   exp/nonce; GitHub: the numeric user id), then enforces the
 //!   deny-by-default allowlist in the provider — before any link or
 //!   code exists.
-//! - Linking (#13415): an allowlisted identity the store has never
-//!   seen is linked to the account row by this login, with the link
-//!   written to the identity history and the audit record. An
-//!   identity an operator has unlinked is denied
-//!   (`identity_unlinked`) — unlinking is never silently undone by
-//!   a login.
+//! - Linking (#13415) and enrollment (#15249): an allowlisted
+//!   identity the store has never seen enrolls by this login into
+//!   a fresh account of its own holding only `read-only` (design
+//!   #9086 §4.4), with the link written to the identity history
+//!   and the audit record; the config account's own door
+//!   identities are the ones declared in its config row, seeded
+//!   active at startup. An identity an operator has unlinked is
+//!   denied (`identity_unlinked`) — unlinking is never silently
+//!   undone by a login.
 //! - On success the handler mints one of *our* authorization codes
 //!   (the same code store as the local door) and redirects to the
 //!   relying party. Every outcome — redirect, denial, link — is
@@ -435,12 +438,25 @@ pub async fn door_callback(
         );
     }
 
-    // Link state (#13415/#13972): active proceeds; pending is denied
-    // without issuing a code; unlinked is denied (an operator's unlink
-    // is never silently undone); never-seen is linked by this login,
-    // with the event in the identity history and the audit record.
-    match flow.identities.status(&name, &subject) {
-        Ok(Some(ref s)) if s == "active" => {}
+    // Link state (#13415/#13972): active proceeds on the account
+    // its row names; pending is denied without issuing a code;
+    // unlinked is denied (an operator's unlink is never silently
+    // undone); never-seen ENROLLS by this login into a fresh
+    // account of its own holding only `read-only` (#15249, design
+    // #9086 §4.4) — never into the config account, whose declared
+    // identities were seeded at startup — with the event in the
+    // identity history and the audit record.
+    let account_id = match flow.identities.status(&name, &subject) {
+        Ok(Some(ref s)) if s == "active" => match flow.identities.account_id_for(&name, &subject) {
+            Ok(Some(id)) => id,
+            _ => {
+                return err_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "identity store unavailable",
+                );
+            }
+        },
         Ok(Some(ref s)) if s == "pending" => {
             return denied(
                 flow,
@@ -465,35 +481,29 @@ pub async fn door_callback(
                 "identity is not linked to an account",
             );
         }
-        Ok(None) => {
-            let account_id = flow.registry.account.account_id.clone();
-            match flow
-                .identities
-                .link(&name, &subject, &account_id, "door-login")
-            {
-                Ok(event) if event != "none" => {
-                    if flow
-                        .audit
-                        .record("link", "allowed", event, &client_id, &identity_key)
-                        .is_err()
-                    {
-                        return err_json(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "server_error",
-                            "audit write failed",
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => {
+        Ok(None) => match flow.identities.enroll(&name, &subject, "door-login") {
+            Ok((account_id, event)) => {
+                if flow
+                    .audit
+                    .record("link", "allowed", event, &client_id, &identity_key)
+                    .is_err()
+                {
                     return err_json(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "server_error",
-                        "identity link failed",
+                        "audit write failed",
                     );
                 }
+                account_id
             }
-        }
+            Err(_) => {
+                return err_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "identity enrollment failed",
+                );
+            }
+        },
         Err(_) => {
             return err_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -501,15 +511,17 @@ pub async fn door_callback(
                 "identity store unavailable",
             );
         }
-    }
+    };
 
     // Success: mint one of our own codes, bound to the relying
-    // party's original request, and hand the user back.
+    // party's original request and to the resolved account, and
+    // hand the user back.
     let code = match issue_code(
         flow,
         &pending.client_id,
         &pending.redirect_uri,
         &pending.code_challenge,
+        &account_id,
         &identity_key,
         pending.nonce.as_deref(),
         &pending.scope,

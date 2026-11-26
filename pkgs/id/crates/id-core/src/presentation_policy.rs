@@ -48,6 +48,11 @@ pub const MAX_GLYPH_BYTES: usize = 16;
 /// Most entries in any one policy list or map.
 pub const MAX_POLICY_ENTRIES: usize = 256;
 
+/// Longest cell kind a glyph override may name, in bytes. With the name
+/// and entry bounds this keeps a whole policy far under the 256 KiB a
+/// world can replicate as one journal entry.
+pub const MAX_CELL_KIND_BYTES: usize = 64;
+
 /// One rung of the authored fallback chain (§4), richest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -144,6 +149,9 @@ pub enum PolicyError {
     InvalidGlyph(String),
     /// A list or map with more than [`MAX_POLICY_ENTRIES`] entries.
     TooManyEntries(&'static str),
+    /// A glyph override's cell kind that is empty, longer than
+    /// [`MAX_CELL_KIND_BYTES`], or holds a control character.
+    InvalidCellKind(String),
 }
 
 impl fmt::Display for PolicyError {
@@ -163,6 +171,10 @@ impl fmt::Display for PolicyError {
             Self::TooManyEntries(what) => {
                 write!(f, "{what} has more than {MAX_POLICY_ENTRIES} entries")
             }
+            Self::InvalidCellKind(s) => write!(
+                f,
+                "glyph cell kind {s:?} is empty, longer than {MAX_CELL_KIND_BYTES} bytes or holds a control character"
+            ),
         }
     }
 }
@@ -422,8 +434,18 @@ impl PresentationPolicy {
         if f.denied.len() > MAX_POLICY_ENTRIES {
             return Err(PolicyError::TooManyEntries("filters.denied"));
         }
+        if self.shaders.formats.len() > MAX_POLICY_ENTRIES {
+            return Err(PolicyError::TooManyEntries("shaders.formats"));
+        }
         if self.fallback.world_glyphs.len() > MAX_POLICY_ENTRIES {
             return Err(PolicyError::TooManyEntries("fallback.world_glyphs"));
+        }
+        if let Some(kind) = self.fallback.world_glyphs.keys().find(|kind| {
+            kind.is_empty()
+                || kind.len() > MAX_CELL_KIND_BYTES
+                || kind.chars().any(char::is_control)
+        }) {
+            return Err(PolicyError::InvalidCellKind(kind.clone()));
         }
         if self.fallback.world_substitutes.len() > MAX_POLICY_ENTRIES {
             return Err(PolicyError::TooManyEntries("fallback.world_substitutes"));
@@ -701,6 +723,33 @@ mod tests {
             PresentationPolicy::from_json(&text)
                 .unwrap_err()
                 .contains("more than")
+        );
+    }
+
+    #[test]
+    fn glyph_cell_kinds_and_shader_formats_are_bounded() {
+        let long = "k".repeat(MAX_CELL_KIND_BYTES + 1);
+        for kind in ["", "\\u0007tree", long.as_str()] {
+            let text = format!(r#"{{"fallback":{{"world_glyphs":{{"{kind}":"T"}}}}}}"#);
+            assert!(
+                PresentationPolicy::from_json(&text)
+                    .unwrap_err()
+                    .contains("cell kind"),
+                "{text} should be refused"
+            );
+        }
+        let max = "k".repeat(MAX_CELL_KIND_BYTES);
+        let text = format!(r#"{{"fallback":{{"world_glyphs":{{"{max}":"T"}}}}}}"#);
+        assert!(PresentationPolicy::from_json(&text).is_ok());
+
+        let formats = |n: usize| {
+            let many = vec!["\"shadertoy.glsl.fragment/v1\""; n].join(",");
+            format!(r#"{{"shaders":{{"enabled":true,"formats":[{many}]}}}}"#)
+        };
+        assert!(PresentationPolicy::from_json(&formats(MAX_POLICY_ENTRIES)).is_ok());
+        assert_eq!(
+            PresentationPolicy::from_json(&formats(MAX_POLICY_ENTRIES + 1)).unwrap_err(),
+            PolicyError::TooManyEntries("shaders.formats").to_string()
         );
     }
 }

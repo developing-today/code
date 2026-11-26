@@ -148,7 +148,10 @@ fn unpublish_revokes_all_three_and_resolves_like_nothing() {
 
     assert!(book.unpublish(&mut grants, &share(1), NOW + 5));
     assert!(!anyone_reads(&grants, "note-1", NOW + 5));
-    assert!(book.listing(&grants, NOW + 5).is_empty());
+    assert_eq!(
+        book.listing(&grants, NOW + 5),
+        [] as [id_grants::ListingEntry; 0]
+    );
     // Unpublished and never-existed give the same answer.
     assert_eq!(
         book.resolve(&share(1), &grants, NOW + 5),
@@ -194,7 +197,7 @@ fn unlisted_shares_stay_off_the_listing() {
     let mut book = Publications::new("owner");
     book.publish(&mut grants, share(1), request(&[("note-1", 0)]))
         .unwrap();
-    assert!(book.listing(&grants, NOW).is_empty());
+    assert_eq!(book.listing(&grants, NOW), [] as [id_grants::ListingEntry; 0]);
     assert!(book.resolve(&share(1), &grants, NOW).is_some());
 }
 
