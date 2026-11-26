@@ -114,6 +114,50 @@ because a silently wrong coordination store double-claims work.
    it. For a drill, destroy the scratch database instead:
    `turso db destroy fleet-queue-restore-drill`.
 
+## CF-3: the D1 plane as the backup source (#14943)
+
+After CF-2's cutover is verified, the live queue plane is D1
+`fleet-queue` and the daily export's source changes to it. The code
+for that leg is in this directory now (`bin/export_d1_to_d1.py`,
+wrapper `systemd/run-export-d1.sh`, units
+`fleet-queue-backup-export-d1.service/.timer`); the Turso leg stays
+the scheduled one until activation, because before the cutover the
+D1 database holds shadow data, not the live queue — exporting it
+over the backup would replace a backup of the live store with a
+copy of the shadow.
+
+**Activation (the one remaining step, run on the laptop in the same
+pass as CF-2's verified flip):**
+
+```bash
+systemd/install-units.sh   # installs the D1 units (not enabled by the installer)
+systemctl --user disable --now fleet-queue-backup-export.timer
+systemctl --user enable --now fleet-queue-backup-export-d1.timer
+systemctl --user start fleet-queue-backup-export-d1.service   # first run by hand
+```
+
+The first run must end with `read-back counts match`; post its
+summary line on #14943. Rollback is the mirror image: disable the
+D1 timer, re-enable the Turso timer — the backup copy's format is
+identical either way (same dump builder, same meta table), so no
+data migration rides on the flip.
+
+**Restore drill against the D1 plane** (the CF-3 acceptance drill;
+also the disaster path if the live D1 plane is lost — restore into
+a fresh D1, verify, then point the hosted door at it):
+
+```bash
+CLOUDFLARE_API_TOKEN=<account token> \
+CLOUDFLARE_ACCOUNT_ID=<account id> \
+  python3 bin/restore_drill_d1.py \
+    --scratch-name fleet-queue-restore-drill --create-scratch --drop-scratch
+```
+
+It must end with `restored counts match the export record`. The
+drill restores from the backup copy (`fleet-queue-backup`), never
+from the live plane, and refuses to use the backup or live name as
+its scratch target.
+
 ## The D1 backup home (mesh class D, #13458)
 
 The D1 copy itself is backed up weekly (Sundays 03:40, plus up to
