@@ -243,6 +243,16 @@ impl ColdCatalog {
         versions.dedup();
         let at = self.entries.len();
         for v in &versions {
+            if let Some(existing_at) = self.by_version.get(&(v.file_id.clone(), v.version_seq)) {
+                let existing = &self.entries[*existing_at];
+                return Err(catalog_error(format!(
+                    "version {}:{} is already catalogued in shard {}; \
+                     a version may resolve to only one canonical cold shard",
+                    v.file_id, v.version_seq, existing.shard_id
+                )));
+            }
+        }
+        for v in &versions {
             self.by_version
                 .insert((v.file_id.clone(), v.version_seq), at);
         }
@@ -438,6 +448,38 @@ mod tests {
                 .shard_id,
             "shard-a"
         );
+    }
+
+    #[test]
+    fn overlapping_versions_are_rejected_without_mutating_catalog() {
+        let mut catalog = ColdCatalog::new();
+        catalog
+            .register(
+                "rustfs://cold/shard-a",
+                sha("manifest-a"),
+                &manifest("shard-a", "code", "code", &[("file-1", 1)]),
+            )
+            .expect("shard-a registers");
+
+        let err = catalog
+            .register(
+                "rustfs://cold/shard-b",
+                sha("manifest-b"),
+                &manifest("shard-b", "code", "code", &[("file-1", 1), ("file-2", 2)]),
+            )
+            .expect_err("a version cannot belong to two canonical shards");
+
+        assert!(err.to_string().contains("shard-a"), "error: {err}");
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.shard_ids(), vec!["shard-a"]);
+        assert_eq!(
+            catalog
+                .resolve("file-1", 1)
+                .expect("original remains canonical")
+                .shard_id,
+            "shard-a"
+        );
+        assert!(catalog.resolve("file-2", 2).is_none());
     }
 
     #[test]
