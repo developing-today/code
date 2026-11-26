@@ -770,7 +770,10 @@ mod tests {
         // clear-then-set leaves the claim live.
         let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(1), vec![])]);
         let set_then_clear = [set(1, 9, "city"), clear(1, &[])];
-        assert_eq!(compacted_claims(&set_then_clear, &parents), [] as [Claim; 0]);
+        assert_eq!(
+            compacted_claims(&set_then_clear, &parents),
+            [] as [Claim; 0]
+        );
         assert_eq!(
             compacted_claims(&set_then_clear, &parents),
             live_claims(&set_then_clear, &parents)

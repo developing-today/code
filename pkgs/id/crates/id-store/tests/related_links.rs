@@ -371,7 +371,10 @@ fn empty_link_set_removes_the_view_entry() {
     assert!(!view.contains_key(LINKS_VIEW_KEY));
     assert_eq!(view_links(&view).unwrap(), [] as [RelatedLink; 0]);
     // A view that never had links reads as empty, not an error.
-    assert_eq!(view_links(&BTreeMap::new()).unwrap(), [] as [RelatedLink; 0]);
+    assert_eq!(
+        view_links(&BTreeMap::new()).unwrap(),
+        [] as [RelatedLink; 0]
+    );
 }
 
 // ---------------------------------------------------------------- §5

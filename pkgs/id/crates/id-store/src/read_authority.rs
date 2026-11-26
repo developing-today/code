@@ -622,7 +622,9 @@ mod tests {
     mod across_projections {
         use super::*;
         use crate::note_blocks::{Block, BlockId, BlockKind, BlockTree};
-        use crate::note_links::{AppliedLink, LinkProjection, LinkRecord, NoteLinkOp, project_links};
+        use crate::note_links::{
+            AppliedLink, LinkProjection, LinkRecord, NoteLinkOp, project_links,
+        };
         use crate::note_projections::{
             CalendarDate, CaptureTarget, DatabaseDefinition, NoteProperty, OutlineMode,
             ProjectedNote, PropertyFilter, PropertyValue, TransclusionRender, capture_target,
@@ -945,12 +947,18 @@ mod tests {
                 ids(&links.backlinks_to_readable(hash(11), &c_reads)),
                 vec![hash(52)]
             );
-            assert_eq!(links.links_from_readable(hash(10), &c_reads), [] as [&LinkRecord; 0]);
+            assert_eq!(
+                links.links_from_readable(hash(10), &c_reads),
+                [] as [&LinkRecord; 0]
+            );
             assert_eq!(
                 links.backlinks_to_readable(hash(10), &c_reads),
                 [] as [&LinkRecord; 0]
             );
-            assert_eq!(links.links_from_readable(hash(13), &c_reads), [] as [&LinkRecord; 0]);
+            assert_eq!(
+                links.links_from_readable(hash(13), &c_reads),
+                [] as [&LinkRecord; 0]
+            );
 
             // A reads both edges out of 11; 13 stays hidden from everyone.
             assert_eq!(

@@ -581,7 +581,7 @@ pub fn render_transclusion<'a>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::note_blocks::{BlockKind, BlockTree};
@@ -852,7 +852,10 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[2].cells, vec![None]);
         // Unreadable notes are omitted entirely (#5839 invariant 6).
-        assert_eq!(database_view(&def, &notes, &deny_all), [] as [DatabaseRow<'_>; 0]);
+        assert_eq!(
+            database_view(&def, &notes, &deny_all),
+            [] as [DatabaseRow<'_>; 0]
+        );
     }
 
     #[test]
