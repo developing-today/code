@@ -152,6 +152,10 @@ pub struct WorldCore {
     /// source retry is answered from (#1355 part 2).
     pub(crate) schedule_receipts: BTreeSet<(String, String, u64)>,
     pub(crate) isolation: Isolation,
+    /// The world's presentation policy (#14731 slice 2b), restored from
+    /// `PresentationPolicy` journal entries. The default denies user
+    /// shaders and disguise-class filters.
+    pub(crate) presentation: id_core::presentation_policy::PresentationPolicy,
     pub(crate) cross_world_write: bool,
     pub(crate) cross_world_forced: bool,
     pub(crate) file_scope: FileScope,
@@ -438,6 +442,7 @@ impl WorldCore {
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
             isolation: Isolation::default(),
+            presentation: id_core::presentation_policy::PresentationPolicy::default(),
             cross_world_write: false,
             cross_world_forced: false,
             file_scope: FileScope::default(),
@@ -969,6 +974,12 @@ impl WorldCore {
                     core.execution_profile = profile;
                 }
                 JournalEntry::Isolation { isolation } => core.isolation = isolation,
+                JournalEntry::PresentationPolicy { policy } => {
+                    policy
+                        .validate()
+                        .context("invalid presentation policy in journal")?;
+                    core.presentation = policy;
+                }
                 JournalEntry::CrossWorldWrite { enabled } => {
                     core.cross_world_write = enabled;
                     if !enabled {
@@ -1860,6 +1871,11 @@ impl WorldCore {
         if self.isolation != Isolation::default() {
             entries.push(JournalEntry::Isolation {
                 isolation: self.isolation,
+            });
+        }
+        if self.presentation != id_core::presentation_policy::PresentationPolicy::default() {
+            entries.push(JournalEntry::PresentationPolicy {
+                policy: self.presentation.clone(),
             });
         }
         if self.cross_world_forced {

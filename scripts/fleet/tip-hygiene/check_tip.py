@@ -73,7 +73,10 @@ def classify(path: str) -> str:
     ext = "." + name.rsplit(".", 1)[1].lower() if "." in name else ""
     if any(c in SCRATCH_COMPONENTS for c in components):
         return "scratch"
-    if any(c in BUILD_OUTPUT_COMPONENTS for c in components) or ext in BUILD_OUTPUT_EXTENSIONS:
+    if (
+        any(c in BUILD_OUTPUT_COMPONENTS for c in components)
+        or ext in BUILD_OUTPUT_EXTENSIONS
+    ):
         return "build-output"
     if ext in DATABASE_EXTENSIONS:
         return "database"
@@ -84,8 +87,11 @@ def classify(path: str) -> str:
     return "content"
 
 
-def census(entries: list[dict], top: int = DEFAULT_TOP,
-           large_blob_mib: float = DEFAULT_LARGE_BLOB_MIB) -> dict:
+def census(
+    entries: list[dict],
+    top: int = DEFAULT_TOP,
+    large_blob_mib: float = DEFAULT_LARGE_BLOB_MIB,
+) -> dict:
     classes = {name: {"count": 0, "bytes": 0} for name in CLASS_ORDER}
     total_bytes = 0
     for entry in entries:
@@ -93,12 +99,8 @@ def census(entries: list[dict], top: int = DEFAULT_TOP,
         classes[cls]["count"] += 1
         classes[cls]["bytes"] += entry["size"]
         total_bytes += entry["size"]
-    junk_count = sum(
-        c["count"] for name, c in classes.items() if name != "content"
-    )
-    junk_bytes = sum(
-        c["bytes"] for name, c in classes.items() if name != "content"
-    )
+    junk_count = sum(c["count"] for name, c in classes.items() if name != "content")
+    junk_bytes = sum(c["bytes"] for name, c in classes.items() if name != "content")
     threshold = int(large_blob_mib * 1024 * 1024)
     large = sorted(
         (e for e in entries if e["size"] >= threshold),
@@ -110,25 +112,22 @@ def census(entries: list[dict], top: int = DEFAULT_TOP,
         "total_bytes": total_bytes,
         "classes": classes,
         "junk": {"count": junk_count, "bytes": junk_bytes},
-        "large_blobs": [
-            {"path": e["path"], "size": e["size"]} for e in large
-        ],
+        "large_blobs": [{"path": e["path"], "size": e["size"]} for e in large],
     }
 
 
 def entries_from_fixture(path: str) -> list[dict]:
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
-    return [
-        {"path": str(e["path"]), "size": int(e["size"])}
-        for e in doc["entries"]
-    ]
+    return [{"path": str(e["path"]), "size": int(e["size"])} for e in doc["entries"]]
 
 
 def entries_from_git(repo_dir: str, ref: str) -> list[dict]:
     out = subprocess.run(
         ["git", "-C", repo_dir, "ls-tree", "-r", "-l", ref],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     entries = []
     for line in out.splitlines():
@@ -145,15 +144,24 @@ def main(argv: list[str] | None = None) -> int:
         description="Tip-hygiene census for one repo (code#3205)."
     )
     parser.add_argument("--repo-dir", help="git checkout to census (live mode)")
-    parser.add_argument("--ref", default="HEAD",
-                        help="ref whose tip tree is censused (default HEAD)")
-    parser.add_argument("--fixture",
-                        help="JSON entry list replacing the git read (offline mode)")
-    parser.add_argument("--top", type=int, default=DEFAULT_TOP,
-                        help="max large blobs to report (default 20)")
-    parser.add_argument("--large-blob-mib", type=float,
-                        default=DEFAULT_LARGE_BLOB_MIB,
-                        help="large-blob threshold in MiB (default 10)")
+    parser.add_argument(
+        "--ref", default="HEAD", help="ref whose tip tree is censused (default HEAD)"
+    )
+    parser.add_argument(
+        "--fixture", help="JSON entry list replacing the git read (offline mode)"
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=DEFAULT_TOP,
+        help="max large blobs to report (default 20)",
+    )
+    parser.add_argument(
+        "--large-blob-mib",
+        type=float,
+        default=DEFAULT_LARGE_BLOB_MIB,
+        help="large-blob threshold in MiB (default 10)",
+    )
     args = parser.parse_args(argv)
     if bool(args.fixture) == bool(args.repo_dir):
         parser.error("exactly one of --fixture / --repo-dir is required")

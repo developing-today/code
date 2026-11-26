@@ -13,6 +13,7 @@ import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
 import { Docs, Stamped } from "../src/docs.ts";
+import { STALE_ACT_ERROR } from "../src/edge-proto.ts";
 import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
@@ -1896,6 +1897,42 @@ describe("the interface's endpoints", () => {
     await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
     await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
     expect(bare.w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length).toBe(2);
+  });
+
+  test("a host refuses a timely action more than ten minutes old unless the owner said to send it anyway (#13501)", async () => {
+    const { d, audited } = deps();
+    d.named = new Named(memoryStore());
+    const at = Date.now() - 11 * 60_000;
+    const body = (id: string, extra: Record<string, unknown> = {}) => ({
+      kind: "task.cancel",
+      args: { task: 21016, reason: "dup" },
+      id,
+      at,
+      sent: at,
+      ...extra,
+    });
+    const late = await handle(post("/console/api/act", body("0e000000-0000-4000-8000-000000000101")), d);
+    expect([late.status, await late.json()]).toEqual([409, { error: STALE_ACT_ERROR, stale: true }]);
+    // Refused before it began: nothing was recorded as started.
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(0);
+    // Looked at again and sent anyway: it is taken.
+    const sure = await handle(
+      post("/console/api/act", body("0e000000-0000-4000-8000-000000000102", { sure: true })),
+      d,
+    );
+    expect(sure.status).not.toBe(409);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(1);
+    // One that says nothing of when it was done is done now.
+    const now = await handle(
+      post("/console/api/act", {
+        kind: "task.cancel",
+        args: { task: 21016, reason: "dup" },
+        id: "0e000000-0000-4000-8000-000000000103",
+      }),
+      d,
+    );
+    expect(now.status).not.toBe(409);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(2);
   });
 
   test("two arrivals under one name at the same moment: one does it, the other is told it is being done", async () => {

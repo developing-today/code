@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/oc-code-02-14665-20261124T234002Z-9e2a2dcb/root.just",
+      "source": "/home/user/git/agent-next-27-23692/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1465,11 +1465,16 @@
         { "arguments": [], "recipe": "cargo-check", "star": null },
         { "arguments": [], "recipe": "clippy-lint", "star": null },
         { "arguments": [], "recipe": "clippy-native-shell", "star": null },
+        { "arguments": [], "recipe": "clippy-bevy-bridge", "star": null },
+        { "arguments": [], "recipe": "clippy-bevy-presenter", "star": null },
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
+        { "arguments": [], "recipe": "test-android-remote", "star": null },
         { "arguments": [], "recipe": "test-tui-shell", "star": null },
         { "arguments": [], "recipe": "test-hw-shell", "star": null },
+        { "arguments": [], "recipe": "test-bevy-bridge", "star": null },
+        { "arguments": [], "recipe": "test-bevy-presenter", "star": null },
         { "arguments": [], "recipe": "test-rust-examples", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
@@ -1481,7 +1486,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 17,
+      "priors": 18,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -1498,6 +1503,32 @@
       "private": false,
       "quiet": false,
       "namepath": "clean",
+      "shebang": false
+    },
+    "clippy-bevy-bridge": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-bevy-bridge --all-targets -- -D warnings"]],
+      "dependencies": [],
+      "doc": "Clippy for id-bevy-bridge (#13704): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-bevy-bridge",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-bevy-bridge",
+      "shebang": false
+    },
+    "clippy-bevy-presenter": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-bevy-presenter --all-targets -- -D warnings"]],
+      "dependencies": [],
+      "doc": "Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-bevy-presenter",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-bevy-presenter",
       "shebang": false
     },
     "clippy-lint": {
@@ -2495,6 +2526,45 @@
       "namepath": "test",
       "shebang": false
     },
+    "test-android-remote": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo test -p id-android-remote"]],
+      "dependencies": [],
+      "doc": "Run the Android remote-drive session bridge's contract and loopback tests (#1831).",
+      "name": "test-android-remote",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-android-remote",
+      "shebang": false
+    },
+    "test-bevy-bridge": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-bevy-bridge"]],
+      "dependencies": [],
+      "doc": "Run the id-bevy-bridge tests, including the replay oracle that gates a bevy_ecs version bump (#13704): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-bevy-bridge",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-bevy-bridge",
+      "shebang": false
+    },
+    "test-bevy-presenter": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-bevy-presenter"]],
+      "dependencies": [],
+      "doc": "Run the id-bevy-presenter tests (#13705): the 2D presenter-client app against a world hosted in a separate process; non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-bevy-presenter",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-bevy-presenter",
+      "shebang": false
+    },
     "test-crate-integration": {
       "attributes": [{ "group": "test" }],
       "body": [
@@ -3420,7 +3490,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/oc-code-02-14665-20261124T234002Z-9e2a2dcb/pkgs/id/justfile",
+  "source": "/home/user/git/agent-next-27-23692/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

@@ -11,12 +11,7 @@ import {
   type ClosedChildrenRecord,
   type SourceTotalRecord,
 } from "../src/cost-anomaly-producer.ts";
-import {
-  buildSpendRollups,
-  SpendRollupStore,
-  type SpendRollup,
-  type SpendRollupEvent,
-} from "../src/spend-rollups.ts";
+import { buildSpendRollups, SpendRollupStore, type SpendRollup, type SpendRollupEvent } from "../src/spend-rollups.ts";
 import { decodeStoreRow, storeStatement } from "../src/turso-stores.ts";
 
 // Oracle: the #4825 producer contract — evidence is assembled only from
@@ -46,7 +41,9 @@ const EVENTS: SpendRollupEvent[] = [
 async function storeWith(events: SpendRollupEvent[], version = "v1"): Promise<SpendRollupStore> {
   const dir = await mkdtemp(join(tmpdir(), "cost-anomaly-producer-"));
   const store = new SpendRollupStore(dir);
-  await store.append(buildSpendRollups(events, { attributionVersion: version, coverageStart: COVERAGE_START, coverage: FULL }));
+  await store.append(
+    buildSpendRollups(events, { attributionVersion: version, coverageStart: COVERAGE_START, coverage: FULL }),
+  );
   return store;
 }
 
@@ -166,7 +163,13 @@ test("end to end: store + certified aux sources post exactly the constructed ano
             }
           : null,
       monthlyCharges: () => [{ service: "Modal", month: "2026-10", totalUsd: 8, coverage: "complete" as const }],
-      serviceActivity: () => ({ service: "Modal", month: "2026-10", sessions: 0, quotaActivity: 0, coverage: "complete" as const }),
+      serviceActivity: () => ({
+        service: "Modal",
+        month: "2026-10",
+        sessions: 0,
+        quotaActivity: 0,
+        coverage: "complete" as const,
+      }),
     };
     const loadEvidence = () => loadCostAnomalyEvidence(deps);
     // Fires: burn for both finished epic weeks, dominance for week 2

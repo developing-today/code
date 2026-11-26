@@ -34,7 +34,10 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         [_, flag] if flag == "--version" || flag == "-V" => {
-            println!("atlas-eval {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "atlas-eval {}",
+                atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+            );
             return ExitCode::SUCCESS;
         }
         [_, path, split] => {
