@@ -319,6 +319,25 @@ pub struct IssuerRenewRequest {
     pub allow_key_reuse: bool,
 }
 
+/// `cert issuer rotate` (§5.2): a new key per slot of an issuer set,
+/// in the next key generation, under the same root set.
+#[derive(Debug, Clone)]
+pub struct IssuerRotateRequest {
+    /// The issuer set whose keys are replaced.
+    pub issuer_bundle: PathBuf,
+    /// The root set the issuer set chains to.
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §24.1(1) opt-in, needed again for a set with legacy slots.
+    pub allow_legacy_root_strength: bool,
+    /// Where the new keys go: `None` = the new bundle's own
+    /// `private/keys`; `Some(dir)` = that external store directory.
+    pub private_store: Option<PathBuf>,
+}
+
 /// `cert leaf renew` (§5.2): reissue a leaf on the key it already
 /// has. The profile, subject and SANs come from the leaf bundle; the
 /// issuer key comes only from the explicit signer source (§24.3).
