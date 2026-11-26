@@ -353,8 +353,11 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 .map(format_unix_timestamp)
                 .filter(|d| !d.is_empty())
                 .unwrap_or_else(|| "unknown".to_owned());
+            // The origin line is the row's longest, least critical text, so
+            // it — not the filename — is the item that truncates when the
+            // row runs out of room (#15146).
             let origin_html = format!(
-                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                "<span class=\"text-base-content/40 truncate min-w-0 text-xs\">origin {} \u{00b7} uploaded {}</span>",
                 html_escape(origin_str),
                 uploaded_str
             );
@@ -382,7 +385,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 "<li class=\"file-item flex items-center gap-2 px-3 py-1.5 border-b border-base-300 hover:bg-base-200 text-xs{}\" data-kind=\"{}\" data-name=\"{}\">\
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
-                    <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
+                    <a class=\"font-bold hover:text-primary truncate flex-1 min-w-0\" href=\"{}\" data-nav>{}</a>\
                     {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
@@ -1648,6 +1651,50 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
+    }
+
+    #[test]
+    fn test_render_file_list_filename_keeps_flex_room() {
+        // #15146: the filename anchor was the row's only shrinkable flex
+        // item (truncate -> automatic minimum size 0) while the date,
+        // origin and hash spans were whitespace-nowrap, so in the E2E
+        // browser's font metrics the metadata claimed the whole row and
+        // the filename rendered at width 0 (invisible). The filename now
+        // takes the row's free space (flex-1) and the long origin line is
+        // the truncating item instead.
+        let files = vec![FileInfo {
+            name: "test.txt".to_owned(),
+            display_name: None,
+            hash: "abc123def456".to_owned(),
+            size: 1024,
+            kind: FileKind::Primary,
+            parent_name: None,
+            timestamp: None,
+            created_at: None,
+            modified_at: None,
+            tags: vec![],
+            origin_node: None,
+            is_deleted: false,
+        }];
+        let page = FileListPage {
+            total: files.len(),
+            files,
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+            sort: None,
+            origin_filter: None,
+        };
+        let html = render_file_list(&page);
+        assert!(
+            html.contains("<a class=\"font-bold hover:text-primary truncate flex-1 min-w-0\""),
+            "filename anchor must claim the row's free space: {html}"
+        );
+        assert!(
+            html.contains("<span class=\"text-base-content/40 truncate min-w-0 text-xs\">origin "),
+            "origin line must be the truncating item: {html}"
+        );
     }
 
     #[test]
