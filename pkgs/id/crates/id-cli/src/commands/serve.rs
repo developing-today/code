@@ -993,8 +993,6 @@ struct ServeWorlds {
     trusted_module_keys: Vec<[u8; 32]>,
     runtime: id_caps::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn id_directory::directory_mail::MailSink>>,
-    /// Host-mode lifecycle over [`WORLDS_DIR`] (`--world-host`, #10693).
-    host: Option<Arc<id_worlds::host::HostLifecycle>>,
     /// The jurisdiction partition this server's worlds live in
     /// (`--world-partition`, #3898); `None` serves unassigned local worlds.
     partition: Option<String>,
@@ -1015,39 +1013,8 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
             {
                 return Ok(None);
             }
-            let Some(host) = &self.host else {
-                return self.open_world(name).await.map(Some);
-            };
-            // Host mode (#10693): record the wake (or the admin-authorised
-            // create) before opening, and take it back if the open fails,
-            // so the host file never shows a world live that is not.
-            let admission = if create {
-                host.admit_create(name)?
-            } else {
-                host.admit_wake(name)?
-            };
-            match self.open_world(name).await {
-                Ok(service) => Ok(Some(service)),
-                Err(error) => {
-                    if let Err(undo) = host.undo_wake(name, admission) {
-                        warn!(world = name, "host: could not undo wake: {undo:#}");
-                    }
-                    Err(error)
-                }
-            }
+            self.open_world(name).await.map(Some)
         })
-    }
-
-    fn closed(&self, name: &str) {
-        if let Some(host) = &self.host
-            && let Err(error) = host.record_closed(name)
-        {
-            warn!(world = name, "host: could not record idle close: {error:#}");
-        }
-    }
-
-    fn pinned(&self, name: &str) -> bool {
-        self.host.as_ref().is_some_and(|host| host.pinned(name))
     }
 
     fn exists(&self, name: &str) -> bool {
@@ -1835,7 +1802,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         } else {
             None
         };
-        let opener = Arc::new(ServeWorlds {
+        // Host-mode lifecycle over the worlds directory (`--world-host`,
+        // #10693): every client open goes through its admission rule.
+        let host = world_host
+            .then(|| -> Result<_> {
+                fs::create_dir_all(WORLDS_DIR)?;
+                Ok(Arc::new(id_worlds::host::HostLifecycle::open(Path::new(
+                    WORLDS_DIR,
+                ))?))
+            })
+            .transpose()?;
+        let storage = ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
             boundary_config: started_server_config
@@ -1860,17 +1837,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 world_mail_smtp,
                 world_mail_from,
             )?,
-            host: world_host
-                .then(|| -> Result<_> {
-                    std::fs::create_dir_all(WORLDS_DIR)?;
-                    Ok(Arc::new(id_worlds::host::HostLifecycle::open(
-                        std::path::Path::new(WORLDS_DIR),
-                    )?))
-                })
-                .transpose()?,
             partition: world_partition,
-        });
-        let host = opener.host.clone();
+        };
+        let opener: Arc<dyn id_worlds::world_hub::WorldOpener> = match &host {
+            Some(host) => Arc::new(id_worlds::host_opener::HostedOpener::new(
+                storage,
+                Arc::clone(host),
+            )),
+            None => Arc::new(storage),
+        };
         let hub = WorldHub::new(
             opener,
             world_admin_token.clone(),
