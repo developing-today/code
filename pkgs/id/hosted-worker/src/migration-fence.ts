@@ -163,7 +163,10 @@ export function planFreeze(
  * moved back to the source at a fresh epoch before the source reopens.
  * Returns the new epoch floor. */
 export function planUnfreeze(current: SourceFence | null, request: FenceRequest): number {
-  if (current === null) throw new FailClosed(409, "not_fenced", "this store holds no migration fence");
+  // With no fence standing (the migration aborted before its freeze
+  // landed, or a retried unfreeze) the call still raises the epoch
+  // floor, so a stale coordinator's late freeze is refused.
+  if (current === null) return request.routingEpoch;
   if (current.migration_id !== request.migrationId) {
     throw new FailClosed(409, "fence_held", "another migration holds this store's fence");
   }

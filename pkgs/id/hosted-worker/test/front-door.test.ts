@@ -159,7 +159,7 @@ test("with no ceiling, normal writes pass and the hard body bound still applies 
 // of the directory: the complete before/after table snapshots must agree.
 function directoryFixture() {
   const db = new DatabaseSync(":memory:");
-  for (const name of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql"]) {
+  for (const name of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql", "0003_migration_leases.sql"]) {
     db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   const adapter: HostedDirectoryDatabase = {
