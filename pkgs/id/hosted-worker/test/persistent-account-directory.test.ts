@@ -585,3 +585,17 @@ test("transitions refuse steps out of order, foreign migration ids and bad targe
     db.close();
   }
 });
+
+test("hosted README discloses the shared directory residency exception and its limits", async () => {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+
+  // Oracle: the disclosure checklist in the jurisdiction-aware store design
+  // requires the shared D1 exception, the pseudonymous-data caveat, and the
+  // separate KV, logging, request-processing, and backup residency gaps.
+  assert.match(readme, /single\s+shared durable-directory residency exception/i);
+  assert.match(readme, /hashed subject.{0,40}potentially personal data/i);
+  assert.match(readme, /KV caches/i);
+  assert.match(readme, /logs/i);
+  assert.match(readme, /request\s+processing/i);
+  assert.match(readme, /backup\s+placement/i);
+});

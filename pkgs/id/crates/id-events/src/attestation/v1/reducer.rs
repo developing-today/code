@@ -1518,7 +1518,7 @@ mod tests {
         let reduction = world.reduce();
         assert_eq!(reduction.state, V1MatchState::Void);
         assert_eq!(reduction.void_audits, vec![h("clean audit")]);
-        assert!(reduction.audits.is_empty());
+        assert_eq!(reduction.audits, [] as [Hash; 0]);
     }
 
     #[test]
@@ -1998,13 +1998,13 @@ mod tests {
         world.received("decision", W, 650);
         let reduction = world.reduce();
         assert_eq!(reduction.superseded, vec![h("fallback")]);
-        assert!(reduction.premature.is_empty());
+        assert_eq!(reduction.premature, [] as [Hash; 0]);
 
         let mut world = World::with_terms();
         fallback_after(&mut world, 699);
         let reduction = world.reduce();
         assert_eq!(reduction.premature, vec![h("fallback")]);
-        assert!(reduction.superseded.is_empty());
+        assert_eq!(reduction.superseded, [] as [Hash; 0]);
     }
 
     #[test]
@@ -2016,7 +2016,7 @@ mod tests {
             seq: 4,
         });
         let reduction = world.reduce();
-        assert!(reduction.void.is_empty());
+        assert_eq!(reduction.void, [] as [Hash; 0]);
         assert_eq!(reduction.void_receipts, vec![h("closure")]);
         assert_eq!(reduction.finality, Finality::Unproven);
     }

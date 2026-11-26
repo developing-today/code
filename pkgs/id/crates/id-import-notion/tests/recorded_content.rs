@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use id_import_notion::content::{
-    BlockClass, FileFetcher, ReferenceSurface, SpanLink, convert_page,
+    BlockClass, ContentBlock, FileFetcher, ReferenceSurface, SpanLink, convert_page,
 };
 use id_import_notion::{Inventory, Manifest, NOTION_API_VERSION, NotionApi, Outcome, Stage};
 use serde_json::{Value, json};
@@ -343,7 +343,7 @@ fn recorded_pages_convert_to_the_expected_content() {
     // The child page is a reference, not inlined content.
     let child_page = &content.blocks[4];
     assert_eq!(child_page.title.as_deref(), Some("Beta"));
-    assert!(child_page.children.is_empty());
+    assert_eq!(child_page.children, [] as [ContentBlock; 0]);
 
     // §3 rewriting: internal spans became note references, the outside
     // link stayed verbatim and was counted externalised.
