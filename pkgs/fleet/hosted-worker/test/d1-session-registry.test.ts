@@ -14,66 +14,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { AuthDeps } from "../src/auth.ts";
 import type { HostedEnv } from "../src/config.ts";
-import type { D1DatabaseLike } from "../src/d1-queue-store.ts";
 import { D1SessionRegistry, openD1SessionRegistry, readSessionRow } from "../src/d1-session-registry.ts";
 import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry, type SessionRecord } from "../src/sessions.ts";
 import { buildDeps } from "../src/worker.ts";
+import { withDb } from "./d1-double.ts";
 import { BINDING_A, bearerReq, makeHarness } from "./helpers.ts";
-
-class FakeD1PreparedStatement {
-  private values: unknown[] = [];
-
-  constructor(
-    private readonly db: DatabaseSync,
-    private readonly sqlText: string,
-  ) {}
-
-  bind(...values: unknown[]): FakeD1PreparedStatement {
-    this.values = values;
-    return this;
-  }
-
-  async all(): Promise<{ results: Record<string, unknown>[]; meta: { changes: number; last_row_id: number } }> {
-    const rows = this.db.prepare(this.sqlText).all(...(this.values as never[])) as Record<string, unknown>[];
-    return { results: rows, meta: { changes: 0, last_row_id: 0 } };
-  }
-
-  async run(): Promise<{ meta: { changes: number; last_row_id: number } }> {
-    const info = this.db.prepare(this.sqlText).run(...(this.values as never[])) as {
-      changes: number | bigint;
-      lastInsertRowid: number | bigint;
-    };
-    return { meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
-  }
-}
-
-class FakeD1Database implements D1DatabaseLike {
-  constructor(readonly db: DatabaseSync) {}
-
-  prepare(sqlText: string): FakeD1PreparedStatement {
-    return new FakeD1PreparedStatement(this.db, sqlText);
-  }
-}
-
-function withDb(fn: (d1: FakeD1Database) => Promise<void>): () => Promise<void> {
-  return async () => {
-    const dir = mkdtempSync(join(tmpdir(), "fleet-d1-sessions-"));
-    const db = new DatabaseSync(join(dir, "fleet-hosted.db"));
-    try {
-      await fn(new FakeD1Database(db));
-    } finally {
-      db.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  };
-}
 
 function record(overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
