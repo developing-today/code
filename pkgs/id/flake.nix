@@ -567,6 +567,7 @@
                 test-unit = mkCheck "test-unit" "test-unit";
                 test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
                 test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
+                test-android-remote = mkCheckCargoOnly "test-android-remote" "test-android-remote";
                 test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
                 test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
                 # Rust example guests (#7904): plaza-sdk (examples/rust-world)
@@ -1094,6 +1095,7 @@
                 "web-lint"
                 "test"
                 "test-native-shell"
+                "test-android-remote"
                 "test-rust-examples"
                 "test-web-unit"
                 "test-web-typecheck"
