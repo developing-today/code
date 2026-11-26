@@ -100,9 +100,12 @@ import {
   type HeldFor,
   HOLDABLE,
   keyId,
+  type MachineCandidate,
   type MachineReport,
   type MachinesAnswer,
+  machineCanDo,
   machineReport,
+  selectMachine,
   type PublicKey,
   publicKey,
   STALE_ACT_ERROR,
@@ -1611,6 +1614,18 @@ export class Edge {
     return this.now() - (this.hostSeen ?? 0) < HOST_QUIET_MS;
   }
 
+  /** The machines the edge knows for choosing who does an action
+   * (#13492 slice 2): the one that reports, under the name and with
+   * the kinds it last said, connected while it reports lately. An
+   * empty list when none has said what it can do — a console older
+   * than the saying reports and is known only as a machine that
+   * reports — and the caller then keeps its older behaviour: what it
+   * cannot know a machine cannot do, it does not refuse for it. */
+  private knownMachines(): MachineCandidate[] {
+    if (this.machine === null) return [];
+    return [{ name: this.machine.name, actions: this.machine.actions, connected: this.machineThere() }];
+  }
+
   /** Tell the owner what changed. What this side reads itself is
    * compared as it stands (after a first look, if this object has not
    * had one: the copy kept from before); the rest is read from the copy
@@ -1674,7 +1689,17 @@ export class Edge {
       return { code: 1, stdout: "", stderr: "too much is already waiting for a machine" };
     }
     const at = new Date(this.now()).toISOString();
-    held.push({ id: crypto.randomUUID(), kind: later.kind, args: later.args, who: by, at });
+    // For the machine that says it can do it, when one is known (#13492 slice 2).
+    const known = this.knownMachines();
+    const picked = known.length > 0 ? selectMachine(known, later.kind) : null;
+    held.push({
+      id: crypto.randomUUID(),
+      kind: later.kind,
+      args: later.args,
+      who: by,
+      at,
+      ...(picked !== null && picked.state !== "none" ? { for: picked.machine.name } : {}),
+    });
     await this.saveHeld();
     return { code: 0, stdout: "", stderr: "" };
   }
@@ -1991,6 +2016,15 @@ export class Edge {
       if ((await this.outstandingRelays(about)).length > 0) mine.add(about);
     }
     const commands = held.filter((h) => {
+      // What waits for a machine goes only to one that says it can do
+      // it (#13492 slice 2): a machine is never handed a kind it did
+      // not declare, nor one that is held for another machine by
+      // name. A machine that has not said what it can do (an older
+      // console, `this.machine` null) is handed what waits as before,
+      // bar what is held for a named machine: it cannot be shown to
+      // be that one.
+      if (this.machine !== null && !machineCanDo(this.machine, h.kind)) return false;
+      if (h.for !== undefined && h.for !== this.machine?.name) return false;
       const about = subjectOf(h.kind, h.args);
       return about === null || !mine.has(about);
     });
@@ -2672,6 +2706,32 @@ export class Edge {
             }
           }
         }
+        // Route it to a machine that says it can do it (#13492
+        // slice 2), when the machines that report have said what
+        // they can do. None declaring the kind: answered at once
+        // that none can, and not relayed blind. One declaring it but
+        // not connected (no address the edge can reach): what may be
+        // done late is kept for that machine by name instead of being
+        // sent toward it. A name already given to a machine keeps to
+        // that machine, as before. No machine having said what it can
+        // do (an older console): relayed as before.
+        const known = this.knownMachines();
+        if (!given && known.length > 0) {
+          const selection = selectMachine(known, kind);
+          if (selection.state === "none") {
+            return json(
+              {
+                error: `No connected machine says it can do ${kind}, so it was not sent anywhere.`,
+                noneCapable: true,
+                kind,
+              },
+              503,
+            );
+          }
+          if (selection.state === "held" && HOLDABLE.has(kind)) {
+            return this.keep({ id: id ?? undefined, kind, args, who: by }, "nowhere", undefined, selection.machine.name);
+          }
+        }
         // Written down as a machine's before it goes anywhere.
         if (id !== null && !given) {
           await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given", relays: 0 } satisfies Acted);
@@ -3019,6 +3079,7 @@ export class Edge {
     body: { id?: unknown; kind?: unknown; args?: unknown; who?: unknown } | null,
     went: "nowhere" | "unreached" | "unknown" = "nowhere",
     at?: string,
+    forMachine?: string,
   ): Promise<Response> {
     const kind = typeof body?.kind === "string" ? body.kind : "";
     const args = body?.args;
@@ -3048,6 +3109,12 @@ export class Edge {
     if (held.length >= HELD_MAX) {
       return json({ error: "The laptop cannot be reached, and too much is already waiting for it." }, 503);
     }
+    // Held for the machine selected for its kind, when one is known
+    // to declare it (#13492 slice 2): it is that machine's by name
+    // from here on, and no other machine is handed it.
+    const known = this.knownMachines();
+    const picked = known.length > 0 ? selectMachine(known, kind) : null;
+    const waitsFor = forMachine ?? (picked !== null && picked.state !== "none" ? picked.machine.name : undefined);
     const item: Held = {
       // The name it was relayed under, so the host can tell it has seen it.
       id: typeof body?.id === "string" && ACT_ID.test(body.id) ? body.id : crypto.randomUUID(),
@@ -3055,6 +3122,7 @@ export class Edge {
       args: args as Record<string, unknown>,
       who: String(body?.who ?? "owner"),
       at: at ?? new Date(this.now()).toISOString(),
+      ...(waitsFor !== undefined ? { for: waitsFor } : {}),
       ...(went === "unknown" ? {} : { unsent: true as const }),
     };
     insertHeld(held, item);
