@@ -27,7 +27,8 @@
 //! The export flavour carries no comments and no block IDs: block IDs
 //! are synthesized deterministically per page (`export-<page>-<n>`), so
 //! re-reading the same export yields the same identities. Export-only
-//! runs (no API inventory) are sub-slice 5 and are not handled here.
+//! runs (no API inventory) are the degraded mode in
+//! [`crate::export_only`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -86,6 +87,9 @@ pub enum MatchConfidence {
     TitlePathAmbiguous,
     /// No inventory object matches; the entry's content is not imported.
     Unmatched,
+    /// Export-only (degraded) run: the entry is its own inventory object,
+    /// keyed by the export (see [`crate::export_only`]).
+    ExportOnly,
 }
 
 /// One row of the export match ledger (§2.5, §2.6).
@@ -577,12 +581,19 @@ impl ExportApi {
         let mut children = BTreeMap::new();
         let mut visible = Vec::new();
         for entry in archive.entries() {
-            if entry.kind != ExportKind::Page || entry.csv_row.is_some() {
+            if entry.kind != ExportKind::Page {
                 continue;
             }
             let Some((page_id, _)) = path_to_id.get(&entry.rel_path) else {
                 continue;
             };
+            if entry.csv_row.is_some() {
+                // A row the export carries only as CSV fields has no
+                // body: its content is its (database-slice) properties.
+                children.entry(page_id.clone()).or_insert_with(Vec::new);
+                visible.push(page_id.clone());
+                continue;
+            }
             let text = archive.text(&entry.rel_path)?;
             let is_row = database_dirs.iter().any(|d| {
                 entry.rel_path.starts_with(d.as_str()) && !entry.rel_path[d.len()..].contains('/')

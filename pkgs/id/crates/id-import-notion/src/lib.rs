@@ -10,12 +10,14 @@
 //! Slice 3 remainder (row notes, property claims, relations) lives in
 //! [`rows`].
 //! Slice 4 export reader (§2.5: Markdown+CSV archive, match ledger) lives
-//! in [`export`].
+//! in [`export`]; export-only degraded mode (§2.5) lives in
+//! [`export_only`].
 
 pub mod comments;
 pub mod content;
 pub mod databases;
 pub mod export;
+pub mod export_only;
 pub mod rows;
 
 #[cfg(unix)]
@@ -632,6 +634,17 @@ pub struct Manifest {
     /// Additive: absent from older manifests, so it defaults to all false.
     #[serde(default)]
     pub acquisition: Acquisition,
+    /// Degraded mode only (design §2.5): page UUID -> the weaker identity
+    /// its `page_id_to_note_id` key carries. Every key of
+    /// `page_id_to_note_id` that appears here is a degraded key. Absent
+    /// from older manifests, so it defaults empty.
+    #[serde(default)]
+    pub degraded_identities: BTreeMap<String, crate::export_only::DegradedIdentity>,
+    /// Page UUID -> why its comments were not imported, for pages whose
+    /// `comments_coverage` is unavailable for a known reason (an
+    /// export-only run records `export-path`). Defaults empty.
+    #[serde(default)]
+    pub comments_uncovered_reasons: BTreeMap<String, String>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
@@ -711,6 +724,8 @@ impl Manifest {
             page_losses: BTreeMap::new(),
             export_matches: BTreeMap::new(),
             acquisition,
+            degraded_identities: BTreeMap::new(),
+            comments_uncovered_reasons: BTreeMap::new(),
         })
     }
 
