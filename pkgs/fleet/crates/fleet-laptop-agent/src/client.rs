@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -70,6 +71,32 @@ fn dispatch(
     got.map_err(CallFailure::Transport)
 }
 
+/// The line a call served by the SSH leg prints on stderr
+/// (developing-today/code#15419, design #10356 section 2): the leg
+/// ladder can fall from the daemon's HTTP API to SSH, and under the
+/// #13717 route-form matrix that is tier T3, so it says so in the same
+/// words the fleet route forms announce themselves with.
+pub(crate) const SSH_FORM_LINE: &str = "fleet: form T3 ssh/fleet";
+
+/// Whether this process has already printed [`SSH_FORM_LINE`]; a poll
+/// loop over the SSH leg says it once, not once per page.
+static SSH_FORM_ANNOUNCED: AtomicBool = AtomicBool::new(false);
+
+/// Print [`SSH_FORM_LINE`] to `w` the first time a call is answered
+/// by the SSH leg. Calls answered by an HTTP leg print nothing.
+pub(crate) fn note_form(
+    result: &Result<Answer, CallFailure>,
+    announced: &AtomicBool,
+    w: &mut dyn Write,
+) {
+    if let Ok(answer) = result
+        && answer.leg == "ssh"
+        && !announced.swap(true, Ordering::SeqCst)
+    {
+        let _ = writeln!(w, "{SSH_FORM_LINE}");
+    }
+}
+
 /// One request, logged as one trip. The trip id rides in the header and,
 /// for `POST /exec` and `POST /jobs`, in the body (the session proxy
 /// forwards bodies verbatim, so the body is the carrier that reaches the
@@ -119,6 +146,7 @@ fn send_ex(
     let started = Instant::now();
     let t_sent = crate::now_ms();
     let result = dispatch(ladder, req, Some(deadline));
+    note_form(&result, &SSH_FORM_ANNOUNCED, &mut std::io::stderr());
     let status = result.as_ref().ok().map(|a| a.reply.status);
     let transport = result.as_ref().ok().map(|a| crate::transport_name(a.leg));
     let t_received = result.as_ref().ok().and_then(|a| {
@@ -837,6 +865,99 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ladder::{Leg, LegError, Reply as LegReply};
+
+    /// A leg that always gives the same answer.
+    struct FixedLeg {
+        name: &'static str,
+        ok: bool,
+    }
+
+    impl Leg for FixedLeg {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn call(&self, _req: &Request) -> Result<LegReply, LegError> {
+            if self.ok {
+                Ok(LegReply {
+                    status: 200,
+                    body: b"{\"ok\": true}".to_vec(),
+                })
+            } else {
+                Err(LegError::Unsent("connect refused".into()))
+            }
+        }
+    }
+
+    fn ladder_of(legs: &[(&'static str, bool)]) -> Arc<Ladder> {
+        Arc::new(Ladder::new(
+            legs.iter()
+                .map(|&(name, ok)| Box::new(FixedLeg { name, ok }) as Box<dyn Leg>)
+                .collect(),
+        ))
+    }
+
+    fn health_req() -> Request {
+        Request {
+            method: "GET",
+            path: "/health".into(),
+            body: None,
+            trip: "t".into(),
+            idempotent: true,
+            direct_only: false,
+        }
+    }
+
+    #[test]
+    fn ssh_leg_serving_a_call_announces_form_t3_ssh_15419() {
+        let ladder = ladder_of(&[
+            ("broker", false),
+            ("cloudflare", false),
+            ("tailscale", false),
+            ("ssh", true),
+        ]);
+        let result = dispatch(&ladder, health_req(), Some(Duration::from_secs(5)));
+        assert_eq!(result.as_ref().map(|a| a.leg).ok(), Some("ssh"));
+        let announced = AtomicBool::new(false);
+        let mut err = Vec::new();
+        note_form(&result, &announced, &mut err);
+        let text = String::from_utf8(err).unwrap();
+        assert!(text.contains("form T3 ssh"), "{text}");
+        assert_eq!(text, format!("{SSH_FORM_LINE}\n"));
+        // A second call in the same process (a poll loop) says nothing more.
+        let mut again = Vec::new();
+        note_form(&result, &announced, &mut again);
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn http_leg_serving_a_call_prints_no_form_line_15419() {
+        for served_by in ["broker", "cloudflare", "tailscale"] {
+            let legs: Vec<(&'static str, bool)> = ["broker", "cloudflare", "tailscale", "ssh"]
+                .into_iter()
+                .map(|n| (n, n == served_by))
+                .collect();
+            let result = dispatch(
+                &ladder_of(&legs),
+                health_req(),
+                Some(Duration::from_secs(5)),
+            );
+            assert_eq!(result.as_ref().map(|a| a.leg).ok(), Some(served_by));
+            let mut err = Vec::new();
+            note_form(&result, &AtomicBool::new(false), &mut err);
+            assert!(err.is_empty(), "{served_by}");
+        }
+        // A failed call prints no form line either.
+        let failed = dispatch(
+            &ladder_of(&[("broker", false), ("ssh", false)]),
+            health_req(),
+            Some(Duration::from_secs(5)),
+        );
+        assert!(failed.is_err());
+        let mut err = Vec::new();
+        note_form(&failed, &AtomicBool::new(false), &mut err);
+        assert!(err.is_empty());
+    }
 
     #[test]
     fn session_row_maps_a_daemon_job_15420() {
