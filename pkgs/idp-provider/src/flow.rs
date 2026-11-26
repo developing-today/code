@@ -112,7 +112,20 @@ impl FlowState {
     /// the enrolled account in the identity store (#15249).
     /// `None` for an id this provider has never heard of — token
     /// issuance and userinfo fail closed on it.
+    ///
+    /// A merged account's id reads through its `merged_into` pointer
+    /// (#13975): an earlier token's `sub` naming a merged secondary
+    /// resolves to the primary, and a store error fails closed. The
+    /// config account is never a merge secondary, so its own id is
+    /// answered from config without the store.
     pub fn account_by_id(&self, account_id: &str) -> Option<ResolvedAccount> {
+        let resolved;
+        let account_id = if account_id == self.registry.account.account_id {
+            account_id
+        } else {
+            resolved = self.identities.resolve_account_id(account_id).ok()?;
+            resolved.as_str()
+        };
         if account_id == self.registry.account.account_id {
             return Some(ResolvedAccount {
                 account_id: account_id.to_string(),
@@ -681,9 +694,11 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
     };
     let iat = now_unix();
     let exp = iat + TOKEN_TTL_SECS;
+    // A code issued just before a merge (#13975) names the secondary;
+    // tokens issued after the merge carry the account it reads as.
     let mut id_claims = serde_json::json!({
         "iss": flow.issuer,
-        "sub": record.account_id,
+        "sub": account.account_id,
         "aud": client_id,
         "iat": iat,
         "exp": exp,
@@ -800,11 +815,18 @@ pub async fn userinfo(State(st): State<crate::AppState>, headers: HeaderMap) -> 
             );
         }
     };
-    Json(serde_json::json!({
-        "sub": account.account_id,
+    // OIDC requires userinfo's `sub` to equal the token's. A token
+    // issued before a merge (#13975) keeps naming the secondary, so
+    // `sub` stays as issued and `merged_into` names the account it
+    // now reads as; the account fields are the primary's.
+    let mut info = serde_json::json!({
+        "sub": subject,
         "name": account.display_name,
         "preferred_username": claims["preferred_username"],
         "roles": account.roles,
-    }))
-    .into_response()
+    });
+    if account.account_id != subject {
+        info["merged_into"] = serde_json::Value::String(account.account_id);
+    }
+    Json(info).into_response()
 }
