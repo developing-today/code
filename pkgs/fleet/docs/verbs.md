@@ -488,6 +488,17 @@ exit with the command's exit code (default command timeout
 600 s). `<ref>` is a handle or the portable `OWNER/REPO#RUN_ID`
 form.
 
+`fleet actions exec once [--repo OWNER/REPO] [--target-repo
+OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
+[--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
+<command...>` — the one-shot sugar over start+run: find a live
+session for `--repo` in the local store or start one with the
+start path (same #13765 claim, same handoff — new sessions take
+`--lease`, default 1800 s, where start requires `--timeout` by
+construction), run one command, exit with its code (default
+command `--timeout` 600 s). The session stays open for the next
+`once` unless `--close`.
+
 `fleet actions exec attach <ref>` / `fleet actions exec watch
 <ref>` — stream the session's IO after handoff (watch also
 reports run/session status). `fleet actions exec renew <ref>

@@ -28,7 +28,7 @@ for(const type of ['private','shared']){
 // A non-owner member of a private store is still a nonmember of it.
 const absent=crypto.randomUUID();
 const routes=[
- ['GET',''],['GET','/policy'],['GET','/access'],['GET','/bogus'],
+ ['GET',''],['GET','/policy'],['GET','/access'],['GET','/export'],['GET','/bogus'],
  ...['events','steering','variants','policy','history'].map(s=>['POST','/'+s,{commandId:crypto.randomUUID(),expectedVersion:0}]),
  ['POST','/settings',{name:'x',type:'shared'}],['POST','/members/carol',{role:'viewer'}],['POST','/members/dave',{role:'remove'}],
  ['POST','/invites',{email:'bob@example.com',role:'viewer'}],['POST','/invites/'+crypto.randomUUID()+'/revoke',{}],

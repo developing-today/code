@@ -92,13 +92,30 @@ struct Acked {
 }
 
 fn parse_ack(line: &str, acked: &mut Vec<(String, Acked)>) {
-    if let Some(rest) = line.strip_prefix("acked ") {
-        let mut fields = rest.split(' ');
-        let key = fields.next().expect("key").to_owned();
-        let version = fields.next().expect("version").parse().expect("version");
-        let round = fields.next().expect("round").parse().expect("round");
-        acked.push((key, Acked { version, round }));
-    }
+    // libtest writes the child test's progress prefix to stdout before the
+    // test body starts. Since the child writes acknowledgements to that same
+    // stream, its first line can be `test crash_child_writer ... acked ...`
+    // instead of starting with `acked`. Keep the acknowledgement record as
+    // the parsing anchor so that a committed write is not mistaken for an
+    // unacknowledged one when the parent kills the child.
+    let Some((_, rest)) = line.split_once("acked ") else {
+        return;
+    };
+    let mut fields = rest.split_whitespace();
+    let key = fields.next().expect("key").to_owned();
+    let version = fields.next().expect("version").parse().expect("version");
+    let round = fields.next().expect("round").parse().expect("round");
+    acked.push((key, Acked { version, round }));
+}
+
+#[test]
+fn parse_ack_accepts_libtest_progress_prefix() {
+    let mut acked = Vec::new();
+    parse_ack("test crash_child_writer ... acked k2 7 14", &mut acked);
+    assert_eq!(acked.len(), 1, "the prefixed acknowledgement is counted");
+    assert_eq!(acked[0].0, "k2");
+    assert_eq!(acked[0].1.version, 7);
+    assert_eq!(acked[0].1.round, 14);
 }
 
 /// Run the child until it has acknowledged `writes` sets, then SIGKILL it.

@@ -3,8 +3,9 @@
 # (code#8171: every pm-stack app is a Nix derivation; the units no
 # longer `bun run` out of the checkout).
 #
-# One package, four entry points: the server plus the script entry
-# points the timer units run (quota gatherer, digest generator). The
+# One package, several entry points: the server plus the script entry
+# points the timer units run (quota gatherer, digest generator, and
+# the watchdog heartbeat checker, #14388). The
 # fleet-feed collector script is deliberately NOT wrapped here: it
 # derives repo-root paths from its own file location (the checkout's
 # .opencode/opencode.jsonc and a checkout-drift self-inspection), so
@@ -115,6 +116,8 @@ stdenvNoCC.mkDerivation {
       --add-flags "run $out/libexec/pm-aggregator/scripts/export-turso-stores.ts"
     makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-quota-weekly-review \
       --add-flags "run $out/libexec/pm-aggregator/scripts/quota-weekly-review.ts"
+    makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-check-watchdog-heartbeat \
+      --add-flags "run $out/libexec/pm-aggregator/scripts/check-watchdog-heartbeat.ts"
     runHook postInstall
   '';
 

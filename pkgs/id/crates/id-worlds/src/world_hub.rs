@@ -907,6 +907,53 @@ impl WorldHub {
         }
     }
 
+    /// The service of `name` when it is open in this hub, without
+    /// opening it.
+    #[must_use]
+    pub fn open_service(&self, name: &str) -> Option<WorldService> {
+        if !self.pin_allows(name) {
+            return None;
+        }
+        self.inner
+            .slots
+            .lock()
+            .ok()?
+            .get(name)
+            .and_then(|slot| slot.service.get().cloned())
+    }
+
+    /// Shut `name` down now, for an operator's stop (#10697): its slot
+    /// leaves the hub at once, so the next session reopens it from
+    /// storage, and sessions still holding it see the world drained.
+    /// Unlike an idle close the opener is not told: the caller records
+    /// the stop. Returns whether `name` was open; a world still opening
+    /// is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the world does not shut down cleanly.
+    pub async fn close(&self, name: &str) -> Result<bool> {
+        let service = {
+            let Ok(mut slots) = self.inner.slots.lock() else {
+                return Ok(false);
+            };
+            if slots
+                .get(name)
+                .is_none_or(|slot| slot.service.get().is_none())
+            {
+                return Ok(false);
+            }
+            slots
+                .remove(name)
+                .and_then(|slot| slot.service.get().cloned())
+        };
+        let Some(service) = service else {
+            return Ok(false);
+        };
+        service.world().shutdown().await?;
+        Ok(true)
+    }
+
     /// Shut every open world down (process exit).
     pub async fn shutdown_all(&self) {
         let services: Vec<WorldService> = self
