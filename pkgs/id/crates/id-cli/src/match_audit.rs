@@ -9,6 +9,8 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use p2panda_core::{Hash, SigningKey as IdSigningKey};
 use serde::{Deserialize, Serialize};
 
+pub mod attestation;
+
 #[cfg(feature = "sandbox")]
 use id_worlds::sandbox::{Sandbox, SandboxLimits};
 #[cfg(feature = "world")]
