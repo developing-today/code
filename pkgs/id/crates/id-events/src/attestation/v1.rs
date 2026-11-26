@@ -20,6 +20,9 @@ pub mod receipt;
 /// The v1 reducer: claim, concession, witness and dispute states with
 /// evidence-dependency and fork recomputation.
 pub mod reducer;
+/// Registry handoff: report standings and the opt-in `audit-resolved`
+/// basis (#2039 phase 6).
+pub mod registry;
 
 /// Evidence a named witness considered when issuing a decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +227,8 @@ pub enum V1SignError {
     WrongLogic,
     NotReceiptIssuer,
     InvalidTerms(receipt::TermsError),
+    InvalidAudit(audit::AuditReportError),
+    WrongRole,
 }
 
 impl From<SignError> for V1SignError {
@@ -263,6 +268,11 @@ impl std::fmt::Display for V1SignError {
                 "only the receipt issuer named in genesis may sign receipts and closures"
             ),
             Self::InvalidTerms(error) => write!(f, "unusable witness terms: {error}"),
+            Self::InvalidAudit(error) => write!(f, "audit report breaks the v1 rules: {error}"),
+            Self::WrongRole => write!(
+                f,
+                "the signer cannot hold the auditor role the report claims"
+            ),
         }
     }
 }

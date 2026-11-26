@@ -12,7 +12,8 @@
 //!   from the right author count: genesis and claims from the two seated
 //!   players, decisions from the genesis-named witness on the pinned logic
 //!   (no witness-shopping), objections from a seated player naming an object
-//!   of this match, audit reports that pass the frozen honest-scope rules.
+//!   of this match, audit reports that pass the frozen honest-scope rules
+//!   from a key that fits the claimed auditor role (never a seated player).
 //!   Objects that name this agreement but fail admission are reported in
 //!   [`Reduction::ignored`].
 //! - **Evidence closure.** Every admitted object depends on its own chain
@@ -522,7 +523,11 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
         if object.body.agreement != agreement_hash {
             continue;
         }
-        if object.body.validate().is_ok() && object.body.logic_hash == agreement.logic_hash {
+        if object.body.validate().is_ok()
+            && object.body.logic_hash == agreement.logic_hash
+            && object.body.match_id == agreement.game_id
+            && object.body.role.fits(agreement, &object.author)
+        {
             audits.push(object);
         } else {
             ignored.push(object.id);
