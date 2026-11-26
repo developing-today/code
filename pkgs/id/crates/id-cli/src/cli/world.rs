@@ -1134,6 +1134,26 @@ pub enum WorldCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export a durable world on disk as a template bundle (#8282).
+    ///
+    /// Writes the template as JSON: the active program as a bundle
+    /// reference and the `kv` entries named with `--keep-state`.
+    /// Capabilities, author keys and grants are stripped and only
+    /// counted. A program that was not installed from a bundle is
+    /// refused. Local only; no host is contacted.
+    TemplateExport {
+        /// Directory of the world to export (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// File to write the template to; it must not exist yet.
+        out: PathBuf,
+        /// A `kv` key to carry as template state (repeatable).
+        #[arg(long = "keep-state", value_name = "KEY")]
+        keep_state: Vec<String>,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a durable world's provenance from its journal: its id and,
     /// for a fork, the world it was forked from, the module hash at the
     /// fork point, and whether it was marked a template (F12.2). Local
