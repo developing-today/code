@@ -16,6 +16,9 @@
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
 //!   the replaying supervisor over one data root.
+//! - [`host_drill`]: one-shot restore drills of a hosted world (#13744):
+//!   export, restore into scratch, replay-equality check, and the
+//!   per-attempt drill record.
 //! - [`creator_announcements`]: scheduled creator announcements — the
 //!   durable local schedule and its evaluator, which fires late after
 //!   downtime and records the lateness (#13743).
@@ -73,6 +76,7 @@ pub mod creator_org_views;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
+pub mod host_drill;
 #[cfg(unix)]
 pub mod host_control;
 pub mod input_framing;

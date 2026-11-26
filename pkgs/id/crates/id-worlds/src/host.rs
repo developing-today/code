@@ -448,7 +448,7 @@ impl HostFile {
 }
 
 /// Validate a world name before it becomes a directory name.
-fn validate_name(name: &str) -> Result<()> {
+pub(crate) fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > 128 {
         bail!("world name must be 1..=128 bytes");
     }

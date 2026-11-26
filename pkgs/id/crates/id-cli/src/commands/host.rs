@@ -132,6 +132,12 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             }
             Ok(())
         }
+        HostCommand::Drill {
+            root,
+            world,
+            scratch,
+            json,
+        } => drill_act(&root, &world, scratch, json).await,
         HostCommand::Inspect { root, world, json } => {
             let file = HostFile::read_or_rebuild(&root)
                 .with_context(|| format!("reading data root {}", root.display()))?;
@@ -200,6 +206,63 @@ async fn operator_act(
     _json: bool,
 ) -> Result<()> {
     anyhow::bail!("reaching a running host needs its Unix control socket")
+}
+
+/// Run one restore drill of `world` in `root`, record it, and print it.
+async fn drill_act(
+    root: &std::path::Path,
+    world: &str,
+    scratch: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    use id_worlds::host_drill::{DrillOutcome, append_drill_record, run_drill};
+    anyhow::ensure!(root.is_dir(), "no data root at {}", root.display());
+    let key = host_key(root).await?;
+    let (temp, dir) = match scratch {
+        Some(dir) => (None, dir),
+        None => {
+            let temp = tempfile::TempDir::new().context("creating drill scratch space")?;
+            let dir = temp.path().join("drill");
+            (Some(temp), dir)
+        }
+    };
+    let record = run_drill(root, world, &key, &dir).await;
+    drop(temp);
+    append_drill_record(root, &record)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&record)?);
+    } else {
+        println!("{}", drill_line(&record));
+    }
+    if record.outcome == DrillOutcome::Fail {
+        anyhow::bail!("restore drill of {world:?} failed");
+    }
+    Ok(())
+}
+
+/// `drill <world> pass|fail head=<seq> restored=<seq> entries=<n>[: reason]`.
+fn drill_line(record: &id_worlds::host_drill::DrillRecord) -> String {
+    let seq = |head: &Option<id_worlds::host_drill::DrillHead>| {
+        head.as_ref()
+            .map_or_else(|| "-".to_owned(), |head| head.sequence.to_string())
+    };
+    let outcome = match record.outcome {
+        id_worlds::host_drill::DrillOutcome::Pass => "pass",
+        id_worlds::host_drill::DrillOutcome::Fail => "fail",
+    };
+    let mut line = format!(
+        "drill {} {outcome} head={} restored={} entries={}",
+        record.world,
+        seq(&record.source_head),
+        seq(&record.restored_head),
+        record
+            .export_entries
+            .map_or_else(|| "-".to_owned(), |entries| entries.to_string()),
+    );
+    if let Some(reason) = &record.reason {
+        let _ = write!(line, ": {reason}");
+    }
+    line
 }
 
 /// The host's export signing key: `host.key` in the data root, created
@@ -681,6 +744,35 @@ mod tests {
         assert_eq!(
             export_line("exported", &body),
             "exported w entries=4 source=ab /x/w.export\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_drill_records_a_failed_attempt_and_exits_non_zero() {
+        let root = tempfile::TempDir::new().unwrap();
+        let failed = drill_act(root.path(), "missing", None, false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(failed.contains("failed"), "{failed}");
+        let records = id_worlds::host_drill::read_drill_records(root.path()).unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].world, "missing");
+        assert_eq!(
+            records[0].outcome,
+            id_worlds::host_drill::DrillOutcome::Fail
+        );
+        let line = drill_line(&records[0]);
+        assert!(
+            line.starts_with("drill missing fail head=- restored=- entries=-: "),
+            "{line}"
+        );
+        assert!(
+            drill_act(&root.path().join("nope"), "w", None, false)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no data root")
         );
     }
 

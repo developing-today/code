@@ -174,6 +174,27 @@ pub enum HostCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Run a one-shot restore drill of a world: copy it out of the data
+    /// root, replay the copy, export it signed with `host.key`, restore
+    /// the export into a fresh scratch world and replay that, then check
+    /// the restored journal is byte-identical and replays to the same
+    /// head. The world in the data root is only read, so a drill is safe
+    /// while a host serves it. Every attempt, pass or fail, is appended
+    /// to `restore-drills.jsonl` in the data root; a failed drill exits
+    /// non-zero.
+    Drill {
+        /// The data root.
+        root: PathBuf,
+        /// The world to drill.
+        world: String,
+        /// Work in this new directory and keep it for inspection,
+        /// instead of a temporary directory removed afterwards.
+        #[arg(long)]
+        scratch: Option<PathBuf>,
+        /// Print the drill record as JSON instead of a line.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one world's record without opening it: lifecycle state and
     /// every recorded transition, journal entries, version and torn
     /// tail, module count, storage bytes, and what the last restart

@@ -112,6 +112,14 @@ id host start hosts/b alpha
 
 `export` talks to the running host through its control socket. `import` uses the socket when a host is running on the target root and writes the root directly when none is. The restored world carries its journal, its directory and its module files, and its journal bytes are identical to the source's.
 
+### Checking a world restores: restore drills
+
+`id host drill <ROOT> <WORLD>` proves that one world's export restores, without touching the world. It copies the world directory out of `<ROOT>` into scratch space, replays the copy, exports it signed with `<ROOT>/host.key`, restores the export into a fresh scratch world and replays that. The drill passes when the restored journal is byte-identical to the exported one and both replays land on the same head (sequence, journal entries, active module and program state). The world in `<ROOT>` is only read, so a drill is safe while a host serves it; the world does not have to be live.
+
+Every attempt, pass or fail, is appended as one JSON line to `<ROOT>/restore-drills.jsonl`: when it ran, the world, the key that signed the export, the source head, the restored head and the outcome, with the reason when it failed. A failed drill exits non-zero. Scratch space is a temporary directory removed afterwards; `--scratch <DIR>` names a new directory to keep for inspection instead, and `--json` prints the record.
+
+Drills run when the operator runs them. A schedule and an alarm on a missing success are not built yet (#13744).
+
 ## The hosted edition
 
 There is nothing for an operator to back up in the hosted edition today, because there is no deployed hosted service: the Worker package is a local-only scaffold (see [Running a node: serve, worlds and the hosted edition](services.md)). Inside that scaffold, a user's data would live in one `UserDO` Durable Object (SQLite tables at schema version `3`) with blob bytes in the R2 binding `BLOBS`, and the `UserDO` exposes a `GET /v1/export` route that returns the full key-value and blob index export. **Unverified as a restore path:** the surveys record the export route and no corresponding import or restore route in the Worker. Do not describe hosted export as hosted backup and restore.

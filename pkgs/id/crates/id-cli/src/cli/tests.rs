@@ -3562,6 +3562,20 @@ fn test_cli_parse_host_key_export_import() {
         _ => panic!("Expected host import"),
     }
     assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
+    let cli = Cli::parse_from(["id", "host", "drill", "/data", "w", "--scratch", "/tmp/d"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Drill {
+            world,
+            scratch,
+            json,
+            ..
+        })) => {
+            assert_eq!(world, "w");
+            assert_eq!(scratch, Some(std::path::PathBuf::from("/tmp/d")));
+            assert!(!json);
+        }
+        _ => panic!("Expected host drill"),
+    }
 }
 
 const HOSTED_BINDING: &str = "0123456789abcdef0123456789abcdef";
