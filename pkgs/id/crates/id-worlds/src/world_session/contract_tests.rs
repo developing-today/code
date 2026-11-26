@@ -198,6 +198,9 @@ async fn query_and_upload_sessions_conform() {
         json!({"type": "caps", "capability": cap}),
         json!({"type": "set_caps_ceiling", "admin_token": "admin", "ceiling": ["time.now"]}),
         json!({"type": "execution_profile_info", "capability": cap}),
+        json!({"type": "presentation_policy_info"}),
+        json!({"type": "set_presentation_policy", "admin_token": "admin", "policy": {}}),
+        json!({"type": "set_presentation_policy", "admin_token": "wrong", "policy": {}}),
         json!({"type": "invite", "admin_token": "wrong", "display_name": "eve"}),
     ] {
         let mut peer = CheckedPeer::connect(svc.clone());

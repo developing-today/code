@@ -42,14 +42,17 @@ Implements the fleet architecture spec v0.3
   anchors), acknowledge (binds version to content hash),
   activate (refused without a matching ack; the displaced
   version is kept as last-known-good), retire.
-- `fleet cert key generate|inspect|import|export` — standalone key
+- `fleet cert key generate|inspect|import|export|rotate` — standalone key
   ceremonies (§6.1). `generate` and `import` write PKCS#8 DER to a
   new owner-only file and never replace one; `import` takes PKCS#8
   DER or a PEM `PRIVATE KEY` block and refuses a key that does not
   load under the named `--algorithm`. `export` writes the public
   half only, as SubjectPublicKeyInfo PEM (default) or DER
   (`--format der`); private-key export stays behind the #9155
-  custody gates.
+  custody gates. `rotate` checks that the `--in` key loads under
+  `--algorithm`, then writes a fresh key of that algorithm to a new
+  owner-only `--out` file and reports both public-key fingerprints;
+  the old key is kept, and retiring it is a separate step.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - `fleet cert inventory list|show|search|audit` — read-only

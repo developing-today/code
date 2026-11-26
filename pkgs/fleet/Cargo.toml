@@ -28,6 +28,7 @@ members = [
   "crates/fleet-laptop-agent",
   "crates/fleet-search",
   "crates/fleet-bridge",
+  "crates/fleet-transport",
   "crates/fleet-agent",
   "crates/fleet-kv",
   "crates/fleet-cert",
@@ -55,6 +56,7 @@ fleet-proxy = { path = "crates/fleet-proxy" }
 fleet-laptop-agent = { path = "crates/fleet-laptop-agent" }
 fleet-search = { path = "crates/fleet-search", default-features = false }
 fleet-bridge = { path = "crates/fleet-bridge" }
+fleet-transport = { path = "crates/fleet-transport" }
 fleet-agent = { path = "crates/fleet-agent" }
 fleet-cert = { path = "crates/fleet-cert" }
 fleet-orgs = { path = "crates/fleet-orgs" }

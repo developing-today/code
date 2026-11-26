@@ -14,7 +14,9 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
+)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import import_to_turso as imp
 import restore_drill

@@ -61,7 +61,7 @@ fn a_minimal_entry_takes_every_default() {
     let entry = &resolved.peers[0];
     assert_eq!(entry.peer_id, "p1");
     assert_eq!(entry.class, PeerClass::Unknown);
-    assert!(entry.operations.is_empty());
+    assert_eq!(entry.operations, [] as [PeerOperation; 0]);
     assert!(!entry.relay_granted);
     assert_eq!(entry.scope, None);
     assert_eq!(entry.policy_version, 3);
@@ -183,7 +183,11 @@ fn identity_and_shape_errors_fail_closed() {
         json!({ "peer_id": "a", "policy_version": 1, "class": "trusted" }),
         json!({ "peer_id": "a", "policy_version": 1, "operations": ["sync.write"] }),
         json!({ "peer_id": "a", "policy_version": -1 }),
-        json!({ "peer_id": "a", "policy_version": 1, "overrides": {} }),
+        json!({
+            "peer_id": "a",
+            "policy_version": 1,
+            "overrides": { "sync.send": { "class": "fully_trusted" } }
+        }),
         json!({ "peer_id": "a", "policy_version": 1, "trust_everything": true }),
     ] {
         assert!(

@@ -775,6 +775,7 @@ pub fn sign_rotation(
 
             chat: None,
             anchor: None,
+            thread: None,
         },
     )?)
 }
@@ -921,7 +922,7 @@ mod tests {
         assert_eq!(chain.active_generation(), 1);
         assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));
         assert_eq!(chain.key_for_generation(0), Some(&issuer_id(&gen0_key())));
-        assert!(chain.recoveries.is_empty());
+        assert_eq!(chain.recoveries, [] as [RecoveryStep; 0]);
     }
 
     #[test]
@@ -1233,7 +1234,7 @@ mod tests {
             &[(issuer_id(&gen0_key()), event(1), recovery)],
         );
         assert_eq!(chain.active_generation(), 0);
-        assert!(chain.recoveries.is_empty());
+        assert_eq!(chain.recoveries, [] as [RecoveryStep; 0]);
     }
 
     #[test]
@@ -1275,7 +1276,7 @@ mod tests {
             &[(issuer_id(&recovery_key()), event(1), recovery)],
         );
         assert_eq!(chain.active_generation(), 0);
-        assert!(chain.recoveries.is_empty());
+        assert_eq!(chain.recoveries, [] as [RecoveryStep; 0]);
         assert_eq!(chain.status, ChainStatus::Settled);
     }
 
@@ -1384,7 +1385,7 @@ mod tests {
         );
         assert_eq!(chain.active_generation(), 0);
         assert!(matches!(chain.status, ChainStatus::Conflicted { .. }));
-        assert!(chain.voided_transitions.is_empty());
+        assert_eq!(chain.voided_transitions, [] as [Hash; 0]);
     }
 
     #[test]

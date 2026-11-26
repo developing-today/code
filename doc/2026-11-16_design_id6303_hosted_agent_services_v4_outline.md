@@ -153,7 +153,7 @@ job.
   stops heartbeating loses the presence at lease expiry, and
   the agent renders absent (below). The hire remains in force
   until its own term or revocation; the agent's outstanding
-  claims are *not* cancelled by presence expiry — they run to
+  claims are _not_ cancelled by presence expiry — they run to
   their own v3 §2.2 claim leases and expire under them, so a
   dead host strands nothing. What presence expiry does block is
   new action: an agent with no live presence lease in a world
@@ -194,19 +194,19 @@ job.
      announced for the hire;
   6. **schedule** — a scheduled listing's availability window
      opens.
-  Nothing else wakes an agent: not heartbeats, not events in
-  worlds it is not hired into, not host-internal events. Wake
-  delivery is charged against the same per-role event-rate
-  budgets as other world events (v3 §2.5): a burst coalesces
-  into a single digest wake carrying the event references, and
-  a wake suppressed by budget is recorded with its reason —
-  contention is data (v3 §2.2), never an invisible drop. A wake
-  is an audited world event naming the triggering events and
-  the delivery outcome (delivered, coalesced, suppressed); it
-  grants no presence by itself — the woken agent acquires a
-  presence lease under the rules above before it may act. An
-  agent in drain (below) receives no claim-offer,
-  attachment-change, or handoff-offer wakes.
+     Nothing else wakes an agent: not heartbeats, not events in
+     worlds it is not hired into, not host-internal events. Wake
+     delivery is charged against the same per-role event-rate
+     budgets as other world events (v3 §2.5): a burst coalesces
+     into a single digest wake carrying the event references, and
+     a wake suppressed by budget is recorded with its reason —
+     contention is data (v3 §2.2), never an invisible drop. A wake
+     is an audited world event naming the triggering events and
+     the delivery outcome (delivered, coalesced, suppressed); it
+     grants no presence by itself — the woken agent acquires a
+     presence lease under the rules above before it may act. An
+     agent in drain (below) receives no claim-offer,
+     attachment-change, or handoff-offer wakes.
 - **Asleep is not absent.** Owners and visitors render a hired
   agent in exactly one of three presence states, through the
   `id-shell` population rendering (§7), with no contract change:
@@ -231,14 +231,14 @@ job.
   appended at announcement naming the hire, the trigger, the
   actor who caused it, the announcement time, and the drain
   deadline.
-  - *announced:* the agent stops taking new claims immediately
+  - _announced:_ the agent stops taking new claims immediately
     — the world refuses new claims under a draining hire and
     audits the refusal — and receives no new wakes except
     hire-lifecycle. Its presence lease keeps renewing for the
     drain's duration, and its in-flight claims stay held: a
     drain never reassigns a held item, and v3 §2.2's atomicity
     means no item is ever double-held.
-  - *handing-off:* entered on the agent's first handoff action,
+  - _handing-off:_ entered on the agent's first handoff action,
     or automatically at announcement if it holds no claims.
     For each in-flight claim the agent must do exactly one of:
     complete and close it under the ordinary role rules;
@@ -249,38 +249,38 @@ job.
     are completed as ordinary world actions or abandoned —
     v3 §2.3 permits no unrecorded partial edit, in drain or
     out of it.
-  - *detached:* entered when no in-flight claims remain. The
+  - _detached:_ entered when no in-flight claims remain. The
     delegation ends, the presence lease is released, and the
     hire record closes with the drain outcome — clean,
     completed-with-expiries, or forced (below). Detached is
     terminal for the hire; returning is a new hire — except
     upgrade-by-replace (below), where detachment is of the old
     program instance and the hire itself persists.
-  The **drain deadline** is 15 minutes from announcement by
-  default; world configuration may set it between 1 minute and
-  24 hours. A handoff for a claim is due by the earlier of the
-  drain deadline and that claim's own lease expiry. A drain
-  with no state-changing progress event — no claim completed,
-  released, or expired, and no live heartbeat — for a **stall
-  window** (default 5 minutes, world-configurable up to the
-  deadline) is a **stalled drain**: the world records the
-  stall, surfaces it to the world owner and the operator
-  (§2.5), and may extend the deadline once, by at most the
-  original deadline, if the agent is heartbeating. At the
-  deadline an unfinished drain force-completes: remaining
-  claims expire immediately rather than at their natural lease
-  expiry, the delegation is revoked, and the hire detaches
-  with outcome forced. Whether force-completion at the
-  deadline is automatic or requires an owner action is world
-  configuration; the default is automatic, so a stalled drain
-  cannot hold a hire open forever. The stall and its outcome
-  enter the listing's history (§2.1) as evidence. A host kill
-  without drain remains the failure case the claim leases
-  already cover; drain is the contract that makes it the rare
-  case.
+    The **drain deadline** is 15 minutes from announcement by
+    default; world configuration may set it between 1 minute and
+    24 hours. A handoff for a claim is due by the earlier of the
+    drain deadline and that claim's own lease expiry. A drain
+    with no state-changing progress event — no claim completed,
+    released, or expired, and no live heartbeat — for a **stall
+    window** (default 5 minutes, world-configurable up to the
+    deadline) is a **stalled drain**: the world records the
+    stall, surfaces it to the world owner and the operator
+    (§2.5), and may extend the deadline once, by at most the
+    original deadline, if the agent is heartbeating. At the
+    deadline an unfinished drain force-completes: remaining
+    claims expire immediately rather than at their natural lease
+    expiry, the delegation is revoked, and the hire detaches
+    with outcome forced. Whether force-completion at the
+    deadline is automatic or requires an owner action is world
+    configuration; the default is automatic, so a stalled drain
+    cannot hold a hire open forever. The stall and its outcome
+    enter the listing's history (§2.1) as evidence. A host kill
+    without drain remains the failure case the claim leases
+    already cover; drain is the contract that makes it the rare
+    case.
 - **Upgrades are drain-and-replace under the same hire.** A new
   program version takes over by the drain above with trigger
-  *upgrade*, naming the target program version: the old
+  _upgrade_, naming the target program version: the old
   instance drains (its handing-off also transfers context the
   only way anything moves here — through world state, above
   all its handoff notes), detaches at the instance level, and
@@ -391,7 +391,7 @@ job.
    surfaces the stall, and force-completion at the deadline —
    remaining claims expire, the delegation is revoked, the
    hire detaches as forced. Upgrade is the same drain with
-   trigger *upgrade*, ending in drain-and-replace under the
+   trigger _upgrade_, ending in drain-and-replace under the
    persisting hire, with the exact acting program version
    recorded in the audit for every action.
 5. **Sealing boundary** — which agent state is sealed, the key

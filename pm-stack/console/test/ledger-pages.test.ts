@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createD1LedgerQuery,
   createLedgerQuery,
   ledgerPage,
   rollupNotificationSends,
+  type LedgerD1Database,
   type LedgerPagesIo,
   type NotificationSendRow,
 } from "../edge/src/ledger-pages.ts";
@@ -92,15 +94,57 @@ describe("alerts surface", () => {
 });
 
 const SENDS: NotificationSendRow[] = [
-  { class: "incident", object_ref: "inc-1", incident_id: "inc-1", outcome: "sent", created_at: "2026-11-24T12:00:00Z", acted_on_at: "2026-11-24T13:00:00Z" },
-  { class: "incident", object_ref: "inc-2", incident_id: "inc-2", outcome: "sent", created_at: "2026-11-24T12:00:00Z", acted_on_at: null },
-  { class: "quota-wall", object_ref: "pool-1", incident_id: null, outcome: "sent", created_at: "2026-11-20T12:00:00Z", acted_on_at: "2026-11-22T12:00:00Z" },
-  { class: "incident", object_ref: "inc-3", incident_id: "inc-3", outcome: "gone", created_at: "2026-11-24T12:00:00Z", acted_on_at: null },
+  {
+    class: "incident",
+    object_ref: "inc-1",
+    incident_id: "inc-1",
+    outcome: "sent",
+    created_at: "2026-11-24T12:00:00Z",
+    acted_on_at: "2026-11-24T13:00:00Z",
+  },
+  {
+    class: "incident",
+    object_ref: "inc-2",
+    incident_id: "inc-2",
+    outcome: "sent",
+    created_at: "2026-11-24T12:00:00Z",
+    acted_on_at: null,
+  },
+  {
+    class: "quota-wall",
+    object_ref: "pool-1",
+    incident_id: null,
+    outcome: "sent",
+    created_at: "2026-11-20T12:00:00Z",
+    acted_on_at: "2026-11-22T12:00:00Z",
+  },
+  {
+    class: "incident",
+    object_ref: "inc-3",
+    incident_id: "inc-3",
+    outcome: "gone",
+    created_at: "2026-11-24T12:00:00Z",
+    acted_on_at: null,
+  },
   { class: "incident", object_ref: "inc-4", incident_id: "inc-4", outcome: "sent", acted_on_at: null },
-  { class: "incident", object_ref: "inc-5", incident_id: "inc-5", outcome: "sent", created_at: "2026-10-01T00:00:00Z", acted_on_at: null },
+  {
+    class: "incident",
+    object_ref: "inc-5",
+    incident_id: "inc-5",
+    outcome: "sent",
+    created_at: "2026-10-01T00:00:00Z",
+    acted_on_at: null,
+  },
   // The live Turso table's defaulted send-time column is `at`: a row
   // carrying only `at` is dated (2026-11-25 IW-339 probe).
-  { class: "incident", object_ref: "inc-6", incident_id: "inc-6", outcome: "sent", at: "2026-11-24T12:00:00Z", acted_on_at: "2026-11-24T12:30:00Z" },
+  {
+    class: "incident",
+    object_ref: "inc-6",
+    incident_id: "inc-6",
+    outcome: "sent",
+    at: "2026-11-24T12:00:00Z",
+    acted_on_at: "2026-11-24T12:30:00Z",
+  },
 ];
 
 describe("notifications roll-up (ported derivation)", () => {
@@ -188,9 +232,7 @@ describe("routing", () => {
   test("other paths and non-GET methods are not this module's", async () => {
     const io = ioWith({});
     expect(await ledgerPage(new Request("https://pm.security.cab/decisions"), io)).toBeNull();
-    expect(
-      await ledgerPage(new Request("https://pm.security.cab/alerts", { method: "POST" }), io),
-    ).toBeNull();
+    expect(await ledgerPage(new Request("https://pm.security.cab/alerts", { method: "POST" }), io)).toBeNull();
   });
 });
 
@@ -211,7 +253,7 @@ describe("ledger query client", () => {
                   rows: [
                     [
                       { type: "integer", value: "42" },
-                      { type: "text", value: "{\"via\":\"sentinel\"}" },
+                      { type: "text", value: '{"via":"sentinel"}' },
                     ],
                   ],
                 },
@@ -236,5 +278,78 @@ describe("ledger query client", () => {
   test("a missing credential is an error, never an unauthenticated read", async () => {
     const query = createLedgerQuery((async () => new Response("{}")) as unknown as typeof fetch, "https://x.example");
     await expect(query("select 1")).rejects.toThrow("missing server credential");
+  });
+});
+
+describe("D1 ledger query (the #14866 ruling's store)", () => {
+  /** A stand-in binding: canned results keyed by a SQL needle, in the
+   * shape the platform returns — JSON columns still text, numbers
+   * already numbers. */
+  function d1With(rows: Record<string, Record<string, unknown>[]>): LedgerD1Database {
+    return {
+      prepare: (sql: string) => ({
+        all: async () => {
+          for (const [needle, canned] of Object.entries(rows)) {
+            if (sql.includes(needle)) return { results: canned };
+          }
+          throw new Error(`unexpected sql: ${sql}`);
+        },
+      }),
+    };
+  }
+
+  test("decodes JSON text columns and passes plain values through", async () => {
+    const query = createD1LedgerQuery(
+      d1With({
+        shared_comments: [
+          { ...COMMENT_ROW, author: '{"kind":"drew"}', linked_identity: '{"provider":"github","login":"dezren39"}' },
+        ],
+      }),
+    );
+    const rows = await query("select * from shared_comments");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].author).toEqual({ kind: "drew" });
+    expect(rows[0].linked_identity).toEqual({ provider: "github", login: "dezren39" });
+    expect(rows[0].author_verified).toBe(1);
+    expect(rows[0].provenance).toBeNull();
+    expect(rows[0].body).toBe("Looks good — <ship> it");
+  });
+
+  test("the handler serves the alerts twin from D1 rows identically", async () => {
+    const io: LedgerPagesIo = {
+      now,
+      query: createD1LedgerQuery(
+        d1With({
+          alerts_incident_events: [{ ...EVENT, detail: '{"via":"sentinel"}' }],
+          alerts_incidents: [INCIDENT],
+        }),
+      ),
+    };
+    const res = await ledgerPage(new Request("https://pm.security.cab/api/alerts.json"), io);
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as any;
+    expect(body.incidents[0].title).toBe("Aggregator <down> & out");
+    expect(body.events[0].detail).toEqual({ via: "sentinel" });
+    expect(body.freshness.newestEventAt).toBe("2026-11-25T10:00:30Z");
+  });
+
+  test("a missing binding is an error, never an unauthenticated read", async () => {
+    const query = createD1LedgerQuery(undefined);
+    await expect(query("select 1")).rejects.toThrow("ledger store not configured");
+  });
+
+  test("a blob cell fails the read instead of rendering an unknown shape", async () => {
+    const query = createD1LedgerQuery(d1With({ t: [{ v: new Uint8Array([1, 2]) }] }));
+    await expect(query("select v from t")).rejects.toThrow("unsupported ledger cell");
+  });
+
+  test("an unsafe integer fails the read", async () => {
+    const query = createD1LedgerQuery(d1With({ t: [{ v: 2 ** 53 }] }));
+    await expect(query("select v from t")).rejects.toThrow("unsafe ledger numeric value");
+  });
+
+  test("a malformed result fails the read", async () => {
+    const db: LedgerD1Database = { prepare: () => ({ all: async () => ({}) }) };
+    await expect(createD1LedgerQuery(db)("select 1")).rejects.toThrow("malformed result");
   });
 });

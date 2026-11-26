@@ -67,8 +67,23 @@ leaves (a `players` presence event from the host), their seat opens,
 the board says so, and the AI moves for that side at once if it was
 their turn. The bottom row names who plays each side (`R:ann  B:AI`).
 
-Later slices of #14862: the scripted two-process game over the id
-network (#15111) and the three-machine demonstration.
+Two separate id processes play a whole game over the id network
+with `pkgs/id/scripts/board-games-two-player.py` (#15111). It runs
+both topologies, a host whose own player joins from the host's data
+directory and a central server that two players join, and plays
+checkers and chess to the end. After every move both players must
+read the same records (seats, turn, board, plies). It also checks
+that out-of-turn and watcher keys change nothing, that a player who
+leaves hands the seat to the AI, and that a restarted host restores
+the same records from its journal:
+
+```sh
+cd pkgs/id && python3 scripts/board-games-two-player.py --id-bin target/debug/id \
+  --checkers-wasm apps/checkers/program/checkers.wasm \
+  --chess-wasm apps/chess/program/chess.wasm
+```
+
+A later slice of #14862 adds the three-machine demonstration.
 
 ## Build
 

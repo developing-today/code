@@ -166,6 +166,12 @@ pub(crate) fn verify(dir: &Path, reference: &WorkingRef) -> Result<(), WorkingEr
     stream(dir, reference, &mut io::sink())
 }
 
+/// Open a working file for streaming after checking its length; the reader
+/// must check the hash (the upload door recomputes it on receipt).
+pub(crate) fn open(dir: &Path, reference: &WorkingRef) -> Result<File, WorkingError> {
+    open_checked(dir, reference)
+}
+
 fn open_checked(dir: &Path, reference: &WorkingRef) -> Result<File, WorkingError> {
     // Only a 64-hex-digit id is ever a file name here, so a crafted row can
     // never point a read outside the working directory.
@@ -284,7 +290,7 @@ mod tests {
         assert_eq!(version, 1);
         let dir = crate::working_dir_for(&db);
         let id = blake3::hash(&big).to_hex().to_string();
-        assert_eq!(files_in(&dir), [id.clone()]);
+        assert_eq!(files_in(&dir), std::slice::from_ref(&id));
         let mut out = Vec::new();
         assert!(store.get_to(&me(), "notes", "big", &mut out).expect("get"));
         assert_eq!(out, big);

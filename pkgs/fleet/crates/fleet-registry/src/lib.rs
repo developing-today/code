@@ -92,6 +92,11 @@ pub enum Capability {
     /// `fleet kv …` — identity-scoped key/value bytes in the host-local
     /// store (code#13314). A working-seat client surface, so full only.
     Kv,
+    /// `fleet id …` — the iroh-native ID transport surface (design
+    /// #10391 pass 2): session key lifecycle + stamping first
+    /// (code#15430, §4.1); proxy, initiator and serve-ws verbs land
+    /// as later slices of the same design. Full only.
+    Id,
 }
 
 impl Capability {
@@ -122,6 +127,7 @@ impl Capability {
             Capability::Actions => "actions",
             Capability::Orgs => "orgs",
             Capability::Kv => "kv",
+            Capability::Id => "id",
         }
     }
 
@@ -151,6 +157,7 @@ impl Capability {
         Capability::Actions,
         Capability::Orgs,
         Capability::Kv,
+        Capability::Id,
     ];
 }
 
@@ -419,6 +426,14 @@ pub const DOMAINS: &[Domain] = &[
         ],
     },
     Domain {
+        name: "id",
+        summary: "Iroh-native ID transport (design #10391 pass 2): session-key mints this session's NodeId stamp (FLEET_ID_NODE_ID / FLEET_ID_SECRET, §4.1); proxy, postcard, stream and serve-ws verbs land as later slices.",
+        capabilities: &[Capability::Id],
+        primary: Capability::Id,
+        aliases: &[],
+        subcommands: &["session-key"],
+    },
+    Domain {
         name: "agent",
         summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
         capabilities: &[Capability::Agent],
@@ -490,7 +505,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopSsh],
         primary: Capability::LaptopSsh,
         aliases: &[],
-        subcommands: &["health", "exec", "close"],
+        subcommands: &["health", "sessions", "sweep", "exec", "close"],
     },
     Domain {
         name: "laptop",
@@ -499,6 +514,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Laptop,
         aliases: &[],
         subcommands: &["tiers", "exec"],
+    },
+    Domain {
+        name: "host",
+        summary: "Resolve a host name through the machine registry and select a transport offer × invocation form with fleet-pool (#14716); `fleet host laptop` resolves the amd record.",
+        capabilities: &[Capability::Laptop],
+        primary: Capability::Laptop,
+        aliases: &[],
+        subcommands: &[],
     },
     Domain {
         name: "actions",

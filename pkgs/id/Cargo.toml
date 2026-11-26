@@ -35,8 +35,11 @@ members = [
   "crates/id-cli",
   "crates/id-import-notion",
   "crates/id-client",
+  "crates/id-android-remote",
   "crates/id-pg",
   "crates/id-grants",
+  "crates/id-bevy-bridge",
+  "crates/id-bevy-presenter",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -206,6 +209,12 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
   "ring",
   "tls12",
 ] }
+# WebSocket binary-message adapter for the serve-proxy fallback leg
+# (#14918 slice 1, src/serve_proxy_leg.rs). Was a dev-dependency for the
+# CLI integration tests; the leg makes it a runtime dependency.
+tokio-tungstenite = "0.30"
+# Message payloads for the WebSocket leg (tokio-tungstenite's Bytes).
+bytes = "1"
 webpki-roots = "1"
 # SHA-256 for the hosted binding ceremony's service attestation (slice 1,
 # #3808): required in every build variant, not only `world`/`web`.
@@ -240,7 +249,9 @@ id-sync = { path = "crates/id-sync", default-features = false, features = [
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.43", features = ["bundled"] }
 wat = "=1.263.0"
-tokio-tungstenite = "0.30"
+# Self-signed broker certificates for the serve-proxy leg TLS tests
+# (#14918 slice 1). Dev only; already in the lock via quinn/iroh.
+rcgen = "0.14"
 # vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
@@ -258,7 +269,11 @@ iroh-blobs = "0.103"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
-n0-mainline = "0.8"
+# Pinned to 0.7 (#15143): iroh-mainline-address-lookup 0.6 is built on
+# n0-mainline 0.7, and the test passes its DhtBuilder into that crate, so a
+# direct 0.8 dependency puts two n0-mainline versions in the graph and the
+# test fails with E0308. Unify on 0.7 until the lookup crate moves to 0.8.
+n0-mainline = "0.7"
 # The lookup under test in tests/dht_testnet.rs (P7.3); the root package
 # only names it for that test, so it is a dev-dependency.
 iroh-mainline-address-lookup = "0.6"
@@ -365,11 +380,6 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"
 
 # =============================================================================
 # Profile Configuration
@@ -400,8 +410,12 @@ codegen-units = 256
 strip = false
 
 [profile.test]
-# Include debug info for better error messages
-debug = true
+# Line tables only, not full debuginfo (#15181): with debug = true every
+# one of the ~95 test binaries carried ~1 GB of debuginfo (56 GB under
+# debug/deps), so a fresh `cargo test -p id --no-run` exhausted the fleet
+# executor's disk (61 GB free) and the linker died mid-build. Line tables
+# keep file:line in panics and backtraces at a fraction of the size.
+debug = "line-tables-only"
 opt-level = 0
 
 [[bench]]

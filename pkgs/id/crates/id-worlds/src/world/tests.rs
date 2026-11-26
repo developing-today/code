@@ -305,7 +305,7 @@ mod tests {
         let payload = vec![0; MAX_ENTITY_TRANSFER_PAYLOAD_BYTES + 1];
         let (mut actor, _, journal, _, _) = transfer_actor(payload, false);
         assert!(export(&mut actor).await.is_err());
-        assert!(actor.core.handoff_transfers().is_empty());
+        assert_eq!(actor.core.handoff_transfers(), []);
         assert!(
             !journal
                 .entries()
@@ -535,7 +535,7 @@ mod tests {
         );
 
         assert_eq!(journal.entries().len(), before);
-        assert!(actor.core.handoff_transfers().is_empty());
+        assert_eq!(actor.core.handoff_transfers(), []);
         assert!(applied.lock().unwrap().is_empty());
     }
 
@@ -667,7 +667,10 @@ mod tests {
             })
             .await;
         assert!(response.await.unwrap().is_ok());
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert!(actor.program_healthy);
         assert_eq!(
             *applied_after_install.lock().unwrap(),
@@ -694,7 +697,10 @@ mod tests {
             *applied_first.lock().unwrap(),
             vec!["add-entity".to_owned()]
         );
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert!(actor.program_healthy);
 
         // A live reinstall of the same module must hand the replacement
@@ -724,7 +730,10 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert_eq!(
             *applied_after_install.lock().unwrap(),
             vec!["add-entity".to_owned()],
@@ -906,7 +915,10 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
     }
 
     #[tokio::test]
@@ -1739,8 +1751,9 @@ mod tests {
         // Version 12 (#11960) records join and revoke times, version
         // 13 the kv store entries, version 14 the blob store entries,
         // and version 15 the notify provider's `Notification` events
-        // (all #1062). Version 16 (#13711) stamps lease positions.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
+        // (all #1062). Version 16 (#13711) stamps lease positions, and
+        // version 17 (#14731) records the presentation policy.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         // A checkpoint whose lease history carries stamped positions
@@ -1936,7 +1949,7 @@ mod tests {
         assert_eq!(lease.rejections().count(), 1);
         assert_eq!(lease.rejections().next().unwrap().operation_id, "op-1");
         assert_eq!(restored.core.current_sequence(), 0);
-        assert!(restored.replay.is_empty());
+        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
 
         // A second audit of the same attempt is a duplicate.
         let error = WorldCore::restore(
@@ -3234,6 +3247,7 @@ mod tests {
     /// (#1067, Codex review on #12557): exhausting the budget must not
     /// mark the program unhealthy, so the same input succeeds once the
     /// window rolls instead of requiring a program replacement.
+    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
         use crate::sandbox::{Sandbox, SandboxLimits};
@@ -3437,7 +3451,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0]["text"], "first");
         assert_eq!(all[2]["text"], "third");
-        assert!(chat_history(&core.events, 0).is_empty());
+        assert_eq!(chat_history(&core.events, 0), [] as [serde_json::Value; 0]);
     }
 
     /// Asks the bounded-read questions of #796 item 9-5 once each and
@@ -3986,7 +4000,7 @@ mod tests {
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "grant-on-use");
         assert!(report.granted.contains(&"time.now".to_owned()));
-        assert!(report.missing.is_empty());
+        assert_eq!(report.missing, [] as [String; 0]);
     }
 
     #[test]
@@ -4824,7 +4838,7 @@ mod tests {
         ));
         let restored =
             WorldCore::restore("empty-presence", WorldLimits::default(), entries).unwrap();
-        assert!(restored.replay.is_empty());
+        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
         assert!(restored.core.open_presence.is_empty());
     }
 
@@ -7045,7 +7059,7 @@ mod tests {
         }
         let page = core.events_after(&token, 0).unwrap();
         assert!(page.needs_snapshot);
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 3);
         assert_eq!(snapshot.oldest_retained_sequence, 2);
@@ -7113,7 +7127,10 @@ mod tests {
         revoked.sort_unstable();
         assert_eq!(revoked, vec![owner.id, child.id]);
         // Revoking a revoked capability again changes no recorded time.
-        assert!(core.revoke_tree_at(owner.id, None, Some(9_999)).is_empty());
+        assert_eq!(
+            core.revoke_tree_at(owner.id, None, Some(9_999)),
+            [] as [u64; 0]
+        );
 
         let expected = vec![
             (owner.id, Some(1_000), Some(4_000)),
@@ -7243,9 +7260,9 @@ mod tests {
         assert_eq!(core.revoke_tree_by(by_admin.id, None), vec![by_admin.id]);
         // A second revoke of a revoked capability changes nothing, the
         // recorded actor included.
-        assert!(
-            core.revoke_tree_by(moderated.id, Some(by_admin.id))
-                .is_empty()
+        assert_eq!(
+            core.revoke_tree_by(moderated.id, Some(by_admin.id)),
+            [] as [u64; 0]
         );
 
         let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
@@ -7266,7 +7283,7 @@ mod tests {
         let mut core = world(8);
         let (participant, token) = join(&mut core, "Ada");
         assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
-        assert!(core.revoke_tree(participant.id).is_empty());
+        assert_eq!(core.revoke_tree(participant.id), [] as [u64; 0]);
         assert!(core.snapshot(&token).is_err());
         assert!(core.chat(&token, "hello").is_err());
     }
@@ -7747,7 +7764,7 @@ mod tests {
         // Only chat so far: nothing to show, yet the cursor moves to the end
         // and retention is judged on the world, not the viewer.
         let page = core.events_after(&watcher, 0).unwrap();
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
         assert!(!page.needs_snapshot);
         assert_eq!(page.current_sequence, 2);
         assert_eq!(page.oldest_retained_sequence, 1);
@@ -7785,7 +7802,7 @@ mod tests {
         assert!(page.needs_snapshot, "the cursor fell behind retention");
         assert_eq!(page.oldest_retained_sequence, 2);
         let snapshot = core.snapshot(&watcher).unwrap();
-        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.events, [] as [WorldEvent; 0]);
         assert_eq!(snapshot.current_sequence, 4);
         assert_eq!(snapshot.oldest_retained_sequence, 5, "carries no events");
     }
@@ -7997,7 +8014,10 @@ mod tests {
             chat_texts(&core.snapshot(&reader).unwrap().events),
             ["hello"]
         );
-        assert!(chat_texts(&core.snapshot(&watcher).unwrap().events).is_empty());
+        assert_eq!(
+            chat_texts(&core.snapshot(&watcher).unwrap().events),
+            [] as [String; 0]
+        );
         assert!(core.chat(&reader, "hi").is_err());
     }
 
@@ -8292,7 +8312,7 @@ mod tests {
         }
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 20);
-        assert!(!snapshot.events.is_empty());
+        assert_ne!(snapshot.events, [] as [WorldEvent; 0]);
         assert!(
             serde_json::to_vec(&snapshot.events).unwrap().len() <= 1024,
             "events fit the budget"
@@ -8306,11 +8326,11 @@ mod tests {
         assert_eq!(snapshot.events.last().unwrap().sequence, 20);
         // The snapshot is a valid rebase point: continuing from its cursor
         // yields only new events.
-        assert!(
+        assert_eq!(
             core.events_after(&token, snapshot.current_sequence)
                 .unwrap()
-                .events
-                .is_empty()
+                .events,
+            [] as [WorldEvent; 0]
         );
     }
 
@@ -9445,12 +9465,7 @@ mod tests {
             .unwrap();
         assert!(
             w.handle
-                .dispatch_spill_copy(
-                    "native-2",
-                    3,
-                    execution.grant_position(),
-                    b"stale".to_vec()
-                )
+                .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"stale".to_vec())
                 .await
                 .is_err()
         );
@@ -9613,10 +9628,7 @@ mod tests {
             &Scope::Scoped(policy),
             &hops
         );
-        assert!(matches!(
-            residency,
-            Err(SpillDispatchRefusal::Residency(_))
-        ));
+        assert!(matches!(residency, Err(SpillDispatchRefusal::Residency(_))));
         assert!(sent.borrow().is_empty());
 
         // The cursor at the current ownership boundary dispatches:
@@ -10780,12 +10792,9 @@ mod schedule_tests {
     async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
         let journal = Recorded::for_world("system-fuel-rate");
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
-        let mut core = WorldCore::new_with_clock(
-            "system-fuel-rate",
-            WorldLimits::default(),
-            clock.clone(),
-        )
-        .unwrap();
+        let mut core =
+            WorldCore::new_with_clock("system-fuel-rate", WorldLimits::default(), clock.clone())
+                .unwrap();
         let (ann, token) = core
             .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
@@ -10796,7 +10805,10 @@ mod schedule_tests {
             Box::new(FuelLimitedSystemProgram),
             Some(Box::new(journal.clone())),
         );
-        actor.core.schedules.insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor
+            .core
+            .schedules
+            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
         actor.fire_schedules().await;
         assert!(actor.program_healthy);
         assert!(actor.core.schedules.contains_key("tick"));
@@ -10960,9 +10972,7 @@ mod schedule_tests {
                 JournalEntry::System { event } => match &event.kind {
                     WorldEventKind::System { event: text } => {
                         serde_json::from_str::<serde_json::Value>(text)
-                            .is_ok_and(|value| {
-                                value["cap"] == "result" && value["id"] == id
-                            })
+                            .is_ok_and(|value| value["cap"] == "result" && value["id"] == id)
                     }
                     _ => false,
                 },
@@ -12894,9 +12904,9 @@ mod schedule_tests {
             journal_version_required_by(&checkpoint),
             JOURNAL_VERSION_NOTIFY
         );
-        // Version 16 (#13711, stamped lease positions) is the newest
+        // Version 17 (#14731, the presentation policy) is the newest
         // version this binary reads.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
     }
 
     #[tokio::test]
@@ -14247,8 +14257,8 @@ mod schedule_tests {
         assert_eq!(delivers.len(), 1);
         assert_eq!(delivers[0].outcome, "accepted");
         assert_eq!(delivers[0].parameters, sends[0].parameters);
-        assert!(portal_audit(&b, "portal.send").is_empty());
-        assert!(portal_audit(&a, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.send"), [] as [AuditRecord; 0]);
+        assert_eq!(portal_audit(&a, "portal.deliver"), [] as [AuditRecord; 0]);
 
         for handle in [&a, &b] {
             let grants = portal_audit(handle, "AdminSetPortalGrant");
@@ -14282,7 +14292,7 @@ mod schedule_tests {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].outcome, "refused");
         assert_eq!(sends[0].parameters["refusal"], "portal.sender_not_granted");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -14307,7 +14317,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.peer_not_granted");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -14377,7 +14387,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "unreadable peer book must be Unavailable, got {error:?}"
         );
-        assert!(portal_audit(&a, "portal.send").is_empty());
+        assert_eq!(portal_audit(&a, "portal.send"), [] as [AuditRecord; 0]);
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a granted send
@@ -14399,7 +14409,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "sinkless send must be Unavailable, got {error:?}"
         );
-        assert!(portal_audit(&handle, "portal.send").is_empty());
+        assert_eq!(portal_audit(&handle, "portal.send"), [] as [AuditRecord; 0]);
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a message at the
@@ -14428,7 +14438,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.message_too_large");
-        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
         assert!(seen_b.lock().unwrap().is_empty());
     }
     /// Oracle: revoking mid-conversation refuses the next message as
@@ -15042,6 +15052,12 @@ mod audit_tests {
             let (reply, response) = tokio::sync::oneshot::channel();
             actor.handle(WorldCommand::PolicyInfo { reply }).await;
             let _policy = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::PresentationPolicyInfo { reply })
+                .await;
+            let _presentation = response.await.unwrap();
         });
 
         let captured = records.lock().unwrap().clone();
@@ -15444,4 +15460,235 @@ fn presence_change_refuses_a_duplicated_key() {
     // A lenient parse keeps the last "event" and reads a join (#8794).
     let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
     assert_eq!(presence_change(&duplicated), None);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod presentation_policy_tests {
+    //! The world's stored presentation policy (#14731 slice 2b): the
+    //! journal entry, its version requirement, restore and compaction,
+    //! and the actor's set and read commands.
+    use super::*;
+    use id_core::presentation_policy::{MAX_POLICY_ENTRIES, PresentationPolicy};
+
+    fn world() -> WorldCore {
+        WorldCore::new("test-world", WorldLimits::default()).unwrap()
+    }
+
+    fn opted_in() -> PresentationPolicy {
+        PresentationPolicy::from_json(
+            r#"{"assets":{"user_uploads":"deny","max_rung":"static"},
+                "filters":{"allowed":["tint@1","fx/*"],"denied":["fx/strobe"],"disguise":"allow"},
+                "shaders":{"enabled":true,"formats":["shadertoy.glsl.fragment/v1"]},
+                "fallback":{"world_glyphs":{"tree":"T"}}}"#,
+        )
+        .unwrap()
+    }
+
+    /// A policy past its size bounds, built without the parser's check.
+    fn oversized() -> PresentationPolicy {
+        let many: Vec<String> = (0..=MAX_POLICY_ENTRIES)
+            .map(|i| format!("\"f{i}\""))
+            .collect();
+        let text = format!(r#"{{"filters":{{"denied":[{}]}}}}"#, many.join(","));
+        let policy: PresentationPolicy = serde_json::from_str(&text).unwrap();
+        assert!(policy.validate().is_err());
+        policy
+    }
+
+    fn header(version: u32) -> JournalEntry {
+        JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version,
+        }
+    }
+
+    #[test]
+    fn the_entry_requires_version_17_and_it_is_the_newest() {
+        for policy in [PresentationPolicy::default(), opted_in()] {
+            assert_eq!(
+                journal_version_required_by(&JournalEntry::PresentationPolicy { policy }),
+                JOURNAL_VERSION_PRESENTATION_POLICY
+            );
+        }
+        assert_eq!(JOURNAL_VERSION_PRESENTATION_POLICY, 17);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+    }
+
+    #[test]
+    fn the_entry_round_trips_in_its_wire_shape() {
+        let entry = JournalEntry::PresentationPolicy { policy: opted_in() };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["entry"], "presentation_policy");
+        assert_eq!(json["policy"]["shaders"]["enabled"], true);
+        let back: JournalEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn a_new_world_holds_the_default_policy() {
+        assert_eq!(world().presentation, PresentationPolicy::default());
+        let restored = WorldCore::restore("w", WorldLimits::default(), [header(1)]).unwrap();
+        assert_eq!(restored.core.presentation, PresentationPolicy::default());
+    }
+
+    #[test]
+    fn restore_applies_the_last_entry() {
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy: opted_in() },
+            JournalEntry::PresentationPolicy {
+                policy: PresentationPolicy::default(),
+            },
+            JournalEntry::PresentationPolicy { policy: opted_in() },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.presentation, opted_in());
+    }
+
+    #[test]
+    fn restore_refuses_an_oversized_policy() {
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy {
+                policy: oversized(),
+            },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn compaction_keeps_a_set_policy_and_raises_the_header() {
+        let mut core = world();
+        core.presentation = opted_in();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_PRESENTATION_POLICY,
+                ..
+            }
+        ));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
+                .count(),
+            1
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.presentation, opted_in());
+    }
+
+    #[test]
+    fn compaction_omits_the_default_policy() {
+        let mut core = world();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
+        );
+        let JournalEntry::Created { version, .. } = entries[0] else {
+            panic!("a checkpoint journal starts with its header");
+        };
+        assert!(version < JOURNAL_VERSION_PRESENTATION_POLICY);
+    }
+
+    #[tokio::test]
+    async fn the_actor_sets_and_reads_the_policy() {
+        let handle = WorldHandle::spawn(world());
+        assert_eq!(
+            handle.presentation_policy().await.unwrap(),
+            PresentationPolicy::default()
+        );
+        assert_eq!(
+            handle.set_presentation_policy(opted_in()).await.unwrap(),
+            opted_in()
+        );
+        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
+    }
+
+    #[tokio::test]
+    async fn the_actor_refuses_an_oversized_policy_and_keeps_the_old_one() {
+        let handle = WorldHandle::spawn(world());
+        handle.set_presentation_policy(opted_in()).await.unwrap();
+        let error = handle
+            .set_presentation_policy(oversized())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid presentation policy"),
+            "{error:#}"
+        );
+        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
+    }
+    /// The largest policy the parser accepts: every list and map full,
+    /// every name and key at its longest, and keys and glyphs made of
+    /// quotes so JSON escaping doubles them.
+    fn largest() -> PresentationPolicy {
+        use id_core::presentation_asset::MAX_NAME_LEN;
+        use id_core::presentation_policy::{MAX_CELL_KIND_BYTES, MAX_GLYPH_BYTES};
+        let name = |i: usize| format!("{i:03}{}", "n".repeat(MAX_NAME_LEN - 3));
+        let reference = |i: usize| format!("{}@{}", name(i), u32::MAX);
+        let refs: Vec<String> = (0..MAX_POLICY_ENTRIES).map(reference).collect();
+        let glyphs: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| {
+                let kind = format!("{i:03}{}", "\"".repeat(MAX_CELL_KIND_BYTES - 3));
+                (kind, "\"".repeat(MAX_GLYPH_BYTES).into())
+            })
+            .collect();
+        let substitutes: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| (name(i), reference(i).into()))
+            .collect();
+        let policy: PresentationPolicy = serde_json::from_value(serde_json::json!({
+            "filters": {"allowed": refs, "denied": refs, "disguise": "allow"},
+            "shaders": {
+                "enabled": true,
+                "formats": vec!["shadertoy.glsl.fragment/v1"; MAX_POLICY_ENTRIES],
+            },
+            "fallback": {
+                "world_glyphs": glyphs,
+                "world_substitutes": substitutes,
+                "tileset": reference(0),
+            },
+        }))
+        .unwrap();
+        policy.validate().unwrap();
+        policy
+    }
+
+    #[test]
+    fn the_largest_valid_policy_fits_one_replication_payload() {
+        let entry = JournalEntry::PresentationPolicy { policy: largest() };
+        let line = serde_json::to_vec(&entry).unwrap().len() + 1;
+        assert!(
+            line <= crate::world::replication::MAX_REPLICATION_PAYLOAD_BYTES,
+            "the largest policy's journal line is {line} bytes"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_policy_with_an_overlong_cell_kind() {
+        let kind = "k".repeat(id_core::presentation_policy::MAX_CELL_KIND_BYTES + 1);
+        let policy: PresentationPolicy = serde_json::from_value(
+            serde_json::json!({"fallback": {"world_glyphs": {(kind): "T"}}}),
+        )
+        .unwrap();
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
 }

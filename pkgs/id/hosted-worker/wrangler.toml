@@ -25,6 +25,15 @@ new_sqlite_classes = ["UserDO"]
 tag = "v2"
 new_sqlite_classes = ["TenantOpsDO"]
 
+# One shared control-plane registry for every front-door request and
+# tenant-operations read. The placeholder is local-only; deployments
+# create and bind the central tenancy database separately.
+[[d1_databases]]
+binding = "TENANCY_DB"
+database_name = "id-hosted-tenancy"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "tenancy/migrations"
+
 # Slice A of #3811 (#9954): content-addressed blob bytes. Local
 # emulation only — no production bucket is provisioned by this
 # config (account gates #2285 / #3403 stay untouched).

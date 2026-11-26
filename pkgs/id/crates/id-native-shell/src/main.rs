@@ -19,26 +19,41 @@
 //! publishes is drained into [`PresentedView`] by
 //! `drain_session_views`. Without `--world` the binary opens the
 //! world directory instead (#15022, design #5782 §3): a probe
-//! thread reads the host's public directory, the
+//! thread reads the host's public directory at start, on an
+//! interval and on the refresh key, the
 //! [`id_native_shell::directory::DirectoryPlugin`] presents it, and
 //! each world the user enters gets its own session bridge, drained
 //! by `drive_directory` — leaving one world never tears down
 //! another's session. Without a target the window opens on an
 //! empty view and the announce line says so, rather than
 //! pretending to be connected. Outbound frames travel the
-//! session's channel (held in [`SessionBridge`]); wiring Bevy keyboard
-//! / clipboard capture to it is presentation work on top of the
-//! already-tested [`id_native_shell::events`] mapping.
+//! session's channel (held in [`SessionBridge`]): key presses in the
+//! window reach the foreground world as the terminal's own `input`
+//! frames, mapped by [`id_native_shell::events::key_input_bytes`]
+//! (in directory mode Esc stays the way back to the list).
+//! Clipboard paste and window resize are later slices on the same
+//! tested [`id_native_shell::events`] mapping.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-use bevy::prelude::{App, DefaultPlugins, Res, ResMut, Resource, Startup, Update};
+use bevy::clipboard::Clipboard;
+use bevy::input::ButtonInput;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::KeyboardInput;
+use bevy::prelude::{
+    App, DefaultPlugins, IntoScheduleConfigs, KeyCode, MessageReader, Res, ResMut, Resource,
+    Startup, Update,
+};
 use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::directory::{
-    DirectoryApp, DirectoryEffect, DirectoryFocus, DirectoryMarks, DirectoryPlugin,
+    DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus,
+    DirectoryInputSystems, DirectoryMarks, DirectoryPlugin,
+};
+use id_native_shell::events::{
+    KeyModifiers, NativeEvent, is_paste_chord, key_input_bytes, native_event_frame, paste_event,
 };
 use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
 use id_native_shell::scene::SceneRenderPlugin;
@@ -105,7 +120,134 @@ fn parse_args() -> Result<SessionArgs> {
 #[derive(Resource)]
 struct SessionBridge {
     views: Mutex<mpsc::UnboundedReceiver<SessionView>>,
-    _outbound: mpsc::Sender<Value>,
+    outbound: mpsc::Sender<Value>,
+}
+
+/// The modifier keys held right now, for the terminal key mapping.
+fn held_modifiers(held: Option<&ButtonInput<KeyCode>>) -> KeyModifiers {
+    held.map_or_else(KeyModifiers::default, |held| KeyModifiers {
+        ctrl: held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
+        alt: held.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
+        shift: held.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+    })
+}
+
+/// Queue one outbound frame without blocking the Bevy frame: a full
+/// queue drops it with a notice naming `what`, and an ended session
+/// drops it silently.
+fn try_send_frame(bridge: &SessionBridge, frame: Value, what: &str) {
+    if let Err(mpsc::error::TrySendError::Full(_)) = bridge.outbound.try_send(frame) {
+        eprintln!("id-native-shell: {what} dropped: the session is not keeping up");
+    }
+}
+
+/// Paste the system clipboard into a session as one contract `paste`
+/// frame (#15022). An empty clipboard sends nothing. A clipboard the
+/// platform cannot read, or text over the contract bound, is reported
+/// on stderr and sends nothing: a paste is never split or truncated.
+fn send_paste(bridge: &SessionBridge, clipboard: Option<&mut Clipboard>) {
+    let Some(clipboard) = clipboard else {
+        eprintln!("id-native-shell: paste not sent: no clipboard is available");
+        return;
+    };
+    let text = match clipboard.fetch_text().poll_result() {
+        Some(Ok(text)) => text,
+        Some(Err(error)) => {
+            eprintln!("id-native-shell: paste not sent: clipboard read failed: {error}");
+            return;
+        }
+        None => {
+            eprintln!("id-native-shell: paste not sent: the clipboard read did not complete");
+            return;
+        }
+    };
+    let Some(event) = paste_event(&text) else {
+        return;
+    };
+    match native_event_frame(&event) {
+        Ok(frame) => try_send_frame(bridge, frame, "paste"),
+        Err(error) => eprintln!("id-native-shell: paste not sent: {error}"),
+    }
+}
+
+/// Send one key press to a session: the paste chord pastes the
+/// clipboard, any other key goes as terminal input.
+fn send_key_or_paste(
+    bridge: &SessionBridge,
+    press: &KeyboardInput,
+    modifiers: KeyModifiers,
+    clipboard: Option<&mut Clipboard>,
+) {
+    if is_paste_chord(&press.logical_key, modifiers) {
+        send_paste(bridge, clipboard);
+    } else {
+        send_key(bridge, press, modifiers);
+    }
+}
+
+/// Send one key press to a session as the contract `input` frame,
+/// if the terminal mapping encodes it. Never blocks the frame: a
+/// session whose outbound queue is full drops the key and says so
+/// on stderr, and a session that has ended drops it silently.
+fn send_key(bridge: &SessionBridge, press: &KeyboardInput, modifiers: KeyModifiers) {
+    let Some(bytes) = key_input_bytes(&press.logical_key, press.text.as_deref(), modifiers) else {
+        return;
+    };
+    let frame = match native_event_frame(&NativeEvent::KeyInput(bytes)) {
+        Ok(frame) => frame,
+        Err(error) => {
+            eprintln!("id-native-shell: key not sent: {error}");
+            return;
+        }
+    };
+    try_send_frame(bridge, frame, "key");
+}
+
+/// Direct-join mode: every key press in the window goes to the one
+/// session as terminal input, and the paste chord pastes the
+/// clipboard into it.
+#[allow(clippy::needless_pass_by_value)]
+fn forward_session_keys(
+    mut keys: MessageReader<'_, '_, KeyboardInput>,
+    held: Option<Res<'_, ButtonInput<KeyCode>>>,
+    bridge: Res<'_, SessionBridge>,
+    mut clipboard: Option<ResMut<'_, Clipboard>>,
+) {
+    let modifiers = held_modifiers(held.as_deref());
+    for press in keys.read() {
+        if press.state == ButtonState::Pressed {
+            send_key_or_paste(&bridge, press, modifiers, clipboard.as_deref_mut());
+        }
+    }
+}
+
+/// Directory mode: key presses go to the foreground world's session
+/// while a session has focus, except Esc, which returns to the
+/// list. Runs before the directory's own key handling, so a key is
+/// judged by the focus it was pressed in: the Enter that opens a
+/// world is not sent to it, and the Esc that leaves one is not
+/// either. The paste chord pastes the clipboard into the foreground
+/// world only, never into the list.
+#[allow(clippy::needless_pass_by_value)]
+fn forward_directory_session_keys(
+    mut keys: MessageReader<'_, '_, KeyboardInput>,
+    held: Option<Res<'_, ButtonInput<KeyCode>>>,
+    directory: Res<'_, DirectoryApp>,
+    sessions: Res<'_, WorldSessions>,
+    mut clipboard: Option<ResMut<'_, Clipboard>>,
+) {
+    let modifiers = held_modifiers(held.as_deref());
+    for press in keys.read() {
+        if press.state != ButtonState::Pressed {
+            continue;
+        }
+        let Some(world) = directory.session_input_target(press.key_code == KeyCode::Escape) else {
+            continue;
+        };
+        if let Some(session) = sessions.0.get(world) {
+            send_key_or_paste(&session.bridge, press, modifiers, clipboard.as_deref_mut());
+        }
+    }
 }
 
 /// Drain every view the session has published into the presented view.
@@ -154,23 +296,29 @@ fn save_marks(marks: &DirectoryMarks) {
     }
 }
 
-/// The directory probe's hand-off to the app: the host directory
-/// reply, sent once by the probe thread.
+/// The directory probe's hand-off to the app: each host directory
+/// reply the probe thread reads, plus the channel the app uses to
+/// ask for a re-read now (the refresh key).
 #[derive(Resource)]
 struct DirectoryBridge {
     listings: Mutex<mpsc::UnboundedReceiver<(String, Vec<(String, bool, usize)>)>>,
+    refresh: mpsc::UnboundedSender<()>,
 }
 
-/// Fetch the host's public world directory (the existing
-/// discovery API) on a short-lived connection and hand the reply
-/// to the app. The probe owns no session: each world the user
-/// opens gets its own session connection, so the probe ending
-/// never disturbs a live session.
+/// Read the host's public world directory (the existing
+/// discovery API) and hand each reply to the app: once at start,
+/// then every `DIRECTORY_REFRESH_INTERVAL` and whenever the app
+/// asks through the refresh channel (#15022). Each read uses its
+/// own short-lived connection, so the probe owns no session: each
+/// world the user opens gets its own session connection, and a
+/// read failing or the host going away never disturbs a live
+/// session. The thread ends when the app drops its side.
 fn spawn_directory_probe(args: &SessionArgs) -> Result<DirectoryBridge> {
     let node = args.node.clone().context("session node")?;
     let addrs = args.addrs.clone();
     let no_relay = args.no_relay;
     let (listings_tx, listings_rx) = mpsc::unbounded_channel();
+    let (refresh_tx, mut refresh_rx) = mpsc::unbounded_channel::<()>();
     std::thread::Builder::new()
         .name("id-native-shell-directory".to_string())
         .spawn(move || {
@@ -182,29 +330,52 @@ fn spawn_directory_probe(args: &SessionArgs) -> Result<DirectoryBridge> {
                 }
             };
             runtime.block_on(async move {
-                match connect(&node, &addrs, no_relay).await {
-                    Ok((endpoint, mut client)) => {
-                        match client.directory().await {
-                            Ok(listing) => {
-                                let _ = listings_tx.send(listing);
+                let mut interval = tokio::time::interval(DIRECTORY_REFRESH_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        request = refresh_rx.recv() => {
+                            if request.is_none() {
+                                break;
                             }
-                            Err(error) => {
-                                eprintln!(
-                                    "id-native-shell: cannot read world directory: {error:#}"
-                                );
-                            }
+                            interval.reset();
                         }
-                        endpoint.close().await;
                     }
-                    Err(error) => {
-                        eprintln!("id-native-shell: cannot connect to world host: {error:#}");
+                    if listings_tx.is_closed() {
+                        break;
                     }
+                    match connect(&node, &addrs, no_relay).await {
+                        Ok((endpoint, mut client)) => {
+                            match client.directory().await {
+                                Ok(listing) => {
+                                    if listings_tx.send(listing).is_err() {
+                                        endpoint.close().await;
+                                        break;
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "id-native-shell: cannot read world directory: {error:#}"
+                                    );
+                                }
+                            }
+                            endpoint.close().await;
+                        }
+                        Err(error) => {
+                            eprintln!("id-native-shell: cannot connect to world host: {error:#}");
+                        }
+                    }
+                    // Requests that arrived during the read are
+                    // answered by the read that just finished.
+                    while refresh_rx.try_recv().is_ok() {}
                 }
             });
         })
         .context("spawn directory thread")?;
     Ok(DirectoryBridge {
         listings: Mutex::new(listings_rx),
+        refresh: refresh_tx,
     })
 }
 
@@ -268,6 +439,9 @@ fn drive_directory(
                 sessions.0.remove(&name);
             }
             DirectoryEffect::MarksChanged => save_marks(&directory.marks),
+            DirectoryEffect::RefreshDirectory => {
+                let _ = probe.refresh.send(());
+            }
         }
     }
     let foreground = directory.registry.foreground().map(str::to_owned);
@@ -418,7 +592,7 @@ fn spawn_session(args: &SessionArgs, world: Option<String>) -> Result<SessionBri
         .context("spawn session thread")?;
     Ok(SessionBridge {
         views: Mutex::new(views_rx),
-        _outbound: outbound_tx,
+        outbound: outbound_tx,
     })
 }
 
@@ -477,7 +651,7 @@ fn main() {
         match spawn_session(&args, args.world.clone()) {
             Ok(bridge) => {
                 app.insert_resource(bridge)
-                    .add_systems(Update, drain_session_views);
+                    .add_systems(Update, (drain_session_views, forward_session_keys));
             }
             Err(error) => {
                 eprintln!("id-native-shell: cannot start session: {error:#}");
@@ -496,7 +670,13 @@ fn main() {
                     .insert_resource(WorldSessions::default())
                     .insert_resource(args)
                     .add_plugins(DirectoryPlugin)
-                    .add_systems(Update, drive_directory);
+                    .add_systems(
+                        Update,
+                        (
+                            forward_directory_session_keys.before(DirectoryInputSystems),
+                            drive_directory,
+                        ),
+                    );
             }
             Err(error) => {
                 eprintln!("id-native-shell: cannot start directory: {error:#}");
