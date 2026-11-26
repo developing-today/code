@@ -1638,7 +1638,17 @@ mod tests {
         assert_eq!(sup2.file().worlds["sleepy"].state, LifecycleState::Asleep);
         assert_eq!(sup2.file().worlds["vault"].state, LifecycleState::Archived);
         assert!(sup2.live_report("live-one").unwrap().journal_entries >= 1);
-        assert_eq!(sup2.file(), &file_before);
+        // The only change is the restart replay the host now records.
+        let mut after = sup2.file().clone();
+        let recovery = after
+            .worlds
+            .get_mut("live-one")
+            .unwrap()
+            .last_recovery
+            .take()
+            .unwrap();
+        assert_eq!(recovery.error, None);
+        assert_eq!(after, file_before);
     }
 
     #[tokio::test]
