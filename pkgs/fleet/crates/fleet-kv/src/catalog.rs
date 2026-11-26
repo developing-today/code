@@ -184,6 +184,12 @@ pub fn entries() -> Vec<Entry> {
         entry("blob.ref_insert", Write, blob_central::BLOB_REF_INSERT, CAS),
         entry("blob.publish", Admin, blob_central::BLOB_PUBLISH, NONE),
         entry(
+            "blob.published_read",
+            Admin,
+            blob_central::BLOB_PUBLISHED_READ,
+            NONE,
+        ),
+        entry(
             "blob.roots_read",
             Admin,
             blob_central::BLOB_ROOTS_READ,
@@ -225,6 +231,24 @@ pub fn entries() -> Vec<Entry> {
             "blob.candidate_drop",
             Admin,
             blob_central::BLOB_CANDIDATE_DROP,
+            NONE,
+        ),
+        entry(
+            "blob.purge_claim",
+            Admin,
+            blob_central::BLOB_PURGE_CLAIM,
+            NONE,
+        ),
+        entry(
+            "blob.purged_mark",
+            Admin,
+            blob_central::BLOB_PURGED_MARK,
+            NONE,
+        ),
+        entry(
+            "blob.purge_release",
+            Admin,
+            blob_central::BLOB_PURGE_RELEASE,
             NONE,
         ),
     ]

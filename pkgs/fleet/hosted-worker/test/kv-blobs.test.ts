@@ -30,6 +30,7 @@ const h = await makeHarness();
 const REGISTRY = "fleet-kv-central";
 const UPLOAD_TOKEN = "svc-token-kv-upload-0123456789abcdef01";
 const PIPELINE_ONLY_TOKEN = "svc-token-kv-pipeline-0123456789abcdef";
+const ADMIN_TOKEN = "svc-token-kv-admin-0123456789abcdef0123";
 
 // --- the streaming hasher ----------------------------------------------
 
@@ -97,6 +98,13 @@ async function deps(options: { primary?: SqlitePrimary; bucket?: MemoryKvBlobBuc
         routes: ["kv"],
         active: true,
         label: "kv-pipeline-only",
+      },
+      {
+        sha256: await sha256Hex(ADMIN_TOKEN),
+        binding_id: BINDING_A,
+        routes: ["kv", "kv-admin"],
+        active: true,
+        label: "kv-operator",
       },
     ],
   });
@@ -280,6 +288,113 @@ test("the upload door deduplicates inside a partition and never across one", asy
   assert.notEqual(us.locator, first.locator);
   assert.equal(bucket.objects.size, 2);
   assert.equal(publishedRows(primary).length, 2);
+});
+
+// --- purge -------------------------------------------------------------
+
+/** Retire `digest`'s central record as GC's fenced delete does. */
+async function fencedDelete(primary: SqlitePrimary, digest: string): Promise<void> {
+  const args: KvValue[] = [
+    text("eu"),
+    text("standard"),
+    text(digest),
+    int(0),
+    int(Date.now()),
+    text(crypto.randomUUID()),
+  ];
+  await runKvTransaction(primary, [
+    { sql: sqlOf("blob.deletion_insert"), args },
+    { sql: sqlOf("blob.delete"), args },
+  ]);
+}
+
+function purgeReq(token: string): Request {
+  return bearerReq("/v1/kv/blobs/purge?jurisdiction=eu&tier=standard", token, { method: "POST" });
+}
+
+interface Purge {
+  purged: string[];
+  released: string[];
+  more: boolean;
+}
+
+function unpurged(primary: SqlitePrimary): number {
+  const row = primary.db.prepare("SELECT COUNT(*) AS n FROM kv_blob_deletions WHERE purged_at_ms IS NULL").get() as {
+    n: number;
+  };
+  return Number(row.n);
+}
+
+test("a purge removes the bytes of a fenced delete and the content publishes again", async () => {
+  const primary = await primaryWithNamespaces();
+  const bucket = new MemoryKvBlobBucket();
+  const d = await deps({ primary, bucket });
+  const bytes = pattern(3000);
+  const digest = hex(oneShot(bytes));
+  const key = publishedKey("eu", "standard", digest);
+  assert.equal((await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).status, 201);
+  await fencedDelete(primary, digest);
+  assert.deepEqual(publishedRows(primary), []);
+  assert.ok(bucket.objects.has(key), "a fenced delete leaves the bytes");
+
+  // Only kv-admin purges.
+  let res = await dispatch(purgeReq(UPLOAD_TOKEN), d);
+  assert.equal(res.status, 403);
+  assert.equal(((await res.json()) as { error: string }).error, "kv_admin_required");
+
+  res = await dispatch(purgeReq(ADMIN_TOKEN), d);
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(await res.json(), {
+    jurisdiction: "eu",
+    tier: "standard",
+    purged: [digest],
+    released: [],
+    more: false,
+  });
+  assert.equal(bucket.objects.has(key), false);
+  assert.equal(unpurged(primary), 0);
+  const again = (await (await dispatch(purgeReq(ADMIN_TOKEN), d)).json()) as Purge;
+  assert.deepEqual(again.purged, []);
+
+  // Uploading the same bytes again writes them afresh.
+  res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d);
+  assert.equal(res.status, 201, await res.clone().text());
+  assert.equal(((await res.json()) as Answer).deduplicated, false);
+  assert.deepEqual(bucket.objects.get(key), bytes);
+  assert.equal(publishedRows(primary).length, 1);
+});
+
+test("a purge never removes bytes a published row names, and a held purge refuses the publish", async () => {
+  const primary = await primaryWithNamespaces();
+  const bucket = new MemoryKvBlobBucket();
+  const d = await deps({ primary, bucket });
+  const bytes = pattern(4000);
+  const digest = hex(oneShot(bytes));
+  const key = publishedKey("eu", "standard", digest);
+  assert.equal((await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).status, 201);
+
+  // Published again before the purge: the deletion is skipped.
+  await fencedDelete(primary, digest);
+  assert.equal((await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).status, 201);
+  let purge = (await (await dispatch(purgeReq(ADMIN_TOKEN), d)).json()) as Purge;
+  assert.deepEqual(purge.purged, []);
+  assert.ok(bucket.objects.has(key));
+
+  // A purge in flight holds the content: the upload is refused and leaves
+  // no staged bytes behind.
+  await fencedDelete(primary, digest);
+  primary.db
+    .prepare("INSERT INTO kv_blob_purges (jurisdiction, tier, content_id, attempt, claimed_ms) VALUES (?, ?, ?, ?, ?)")
+    .run("eu", "standard", digest, "another-purge", Date.now());
+  const res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d);
+  assert.equal(res.status, 503);
+  assert.equal(((await res.json()) as { error: string }).error, "kv_blob_purge_in_progress");
+  assert.deepEqual([...bucket.objects.keys()], [key]);
+  assert.deepEqual(publishedRows(primary), []);
+  // The other purge's claim is fresh, so this purge leaves it alone.
+  purge = (await (await dispatch(purgeReq(ADMIN_TOKEN), d)).json()) as Purge;
+  assert.deepEqual(purge.purged, []);
+  assert.equal(unpurged(primary), 2);
 });
 
 test("the upload door checks the caller's scope and route", async () => {

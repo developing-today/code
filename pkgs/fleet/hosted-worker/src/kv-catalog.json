@@ -345,7 +345,18 @@
       "namespace": null,
       "owner": null,
       "writer": null,
-      "sql": "INSERT INTO kv_blobs (\n        jurisdiction, tier, content_id, bytes_len, locator, state, published_at_ms)\n    VALUES (?1, ?2, ?3, ?4, ?5, 'published', ?6)\n    ON CONFLICT (jurisdiction, tier, content_id) DO NOTHING"
+      "sql": "INSERT INTO kv_blobs (\n        jurisdiction, tier, content_id, bytes_len, locator, state, published_at_ms)\n    SELECT ?1, ?2, ?3, ?4, ?5, 'published', ?6\n    WHERE NOT EXISTS (SELECT 1 FROM kv_blob_purges AS purge\n        WHERE purge.jurisdiction = ?1 AND purge.tier = ?2 AND purge.content_id = ?3)\n    ON CONFLICT (jurisdiction, tier, content_id) DO NOTHING"
+    },
+    {
+      "args": 3,
+      "class": "admin",
+      "name": "blob.published_read",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "SELECT bytes_len FROM kv_blobs\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3",
+      "writer": null
     },
     {
       "name": "blob.roots_read",
@@ -445,6 +456,39 @@
       "scope": null,
       "sql": "DELETE FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3\n        AND EXISTS (SELECT 1 FROM kv_blob_deletions AS fence\n            WHERE fence.jurisdiction = ?1 AND fence.tier = ?2\n                AND fence.content_id = ?3 AND fence.attempt = ?6)",
       "writer": null
+    },
+    {
+      "args": 6,
+      "class": "admin",
+      "name": "blob.purge_claim",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "INSERT OR REPLACE INTO kv_blob_purges (\n        jurisdiction, tier, content_id, attempt, claimed_ms)\n    SELECT DISTINCT deletion.jurisdiction, deletion.tier, deletion.content_id, ?6, ?3\n    FROM kv_blob_deletions AS deletion\n    WHERE deletion.jurisdiction = ?1 AND deletion.tier = ?2\n        AND deletion.purged_at_ms IS NULL\n        AND NOT EXISTS (SELECT 1 FROM kv_blobs AS blob\n            WHERE blob.jurisdiction = ?1 AND blob.tier = ?2\n                AND blob.content_id = deletion.content_id)\n        AND NOT EXISTS (SELECT 1 FROM kv_blob_purges AS purge\n            WHERE purge.jurisdiction = ?1 AND purge.tier = ?2\n                AND purge.content_id = deletion.content_id AND purge.claimed_ms >= ?4)\n    ORDER BY deletion.content_id\n    LIMIT IFNULL(?5, 0)\n    RETURNING content_id",
+      "writer": null
+    },
+    {
+      "args": 5,
+      "class": "admin",
+      "name": "blob.purged_mark",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "UPDATE kv_blob_deletions SET purged_at_ms = ?4\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND purged_at_ms IS NULL\n        AND EXISTS (SELECT 1 FROM kv_blob_purges AS purge\n            WHERE purge.jurisdiction = ?1 AND purge.tier = ?2\n                AND purge.content_id = ?3 AND purge.attempt = ?5)",
+      "writer": null
+    },
+    {
+      "args": 5,
+      "class": "admin",
+      "name": "blob.purge_release",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "DELETE FROM kv_blob_purges\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND attempt = ?5",
+      "writer": null
     }
   ],
   "migrations": {
@@ -497,6 +541,13 @@
           "CREATE TABLE IF NOT EXISTS kv_blob_candidates (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    since_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id)\n) WITHOUT ROWID"
         ],
         "version": 6
+      },
+      {
+        "statements": [
+          "ALTER TABLE kv_blob_deletions ADD COLUMN purged_at_ms INTEGER",
+          "CREATE TABLE IF NOT EXISTS kv_blob_purges (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    attempt TEXT NOT NULL,\n    claimed_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id)\n) WITHOUT ROWID"
+        ],
+        "version": 7
       }
     ]
   }
