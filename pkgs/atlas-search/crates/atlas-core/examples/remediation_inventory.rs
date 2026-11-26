@@ -7,7 +7,7 @@
 //!
 //! Run on the laptop from the task worktree:
 //! ```sh
-//! MONOLITH_URL=... SECRET_URL=... MONOLITH_TOKEN=... SECRET_TOKEN=... \
+//! SECRET_HOST=... MONOLITH_TOKEN=... SECRET_TOKEN=... \
 //!   cargo run -p atlas-core --example remediation_inventory --release \
 //!     -- --out /path/to/report.json [--vec-table TABLE]
 //! ```
@@ -37,11 +37,10 @@ fn main() {
     // Local replica source: MONOLITH_FILE=<path> selects the read-only
     // LocalShardTransport; otherwise the hosted monolith is used.
     if let Ok(path) = std::env::var("MONOLITH_FILE") {
-        let monolith = LocalShardTransport::open(std::path::Path::new(&path))
-            .expect("open local replica");
-        let secret_host = std::env::var("SECRET_HOST").unwrap_or_else(|_| {
-            panic!("SECRET_HOST is required with MONOLITH_FILE")
-        });
+        let monolith =
+            LocalShardTransport::open(std::path::Path::new(&path)).expect("open local replica");
+        let secret_host = std::env::var("SECRET_HOST")
+            .unwrap_or_else(|_| panic!("SECRET_HOST is required with MONOLITH_FILE"));
         let secret = HttpTransport::new(&secret_host, env("SECRET_TOKEN"));
         let report = inventory(
             &monolith,
@@ -67,11 +66,11 @@ fn main() {
         println!("report: {}", out.display());
         return;
     }
-    let monolith_host = std::env::var("MONOLITH_HOST").unwrap_or_else(|_| atlas_core::turso::TURSO_HOST.to_string());
-    let secret_host = std::env::var("SECRET_HOST").unwrap_or_else(|_| {
-        let prefix = monolith_host.split_once('.').map(|x| x.0).unwrap_or(&monolith_host);
-        format!("{prefix}-auth.aws-us-east-1.turso.io")
-    });
+    let monolith_host = std::env::var("MONOLITH_HOST")
+        .unwrap_or_else(|_| atlas_core::turso::TURSO_HOST.to_string());
+    // Never infer the destination from the monolith hostname. A fabricated
+    // hostname could connect the verifier to the wrong database.
+    let secret_host = env("SECRET_HOST");
     let monolith = HttpTransport::new(&monolith_host, env("MONOLITH_TOKEN"));
     let secret = HttpTransport::new(&secret_host, env("SECRET_TOKEN"));
     let report = inventory(
