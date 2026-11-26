@@ -20,6 +20,7 @@ import { validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import { authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
+import { RULING_CLASS_ID, validateRulingInput } from "./conflict-rulings.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { resolveBwsSecretLookup } from "./secrets.ts";
 import { readJsonBody } from "./request-body.ts";
@@ -50,10 +51,11 @@ import {
   breakGlassTokenStore,
   recordStreamEvent,
   outageQueueStore,
+  conflictRulingsStore,
   source,
 } from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
-import { applyViewAction } from "./server-contexts.ts";
+import { applyViewAction, invalidateConflictRulingViews } from "./server-contexts.ts";
 
 export async function handleReportsRead(req: Request, path: string): Promise<Response> {
   try {
@@ -383,6 +385,35 @@ export async function handleWriteRoutes(
   path: string,
   remoteAddress?: string,
 ): Promise<Response | null> {
+  if (req.method === "POST" && path === "/api/conflicts/rulings") {
+    try {
+      const parsed = validateRulingInput(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+      if (!access.ok) return json({ error: access.error }, access.status);
+      const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+      const ruling = await conflictRulingsStore.set(parsed.value, `drew:${auditActor}`);
+      invalidateConflictRulingViews();
+      return json({ ruling }, 201);
+    } catch (err) {
+      return json({ error: `invalid ruling: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "DELETE" && path === "/api/conflicts/rulings") {
+    try {
+      const body = (await readJsonBody(req)) as { classId?: unknown };
+      if (body.classId !== RULING_CLASS_ID) return json({ error: "classId required" }, 400);
+      const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+      if (!access.ok) return json({ error: access.error }, access.status);
+      const revoked = await conflictRulingsStore.revoke(body.classId);
+      if (!revoked) return json({ error: "no such ruling" }, 404);
+      invalidateConflictRulingViews();
+      return json({ revoked: body.classId });
+    } catch (err) {
+      return json({ error: `invalid revocation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/roadmap/annotations") {
     try {
