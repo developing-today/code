@@ -20,7 +20,15 @@ CREATE TABLE IF NOT EXISTS staging_units (
   state          TEXT NOT NULL CHECK (state IN ('open', 'closing', 'merged')),
   schema_version INTEGER NOT NULL,
   created_at     TEXT NOT NULL,
-  updated_at     TEXT NOT NULL
+  updated_at     TEXT NOT NULL,
+  -- Per-corpus embedding-model identity (#8623 slice 2): the model +
+  -- pipeline identity every corpus's vectors are produced with. Fresh
+  -- databases record it at provision time; pre-slice-2 databases gain
+  -- it through the ensure_registry migration below. Ingestion refuses
+  -- (or loudly flags) a corpus whose recorded model is not the
+  -- mandated one, so a model change is an explicit re-embed slice,
+  -- never silent drift.
+  embedding_model TEXT NOT NULL DEFAULT 'snowflake-arctic-embed-m-v2.0'
 );
 
 -- Durable audit record for each successful staging-unit promotion.

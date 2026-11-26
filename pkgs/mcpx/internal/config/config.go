@@ -1592,13 +1592,25 @@ func parse(b []byte) (*Config, error) {
 				s.Transport = "http"
 			}
 		}
-		// Supervised stdio is opt-in again ("supervised": true). #9963
-		// made it the default, but the supervisor socket is keyed by
-		// server name alone, so a server's second scoped instance
-		// (another session, repo or worktree) attached to the first
-		// one's supervisor and was refused, and supervisors outlived
-		// `mcpx stop`. The default returns once sockets are keyed per
-		// instance and stop reaps them.
+		// Phase 3 of #1384 (#9963): supervised stdio is the default.
+		// Materialize it here, at file load, so every consumer of a
+		// parsed config (daemon, CLI, settings views) sees the same
+		// resolved value and an explicit "supervised": false remains
+		// the one opt-out into the legacy direct-spawn path. The
+		// default was paused between #11343 and the #9963 restore
+		// because the supervisor socket was keyed by server name
+		// alone (a second scoped instance was refused by the first
+		// one's supervisor) and supervisors outlived `mcpx stop`;
+		// sockets are now keyed per instance and stop reaps them.
+		if s.Command != "" {
+			if s.Mcpx == nil {
+				s.Mcpx = &Extras{}
+			}
+			if s.Mcpx.Supervised == nil {
+				tr := true
+				s.Mcpx.Supervised = &tr
+			}
+		}
 	}
 	return c, nil
 }

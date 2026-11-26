@@ -14,6 +14,7 @@ pub mod client;
 pub mod guard;
 pub mod ladder;
 pub mod legs;
+pub mod tls;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -108,6 +109,11 @@ pub struct TripRecord {
     /// the reply carried one — the Python client's third v2 stamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub t_received: Option<u64>,
+    /// The caller's `FLEET_CTX_ID` (code#14188): the join key that
+    /// ties this trip to the daemon's spool and the brokers' trip
+    /// lines. Absent when the caller has no context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctx_id: Option<String>,
 }
 
 /// Milliseconds since the Unix epoch.
@@ -152,6 +158,7 @@ pub fn log_trip(
             t_sent,
             t_returned,
             t_received,
+            ctx_id: fleet_config::ctx::Ctx::from_env().id().map(str::to_string),
         },
     );
 }
@@ -230,10 +237,21 @@ mod tests {
             t_sent: Some(100),
             t_returned: Some(105),
             t_received: Some(103),
+            ctx_id: None,
         };
         assert_eq!(
             serde_json::to_string(&rec).unwrap(),
             r#"{"v":2,"ts":"T","trip":"t","path":"/exec","total_ms":5,"status":null,"transport":"ts","t_sent":100,"t_returned":105,"t_received":103}"#
+        );
+        // #14188: a caller with context adds the join key last.
+        let rec = TripRecord {
+            ctx_id: Some("task-22655".into()),
+            ..rec
+        };
+        assert!(
+            serde_json::to_string(&rec)
+                .unwrap()
+                .ends_with(r#","t_received":103,"ctx_id":"task-22655"}"#)
         );
     }
 

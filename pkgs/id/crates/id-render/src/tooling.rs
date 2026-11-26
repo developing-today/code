@@ -31,6 +31,10 @@
 //!   raw-CSS declarations that overrode an assertion-derived
 //!   property (#5854 §6b reported overrides), carried from the
 //!   composition report through the web lowering report.
+//! * `duplicate-source` (error, multi-source): the same semantic
+//!   document appears in more than one target folder. Source spans
+//!   and attribute order are ignored; child order and raw content
+//!   remain significant.
 //!
 //! The remaining #5855 §4 error rule — essential content inside
 //! a conditional block — does not ship here, by §4's own gate: a
@@ -39,9 +43,7 @@
 //! element kind, so a conditional block has no source
 //! representation to lint (the same stated boundary as stage 3;
 //! see [`crate::compose`]). The rule lands with that vocabulary
-//! addition, not before it. The §4 duplication rule likewise
-//! needs per-target source folders, which this single-source
-//! surface does not take.
+//! addition, not before it.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -73,6 +75,10 @@ pub const RULE_VALIDATION: &str = "validation";
 pub const RULE_COMPOSITION_CONFLICT: &str = "composition-conflict";
 /// Lint rule name: lowering failed for a target.
 pub const RULE_LOWERING: &str = "lowering";
+
+/// Rule for the same semantic source found in two target folders
+/// (#5855 §4).
+pub const RULE_DUPLICATE_SOURCE: &str = "duplicate-source";
 
 /// How serious a lint diagnostic is (#5855 §4: the lint rules
 /// split into errors and warnings; nothing else exists).
@@ -607,6 +613,92 @@ pub fn lint(source: &str, plans: &[TargetPlan]) -> LintReport {
                     });
                 }
             }
+        }
+    }
+    LintReport { diagnostics }
+}
+
+/// Compare parsed documents by semantic content. Source positions are
+/// diagnostics metadata, not part of the source's meaning. Element
+/// attributes are key/value properties, so their order is ignored while
+/// duplicate pairs are retained; child order and raw-region content remain
+/// significant.
+fn same_semantic_document(left: &Document, right: &Document) -> bool {
+    same_semantic_element(&left.root, &right.root)
+}
+
+fn same_semantic_element(left: &Element, right: &Element) -> bool {
+    if left.name != right.name || !same_semantic_attributes(&left.attrs, &right.attrs) {
+        return false;
+    }
+    left.children.len() == right.children.len()
+        && left
+            .children
+            .iter()
+            .zip(&right.children)
+            .all(|(left, right)| same_semantic_node(left, right))
+}
+
+fn same_semantic_attributes(
+    left: &[(String, Option<String>)],
+    right: &[(String, Option<String>)],
+) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort();
+    right.sort();
+    left == right
+}
+
+fn same_semantic_node(left: &Node, right: &Node) -> bool {
+    match (left, right) {
+        (Node::Element(left), Node::Element(right)) => same_semantic_element(left, right),
+        (Node::Text(left), Node::Text(right)) => left == right,
+        (Node::Raw(left), Node::Raw(right)) => {
+            left.kind == right.kind && left.content == right.content
+        }
+        _ => false,
+    }
+}
+
+/// Lint several target folders' sources together. Each source is
+/// linted on its own with [`lint`], and every pair of sources whose
+/// parsed documents are semantically equal is reported as a
+/// `duplicate-source` error on the later folder (#5855 §4). Source
+/// diagnostics retain their folder in the message; target diagnostics keep
+/// their separate `target` field. Sources that fail to parse are not
+/// compared; their own lint already reports the failure.
+#[must_use]
+pub fn lint_folders(sources: &[(&str, &str)], plans: &[TargetPlan]) -> LintReport {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut parsed: Vec<(&str, Document)> = Vec::new();
+    for (folder, source) in sources {
+        let mut report = lint(source, plans);
+        for diagnostic in &mut report.diagnostics {
+            diagnostic.message = format!("{folder}: {}", diagnostic.message);
+        }
+        diagnostics.extend(report.diagnostics);
+        if let Ok(doc) = crate::parse(source) {
+            parsed.push((folder, doc));
+        }
+    }
+    for (index, (folder, doc)) in parsed.iter().enumerate() {
+        if let Some((first, _)) = parsed[..index]
+            .iter()
+            .find(|(_, other)| same_semantic_document(other, doc))
+        {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                rule: RULE_DUPLICATE_SOURCE,
+                message: format!("semantic source in {folder} duplicates the one in {first}"),
+                line: 0,
+                col: 0,
+                target: None,
+                element_path: None,
+            });
         }
     }
     LintReport { diagnostics }

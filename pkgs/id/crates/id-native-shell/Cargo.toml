@@ -18,6 +18,10 @@ license = "MIT OR Apache-2.0"
 # The #12657 step-2b audio renderer adds no features: it derives its
 # schedule and tones in-crate and owns presentation state only (this
 # feature set carries no audio output backend).
+# The #15022 clipboard paste slice adds `system_clipboard`: Bevy's
+# `bevy_clipboard` plugin over arboard (X11 and, with the Linux
+# `wayland` feature below, Wayland data-control), already in the
+# lockfile through bevy_text. It is read only on the paste chord.
 
 [dependencies]
 anyhow = "1"
@@ -31,6 +35,7 @@ bevy = { version = "0.19", default-features = false, features = [
   "bevy_window",
   "bevy_winit",
   "default_font",
+  "system_clipboard",
 ] }
 id = { path = "../..", default-features = false, features = ["world"] }
 iroh = "1"
