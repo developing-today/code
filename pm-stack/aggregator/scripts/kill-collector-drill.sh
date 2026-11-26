@@ -22,7 +22,8 @@
 #      up to one collector run; it cannot produce a false pass, because the
 #      drill passes only once the feed age actually crosses FEED_STALE_MS.
 #   3. Polls the aggregator's /api/health until the feed's age crosses
-#      FEED_STALE_MS — 5 minutes, the #1148 watchdog threshold the code
+#      FEED_STALE_MS — 10 minutes (two collector cadences, #14062), the
+#      #1148 watchdog threshold the code
 #      itself uses (src/health.ts, src/sources/live.ts) — and records
 #      the health payload at that moment as the fired-signal evidence.
 #   4. Restores, ALWAYS once the kill has happened (trap on
@@ -58,7 +59,7 @@ fi
 STATE_DIR="${PM_DRILL_STATE_DIR:-$HOME/.local/state/pm-drills}"
 INCIDENT_FLAG="${PM_DRILL_INCIDENT_FLAG:-$STATE_DIR/incident.flag}"
 MAX_WAIT_MIN="${PM_DRILL_MAX_WAIT_MIN:-25}"
-STALE_MS=300000 # FEED_STALE_MS in aggregator src/feed.ts
+STALE_MS=600000 # FEED_STALE_MS in aggregator src/feed.ts (two collector cadences, #14062)
 COLLECTOR_TIMER="fleet-feed-collector.timer"
 AGG_ENV_FILE="$HOME/.local/state/pm-aggregator/.env"
 ISSUE_REPO="developing-today/code"
@@ -229,7 +230,7 @@ json.dump({
     "outcome": outcome,
     "signal_fired": signal == "1",
     "restoration_confirmed": confirmed == "1",
-    "stale_threshold_ms": 300000,
+    "stale_threshold_ms": 600000,
 }, open(path, "w"), indent=2)
 PY
 log "result: $OUTCOME (signal=$SIGNAL restored=$CONFIRMED) -> $RESULT_FILE"
@@ -238,8 +239,8 @@ if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
   if [ "$OUTCOME" = "passed" ]; then
     gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — kill-collector** (queue task 2667, first slice of this issue, epic #$EPIC)
 
-- Paused pm-core's in-process fleet-feed scheduler on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 5-minute \`FEED_STALE_MS\` (#1148) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
-- Collector restored by removing the pause file; restoration was confirmed via \`/api/health\` after an in-process tick: feed fresh again.
+- Paused pm-core's in-process fleet-feed scheduler on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 10-minute `FEED_STALE_MS` (#1148, two collector cadences) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
+- Collector restored by removing the pause file; restoration was confirmed via `/api/health` after an in-process tick: feed fresh again.
 - Script: \`pm-stack/aggregator/scripts/kill-collector-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/kill-collector-result.json\` on laptop host amd per run." >/dev/null 2>&1 &&
       log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
   else

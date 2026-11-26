@@ -7,7 +7,10 @@ import android.os.Bundle;
 /**
  * Receives text from anywhere on the phone: "Share" in another app, or
  * "Ask the fleet" in the menu that appears when text is selected. The
- * text lands in the Ask box, ready to edit and send.
+ * text lands in the Ask box, ready to edit and send — unless it is an
+ * enroll command, which lands in provisioning on the Agents screen
+ * instead (#14377): a bootstrap token pasted into an Ask would file
+ * it as a task and leave the new agent unenrolled.
  */
 public class ShareActivity extends Activity {
     @Override
@@ -25,7 +28,7 @@ public class ShareActivity extends Activity {
             text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
         }
         if (text != null && text.toString().trim().length() > 0) {
-            startActivity(Links.ask(this, text));
+            startActivity(Links.enrollCommand(text) ? Links.provision(this, text) : Links.ask(this, text));
         } else {
             startActivity(Links.open(this, "ask"));
         }

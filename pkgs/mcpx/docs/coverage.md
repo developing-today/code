@@ -106,10 +106,10 @@ across the whole settings tree, test files included, rather
 than the registry the binary itself prints.
 
 Every setting carries an effect probe or a written exemption.
-The exemption count is pinned at **5** (`EffectExemptionPin`)
+The exemption count is pinned at **4** (`EffectExemptionPin`)
 and can only shrink: `daemon.inlineStartPoll`,
 `daemon.tsnet.hostname`, `daemon.tsnetUpTimeout`,
-`http.streamBufferInit`, `embeddings.wasmPath` — each named,
+`http.streamBufferInit` — each named,
 with its reason, in the registry and in the configuration
 chapter's table.
 

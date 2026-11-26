@@ -15,6 +15,7 @@ rows" below.
 
 - Library: `crates/atlas-core/src/eval.rs` (`atlas_core::eval`)
 - Runner: `cargo run -p atlas-core --bin atlas-eval -- <eval.json> <dev|test>`
+- Optional precision report: `cargo run -p atlas-core --bin atlas-eval -- --precision-at-k <k> <eval.json> <dev|test>`
 - Smoke fixture: `fixtures/eval-smoke.json`
 
 ## Python reference and v3 golden set (#5670)
@@ -45,6 +46,13 @@ corpus-specific retrieval runner beside the Rust tooling:
   (SHA-256 `b64bc1905384405c9127c744d3874ffd149a9429b6710b0664c2198505bf291c`).
   Its header records the source corpus size and fingerprint used to build
   the set; the source corpus itself is not checked in here.
+
+As of 2026-11-24 the copies in this repo are the canonical ones: the
+migration was verified against the outside sources (SHA-256 provenance
+match, AST identity for both Python files, JSON identity for the golden
+set) and the outside copies in hatch-personal are retired. Record:
+`doc/2026-11-24T06-23-32Z_report_id5670_phase1_atlas_python_migration/`
+(#5670 phase-1 close-out).
 
 From this directory, run the corpus-specific FTS baseline with the laptop
 corpus (the runner checks its frozen fingerprint before scoring):
@@ -98,6 +106,22 @@ from the report alone. Reports are deterministic — sorted signals,
 queries, and classes, floats rounded to 6dp (the crate's Python
 parity convention) — so the same input serializes byte-identically
 on every run.
+
+### Precision@k report
+
+The optional CLI mode emits a separate `atlas-eval-precision-report/v1`
+format, preserving the original command's report bytes:
+
+```sh
+cargo run -p atlas-core --bin atlas-eval -- --precision-at-k 10 eval.json dev
+```
+
+`k` is bounded to `1..=1000`. The report contains per-query hit counts,
+the fixed denominator `k`, precision values, and macro means overall and
+per class for each signal. Every query contributes, including one with no
+positive qrels. Short and missing rankings score unfilled slots as zero;
+for example, one hit in a one-result ranking at `k=3` is `1/3`. Values
+are deterministic and rounded to six decimal places.
 
 ## Split discipline (the held-out rule)
 

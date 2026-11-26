@@ -359,7 +359,7 @@ fn parse_content_token(token: &str) -> Result<ContentId, UriParseError> {
         return Err(UriParseError::InvalidDigestText);
     }
     let mut digest = [0_u8; DIGEST_BYTES];
-    for (slot, pair) in digest.iter_mut().zip(text.chunks_exact(2)) {
+    for (slot, pair) in digest.iter_mut().zip(text.as_chunks::<2>().0) {
         let nibble = |byte: u8| match byte {
             b'0'..=b'9' => Some(byte - b'0'),
             b'a'..=b'f' => Some(byte - b'a' + 10),

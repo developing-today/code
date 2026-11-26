@@ -220,6 +220,26 @@ fn retries_reuse_the_exact_reservation_and_never_mint() {
 }
 
 #[test]
+fn over_cap_reserve_reclaims_expired_opens_before_refusing() {
+    let scopes = scopes_all();
+    let mut l = ScopedLedger::new(limits(&scopes, 100), 10);
+    l.reserve(rid(1), v(&[(Work, 90)]), scopes.clone(), 20, 0)
+        .unwrap();
+    assert_eq!(
+        l.reserve(rid(2), v(&[(Work, 50)]), scopes.clone(), 100, 10),
+        Err(BudgetError::OverCap(scopes[0].clone(), Work))
+    );
+    assert!(l.is_open(&rid(1)));
+    assert_eq!(l.held(&Scope::Node, Work), 90);
+    l.reserve(rid(2), v(&[(Work, 50)]), scopes.clone(), 100, 20)
+        .unwrap();
+    assert!(!l.is_open(&rid(1)));
+    assert!(l.is_open(&rid(2)));
+    assert_eq!(l.held(&Scope::Node, Work), 50);
+    assert_eq!(l.spent(&Scope::Node, Work), 0);
+}
+
+#[test]
 fn expiry_closes_refunds_unused_and_tombstones_until_grace() {
     let scopes = scopes_all();
     let mut l = ScopedLedger::new(limits(&scopes, 100), 10);
@@ -400,15 +420,32 @@ impl RefLedger {
         if now >= expires {
             return Err(BudgetError::Expired);
         }
-        for s in scopes {
-            for (d, amount) in vector {
-                let Some(limit) = self.limits.get(&(s.clone(), *d)) else {
-                    return Err(BudgetError::NoLimit(s.clone(), *d));
-                };
-                let used = u128::from(self.held(s, *d)) + u128::from(self.spent(s, *d));
-                if used + u128::from(*amount) > u128::from(*limit) {
-                    return Err(BudgetError::OverCap(s.clone(), *d));
+        let over_cap = |this: &Self| -> Result<Option<BudgetError>, BudgetError> {
+            for s in scopes {
+                for (d, amount) in vector {
+                    let Some(limit) = this.limits.get(&(s.clone(), *d)) else {
+                        return Err(BudgetError::NoLimit(s.clone(), *d));
+                    };
+                    let used = u128::from(this.held(s, *d)) + u128::from(this.spent(s, *d));
+                    if used + u128::from(*amount) > u128::from(*limit) {
+                        return Ok(Some(BudgetError::OverCap(s.clone(), *d)));
+                    }
                 }
+            }
+            Ok(None)
+        };
+        if over_cap(self)?.is_some() {
+            let due: Vec<ReservationId> = self
+                .res
+                .iter()
+                .filter(|(_, x)| !x.closed && now >= x.expires)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in &due {
+                self.close(id)?;
+            }
+            if let Some(err) = over_cap(self)? {
+                return Err(err);
             }
         }
         self.res.insert(

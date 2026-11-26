@@ -136,10 +136,28 @@ function noFreshReason(freshness: ReadingFreshness, entry: QuotaCurrentEntry): s
   }
 }
 
+/** The percent history indexed once by folded series key; each pool
+ * then reads its own key plus sub-id keys. */
+export function indexPctHistory(history: readonly SnapshotRecord[]): Map<string, SnapshotRecord[]> {
+  const index = new Map<string, SnapshotRecord[]>();
+  for (const r of history) {
+    if (typeof r.value !== "number" || r.unit !== "pct") continue;
+    const key = forecastSeriesKey(r.serviceId);
+    const list = index.get(key) ?? [];
+    list.push(r);
+    index.set(key, list);
+  }
+  return index;
+}
+
 /** Percent points for one pool window from the snapshot history,
  * rename-joined (forecastSeriesKey + sub-id acceptance) with the
  * analytics-store metric matching and (ts, value) dedupe. */
-function pointsForWindow(index: Map<string, SnapshotRecord[]>, poolServiceId: string, windowName: string): PctPoint[] {
+export function pointsForWindow(
+  index: Map<string, SnapshotRecord[]>,
+  poolServiceId: string,
+  windowName: string,
+): PctPoint[] {
   const poolKey = forecastSeriesKey(poolServiceId);
   const aliases = WINDOW_METRIC_ALIASES[windowName] ?? [windowName];
   const metrics = new Set(aliases);
@@ -205,16 +223,7 @@ export function buildQuotaForecast(
 ): QuotaForecastFile {
   const nowMs = now.getTime();
 
-  // Index the percent history by folded series key once; each pool
-  // then reads its own key plus sub-id keys.
-  const index = new Map<string, SnapshotRecord[]>();
-  for (const r of history) {
-    if (typeof r.value !== "number" || r.unit !== "pct") continue;
-    const key = forecastSeriesKey(r.serviceId);
-    const list = index.get(key) ?? [];
-    list.push(r);
-    index.set(key, list);
-  }
+  const index = indexPctHistory(history);
 
   // Group the tick's entries: providerId -> serviceId -> entries.
   const byProvider = new Map<string, Map<string, QuotaCurrentEntry[]>>();

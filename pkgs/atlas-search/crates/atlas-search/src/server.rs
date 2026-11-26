@@ -30,10 +30,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use atlas_core::types::BranchPools;
 use atlas_core::{
     BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
-    JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
-    SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
-    VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
-    record_feedback, run_get_chunk_with_context, run_search_with_executor_traced,
+    JsonlFeedbackSink, JsonlTraceSink, Manifest, QueryEmbedder, SearchBackend,
+    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    VectorBackend as CoreVectorBackend, builtin_manifest, chunk_classification, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk_with_context,
+    run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -229,6 +230,10 @@ struct ServiceConfigFile {
     /// Seconds between shard re-discoveries in serve mode
     /// (#6666 slice 1). Default 60; ignored without `shards`.
     shard_refresh_seconds: Option<u64>,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7). Requires
+    /// `shards`; absent = occurrence rows stay unattributed.
+    source_registry: Option<String>,
     limits: Option<RuntimeLimitsFile>,
     clients: Vec<RawClientConfig>,
 }
@@ -247,6 +252,13 @@ pub struct ServeSettings {
     /// snapshot-bound result cache invalidates on the new
     /// snapshot id.
     pub shard_refresh: Duration,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7): opened at serve
+    /// start and attached to the shard fan-out, so served
+    /// get-chunk occurrence rows carry `root_id` for registered
+    /// locators. Requires `shards`; `None` = unattributed rows,
+    /// exactly as before slice 7.
+    pub source_registry: Option<PathBuf>,
 }
 
 /// Default shard re-discovery interval for serve mode (#6666).
@@ -336,9 +348,9 @@ pub fn load_service_settings(
                 c.name
             ));
         }
-        let cap = ProtoSensitivity::from_name(&c.ceiling_cap).ok_or_else(|| {
+        let cap = ProtoSensitivity::from_ceiling_name(&c.ceiling_cap).ok_or_else(|| {
             format!(
-                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing",
+                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing (or public, internal, private, sensitive)",
                 c.name
             )
         })?;
@@ -375,6 +387,19 @@ pub fn load_service_settings(
     if shard_refresh_seconds == 0 {
         return Err("service config shard_refresh_seconds must be at least 1".to_string());
     }
+    let source_registry = match raw.source_registry {
+        Some(p) if !p.trim().is_empty() => Some(PathBuf::from(p)),
+        Some(_) => {
+            return Err("service config source_registry path must not be empty".to_string());
+        }
+        None => None,
+    };
+    if source_registry.is_some() && shards.is_none() {
+        return Err(
+            "service config source_registry requires shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        );
+    }
     Ok(ServeSettings {
         listen,
         clients,
@@ -384,6 +409,7 @@ pub fn load_service_settings(
         limits,
         shards,
         shard_refresh: Duration::from_secs(shard_refresh_seconds),
+        source_registry,
     })
 }
 
@@ -585,6 +611,16 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
 }
 
 fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
@@ -598,6 +634,16 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
 }
 
 fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -635,6 +681,16 @@ pub trait SearchEngine: Send + Sync {
     /// backend carries no shard set report [`NO_SNAPSHOT_ID`].
     fn snapshot_id(&self) -> String {
         NO_SNAPSHOT_ID.to_string()
+    }
+
+    /// The effective filter-surface manifest the next search
+    /// would serve under (#6228 Phase 4): the job manager binds
+    /// every cache key to its `(version, content_hash)`, so a
+    /// surface change invalidates coalescing and result reuse
+    /// exactly like a snapshot change. Engines with no manifest
+    /// surface report the built-in manifest.
+    fn surface_manifest(&self) -> Manifest {
+        builtin_manifest()
     }
 
     fn search(
@@ -804,6 +860,10 @@ where
         self.backend
             .snapshot_id()
             .unwrap_or_else(|| NO_SNAPSHOT_ID.to_string())
+    }
+
+    fn surface_manifest(&self) -> Manifest {
+        self.backend.manifest()
     }
 
     fn embedder_state(&self) -> String {
@@ -1040,6 +1100,18 @@ struct CacheKey {
     client: Vec<String>,
     since: Option<String>,
     until: Option<String>,
+    /// Generic dimension filters (#6228 Phase 3), in the
+    /// dimension map's sorted (BTreeMap) order: a request filtered
+    /// on a generic dimension never coalesces with one that is
+    /// not, exactly like the named filters above.
+    dimensions: Vec<(String, Vec<String>)>,
+    /// The effective filter surface's identity (#6228 Phase 4,
+    /// design note §7): `(manifest_version, content_hash)` of the
+    /// manifest the serving backend loaded. Entries computed
+    /// under a different surface never coalesce or serve, even on
+    /// the same corpus snapshot.
+    manifest_version: i64,
+    content_hash: String,
     effective_ceiling: ProtoSensitivity,
     /// The resolved disclosure context (#12404): cached and
     /// coalesced payloads are context-filtered, so the context
@@ -1053,6 +1125,7 @@ impl CacheKey {
         req: &SearchRequest,
         effective_ceiling: ProtoSensitivity,
         snapshot: &str,
+        surface: &Manifest,
     ) -> CacheKey {
         CacheKey {
             snapshot: snapshot.to_string(),
@@ -1090,6 +1163,14 @@ impl CacheKey {
             client: req.filters.client.clone(),
             since: req.filters.since.clone(),
             until: req.filters.until.clone(),
+            dimensions: req
+                .filters
+                .dimensions
+                .iter()
+                .map(|(name, values)| (name.clone(), values.clone()))
+                .collect(),
+            manifest_version: surface.version,
+            content_hash: surface.content_hash.clone(),
             effective_ceiling,
             context: request_context(req),
         }
@@ -1562,7 +1643,13 @@ impl JobManager {
         // carries the snapshot, so nothing computed under another
         // snapshot can coalesce onto or answer this request.
         let snapshot = self.engine.snapshot_id();
-        let key = CacheKey::from_request(&request, effective, &snapshot);
+        // Bind this submit to the effective filter surface too
+        // (#6228 Phase 4): the key carries the loaded manifest's
+        // (version, content_hash), so a manifest change — a new
+        // generic dimension, a changed shape — can never be
+        // answered from entries computed under the old surface.
+        let surface = self.engine.surface_manifest();
+        let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
         let now = Instant::now();
@@ -2531,6 +2618,7 @@ mod tests {
             limits,
             shards: None,
             shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
+            source_registry: None,
         }
     }
 
@@ -2557,6 +2645,57 @@ mod tests {
             })
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
+        );
+    }
+
+    #[test]
+    fn service_config_source_registry_round_trips() {
+        // #3125 slice 7: `source_registry` in the service config
+        // lands on ServeSettings as a path; it requires `shards`
+        // (attribution rides the fan-out) and must not be empty.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-service-registry-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let wired = write(
+            "wired.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&wired, ServeOverrides::default()).unwrap();
+        assert_eq!(
+            settings.source_registry.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.db"))
+        );
+        let orphan = write(
+            "orphan.json",
+            &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&orphan, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry requires shards"),
+            "got: {err}"
+        );
+        let empty = write(
+            "empty.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
+            ),
+        );
+        let err = load_service_settings(&empty, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry path must not be empty"),
+            "got: {err}"
         );
     }
 
@@ -3699,6 +3838,27 @@ mod tests {
     }
 
     #[test]
+    fn search_rejects_generic_dimensions_before_backend_work() {
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "filters": { "dimensions": { "source-app": ["mail"] } }
+            }),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(
+            response.body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not supported")
+        );
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
     fn search_honors_and_dedupes_by_parameters() {
         // Oracle: the API contract flattens SearchParametersV1 onto the
         // request; effective controls reach branch execution and distinguish
@@ -3756,6 +3916,47 @@ mod tests {
             calls.lock().unwrap().len() > first_calls.len(),
             "different effective parameters must not reuse the first ranking"
         );
+    }
+
+    #[test]
+    fn cache_key_binds_manifest_surface_and_generic_dimensions() {
+        // #6228 Phase 3/4, oracle: key equality. Two submits that
+        // differ only in the effective manifest's (version,
+        // content_hash), or only in a generic dimension filter,
+        // must NOT share a cache key; identical surface + filters
+        // must share one.
+        let mut req = SearchRequest::default();
+        req.query = "alpha".to_string();
+        let builtin = builtin_manifest();
+        let base = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        let same = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_eq!(base, same);
+
+        let mut other_surface = builtin.clone();
+        other_surface.version += 1;
+        other_surface.content_hash = other_surface.compute_hash();
+        let diff_surface =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &other_surface);
+        assert_ne!(base, diff_surface);
+
+        req.filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+        let diff_dimension =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_ne!(base, diff_dimension);
+    }
+
+    #[test]
+    fn generic_dimensions_are_rejected_until_search_support_lands() {
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+
+        let error = build_filters(&request, ProtoSensitivity::Personal).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.body.error.code, "bad_request");
+        assert!(error.body.error.message.contains("not supported"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------

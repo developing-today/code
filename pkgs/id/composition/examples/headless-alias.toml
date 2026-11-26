@@ -1,0 +1,9 @@
+# composition manifest — schema v1 (alias form)
+# Same composition as basement-store-node.toml, written against the
+# canonical profile name. Resolves and hashes IDENTICALLY to the
+# `profile = "basement"` form: aliases resolve before hashing and never
+# change a composition hash (amendment 2).
+name = "basement-store-node"
+target = "x86_64-unknown-linux-musl"
+profile = "headless"
+features = ["store-turso", "dht"]

@@ -59,6 +59,29 @@ func init() {
 			"elicit.TestAClientSuppliedSessionGrantsNoAuthority@2025-11-25,2026-07-28"),
 		S("elicitation-state-not-session-id-alone",
 			"elicit.TestQuestionsSharingASessionStayAddressedById@2025-11-25"),
+		// Decision 0007 (refuse-identity, #7843 slice 2): state binds to
+		// the request and the daemon principal — keyed by elicitation id
+		// over signed requestState in the owner-only store — and the
+		// applicable identifying-the-user practices (signed requestState,
+		// owner-only storage, no trust in client-supplied identity
+		// values) are adopted. Authenticated-user binding is declined by
+		// the decision. These covers pin that position for the residual
+		// #257/#255 rows the 2026-11-17 re-disposition missed in the
+		// generator inputs.
+		S("elicitation-server-state-bound-to-user",
+			"elicit.TestAClientSuppliedSessionGrantsNoAuthority@2025-11-25",
+			"elicit.TestQuestionsSharingASessionStayAddressedById@2025-11-25",
+			"elicit.TestOpenAtCreatesOwnerOnlyStore@2025-11-25",
+			"mcpserver.TestARequestStateCannotBeForgedOrBorrowed@2025-11-25"),
+		S("elicitation-server-stored-state-bound-to-user",
+			"elicit.TestAClientSuppliedSessionGrantsNoAuthority@2026-07-28",
+			"elicit.TestQuestionsSharingASessionStayAddressedById@2026-07-28",
+			"elicit.TestOpenAtCreatesOwnerOnlyStore@2026-07-28",
+			"mcpserver.TestARequestStateCannotBeForgedOrBorrowed@2026-07-28"),
+		S("elicitation-server-follow-best-practices",
+			"elicit.TestAClientSuppliedSessionGrantsNoAuthority@2025-11-25,2026-07-28",
+			"elicit.TestOpenAtCreatesOwnerOnlyStore@2025-11-25,2026-07-28",
+			"mcpserver.TestARequestStateCannotBeForgedOrBorrowed@2025-11-25,2026-07-28"),
 		S("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
 		C("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
 		SReq("conformance.TestSamplingValidation",
@@ -160,8 +183,5 @@ func init() {
 		Gap{ID: "sampling-messages-not-retained-between-requests", Side: Client, Issue: "#255", Why: "terminal sampling rows are now pruned past the #1677 age bound, but a sampling request's messages are still retained in elicit.db between separate requests until that bound; the SHOULD NOT is not met"},
 		Gap{ID: "sampling-client-errors-user-rejected-and-tool-shape", Side: Client, Issue: "#1836", Why: "only the -32602 content half remains: sampling messages/results are not yet checked for a missing tool result or tool results mixed with other content (Phase 2 of #1834); the -1 half is covered -- a refusal reaches the upstream as -1 (typed CodedError, #1835)"},
 		Gap{ID: "sampling-server-avoid-includecontext-values", Side: Server, Issue: "#210", Why: "an upstream sampling request is relayed as-is: tools and includeContext reach a client that did not declare sampling.tools or sampling.context"},
-		Gap{ID: "elicitation-server-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
-		Gap{ID: "elicitation-server-stored-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
-		Gap{ID: "elicitation-server-follow-best-practices", Side: Server, Issue: "#255", Why: "requestState signing is sound and question storage is owner-only (0700/0600, #1676); there is no user identity"},
 	)
 }

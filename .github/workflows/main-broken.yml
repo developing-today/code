@@ -83,6 +83,7 @@ on:
       - "identity build"
       - "map build"
       - "id bench"
+      - "pm-console nightly"
     branches: [main]
     types: [completed]
   schedule:

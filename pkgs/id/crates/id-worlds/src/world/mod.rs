@@ -47,7 +47,9 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+pub mod spill_controller;
 pub mod spill_gate;
+pub mod spill_pool;
 mod upgrade;
 mod util;
 
@@ -85,11 +87,12 @@ pub use journal::{
     JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
     JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV, JOURNAL_VERSION_LEASE_POSITION,
     JOURNAL_VERSION_NOTIFY, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
-    JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
-    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY,
-    JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE, JournalAckMode,
-    JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource,
-    MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    JOURNAL_VERSION_PRESENTATION_POLICY, JOURNAL_VERSION_PROGRAM_BUNDLE,
+    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
+    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
+    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -693,7 +696,11 @@ pub const WRITE_LEASE_RENEWAL_INTERVAL_MS: u64 = 10_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum LeaseRejectionReason {
-    /// The writer is not the current lease holder (or there is none).
+    /// No holder stands while the authority is fencing and selecting a
+    /// successor. The caller should retry with backoff against the pool.
+    #[error("world write rejected: holder_lost (retryable)")]
+    HolderLost,
+    /// The writer is not the current lease holder in steady state.
     #[error("world write rejected: not_holder (retryable)")]
     NotHolder,
     /// The writer presented an epoch other than the current one.
@@ -904,6 +911,9 @@ impl WriteLease {
         presented_epoch: u64,
         now_ms: u64,
     ) -> Result<(), LeaseRejectionReason> {
+        if self.holder.is_none() {
+            return Err(LeaseRejectionReason::HolderLost);
+        }
         if self.holder.as_deref() != Some(writer) {
             return Err(LeaseRejectionReason::NotHolder);
         }
@@ -1677,6 +1687,11 @@ pub(crate) fn schedule_fired_event_from(id: &str, late: bool, source: Option<&st
 /// waits while the program cannot take a fire (`deliverable` is false): a due
 /// schedule that cannot be delivered would otherwise wake the loop without end.
 ///
+/// A due schedule whose fire was refused at the account's fuel rate waits
+/// until `not_before` instead (#1067): without this the loop retries the same
+/// refused fire, scans schedules and warns on every pass until rollover. A
+/// schedule that is not due yet keeps its own wake.
+///
 /// The deadline is anchored to `now_instant` (the injected clock's monotonic
 /// face), so a manual clock advancing `now_ms` past a schedule also advances
 /// this deadline.
@@ -1685,13 +1700,21 @@ pub(crate) fn next_schedule_wake(
     now_ms: u64,
     now_instant: std::time::Instant,
     deliverable: bool,
+    not_before: Option<std::time::Instant>,
 ) -> Option<std::time::Instant> {
     if !deliverable {
         return None;
     }
     let earliest = schedules.values().map(|schedule| schedule.at_ms).min()?;
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
-    Some(now_instant + wait)
+    let wake = now_instant + wait;
+    Some(if wait.is_zero() {
+        not_before
+            .filter(|deadline| *deadline > wake)
+            .unwrap_or(wake)
+    } else {
+        wake
+    })
 }
 
 /// The newest `count` chat lines in `events`, oldest first, each carrying its

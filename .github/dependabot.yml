@@ -19,19 +19,80 @@ updates:
         patterns: ["*"]
   - package-ecosystem: "npm"
     directories:
-      - "/"
-      - "/pkgs/supergateway"
+      - "/infra/github-backup/rehost/worker"
+      - "/infra/github-backup/worker"
+      - "/nixos/services/id-mail/worker"
+      - "/.opencode"
+      - "/.opencode/plugin/shell-strategy"
+      - "/pkgs/atlas-search/worker"
+      - "/pkgs/bedside-and-away"
+      - "/pkgs/cf-container-hello"
+      - "/pkgs/cold-store-reaper/worker"
+      - "/pkgs/d1-gateway/worker"
+      - "/pkgs/desktop-commander/worker"
+      - "/pkgs/dot-bridge/site"
+      - "/pkgs/fleet/hosted-worker"
+      - "/pkgs/github-ci/worker"
+      - "/pkgs/id/browser"
+      - "/pkgs/identity/web"
+      - "/pkgs/id/hosted-worker"
+      - "/pkgs/id/worker-poc"
+      - "/pkgs/lab-ops-hub"
+      - "/pkgs/mcpx/worker"
+      - "/pkgs/message-bridge/worker"
+      - "/pkgs/pkarr-worker"
+      - "/pkgs/pkarr-worker/gha-toolchain"
+      - "/pkgs/queue-transport-alert/worker"
+      - "/pkgs/web-gen-api-axum/end2end"
+      - "/pkgs/web-gen-api/end2end"
+      - "/pm-stack/console"
+      - "/pm-stack/console/edge"
+      - "/pm-stack/decision-events-worker"
+      - "/pm-stack/notify-relay"
+      - "/pm-stack/private-laptop-bridge"
+      - "/scripts/muse/handoff/worker"
     schedule:
       interval: "weekly"
+    # Tarball-built npm packages (#14164): the Nix build pins a fixed
+    # registry tarball `src` plus a vendored lockfile, so a Dependabot
+    # lockfile-only bump cannot build (tarball-pin skew, stale
+    # npmDepsHash). These dirs stay excluded; bump them manually per
+    # each default.nix header (version + hash, regenerate lock,
+    # refresh npmDepsHash). Keep these tarball-built paths out of the
+    # scheduled npm directories even when a security-update manifest
+    # mirror exists. command-code has a stripped package.json mirror so
+    # its lock-only security job can read the dependency file; it is not
+    # a scheduled version-update target because the Nix hash must move
+    # with its lock. Other lock-only directories still need a matching
+    # package.json before security updates can read them.
+    # Tarball-built paths: pkgs/wrangler, pkgs/command-code,
+    # pkgs/desktop-commander (same tarball + vendored-lock shape). Keep the
+    # explicitly enumerated npm directories below limited to tracked manifests;
+    # do not add "/" here.
+    # because Dependabot's security-update discovery can still select a
+    # lock-only directory and then fail if its package.json is absent.
     exclude-paths:
+      - "pkgs/cf/**"
       - "pkgs/grok-cli/**"
       - "pkgs/supergateway/**"
+      - "pkgs/wrangler/**"
+      - "pkgs/command-code/**"
+      - "pkgs/desktop-commander/package.json"
+      - "pkgs/desktop-commander/package-lock.json"
       - "pm-stack/voice-line-worker/**"
     groups:
       npm:
         patterns: ["*"]
   - package-ecosystem: "bun"
-    directory: "/pm-stack/voice-line-worker"
+    directories:
+      - "/pkgs/id/e2e"
+      - "/pkgs/id/web"
+      - "/pkgs/mcpx/plugin/opencode"
+      - "/pm-stack/aggregator"
+      - "/pm-stack/dispatch"
+      - "/pm-stack/pm-service"
+      - "/pm-stack/projector"
+      - "/pm-stack/voice-line-worker"
     schedule:
       interval: "weekly"
     groups:
@@ -78,6 +139,12 @@ updates:
       - "/pkgs/tea"
     schedule:
       interval: "weekly"
+    # charmbracelet/ssh v0.4.x+ declares itself as charm.land/ssh, so
+    # Dependabot's gomod update fails the module-path check in chat,
+    # identity, launcher and tea (run 45347745147). Ignored until the
+    # imports move to charm.land/ssh deliberately.
+    ignore:
+      - dependency-name: "github.com/charmbracelet/ssh"
     groups:
       gomod:
         patterns: ["*"]

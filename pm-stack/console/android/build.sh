@@ -24,7 +24,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-GRADLE_VERSION="${GRADLE_VERSION:-8.9}"
+GRADLE_VERSION="${GRADLE_VERSION:-8.11.1}"
 OUT=app/build/outputs/apk/release
 
 if [ -z "${PM_ANDROID_VERSION_CODE:-}" ] || [ -z "${PM_ANDROID_VERSION_NAME:-}" ]; then

@@ -23,6 +23,36 @@ interface Env {
   GITHUB_TOKEN?: string;
   QUEUE_TOKEN?: string;
   EDGE_DIRECT?: string;
+  /** The message bridge, by service binding (#14373), and the PM
+   * stack's own bridge credential: a Worker secret like the two
+   * tokens, put there by scripts/expose.py --edge-direct from the
+   * vault. With both, the edge sends the owner's messages itself, as
+   * service:pm-stack, and reads the agents list and the message log
+   * from the bridge; without either, those stay a machine's. */
+  BRIDGE?: { fetch(request: Request): Promise<Response> };
+  BRIDGE_TOKEN?: string;
+  /** The fleet-platform ledger the hosted M4 ledger surfaces read
+   * (#14968), and their opt-in flag: off unless it reads `on`, and
+   * only after the #14865 gate check recorded on #14968. Which store
+   * answers is LEDGER_STORE: `d1` (the owner ruling of 2026-11-26 on
+   * #14866) reads the LEDGER_DB binding — the D1 database named
+   * fleet-platform; anything else reads the Turso ledger at
+   * PM_LEDGER_DB_URL, whose token is a Worker secret, put there by
+   * scripts/expose.py from the vault (name:
+   * turso.fleet-platform-rw-token). The Turso arm is the rollback:
+   * the same var, flipped back. */
+  PM_LEDGER_DB_URL?: string;
+  PM_LEDGER_DB_TOKEN?: string;
+  LEDGER_PAGES?: string;
+  LEDGER_STORE?: string;
+  LEDGER_DB?: import("./ledger-pages.ts").LedgerD1Database;
+  /** Hosted /dns (#14968 slice 2) and its opt-in flag: off unless it
+   * reads `on`. The surface reads the #902 register snapshot the
+   * collector publishes into the same fleet-platform D1 database, so
+   * it shares the LEDGER_DB binding; the flag is deliberately not
+   * set in wrangler.jsonc / cloudflare.config.ts by the slice that
+   * lands the reader — enabling it is the follow-up flip. */
+  DNS_PAGES?: string;
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -69,6 +99,10 @@ export class PmEdge extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // The app says "ping" to keep its connection from being dropped as
+    // idle; the platform answers "pong" itself, without waking this.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    const bridge = env.BRIDGE;
     this.edge = new Edge({
       fetchImpl: keysFetch(env),
       kv: {
@@ -82,9 +116,45 @@ export class PmEdge extends DurableObject<Env> {
         enabled: env.EDGE_DIRECT === "on",
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
+        bridgeToken: env.BRIDGE_TOKEN,
+        // The binding's fetch, shaped as the fetch the classes take:
+        // not to be called as a method, like the platform's own.
+        bridgeFetch: bridge
+          ? (url: string | URL | Request, init?: RequestInit) => bridge.fetch(new Request(url as string, init))
+          : undefined,
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
+      },
+      ledgerPages:
+        env.LEDGER_PAGES === "on"
+          ? env.LEDGER_STORE === "d1"
+            ? { store: "d1", db: env.LEDGER_DB }
+            : { store: "turso", url: env.PM_LEDGER_DB_URL ?? "", token: env.PM_LEDGER_DB_TOKEN }
+          : undefined,
+      dnsPages: env.DNS_PAGES === "on" ? { db: env.LEDGER_DB } : undefined,
+      // Live connections to the app. The platform holds them, so they
+      // stay open while this object is put away between events, and it
+      // is woken (by its alarm) only when there is something to read.
+      sockets: {
+        accept: () => {
+          const pair = new WebSocketPair();
+          ctx.acceptWebSocket(pair[1]);
+          return new Response(null, { status: 101, webSocket: pair[0] });
+        },
+        send: (text) => {
+          let told = 0;
+          for (const ws of ctx.getWebSockets()) {
+            try {
+              ws.send(text);
+              told++;
+            } catch {
+              // Gone between being listed and being told: the platform drops it.
+            }
+          }
+          return told;
+        },
+        count: () => ctx.getWebSockets().length,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
       getAlarm: () => ctx.storage.getAlarm(),
@@ -100,6 +170,30 @@ export class PmEdge extends DurableObject<Env> {
 
   alarm(): Promise<void> {
     return this.edge.alarm();
+  }
+
+  /** The app says nothing over its connection but "ping" (answered by
+   * the platform, above): what it does goes by its requests, which are
+   * kept and sent again when there is no connection. Anything else
+   * said is not for this. */
+  webSocketMessage(): void {}
+
+  /** The app went away, or the connection broke: finish closing it. */
+  webSocketClose(ws: WebSocket, code: number): void {
+    try {
+      // 1005 and 1006 say how it ended and may not be sent back.
+      ws.close(code === 1005 || code === 1006 ? 1000 : code);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  webSocketError(ws: WebSocket): void {
+    try {
+      ws.close(1011);
+    } catch {
+      // Already closed.
+    }
   }
 }
 

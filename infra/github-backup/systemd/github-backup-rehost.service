@@ -1,0 +1,8 @@
+[Unit]
+Description=github-backup: publish fleet repo packs + refs to the Cloudflare rehost bucket
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash __GB_DIR__/systemd/run-rehost.sh
