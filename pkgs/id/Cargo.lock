@@ -5339,6 +5339,7 @@ dependencies = [
 name = "id-tui-shell"
 version = "0.1.0"
 dependencies = [
+ "id",
  "serde_json",
 ]
 
