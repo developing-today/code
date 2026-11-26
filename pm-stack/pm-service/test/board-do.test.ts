@@ -9,7 +9,7 @@ function tenantDb(snapshotId: string, title: string) {
     async all<T>(sql: string): Promise<T[]> {
       statements.push(sql);
       if (sql.includes("FROM pm_boards")) return [{
-        board_id: "board-a", org: "acme", number: 1, node_id: "PVT_1", url: "https://example.test/1",
+        board_id: "board-a", org: "acme", number: 1, node_id: "PVT_1", url: "https://github.com/orgs/acme/projects/1",
         role: "overall", parent_board_id: null, sibling_order: 0, title: "Board A",
       }] as T[];
       if (sql.includes("FROM pm_snapshots")) return [{
