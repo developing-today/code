@@ -5,12 +5,12 @@
 //! remain pending #11182/#11184.
 
 use atlas_core::version_projection::{
-    project_corrections, project_lineage_claims, project_selected_versions, project_tombstone,
     AtlasCorrection, AtlasFileNoteBinding, AtlasRevisionEdge, AtlasTombstone, AtlasVersionKey,
-    AtlasVersionRow, ProjectedCorrection, ProjectedDocumentRef, ProjectedLineageClaim,
-    ProjectedLineageRef, ProjectedLineageValue, ProjectedNote, ProjectedNoteEventRef,
-    ProjectedSelectedVersion, ProjectedTag, ProjectedTagClear, ProjectedTombstone,
-    ProjectedTombstoneClaim, ProjectedVersion, PROJECTION_VERSION,
+    AtlasVersionRow, PROJECTION_VERSION, ProjectedCorrection, ProjectedDocumentRef,
+    ProjectedLineageClaim, ProjectedLineageRef, ProjectedLineageValue, ProjectedNote,
+    ProjectedNoteEventRef, ProjectedSelectedVersion, ProjectedTag, ProjectedTagClear,
+    ProjectedTombstone, ProjectedTombstoneClaim, ProjectedVersion, project_corrections,
+    project_lineage_claims, project_selected_versions, project_tombstone,
 };
 use proptest::prelude::*;
 use serde_json::Value;
@@ -497,9 +497,11 @@ fn real_projection_matches_fixture_oracle_and_permutations() {
         "fixture oracle mismatch: {}",
         report.summary()
     );
-    assert!(report
-        .summary()
-        .contains("pending: signed complete-unit §6.4, pinned replay §6.1 (#11182/#11184)"));
+    assert!(
+        report
+            .summary()
+            .contains("pending: signed complete-unit §6.4, pinned replay §6.1 (#11182/#11184)")
+    );
 
     let mut reversed = Fixture {
         values: f.values.clone(),
