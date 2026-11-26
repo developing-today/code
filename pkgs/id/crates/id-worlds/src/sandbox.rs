@@ -2524,7 +2524,8 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("A s s #")), "{rows:?}");
         assert!(rows.iter().any(|row| row.contains(". . s X")), "{rows:?}");
         assert!(
-            rows.iter().any(|row| row.contains("soil left=3 cleared=0/3")),
+            rows.iter()
+                .any(|row| row.contains("soil left=3 cleared=0/3")),
             "{rows:?}"
         );
         // (input, expected outcome, expected after-state)
@@ -2589,7 +2590,8 @@ mod tests {
         let rows = view_rows(&mut live);
         assert!(rows.iter().any(|row| row.contains(". . . A")), "{rows:?}");
         assert!(
-            rows.iter().any(|row| row.contains("soil left=0 cleared=3/3")),
+            rows.iter()
+                .any(|row| row.contains("soil left=0 cleared=3/3")),
             "{rows:?}"
         );
         assert!(

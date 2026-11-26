@@ -650,7 +650,10 @@ impl TierPresenter {
             // carries the new dimensions, so the presenter sees every
             // resize here.
             let dims = (screen.width, screen.height);
-            if self.previous_text_dims.is_some_and(|previous| previous != dims) {
+            if self
+                .previous_text_dims
+                .is_some_and(|previous| previous != dims)
+            {
                 self.previous_text.clear();
             }
             self.previous_text_dims = Some(dims);
@@ -1396,14 +1399,16 @@ mod tests {
     fn text_mode_presenter_output_never_contains_an_escape_byte() {
         // Oracle: design D2 — in text mode no escape sequence is ever
         // written, even for the first (full) frame.
-        let mut presenter =
-            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
         let first = presenter.render_screen(&screen(&["hello", "world"]));
         let second = presenter.render_screen(&screen(&["hello", "there"]));
 
         assert!(!first.contains('\x1b'), "first frame escaped: {first:?}");
         assert!(!second.contains('\x1b'), "delta frame escaped: {second:?}");
-        assert!(first.contains("hello"), "first frame lost its text: {first:?}");
+        assert!(
+            first.contains("hello"),
+            "first frame lost its text: {first:?}"
+        );
     }
 
     #[test]
@@ -1414,8 +1419,7 @@ mod tests {
         // is exactly the changed-lines form computed against nothing,
         // so applying it over any prior frame state yields the new
         // frame (TextDelta::apply parity).
-        let mut presenter =
-            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
 
         let joined = presenter.render_screen(&screen(&["alpha", "beta"]));
         assert_eq!(joined, "alpha\r\nbeta\r\n", "join is a full frame");
