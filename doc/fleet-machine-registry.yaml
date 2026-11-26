@@ -33,6 +33,46 @@ machines:
       # (OpenChamber, dispatcher). Port from the shared definitions in
       # home/common/default.nix.
       opencode_server: http://127.0.0.1:13420
+    # Transport offers (#14714; transport & pooling design §1.2): one
+    # per transport this host serves. Endpoint data only; credentials
+    # by NAME (the secrets broker's names), never values. Every
+    # credential here is bound to this record's `id`, never a stand-in
+    # for it. Liveness is not recorded here (the health block is).
+    # Two names are file-held today, not broker-held: laptop-agent-token
+    # (~/tools/laptop-agent-token) and ssh.operator-key (the operator's
+    # ~/.ssh/id_ed25519).
+    transports:
+      - name: commander-door # Desktop Commander MCP door (#13404), tier T1
+        kind: commander-door
+        endpoint:
+          url: https://commander.security.cab/mcp
+        credentials: [desktop-commander.machine-bearer]
+      - name: laptop-agent-cf # laptop-agent daemon via the Cloudflare door (#10796)
+        kind: laptop-agent
+        endpoint:
+          url: https://sandbox-link.security.cab
+          port: 4799 # PORT_LAPTOP_AGENT, the daemon behind the door
+        credentials: [cloudflare.access-laptop-agent, laptop-agent-token]
+      - name: laptop-agent-tailnet # the same daemon, direct over the tailnet
+        kind: tsnet
+        endpoint:
+          address: 100.99.113.103
+          port: 4799
+        credentials: [laptop-agent-token]
+      - name: ssh # real SSH, tier T3 (pinned host key)
+        kind: ssh
+        endpoint:
+          target: user@amd-6
+          port: 22
+        credentials: [ssh.operator-key]
+    # Which agent classes may use which offers (§1.2). Today every lane
+    # and seat that reaches amd uses the full ladder; hosted MCP clients
+    # speak HTTPS only, so they get the public door alone.
+    enrollment:
+      opencode-lanes:
+        [laptop-agent-cf, laptop-agent-tailnet, ssh, commander-door]
+      muse-seats: [laptop-agent-cf, laptop-agent-tailnet, ssh, commander-door]
+      external-mcp-clients: [commander-door]
     capabilities:
       queue_worker: true
       opencode_sessions: true
@@ -55,25 +95,25 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: "2026-11-25T00:54:12Z"
+      last_seen: '2026-11-26T14:54:02Z'
       status: degraded
       checks:
-        reported_at: "2026-11-25T00:54:12Z"
+        reported_at: '2026-11-26T14:54:02Z'
         reachable:
           state: ok
           ssh: true
           opencode_server_http: 200
         load_headroom:
-          state: ok
-          load15: 4.58
+          state: failed
+          load15: 17.55
           cpu_cores: 16
-          load15_per_core: 0.286
+          load15_per_core: 1.097
         disk_headroom:
           state: failed
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 192
-          free_pct: 5.7
+          free_gb: 128
+          free_pct: 3.8
         sessions:
           state: ok
           listed: 50
@@ -82,7 +122,7 @@ machines:
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: "22676"
-          queue: repo-health-nix-pilot
-          worker: agent-next-24-local
-          completed_at: "2026-11-25T00:53:55Z"
+          task_id: '23885'
+          queue: repo-health-code-pilot
+          worker: repo-worker-code
+          completed_at: '2026-11-26T13:18:38Z'

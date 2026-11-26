@@ -102,6 +102,8 @@ fn issue_leaf(issuer: &Path, out: &Path, name: &str, valid_for: CalendarDuration
             name: name.into(),
             common_name: None,
             dns_names: vec!["www.example.test".into()],
+            ip_addresses: vec![],
+            csr: None,
             key_algorithm: None,
             issuer_algorithm: None,
             issuer_partition: None,

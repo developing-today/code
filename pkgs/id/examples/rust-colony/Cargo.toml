@@ -2,8 +2,18 @@
 name = "rust-colony"
 version = "0.1.0"
 edition = "2021"
-description = "Colony hauling world (#13605): pure Rust domain twin of the Roc colony guest, checked against the colony/two-deliveries oracle."
+description = "Colony hauling world (#13605) for Plaza ABI v1, checked against the colony/two-deliveries oracle."
 license = "MIT OR Apache-2.0"
 
 # Standalone crate: intentionally not a member of the pkgs/id workspace.
 [workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+plaza-sdk = { path = "../rust-world" }
+
+[profile.release]
+opt-level = "s"
+strip = true

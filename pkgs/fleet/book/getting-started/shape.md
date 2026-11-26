@@ -52,9 +52,9 @@ registry — every build knows every domain" on every variant, and why domain
 help never stubs — help is registry data and renders identically everywhere,
 with unavailable domains marked inline.
 
-The nineteen domains, in registry (help) order, are `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`,
-`gh`, `bridge`, `orgs`, `agent`, `shell`, `search`, `cert`,
-`laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `actions`. Their purposes are tabulated in the
+The twenty-two domains, in registry (help) order, are `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`,
+`gh`, `bridge`, `orgs`, `kv`, `id`, `agent`, `shell`, `search`, `cert`,
+`laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `host`, `actions`. Their purposes are tabulated in the
 [introduction](../index.md#the-domain-map).
 
 Each domain declares a _primary capability_ — the capability its headline
@@ -63,16 +63,16 @@ availability keys on. One consequence worth knowing: on the serve build the
 search _client_, even though the `search-serve` capability exists in that
 build under the `serve` domain.
 
-## Capabilities: the 22
+## Capabilities: the 24
 
 A _capability_ is an atom of function that a build can include or omit.
-There are 22, in registry order:
+There are 24, in registry order:
 
 ```
 proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker,
 secrets-broker, search, search-serve, dispatch, dispatch-test,
 laptop-agent, secrets, gh, bridge, agent, commander, laptop-http,
-laptop-ssh, laptop, cert, actions, orgs
+laptop-ssh, laptop, cert, actions, orgs, kv, id
 ```
 
 Notes:
@@ -81,7 +81,8 @@ Notes:
   not even a Cargo feature. `proxy-raw-splice` joins it in the runtime's
   always-present set.
 - There is no `shell` capability atom: the `shell` domain rides on the
-  `agent` capability.
+  `agent` capability. Likewise there is no `host` capability atom: the
+  `host` domain rides on the `laptop` capability.
 - A domain can require several capabilities. `serve` requires four
   (`queue-broker`, `secrets-broker`, `search-serve`, `proxy-serve`) — one per
   role — and the capability checked for a `serve` invocation is the one for
@@ -104,7 +105,7 @@ invocation profiles above.
 
 | Variant | Installed name  | Compiled capabilities                                                                                                                                                  |
 | ------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Full    | `fleet`         | all 22                                                                                                                                                                 |
+| Full    | `fleet`         | all 24                                                                                                                                                                 |
 | Serve   | `fleet-serve`   | `proxy-connect`, `proxy-serve`, `proxy-raw-splice`, `queue-broker`, `secrets-broker`, `search-serve`, `secrets` (7) — daemon roles plus proxy, no working-seat clients |
 | Connect | `fleet-connect` | `proxy-connect`, `proxy-raw-splice` (2)                                                                                                                                |
 
