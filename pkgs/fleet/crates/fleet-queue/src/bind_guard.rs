@@ -69,7 +69,7 @@ pub fn retry_with_budget<T, E>(
                 if !is_retryable(&e) || elapsed >= budget {
                     return Err(e);
                 }
-                sleep(delay_for_attempt(attempt));
+                sleep(delay_for_attempt(attempt).min(budget - elapsed));
                 attempt = attempt.saturating_add(1);
             }
         }
@@ -81,25 +81,20 @@ pub fn retry_with_budget<T, E>(
 /// Logs each retry through `crate::log` so the journal shows the
 /// wait instead of a restart spiral.
 pub fn tcp_bind_with_retry(domain: &str, bind: &str) -> std::io::Result<std::net::TcpListener> {
-    let deadline = std::time::Instant::now() + BUDGET;
-    let mut attempt: u32 = 0;
-    loop {
-        match std::net::TcpListener::bind(bind) {
-            Ok(listener) => return Ok(listener),
-            Err(e) => {
-                if !is_retryable_bind(&e) || std::time::Instant::now() >= deadline {
-                    return Err(e);
-                }
-                let delay = delay_for_attempt(attempt);
-                crate::log::info(
-                    domain,
-                    &format!("cannot bind {bind} yet ({e:?}); retrying in {delay:?}"),
-                );
-                std::thread::sleep(delay);
-                attempt = attempt.saturating_add(1);
-            }
-        }
-    }
+    let start = std::time::Instant::now();
+    retry_with_budget(
+        BUDGET,
+        || std::net::TcpListener::bind(bind),
+        is_retryable_bind,
+        |delay| {
+            crate::log::info(
+                domain,
+                &format!("address unavailable: cannot bind {bind} yet; retrying in {delay:?}"),
+            );
+            std::thread::sleep(delay);
+        },
+        || start.elapsed(),
+    )
 }
 
 #[cfg(test)]
@@ -107,6 +102,47 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    proptest::proptest! {
+        /// Oracle: saturating exponential policy, positive, monotonic,
+        /// and capped for every failure count, including u32::MAX.
+        #[test]
+        fn delay_is_positive_monotonic_and_capped(attempt in proptest::num::u32::ANY) {
+            let delay = delay_for_attempt(attempt);
+            proptest::prop_assert!(delay >= BASE_DELAY);
+            proptest::prop_assert!(delay <= CAP_DELAY);
+            proptest::prop_assert!(delay <= delay_for_attempt(attempt.saturating_add(1)));
+        }
+    }
+
+    /// Oracle: real loopback bind succeeds immediately without retries.
+    #[test]
+    fn ready_address_binds_immediately() {
+        let listener = tcp_bind_with_retry("bind-guard-test", "127.0.0.1:0").unwrap();
+        assert!(listener.local_addr().unwrap().ip().is_loopback());
+    }
+
+    /// Oracle: virtual sleeps sum exactly to the budget, including
+    /// a clipped final delay; the original error survives exhaustion.
+    #[test]
+    fn sleep_is_clipped_to_remaining_budget() {
+        let (sleeps, sleep, now) = fake_clock();
+        let mut calls = 0;
+        let err = retry_with_budget(
+            Duration::from_secs(5),
+            || {
+                calls += 1;
+                Err::<(), _>(std::io::Error::from_raw_os_error(libc::EADDRNOTAVAIL))
+            },
+            is_retryable_bind,
+            sleep,
+            now,
+        )
+        .unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EADDRNOTAVAIL));
+        assert_eq!(calls, 4);
+        assert_eq!(*sleeps.borrow(), [1, 2, 2].map(Duration::from_secs));
+    }
 
     /// A fake clock shared between the sleep recorder and the `now`
     /// probe: both closures hold a clone, so no double-mutable-borrow.
@@ -178,7 +214,7 @@ mod tests {
     #[test]
     fn flapping_bind_succeeds_after_two_retries() {
         let mut calls = 0;
-        let (sleeps, mut sleep, now) = fake_clock();
+        let (sleeps, sleep, now) = fake_clock();
         let res = retry_with_budget(
             Duration::from_secs(600),
             || {
@@ -235,7 +271,7 @@ mod tests {
     #[test]
     fn retryable_error_past_budget_returns_the_last_error() {
         let mut calls = 0;
-        let (sleeps, mut sleep, now) = fake_clock();
+        let (sleeps, sleep, now) = fake_clock();
         let res = retry_with_budget(
             Duration::from_secs(3),
             || {
@@ -247,7 +283,7 @@ mod tests {
             now,
         );
         assert!(res.is_err());
-        assert_eq!(calls, 3, "attempts at t=0,1,3 within a 5s budget");
+        assert_eq!(calls, 3, "attempts at t=0,1,3 within a 3s budget");
         assert_eq!(
             *sleeps.borrow(),
             vec![Duration::from_secs(1), Duration::from_secs(2)]

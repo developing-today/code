@@ -6,20 +6,24 @@ Run with: python3 -m unittest discover -s pkgs/laptop-agent/tests -p "test_bind_
 """
 
 import os
-import sys
+import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 AGENT = Path(__file__).resolve().parents[1] / "src" / "laptop_agent.py"
 
 # Scrubbing first: importing laptop_agent parses LAPTOP_AGENT_* at
 # module load and exits 3 on garbage, so the importing environment
 # must be clean (#15533 slice note).
-for _var in list(os.environ):
-    if _var.startswith("LAPTOP_AGENT_") or _var.startswith("FLEET_CTX_"):
-        del os.environ[_var]
-sys.path.insert(0, str(AGENT.parent))
-import laptop_agent as la  # noqa: E402
+_clean_env = {
+    k: v for k, v in os.environ.items()
+    if not k.startswith(("LAPTOP_AGENT_", "FLEET_CTX_"))
+}
+with patch.dict(os.environ, _clean_env, clear=True):
+    _spec = importlib.util.spec_from_file_location("bind_guard_agent", AGENT)
+    la = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(la)
 
 
 def _raise(err):
@@ -30,6 +34,28 @@ class BindGuardTest(unittest.TestCase):
     """Oracle: only errno 99 (EADDRNOTAVAIL) retries, with a 1s doubling
     schedule capped at 15s inside a 10-minute budget; every other bind
     error raises on the first attempt."""
+
+    def test_main_listens_after_address_appears(self):
+        """Oracle: actual daemon startup retries the server constructor
+        twice, preserves TLS arguments, then enters serve_forever."""
+        server = Mock()
+        with (
+            patch.object(la, "STATE_DIR"),
+            patch.object(la, "load_persisted_jobs"),
+            patch.object(la, "reap_old_jobs"),
+            patch.object(la.threading, "Thread"),
+            patch.object(la.time, "sleep") as sleep,
+            patch.object(la, "AgentServer", side_effect=[
+                OSError(99, "address absent"), OSError(99, "address absent"), server
+            ]) as constructor,
+        ):
+            la.main()
+        self.assertEqual(constructor.call_count, 3)
+        constructor.assert_called_with(
+            (la.BIND_HOST, la.BIND_PORT), la.Handler, tls_context=la.TLS_CONTEXT
+        )
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [1.0, 2.0])
+        server.serve_forever.assert_called_once_with()
 
     def test_retryable_class_is_only_eaddrnotavail(self):
         self.assertTrue(
@@ -44,6 +70,32 @@ class BindGuardTest(unittest.TestCase):
             [la.bind_retry_delay(a) for a in range(8)],
             [1.0, 2.0, 4.0, 8.0, 15.0, 15.0, 15.0, 15.0],
         )
+
+    def test_ready_at_start_never_sleeps(self):
+        """Oracle: an available address keeps the one-attempt startup path."""
+        server = object()
+        make = Mock(return_value=server)
+        self.assertIs(la.bind_with_retry(make, sleep=lambda _: self.fail("slept")), server)
+        make.assert_called_once_with()
+
+    def test_absent_address_clips_sleep_to_budget(self):
+        """Oracle: virtual attempts at 0,1,3,5 seconds, never beyond 5s."""
+        clock = [0.0]
+        sleeps = []
+        error = OSError(99, "address absent")
+        make = Mock(side_effect=error)
+
+        def sleep(delay):
+            sleeps.append(delay)
+            clock[0] += delay
+
+        with patch.object(la.time, "monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaises(OSError) as raised:
+                la.bind_with_retry(make, budget_s=5, sleep=sleep)
+        self.assertIs(raised.exception, error)
+        self.assertEqual(sleeps, [1.0, 2.0, 2.0])
+        self.assertEqual(make.call_count, 4)
+        self.assertEqual(clock[0], 5.0)
 
     def test_flapping_bind_succeeds_after_two_retries(self):
         calls = []

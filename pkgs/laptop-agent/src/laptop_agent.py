@@ -90,6 +90,7 @@ import hmac
 import json
 import math
 import os
+import errno
 import secrets
 import shutil
 import signal
@@ -2299,7 +2300,6 @@ class AgentServer(ThreadingHTTPServer):
 BIND_RETRY_BUDGET_S = 600.0
 BIND_RETRY_BASE_S = 1.0
 BIND_RETRY_CAP_S = 15.0
-_EADDRNOTAVAIL = 99
 
 
 def bind_retry_delay(attempt):
@@ -2309,21 +2309,24 @@ def bind_retry_delay(attempt):
 
 def is_retryable_bind_error(exc):
     """True only for the tailnet-not-ready signature (errno 99)."""
-    return getattr(exc, "errno", None) == _EADDRNOTAVAIL
+    return getattr(exc, "errno", None) == errno.EADDRNOTAVAIL
 
 
-def bind_with_retry(make_server, budget_s=BIND_RETRY_BUDGET_S, sleep=time.sleep):
+def bind_with_retry(make_server, budget_s=BIND_RETRY_BUDGET_S, sleep=None):
     """Call `make_server()` until it binds, the error is fatal, or the
     budget elapses. At least one attempt always runs."""
+    if sleep is None:
+        sleep = time.sleep
     deadline = time.monotonic() + budget_s
     attempt = 0
     while True:
         try:
             return make_server()
         except OSError as e:
-            if not is_retryable_bind_error(e) or time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if not is_retryable_bind_error(e) or remaining <= 0:
                 raise
-            delay = bind_retry_delay(attempt)
+            delay = min(bind_retry_delay(attempt), remaining)
             print(
                 f"laptop-agent: cannot bind {BIND_HOST}:{BIND_PORT} yet "
                 f"({e}); retrying in {delay:g}s",
