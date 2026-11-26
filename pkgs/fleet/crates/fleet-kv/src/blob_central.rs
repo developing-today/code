@@ -17,13 +17,15 @@
 //!   transaction, that no root names the content, then removes the row
 //!   under the partition's next epoch and writes the audit row.
 //!
-//! [`roots`] loads a partition's GC roots as a [`crate::plane::Roots`].
+//! [`roots`] loads a partition's GC roots as a [`crate::plane::Roots`], and
+//! [`gc_pass`] runs one mark, clear and delete pass over a partition, with
+//! candidacy kept in `kv_blob_candidates` so grace survives between passes.
 
 use std::collections::BTreeSet;
 
 use crate::blob::{KvBlobRefV1, Partition};
 use crate::central::{self, CentralError, Intent, Op, Pipeline, Receipt, Result, Statement, Value};
-use crate::plane::{Deletion, Roots};
+use crate::plane::{Deletion, Roots, Sweep};
 
 /// Record a verified object as published in its partition. Publishing the
 /// same content again keeps the first row.
@@ -75,6 +77,39 @@ pub(crate) const BLOB_DELETE: &str = "DELETE FROM kv_blobs
 /// This attempt's fence row, if the delete happened.
 pub(crate) const BLOB_DELETION_READ: &str = "SELECT epoch, deleted_at_ms FROM kv_blob_deletions
     WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND attempt = ?6";
+
+/// Drop candidacy for content a root names again, or that is gone.
+pub(crate) const BLOB_CANDIDATES_CLEAR: &str = "DELETE FROM kv_blob_candidates
+    WHERE jurisdiction = ?1 AND tier = ?2
+        AND (EXISTS (SELECT 1 FROM kv_blob_refs AS root
+                WHERE root.jurisdiction = ?1 AND root.tier = ?2
+                    AND root.content_id = kv_blob_candidates.content_id)
+            OR NOT EXISTS (SELECT 1 FROM kv_blobs AS blob
+                WHERE blob.jurisdiction = ?1 AND blob.tier = ?2
+                    AND blob.content_id = kv_blob_candidates.content_id))
+    RETURNING content_id";
+
+/// Mark every published, unrooted object not yet a candidate, as of ?3.
+pub(crate) const BLOB_CANDIDATES_MARK: &str = "INSERT OR IGNORE INTO kv_blob_candidates (
+        jurisdiction, tier, content_id, since_ms)
+    SELECT blob.jurisdiction, blob.tier, blob.content_id, ?3
+    FROM kv_blobs AS blob
+    WHERE blob.jurisdiction = ?1 AND blob.tier = ?2
+        AND NOT EXISTS (SELECT 1 FROM kv_blob_refs AS root
+            WHERE root.jurisdiction = ?1 AND root.tier = ?2
+                AND root.content_id = blob.content_id)
+    RETURNING content_id";
+
+/// Candidates whose grace ran out by ?3 (candidacy began at or before it).
+pub(crate) const BLOB_CANDIDATES_DUE: &str = "SELECT content_id, since_ms FROM kv_blob_candidates
+    WHERE jurisdiction = ?1 AND tier = ?2 AND since_ms <= ?3 ORDER BY content_id";
+
+/// A fenced delete drops the candidacy, only under this attempt's fence.
+pub(crate) const BLOB_CANDIDATE_DROP: &str = "DELETE FROM kv_blob_candidates
+    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3
+        AND EXISTS (SELECT 1 FROM kv_blob_deletions AS fence
+            WHERE fence.jurisdiction = ?1 AND fence.tier = ?2
+                AND fence.content_id = ?3 AND fence.attempt = ?6)";
 
 /// A published object as central records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +272,7 @@ pub fn fenced_delete(
     let results = primary.transaction(&[
         Statement::numbered(BLOB_DELETION_INSERT, &args),
         Statement::numbered(BLOB_DELETE, &args),
+        Statement::numbered(BLOB_CANDIDATE_DROP, &args),
         Statement::numbered(BLOB_DELETION_READ, &args),
     ])?;
     let Some(row) = results.last().and_then(|rows| rows.rows.first()) else {
@@ -250,6 +286,53 @@ pub fn fenced_delete(
         candidate_since_ms,
         reverified_at_ms: field(1).as_i64().unwrap_or(0),
     }))
+}
+
+/// One GC pass over `partition` at `now_ms`, with `grace_ms` of grace.
+///
+/// First, in one transaction, candidacy is cleared for content a root names
+/// again (or that is gone), and every published object no root names
+/// becomes a candidate as of `now_ms`. Then each candidate whose grace has
+/// run out is fenced-deleted; [`fenced_delete`] re-verifies the roots in its
+/// own transaction, so a reference that lands between the two steps keeps
+/// the object (and the next pass clears its candidacy). Candidacy lives on
+/// the primary, so grace counts from the first pass that saw the object
+/// unrooted, whichever process ran it.
+pub fn gc_pass(
+    primary: &dyn Pipeline,
+    partition: &Partition,
+    now_ms: i64,
+    grace_ms: i64,
+) -> Result<Sweep> {
+    let [jurisdiction, tier] = partition_args(partition);
+    let marked_at = [jurisdiction.clone(), tier.clone(), Value::Integer(now_ms)];
+    let results = primary.transaction(&[
+        Statement::numbered(BLOB_CANDIDATES_CLEAR, &marked_at),
+        Statement::numbered(BLOB_CANDIDATES_MARK, &marked_at),
+    ])?;
+    let count = |index: usize| results.get(index).map_or(0, |rows| rows.rows.len());
+    let mut sweep = Sweep {
+        marked: count(1),
+        cleared: count(0),
+        deleted: Vec::new(),
+    };
+    let due = central::read(
+        primary,
+        BLOB_CANDIDATES_DUE,
+        &[
+            jurisdiction,
+            tier,
+            Value::Integer(now_ms.saturating_sub(grace_ms)),
+        ],
+    )?;
+    for row in due {
+        let content_id = row.first().map(central::string).unwrap_or_default();
+        let since_ms = row.get(1).and_then(Value::as_i64).unwrap_or(now_ms);
+        if let Some(deletion) = fenced_delete(primary, partition, &content_id, since_ms)? {
+            sweep.deleted.push(deletion);
+        }
+    }
+    Ok(sweep)
 }
 
 #[cfg(test)]
@@ -426,6 +509,92 @@ mod tests {
         assert!(roots.is_referenced(&eu(), &first.digest));
         assert!(roots.is_referenced(&eu(), &second.digest));
         assert_eq!(published(&primary, &eu()).unwrap().len(), 2);
+    }
+
+    fn deleted_ids(sweep: &Sweep) -> Vec<String> {
+        sweep
+            .deleted
+            .iter()
+            .map(|deletion| deletion.digest.clone())
+            .collect()
+    }
+
+    #[test]
+    fn blob_gc_pass_waits_out_grace_then_fences_only_unrooted_objects() {
+        let primary = primary();
+        let kept = reference(b"kept");
+        let orphan = reference(b"orphan");
+        for reference in [&kept, &orphan] {
+            mark_published(&primary, reference).unwrap();
+        }
+        committed(publish_cas(&primary, &intent("k", 0, &kept, "1"), &kept).unwrap());
+
+        let first = gc_pass(&primary, &eu(), 100, 50).unwrap();
+        assert_eq!((first.marked, first.cleared), (1, 0));
+        assert!(first.deleted.is_empty(), "grace has not started to run");
+        // Candidacy is kept: a later pass marks nothing new, and grace
+        // still counts from the first pass.
+        let early = gc_pass(&primary, &eu(), 149, 50).unwrap();
+        assert_eq!((early.marked, early.cleared), (0, 0));
+        assert!(early.deleted.is_empty(), "one millisecond short of grace");
+
+        let due = gc_pass(&primary, &eu(), 150, 50).unwrap();
+        assert_eq!(deleted_ids(&due), vec![orphan.digest.clone()]);
+        assert_eq!(due.deleted[0].candidate_since_ms, 100);
+        assert_eq!(due.deleted[0].epoch, 1);
+        let left: Vec<_> = published(&primary, &eu())
+            .unwrap()
+            .into_iter()
+            .map(|published| published.content_id)
+            .collect();
+        assert_eq!(left, vec![kept.digest.clone()]);
+        // Nothing is left to do.
+        let after = gc_pass(&primary, &eu(), 10_000, 50).unwrap();
+        assert_eq!(
+            (after.marked, after.cleared, after.deleted.len()),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn blob_gc_pass_clears_candidacy_when_a_reference_lands_during_grace() {
+        let primary = primary();
+        let late = reference(b"referenced during grace");
+        mark_published(&primary, &late).unwrap();
+        assert_eq!(gc_pass(&primary, &eu(), 0, 50).unwrap().marked, 1);
+
+        committed(publish_cas(&primary, &intent("late", 0, &late, "1"), &late).unwrap());
+        let cleared = gc_pass(&primary, &eu(), 60, 50).unwrap();
+        assert_eq!((cleared.marked, cleared.cleared), (0, 1));
+        assert!(
+            cleared.deleted.is_empty(),
+            "a rooted object is never deleted"
+        );
+        assert_eq!(published(&primary, &eu()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn blob_gc_pass_restarts_grace_for_content_published_again_after_a_delete() {
+        let primary = primary();
+        let churn = reference(b"published, deleted, published again");
+        mark_published(&primary, &churn).unwrap();
+        gc_pass(&primary, &eu(), 0, 50).unwrap();
+        assert_eq!(gc_pass(&primary, &eu(), 50, 50).unwrap().deleted.len(), 1);
+
+        // The fence dropped the candidacy, so the new object's grace
+        // starts at the pass that first sees it, not at the old mark.
+        mark_published(&primary, &churn).unwrap();
+        let again = gc_pass(&primary, &eu(), 60, 50).unwrap();
+        assert_eq!((again.marked, again.deleted.len()), (1, 0));
+        assert!(
+            gc_pass(&primary, &eu(), 109, 50)
+                .unwrap()
+                .deleted
+                .is_empty()
+        );
+        let deleted = gc_pass(&primary, &eu(), 110, 50).unwrap();
+        assert_eq!(deleted.deleted[0].candidate_since_ms, 60);
+        assert_eq!(deleted.deleted[0].epoch, 2);
     }
 
     #[test]

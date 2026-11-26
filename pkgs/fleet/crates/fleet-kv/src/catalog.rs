@@ -203,6 +203,30 @@ pub fn entries() -> Vec<Entry> {
             blob_central::BLOB_DELETION_READ,
             NONE,
         ),
+        entry(
+            "blob.candidates_clear",
+            Admin,
+            blob_central::BLOB_CANDIDATES_CLEAR,
+            NONE,
+        ),
+        entry(
+            "blob.candidates_mark",
+            Admin,
+            blob_central::BLOB_CANDIDATES_MARK,
+            NONE,
+        ),
+        entry(
+            "blob.candidates_due",
+            Admin,
+            blob_central::BLOB_CANDIDATES_DUE,
+            NONE,
+        ),
+        entry(
+            "blob.candidate_drop",
+            Admin,
+            blob_central::BLOB_CANDIDATE_DROP,
+            NONE,
+        ),
     ]
 }
 
