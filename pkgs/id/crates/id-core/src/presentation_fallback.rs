@@ -166,6 +166,13 @@ fn validate_candidate(
     if !kind_matches {
         return Err(FallbackError::WrongOutputKind(rung));
     }
+    if let RenderedArt::Glyph(glyph) = &candidate.art {
+        if glyph.as_str().trim().is_empty() || glyph.as_str() == "?" {
+            return Err(FallbackError::BlankOrUnknownGlyph(
+                glyph.as_str().to_owned(),
+            ));
+        }
+    }
     if let Some(tag) = candidate.retained_tags.difference(source_tags).next() {
         return Err(FallbackError::AddsUnknownTag(tag.clone()));
     }
@@ -310,6 +317,20 @@ mod tests {
         assert_eq!(resolved.rung, Rung::Glyph);
         assert!(FallbackCandidate::glyph("", BTreeSet::new(), vec![]).is_err());
         assert!(FallbackCandidate::glyph("?", BTreeSet::new(), vec![]).is_err());
+        let bypassed_constructor = FallbackPlan {
+            rich: None,
+            static_substitute: None,
+            tileset: None,
+            glyph: FallbackCandidate {
+                art: RenderedArt::Glyph(Glyph::new("?").unwrap()),
+                retained_tags: BTreeSet::new(),
+                retained_filters: vec![],
+            },
+        };
+        assert_eq!(
+            bypassed_constructor.resolve(Rung::Rich, &BTreeSet::new(), &[]),
+            Err(FallbackError::BlankOrUnknownGlyph("?".to_owned()))
+        );
     }
 
     proptest::proptest! {
