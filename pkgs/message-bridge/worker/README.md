@@ -355,7 +355,7 @@ comma-separated string, case-insensitive.
 
 | Address                         | Reaches                                                                     |
 | ------------------------------- | --------------------------------------------------------------------------- |
-| `drew` (or `owner`, `central`)  | Drew: an outbound row on a connector's channel, or a post to central        |
+| `owner` (or `drew`, `central`)  | Drew: an outbound row on a connector's channel, or a post to central        |
 | `claude`, `chatgpt`             | that connector (also `channel:claude`, `channel:chatgpt`)                   |
 | `connectors`                    | every other connector                                                       |
 | `agent:<name>` (or a bare name) | that agent's mailbox (registered or not; unregistered ones are listed back) |

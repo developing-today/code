@@ -33,7 +33,7 @@ The six global flags are defined with clap `global = true`: each one is accepted
 | `-d`, `--data-dir` | `DIR`             | current directory                    | Base directory for `.iroh-store`, `.iroh-key` and `.iroh-serve.lock`. Created if it does not exist. The process changes its working directory into `DIR` at startup. Conflicts with `--new`.                                                               |
 | `--new`            | `NAME` (optional) | none                                 | Create a new instance directory `.iroh/<NAME>/` under the current directory and change into it. A missing value means the empty string, which generates a random 8-hex-character name. Fails if the directory already exists. Conflicts with `--data-dir`. |
 | `--groups-log`     | `FILE`            | `groups.jsonl` in the data directory | The group log read and appended to by `group`, `delegate` and `revoke`. A relative path is resolved relative to the data directory.                                                                                                                        |
-| `--event-store`    | `DIR`             | `events` in the data directory       | The event store read and appended to by `doc`, `claim` and `writer-sets`. A relative path is resolved relative to the data directory.                                                                                                                      |
+| `--event-store`    | `DIR`             | `events` in the data directory       | The event store read and appended to by `doc`, `claim`, `talk` and `writer-sets`. A relative path is resolved relative to the data directory.                                                                                                              |
 
 Behaviour notes:
 
@@ -113,17 +113,17 @@ $ echo $?
 
 The parser defines 32 top-level commands and 113 leaf commands. The reference chapters divide them as follows:
 
-| Family                          | Commands                                                                                                 | Chapter                                                            |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| File storage and retrieval      | `put`, `put-hash`, `send`, `get`, `get-hash`, `cat`, `list`, `migrate-tags`                              | [File commands: put, get, find and kin](cli-files.md)              |
-| Search                          | `find`, `search`, `show`, `peek`                                                                         | [File commands: put, get, find and kin](cli-files.md)              |
-| Tags                            | `tag set`, `tag del`, `tag list`, `tag search`                                                           | [The tag family](cli-tags.md)                                      |
-| Hosting and publications        | `serve`, `publish`, `unpublish`, `publications`                                                          | [serve and publications](cli-serve.md)                             |
-| Worlds (playing)                | `world invite`, `world join`, `world records`, `world mirror`, `world download`, and kin                 | [World commands: joining and playing](cli-worlds.md)               |
-| Worlds (administering)          | `world install`, `world compile`, `world caps`, `world doctor`, and kin                                  | [World commands: administering and verifying](cli-worlds-admin.md) |
-| Gallery, match-audit, walk      | `gallery …`, `match-audit …`, `walk …`                                                                   | [Gallery, match-audit and walk](cli-gallery-walk.md)               |
-| Groups, documents, claims, keys | `group …`, `delegate`, `revoke`, `doc …`, `claim …`, `writer-sets …`, `id`, `key …`, `keyset …`, `peers` | [Groups, documents, claims and keys](cli-groups-identity.md)       |
-| Interactive shell               | `repl` (alias `shell`), bare `id`                                                                        | [The interactive REPL](repl.md)                                    |
-| Desktop shell                   | the separate `id-native-shell` binary                                                                    | [id-native-shell](native-shell.md)                                 |
+| Family                          | Commands                                                                                                           | Chapter                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| File storage and retrieval      | `put`, `put-hash`, `send`, `get`, `get-hash`, `cat`, `list`, `migrate-tags`                                        | [File commands: put, get, find and kin](cli-files.md)              |
+| Search                          | `find`, `search`, `show`, `peek`                                                                                   | [File commands: put, get, find and kin](cli-files.md)              |
+| Tags                            | `tag set`, `tag del`, `tag list`, `tag search`                                                                     | [The tag family](cli-tags.md)                                      |
+| Hosting and publications        | `serve`, `publish`, `unpublish`, `publications`                                                                    | [serve and publications](cli-serve.md)                             |
+| Worlds (playing)                | `world invite`, `world join`, `world records`, `world mirror`, `world download`, and kin                           | [World commands: joining and playing](cli-worlds.md)               |
+| Worlds (administering)          | `world install`, `world compile`, `world caps`, `world doctor`, and kin                                            | [World commands: administering and verifying](cli-worlds-admin.md) |
+| Gallery, match-audit, walk      | `gallery …`, `match-audit …`, `walk …`                                                                             | [Gallery, match-audit and walk](cli-gallery-walk.md)               |
+| Groups, documents, claims, keys | `group …`, `delegate`, `revoke`, `doc …`, `claim …`, `talk …`, `writer-sets …`, `id`, `key …`, `keyset …`, `peers` | [Groups, documents, claims and keys](cli-groups-identity.md)       |
+| Interactive shell               | `repl` (alias `shell`), bare `id`                                                                                  | [The interactive REPL](repl.md)                                    |
+| Desktop shell                   | the separate `id-native-shell` binary                                                                              | [id-native-shell](native-shell.md)                                 |
 
 Cross-cutting configuration — `defaults.json`, the full environment variable list, and feature-gated builds — is covered in [Configuration and environment](configuration.md). The on-disk layout behind `--data-dir`, `--groups-log` and `--event-store` is covered in [Data stores and schemas](data-stores.md).

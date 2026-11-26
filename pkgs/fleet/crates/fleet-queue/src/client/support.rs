@@ -194,7 +194,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
   needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
   claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
-  release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\
+  release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
   heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
@@ -217,6 +217,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   show <task-id> [--limit <n>] [--json]\n\
   note <add|list|edit|remove> ...\n\
+  link <add|remove|list> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -252,7 +253,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
         }
         "release" => {
-            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\nReleases a held claim."
+            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
         }
         "lane" => {
             "usage: repo-queue lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\nReports lane progress on a task."
@@ -319,6 +320,18 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "note" => {
             "usage: repo-queue note <add|list|edit|remove> ...\n\nA task's notes: an append-only, authored stream (#14170 Q4). Run `repo-queue note <sub> --help` for flags."
+        }
+        "link" => {
+            "usage: repo-queue link <add|remove|list> ...\n\nManages normalized relationships for a queue task."
+        }
+        "link add" => {
+            "usage: repo-queue link add <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nAdds an issue, pull request, or task relationship. Exactly one target option is required."
+        }
+        "link remove" => {
+            "usage: repo-queue link remove <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nSoft-removes a relationship. Exactly one target option is required."
+        }
+        "link list" => {
+            "usage: repo-queue link list <task-id> [--include-removed] [--json]\n\nLists a task's relationships."
         }
         "note add" => {
             "usage: repo-queue note add <task-id> --text <text> [--worker <id>] [--kind agent|human|system] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nAppends a note to a task. The worker is the author. The body is at most 4096 characters. Without marks, a note by the task's claim holder copies the claim's session and model."

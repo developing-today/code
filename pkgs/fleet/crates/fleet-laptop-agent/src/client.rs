@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -70,6 +71,32 @@ fn dispatch(
     got.map_err(CallFailure::Transport)
 }
 
+/// The line a call served by the SSH leg prints on stderr
+/// (developing-today/code#15419, design #10356 section 2): the leg
+/// ladder can fall from the daemon's HTTP API to SSH, and under the
+/// #13717 route-form matrix that is tier T3, so it says so in the same
+/// words the fleet route forms announce themselves with.
+pub(crate) const SSH_FORM_LINE: &str = "fleet: form T3 ssh/fleet";
+
+/// Whether this process has already printed [`SSH_FORM_LINE`]; a poll
+/// loop over the SSH leg says it once, not once per page.
+static SSH_FORM_ANNOUNCED: AtomicBool = AtomicBool::new(false);
+
+/// Print [`SSH_FORM_LINE`] to `w` the first time a call is answered
+/// by the SSH leg. Calls answered by an HTTP leg print nothing.
+pub(crate) fn note_form(
+    result: &Result<Answer, CallFailure>,
+    announced: &AtomicBool,
+    w: &mut dyn Write,
+) {
+    if let Ok(answer) = result
+        && answer.leg == "ssh"
+        && !announced.swap(true, Ordering::SeqCst)
+    {
+        let _ = writeln!(w, "{SSH_FORM_LINE}");
+    }
+}
+
 /// One request, logged as one trip. The trip id rides in the header and,
 /// for `POST /exec` and `POST /jobs`, in the body (the session proxy
 /// forwards bodies verbatim, so the body is the carrier that reaches the
@@ -119,6 +146,7 @@ fn send_ex(
     let started = Instant::now();
     let t_sent = crate::now_ms();
     let result = dispatch(ladder, req, Some(deadline));
+    note_form(&result, &SSH_FORM_ANNOUNCED, &mut std::io::stderr());
     let status = result.as_ref().ok().map(|a| a.reply.status);
     let transport = result.as_ref().ok().map(|a| crate::transport_name(a.leg));
     let t_received = result.as_ref().ok().and_then(|a| {
@@ -271,6 +299,124 @@ pub fn jobs(ladder: &Arc<Ladder>) -> i32 {
     }
 }
 
+/// One row of `fleet http sessions` (developing-today/code#15420): a
+/// daemon job seen as a connect session. The owning context id is
+/// the job's recorded `FLEET_CTX_ID`, shown only when the caller
+/// exported one and never guessed. `bytes_dropped` is what a spool
+/// cap discarded (0 until the daemon reports it).
+pub fn session_row(job: &Value) -> Value {
+    let ctx_id = job
+        .get("ctx")
+        .and_then(|c| c.get("FLEET_CTX_ID"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let bytes = |k: &str| job.get(k).and_then(Value::as_u64).unwrap_or(0);
+    json!({
+        "id": job.get("job_id").cloned().unwrap_or(Value::Null),
+        "origin": "daemon",
+        "ctx_id": ctx_id,
+        "cmd": job.get("cmd").cloned().unwrap_or(Value::Null),
+        "started_at": job.get("started_at").cloned().unwrap_or(Value::Null),
+        "state": job.get("state").cloned().unwrap_or(Value::Null),
+        "exit": job.get("exit").cloned().unwrap_or(Value::Null),
+        "out_bytes": bytes("out_bytes"),
+        "err_bytes": bytes("err_bytes"),
+        "bytes_dropped": bytes("bytes_dropped"),
+    })
+}
+
+/// Render session rows as an aligned table, one session per line.
+pub fn render_sessions(rows: &[Value]) -> String {
+    let mut lines = vec![[
+        "ID".to_string(),
+        "ORIGIN".to_string(),
+        "STATE".to_string(),
+        "STARTED".to_string(),
+        "OUT".to_string(),
+        "ERR".to_string(),
+        "DROPPED".to_string(),
+        "CTX".to_string(),
+        "CMD".to_string(),
+    ]];
+    for r in rows {
+        let text = |k: &str| match r.get(k) {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => "-".to_string(),
+            Some(other) => other.to_string(),
+        };
+        let started = r
+            .get("started_at")
+            .and_then(Value::as_f64)
+            .map(|t| crate::iso_utc(t as i64))
+            .unwrap_or_else(|| "-".to_string());
+        lines.push([
+            text("id"),
+            text("origin"),
+            text("state"),
+            started,
+            text("out_bytes"),
+            text("err_bytes"),
+            text("bytes_dropped"),
+            text("ctx_id"),
+            text("cmd"),
+        ]);
+    }
+    let mut widths = [0usize; 9];
+    for l in &lines {
+        for (w, cell) in widths.iter_mut().zip(l.iter()) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let mut out = String::new();
+    for l in &lines {
+        let mut row = String::new();
+        for (i, cell) in l.iter().enumerate() {
+            if i + 1 == l.len() {
+                row.push_str(cell);
+            } else {
+                row.push_str(&format!("{cell:<w$}  ", w = widths[i]));
+            }
+        }
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// `sessions`: the daemon's jobs as connect sessions (#15420).
+pub fn sessions(ladder: &Arc<Ladder>, as_json: bool) -> i32 {
+    let trip = crate::new_trip();
+    match call(
+        ladder,
+        &trip,
+        "GET",
+        "/jobs",
+        None,
+        true,
+        default_deadline(),
+    ) {
+        Ok(reply) => {
+            note_fallbacks(&reply);
+            let rows: Vec<Value> = reply
+                .body
+                .get("jobs")
+                .and_then(Value::as_array)
+                .map(|jobs| jobs.iter().map(session_row).collect())
+                .unwrap_or_default();
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({ "sessions": rows })).unwrap_or_default()
+                );
+            } else {
+                print!("{}", render_sessions(&rows));
+            }
+            0
+        }
+        Err(e) => fail(e),
+    }
+}
+
 pub fn kill(ladder: &Arc<Ladder>, job: &str) -> i32 {
     let trip = crate::new_trip();
     let path = format!("/jobs/{job}/kill");
@@ -400,10 +546,10 @@ pub fn run(ladder: &Arc<Ladder>, spec: Value) -> i32 {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct Offsets {
-    out: u64,
-    err: u64,
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone, PartialEq)]
+pub(crate) struct Offsets {
+    pub(crate) out: u64,
+    pub(crate) err: u64,
 }
 
 fn offsets_file(job: &str) -> std::path::PathBuf {
@@ -440,47 +586,139 @@ pub fn poll_interval(polls: u32) -> Duration {
     Duration::from_secs(1u64.saturating_mul(1 << polls.min(4)).min(10))
 }
 
-pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
-    let deadline = Instant::now() + Duration::from_secs(wait_s);
-    let mut offs = load_offsets(job);
+/// How one drain of a job's spool ended.
+#[derive(Debug)]
+pub(crate) enum Drained {
+    /// The job is done and every spooled byte was written out; the
+    /// final reply body (for the exit code and duration).
+    Done(Value),
+    /// The wait ran out while the job was still running.
+    StillRunning,
+    /// A request failed.
+    Failed(CallFailure),
+    /// A reply had no `out_next`/`err_next`.
+    BadReply,
+}
+
+/// True once a `done` job's spool has been read to the end
+/// (developing-today/code#15420): either the daemon reported the
+/// spool sizes (`out_size`/`err_size`) and the cursors reached them,
+/// or this reply carried no bytes on either stream. A done job used
+/// to stop at its first reply, which carries at most 1 MiB per
+/// stream, so a larger spool was cut short.
+fn spool_drained(
+    body: &Value,
+    out_next: u64,
+    err_next: u64,
+    got_out: usize,
+    got_err: usize,
+) -> bool {
+    if got_out == 0 && got_err == 0 {
+        return true;
+    }
+    match (
+        body.get("out_size").and_then(Value::as_u64),
+        body.get("err_size").and_then(Value::as_u64),
+    ) {
+        (Some(out_size), Some(err_size)) => out_next >= out_size && err_next >= err_size,
+        _ => false,
+    }
+}
+
+/// Page a job's spool from `offs` until the job is done and the spool
+/// is drained, or until `deadline` while it is still running. `fetch`
+/// asks the daemon for one page at the given offsets; `save` records
+/// the cursors after each page; `sleep` waits between polls of a
+/// running job. A finished job is paged without sleeping.
+pub(crate) fn drain<F, S, W>(
+    mut fetch: F,
+    offs: &mut Offsets,
+    deadline: Instant,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    mut save: S,
+    mut sleep: W,
+) -> Drained
+where
+    F: FnMut(&Offsets) -> Result<Value, CallFailure>,
+    S: FnMut(&Offsets),
+    W: FnMut(Duration),
+{
     let mut polls: u32 = 0;
     loop {
-        let trip = crate::new_trip();
-        let path = format!("/jobs/{job}?out_off={}&err_off={}", offs.out, offs.err);
-        let reply = match call(ladder, &trip, "GET", &path, None, true, default_deadline()) {
-            Ok(reply) => reply,
-            Err(e) => return fail(e),
+        let body = match fetch(offs) {
+            Ok(body) => body,
+            Err(e) => return Drained::Failed(e),
         };
-        let body = &reply.body;
-        let mut out = std::io::stdout();
-        let mut err = std::io::stderr();
-        let _ = out.write_all(
-            body.get("stdout")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .as_bytes(),
-        );
+        let chunk_out = body.get("stdout").and_then(Value::as_str).unwrap_or("");
+        let chunk_err = body.get("stderr").and_then(Value::as_str).unwrap_or("");
+        let _ = out.write_all(chunk_out.as_bytes());
         let _ = out.flush();
-        let _ = err.write_all(
-            body.get("stderr")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .as_bytes(),
-        );
+        let _ = err.write_all(chunk_err.as_bytes());
         let _ = err.flush();
         let (Some(out_next), Some(err_next)) = (
             body.get("out_next").and_then(Value::as_u64),
             body.get("err_next").and_then(Value::as_u64),
         ) else {
-            eprintln!("laptop-agent: reply has no out_next/err_next");
-            return 1;
+            return Drained::BadReply;
         };
-        offs = Offsets {
+        // The cursors are byte offsets into the spool; a reply that
+        // did not move them carried nothing new.
+        let got_out = out_next.saturating_sub(offs.out) as usize;
+        let got_err = err_next.saturating_sub(offs.err) as usize;
+        *offs = Offsets {
             out: out_next,
             err: err_next,
         };
-        save_offsets(job, &offs);
+        save(offs);
         if body.get("state").and_then(Value::as_str) == Some("done") {
+            if spool_drained(&body, out_next, err_next, got_out, got_err) {
+                return Drained::Done(body);
+            }
+            continue;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Drained::StillRunning;
+        }
+        sleep((deadline - now).min(poll_interval(polls)));
+        polls = polls.saturating_add(1);
+    }
+}
+
+/// The explicit marker `attach` prints when the daemon's spool cap
+/// discarded output (developing-today/code#15420, design #10356
+/// section 3.3): output is never silently truncated. `None` when the
+/// reply reports no dropped bytes, including a daemon from before the
+/// cap that sends no count at all.
+pub(crate) fn spool_cap_marker(body: &Value) -> Option<String> {
+    let dropped = body.get("bytes_dropped").and_then(Value::as_u64)?;
+    (dropped > 0).then(|| format!("[spool cap reached: {dropped} bytes dropped]"))
+}
+
+pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(wait_s);
+    let mut offs = load_offsets(job);
+    let fetch = |o: &Offsets| {
+        let trip = crate::new_trip();
+        let path = format!("/jobs/{job}?out_off={}&err_off={}", o.out, o.err);
+        call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body)
+    };
+    let mut out = std::io::stdout();
+    let mut err = std::io::stderr();
+    match drain(
+        fetch,
+        &mut offs,
+        deadline,
+        &mut out,
+        &mut err,
+        |o| save_offsets(job, o),
+        thread::sleep,
+    ) {
+        Drained::Done(body) => {
+            if let Some(marker) = spool_cap_marker(&body) {
+                eprintln!("{marker}");
+            }
             let exit = body.get("exit").cloned().unwrap_or(Value::Null);
             let dur = body.get("duration_ms").cloned().unwrap_or(Value::Null);
             eprintln!(
@@ -488,15 +726,17 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
                 py_opt(&exit),
                 py_opt(&dur)
             );
-            return exit.as_i64().map(|v| v as i32).unwrap_or(1);
+            exit.as_i64().map(|v| v as i32).unwrap_or(1)
         }
-        let now = Instant::now();
-        if now >= deadline {
+        Drained::StillRunning => {
             eprintln!("[laptop-agent] job {job} still running");
-            return 0;
+            0
         }
-        thread::sleep((deadline - now).min(poll_interval(polls)));
-        polls = polls.saturating_add(1);
+        Drained::Failed(e) => fail(e),
+        Drained::BadReply => {
+            eprintln!("laptop-agent: reply has no out_next/err_next");
+            1
+        }
     }
 }
 
@@ -625,6 +865,361 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ladder::{Leg, LegError, Reply as LegReply};
+
+    /// A leg that always gives the same answer.
+    struct FixedLeg {
+        name: &'static str,
+        ok: bool,
+    }
+
+    impl Leg for FixedLeg {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn call(&self, _req: &Request) -> Result<LegReply, LegError> {
+            if self.ok {
+                Ok(LegReply {
+                    status: 200,
+                    body: b"{\"ok\": true}".to_vec(),
+                })
+            } else {
+                Err(LegError::Unsent("connect refused".into()))
+            }
+        }
+    }
+
+    fn ladder_of(legs: &[(&'static str, bool)]) -> Arc<Ladder> {
+        Arc::new(Ladder::new(
+            legs.iter()
+                .map(|&(name, ok)| Box::new(FixedLeg { name, ok }) as Box<dyn Leg>)
+                .collect(),
+        ))
+    }
+
+    fn health_req() -> Request {
+        Request {
+            method: "GET",
+            path: "/health".into(),
+            body: None,
+            trip: "t".into(),
+            idempotent: true,
+            direct_only: false,
+        }
+    }
+
+    #[test]
+    fn ssh_leg_serving_a_call_announces_form_t3_ssh_15419() {
+        let ladder = ladder_of(&[
+            ("broker", false),
+            ("cloudflare", false),
+            ("tailscale", false),
+            ("ssh", true),
+        ]);
+        let result = dispatch(&ladder, health_req(), Some(Duration::from_secs(5)));
+        assert_eq!(result.as_ref().map(|a| a.leg).ok(), Some("ssh"));
+        let announced = AtomicBool::new(false);
+        let mut err = Vec::new();
+        note_form(&result, &announced, &mut err);
+        let text = String::from_utf8(err).unwrap();
+        assert!(text.contains("form T3 ssh"), "{text}");
+        assert_eq!(text, format!("{SSH_FORM_LINE}\n"));
+        // A second call in the same process (a poll loop) says nothing more.
+        let mut again = Vec::new();
+        note_form(&result, &announced, &mut again);
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn http_leg_serving_a_call_prints_no_form_line_15419() {
+        for served_by in ["broker", "cloudflare", "tailscale"] {
+            let legs: Vec<(&'static str, bool)> = ["broker", "cloudflare", "tailscale", "ssh"]
+                .into_iter()
+                .map(|n| (n, n == served_by))
+                .collect();
+            let result = dispatch(
+                &ladder_of(&legs),
+                health_req(),
+                Some(Duration::from_secs(5)),
+            );
+            assert_eq!(result.as_ref().map(|a| a.leg).ok(), Some(served_by));
+            let mut err = Vec::new();
+            note_form(&result, &AtomicBool::new(false), &mut err);
+            assert!(err.is_empty(), "{served_by}");
+        }
+        // A failed call prints no form line either.
+        let failed = dispatch(
+            &ladder_of(&[("broker", false), ("ssh", false)]),
+            health_req(),
+            Some(Duration::from_secs(5)),
+        );
+        assert!(failed.is_err());
+        let mut err = Vec::new();
+        note_form(&failed, &AtomicBool::new(false), &mut err);
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn session_row_maps_a_daemon_job_15420() {
+        let job = json!({
+            "job_id": "j1", "state": "done", "exit": 0, "cwd": "/",
+            "cmd": "make test", "started_at": 86400.5,
+            "ctx": {"FLEET_CTX_ID": "ctx-9", "FLEET_CTX_TASK_ID": "7"},
+            "out_bytes": 2_000_000, "err_bytes": 12,
+        });
+        let row = session_row(&job);
+        assert_eq!(row["id"], "j1");
+        assert_eq!(row["origin"], "daemon");
+        assert_eq!(row["ctx_id"], "ctx-9");
+        assert_eq!(row["out_bytes"], 2_000_000);
+        assert_eq!(row["bytes_dropped"], 0);
+        let table = render_sessions(&[row]);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("ID"));
+        assert!(lines[1].contains("1970-01-02T00:00:00Z"), "{table}");
+        assert!(lines[1].ends_with("make test"), "{table}");
+    }
+
+    #[test]
+    fn spool_cap_marker_names_the_dropped_bytes_15420() {
+        let body = json!({"state": "done", "bytes_dropped": 4096});
+        assert_eq!(
+            spool_cap_marker(&body).as_deref(),
+            Some("[spool cap reached: 4096 bytes dropped]")
+        );
+        assert_eq!(spool_cap_marker(&json!({"bytes_dropped": 0})), None);
+        // A daemon from before the cap sends no count: no marker.
+        assert_eq!(spool_cap_marker(&json!({"state": "done"})), None);
+    }
+
+    #[test]
+    fn session_row_never_guesses_a_context_id() {
+        let row = session_row(&json!({"job_id": "j2", "state": "running", "ctx": {}}));
+        assert!(row["ctx_id"].is_null());
+        assert!(
+            render_sessions(&[row])
+                .lines()
+                .nth(1)
+                .unwrap()
+                .contains(" - ")
+        );
+    }
+
+    /// One stream of a fake daemon spool, served the way the daemon's
+    /// `job_public` serves it: at most 1 MiB from the requested offset.
+    const PAGE: usize = 1 << 20;
+
+    fn page(spool: &[u8], off: u64) -> (String, u64) {
+        let start = (off as usize).min(spool.len());
+        let end = (start + PAGE).min(spool.len());
+        (
+            String::from_utf8(spool[start..end].to_vec()).unwrap(),
+            end as u64,
+        )
+    }
+
+    /// A fake `GET /jobs/<id>` over in-memory spools. `sizes` adds the
+    /// `out_size`/`err_size` fields newer daemons send (#15420).
+    fn fake_daemon<'a>(
+        out: &'a [u8],
+        err: &'a [u8],
+        sizes: bool,
+        calls: &'a std::cell::Cell<u32>,
+    ) -> impl FnMut(&Offsets) -> Result<Value, CallFailure> + 'a {
+        move |o: &Offsets| {
+            calls.set(calls.get() + 1);
+            let (stdout, out_next) = page(out, o.out);
+            let (stderr, err_next) = page(err, o.err);
+            let mut body = json!({
+                "state": "done",
+                "exit": 0,
+                "duration_ms": 5,
+                "stdout": stdout,
+                "stderr": stderr,
+                "out_next": out_next,
+                "err_next": err_next,
+            });
+            if sizes {
+                body["out_size"] = json!(out.len());
+                body["err_size"] = json!(err.len());
+            }
+            Ok(body)
+        }
+    }
+
+    fn spool(len: usize, seed: u8) -> Vec<u8> {
+        (0..len)
+            .map(|i| b'a' + ((i as u8).wrapping_add(seed) % 26))
+            .collect()
+    }
+
+    /// #15420: attaching to a finished job with more than 1 MiB
+    /// spooled returns every byte, not just the first page.
+    #[test]
+    fn attach_to_finished_job_over_1mib_returns_every_byte_15420() {
+        let out_spool = spool(3 * PAGE + 123, 0);
+        let err_spool = spool(PAGE + 7, 5);
+        for sizes in [true, false] {
+            let calls = std::cell::Cell::new(0);
+            let mut offs = Offsets::default();
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let got = drain(
+                fake_daemon(&out_spool, &err_spool, sizes, &calls),
+                &mut offs,
+                Instant::now(),
+                &mut out,
+                &mut err,
+                |_| {},
+                |_| panic!("a finished job is drained without sleeping"),
+            );
+            assert!(matches!(got, Drained::Done(_)), "sizes={sizes}: {got:?}");
+            assert_eq!(out.len(), out_spool.len(), "sizes={sizes}");
+            assert!(out == out_spool, "stdout differs, sizes={sizes}");
+            assert!(err == err_spool, "stderr differs, sizes={sizes}");
+            assert_eq!(
+                offs,
+                Offsets {
+                    out: out_spool.len() as u64,
+                    err: err_spool.len() as u64
+                }
+            );
+            // With sizes the drain stops on the page that reaches them;
+            // without, one more (empty) page confirms the end.
+            let pages = out_spool.len().div_ceil(PAGE) as u32;
+            assert_eq!(calls.get(), if sizes { pages } else { pages + 1 });
+        }
+    }
+
+    #[test]
+    fn drain_resumes_from_saved_offsets_and_saves_each_page() {
+        let out_spool = spool(2 * PAGE + 10, 1);
+        let calls = std::cell::Cell::new(0);
+        let mut offs = Offsets {
+            out: PAGE as u64,
+            err: 0,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut saved = Vec::new();
+        let got = drain(
+            fake_daemon(&out_spool, b"", true, &calls),
+            &mut offs,
+            Instant::now(),
+            &mut out,
+            &mut err,
+            |o| saved.push(o.clone()),
+            |_| {},
+        );
+        assert!(matches!(got, Drained::Done(_)));
+        assert!(out[..] == out_spool[PAGE..]);
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved.last().unwrap().out, out_spool.len() as u64);
+    }
+
+    #[test]
+    fn done_job_whose_cursor_stalls_still_finishes() {
+        // Sizes claim more than the spool serves (a spool cut under
+        // the daemon): an empty page ends the drain, never a loop.
+        let calls = std::cell::Cell::new(0);
+        let fetch = |o: &Offsets| {
+            calls.set(calls.get() + 1);
+            Ok(json!({
+                "state": "done", "exit": 3, "stdout": "", "stderr": "",
+                "out_next": o.out, "err_next": o.err,
+                "out_size": 99, "err_size": 0,
+            }))
+        };
+        let mut offs = Offsets::default();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let got = drain(
+            fetch,
+            &mut offs,
+            Instant::now(),
+            &mut out,
+            &mut err,
+            |_| {},
+            |_| {},
+        );
+        match got {
+            Drained::Done(body) => assert_eq!(body["exit"], 3),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn running_job_sleeps_until_done_then_drains() {
+        let calls = std::cell::Cell::new(0);
+        let fetch = |o: &Offsets| {
+            let n = calls.get();
+            calls.set(n + 1);
+            if n == 0 {
+                return Ok(json!({
+                    "state": "running", "stdout": "ab", "stderr": "",
+                    "out_next": 2, "err_next": 0,
+                }));
+            }
+            let rest = if o.out < 4 { "cd" } else { "" };
+            Ok(json!({
+                "state": "done", "exit": 0, "stdout": rest, "stderr": "",
+                "out_next": o.out + rest.len() as u64, "err_next": 0,
+            }))
+        };
+        let mut sleeps = 0;
+        let mut offs = Offsets::default();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let got = drain(
+            fetch,
+            &mut offs,
+            Instant::now() + Duration::from_secs(60),
+            &mut out,
+            &mut err,
+            |_| {},
+            |_| sleeps += 1,
+        );
+        assert!(matches!(got, Drained::Done(_)));
+        assert_eq!(out, b"abcd");
+        assert_eq!(sleeps, 1);
+    }
+
+    #[test]
+    fn running_job_past_deadline_reports_still_running() {
+        let fetch = |_: &Offsets| {
+            Ok(json!({
+                "state": "running", "stdout": "", "stderr": "",
+                "out_next": 0, "err_next": 0,
+            }))
+        };
+        let mut offs = Offsets::default();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let got = drain(
+            fetch,
+            &mut offs,
+            Instant::now(),
+            &mut out,
+            &mut err,
+            |_| {},
+            |_| {},
+        );
+        assert!(matches!(got, Drained::StillRunning));
+    }
+
+    #[test]
+    fn reply_without_cursors_is_a_bad_reply() {
+        let fetch = |_: &Offsets| Ok(json!({ "state": "done" }));
+        let mut offs = Offsets::default();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let got = drain(
+            fetch,
+            &mut offs,
+            Instant::now(),
+            &mut out,
+            &mut err,
+            |_| {},
+            |_| {},
+        );
+        assert!(matches!(got, Drained::BadReply));
+    }
 
     /// #14188: the FLEET_CTX_* record rides the exec/jobs spec `env`,
     /// and the SSH fallback leg exports it on the remote line.

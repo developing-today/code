@@ -309,11 +309,13 @@ it is — a valid world capability, minted by the host's admin with
 | `petname`      |                                | List the petnames one owner gave, read-only             |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
 | `walk`         |                                | The #9106 walking skeleton, driven by hand              |
+| `host`         |                                | Host mode: run a data root of worlds and operate it     |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |
 | `delegate`     |                                | Grant a delegate a scope in a group                     |
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
 | `doc`          |                                | Publish documents; list events/frontier/history         |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
+| `talk`         |                                | Talk pages: post on and list an object's discussion     |
 | `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
 
 ### Tag Subcommands

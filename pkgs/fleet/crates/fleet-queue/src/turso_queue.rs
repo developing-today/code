@@ -51,6 +51,7 @@ mod core;
 pub mod ctx_scope;
 mod label_enrich;
 mod lifecycle;
+mod links;
 mod notes;
 mod placement_coord;
 mod placement_sessions;
@@ -66,6 +67,7 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use links::*;
 pub use notes::*;
 pub use placement_coord::*;
 pub use placement_sessions::*;
@@ -856,6 +858,111 @@ mod tests {
             bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
             "a failed predecessor must still revive: {bodies:?}"
         );
+    }
+
+    #[test]
+    fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
+        // The fleet monitor's 2026-11-25 finding on #10627: a fresh
+        // filing under a standard key whose task already completed
+        // got the DONE row back with no signal it was a terminal
+        // return rather than a creation, so `queue/queued` issues
+        // silently held no live task. The absorption stands
+        // (#13091); the envelope must now name it.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![done]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "done", "{out}");
+        assert_eq!(
+            out["dedupe_match"]["dedupe_key"],
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_live_key_match_reports_dedupe_match_10627() {
+        // The live half of the same report: a filing absorbed by a
+        // live holder of the key names the match as live, so a
+        // caller can tell "attach to the holder" apart from both a
+        // creation and a terminal return.
+        let live = task_row_13091(
+            4242,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![(
+            "dedupe_key = ?",
+            task_select_reply_13091(vec![live]),
+        )]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_live", "{out}");
+        assert_eq!(out["dedupe_match"]["task_id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["status"], "queued", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_fresh_filing_carries_no_dedupe_match_10627() {
+        // Negative space: a filing that creates its row (here the
+        // revive-on-enqueue path over a failed predecessor) must
+        // NOT carry the absorption report — the field means
+        // "absorbed", never "filed".
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, _captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
     }
 
     #[test]
@@ -4906,7 +5013,12 @@ mod tests {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
         // session binding cleared and a `released` audit event;
-        // attempts are NOT handed back.
+        // attempts are NOT handed back. #12901 exception: a
+        // release whose claim consumed the last attempt fails the
+        // row at the cap instead (the #6463 expiry_disposition
+        // oracle, sink rows exempt), with the reason in last_error
+        // and a `failed` audit event — a queued return there is
+        // the unclaimable churn zombie.
         let src = &test_source();
         let seg = seg8217(
             src,
@@ -4920,12 +5032,59 @@ mod tests {
             "DELETE FROM leases",
             "attempt change",
             "SET status = 'queued'",
+            "expiry_disposition(attempts, max_attempts)",
+            "expired_claim_returns_to_sink(&progress)",
+            "SET status = 'failed'",
+            "released at attempt cap",
+            "\"released_at_cap\": true",
         ] {
             assert!(seg.contains(needle), "verb_release misses {needle}");
         }
         assert!(
             src.contains("\"/release\" => verb_release(t, req),"),
             "release is dispatched"
+        );
+    }
+
+    #[test]
+    fn release_platform_limit_contract_14993() {
+        // Oracle (#14993): a release can record a platform
+        // limitation -- the route-mismatch hand-back -- so the
+        // claim pick stops offering the task to seats of the wrong
+        // family (the five redraws of laptop-routed task 23528).
+        // verb_release validates the pair with the lane verb's own
+        // validator before anything mutates, writes it to the lane
+        // ledger the pick clause reads (upserting a minimal row
+        // when the claim never created one), records it on the
+        // `released` event, and the client passes both flags
+        // through under the lane verb's field names.
+        let src = &test_source();
+        let seg = seg8217(
+            src,
+            "pub(crate) fn verb_release(",
+            "\npub(crate) fn verb_wake(",
+        );
+        for needle in [
+            "platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())",
+            "UPDATE repo_task_lane_ledger SET platform_limit = ?",
+            "INSERT INTO repo_task_lane_ledger",
+            "\"platform_limit\": limit_family",
+            "\"platform_limit_reason\": limit_reason",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        let client_src = [
+            include_str!("client/support.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+        ]
+        .concat();
+        assert!(
+            client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"),
+            "the release client passes --limit-platform through"
+        );
+        assert!(
+            client_src.contains("\"platform_limit_reason\": args.get(\"limit-reason\")"),
+            "the release client passes --limit-reason through"
         );
     }
 

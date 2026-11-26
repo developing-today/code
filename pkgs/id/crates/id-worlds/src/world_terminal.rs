@@ -4,8 +4,10 @@
 //! stay on the client side; they are not part of shell-contract frames or the
 //! event journal.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
+use crate::kitty_graphics::{Action, GraphicsGate, KittyGraphicsError, PayloadClass, StillPayload};
 use crate::world_presentation::ScreenSurface;
 
 /// Total startup window for the batched capability queries.
@@ -16,9 +18,12 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// XTGETTCAP's special `Co` color-count capability is queried alongside an
 /// ANSI cursor-position report. The remaining
 /// sequences are Kitty's keyboard and graphics queries, DEC mode 2026 via
-/// DECRQM, and primary device attributes for Sixel detection.
-pub(crate) const PROBE_QUERIES: &[u8] =
-    b"\x1bP+q436F\x1b\\\x1b[6n\x1b[?u\x1b[?2026$p\x1b[c\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
+/// DECRQM, and primary device attributes for Sixel detection. The burst
+/// ends with the kitty graphics payload-class queries of
+/// [`crate::kitty_graphics`] (IDs 41 to 43: PNG, raw RGBA, zlib RGBA), so
+/// the same round trip learns which stills formats this terminal accepts
+/// (#13623): detection alone is not support.
+pub(crate) const PROBE_QUERIES: &[u8] = b"\x1bP+q436F\x1b\\\x1b[6n\x1b[?u\x1b[?2026$p\x1b[c\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Ga=q,t=d,f=100,i=41;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\x1b\\\x1b_Ga=q,t=d,f=32,s=1,v=1,i=42;AAAAAA==\x1b\\\x1b_Ga=q,t=d,f=32,s=1,v=1,o=z,i=43;eJxjYGBgAAAABAAB\x1b\\";
 
 /// Injectable byte I/O used by the SSH PTY and interactive iroh TTY adapters.
 ///
@@ -50,6 +55,12 @@ pub struct TerminalProfile {
     pub synchronized_output: bool,
     /// The Kitty keyboard flags query returned a syntactically valid report.
     pub kitty_keyboard: bool,
+    /// The kitty graphics PNG (`f=100`) payload query answered OK.
+    pub kitty_png: bool,
+    /// The kitty graphics raw RGBA (`f=32`) payload query answered OK.
+    pub kitty_rgba: bool,
+    /// The kitty graphics zlib RGBA (`f=32,o=z`) payload query answered OK.
+    pub kitty_rgba_zlib: bool,
 }
 
 impl TerminalProfile {
@@ -523,7 +534,9 @@ impl TextDelta {
 ///   against the previous screen (full repaint when a diff is impossible,
 ///   e.g. after a resize or [`TierPresenter::invalidate`]).
 /// - Tier 3 renders text only: no full-screen escapes, and after the
-///   first view only the changed lines (a [`TextDelta`]).
+///   first view only the changed lines (a [`TextDelta`]). A view whose
+///   dimensions differ from the previous one is a full frame again
+///   (the join/resize form, #14937).
 ///
 /// Under [`DisplayMode::Primary`] the cell-grid tiers paint with the
 /// primary-mode contract instead ([`ScreenSurface::paint_primary`]):
@@ -541,6 +554,9 @@ pub struct TierPresenter {
     mode: DisplayMode,
     previous_screen: Option<ScreenSurface>,
     previous_text: Vec<String>,
+    /// Dimensions of the last screen this presenter projected to text;
+    /// a change forces the text path's full-frame form (#14937).
+    previous_text_dims: Option<(u16, u16)>,
     counters: PresenterCounters,
     sync_used: bool,
 }
@@ -556,6 +572,7 @@ impl TierPresenter {
             mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
+            previous_text_dims: None,
             counters: PresenterCounters::default(),
             sync_used: false,
         }
@@ -571,6 +588,7 @@ impl TierPresenter {
             mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
+            previous_text_dims: None,
             counters: PresenterCounters::default(),
             sync_used: false,
         }
@@ -629,11 +647,27 @@ impl TierPresenter {
     pub fn invalidate(&mut self) {
         self.previous_screen = None;
         self.previous_text = Vec::new();
+        self.previous_text_dims = None;
     }
 
     /// Render one screen view for this presenter's tier.
     pub fn render_screen(&mut self, screen: &ScreenSurface) -> String {
         if self.tier == PresentationTier::Tier3 {
+            // A size change is answered with the terse full-frame form
+            // (#14937): the text path's full form is a diff against
+            // nothing, so a resize drops the remembered lines before
+            // diffing, exactly as a join does. The shell forwards the
+            // resize to the world, and the world's answering view
+            // carries the new dimensions, so the presenter sees every
+            // resize here.
+            let dims = (screen.width, screen.height);
+            if self
+                .previous_text_dims
+                .is_some_and(|previous| previous != dims)
+            {
+                self.previous_text.clear();
+            }
+            self.previous_text_dims = Some(dims);
             let projection = screen.text_projection();
             let lines: Vec<String> = if projection.is_empty() {
                 Vec::new()
@@ -732,6 +766,55 @@ impl TierPresenter {
         Some(output)
     }
 
+    /// The kitty graphics stills gate for this session (#13623): open for a
+    /// payload class only when the probe saw kitty graphics AND that
+    /// class's own query in the probe burst answered OK.
+    #[must_use]
+    pub fn kitty_gate(&self) -> GraphicsGate {
+        let mut gate = GraphicsGate::new(self.profile.kitty_graphics);
+        for (class, accepted) in [
+            (PayloadClass::Png, self.profile.kitty_png),
+            (PayloadClass::Rgba, self.profile.kitty_rgba),
+            (PayloadClass::RgbaZlib, self.profile.kitty_rgba_zlib),
+        ] {
+            gate.record_answer(class, accepted);
+        }
+        gate
+    }
+
+    /// Encode a presenter-owned still for this terminal through the kitty
+    /// graphics stills encoder, or `Ok(None)` when nothing may be written:
+    /// the presenter is not Tier 1, or this terminal did not accept the
+    /// payload's class. As with [`TierPresenter::present_image`], guest
+    /// payloads never reach this; the frame is bracketed in synchronized
+    /// output when the terminal confirmed it.
+    ///
+    /// # Errors
+    ///
+    /// [`KittyGraphicsError`] for a malformed or over-cap payload, checked
+    /// only once the gate is open. Nothing is emitted on error.
+    pub fn present_still(
+        &mut self,
+        image_id: NonZeroU32,
+        payload: StillPayload<'_>,
+        action: Action,
+    ) -> Result<Option<String>, KittyGraphicsError> {
+        if self.tier != PresentationTier::Tier1 {
+            return Ok(None);
+        }
+        let Some(encoded) = self.kitty_gate().encode_still(image_id, payload, action)? else {
+            return Ok(None);
+        };
+        let output = if self.profile.synchronized_output {
+            self.sync_used = true;
+            format!("{SYNC_OUTPUT_BEGIN}{encoded}{SYNC_OUTPUT_END}")
+        } else {
+            encoded
+        };
+        self.counters.record(output.len(), false);
+        Ok(Some(output))
+    }
+
     /// End the presentation: returns the mode-restore bytes the adapter
     /// must write on every exit path (success, error, disconnect) and
     /// resets the diff state. Synchronized output, once used, is always
@@ -789,7 +872,7 @@ pub fn encode_sixel(rgb: &[u8], width: usize, height: usize) -> Option<String> {
     }
     let mut colors: Vec<(u8, u8, u8)> = Vec::new();
     let mut index = vec![0_usize; pixels];
-    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+    for (i, pixel) in rgb.as_chunks::<3>().0.iter().enumerate() {
         let key = (pixel[0], pixel[1], pixel[2]);
         index[i] = match colors.iter().position(|color| *color == key) {
             Some(position) => position,
@@ -881,6 +964,9 @@ struct Evidence {
     sixel_graphics: Option<bool>,
     synchronized_output: Option<bool>,
     kitty_keyboard: Option<bool>,
+    kitty_png: Option<bool>,
+    kitty_rgba: Option<bool>,
+    kitty_rgba_zlib: Option<bool>,
     conflicted: bool,
 }
 
@@ -903,6 +989,9 @@ impl Evidence {
             sixel_graphics: self.sixel_graphics.unwrap_or(false),
             synchronized_output: self.synchronized_output.unwrap_or(false),
             kitty_keyboard: self.kitty_keyboard.unwrap_or(false),
+            kitty_png: self.kitty_png.unwrap_or(false),
+            kitty_rgba: self.kitty_rgba.unwrap_or(false),
+            kitty_rgba_zlib: self.kitty_rgba_zlib.unwrap_or(false),
         }
     }
 }
@@ -1046,15 +1135,22 @@ fn parse_xtgettcap(body: &[u8], evidence: &mut Evidence) -> bool {
 fn parse_kitty_graphics(body: &[u8], evidence: &mut Evidence) -> bool {
     // Kitty graphics protocol query responses echo the request id and report OK
     // on success; an error response is still a complete, matching negative.
-    let Some(status) = body.strip_prefix(b"Gi=31;") else {
+    // ID 31 is the detection query; 41 to 43 are the payload-class queries.
+    let Some((id, status)) = body.strip_prefix(b"Gi=").and_then(|rest| {
+        rest.iter()
+            .position(|&b| b == b';')
+            .map(|at| rest.split_at(at))
+    }) else {
         return false;
     };
-    let supported = status == b"OK";
-    Evidence::record(
-        &mut evidence.kitty_graphics,
-        supported,
-        &mut evidence.conflicted,
-    );
+    let slot = match id {
+        b"31" => &mut evidence.kitty_graphics,
+        b"41" => &mut evidence.kitty_png,
+        b"42" => &mut evidence.kitty_rgba,
+        b"43" => &mut evidence.kitty_rgba_zlib,
+        _ => return false,
+    };
+    Evidence::record(slot, &status[1..] == b"OK", &mut evidence.conflicted);
     true
 }
 
@@ -1146,7 +1242,9 @@ fn decode_hex(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;
@@ -1221,6 +1319,8 @@ mod tests {
                 KITTY_KEYBOARD_REPLY,
                 SYNC_OUTPUT_REPLY,
                 KITTY_GRAPHICS_REPLY,
+                b"\x1b_Gi=41;OK\x1b\\".as_slice(),
+                b"\x1b_Gi=43;ENOTSUPPORTED:no zlib\x1b\\".as_slice(),
             ],
         );
 
@@ -1237,6 +1337,9 @@ mod tests {
                 sixel_graphics: false,
                 synchronized_output: true,
                 kitty_keyboard: true,
+                kitty_png: true,
+                kitty_rgba: false,
+                kitty_rgba_zlib: false,
             }
         );
         assert_eq!(outcome.replay, b"jk");
@@ -1266,6 +1369,115 @@ mod tests {
         assert!(outcome.profile.kitty_keyboard);
         assert!(!outcome.profile.synchronized_output);
         assert!(!outcome.profile.kitty_graphics);
+    }
+
+    #[test]
+    fn the_probe_burst_ends_with_the_payload_class_queries() {
+        let tail = [
+            crate::kitty_graphics::PNG_QUERY,
+            crate::kitty_graphics::RGBA_QUERY,
+            crate::kitty_graphics::RGBA_ZLIB_QUERY,
+        ]
+        .concat();
+        assert!(PROBE_QUERIES.ends_with(tail.as_bytes()));
+    }
+
+    #[test]
+    fn payload_class_replies_are_consumed_and_recorded_per_class() {
+        let outcome = parse_transcript(
+            &[
+                KITTY_GRAPHICS_REPLY,
+                b"\x1b_Gi=42;OK\x1b\\".as_slice(),
+                b"\x1b_Gi=43;OK\x1b\\".as_slice(),
+                b"x".as_slice(),
+                // Not one of our query IDs: user input, not evidence.
+                b"\x1b_Gi=44;OK\x1b\\".as_slice(),
+            ]
+            .concat(),
+        );
+        assert!(outcome.profile.kitty_graphics);
+        assert!(!outcome.profile.kitty_png);
+        assert!(outcome.profile.kitty_rgba);
+        assert!(outcome.profile.kitty_rgba_zlib);
+        assert_eq!(outcome.replay, b"x\x1b_Gi=44;OK\x1b\\");
+
+        // Contradictory answers to one class are a conflict: Tier 3 defaults.
+        let conflicted = parse_transcript(
+            &[
+                KITTY_GRAPHICS_REPLY,
+                b"\x1b_Gi=41;OK\x1b\\".as_slice(),
+                b"\x1b_Gi=41;EINVAL\x1b\\".as_slice(),
+            ]
+            .concat(),
+        );
+        assert_eq!(conflicted.profile, TerminalProfile::default());
+    }
+
+    #[test]
+    fn present_still_needs_tier_one_and_an_accepted_class() {
+        use crate::kitty_graphics::{Action, StillPayload};
+        let png: Vec<u8> = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+                )
+                .expect("fixture decodes")
+        };
+        let id = NonZeroU32::new(7).expect("non-zero");
+        let rich = TerminalProfile {
+            kitty_graphics: true,
+            synchronized_output: true,
+            ..TerminalProfile::default()
+        };
+
+        // Detection without the class answer: nothing.
+        let mut detected = TierPresenter::new(rich);
+        assert_eq!(detected.tier(), PresentationTier::Tier1);
+        assert_eq!(
+            detected.present_still(id, StillPayload::Png(&png), Action::Store),
+            Ok(None)
+        );
+
+        // The class answered OK but the presenter is not Tier 1: nothing.
+        let mut not_tier_one = TierPresenter::new(TerminalProfile {
+            kitty_graphics: true,
+            kitty_png: true,
+            ..TerminalProfile::default()
+        });
+        assert_eq!(
+            not_tier_one.present_still(id, StillPayload::Png(&png), Action::Store),
+            Ok(None)
+        );
+
+        // Tier 1 and PNG accepted: one quiet transmission in sync brackets.
+        let mut accepted = TierPresenter::new(TerminalProfile {
+            kitty_png: true,
+            ..rich
+        });
+        let frame = accepted
+            .present_still(id, StillPayload::Png(&png), Action::Store)
+            .expect("valid payload")
+            .expect("gate open");
+        assert!(frame.starts_with("\x1b[?2026h\x1b_Ga=t,f=100,t=d,i=7,q=2,m=0;iVBOR"));
+        assert!(frame.ends_with("\x1b\\\x1b[?2026l"));
+        assert_eq!(accepted.finish(), SYNC_OUTPUT_END);
+
+        // An accepted class does not open another one.
+        let rgba = [0_u8; 4];
+        assert_eq!(
+            accepted.present_still(
+                id,
+                StillPayload::Rgba {
+                    data: &rgba,
+                    width: 1,
+                    height: 1,
+                    compress: false,
+                },
+                Action::Store,
+            ),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -1376,14 +1588,49 @@ mod tests {
     fn text_mode_presenter_output_never_contains_an_escape_byte() {
         // Oracle: design D2 — in text mode no escape sequence is ever
         // written, even for the first (full) frame.
-        let mut presenter =
-            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
         let first = presenter.render_screen(&screen(&["hello", "world"]));
         let second = presenter.render_screen(&screen(&["hello", "there"]));
 
         assert!(!first.contains('\x1b'), "first frame escaped: {first:?}");
         assert!(!second.contains('\x1b'), "delta frame escaped: {second:?}");
-        assert!(first.contains("hello"), "first frame lost its text: {first:?}");
+        assert!(
+            first.contains("hello"),
+            "first frame lost its text: {first:?}"
+        );
+    }
+
+    #[test]
+    fn text_presenter_answers_a_resize_with_a_full_frame() {
+        // Oracle: issue #14937 — a text session renders each frame as
+        // plain text lines, emitting only the lines that changed, with
+        // a terse full-frame form on join and on resize. The full form
+        // is exactly the changed-lines form computed against nothing,
+        // so applying it over any prior frame state yields the new
+        // frame (TextDelta::apply parity).
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+
+        let joined = presenter.render_screen(&screen(&["alpha", "beta"]));
+        assert_eq!(joined, "alpha\r\nbeta\r\n", "join is a full frame");
+
+        let quiet = presenter.render_screen(&screen(&["alpha", "beta"]));
+        assert_eq!(quiet, "", "an unchanged frame costs zero bytes");
+
+        let delta = presenter.render_screen(&screen(&["alpha", "gamma"]));
+        assert_eq!(delta, "gamma\r\n", "only the changed line is emitted");
+
+        // Resize: the same leading lines at a new size still repaints
+        // in full, because the reader's frame state no longer matches.
+        let resized = presenter.render_screen(&screen(&["alpha", "beta", "extra"]));
+        assert_eq!(
+            resized, "alpha\r\nbeta\r\nextra\r\n",
+            "a resize answers with the full-frame form"
+        );
+        assert!(!resized.contains('\x1b'), "full frame escaped: {resized:?}");
+
+        // After the resize frame, deltas resume against the new size.
+        let after = presenter.render_screen(&screen(&["alpha", "beta", "extra"]));
+        assert_eq!(after, "", "post-resize frame is a delta again");
     }
 
     #[test]

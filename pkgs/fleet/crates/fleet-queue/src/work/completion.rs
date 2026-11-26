@@ -54,6 +54,10 @@ pub enum ActivityClass {
     Close,
     /// The work item was reopened.
     Reopen,
+    /// An event type no mapping names yet. It holds a completion
+    /// rather than slipping through as harmless; the receipt names
+    /// it so a mapping can be added (REL-09 design record §3).
+    Unclassified,
 }
 
 impl ActivityClass {
@@ -69,6 +73,7 @@ impl ActivityClass {
                 | ActivityClass::ExplicitBlock
                 | ActivityClass::Close
                 | ActivityClass::Reopen
+                | ActivityClass::Unclassified
         )
     }
 
@@ -173,6 +178,46 @@ impl CompletionReceipt {
             PostTerminalOutcome::AlreadyCovered
         } else {
             PostTerminalOutcome::IgnoredAfterCompletion
+        }
+    }
+}
+
+/// What an event observed after a reported completion does to the
+/// work item (REL-09 design record §6). None of these reopens the
+/// receipt, re-runs an effect or re-queues the work: re-queuing is a
+/// lifecycle decision made through its own verb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostCompletionEffect {
+    /// At or below the receipt's boundary: already covered, nothing
+    /// to record.
+    Covered,
+    /// Recorded as an internal journal entry only.
+    JournalOnly,
+    /// Recorded as an internal journal entry plus an advisory triage
+    /// hint on the work item; no base field changes.
+    JournalAndTriageHint,
+}
+
+impl CompletionReceipt {
+    /// Post-completion policy: what a later event does to the work
+    /// item. Decisions people make after completion (reviews,
+    /// blocks, a reopen, or anything unmapped) raise a triage hint;
+    /// bookkeeping is journalled only.
+    pub fn post_completion_effect(&self, activity: &Activity) -> PostCompletionEffect {
+        if self.note_post_terminal(activity) == PostTerminalOutcome::AlreadyCovered {
+            return PostCompletionEffect::Covered;
+        }
+        match activity.class {
+            ActivityClass::Comment
+            | ActivityClass::Push
+            | ActivityClass::LabelChange
+            | ActivityClass::ExplicitApproval
+            | ActivityClass::Close => PostCompletionEffect::JournalOnly,
+            ActivityClass::Review
+            | ActivityClass::ReviewComment
+            | ActivityClass::ExplicitBlock
+            | ActivityClass::Reopen
+            | ActivityClass::Unclassified => PostCompletionEffect::JournalAndTriageHint,
         }
     }
 }
@@ -353,5 +398,89 @@ mod tests {
             receipt.note_post_terminal(&covered),
             PostTerminalOutcome::AlreadyCovered
         );
+    }
+
+    /// An event type nobody mapped holds the completion instead of
+    /// passing as harmless (REL-09 design record §3).
+    #[test]
+    fn pmo_rel_unclassified_activity_holds_completion() {
+        let watermark = ActivityWatermark::at(3);
+        let odd = Activity::new(4, ActivityClass::Unclassified, "unmapped event type");
+
+        let receipt = evaluate_completion(watermark, &[odd]);
+
+        assert_eq!(
+            receipt.freshness,
+            Freshness::Limited {
+                observed: ActivityRevision(3),
+                current: ActivityRevision(4),
+                late: vec![ActivityClass::Unclassified],
+            }
+        );
+        assert!(!receipt.merge_allowed);
+        assert!(!ActivityClass::Unclassified.is_terminal());
+    }
+
+    /// A push after the refresh is not an activity-gate matter: the
+    /// receipt stays current, and the moved head is refused by the
+    /// REL-06 expected-head-SHA precondition instead (§4).
+    #[test]
+    fn pmo_rel_push_after_refresh_is_left_to_head_sha_gate() {
+        let watermark = ActivityWatermark::at(6);
+        let push = Activity::new(7, ActivityClass::Push, "new commits");
+
+        let receipt = evaluate_completion(watermark, &[push]);
+
+        assert_eq!(receipt.freshness, Freshness::Current);
+        assert!(receipt.merge_allowed);
+        assert!(!ActivityClass::Push.invalidates_completion());
+        assert_eq!(receipt.late_activity.len(), 1, "the push is kept for audit");
+    }
+
+    /// A review after completion raises a triage hint and leaves the
+    /// receipt exactly as reported (§6).
+    #[test]
+    fn pmo_rel_post_completion_review_raises_hint_not_reopen() {
+        let receipt = evaluate_completion(ActivityWatermark::at(5), &[]);
+        let before = receipt.clone();
+
+        let review = Activity::new(6, ActivityClass::Review, "changes requested");
+        assert_eq!(
+            receipt.post_completion_effect(&review),
+            PostCompletionEffect::JournalAndTriageHint
+        );
+        let comment = Activity::new(7, ActivityClass::Comment, "thanks");
+        assert_eq!(
+            receipt.post_completion_effect(&comment),
+            PostCompletionEffect::JournalOnly
+        );
+        let covered = Activity::new(5, ActivityClass::Review, "read before completion");
+        assert_eq!(
+            receipt.post_completion_effect(&covered),
+            PostCompletionEffect::Covered
+        );
+        assert_eq!(
+            receipt, before,
+            "post-completion events never mutate the receipt"
+        );
+    }
+
+    /// A reopen after completion is a hint for a person to decide,
+    /// never an automatic re-queue (§6).
+    #[test]
+    fn pmo_rel_reopen_after_completion_never_requeues() {
+        let receipt = evaluate_completion(ActivityWatermark::at(2), &[]);
+        let reopen = Activity::new(3, ActivityClass::Reopen, "reopened");
+
+        assert_eq!(
+            receipt.post_completion_effect(&reopen),
+            PostCompletionEffect::JournalAndTriageHint
+        );
+        assert_eq!(
+            receipt.note_post_terminal(&reopen),
+            PostTerminalOutcome::IgnoredAfterCompletion
+        );
+        assert!(receipt.merge_allowed);
+        assert_eq!(receipt.freshness, Freshness::Current);
     }
 }

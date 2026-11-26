@@ -16,9 +16,14 @@
 //!    transport fills (#13763): the `PostgREST` `db-schemas` setting must
 //!    list exactly the one exposed schema (§2, §4 layer 3), and the
 //!    credential's role may hold nothing on that schema beyond `SELECT` on
-//!    its relations and `USAGE` on the schema itself — `INSERT`,
-//!    `UPDATE`, `DELETE`, `EXECUTE`, or any other privilege is a
-//!    registration error (§4 layer 2, §9 invariant 9).
+//!    the relations named by the configured collections and `USAGE` on the
+//!    schema itself — `INSERT`, `UPDATE`, `DELETE`, `EXECUTE`, or any
+//!    other privilege is a registration error, and so is `SELECT` on a
+//!    relation no collection configures (#15044): §4 requires each layer
+//!    to check the others independently, so the database role itself must
+//!    not be able to read an unlisted relation even if the adapter
+//!    allowlist is bypassed or the credential is used separately
+//!    (§4 layer 2, §9 invariant 9).
 //!
 //! A [`RegisteredEndpoint`] can only be built by [`register`], so holding
 //! one is proof that both checks passed. Registration errors are for the
@@ -121,6 +126,23 @@ impl Privilege {
 
 /// One privilege the credential's role holds on an object in the exposed
 /// schema, directly or through a role it inherits or `PUBLIC`.
+///
+/// The probe identifies an object by its bare name within the exposed
+/// schema — grants carry no schema qualifier, because registration only
+/// ever asks about the one exposed schema, and a relation grant matches
+/// a configured collection by exact name equality. The probe reports the
+/// role's *effective* privileges: a grant the role holds only through an
+/// inherited role or through `PUBLIC` appears here exactly like a direct
+/// grant, so the unlisted-relation check in [`check_probe`] covers
+/// inherited and `PUBLIC` grants with no special case.
+///
+/// View-kind limitation: [`ObjectKind::Relation`] covers tables, views,
+/// and materialized views indistinguishably — Postgres privilege
+/// catalogs grant on all three the same way, and the probe does not
+/// report which kind a named relation is. Registration therefore cannot
+/// (and does not try to) refuse `SELECT` on a configured collection
+/// because the underlying object is a table rather than a view; the
+/// check is purely that the *name* is a configured collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleGrant {
@@ -140,8 +162,9 @@ pub struct EndpointProbe {
     /// The schemas the `PostgREST` endpoint serves (its `db-schemas`
     /// setting, or the schema list its schema probe returns).
     pub db_schemas: Vec<String>,
-    /// Every privilege the credential's role holds on the exposed schema
-    /// and the objects in it.
+    /// Every privilege the credential's role effectively holds on the
+    /// exposed schema and the objects in it, including privileges held
+    /// through inherited roles or `PUBLIC` (see [`RoleGrant`]).
     pub role_grants: Vec<RoleGrant>,
 }
 
@@ -203,6 +226,14 @@ pub enum RegistrationError {
         /// The privilege.
         privilege: Privilege,
     },
+    /// The role holds `SELECT` on a relation no configured collection
+    /// names (§4 layer 2, #15044). Kept distinct from
+    /// [`Self::ForbiddenPrivilege`] so the owner can tell "the role can
+    /// read something unlisted" apart from "the role can write".
+    UnlistedRelationSelect {
+        /// The relation's name within the exposed schema.
+        relation: String,
+    },
 }
 
 impl fmt::Display for RegistrationError {
@@ -247,8 +278,13 @@ impl fmt::Display for RegistrationError {
             ),
             Self::ForbiddenPrivilege { object, privilege } => write!(
                 f,
-                "the role holds {} on {object:?}; only SELECT on relations and USAGE on the schema are allowed",
+                "the role holds {} on {object:?}; only SELECT on configured collections and USAGE on the schema are allowed",
                 privilege.name()
+            ),
+            Self::UnlistedRelationSelect { relation } => write!(
+                f,
+                "the role holds SELECT on relation {relation:?}, which no configured collection names; \
+                 only SELECT on configured collections is allowed"
             ),
         }
     }
@@ -377,8 +413,12 @@ impl EndpointConfig {
 }
 
 /// Check what the probe read from the live endpoint against the exposed
-/// schema.
-fn check_probe(schema: &str, probe: &EndpointProbe) -> Result<(), RegistrationError> {
+/// schema and the configured collections.
+fn check_probe(
+    schema: &str,
+    collections: &[CollectionAllowlist],
+    probe: &EndpointProbe,
+) -> Result<(), RegistrationError> {
     if !probe.db_schemas.iter().any(|s| s == schema) {
         return Err(RegistrationError::ExposedSchemaNotServed);
     }
@@ -393,6 +433,10 @@ fn check_probe(schema: &str, probe: &EndpointProbe) -> Result<(), RegistrationEr
             schemas: extra.into_iter().map(str::to_owned).collect(),
         });
     }
+    // The relation names the role may SELECT: exactly the configured
+    // collections. `config.validate` has already run, so every name here
+    // is a plain identifier in the exposed schema.
+    let listed: BTreeSet<&str> = collections.iter().map(|c| c.relation.as_str()).collect();
     for grant in &probe.role_grants {
         let allowed = matches!(
             (grant.kind, grant.privilege),
@@ -402,6 +446,17 @@ fn check_probe(schema: &str, probe: &EndpointProbe) -> Result<(), RegistrationEr
             return Err(RegistrationError::ForbiddenPrivilege {
                 object: grant.object.clone(),
                 privilege: grant.privilege,
+            });
+        }
+        // A SELECT grant is only allowed on a listed relation (#15044).
+        // The probe reports effective grants, so this also refuses SELECT
+        // inherited through another role or granted via PUBLIC.
+        if grant.kind == ObjectKind::Relation
+            && grant.privilege == Privilege::Select
+            && !listed.contains(grant.object.as_str())
+        {
+            return Err(RegistrationError::UnlistedRelationSelect {
+                relation: grant.object.clone(),
             });
         }
     }
@@ -456,6 +511,6 @@ pub fn register(
     probe: &EndpointProbe,
 ) -> Result<RegisteredEndpoint, RegistrationError> {
     config.validate()?;
-    check_probe(&config.schema, probe)?;
+    check_probe(&config.schema, &config.collections, probe)?;
     Ok(RegisteredEndpoint { config })
 }

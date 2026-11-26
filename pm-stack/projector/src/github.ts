@@ -201,20 +201,6 @@ export function githubApiError(res: Response): Error {
   return new Error(`${base} rate_limited reset=${new Date(Number(reset) * 1000).toISOString()}`);
 }
 
-async function ghJson<T>(auth: GitHubAuth, path: string, fetchFn: typeof fetch): Promise<T> {
-  const res = await fetchFn(`https://api.github.com/${path}`, {
-    headers: {
-      authorization: `Bearer ${auth.token}`,
-      accept: "application/vnd.github+json",
-      "user-agent": "pm-projector",
-    },
-    signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
-  });
-  if (res.status === 404) throw new Error("not_found");
-  if (!res.ok) throw githubApiError(res);
-  return (await res.json()) as T;
-}
-
 /** Extract Link rel="next" from the Link header. */
 export function nextPageFromLink(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
