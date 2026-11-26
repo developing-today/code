@@ -20,7 +20,7 @@ import { join } from "node:path";
 const DRILL = join(import.meta.dir, "..", "scripts", "age-feed-drill.sh");
 
 interface Scenario {
-  timerActive: boolean;
+  legacyTimerActive: boolean;
   healthPlan: string[]; // per health call: fresh | stale | fail
   incidentFlag?: boolean;
   holdLock?: boolean;
@@ -107,7 +107,7 @@ printf '{"degraded":%s,"feed":{"generatedAt":"%s","ageMs":0}}' "$([ "$mode" = st
 
   let lockHolder: ReturnType<typeof Bun.spawn> | null = null;
   if (scn.holdLock) {
-    lockHolder = Bun.spawn(["flock", join(state, "age-feed.lock"), "sleep", "15"], {
+    lockHolder = Bun.spawn(["flock", join(state, "pm-drills.lock"), "sleep", "15"], {
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -125,7 +125,7 @@ printf '{"degraded":%s,"feed":{"generatedAt":"%s","ageMs":0}}' "$([ "$mode" = st
       PM_DRILL_ATTENTION_CMD: `printf '%s' '{"attention":[{"id":"watchdog:feed"}]}'`,
       PM_DRILL_NO_POST: "1",
       PM_DRILL_RESTORE_WAIT_MIN: "1",
-      STUB_TIMER_ACTIVE: scn.timerActive ? "1" : "0",
+      STUB_TIMER_ACTIVE: scn.legacyTimerActive ? "1" : "0",
       STUB_REWRITE_ON_SLEEP: scn.rewriteOnSleep ? "1" : "0",
     };
     // #1116 item (5): stub the rendered overview page the drill greps for
@@ -171,16 +171,16 @@ printf '%s' '<div class="card">3 of 3 services up</div>'`,
 }
 
 describe("age-feed drill: refusals touch nothing (#2865 lesson)", () => {
-  test("collector timer inactive -> refuse, feed unchanged", () => {
-    const r = runDrill({ timerActive: false, healthPlan: ["fresh"] });
+  test("legacy collector timer active -> refuse, feed unchanged", () => {
+    const r = runDrill({ legacyTimerActive: true, healthPlan: ["fresh"] });
     expect(r.status).toBe(1);
-    expect(r.stdout).toContain("is not active");
+    expect(r.stdout).toContain("legacy timer must be retired");
     expect(r.feedBytes).toBe(r.originalFeed);
     expect(existsSync(r.resultFile)).toBe(false);
   });
 
   test("incident flag present -> refuse before any systemctl call", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["fresh"], incidentFlag: true });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fresh"], incidentFlag: true });
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("incident flag present");
     expect(r.systemctlLog.trim()).toBe("");
@@ -188,21 +188,21 @@ describe("age-feed drill: refusals touch nothing (#2865 lesson)", () => {
   });
 
   test("drill lock held -> refuse, feed unchanged", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["fresh"], holdLock: true });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fresh"], holdLock: true });
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("holds the lock");
     expect(r.feedBytes).toBe(r.originalFeed);
   });
 
   test("aggregator health unreadable -> refuse, feed unchanged", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["fail"] });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fail"] });
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("refusing to drill blind");
     expect(r.feedBytes).toBe(r.originalFeed);
   });
 
   test("feed already stale -> refuse (real incident), feed unchanged", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["stale"] });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["stale"] });
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("already stale");
     expect(r.feedBytes).toBe(r.originalFeed);
@@ -213,7 +213,7 @@ describe("age-feed drill: a real run ages, notices, and restores", () => {
   test("fresh -> aged -> signal fires -> restore confirmed, outcome passed", () => {
     // Health reads in order: baseline (fresh), wait-poll (stale ->
     // signal), restore confirmation (fresh).
-    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"] });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fresh", "stale", "fresh"] });
     expect(r.status).toBe(0);
     expect(r.feedBytes).toBe(r.originalFeed);
     expect(existsSync(r.resultFile)).toBe(true);
@@ -233,7 +233,7 @@ describe("age-feed drill: a real run ages, notices, and restores", () => {
     // health reads: baseline fresh, wait-poll fresh (collector's write
     // landed during the sleep), wait-poll stale -> signal, restore fresh.
     const r = runDrill({
-      timerActive: true,
+      legacyTimerActive: false,
       healthPlan: ["fresh", "fresh", "stale", "fresh"],
       rewriteOnSleep: true,
     });
@@ -251,7 +251,7 @@ describe("age-feed drill: a real run ages, notices, and restores", () => {
 
 describe("age-feed drill: rendered-page stale warning (#1116 item 5)", () => {
   test("page carrying the stale banner is recorded as seen", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"], page: "warn" });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fresh", "stale", "fresh"], page: "warn" });
     expect(r.status).toBe(0);
     const result = JSON.parse(readFileSync(r.resultFile, "utf8"));
     expect(result.outcome).toBe("passed");
@@ -259,7 +259,7 @@ describe("age-feed drill: rendered-page stale warning (#1116 item 5)", () => {
   });
 
   test("readable page without the banner is recorded as not seen", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"], page: "silent" });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fresh", "stale", "fresh"], page: "silent" });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("has no stale-feed warning");
     const result = JSON.parse(readFileSync(r.resultFile, "utf8"));
@@ -267,7 +267,7 @@ describe("age-feed drill: rendered-page stale warning (#1116 item 5)", () => {
   });
 
   test("unreadable page is recorded as unknown, drill still passes on the health signal", () => {
-    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"], page: "fail" });
+    const r = runDrill({ legacyTimerActive: false, healthPlan: ["fresh", "stale", "fresh"], page: "fail" });
     expect(r.status).toBe(0);
     const result = JSON.parse(readFileSync(r.resultFile, "utf8"));
     expect(result.outcome).toBe("passed");

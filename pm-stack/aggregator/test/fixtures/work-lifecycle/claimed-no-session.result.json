@@ -1,0 +1,12 @@
+{
+  "column": "Inbox/Triage",
+  "rule": "R6",
+  "reason_codes": [
+    "claim_binding_unverified",
+    "no_bound_session"
+  ],
+  "conflicts": [
+    "claimed_binding_unknown"
+  ],
+  "stale_facets": []
+}

@@ -223,6 +223,15 @@ async function readTextUpTo(req: Request, limit: number): Promise<string | null>
   return bytes === null ? null : new TextDecoder().decode(bytes);
 }
 
+/** GET routes the per-binding request cap never refuses or counts
+ * (#15485, #15591): the usage read and the export paths. */
+const CAP_EXEMPT_PATHS: ReadonlySet<string> = new Set([
+  "/v1/usage",
+  "/v1/export",
+  "/v1/bridge/challenge",
+  "/v1/bridge/export",
+]);
+
 export class UserDO {
   private state: DOState;
   private ready: Promise<void>;
@@ -973,9 +982,17 @@ export class UserDO {
       // activated after the directory switch (#3404).
       this.assertServing();
       const requestCap = this.requestCap();
-      // The usage read is exempt so a capped caller can still see
-      // where it stands and when the window resets (#15485).
-      if (requestCap !== null && !isUsage) this.admitRequest(requestCap);
+      // Cap-exempt reads (#15485, #15591). Usage lets a capped
+      // caller see where it stands and when the window resets.
+      // Plain export and bridge export are how a capped user gets
+      // their data out (#3811). The bridge challenge mints the
+      // single-use, 5-minute nonce that bridge export's proof needs,
+      // so refusing it would leave bridge export unreachable to a
+      // caller holding no live nonce. Exempt reads do not count
+      // toward the window either; the export proof checks are
+      // unchanged.
+      const capExempt = req.method === "GET" && CAP_EXEMPT_PATHS.has(url.pathname);
+      if (requestCap !== null && !capExempt) this.admitRequest(requestCap);
       if (isUsage) {
         const usage = this.usage();
         const ceiling = this.ceilingBytes();
