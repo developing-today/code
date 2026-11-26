@@ -59,7 +59,7 @@ def registry_shift_rows():
         for line in fh:
             m = re.match(r"\| `(repo-queue-worker-shift[^`]*)`\s*\|", line)
             if m:
-                state = re.search(r"\| (enabled|disabled) \|", line)
+                state = re.search(r"\|\s*(enabled|disabled)\s*\|", line)
                 rows[m.group(1)] = state.group(1) if state else None
     return rows
 
