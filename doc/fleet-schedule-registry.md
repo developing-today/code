@@ -9,7 +9,7 @@ specified in the #2020 Jules investigation).
   Muse's scheduler (the definitions are the source of truth; the
   read-only copies live under `~/workspace/cron.d/` and
   `~/workspace/goals/<goal>/crons/` on the Muse host).
-- **Surface 2 — OpenCode schedules:** OpenChamber per-project
+- **Surface 2 — Laptop and OpenCode schedules:** OpenChamber per-project
   `scheduledTasks` (laptop stores:
   `~/.config/openchamber/projects/*.json`) plus the laptop's systemd
   user timers — the OS-timer surface the #2019 pattern and its
