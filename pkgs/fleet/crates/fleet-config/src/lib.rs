@@ -122,6 +122,31 @@ pub struct GhConfig {
     /// rule. On the laptop itself localhost IS the laptop, so the
     /// same localhost-then-laptop order serves both machines.
     pub cache_laptop: Option<String>,
+    /// Additional GitHub Apps, declared without a fleet binary
+    /// change (code#10311 ask (b)). Existing built-in Apps remain
+    /// available; configured entries extend them by slug.
+    #[serde(default)]
+    pub apps: Vec<GhAppConfig>,
+}
+
+/// A GitHub App credential source declared in `[[gh.apps]]`.
+/// Exactly one of `app_id` and `app_id_secret` must be set. The
+/// private key is always resolved by name through fleet-secrets;
+/// key material is never stored in this config.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhAppConfig {
+    /// Stable rotation slug, used by `FLEET_GH_ORDER` and cache requests.
+    pub slug: String,
+    /// Public GitHub App ID, when not resolved from fleet-secrets.
+    pub app_id: Option<u64>,
+    /// Secret name containing the GitHub App ID.
+    pub app_id_secret: Option<String>,
+    /// Secret name containing the App's private key.
+    pub key_secret: String,
+    /// Default owners whose installations may be used.
+    #[serde(default)]
+    pub owners: Vec<String>,
 }
 /// `[bridge]` — the message bridge's fleet mailboxes (`fleet
 /// bridge`). Everything is optional: the URL defaults to
@@ -1011,6 +1036,55 @@ impl Config {
                 });
             }
         }
+        // [[gh.apps]] (#10311 ask (b)): these records are a
+        // credential-source schema, so reject ambiguous ID sources,
+        // built-in slug collisions and blank secret/owner fields at
+        // config load rather than silently shadowing a rotation leg.
+        let mut gh_app_slugs = std::collections::BTreeSet::new();
+        for (index, app) in self.gh.apps.iter().enumerate() {
+            let row = index + 1;
+            let slug_valid = !app.slug.is_empty()
+                && app
+                    .slug
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !slug_valid || matches!(app.slug.as_str(), "app" | "devtoday" | "backup") {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} has an invalid or reserved slug; use lowercase letters, digits and hyphens, excluding app, devtoday and backup"
+                    ),
+                });
+            }
+            if !gh_app_slugs.insert(app.slug.as_str()) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!("[[gh.apps]] row {row} duplicates an App slug"),
+                });
+            }
+            if app.app_id.is_some() == app.app_id_secret.is_some() {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} must set exactly one of app_id or app_id_secret"
+                    ),
+                });
+            }
+            if app.key_secret.trim().is_empty()
+                || app
+                    .app_id_secret
+                    .as_deref()
+                    .is_some_and(|name| name.trim().is_empty())
+                || app.owners.iter().any(|owner| owner.trim().is_empty())
+            {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} secret names and owners must not be empty or blank"
+                    ),
+                });
+            }
+        }
         // [secrets] prefix (#10358 D9): an empty value counts as
         // unset, so it is not a blank-field error; a set prefix must be
         // a usable secret name and may not end with the separator. The
@@ -1767,6 +1841,50 @@ mod tests {
         let path = dir.path().join("fleet.toml");
         std::fs::write(&path, contents).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn gh_configured_apps_parse_and_validate_sources() {
+        // Oracle: a configured App has a stable slug, exactly one
+        // App-ID source, a secret name for its private key and
+        // default owners; duplicate/reserved slugs and ambiguous
+        // IDs are rejected at config load.
+        let (_dir, path) = write_temp(
+            "[[gh.apps]]\nslug = \"backup-next\"\napp_id_secret = \"github.backup-next.id\"\nkey_secret = \"github.backup-next.key\"\nowners = [\"developing-today\", \"layercloud\"]\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.gh.apps.len(), 1);
+        assert_eq!(cfg.gh.apps[0].slug, "backup-next");
+        assert_eq!(cfg.gh.apps[0].app_id, None);
+        assert_eq!(
+            cfg.gh.apps[0].app_id_secret.as_deref(),
+            Some("github.backup-next.id")
+        );
+        assert_eq!(cfg.gh.apps[0].key_secret, "github.backup-next.key");
+        assert_eq!(cfg.gh.apps[0].owners, ["developing-today", "layercloud"]);
+
+        for (contents, expected) in [
+            (
+                "[[gh.apps]]\nslug = \"app\"\napp_id = 1\nkey_secret = \"key\"\n",
+                "invalid or reserved slug",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id = 1\napp_id_secret = \"id\"\nkey_secret = \"key\"\n",
+                "exactly one of app_id or app_id_secret",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id_secret = \"id\"\nkey_secret = \"key\"\n\n[[gh.apps]]\nslug = \"extra\"\napp_id = 2\nkey_secret = \"key2\"\n",
+                "duplicates an App slug",
+            ),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains(expected), "{message}");
+                }
+                other => panic!("expected Parse error, got {other:?}"),
+            }
+        }
     }
 
     #[test]

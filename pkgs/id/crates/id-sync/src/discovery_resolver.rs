@@ -22,7 +22,7 @@ use std::fmt;
 
 use anyhow::{Result, bail};
 
-use crate::announcement::SignedAnnouncement;
+use crate::announcement::{SignedAnnouncement, Visibility};
 use crate::announcement_relay::RelaySinks;
 use crate::bridge_http::BridgeHttp;
 use crate::registry::{RegistryEntry, SignedRegistryList};
@@ -127,7 +127,7 @@ pub fn arbitrate(world_id: &[u8; 32], offers: Vec<(Layer, Offer)>, now: u64) -> 
             Offer::Delisted(reason) => Outcome::Delisted(reason),
             Offer::Failed(reason) => Outcome::Failed(reason),
             Offer::Announcement(signed) => {
-                if let Err(error) = check(world_id, &signed, now) {
+                if let Err(error) = check(world_id, layer, &signed, now) {
                     Outcome::Refused(format!("{error:#}"))
                 } else {
                     let fresher = chosen.as_ref().is_none_or(|(_, current)| {
@@ -171,10 +171,19 @@ pub fn arbitrate(world_id: &[u8; 32], offers: Vec<(Layer, Offer)>, now: u64) -> 
     )
 }
 
-/// One candidate's own checks: right world, signature, not expired.
-fn check(world_id: &[u8; 32], signed: &SignedAnnouncement, now: u64) -> Result<()> {
+/// One candidate's own checks: right world, signature, not expired,
+/// and, from a registry, a world that chose to be listed.
+///
+/// An honest registry refuses an unlisted announcement at inclusion,
+/// but the reader checks again: a registry that lists one anyway is
+/// publishing a world its owner kept out of registries (design §6),
+/// and the resolver will not discover it there (#15646).
+fn check(world_id: &[u8; 32], layer: Layer, signed: &SignedAnnouncement, now: u64) -> Result<()> {
     if signed.announcement.world_id != *world_id {
         bail!("the announcement names another world");
+    }
+    if matches!(layer, Layer::Registry(_)) && signed.announcement.visibility != Visibility::Listed {
+        bail!("a registry listed a world that is not listed");
     }
     signed.verify_at(now)
 }
@@ -212,7 +221,8 @@ pub fn registry_offer(list: &SignedRegistryList, world_id: &[u8; 32]) -> Offer {
 /// lists every live world.
 ///
 /// Tags are discovery hints only (design §3): a match here says what
-/// a registry holds, never that the world is what its tags say.
+/// a registry holds, never that the world is what its tags say. An
+/// entry that is not listed is skipped, as [`arbitrate`] refuses it.
 #[must_use]
 pub fn search<'a>(
     registries: &'a [SignedRegistryList],
@@ -224,6 +234,9 @@ pub fn search<'a>(
     for list in registries {
         for entry in list.list.live_entries(now) {
             let announcement = &entry.announcement.announcement;
+            if announcement.visibility != Visibility::Listed {
+                continue;
+            }
             let matches = query.is_empty()
                 || announcement.name.to_lowercase().contains(&query)
                 || announcement
@@ -332,7 +345,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
-    use crate::announcement::{Announcement, Occupancy, Subject, Visibility};
+    use crate::announcement::{Announcement, Occupancy, Subject};
     use crate::announcement_pkarr::{PkarrItem, Publisher};
     use crate::bridge_http::{HttpRequest, HttpResponse};
     use crate::registry::Registry;

@@ -21,7 +21,7 @@ const HOME_DEFAULTS: [string, string, string][] = [
   ["outcomeFile", "PM_AGG_OUTCOME_FILE", ".local/state/pm-aggregator/outcome-facts.jsonl"],
   ["outcomeBindingsFile", "PM_AGG_OUTCOME_BINDINGS_FILE", ".local/state/pm-aggregator/outcome-bindings.jsonl"],
   ["notificationsFile", "PM_AGG_NOTIFICATIONS_FILE", ".local/state/pm-aggregator/notifications.jsonl"],
-  ["needsDrewFile", "PM_AGG_NEEDS_DREW_FILE", ".local/state/pm-aggregator/needs-drew.json"],
+  ["needsDrewFile", "PM_AGG_NEEDS_USER_FILE", ".local/state/pm-aggregator/needs-user.json"],
   ["decisionsFile", "PM_AGG_DECISIONS_FILE", ".local/state/pm-aggregator/decisions.json"],
   ["decisionsEventsFile", "PM_AGG_DECISION_EVENTS_FILE", ".local/state/pm-aggregator/decision-events.jsonl"],
   ["decisionsOutboxFile", "PM_AGG_DECISION_OUTBOX_FILE", ".local/state/pm-aggregator/decision-events-outbox.jsonl"],
@@ -107,6 +107,13 @@ describe("loadConfig HOME-derived defaults (#8220)", () => {
     expect(loadConfig({ PM_AGG_DEV: "1" }).notifyRelay.stateFile).toBe(join("/home/probe", NOTIFY_RELAY[1]));
     expect(loadConfig({ PM_AGG_DEV: "1" }).fleetInvocationLedgerFile).toBe(
       "/home/probe/.local/state/fleet/invocations.jsonl",
+    );
+  });
+
+  test("legacy needs-drew environment override remains the fallback", () => {
+    setHome("/home/probe");
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_NEEDS_DREW_FILE: "/legacy/needs-drew.json" }).needsDrewFile).toBe(
+      "/legacy/needs-drew.json",
     );
   });
 

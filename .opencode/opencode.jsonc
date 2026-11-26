@@ -4826,6 +4826,13 @@
           "opencode-route/kilo-free-plan",
           "opencode-route/workhorse"
         ],
+        // Time-of-day window binding (#9378 stage 2, 2026-11-24):
+        // the two DeepSeek peak windows above are the windows whose
+        // class drives this pool, so route_attempt rows for this
+        // route carry their match state (window_names/window_class).
+        // Recording only: ranking still comes from the gated
+        // positions above, unchanged.
+        "windows": ["deepseek-peak-early", "deepseek-peak-late"],
         "selection": "ordered",
         "autonomy": "rules"
       },
@@ -5631,17 +5638,22 @@
       // background route leads with MiMo and treats Flash as
       // peak-priced when it is actually off-peak — lost value on
       // those days, never overspend.
+      // Class (#9378 stage 2): both windows are peak-priced ranges,
+      // recorded on route_attempt rows via the background route's
+      // `windows` binding.
       "deepseek-peak-early": {
         "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"],
         "start": "01:00",
         "end": "04:00",
-        "timezone": "UTC"
+        "timezone": "UTC",
+        "class": "peak"
       },
       "deepseek-peak-late": {
         "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"],
         "start": "06:00",
         "end": "10:00",
-        "timezone": "UTC"
+        "timezone": "UTC",
+        "class": "peak"
       }
     }
   }

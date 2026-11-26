@@ -8,6 +8,9 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use crate::kitty_graphics::{Action, GraphicsGate, KittyGraphicsError, PayloadClass, StillPayload};
+use crate::kitty_still::{
+    CellBudget, StillLookupError, StillPrepError, StillSource, lookup_still, prepare_still,
+};
 use crate::world_presentation::ScreenSurface;
 
 /// Total startup window for the batched capability queries.
@@ -815,6 +818,40 @@ impl TierPresenter {
         Ok(Some(output))
     }
 
+    /// Present the still stored under `content` (#13623, lookup by content
+    /// ID at the call site): look it up in `source`, check it is that
+    /// content and under the size cap, fit it to `budget`, and place it at
+    /// the cursor over exactly the cells it covers.
+    ///
+    /// Returns `Ok(None)` without touching `source` when the presenter is
+    /// not Tier 1 or this terminal accepted no payload class, since nothing
+    /// could be shown.
+    ///
+    /// # Errors
+    ///
+    /// [`StillPresentError`] when the lookup, the preparation or the
+    /// encoding fails. Nothing is emitted on error.
+    pub fn present_content_still<S: StillSource + ?Sized>(
+        &mut self,
+        image_id: NonZeroU32,
+        source: &S,
+        content: &blake3::Hash,
+        budget: CellBudget,
+    ) -> Result<Option<String>, StillPresentError> {
+        if self.tier != PresentationTier::Tier1 {
+            return Ok(None);
+        }
+        let gate = self.kitty_gate();
+        if !PayloadClass::ALL.iter().any(|class| gate.accepts(*class)) {
+            return Ok(None);
+        }
+        let asset = lookup_still(source, content)?;
+        let Some(still) = prepare_still(&asset, budget, &gate)? else {
+            return Ok(None);
+        };
+        Ok(self.present_still(image_id, still.payload(), Action::Place(still.placement()))?)
+    }
+
     /// End the presentation: returns the mode-restore bytes the adapter
     /// must write on every exit path (success, error, disconnect) and
     /// resets the diff state. Synchronized output, once used, is always
@@ -829,6 +866,20 @@ impl TierPresenter {
             String::new()
         }
     }
+}
+
+/// Why [`TierPresenter::present_content_still`] emitted nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StillPresentError {
+    /// The content ID did not yield a checked asset.
+    #[error(transparent)]
+    Lookup(#[from] StillLookupError),
+    /// The asset could not be fitted to the cell budget.
+    #[error(transparent)]
+    Prep(#[from] StillPrepError),
+    /// The fitted still could not be encoded.
+    #[error(transparent)]
+    Encode(#[from] KittyGraphicsError),
 }
 
 /// Encode an RGB image (3 bytes per pixel, row-major) as a chunked
@@ -1477,6 +1528,93 @@ mod tests {
                 Action::Store,
             ),
             Ok(None)
+        );
+    }
+
+    #[test]
+    fn content_still_is_looked_up_checked_and_placed_only_when_it_can_show() {
+        use std::borrow::Cow;
+        use std::cell::Cell;
+
+        use crate::kitty_still::{CellBudget, StillLookupError, StillSource};
+
+        struct Counting {
+            bytes: Vec<u8>,
+            lookups: Cell<u32>,
+        }
+        impl StillSource for Counting {
+            fn still_asset(&self, _content: &blake3::Hash) -> Option<Cow<'_, [u8]>> {
+                self.lookups.set(self.lookups.get() + 1);
+                Some(Cow::Borrowed(self.bytes.as_slice()))
+            }
+        }
+
+        let png: Vec<u8> = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+                )
+                .expect("fixture decodes")
+        };
+        let content = blake3::hash(&png);
+        let source = Counting {
+            bytes: png,
+            lookups: Cell::new(0),
+        };
+        let id = NonZeroU32::new(5).expect("non-zero");
+        let budget = CellBudget {
+            columns: 4,
+            rows: 2,
+            cell_px: Some((10, 20)),
+        };
+        let rich = TerminalProfile {
+            kitty_graphics: true,
+            synchronized_output: true,
+            ..TerminalProfile::default()
+        };
+
+        // Tier 1 but no class accepted: nothing, and the store is not read.
+        let mut closed = TierPresenter::new(rich);
+        assert_eq!(
+            closed.present_content_still(id, &source, &content, budget),
+            Ok(None)
+        );
+        // Not Tier 1: nothing, and the store is not read.
+        let mut not_tier_one = TierPresenter::new(TerminalProfile {
+            kitty_graphics: true,
+            kitty_png: true,
+            ..TerminalProfile::default()
+        });
+        assert_eq!(
+            not_tier_one.present_content_still(id, &source, &content, budget),
+            Ok(None)
+        );
+        assert_eq!(source.lookups.get(), 0);
+
+        // Open gate: the PNG fits, passes through, and is placed over one
+        // cell.
+        let mut open = TierPresenter::new(TerminalProfile {
+            kitty_png: true,
+            ..rich
+        });
+        let frame = open
+            .present_content_still(id, &source, &content, budget)
+            .expect("valid still")
+            .expect("gate open");
+        assert!(frame.starts_with("\x1b[?2026h\x1b_Ga=T,f=100,t=d,i=5,"));
+        assert!(frame.contains(",c=1,r=1,"));
+        assert!(frame.ends_with("\x1b\\\x1b[?2026l"));
+        assert_eq!(source.lookups.get(), 1);
+
+        // A store that answers with other bytes is refused before decoding.
+        let wrong = blake3::hash(b"a different still");
+        assert_eq!(
+            open.present_content_still(id, &source, &wrong, budget),
+            Err(StillPresentError::Lookup(StillLookupError::HashMismatch {
+                expected: wrong,
+                actual: content,
+            }))
         );
     }
 

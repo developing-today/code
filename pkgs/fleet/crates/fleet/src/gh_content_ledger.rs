@@ -300,9 +300,9 @@ pub fn start(args: &[String]) -> Result<Option<Pending>, String> {
     start_at(args, &ledger_path())
 }
 
-/// Reserve against an explicit ledger path. Kept private to this module's
-/// tests so they never mutate process-global environment variables.
-#[cfg(test)]
+/// Reserve against an explicit ledger path. `start` passes the
+/// configured path; tests pass a temporary one so they never mutate
+/// process-global environment variables.
 pub fn start_at(args: &[String], path: &Path) -> Result<Option<Pending>, String> {
     let Some(classified) = classify(args) else {
         return Ok(None);

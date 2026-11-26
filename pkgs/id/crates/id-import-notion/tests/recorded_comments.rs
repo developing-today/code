@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use id_import_notion::comments::{CommentClaim, CommentConversion, CommentsCoverage, convert_comments};
+use id_import_notion::comments::{
+    CommentClaim, CommentConversion, CommentsCoverage, convert_comments,
+};
 use id_import_notion::{Inventory, Manifest, NOTION_API_VERSION, NotionApi};
 use serde_json::{Value, json};
 

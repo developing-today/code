@@ -51,6 +51,16 @@
         "sends": ["form_result", "join"],
         "workflow": ["form_result", "join"]
       }
+    },
+    {
+      "name": "tui",
+      "session": "sessions/tui.jsonl",
+      "statement": {
+        "presents": ["error", "event", "form_result_status", "records", "snapshot", "view"],
+        "providers": [],
+        "sends": ["chat", "form_result", "input", "join", "paste", "records", "resize"],
+        "workflow": ["chat", "form_result", "input", "join", "records"]
+      }
     }
   ],
   "suite": "shell-suite",

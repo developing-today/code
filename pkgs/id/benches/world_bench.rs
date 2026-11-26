@@ -148,9 +148,8 @@ use id::bench_ack_mode::{journal_ack_mode_name, mw_journal_ack_mode};
 use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, Participant, RestoredWorld,
-    WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram,
-    WorldScopes,
+    CapabilityBounds, JoinCapability, JournalEntry, Participant, RestoredWorld, WorldCore,
+    WorldEvent, WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
 };
 use id::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
 use id::world_limits::RuntimeLimits;

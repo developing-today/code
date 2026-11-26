@@ -31,6 +31,7 @@ pub mod chained_message;
 mod checked_json;
 pub mod dht;
 pub mod discovery_client;
+pub mod discovery_join;
 pub mod discovery_resolver;
 pub mod envelope;
 pub mod envelope_net;
