@@ -319,10 +319,13 @@ fn direct_request_head(
     token: &str,
     ctx: &str,
     content_length: usize,
-    _trust_bundle_version: Option<u32>,
+    trust_bundle_version: Option<u32>,
 ) -> String {
+    let trust_bundle_version = trust_bundle_version
+        .map(|version| format!("X-Fleet-Trust-Bundle-Version: {version}\r\n"))
+        .unwrap_or_default();
     format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n{trust_bundle_version}{ctx}Content-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
     )
 }
 
