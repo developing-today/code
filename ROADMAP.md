@@ -24,11 +24,11 @@ The order, the evidence behind it and the progress log are in the [results-first
 1. Test `id` before it merges, and give the queue a way to build a slice of a feature instead of re-triaging it (#1233, #1187).
 2. `id`: close Phase 12 against its exit table and tag the first release — many worlds per node (#557), fair scheduling (#1067), delta frames (#805), first providers (#1062), verification debt (#796).
 3. `id`: one end-to-end slice of the signed-record substrate, two nodes and a CLI (#9106, #9112).
-4. `mcpx` robustness: a supervisor for stdio children (#1384), session resume after a cold restart (#1414), JSON Schema validation.
+4. `mcpx` robustness: a supervisor for stdio children (#1384), JSON Schema validation.
 
 ## Next
 
-1. `id` hosted worlds v1 and discovery (#6276, #10695), then the agents-in-worlds spike (#6300).
+1. `id` hosted worlds v1 and discovery (#6276), then the agents-in-worlds spike (#6300).
 2. `id` Phase 13 shells: presentation tiers (#786), kitty keyboard (#787), native shells (#788).
 
 ## Later
