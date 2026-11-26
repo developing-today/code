@@ -36,14 +36,14 @@ function freshDirectoryDb(): DatabaseSync {
 function tableNames(db: DatabaseSync): string[] {
   const rows = db
     .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
     )
     .all() as { name: string }[];
   return rows.map((r) => r.name);
 }
 
 function columnNames(db: DatabaseSync, table: string): string[] {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  const rows = db.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string }[];
   return rows.map((r) => r.name);
 }
 
