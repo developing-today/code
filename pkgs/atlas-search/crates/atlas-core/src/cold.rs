@@ -1247,10 +1247,7 @@ mod tests {
         );
         let lineage = restored.lineage.as_ref().expect("lineage re-attached");
         assert_eq!(lineage.edge.as_deref(), Some("edit"));
-        assert_eq!(
-            lineage.predecessor.as_ref().map(|p| p.version_seq),
-            Some(1)
-        );
+        assert_eq!(lineage.predecessor.as_ref().map(|p| p.version_seq), Some(1));
         // Vectors as-is (§6 step 6): v2 uses span-a and span-c; only
         // span-a has a vector entry, carried bit-identically.
         assert_eq!(restored.vectors.len(), 1);
@@ -1309,7 +1306,10 @@ mod tests {
         );
         assert!(store.inserted.is_empty(), "conflict writes nothing");
         assert_eq!(
-            store.hot.get(&("file-1".to_string(), 1)).map(String::as_str),
+            store
+                .hot
+                .get(&("file-1".to_string(), 1))
+                .map(String::as_str),
             Some("a-different-hash"),
             "the differing hot copy is untouched"
         );
