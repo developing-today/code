@@ -81,7 +81,23 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         )
         self.assertLess(
             workflow.index("bundle_r2_all.py --bucket supabase-backups"),
+            workflow.index("rehost_publish_all.py --bucket fleet-git-rehost"),
+        )
+        self.assertLess(
+            workflow.index("rehost_publish_all.py --bucket fleet-git-rehost"),
+            workflow.index("verify_rehost_clones.py --root"),
+        )
+        self.assertLess(
+            workflow.index("verify_rehost_clones.py --root"),
             workflow.index("Remove ephemeral backup root"),
+        )
+        self.assertIn(
+            "python3 infra/github-backup/bin/rehost_publish_all.py --bucket fleet-git-rehost --root",
+            workflow,
+        )
+        self.assertIn(
+            "python3 infra/github-backup/bin/verify_rehost_clones.py --root",
+            workflow,
         )
         self.assertIn("cancel-in-progress: false", workflow)
 

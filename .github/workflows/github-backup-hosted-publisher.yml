@@ -1,8 +1,8 @@
 name: github-backup hosted publisher
 
-# First hosted publisher slice for #15000: reconstruct the four source
-# mirrors directly from GitHub, then publish and verify their plain mirrors.
-# R2 bundles and rehost publication remain later slices of the same issue.
+# Hosted publisher for #15000: reconstruct the four source mirrors directly
+# from GitHub, then publish verified plain mirrors, R2 bundles, and rehost
+# packs. The rehost leg ends with live clone and ref verification.
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
     name: Reconstruct and publish four plain mirrors
     if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,6 +77,21 @@ jobs:
           RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: python3 infra/github-backup/bin/bundle_r2_all.py --bucket supabase-backups --root "$HOSTED_BACKUP_ROOT"
+
+      - name: Publish verified rehost packs
+        env:
+          HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
+          RCLONE_CONFIG_R2BAK_TYPE: s3
+          RCLONE_CONFIG_R2BAK_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: python3 infra/github-backup/bin/rehost_publish_all.py --bucket fleet-git-rehost --root "$HOSTED_BACKUP_ROOT"
+
+      - name: Verify live rehost clones
+        env:
+          HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
+        run: python3 infra/github-backup/bin/verify_rehost_clones.py --root "$HOSTED_BACKUP_ROOT"
 
       - name: Remove ephemeral backup root
         if: always() && steps.root.outputs.path != ''
