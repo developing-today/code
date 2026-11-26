@@ -195,14 +195,14 @@ describe("before/after report", () => {
 describe("admin routes", () => {
   const auth = { Authorization: "Bearer test-gate" };
   const base = "https://atlas.test/v1/admin/retained";
-  const call = (req: Request, retained: D1Database | undefined = db) =>
-    worker.fetch(req, { ...(env as unknown as Env), RETAINED: retained });
+  const call = (req: Request, retained: D1Database | null = db) =>
+    worker.fetch(req, { ...(env as unknown as Env), RETAINED: retained ?? undefined });
   const pin = (body: unknown, headers: Record<string, string> = auth) =>
     new Request(`${base}/audit`, { method: "POST", headers, body: JSON.stringify(body) });
 
   it("is gated and off without a store", async () => {
-    expect((await call(pin({ object: OBJECT, version: 1 }), {})).status).toBe(401);
-    const off = await call(pin({ object: OBJECT, version: 1 }), undefined);
+    expect((await call(pin({ object: OBJECT, version: 1 }, {}))).status).toBe(401);
+    const off = await call(pin({ object: OBJECT, version: 1 }), null);
     expect(off.status).toBe(503);
   });
 
