@@ -265,6 +265,366 @@ pub fn run_proxy_mode(args: &[String]) -> i32 {
     0
 }
 
+/// Exit codes for `fleet id proxy` (§4.7: distinct, never a
+/// silent fallback or downgrade). 2 is usage; 69 is the house
+/// `EX_UNAVAILABLE` for a mode selected but not yet landed.
+pub const EXIT_MODE_UNAVAILABLE: i32 = 69;
+/// The relay (or the CONNECT shim in front of it) could not be
+/// reached, refused the CONNECT, or answered non-200 (mode 2).
+pub const EXIT_RELAY_UNREACHABLE: i32 = 71;
+/// The dialed peer's NodeId did not match `--expect-node-id`
+/// (mode 2) — fail closed, never downgrade.
+pub const EXIT_IDENTITY_MISMATCH: i32 = 72;
+/// The mode-1 raw target could not be connected.
+pub const EXIT_TARGET_UNREACHABLE: i32 = 73;
+
+impl DialFailure {
+    /// The process exit code for this fail-closed dial failure.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            DialFailure::RelayUnreachable => EXIT_RELAY_UNREACHABLE,
+            DialFailure::IdentityMismatch => EXIT_IDENTITY_MISMATCH,
+        }
+    }
+}
+
+/// A mode-1 target: a plain endpoint fleet byte-moves to. Fleet
+/// parses nothing on these streams and holds no iroh key for the
+/// flow (§4.2 mode 1, the `ssh -W`-style hop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Tcp(String),
+    Unix(String),
+}
+
+/// Parse a target argument. `tcp://host:port`, `unix:///path`,
+/// a bare `host:port`, or a bare `/path` are accepted; the bare
+/// forms count as "an explicit raw endpoint path" for the §4.2
+/// rule (second element of the return).
+pub fn parse_target(s: &str) -> Result<(Target, bool), String> {
+    if let Some(rest) = s.strip_prefix("tcp://") {
+        if rest.is_empty() {
+            return Err("tcp:// target needs a host:port".to_string());
+        }
+        Ok((Target::Tcp(rest.to_string()), false))
+    } else if let Some(rest) = s.strip_prefix("unix://") {
+        if rest.is_empty() {
+            return Err("unix:// target needs a path".to_string());
+        }
+        Ok((Target::Unix(rest.to_string()), false))
+    } else if s.contains("://") {
+        Err(format!(
+            "unsupported target scheme in '{s}' (want tcp://, unix://, host:port, or /path)"
+        ))
+    } else if s.starts_with('/') {
+        Ok((Target::Unix(s.to_string()), true))
+    } else if s.contains(':') {
+        Ok((Target::Tcp(s.to_string()), true))
+    } else {
+        Err(format!(
+            "cannot tell what target '{s}' is (want tcp://, unix://, host:port, or /path)"
+        ))
+    }
+}
+
+/// Validate a `--expect-node-id` pin: exactly 64 hex characters
+/// (a 32-byte NodeId, the §4.1 form). A malformed pin is a usage
+/// error, never an identity mismatch and never ignored.
+pub fn parse_expect_node_id(s: &str) -> Result<[u8; 32], String> {
+    let bytes = s.as_bytes();
+    if bytes.len() != 64 {
+        return Err(format!(
+            "--expect-node-id must be 64 hex characters (32 bytes), got {}",
+            bytes.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (i, pair) in bytes.chunks_exact(2).enumerate() {
+        let hi = hex_val(pair[0])?;
+        let lo = hex_val(pair[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn hex_val(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err("--expect-node-id must be hex".to_string()),
+    }
+}
+
+/// One end of a mode-1 duplex splice. Fleet parses nothing on
+/// these streams; the splice half-closes a direction on EOF so
+/// the peer sees the caller's end-of-input instead of a hung
+/// stream.
+pub enum End {
+    Tcp(std::net::TcpStream),
+    Unix(std::os::unix::net::UnixStream),
+    /// The caller's own stdin/stdout (the `ssh -W`-style hop).
+    Stdio {
+        input: std::io::Stdin,
+        output: std::io::Stdout,
+    },
+}
+
+impl End {
+    pub fn stdio() -> Self {
+        End::Stdio {
+            input: std::io::stdin(),
+            output: std::io::stdout(),
+        }
+    }
+
+    fn try_clone(&self) -> std::io::Result<End> {
+        match self {
+            End::Tcp(s) => Ok(End::Tcp(s.try_clone()?)),
+            End::Unix(s) => Ok(End::Unix(s.try_clone()?)),
+            End::Stdio { .. } => Ok(End::stdio()),
+        }
+    }
+
+    fn shutdown_write(&self) {
+        match self {
+            End::Tcp(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            }
+            End::Unix(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            }
+            End::Stdio { .. } => {}
+        }
+    }
+}
+
+impl Read for End {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            End::Tcp(s) => s.read(buf),
+            End::Unix(s) => s.read(buf),
+            End::Stdio { input, .. } => input.read(buf),
+        }
+    }
+}
+
+impl Write for End {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            End::Tcp(s) => s.write(buf),
+            End::Unix(s) => s.write(buf),
+            End::Stdio { output, .. } => output.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            End::Tcp(s) => s.flush(),
+            End::Unix(s) => s.flush(),
+            End::Stdio { output, .. } => output.flush(),
+        }
+    }
+}
+
+/// Splice two ends together, byte for byte, in both directions
+/// at once (mode 1). Returns `(left→right, right→left)` byte
+/// counts. A direction that reaches EOF half-closes the other
+/// end's write side; the splice ends when both directions do.
+pub fn splice_duplex(mut left: End, mut right: End) -> std::io::Result<(u64, u64)> {
+    let mut left_clone = left.try_clone()?;
+    let mut right_clone = right.try_clone()?;
+    let forward = std::thread::spawn(move || {
+        let n = std::io::copy(&mut left_clone, &mut right_clone);
+        right_clone.shutdown_write();
+        n
+    });
+    let backward_n = std::io::copy(&mut right, &mut left);
+    left.shutdown_write();
+    let forward_n = forward
+        .join()
+        .unwrap_or(Err(std::io::Error::other("splice thread panicked")));
+    Ok((forward_n?, backward_n?))
+}
+
+/// Connect a mode-1 target. Failure is exit 73
+/// ([`EXIT_TARGET_UNREACHABLE`]) — distinct from a relay
+/// failure, per §4.7.
+pub fn connect_target(target: &Target) -> Result<End, (i32, String)> {
+    match target {
+        Target::Tcp(addr) => std::net::TcpStream::connect(addr)
+            .map(End::Tcp)
+            .map_err(|e| {
+                (
+                    EXIT_TARGET_UNREACHABLE,
+                    format!("target-unreachable: tcp {addr}: {e}"),
+                )
+            }),
+        Target::Unix(path) => std::os::unix::net::UnixStream::connect(path)
+            .map(End::Unix)
+            .map_err(|e| {
+                (
+                    EXIT_TARGET_UNREACHABLE,
+                    format!("target-unreachable: unix {path}: {e}"),
+                )
+            }),
+    }
+}
+
+const PROXY_USAGE: &str = "\
+Usage: fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>]
+                      [--relay <url>] [--expect-node-id <hex>] <target>
+
+Byte-move to an ID peer under the design #10391 §4.2 mode rule
+(first match wins): --mode overrides all; --raw or a raw endpoint
+path -> mode 1 (raw proxy); --opaque or an ALPN fleet does not
+know -> mode 2 (relay-aware proxy); otherwise mode 3 (initiator,
+served by 'fleet id postcard'/'fleet id stream', not this verb).
+
+  <target>        tcp://host:port | unix:///path | host:port | /path
+  --alpn <alpn>   the target protocol (fleet knows /iroh-meta/3)
+  --relay <url>   relay for the mode-2 dial (next sub-slice)
+  --expect-node-id <hex>
+                  pin the peer NodeId for the mode-2 dial; a
+                  mismatch fails closed (exit 72), never downgrades
+
+Mode 1 splices this process's stdin/stdout to the target,
+byte for byte; fleet parses nothing. Mode 2's live dialer
+(CONNECT relay shim + resolver override) is the next sub-slice
+of #15434: until it lands a mode-2 selection exits 69 rather
+than silently downgrading. Exit codes: 0 ok · 2 usage ·
+69 mode unavailable · 71 relay unreachable · 72 identity
+mismatch · 73 target unreachable.";
+
+/// `fleet id proxy` — see [`PROXY_USAGE`]. Returns a process
+/// exit code. The first element of `args` is the literal
+/// `"proxy"` (stripped by the `id` domain router in `main.rs`).
+pub fn run(args: &[String]) -> i32 {
+    let mut rest = args.iter();
+    match rest.next().map(|s| s.as_str()) {
+        Some("proxy") => {}
+        Some(other) => {
+            eprintln!("error: unknown 'fleet id' command '{other}'\n\n{PROXY_USAGE}");
+            return 2;
+        }
+        None => {
+            eprintln!("error: 'fleet id proxy' needs a <target>\n\n{PROXY_USAGE}");
+            return 2;
+        }
+    }
+    let mut req = ProxyRequest::default();
+    let mut target_arg: Option<String> = None;
+    let mut expect: Option<[u8; 32]> = None;
+    let mut relay: Option<String> = None;
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--help" | "-h" | "help" => {
+                println!("{PROXY_USAGE}");
+                return 0;
+            }
+            "--raw" => req.raw = true,
+            "--opaque" => req.opaque = true,
+            "--mode" => match rest.next().and_then(|v| Mode::parse(v)) {
+                Some(m) => req.mode_override = Some(m),
+                None => {
+                    eprintln!("error: --mode must be one of 1, 2, 3, raw, relay-aware, initiator");
+                    return 2;
+                }
+            },
+            "--alpn" => match rest.next() {
+                Some(v) => req.alpn = Some(v.clone()),
+                None => {
+                    eprintln!("error: --alpn needs a value");
+                    return 2;
+                }
+            },
+            "--relay" => match rest.next() {
+                Some(v) => relay = Some(v.clone()),
+                None => {
+                    eprintln!("error: --relay needs a value");
+                    return 2;
+                }
+            },
+            "--expect-node-id" => match rest.next() {
+                Some(v) => match parse_expect_node_id(v) {
+                    Ok(pin) => expect = Some(pin),
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return 2;
+                    }
+                },
+                None => {
+                    eprintln!("error: --expect-node-id needs a value");
+                    return 2;
+                }
+            },
+            other if other.starts_with("--") => {
+                eprintln!("error: unknown argument '{other}'\n\n{PROXY_USAGE}");
+                return 2;
+            }
+            other => {
+                if target_arg.is_some() {
+                    eprintln!("error: exactly one <target> is allowed\n\n{PROXY_USAGE}");
+                    return 2;
+                }
+                target_arg = Some(other.to_string());
+            }
+        }
+    }
+    let target_arg = match target_arg {
+        Some(t) => t,
+        None => {
+            eprintln!("error: 'fleet id proxy' needs a <target>\n\n{PROXY_USAGE}");
+            return 2;
+        }
+    };
+    let (target, raw_endpoint) = match parse_target(&target_arg) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    req.raw_endpoint = raw_endpoint;
+    let mode = select_mode(&req);
+    // The mode-2-only flags are meaningless (and refused, not
+    // ignored) for a raw splice: silently accepting a NodeId pin
+    // fleet cannot check would be a silent downgrade of the
+    // caller's stated intent.
+    if mode == Mode::Raw && (expect.is_some() || relay.is_some()) {
+        eprintln!(
+            "error: --expect-node-id/--relay belong to the mode-2 dial; mode 1 holds no iroh key and cannot honor them (refusing, not ignoring)"
+        );
+        return 2;
+    }
+    match mode {
+        Mode::Raw => match connect_target(&target) {
+            Ok(end) => match splice_duplex(End::stdio(), end) {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("error: splice failed: {e}");
+                    EXIT_TARGET_UNREACHABLE
+                }
+            },
+            Err((code, msg)) => {
+                eprintln!("error: {msg}");
+                code
+            }
+        },
+        Mode::RelayAware => {
+            eprintln!(
+                "error: mode-unavailable: mode 2 (relay-aware) selected but its live iroh dialer has not landed yet (#15434); refusing to downgrade"
+            );
+            EXIT_MODE_UNAVAILABLE
+        }
+        Mode::Initiator => {
+            eprintln!(
+                "error: mode 3 (initiator) is not a proxy mode; use 'fleet id postcard' or 'fleet id stream' (design #10391 §4.7)"
+            );
+            2
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +809,197 @@ mod tests {
         assert!(head.starts_with("CONNECT relay.example:443 HTTP/1.1\r\n"));
         assert!(head.contains("Host: relay.example:443\r\n"));
         assert!(head.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn proxy_exit_codes_are_distinct_and_stable() {
+        let mut codes = vec![
+            EXIT_MODE_UNAVAILABLE,
+            EXIT_RELAY_UNREACHABLE,
+            EXIT_IDENTITY_MISMATCH,
+            EXIT_TARGET_UNREACHABLE,
+        ];
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), 4, "proxy exit codes must be distinct");
+        assert_eq!(DialFailure::RelayUnreachable.exit_code(), 71);
+        assert_eq!(DialFailure::IdentityMismatch.exit_code(), 72);
+    }
+
+    #[test]
+    fn target_parsing_marks_bare_forms_raw() {
+        assert_eq!(
+            parse_target("tcp://127.0.0.1:9"),
+            Ok((Target::Tcp("127.0.0.1:9".into()), false))
+        );
+        assert_eq!(
+            parse_target("unix:///tmp/sock"),
+            Ok((Target::Unix("/tmp/sock".into()), false))
+        );
+        assert_eq!(
+            parse_target("127.0.0.1:9"),
+            Ok((Target::Tcp("127.0.0.1:9".into()), true))
+        );
+        assert_eq!(
+            parse_target("/tmp/sock"),
+            Ok((Target::Unix("/tmp/sock".into()), true))
+        );
+        assert!(parse_target("iroh://ticket").is_err());
+        assert!(parse_target("just-a-name").is_err());
+    }
+
+    #[test]
+    fn expect_node_id_pin_is_strict() {
+        let ok = parse_expect_node_id(&"ab".repeat(32)).expect("64 hex");
+        assert_eq!(ok, [0xab; 32]);
+        for bad in [
+            "",
+            "ab",
+            &"ab".repeat(31),
+            &"ab".repeat(33),
+            &"zz".repeat(32),
+        ] {
+            assert!(parse_expect_node_id(bad).is_err(), "input: {bad:?}");
+        }
+    }
+
+    fn proxy_args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn proxy_mode2_without_dialer_is_fail_closed_69() {
+        // No network is touched: the mode-2 live dialer has not
+        // landed, so selection alone decides the exit.
+        assert_eq!(
+            run(&proxy_args(&["proxy", "--mode", "2", "127.0.0.1:9"])),
+            EXIT_MODE_UNAVAILABLE
+        );
+        assert_eq!(
+            run(&proxy_args(&["proxy", "--opaque", "127.0.0.1:9"])),
+            EXIT_MODE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn proxy_mode1_refuses_mode2_flags_instead_of_ignoring_them() {
+        let pin = "ab".repeat(32);
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "1",
+                "--expect-node-id",
+                &pin,
+                "127.0.0.1:9"
+            ])),
+            2
+        );
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "1",
+                "--relay",
+                "https://relay.example:443",
+                "127.0.0.1:9"
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn proxy_mode3_through_this_verb_is_a_usage_error() {
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "3",
+                "--alpn",
+                "/iroh-meta/3",
+                "127.0.0.1:9"
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn unreachable_raw_target_is_the_distinct_73_error() {
+        // Bind then drop a listener to get a port nothing serves.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        drop(listener);
+        match connect_target(&Target::Tcp(addr.clone())) {
+            Err((code, _)) => assert_eq!(code, EXIT_TARGET_UNREACHABLE),
+            Ok(_) => panic!("connect to a dead port must fail"),
+        }
+        // The verb itself maps the same failure to exit 73.
+        assert_eq!(
+            run(&proxy_args(&["proxy", "--mode", "1", &addr])),
+            EXIT_TARGET_UNREACHABLE
+        );
+    }
+
+    /// Deterministic byte stream (splitmix64) — the fixture's
+    /// oracle is byte identity, not the generator.
+    fn fixture_bytes(n: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                (z ^ (z >> 31)) as u8
+            })
+            .collect()
+    }
+
+    /// Mode 1's acceptance shape: an echo peer (a "stock peer"
+    /// that needs no special code) behind the duplex splice;
+    /// bytes the caller sends come back identical, in both
+    /// directions, and the splice reports the moved counts. The
+    /// caller side is a loopback TCP pair standing in for stdio
+    /// so the test does not touch the process's real stdin/out.
+    #[test]
+    fn raw_splice_duplex_moves_bytes_identically_both_ways() {
+        use std::io::{Read as _, Write as _};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        // Echo server: one accepted connection, echo until EOF.
+        let echo_listener = TcpListener::bind("127.0.0.1:0").expect("bind echo");
+        let echo_addr = echo_listener.local_addr().expect("addr");
+        let echo = std::thread::spawn(move || {
+            let (mut s, _) = echo_listener.accept().expect("accept");
+            std::io::copy(&mut s, &mut s.try_clone().expect("clone")).expect("echo copy");
+        });
+        // Caller pair: driver <-> splice-left.
+        let pair_listener = TcpListener::bind("127.0.0.1:0").expect("bind pair");
+        let pair_addr = pair_listener.local_addr().expect("addr");
+        let mut driver = TcpStream::connect(pair_addr).expect("connect pair");
+        let (splice_left, _) = pair_listener.accept().expect("accept pair");
+        let splice_right = TcpStream::connect(echo_addr).expect("connect echo");
+
+        let splice_thread = std::thread::spawn(move || {
+            splice_duplex(End::Tcp(splice_left), End::Tcp(splice_right))
+        });
+
+        let payload = fixture_bytes(1 << 20, 42);
+        let mut driver_clone = driver.try_clone().expect("clone driver");
+        let payload_clone = payload.clone();
+        let writer = std::thread::spawn(move || {
+            driver_clone
+                .write_all(&payload_clone)
+                .expect("write payload");
+            driver_clone.shutdown(Shutdown::Write).expect("half-close");
+        });
+        let mut echoed = Vec::new();
+        driver.read_to_end(&mut echoed).expect("read echo");
+        writer.join().expect("writer");
+        let (fwd, back) = splice_thread.join().expect("splice").expect("splice ok");
+        echo.join().expect("echo");
+
+        assert_eq!(echoed, payload, "bytes must survive the splice identical");
+        assert_eq!(fwd, payload.len() as u64);
+        assert_eq!(back, payload.len() as u64);
     }
 }

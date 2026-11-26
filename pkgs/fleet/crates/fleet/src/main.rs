@@ -74,6 +74,8 @@ mod gh_guard;
 mod gh_metadata;
 #[cfg(feature = "gh")]
 mod gh_sync;
+#[cfg(feature = "host")]
+mod host;
 #[cfg(feature = "http")]
 mod http;
 #[cfg(feature = "id")]
@@ -85,8 +87,6 @@ mod invocation_ledger;
 mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
-#[cfg(feature = "host")]
-mod host;
 mod session_state;
 #[cfg(feature = "ssh")]
 mod ssh;
@@ -1108,11 +1108,15 @@ fn run_domain_with_initializer(
                 return kv::run(args);
             }
             // code#15430 (design #10391 §4.1): the id domain runs
-            // for real — session key lifecycle + stamping. Later
-            // slices add the proxy/initiator/serve-ws verbs.
+            // for real — session key lifecycle + stamping. Slice 2
+            // (#15434, design §4.2) adds `fleet id proxy` (modes
+            // 1–2); every other id verb is the slice-1 key surface.
             #[cfg(feature = "id")]
             if d.name == "id" {
-                return id_key::run(args);
+                return match args.first().map(|s| s.as_str()) {
+                    Some("proxy") => id_proxy::run(args),
+                    _ => id_key::run(args),
+                };
             }
             // The bridge domain runs for real: fleet mailboxes on the
             // message bridge (central send/agents/log/pipeline/
