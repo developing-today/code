@@ -1,3 +1,7 @@
+import { D1BridgeStore } from "../../hosted-worker/src/d1-bridge-store.ts";
+import { importIdKey } from "../../hosted-worker/src/ed25519.ts";
+import { signEvent } from "../../hosted-worker/src/event.ts";
+
 const WORLD_ID = "d1-journal-poc-world";
 const JOURNAL_VERSION = 1;
 
@@ -137,6 +141,67 @@ function parseAfter(url) {
   return after;
 }
 
+// #15538 slice 3: the hosted bridge event store on per-tenant D1.
+// Two tenant databases are two separate D1 bindings. In the hosted
+// path the binding comes from the authoritative tenant record; this
+// local PoC names it by a fixed test letter, and an unknown letter is
+// refused rather than falling back to some other database.
+function tenantStore(env, url) {
+  const tenant = url.searchParams.get("tenant");
+  const binding = tenant === "a" ? env.TENANT_A : tenant === "b" ? env.TENANT_B : undefined;
+  if (!binding) throw new HttpError(400, "tenant must be a or b");
+  return new D1BridgeStore(binding);
+}
+
+// A fixed test-only signing seed: the fixture chain is synthetic and
+// signs nothing outside this local harness.
+const FIXTURE_SEED = new Uint8Array(32).fill(0x5d);
+
+async function fixtureChain() {
+  const key = await importIdKey(FIXTURE_SEED);
+  const events = [];
+  for (let seq = 0; seq < 2; seq++) {
+    events.push(
+      await signEvent(key, {
+        seq,
+        backlink: seq === 0 ? null : events[seq - 1].idBytes,
+        kind: "message",
+        body: new TextEncoder().encode(`d1 bridge fixture ${seq}`),
+      }),
+    );
+  }
+  return {
+    author: key.publicHex,
+    events: events.map((event) => ({ id: event.id, seq: event.seq, bytes_b64: btoa(String.fromCharCode(...event.bytes)) })),
+  };
+}
+
+async function bridgeRoute(request, env, url) {
+  if (request.method === "GET" && url.pathname === "/bridge/fixture") {
+    return jsonResponse(await fixtureChain());
+  }
+  if (request.method === "POST" && url.pathname === "/bridge/append") {
+    const store = tenantStore(env, url);
+    const outcome = await store.append(new Uint8Array(await request.arrayBuffer()));
+    return jsonResponse(outcome, outcome.kind === "refused" ? 409 : 200);
+  }
+  if (request.method === "GET" && url.pathname === "/bridge/head") {
+    const author = url.searchParams.get("author") ?? "";
+    return jsonResponse(await tenantStore(env, url).chainOf(author));
+  }
+  if (request.method === "GET" && url.pathname === "/bridge/event") {
+    const author = url.searchParams.get("author") ?? "";
+    const seq = Number(url.searchParams.get("seq"));
+    if (!Number.isSafeInteger(seq) || seq < 0) throw new HttpError(400, "seq must be a non-negative safe integer");
+    const stored = await tenantStore(env, url).storedAt(author, seq);
+    if (!stored) return jsonResponse({ error: "not found" }, 404);
+    return new Response(stored.bytes, {
+      headers: { "content-type": "application/octet-stream", "x-event-id": stored.id },
+    });
+  }
+  return undefined;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -145,6 +210,11 @@ export default {
     }
 
     try {
+      if (url.pathname.startsWith("/bridge/")) {
+        const response = await bridgeRoute(request, env, url);
+        if (response) return response;
+      }
+
       if (request.method === "POST" && url.pathname === "/append") {
         await ensureSchema(env.DB);
         const bytes = parseEntryBytes(new Uint8Array(await request.arrayBuffer()));

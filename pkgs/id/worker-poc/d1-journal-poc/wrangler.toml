@@ -8,3 +8,15 @@ compatibility_date = "2025-03-01"
 binding = "DB"
 database_name = "id-d1-journal-poc"
 database_id = "00000000-0000-0000-0000-000000000001"
+
+# #15538 slice 3: two tenant D1 databases, one binding each, for the
+# hosted bridge event-store isolation check. Local placeholders only.
+[[d1_databases]]
+binding = "TENANT_A"
+database_name = "id-d1-bridge-tenant-a"
+database_id = "00000000-0000-0000-0000-00000000000a"
+
+[[d1_databases]]
+binding = "TENANT_B"
+database_name = "id-d1-bridge-tenant-b"
+database_id = "00000000-0000-0000-0000-00000000000b"
