@@ -18,7 +18,10 @@ API (JSON):
                                       err_size, duration_ms}
                                       (out_size/err_size: the spool
                                       sizes, so a client pages a done
-                                      job to the end, #15420)
+                                      job to the end, #15420;
+                                      out_dropped/err_dropped/
+                                      bytes_dropped: bytes past the
+                                      spool cap, see below)
   POST /jobs/<id>/kill            -> {ok, state}
   POST /exec/<trip>/cancel        -> {ok, cancelled} (POST /cancel
                                       {trip} is the legacy spelling)
@@ -34,6 +37,18 @@ Job stdout/stderr spool to ~/.local/state/laptop-agent/jobs/<id>/ so a
 daemon restart does not lose results: job metadata is persisted next to
 the output and the index is rebuilt on startup. Finished jobs reaped
 after 24h, spool directory included.
+
+Spool cap (#15420, design #10356 section 3.3): each stream's spool
+stops appending at LAPTOP_AGENT_SPOOL_CAP bytes (default 256 MiB).
+The process keeps running and is never killed because its log grew;
+bytes past the cap are counted, not stored, and every reply carries
+the counts so `fleet http attach` prints an explicit
+"[spool cap reached: N bytes dropped]" marker. A small pump process
+per job (its own session, like the job) reads the job's stdout and
+stderr pipes and writes the spool, so a daemon restart neither kills
+the job nor stops its spool, exactly as when the job wrote the files
+directly. The counts live next to the spool as stdout.dropped and
+stderr.dropped.
 
 Timeout semantics (2026-11-10, live lineage): every /exec command runs
 in its OWN process group (start_new_session) and the whole group is
@@ -199,6 +214,17 @@ FILE_CHUNK_MAX = 1 << 20  # max bytes served per GET /file request
 FILES_CHUNK_SIZE = 2 << 20  # 2 MiB, matches fleet-proxy CHUNK_SIZE
 FILES_BODY_MAX = (FILES_CHUNK_SIZE * 4) // 3 + (1 << 16)
 FILES_TEMP_MARK = ".fleet-part-"  # ".{name}.fleet-part-{sha256[..12]}"
+# Spool cap per stream for POST /jobs (#15420, design #10356 §3.3).
+SPOOL_CAP = _parse_startup_int(
+    "LAPTOP_AGENT_SPOOL_CAP",
+    os.environ.get("LAPTOP_AGENT_SPOOL_CAP", str(256 << 20)),
+    "must be an integer >= 1 (bytes per stream)",
+    1,
+)
+# How long a finished job waits for its pump to drain the pipes before
+# it reads as done. A grandchild that keeps the pipe open (a daemonised
+# helper) must not hold the job in "running" forever.
+PUMP_SETTLE_S = 2
 EXEC_TIMEOUT_DEFAULT = 120
 EXEC_TIMEOUT_MAX = 600
 JOB_TTL_S = 24 * 3600
@@ -613,6 +639,142 @@ def job_dir(job_id):
     return resolved
 
 
+# The per-job spool pump (#15420). Run as `python3 -I -c SRC cap dir
+# out_fd err_fd` with the two pipe read ends passed through pass_fds.
+# It appends each stream to <dir>/stdout and <dir>/stderr up to cap
+# bytes, counts what it drops past the cap (or past a failed write,
+# such as a full disk) in <dir>/<stream>.dropped, and exits when both
+# pipes reach EOF. It never stops reading, so the job never blocks on
+# a full pipe and is never killed because its output grew. Stdlib
+# only, and self-contained: it does not import this module, whose
+# import reads the token and binds nothing but does validate env.
+SPOOL_PUMP_SRC = r"""
+import os, selectors, sys, time
+cap = int(sys.argv[1])
+d = sys.argv[2]
+sel = selectors.DefaultSelector()
+streams = {}
+for raw, name in ((sys.argv[3], "stdout"), (sys.argv[4], "stderr")):
+    fd = int(raw)
+    f = open(os.path.join(d, name), "ab", buffering=0)
+    streams[fd] = {
+        "f": f,
+        "name": name,
+        "written": os.fstat(f.fileno()).st_size,
+        "dropped": 0,
+        "noted": 0,
+        "t": 0.0,
+    }
+    sel.register(fd, selectors.EVENT_READ)
+
+
+def note(s, force):
+    if s["dropped"] == s["noted"]:
+        return
+    now = time.monotonic()
+    if not force and now - s["t"] < 1.0:
+        return
+    tmp = os.path.join(d, s["name"] + ".dropped.tmp")
+    try:
+        with open(tmp, "w") as t:
+            t.write(str(s["dropped"]))
+        os.replace(tmp, os.path.join(d, s["name"] + ".dropped"))
+        s["noted"] = s["dropped"]
+        s["t"] = now
+    except OSError:
+        pass
+
+
+while streams:
+    for key, _ in sel.select(timeout=1.0):
+        fd = key.fd
+        s = streams[fd]
+        try:
+            chunk = os.read(fd, 65536)
+        except InterruptedError:
+            continue
+        except OSError:
+            chunk = b""
+        if not chunk:
+            sel.unregister(fd)
+            os.close(fd)
+            note(s, True)
+            s["f"].close()
+            del streams[fd]
+            continue
+        before = s["written"]
+        part = memoryview(chunk)[: max(0, cap - before)]
+        while len(part):
+            try:
+                n = s["f"].write(part)
+            except OSError:
+                break
+            if not n:
+                break
+            s["written"] += n
+            part = part[n:]
+        s["dropped"] += len(chunk) - (s["written"] - before)
+        note(s, False)
+    for s in streams.values():
+        note(s, False)
+"""
+
+
+def _read_dropped(d, name):
+    """Bytes the pump dropped past the spool cap for one stream.
+
+    0 when the count file is missing (no drop yet, or a spool from
+    before the cap) or unreadable; never negative. A malformed file
+    reads as 0 rather than failing the reply that carries it.
+    """
+    if d is None:
+        return 0
+    try:
+        value = int((d / f"{name}.dropped").read_text().strip())
+    except (OSError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _start_spool_pump(d):
+    """Start the spool pump for job directory d (#15420).
+
+    Returns (pump, out_w, err_w): the pump's Popen and the write ends
+    of the two pipes, which the caller hands to the job as its stdout
+    and stderr and then closes. The read ends are the pump's alone.
+    """
+    out_r, out_w = os.pipe()
+    err_r, err_w = os.pipe()
+    try:
+        pump = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                SPOOL_PUMP_SRC,
+                str(SPOOL_CAP),
+                str(d),
+                str(out_r),
+                str(err_r),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(out_r, err_r),
+            start_new_session=True,
+        )
+    except BaseException:
+        for fd in (out_r, out_w, err_r, err_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+    os.close(out_r)
+    os.close(err_r)
+    return pump, out_w, err_w
+
+
 def _write_meta(job):
     meta = {
         "id": job["id"],
@@ -906,6 +1068,12 @@ def job_state(job):
         proc = job["proc"]
         if proc is not None and proc.poll() is None:
             return "running"
+        if not job.get("_settled", True):
+            # The process exited but its pump is still draining the
+            # pipes into the spool (#15420): reading as done now would
+            # let a client stop before the last bytes land. The watch
+            # thread bounds this at PUMP_SETTLE_S.
+            return "running"
         job["state"] = "done"
         if proc is not None:
             job["exit"] = proc.returncode
@@ -951,6 +1119,8 @@ def job_public(job, out_off=0, err_off=0):
                 err = f.read(MAX_OUT)
         except OSError:
             pass
+    out_dropped = _read_dropped(d, "stdout")
+    err_dropped = _read_dropped(d, "stderr")
     return {
         "job_id": job["id"],
         "state": state,
@@ -969,6 +1139,9 @@ def job_public(job, out_off=0, err_off=0):
         "err_next": err_off + len(err),
         "out_size": max(out_size, out_off + len(out)),
         "err_size": max(err_size, err_off + len(err)),
+        "out_dropped": out_dropped,
+        "err_dropped": err_dropped,
+        "bytes_dropped": out_dropped + err_dropped,
     }
 
 
@@ -1003,6 +1176,8 @@ def job_summary(job):
         err_size = (d / "stderr").stat().st_size if d else 0
     except OSError:
         err_size = 0
+    out_dropped = _read_dropped(d, "stdout")
+    err_dropped = _read_dropped(d, "stderr")
     return {
         "job_id": job["id"],
         "state": state,
@@ -1019,6 +1194,9 @@ def job_summary(job):
         "err_bytes": err_size,
         "out_next": out_size,
         "err_next": err_size,
+        "out_dropped": out_dropped,
+        "err_dropped": err_dropped,
+        "bytes_dropped": out_dropped + err_dropped,
     }
 
 
@@ -1361,7 +1539,7 @@ class Handler(BaseHTTPRequestHandler):
             if not SEMA.acquire(timeout=5):
                 return self._send(503, {"error": "busy"})
             job_id = d = None
-            out_f = err_f = proc = None
+            out_w = err_w = proc = pump = None
             watch_thread = None
             watch_started = False
             try:
@@ -1373,16 +1551,26 @@ class Handler(BaseHTTPRequestHandler):
                 # #14186: record the FLEET_CTX_* subset (merged daemon +
                 # request env, request wins) in the spool; ids only.
                 ctx = _extract_ctx(env)
-                out_f = open(d / "stdout", "wb")
-                err_f = open(d / "stderr", "wb")
+                # The spool files exist from the start so a reader sees
+                # empty output, not a missing spool; the pump appends
+                # to them up to SPOOL_CAP (#15420).
+                (d / "stdout").write_bytes(b"")
+                (d / "stderr").write_bytes(b"")
+                pump, out_w, err_w = _start_spool_pump(d)
                 proc = subprocess.Popen(
                     argv,
                     cwd=cwd,
                     env=env,
-                    stdout=out_f,
-                    stderr=err_f,
+                    stdout=out_w,
+                    stderr=err_w,
                     start_new_session=True,
                 )
+                # Only the job holds the write ends now, so the pump
+                # sees EOF when the job (and anything it left holding
+                # them) exits.
+                for fd in (out_w, err_w):
+                    os.close(fd)
+                out_w = err_w = None
                 job = {
                     "id": job_id,
                     "proc": proc,
@@ -1394,7 +1582,9 @@ class Handler(BaseHTTPRequestHandler):
                     "state": "running",
                     "interrupted": False,
                     "ctx": ctx,
-                    "_files": (out_f, err_f),
+                    "_files": (),
+                    "_pump": pump,
+                    "_settled": False,
                     "trip": trip,
                     "t_received": t_received_ms,
                 }
@@ -1408,11 +1598,14 @@ class Handler(BaseHTTPRequestHandler):
                     finally:
                         SEMA.release()
                     j["ended_at"] = time.time()
-                    for f in j["_files"]:
-                        try:
-                            f.close()
-                        except OSError:
-                            pass
+                    # Let the pump drain what the job wrote before the
+                    # job reads as done, but never wait on a grandchild
+                    # that keeps the pipes open (#15420).
+                    try:
+                        j["_pump"].wait(timeout=PUMP_SETTLE_S)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    j["_settled"] = True
                     job_state(j)
                     try:
                         d = job_dir(j["id"])
@@ -1449,12 +1642,20 @@ class Handler(BaseHTTPRequestHandler):
                                 pass
                         with JOBS_LOCK:
                             JOBS.pop(job_id, None)
-                        for f in (out_f, err_f):
-                            if f is not None:
+                        for fd in (out_w, err_w):
+                            if fd is not None:
                                 try:
-                                    f.close()
+                                    os.close(fd)
                                 except OSError:
                                     pass
+                        if pump is not None:
+                            # With the write ends closed the pump sees
+                            # EOF; kill it only if it lingers.
+                            try:
+                                pump.wait(timeout=PUMP_SETTLE_S)
+                            except subprocess.TimeoutExpired:
+                                pump.kill()
+                                pump.wait(timeout=5)
                         if d is not None:
                             shutil.rmtree(d, ignore_errors=True)
                     except Exception:

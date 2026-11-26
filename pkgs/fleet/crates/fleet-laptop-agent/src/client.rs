@@ -658,6 +658,16 @@ where
     }
 }
 
+/// The explicit marker `attach` prints when the daemon's spool cap
+/// discarded output (developing-today/code#15420, design #10356
+/// section 3.3): output is never silently truncated. `None` when the
+/// reply reports no dropped bytes, including a daemon from before the
+/// cap that sends no count at all.
+pub(crate) fn spool_cap_marker(body: &Value) -> Option<String> {
+    let dropped = body.get("bytes_dropped").and_then(Value::as_u64)?;
+    (dropped > 0).then(|| format!("[spool cap reached: {dropped} bytes dropped]"))
+}
+
 pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(wait_s);
     let mut offs = load_offsets(job);
@@ -678,6 +688,9 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
         thread::sleep,
     ) {
         Drained::Done(body) => {
+            if let Some(marker) = spool_cap_marker(&body) {
+                eprintln!("{marker}");
+            }
             let exit = body.get("exit").cloned().unwrap_or(Value::Null);
             let dur = body.get("duration_ms").cloned().unwrap_or(Value::Null);
             eprintln!(
@@ -845,6 +858,18 @@ mod tests {
         assert!(lines[0].starts_with("ID"));
         assert!(lines[1].contains("1970-01-02T00:00:00Z"), "{table}");
         assert!(lines[1].ends_with("make test"), "{table}");
+    }
+
+    #[test]
+    fn spool_cap_marker_names_the_dropped_bytes_15420() {
+        let body = json!({"state": "done", "bytes_dropped": 4096});
+        assert_eq!(
+            spool_cap_marker(&body).as_deref(),
+            Some("[spool cap reached: 4096 bytes dropped]")
+        );
+        assert_eq!(spool_cap_marker(&json!({"bytes_dropped": 0})), None);
+        // A daemon from before the cap sends no count: no marker.
+        assert_eq!(spool_cap_marker(&json!({"state": "done"})), None);
     }
 
     #[test]

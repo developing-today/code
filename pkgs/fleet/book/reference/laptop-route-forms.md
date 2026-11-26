@@ -90,6 +90,13 @@ session's output from the saved cursor, like `poll`. Replies carry
 even when more than 1 MiB is spooled, instead of stopping at the
 first page.
 
+Each stream's spool stops growing at the daemon's spool cap
+(`LAPTOP_AGENT_SPOOL_CAP`, 256 MiB by default). The job keeps running
+and is never killed because its output grew. The bytes past the cap
+are counted, and `attach` ends with an explicit
+`[spool cap reached: N bytes dropped]` line instead of truncating
+silently.
+
 ## fleet ssh — tier T3
 
 SSH's endpoint-grade shape is a binary-owned client contract: the

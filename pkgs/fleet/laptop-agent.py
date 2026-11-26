@@ -1675,6 +1675,14 @@ def main():
                     if not drained:
                         continue
                     state["done"] = True
+                    dropped = out.get("bytes_dropped") or 0
+                    if dropped > 0:
+                        # The daemon's spool cap discarded output; say
+                        # so instead of truncating silently (#15420).
+                        print(
+                            f"[spool cap reached: {dropped} bytes dropped]",
+                            file=sys.stderr,
+                        )
                     print(
                         f"[laptop-agent] job {job_id} done "
                         f"exit={out['exit']} "

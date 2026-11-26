@@ -118,6 +118,15 @@ class StartupEnvValidationTest(unittest.TestCase):
                 self.assertIn(repr(value), p.stderr)
                 self.assertNotIn("Traceback", p.stderr)
 
+    def test_invalid_spool_cap_refuses_to_start(self):
+        for value in ("abc", "0", "-1"):
+            with self.subTest(LAPTOP_AGENT_SPOOL_CAP=value):
+                p = self._run_with_env({"LAPTOP_AGENT_SPOOL_CAP": value})
+                self.assertEqual(p.returncode, 3, p.stderr)
+                self.assertIn("invalid LAPTOP_AGENT_SPOOL_CAP=", p.stderr)
+                self.assertIn(repr(value), p.stderr)
+                self.assertNotIn("Traceback", p.stderr)
+
     def test_invalid_slots_refuses_to_start(self):
         for value in ("abc", "0", "-1"):
             with self.subTest(LAPTOP_AGENT_SLOTS=value):
@@ -539,6 +548,170 @@ class JobSpoolSizeTest(unittest.TestCase):
                 public = la.job_public(job)
         self.assertEqual(public["out_size"], 0)
         self.assertEqual(public["err_size"], 0)
+
+
+class SpoolCapTest(unittest.TestCase):
+    """Issue #15420 (design #10356 section 3.3): the spool cap.
+
+    Each stream's spool stops appending at LAPTOP_AGENT_SPOOL_CAP; the
+    process keeps running, the bytes past the cap are counted, and
+    every reply carries the counts so attach can print a marker.
+    """
+
+    def _import_agent(self):
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
+            f.write("spool-cap-test-token\n")
+            token_path = f.name
+        os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
+        sys.path.insert(0, str(AGENT.parent))
+        import laptop_agent as la
+
+        return la
+
+    def test_pump_stores_up_to_the_cap_and_counts_the_rest(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("stdout", "stderr"):
+                Path(d, name).write_bytes(b"")
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+            pump = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    la.SPOOL_PUMP_SRC,
+                    "10",
+                    d,
+                    str(out_r),
+                    str(err_r),
+                ],
+                pass_fds=(out_r, err_r),
+            )
+            os.close(out_r)
+            os.close(err_r)
+            os.write(out_w, b"0123456789abcdefghijklmno")
+            os.write(err_w, b"warn\n")
+            os.close(out_w)
+            os.close(err_w)
+            self.assertEqual(pump.wait(timeout=20), 0)
+            self.assertEqual(Path(d, "stdout").read_bytes(), b"0123456789")
+            self.assertEqual(Path(d, "stdout.dropped").read_text(), "15")
+            self.assertEqual(Path(d, "stderr").read_bytes(), b"warn\n")
+            self.assertFalse(Path(d, "stderr.dropped").exists())
+
+    def test_replies_carry_the_dropped_counts(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch.object(la, "STATE_DIR", Path(state_dir)):
+                job_id = "job-spool-cap"
+                spool = la.job_dir(job_id)
+                spool.mkdir(parents=True)
+                (spool / "stdout").write_bytes(b"x" * 8)
+                (spool / "stderr").write_bytes(b"")
+                (spool / "stdout.dropped").write_text("4000")
+                (spool / "stderr.dropped").write_text("not a number")
+                job = {
+                    "id": job_id,
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
+                public = la.job_public(job)
+                summary = la.job_summary(job)
+        for reply in (public, summary):
+            self.assertEqual(reply["out_dropped"], 4000)
+            self.assertEqual(reply["err_dropped"], 0)
+            self.assertEqual(reply["bytes_dropped"], 4000)
+
+    def test_job_past_the_cap_keeps_running_and_reports_drops(self):
+        token = "spool-cap-http-token"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(token + "\n")
+            token_path = f.name
+        port = free_port()
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+            LAPTOP_AGENT_SPOOL_CAP="1000",
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+
+        def call(method, path, body=None):
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+
+        try:
+            deadline = time.time() + 10
+            while True:
+                try:
+                    if call("GET", "/health")["ok"]:
+                        break
+                except Exception:
+                    if time.time() > deadline:
+                        raise
+                    time.sleep(0.1)
+            # The job writes 5000 bytes past a 1000-byte cap, then
+            # more after it, and exits 7 on its own: a job killed for
+            # its output would never reach the exit or the last write.
+            job_id = call(
+                "POST",
+                "/jobs",
+                {
+                    "cwd": "/",
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdout.write('k' * 5000); "
+                        "sys.stdout.flush(); sys.stderr.write('tail'); "
+                        "sys.exit(7)",
+                    ],
+                },
+            )["job_id"]
+            deadline = time.time() + 20
+            single = None
+            while time.time() < deadline:
+                single = call("GET", f"/jobs/{job_id}")
+                if single["state"] == "done":
+                    break
+                time.sleep(0.1)
+            self.assertEqual(single["state"], "done")
+            self.assertEqual(single["exit"], 7)
+            self.assertEqual(single["stdout"], "k" * 1000)
+            self.assertEqual(single["stderr"], "tail")
+            self.assertEqual(single["out_size"], 1000)
+            self.assertEqual(single["out_dropped"], 4000)
+            self.assertEqual(single["err_dropped"], 0)
+            self.assertEqual(single["bytes_dropped"], 4000)
+            listing = call("GET", "/jobs")
+            entry = [j for j in listing["jobs"] if j["job_id"] == job_id]
+            self.assertEqual(len(entry), 1)
+            self.assertEqual(entry[0]["bytes_dropped"], 4000)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+            os.unlink(token_path)
 
 
 class JobSlotsTest(unittest.TestCase):
@@ -1963,6 +2136,9 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     "err_next": 0,
                     "out_size": 0,
                     "err_size": 0,
+                    "out_dropped": 0,
+                    "err_dropped": 0,
+                    "bytes_dropped": 0,
                 },
             )
 
