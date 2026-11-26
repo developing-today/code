@@ -471,6 +471,23 @@ fn fetch_page<T: Transport, D: PageDecoder>(
     if row_count > u64::from(limit) {
         return Err(ReadError::MalformedPage);
     }
+    if let Some(range) = range {
+        match range {
+            ContentRange::Empty { .. } if row_count != 0 => {
+                return Err(ReadError::MalformedPage);
+            }
+            ContentRange::Rows { first, last, total } => {
+                let interval_len = last
+                    .checked_sub(first)
+                    .and_then(|distance| distance.checked_add(1))
+                    .ok_or(ReadError::MalformedPage)?;
+                if interval_len != row_count || total.is_some_and(|total| last >= total) {
+                    return Err(ReadError::MalformedPage);
+                }
+            }
+            ContentRange::Empty { .. } => {}
+        }
+    }
     let complete = match range.and_then(ContentRange::says_complete) {
         Some(explicit) => explicit,
         None => row_count < u64::from(limit),

@@ -273,6 +273,48 @@ fn live_content_range_total_marks_a_full_page_complete() {
 }
 
 #[test]
+fn live_rejects_content_range_inconsistent_with_decoded_rows_or_total() {
+    let run = |ids: &[i64], range: &str| {
+        let mut transport = Scripted::new(vec![page(ids, Some(range), 1)]);
+        live_read(
+            &endpoint(),
+            &modes(ReadMode::Live),
+            &mut transport,
+            &JsonRows,
+            &Query::read("items"),
+            5,
+        )
+    };
+
+    // Oracle: inclusive Content-Range interval length must equal the
+    // number of decoded rows; any declared total must contain the range.
+    assert_eq!(
+        run(&[1], "0-1/2").unwrap_err(),
+        ReadError::MalformedPage,
+        "a range claiming two rows cannot accompany one decoded row"
+    );
+    assert_eq!(
+        run(&[1, 2], "0-1/1").unwrap_err(),
+        ReadError::MalformedPage,
+        "the declared total cannot end before the last row index"
+    );
+    assert_eq!(
+        run(&[1], "*/0").unwrap_err(),
+        ReadError::MalformedPage,
+        "an empty range cannot accompany decoded rows"
+    );
+    assert_eq!(
+        run(&[], "0-0/1").unwrap_err(),
+        ReadError::MalformedPage,
+        "a row range cannot accompany an empty body"
+    );
+
+    let empty = run(&[], "*/0").unwrap();
+    assert!(empty.complete);
+    assert!(empty.rows.is_empty());
+}
+
+#[test]
 fn live_follows_the_keyset_cursor_one_request_per_page() {
     let mut transport = Scripted::new(vec![
         page(&[1, 2], Some("0-1/*"), 10),
