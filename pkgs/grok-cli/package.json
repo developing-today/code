@@ -52,5 +52,8 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "preferGlobal": true
+  "preferGlobal": true,
+  "overrides": {
+    "ws": "^8.21.0"
+  }
 }
