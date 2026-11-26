@@ -2284,6 +2284,59 @@ fn test_cli_parse_world_boot_window() {
 }
 
 #[test]
+fn test_cli_parse_world_partition() {
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-partition",
+        "eu-west",
+    ]);
+    match cli.command {
+        Some(Command::Serve(args)) => {
+            assert_eq!(args.world_partition.as_deref(), Some("eu-west"));
+        }
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(args.world_partition.is_none()),
+        _ => panic!("Expected Serve command"),
+    }
+    for bad in ["", "EU", "eu/us", "../eu", &"a".repeat(64)] {
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world", "--world-partition", bad]).is_err(),
+            "{bad:?}"
+        );
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--world-partition", "eu"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-host",
+            "--world-partition",
+            "eu"
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--ephemeral",
+            "--world-partition",
+            "eu"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn test_cli_parse_world_host() {
     let cli = Cli::parse_from([
         "id",
