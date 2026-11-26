@@ -2655,6 +2655,9 @@ describe("routing an action to a machine that can do it (#13492 slice 2)", () =>
     w.now.t += 1_000;
     await w.link.now.once();
     expect(w.ran.map((r) => r.kind)).toEqual(["issue.comment"]);
+    // Its next report says what became of it, and it leaves the held list.
+    w.now.t += 1_000;
+    await w.link.now.once();
     expect(heldStored(w)).toEqual([]);
   });
 
@@ -2690,6 +2693,8 @@ describe("routing an action to a machine that can do it (#13492 slice 2)", () =>
     w.now.t += 1_000;
     await w.link.now.once();
     expect(w.ran.map((r) => r.kind)).toEqual(["issue.comment", "issue.comment"]);
+    w.now.t += 1_000;
+    await w.link.now.once();
     expect(heldStored(w)).toEqual([]);
   });
 });
