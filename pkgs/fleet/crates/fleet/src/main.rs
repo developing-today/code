@@ -1109,8 +1109,9 @@ fn run_domain_with_initializer(
             }
             // code#15430 (design #10391 §4.1): the id domain runs
             // for real — session key lifecycle + stamping. Slice 2
-            // (#15434, design §4.2) adds `fleet id proxy` (modes
-            // 1–2); every other id verb is the slice-1 key surface.
+            // (#15434, design §4.2) adds the `fleet id proxy` entry
+            // point; mode 1 is live and mode 2 currently fails closed.
+            // Every other id verb remains on the slice-1 key surface.
             #[cfg(feature = "id")]
             if d.name == "id" {
                 return match args.first().map(|s| s.as_str()) {

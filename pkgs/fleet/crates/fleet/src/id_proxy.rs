@@ -4,16 +4,11 @@
 //! request/response shape for the relay dialer in constrained
 //! egress, and the opaque splice both proxy modes byte-move with.
 //!
-//! What this slice does NOT do: the live iroh dial itself. That
-//! dial needs slice 1's key on the wire together with the relay
-//! fixture, and lands with the initiator work in slices 3–4
-//! (#15435, #15436). What lands here is everything about the dial
-//! that is decidable without a network: which mode a request gets
-//! (§4.2 first-match), how a failed dial is reported (distinctly,
-//! never as a downgrade to another mode), the CONNECT bytes a
-//! CONNECT-only egress proxy sees, and the byte-identical splice
-//! (mode 1 byte-moves a caller-held ticket through it; the stock
-//! peer needs no special code because the splice parses nothing).
+//! Mode 1 is live: `fleet id proxy` splices stdio to a plain TCP or
+//! Unix target without parsing the payload. The live mode-2 iroh
+//! dial is not implemented yet; mode 2 fails closed with exit 69.
+//! This module also implements §4.2 selection, distinct dial-failure
+//! types, CONNECT request/response helpers and opaque splice logic.
 //!
 //! The §4.2 contract implemented here:
 //!
@@ -298,20 +293,20 @@ pub enum Target {
 }
 
 /// Parse a target argument. `tcp://host:port`, `unix:///path`,
-/// a bare `host:port`, or a bare `/path` are accepted; the bare
-/// forms count as "an explicit raw endpoint path" for the §4.2
-/// rule (second element of the return).
+/// a bare `host:port`, or a bare `/path` are accepted; all explicit
+/// ordinary endpoints count as raw endpoints for the §4.2 rule
+/// (second element of the return).
 pub fn parse_target(s: &str) -> Result<(Target, bool), String> {
     if let Some(rest) = s.strip_prefix("tcp://") {
         if rest.is_empty() {
             return Err("tcp:// target needs a host:port".to_string());
         }
-        Ok((Target::Tcp(rest.to_string()), false))
+        Ok((Target::Tcp(rest.to_string()), true))
     } else if let Some(rest) = s.strip_prefix("unix://") {
         if rest.is_empty() {
             return Err("unix:// target needs a path".to_string());
         }
-        Ok((Target::Unix(rest.to_string()), false))
+        Ok((Target::Unix(rest.to_string()), true))
     } else if s.contains("://") {
         Err(format!(
             "unsupported target scheme in '{s}' (want tcp://, unix://, host:port, or /path)"
@@ -397,6 +392,18 @@ impl End {
             End::Stdio { .. } => {}
         }
     }
+
+    fn shutdown_both(&self) {
+        match self {
+            End::Tcp(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            End::Unix(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            End::Stdio { .. } => {}
+        }
+    }
 }
 
 impl Read for End {
@@ -434,12 +441,25 @@ pub fn splice_duplex(mut left: End, mut right: End) -> std::io::Result<(u64, u64
     let mut left_clone = left.try_clone()?;
     let mut right_clone = right.try_clone()?;
     let forward = std::thread::spawn(move || {
-        let n = std::io::copy(&mut left_clone, &mut right_clone);
+        let n = std::io::copy(&mut left_clone, &mut right_clone)
+            .and_then(|n| right_clone.flush().map(|()| n));
         right_clone.shutdown_write();
+        if n.is_err() {
+            left_clone.shutdown_both();
+            right_clone.shutdown_both();
+        }
         n
     });
-    let backward_n = std::io::copy(&mut right, &mut left);
+    let backward_n = std::io::copy(&mut right, &mut left).and_then(|n| left.flush().map(|()| n));
     left.shutdown_write();
+    if let Err(error) = backward_n {
+        left.shutdown_both();
+        right.shutdown_both();
+        // An interactive stdin read cannot be cancelled by a socket
+        // shutdown. Do not wait for it after the other direction fails;
+        // the CLI returns this error and exits, ending that reader.
+        return Err(error);
+    }
     let forward_n = forward
         .join()
         .unwrap_or(Err(std::io::Error::other("splice thread panicked")));
@@ -497,7 +517,7 @@ mismatch · 73 target unreachable.";
 
 /// `fleet id proxy` — see [`PROXY_USAGE`]. Returns a process
 /// exit code. The first element of `args` is the literal
-    /// `"proxy"` (retained by the `id` domain router in `main.rs`).
+/// `"proxy"` (retained by the `id` domain router in `main.rs`).
 pub fn run(args: &[String]) -> i32 {
     let mut rest = args.iter();
     match rest.next().map(|s| s.as_str()) {
@@ -830,11 +850,11 @@ mod tests {
     fn target_parsing_marks_bare_forms_raw() {
         assert_eq!(
             parse_target("tcp://127.0.0.1:9"),
-            Ok((Target::Tcp("127.0.0.1:9".into()), false))
+            Ok((Target::Tcp("127.0.0.1:9".into()), true))
         );
         assert_eq!(
             parse_target("unix:///tmp/sock"),
-            Ok((Target::Unix("/tmp/sock".into()), false))
+            Ok((Target::Unix("/tmp/sock".into()), true))
         );
         assert_eq!(
             parse_target("127.0.0.1:9"),
@@ -846,6 +866,19 @@ mod tests {
         );
         assert!(parse_target("iroh://ticket").is_err());
         assert!(parse_target("just-a-name").is_err());
+    }
+
+    #[test]
+    fn explicit_scheme_target_selects_raw_mode_without_flags() {
+        let (target, raw_endpoint) = parse_target("tcp://127.0.0.1:9").expect("target");
+        assert_eq!(target, Target::Tcp("127.0.0.1:9".into()));
+        assert_eq!(
+            select_mode(&ProxyRequest {
+                raw_endpoint,
+                ..ProxyRequest::default()
+            }),
+            Mode::Raw
+        );
     }
 
     #[test]
@@ -876,7 +909,13 @@ mod tests {
             EXIT_MODE_UNAVAILABLE
         );
         assert_eq!(
-            run(&proxy_args(&["proxy", "--opaque", "tcp://127.0.0.1:9"])),
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "2",
+                "--opaque",
+                "tcp://127.0.0.1:9"
+            ])),
             EXIT_MODE_UNAVAILABLE
         );
     }
