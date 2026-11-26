@@ -55,18 +55,22 @@ pub fn certificate_der(bytes: &[u8]) -> Result<Vec<u8>> {
         Encoding::Pem => {
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| CertError::validation("PEM input is not UTF-8"))?;
-            let mut certs: Vec<Vec<u8>> = pem_decode_all(text)?
-                .into_iter()
-                .filter(|(label, _)| label == CERT_LABEL)
-                .map(|(_, der)| der)
-                .collect();
-            if certs.len() != 1 {
+            let trimmed = text.trim();
+            let blocks = pem_decode_all(trimmed)?;
+            if blocks.len() != 1 || blocks[0].0 != CERT_LABEL {
                 return Err(CertError::validation(format!(
-                    "expected exactly one {CERT_LABEL} block, found {}",
-                    certs.len()
+                    "expected exactly one {CERT_LABEL} block, found {} PEM blocks",
+                    blocks.len()
                 )));
             }
-            certs.swap_remove(0)
+            let begin = format!("-----BEGIN {CERT_LABEL}-----");
+            let end = format!("-----END {CERT_LABEL}-----");
+            if !trimmed.starts_with(&begin) || !trimmed.ends_with(&end) {
+                return Err(CertError::validation(
+                    "unexpected text or PEM block outside the certificate",
+                ));
+            }
+            blocks.into_iter().next().expect("one PEM block").1
         }
     };
     let (rest, _) = x509_parser::parse_x509_certificate(&der)
@@ -173,6 +177,16 @@ mod tests {
         let mut pem = String::from_utf8(convert(&der, Encoding::Pem).expect("pem")).expect("utf8");
         pem.push_str("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
         assert!(certificate_der(pem.trim_end().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn rejects_other_pem_blocks_and_surrounding_text() {
+        let der = self_signed_der(AlgorithmId::P256);
+        let pem = String::from_utf8(convert(&der, Encoding::Pem).expect("pem")).expect("utf8");
+        let key = pem_encode("PRIVATE KEY", b"key material");
+        assert!(certificate_der(format!("{pem}{key}").as_bytes()).is_err());
+        assert!(certificate_der(format!("ignored\n{pem}").as_bytes()).is_err());
+        assert!(certificate_der(format!("{pem}ignored").as_bytes()).is_err());
     }
 
     #[test]

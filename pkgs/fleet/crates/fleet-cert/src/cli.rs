@@ -1571,7 +1571,7 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(
                 json_out,
                 format!(
-                    "{input}: valid X.509 certificate ({} input, {} DER bytes, sha256 {}); PEM and DER round trips match\n",
+                    "{input}: well-formed X.509 certificate ({} input, {} DER bytes, sha256 {}); PEM and DER round trips match\n",
                     v.input.as_str(),
                     v.der_len,
                     v.sha256
