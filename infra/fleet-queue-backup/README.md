@@ -6,6 +6,11 @@ of the fleet-queue Turso database into a Cloudflare D1 database —
 same SQLite family, restorable — with a drilled restore path back
 into Turso. The D1 copy also serves as the analytics copy.
 
+**Name contract:** the live queue database is `fleet-queue` (Turso
+today; D1 after CF-2's verified cutover). The separate backup D1
+database is `fleet-queue-backup`; it remains the backup copy after
+that cutover.
+
 Per #8575's wipe test, the queue database holds coordination only —
 claims, leases, heartbeats — so this backup is a convenience and an
 analytics copy, never a second durable truth: durable truth lives on

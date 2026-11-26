@@ -173,8 +173,15 @@ export interface HostedConfig {
   rp: RpValidationConfig | null;
   /** Tenancy directory, or null when none is configured/readable. */
   tenancy: TenancyDirectory | null;
-  /** True only when every auth input is present and parsed. */
+  /** True only when every auth input is present and parsed. Note
+   * (#14978): authenticate() no longer requires this as a whole —
+   * service-token callers need only the tenancy directory; this flag
+   * stays the "full auth (RP + tenancy)" summary for reporting. */
   authConfigured: boolean;
+  /** True when a tenancy directory is configured: service-token
+   * callers can authenticate (#14978 / CF-2b) even before an RP
+   * issuer exists. */
+  serviceAuthConfigured: boolean;
   /** Stamp signature key material (#12586), independent of auth. */
   stamp: StampConfig;
   /** Fleet App rotation configuration (#12585), or null when no
@@ -328,6 +335,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     rp,
     tenancy,
     authConfigured: rp !== null && tenancy !== null,
+    serviceAuthConfigured: tenancy !== null,
     stamp: parseStampConfig(env),
     github: parseGitHubAppConfig(env),
     webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,

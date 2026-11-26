@@ -32,27 +32,42 @@ def report(run_id="run-1", mirror_status="fresh", d1_status="fresh"):
         "generated_at": "2026-11-25T12:00:00Z",
         "inventory": [REPO],
         "legs": {
-            "source": {"status": "fresh", "repos": {
-                REPO: {"status": "fresh", "detail": "source head observed"}}},
-            "plain_mirror": {"slo_hours": 26, "status": mirror_status, "repos": {
-                REPO: {"status": mirror_status,
-                       "detail": f"mirror is {mirror_status}",
-                       "copy_head": "b" * 40}}},
-            "d1_export": {"slo_hours": 26, "status": d1_status,
-                          "detail": f"d1 is {d1_status}", "repos": {},
-                          "exported_at": "2026-11-24T10:00:00Z"},
+            "source": {
+                "status": "fresh",
+                "repos": {REPO: {"status": "fresh", "detail": "source head observed"}},
+            },
+            "plain_mirror": {
+                "slo_hours": 26,
+                "status": mirror_status,
+                "repos": {
+                    REPO: {
+                        "status": mirror_status,
+                        "detail": f"mirror is {mirror_status}",
+                        "copy_head": "b" * 40,
+                    }
+                },
+            },
+            "d1_export": {
+                "slo_hours": 26,
+                "status": d1_status,
+                "detail": f"d1 is {d1_status}",
+                "repos": {},
+                "exported_at": "2026-11-24T10:00:00Z",
+            },
         },
         "verdict": "fresh" if mirror_status == d1_status == "fresh" else "attention",
     }
 
 
 def existing_from(action, number=77):
-    return [{
-        "number": number,
-        "title": action["title"],
-        "body": action["body"],
-        "state": "open",
-    }]
+    return [
+        {
+            "number": number,
+            "title": action["title"],
+            "body": action["body"],
+            "state": "open",
+        }
+    ]
 
 
 class CreateTests(unittest.TestCase):
@@ -79,8 +94,9 @@ class CreateTests(unittest.TestCase):
     def test_d1_global_leg_alerts_under_dash_repo(self):
         actions = ha.plan_actions(report(d1_status="stale"), [])
         self.assertEqual(len(actions), 1)
-        self.assertEqual((actions[0]["leg"], actions[0]["repo"]),
-                         ("d1_export", ha.GLOBAL_REPO))
+        self.assertEqual(
+            (actions[0]["leg"], actions[0]["repo"]), ("d1_export", ha.GLOBAL_REPO)
+        )
         self.assertIn("exported_at: 2026-11-24T10:00:00Z", actions[0]["body"])
 
 
@@ -88,7 +104,9 @@ class DedupTests(unittest.TestCase):
     def test_second_run_updates_same_issue_never_creates(self):
         first = ha.plan_actions(report(run_id="run-1", mirror_status="stale"), [])
         existing = existing_from(first[0])
-        second = ha.plan_actions(report(run_id="run-2", mirror_status="missing"), existing)
+        second = ha.plan_actions(
+            report(run_id="run-2", mirror_status="missing"), existing
+        )
         self.assertEqual(len(second), 1)
         self.assertEqual(second[0]["action"], "update")
         self.assertEqual(second[0]["issue"], 77)
@@ -101,7 +119,9 @@ class DedupTests(unittest.TestCase):
         self.assertEqual([a["action"] for a in again], ["noop"])
 
     def test_unmarked_issues_are_ignored(self):
-        issues = [{"number": 5, "title": "unrelated", "body": "no marker", "state": "open"}]
+        issues = [
+            {"number": 5, "title": "unrelated", "body": "no marker", "state": "open"}
+        ]
         actions = ha.plan_actions(report(mirror_status="failed"), issues)
         self.assertEqual([a["action"] for a in actions], ["create"])
 
@@ -127,8 +147,7 @@ class ResolveTests(unittest.TestCase):
 class ApplyTests(unittest.TestCase):
     def test_apply_dispatches_each_action_to_executor(self):
         seen = []
-        actions = ha.plan_actions(
-            report(mirror_status="stale", d1_status="failed"), [])
+        actions = ha.plan_actions(report(mirror_status="stale", d1_status="failed"), [])
         results = ha.apply_actions(actions, lambda a: seen.append(a) or 100 + len(seen))
         self.assertEqual(len(seen), 2)
         self.assertEqual([r["issue"] for r in results], [101, 102])

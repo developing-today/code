@@ -460,6 +460,8 @@ pub struct ServeOptions {
     pub world_idle_secs: Option<u64>,
     /// Serve the worlds directory as a host-mode data root (#10693).
     pub world_host: bool,
+    /// Serve worlds inside this jurisdiction partition only (#3898).
+    pub world_partition: Option<String>,
     /// Refuse signed world requests for this many seconds after startup (`0` none).
     pub world_boot_window_secs: u64,
     /// Capabilities the default world's program may use.
@@ -993,6 +995,9 @@ struct ServeWorlds {
     mail: Option<Arc<dyn id_directory::directory_mail::MailSink>>,
     /// Host-mode lifecycle over [`WORLDS_DIR`] (`--world-host`, #10693).
     host: Option<Arc<id_worlds::host::HostLifecycle>>,
+    /// The jurisdiction partition this server's worlds live in
+    /// (`--world-partition`, #3898); `None` serves unassigned local worlds.
+    partition: Option<String>,
 }
 
 #[cfg(feature = "world")]
@@ -1000,6 +1005,14 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
     fn open<'a>(&'a self, name: &'a str, create: bool) -> id_worlds::world_hub::OpenFuture<'a> {
         Box::pin(async move {
             if !create && !self.exists(name) {
+                return Ok(None);
+            }
+            // A partition-scoped server never creates over a name that is
+            // already present on disk but not bound to its partition: it
+            // answers exactly as for a name it may not create (#3898).
+            if create
+                && partition_create_refused(Path::new(WORLDS_DIR), name, self.partition.as_deref())
+            {
                 return Ok(None);
             }
             let Some(host) = &self.host else {
@@ -1038,28 +1051,63 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
     }
 
     fn exists(&self, name: &str) -> bool {
-        !self.ephemeral && world_dir(name).join("journal.jsonl").is_file()
+        !self.ephemeral && world_visible(Path::new(WORLDS_DIR), name, self.partition.as_deref())
     }
 
     fn list(&self) -> Vec<String> {
         if self.ephemeral {
             return Vec::new();
         }
-        let mut names: Vec<String> = std::fs::read_dir(WORLDS_DIR)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.path().join("journal.jsonl").is_file())
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| id_worlds::world_hub::validate_world_name(name).is_ok())
-            .collect();
-        names.sort();
-        names
+        visible_worlds(Path::new(WORLDS_DIR), self.partition.as_deref())
     }
 
     fn durable(&self) -> bool {
         !self.ephemeral
     }
+}
+
+/// Whether `name` is a durable world under `root` that this server may
+/// see. Unscoped, any journal counts; scoped to a partition (#3898), only
+/// a journal bound to that partition does, so worlds bound elsewhere,
+/// unassigned legacy worlds and malformed bindings all read as absent.
+#[cfg(feature = "world")]
+fn world_visible(root: &Path, name: &str, partition: Option<&str>) -> bool {
+    let dir = root.join(name);
+    match partition {
+        None => dir.join("journal.jsonl").is_file(),
+        Some(partition) => id_worlds::world_store::world_bound_to_partition(&dir, name, partition),
+    }
+}
+
+/// The world names under `root` that [`world_visible`] admits, sorted.
+#[cfg(feature = "world")]
+fn visible_worlds(root: &Path, partition: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| id_worlds::world_hub::validate_world_name(name).is_ok())
+        .filter(|name| world_visible(root, name, partition))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Whether a partition-scoped server must refuse to create `name`: a
+/// journal or partition record is already there but the world is not
+/// bound to this partition. Fail closed; an interrupted creation that
+/// left only a record is for the operator to clear.
+#[cfg(feature = "world")]
+fn partition_create_refused(root: &Path, name: &str, partition: Option<&str>) -> bool {
+    let Some(partition) = partition else {
+        return false;
+    };
+    let dir = root.join(name);
+    let present = ["journal.jsonl", "journal.jsonl.partition.json"]
+        .iter()
+        .any(|file| std::fs::symlink_metadata(dir.join(file)).is_ok());
+    present && !id_worlds::world_store::world_bound_to_partition(&dir, name, partition)
 }
 
 #[cfg(feature = "world")]
@@ -1133,15 +1181,31 @@ impl ServeWorlds {
             ))
             .with_records_store(records)
         } else {
-            let (service, report) = id_worlds::world_store::open_world_with_directory_gate(
-                &dir,
-                name,
-                limits,
-                runtime,
-                boundary_gate,
-                make,
-            )
-            .await?;
+            let (service, report) = match self.partition.as_deref() {
+                Some(partition) => {
+                    id_worlds::world_store::open_world_in_partition(
+                        &dir,
+                        name,
+                        partition,
+                        limits,
+                        runtime,
+                        boundary_gate,
+                        make,
+                    )
+                    .await?
+                }
+                None => {
+                    id_worlds::world_store::open_world_with_directory_gate(
+                        &dir,
+                        name,
+                        limits,
+                        runtime,
+                        boundary_gate,
+                        make,
+                    )
+                    .await?
+                }
+            };
             status!(
                 "world {name}: restored {} at sequence {} ({} input(s) replayed)",
                 dir.display(),
@@ -1356,6 +1420,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_max_sessions,
         world_idle_secs,
         world_host,
+        world_partition,
         world_boot_window_secs,
         world_caps,
         world_cap_policy,
@@ -1791,6 +1856,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     )?))
                 })
                 .transpose()?,
+            partition: world_partition,
         });
         let host = opener.host.clone();
         let hub = WorldHub::new(
@@ -2671,6 +2737,79 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
 
+    #[cfg(feature = "world")]
+    #[test]
+    fn partition_scoped_server_sees_only_its_own_worlds() {
+        // #3898: a partition-scoped server lists and finds only worlds bound
+        // to its partition; foreign, legacy and malformed worlds read as
+        // absent, and it refuses to create over any of them.
+        use id_worlds::world::JournalAckMode;
+        use id_worlds::world_store::FileJournal;
+
+        let root = tempfile::TempDir::new().unwrap();
+        let journal = |name: &str| root.path().join(name).join("journal.jsonl");
+        drop(
+            FileJournal::open_in_partition(&journal("ours"), "ours", "eu", JournalAckMode::Sync)
+                .unwrap(),
+        );
+        drop(
+            FileJournal::open_in_partition(
+                &journal("theirs"),
+                "theirs",
+                "us",
+                JournalAckMode::Sync,
+            )
+            .unwrap(),
+        );
+        drop(FileJournal::open(&journal("legacy"), "legacy").unwrap());
+        drop(
+            FileJournal::open_in_partition(
+                &journal("broken"),
+                "broken",
+                "eu",
+                JournalAckMode::Sync,
+            )
+            .unwrap(),
+        );
+        std::fs::write(root.path().join("broken/journal.jsonl.partition.json"), "{").unwrap();
+
+        assert_eq!(
+            visible_worlds(root.path(), Some("eu")),
+            vec!["ours".to_owned()]
+        );
+        assert_eq!(
+            visible_worlds(root.path(), Some("us")),
+            vec!["theirs".to_owned()]
+        );
+        assert_eq!(
+            visible_worlds(root.path(), None),
+            vec![
+                "broken".to_owned(),
+                "legacy".to_owned(),
+                "ours".to_owned(),
+                "theirs".to_owned()
+            ]
+        );
+        for name in ["theirs", "legacy", "broken", "missing"] {
+            assert!(!world_visible(root.path(), name, Some("eu")), "{name}");
+        }
+        assert!(world_visible(root.path(), "ours", Some("eu")));
+
+        for name in ["theirs", "legacy", "broken"] {
+            assert!(
+                partition_create_refused(root.path(), name, Some("eu")),
+                "{name}"
+            );
+            assert!(!partition_create_refused(root.path(), name, None), "{name}");
+        }
+        assert!(!partition_create_refused(root.path(), "ours", Some("eu")));
+        assert!(!partition_create_refused(
+            root.path(),
+            "missing",
+            Some("eu")
+        ));
+    }
+
     #[test]
     fn host_mode_idles_worlds_after_fifteen_minutes_and_never_never() {
         // #10694: a hosted world always sleeps once its last client has
@@ -3021,7 +3160,10 @@ mod tests {
 
         // The persistent Evaluator's high-water mark: the same state warns
         // no second time.
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Growing past the next threshold warns once more, for that tier.
         {
@@ -3059,13 +3201,19 @@ mod tests {
 
         // The first authorization is not a re-add, and warns about nothing.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-authorize cycles inside the window: the fourth
         // re-add crosses the churn threshold and warns exactly once.
         for cycle in 0..4_u64 {
             log.device_revoke(author, group, device).unwrap();
-            assert!(evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2).is_empty());
+            assert_eq!(
+                evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2),
+                [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+            );
             log.device_add(author, group, device, Role::Read).unwrap();
             let fired = evaluate_group_warnings(&mut watcher, &path, 1_002 + cycle * 2);
             if cycle < 3 {
@@ -3096,7 +3244,10 @@ mod tests {
 
         // The first authorization is not a re-add, and warns about nothing.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-authorize cycles, all inside one interval:
         // no evaluation runs until every cycle is already in the log.
@@ -3132,7 +3283,10 @@ mod tests {
 
         // Account A authorizes the device; the first evaluation adopts it.
         log.device_add(author, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four revoke + re-add cycles by account B inside one interval:
         // B's revokes do not touch A's grant, so nothing here is a re-add.
@@ -3140,7 +3294,10 @@ mod tests {
             log.device_revoke(other, group, device).unwrap();
             log.device_add(other, group, device, Role::Read).unwrap();
         }
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3167,14 +3324,20 @@ mod tests {
         // adopts it with both grant owners tracked.
         log.device_add(author, group, device, Role::Read).unwrap();
         log.device_add(other, group, device, Role::Read).unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_000),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
         log.remove(author, group, other, id_events::groups::RemoveMode::Revoke)
             .unwrap();
-        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        assert_eq!(
+            evaluate_group_warnings(&mut watcher, &path, 1_001),
+            [] as [(p2panda_core::Hash, id_groups::encryption::warnings::Warning); 0]
+        );
 
         // Four genuine revoke + re-add cycles by the remaining account,
         // all inside one interval, must count four re-adds and warn.
@@ -3529,7 +3692,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.web_port, Some(3001));
-        assert!(parsed.web_bindings.is_empty());
+        assert_eq!(parsed.web_bindings, [] as [String; 0]);
     }
 
     #[test]

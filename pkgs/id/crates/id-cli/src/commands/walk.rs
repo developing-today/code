@@ -780,7 +780,7 @@ fn print_transfer(label: &str, transfer: &id_sync::federation::slices::b09_anti_
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

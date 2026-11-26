@@ -9,9 +9,10 @@
 //! - The runtime: [`world`] (core, actor, replica, replication,
 //!   handle), [`world_session`], [`world_hub`], [`world_net`],
 //!   [`world_store`], [`world_records`], [`world_compile`],
-//!   [`world_native`], [`world_fixture`], [`world_cache`] and, under
-//!   the `sandbox` feature, [`sandbox`] — the wasmtime guest runner
-//!   whose fuel budgets are the split's determinism canary.
+//!   [`world_functions`], [`world_native`], [`world_fixture`],
+//!   [`world_cache`] and, under the `sandbox` feature, [`sandbox`] —
+//!   the wasmtime guest runner whose fuel budgets are the split's
+//!   determinism canary.
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
 //!   the replaying supervisor over one data root.
@@ -98,6 +99,7 @@ pub mod world_dev;
 pub mod world_doctor;
 pub mod world_export;
 pub mod world_fixture;
+pub mod world_functions;
 pub mod world_hub;
 pub mod world_line;
 pub mod world_native;

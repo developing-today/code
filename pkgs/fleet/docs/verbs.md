@@ -230,15 +230,15 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 
 `fleet shell [OPTIONS] [-- COMMAND...]` plans or runs a command. `fleet shell targets` reports laptop and Codespace reachability and what automatic selection would choose.
 
-| Option             | Purpose                                                               |
+| Option | Purpose |
 | ------------------ | --------------------------------------------------------------------- | --------- | ------ | ----------------------------------------------------------- |
 | `--target auto     | laptop                                                                | codespace | local` | Select the execution target; default is automatic fallback. |
-| `--codespace NAME` | Select a named Codespace; otherwise the first available is used.      |
-| `--cwd DIR`        | Set the working directory on the selected target.                     |
-| `--build`          | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
-| `--timeout SECS`   | Set a laptop command timeout.                                         |
-| `--detach`         | Start a laptop command as a job and return its job ID.                |
-| `--print`          | Print the selected plan as JSON without running it.                   |
+| `--codespace NAME` | Select a named Codespace; otherwise the first available is used. |
+| `--cwd DIR` | Set the working directory on the selected target. |
+| `--build` | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
+| `--timeout SECS` | Set a laptop command timeout. |
+| `--detach` | Start a laptop command as a job and return its job ID. |
+| `--print` | Print the selected plan as JSON without running it. |
 
 Automatic selection honors `FLEET_SHELL_TARGET`, then prefers the current laptop seat, a reachable laptop, a Codespace, and finally the local environment. An explicit target does not fall back. `--detach` is for laptop jobs; use `fleet laptop-agent poll JOB --wait N` to follow one.
 
@@ -415,6 +415,34 @@ daemon's general client.
 | `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
 | `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
+
+## `id` — iroh-native ID transport (design #10391 pass 2)
+
+`fleet id session-key [--id-secret <hex>] [--stamp | --node-id]`
+
+Slice 1 (#15430, design §4.1): the session key lifecycle. Mints a
+fresh ephemeral ed25519 node key per session from the OS RNG, or
+adopts the caller-supplied secret verbatim (`--id-secret` /
+`FLEET_ID_SECRET`, 64 hex chars; never persisted). The default
+rendering is the dot-sourced env: `FLEET_ID_NODE_ID` plus
+`FLEET_ID_SECRET` (in-session only). `--stamp` prints the queue
+stamp JSON (`{"fleet_node_id": …}`, public key only — the secret
+never enters the stamp, a log, or a trip record); `--node-id`
+prints just the NodeId hex. The secret lives in process memory
+only and is zeroized at exit. The `postcard`, `stream`
+and `serve-ws` verbs land as slices 3–5 of the same design
+(#15435, #15436, #15399).
+
+`fleet id proxy-mode [--raw] [--raw-endpoint] [--opaque] [--alpn <alpn>] [--mode <1|2|3|name>]`
+
+Slice 2 (#15434, design §4.2): prints the proxy mode the §4.2
+first-match rule selects — `--mode` override first, then
+`--raw`/raw endpoint → `1 raw`, then `--opaque` or an ALPN the
+initiator does not speak → `2 relay-aware`, else `3 initiator`.
+The initiator speaks `/iroh-meta/3` only; every other ALPN
+selects mode 2. Dial failures are distinct and never downgrade:
+`relay_unreachable` vs `identity_mismatch` (fail closed on a
+peer NodeId that is not the pinned one).
 
 ## `actions` — live exec sessions in Actions runners
 

@@ -344,9 +344,19 @@ describe("a change the owner asks for is checked whole", () => {
     expect(refused("needsRepos", ["a/b/c"])).toBe("needsRepos");
     expect(refused("needsRepos", ["no-slash"])).toBe("needsRepos");
     expect(refused("needsRepos", ["a/b", 3])).toBe("needsRepos");
-    expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 1 }, (_, i) => `o/r${i}`))).toBe("needsRepos");
+    expect(
+      refused(
+        "needsRepos",
+        Array.from({ length: NEEDS_REPOS_MAX + 1 }, (_, i) => `o/r${i}`),
+      ),
+    ).toBe("needsRepos");
     // Repeats are not counted against the limit.
-    expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 5 }, () => "o/r"))).toBe("taken");
+    expect(
+      refused(
+        "needsRepos",
+        Array.from({ length: NEEDS_REPOS_MAX + 5 }, () => "o/r"),
+      ),
+    ).toBe("taken");
     const said = ownerSettingChange("promptLabel", "secret,label");
     expect(JSON.stringify(said)).not.toContain("secret");
   });

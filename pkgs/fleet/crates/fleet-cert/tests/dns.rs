@@ -357,7 +357,10 @@ fn current_snapshot_diffs_without_fabricating_changes() {
         action("0 issue \"old-ca.example\"", "pki.example.test.").as_deref(),
         Some("delete")
     );
-    assert_eq!(action("0 issue \"old-ca.example\"", "other.example.test."), None);
+    assert_eq!(
+        action("0 issue \"old-ca.example\"", "other.example.test."),
+        None
+    );
     assert_eq!(
         action("0 issue \"letsencrypt.org\"", "pki.example.test.").as_deref(),
         Some("no-op")
@@ -423,13 +426,20 @@ fn verify_proposes_the_plan_and_catches_tampering() {
     // A CAA record naming the Fleet CA is refused on verify too.
     invalid(
         &|c| {
-            let i = c.records.iter().position(|r| r.record_type == "CAA").unwrap();
+            let i = c
+                .records
+                .iter()
+                .position(|r| r.record_type == "CAA")
+                .unwrap();
             c.records[i].value = "0 issue \"fleet-ca\"".into();
         },
         &bundles,
     );
     // Out-of-zone owner and a zero TTL.
-    invalid(&|c| c.records[0].name = "svc.elsewhere.test.".into(), &bundles);
+    invalid(
+        &|c| c.records[0].name = "svc.elsewhere.test.".into(),
+        &bundles,
+    );
     invalid(&|c| c.records[0].ttl = 0, &bundles);
 }
 
@@ -482,14 +492,7 @@ fn cli_is_offline_and_writes_only_under_out() {
     let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     for flag in ["--provider", "--resolver", "--token"] {
         assert_eq!(
-            fleet_cert::run(&args(&[
-                "dns",
-                "plan",
-                "--zone",
-                "example.test",
-                flag,
-                "x"
-            ])),
+            fleet_cert::run(&args(&["dns", "plan", "--zone", "example.test", flag, "x"])),
             2,
             "{flag} must be an unknown option"
         );

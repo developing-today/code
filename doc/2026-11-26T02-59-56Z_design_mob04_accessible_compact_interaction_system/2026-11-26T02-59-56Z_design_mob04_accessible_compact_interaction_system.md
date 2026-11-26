@@ -88,7 +88,7 @@ exception.
 ### D2. Focus, motion, targets
 
 - Global `:focus-visible { outline: 2px solid var(--focus);
-  outline-offset: 2px; }`. No rule may set `outline: none` without a
+outline-offset: 2px; }`. No rule may set `outline: none` without a
   replacement; the bun test scans the stylesheet for it.
 - `@media (prefers-reduced-motion: reduce)` sets transitions and
   animations to none and scroll behaviour to auto.

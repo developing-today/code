@@ -89,7 +89,7 @@ fn load_err(value: &Value) -> ConfigError {
 #[test]
 fn absent_remotes_mean_local_only_and_keep_the_digest() {
     let plain = load(&base()).unwrap();
-    assert!(plain.fanout.remotes.is_empty());
+    assert_eq!(plain.fanout.remotes, [] as [id_config::FanoutRemote; 0]);
     let empty = load(&with_remotes(json!([]))).unwrap();
     assert_eq!(
         resolved_digest(&plain).unwrap(),

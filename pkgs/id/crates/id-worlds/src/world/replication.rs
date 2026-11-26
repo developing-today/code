@@ -1448,7 +1448,7 @@ mod tests {
             .unwrap();
         let committed = receiver.accept(&terminal_bytes).unwrap();
         assert_eq!(committed.kind, ReplicationKind::Terminal);
-        assert!(committed.payload.is_empty());
+        assert_eq!(committed.payload, [] as [u8; 0]);
     }
 
     #[test]

@@ -328,11 +328,9 @@ mod tests {
             sinks.bases(),
             [DEVELOPING_TODAY_RELAY, "http://127.0.0.1:8080"]
         );
-        assert!(
-            RelaySinks::new(Vec::<String>::new())
-                .unwrap()
-                .bases()
-                .is_empty()
+        assert_eq!(
+            RelaySinks::new(Vec::<String>::new()).unwrap().bases(),
+            [] as [String; 0]
         );
         assert!(RelaySinks::new(["relay.example.net"]).is_err());
         assert!(RelaySinks::new(["https://"]).is_err());
