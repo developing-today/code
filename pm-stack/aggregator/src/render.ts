@@ -6648,8 +6648,9 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
         })
         .join("")
     : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
-  // #14062: one row per provider, service and credential (the gatherer can
-  // list one more than once), the gatherer's own error text on a failed row,
+  // #14062: one row per provider, service and credential, and one per split
+  // pool (the gatherer can list one meter more than once, under several
+  // doors), the gatherer's own error text on a failed row,
   // and the lag note said once under the table rather than on every row.
   const gathererProviders = dedupeGathererProviders(view.quotaGatherer?.providers ?? []);
   const gathererLagNotes = [...new Set(gathererProviders.map((p) => p.lagNote).filter(Boolean))];
@@ -6657,7 +6658,7 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     ? gathererProviders
         .map(
           (p) =>
-            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}${p.state === "error" || p.state === "lapsed" ? ` <span class="muted">\u2014 ${p.error ? esc(p.error) : "the gatherer gave no reason"}</span>` : ""}</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "\u2014"}</td></tr>`,
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}${p.aliasProviderIds?.length ? ` <span class="muted">(also ${p.aliasProviderIds.map((id) => `<code>${esc(id)}</code>`).join(", ")})</span>` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}${p.state === "error" || p.state === "lapsed" ? ` <span class="muted">\u2014 ${p.error ? esc(p.error) : "the gatherer gave no reason"}</span>` : ""}</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "\u2014"}</td></tr>`,
         )
         .join("")
     : `<tr><td colspan="4" class="muted">No quota-gatherer provider rows are available.</td></tr>`;

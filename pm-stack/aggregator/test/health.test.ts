@@ -8,6 +8,8 @@ import { feedSectionStatus, type FleetFeed, type SectionDiagnosis } from "../src
 import {
   buildHealth,
   createProbeCache,
+  dedupeGathererProviders,
+  type QuotaGathererProviderHealth,
   recordRender,
   resolveBuildVersion,
   type HealthInputs,
@@ -803,5 +805,72 @@ describe("buildHealth version marker (#1150)", () => {
     const html = renderHealth(base, {} as Parameters<typeof renderHealth>[1]);
     expect(html).toContain("Build <strong>unknown</strong>");
     expect(html).toContain("PM_AGG_BUILD_VERSION");
+  });
+});
+
+describe("quota-gatherer rows (#14062)", () => {
+  const row = (
+    providerId: string,
+    serviceId: string,
+    credentialLabel: string | undefined,
+    state: QuotaGathererProviderHealth["state"] = "ok",
+    lastSyncAt: string | null = "2026-11-26T23:00:00.000Z",
+  ): QuotaGathererProviderHealth => ({
+    providerId,
+    serviceId,
+    state,
+    lastSyncAt,
+    behindBy: null,
+    lagNote: "",
+    ...(credentialLabel === undefined ? {} : { credentialLabel }),
+  });
+
+  test("every door onto one split pool is one row, naming the doors it absorbed", () => {
+    const out = dedupeGathererProviders([
+      row("_openai", "_openai.main", "default"),
+      row("opencode-go", "opencode-go.popesdrew", "popesdrew"),
+      row("_openai.main", "_openai.main", "default"),
+      row("opencode-go.popesdrew", "opencode-go.popesdrew", "OpenCode Go (popesdrew)"),
+      row("opencode.popesdrew", "opencode-go.popesdrew", "OpenCode Zen (popesdrew)"),
+    ]);
+    expect(out.map((r) => r.serviceId)).toEqual(["_openai.main", "opencode-go.popesdrew"]);
+    expect(out[0]?.aliasProviderIds).toEqual(["_openai.main"]);
+    expect(out[1]?.aliasProviderIds).toEqual(["opencode-go.popesdrew", "opencode.popesdrew"]);
+  });
+
+  test("the worst state wins a split pool, and the row keeps its own provider id", () => {
+    const out = dedupeGathererProviders([
+      row("opencode-go.drewrypope", "opencode-go.drewrypope", "OpenCode Go (drewrypope)"),
+      row("opencode.drewrypope", "opencode-go.drewrypope", "OpenCode Zen (drewrypope)", "error", null),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.state).toBe("error");
+    expect(out[0]?.providerId).toBe("opencode.drewrypope");
+    expect(out[0]?.aliasProviderIds).toEqual(["opencode-go.drewrypope"]);
+  });
+
+  test("distinct pools and per-workspace combined rows stay apart", () => {
+    const out = dedupeGathererProviders([
+      row("_openai", "_openai.main", "default"),
+      row("_openai", "_openai.alt", "OpenAI Alternate"),
+      row("_antigravity", "_antigravity.gemini", undefined),
+      row("_antigravity", "_antigravity.claude-gpt", undefined),
+      row("opencode-go", "opencode-go", "OpenCode Go (drewrypope)"),
+      row("opencode-go", "opencode-go", "OpenCode Go (popesdrew)"),
+      row("_muse", "meta", undefined, "stale"),
+      row("meta", "meta", undefined, "error", null),
+    ]);
+    expect(out).toHaveLength(8);
+    expect(out.every((r) => r.aliasProviderIds === undefined)).toBe(true);
+  });
+
+  test("an exact repeat of a row is still one row with no alias", () => {
+    const out = dedupeGathererProviders([
+      row("deepseek", "deepseek", undefined, "error", null),
+      row("deepseek", "deepseek", undefined, "ok"),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.state).toBe("error");
+    expect(out[0]?.aliasProviderIds).toBeUndefined();
   });
 });
