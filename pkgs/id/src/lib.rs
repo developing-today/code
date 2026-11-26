@@ -209,6 +209,7 @@ pub use id_core::admission_gate;
 pub mod artifact;
 pub use id_events::attestation;
 pub mod backup;
+pub mod bench_ack_mode;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
@@ -268,6 +269,7 @@ pub use id_sync::chained_message;
 pub use id_sync::log_sync;
 pub use id_worlds::input_framing;
 pub mod serve_proxy;
+pub mod serve_proxy_leg;
 pub mod serve_proxy_mux;
 pub use id_core::membership;
 pub use id_core::migration_control;

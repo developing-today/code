@@ -187,7 +187,10 @@ fn plan_orders_the_dag_and_writes_nothing() {
     let plan = batch::plan(&b);
     assert_eq!(plan.status, "planned");
     let signers: Vec<&str> = plan.operations.iter().map(|o| o.signer.as_str()).collect();
-    assert_eq!(signers, vec!["roots/g1/private/keys", "@web.keys", "@web.keys"]);
+    assert_eq!(
+        signers,
+        vec!["roots/g1/private/keys", "@web.keys", "@web.keys"]
+    );
     let parents: Vec<&str> = plan.operations.iter().map(|o| o.parent.as_str()).collect();
     assert_eq!(parents, vec!["roots/g1", "@web.bundle", "@web.bundle"]);
     assert!(plan.operations.iter().all(|o| o.fingerprints.is_empty()));
@@ -197,7 +200,11 @@ fn plan_orders_the_dag_and_writes_nothing() {
     let text = batch::render_text(&plan, "rollout.json", "base");
     assert!(text.contains(&format!("--approve {}", b.sha256)), "{text}");
     assert_eq!(batch::status(&b, tmp.path()).unwrap().status, "pending");
-    assert_eq!(listing(tmp.path()), before, "plan and validate must write nothing");
+    assert_eq!(
+        listing(tmp.path()),
+        before,
+        "plan and validate must write nothing"
+    );
 }
 
 #[test]
@@ -218,11 +225,19 @@ fn dry_run_runs_every_step_and_leaves_no_trace() {
     assert_eq!(rep.operations.len(), 3);
     for o in &rep.operations {
         assert_eq!(o.status, "dry-run");
-        assert!(!o.fingerprints.is_empty(), "{} produced no certificate", o.id);
+        assert!(
+            !o.fingerprints.is_empty(),
+            "{} produced no certificate",
+            o.id
+        );
         assert!(o.bundle_id.is_some());
     }
     assert_eq!(rep.operations[1].fingerprints.len(), 1);
-    assert_eq!(listing(tmp.path()), before, "a dry run must leave the base as it was");
+    assert_eq!(
+        listing(tmp.path()),
+        before,
+        "a dry run must leave the base as it was"
+    );
 }
 
 #[test]
@@ -273,7 +288,10 @@ fn apply_commits_once_and_never_reissues() {
         },
     )
     .unwrap_err();
-    assert!(wrong.to_string().contains("changed since it was reviewed"), "{wrong}");
+    assert!(
+        wrong.to_string().contains("changed since it was reviewed"),
+        "{wrong}"
+    );
     assert!(!tmp.path().join("issuers").exists());
 
     let approve = ApplyOptions {
@@ -302,7 +320,10 @@ fn apply_commits_once_and_never_reissues() {
         );
     }
     assert_eq!(svc.manifest.name, "svc");
-    assert_eq!(rep.operations[1].fingerprints, vec![svc.manifest.certificates[0].fingerprint_sha256.clone()]);
+    assert_eq!(
+        rep.operations[1].fingerprints,
+        vec![svc.manifest.certificates[0].fingerprint_sha256.clone()]
+    );
 
     // Only the receipt remains in the state directory.
     let state = listing(&tmp.path().join(".fleet-batch"));
@@ -317,7 +338,10 @@ fn apply_commits_once_and_never_reissues() {
         std::fs::read(tmp.path().join("leaves/svc/manifest.json")).unwrap(),
         svc_manifest
     );
-    assert_eq!(batch::validate(&b, tmp.path()).unwrap().status, "already-applied");
+    assert_eq!(
+        batch::validate(&b, tmp.path()).unwrap().status,
+        "already-applied"
+    );
 
     // A different batch under the same idempotency key is refused.
     let mut changed = rollout();
@@ -479,7 +503,17 @@ fn the_parser_refuses_unsafe_batches() {
     std::fs::create_dir_all(tmp.path().join("leaves/svc")).unwrap();
     let err = batch::validate(&b, tmp.path()).unwrap_err().to_string();
     assert!(err.contains("already exists"), "{err}");
-    assert!(batch::apply(&b, tmp.path(), &ApplyOptions { dry_run: true, approve: None }).is_err());
+    assert!(
+        batch::apply(
+            &b,
+            tmp.path(),
+            &ApplyOptions {
+                dry_run: true,
+                approve: None
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -490,23 +524,69 @@ fn cli_round_trip() {
     std::fs::write(&file, &doc).unwrap();
     let f = file.display().to_string();
     let base = tmp.path().display().to_string();
-    let run = |items: &[&str]| fleet_cert::run(&items.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let run =
+        |items: &[&str]| fleet_cert::run(&items.iter().map(|s| s.to_string()).collect::<Vec<_>>());
 
     assert_eq!(run(&["batch"]), 2);
     assert_eq!(run(&["batch", "--help"]), 0);
-    assert_eq!(run(&["batch", "plan", "--file", &f]), 2, "--base is required");
-    assert_eq!(run(&["batch", "plan", "--file", &f, "--base", &base, "--json"]), 0);
-    assert_eq!(run(&["batch", "validate", "--file", &f, "--base", &base]), 0);
-    assert_eq!(run(&["batch", "apply", "--file", &f, "--base", &base]), 1, "no --approve");
-    assert_eq!(run(&["batch", "apply", "--file", &f, "--base", &base, "--dry-run"]), 0);
+    assert_eq!(
+        run(&["batch", "plan", "--file", &f]),
+        2,
+        "--base is required"
+    );
+    assert_eq!(
+        run(&["batch", "plan", "--file", &f, "--base", &base, "--json"]),
+        0
+    );
+    assert_eq!(
+        run(&["batch", "validate", "--file", &f, "--base", &base]),
+        0
+    );
+    assert_eq!(
+        run(&["batch", "apply", "--file", &f, "--base", &base]),
+        1,
+        "no --approve"
+    );
+    assert_eq!(
+        run(&["batch", "apply", "--file", &f, "--base", &base, "--dry-run"]),
+        0
+    );
     assert!(!tmp.path().join("issuers").exists());
     let digest = sha(&doc);
-    assert_eq!(run(&["batch", "apply", "--file", &f, "--base", &base, "--approve", &digest]), 0);
+    assert_eq!(
+        run(&[
+            "batch",
+            "apply",
+            "--file",
+            &f,
+            "--base",
+            &base,
+            "--approve",
+            &digest
+        ]),
+        0
+    );
     assert!(tmp.path().join("leaves/api/manifest.json").exists());
     assert_eq!(run(&["batch", "status", "--file", &f, "--base", &base]), 0);
-    assert_eq!(run(&["batch", "apply", "--file", &f, "--base", &base, "--approve", &digest]), 0);
+    assert_eq!(
+        run(&[
+            "batch",
+            "apply",
+            "--file",
+            &f,
+            "--base",
+            &base,
+            "--approve",
+            &digest
+        ]),
+        0
+    );
     assert_eq!(run(&["batch", "resume", "--file", &f, "--base", &base]), 1);
     assert_eq!(run(&["batch", "bogus"]), 2);
     std::fs::remove_dir_all(tmp.path().join("leaves/svc")).unwrap();
-    assert_eq!(run(&["batch", "status", "--file", &f, "--base", &base]), 1, "drift");
+    assert_eq!(
+        run(&["batch", "status", "--file", &f, "--base", &base]),
+        1,
+        "drift"
+    );
 }

@@ -43,7 +43,7 @@ the gates for a separately scoped implementation issue.
   `ActivitySourceStatus` keeps `cursor` (processed locally),
   `checkpointCursor` (durably acknowledged) and `highWater` apart, and
   its `state` is `unconfigured | current | lagging | outage |
-  unrecoverable`. Known outage windows become `GapRecord`s, rendered as
+unrecoverable`. Known outage windows become `GapRecord`s, rendered as
   holes and never as coverage.
 - `src/outcome-attribution.ts` and `src/outcome-view.ts` (#10910) hold
   one immutable outcome fact per hot-list event, with `taskId`,
@@ -99,7 +99,7 @@ write the same file.
 interface RelationEdge {
   kind: "parent" | "child" | "blocked_by" | "blocks" | "advisory";
   strength: "hard" | "advisory";
-  target: RefKey | null;          // null only for an unresolved endpoint
+  target: RefKey | null; // null only for an unresolved endpoint
   target_state: "open" | "closed" | "merged" | "unknown";
   resolution: "in_view" | "out_of_view" | "unresolved";
   source: "github_native" | "dep_typed";
@@ -107,10 +107,10 @@ interface RelationEdge {
 }
 interface RelationsSection {
   parent_refs: RefKey[];
-  hard_blocker_refs: RefKey[];      // blocked_by edges whose target is not closed or merged
+  hard_blocker_refs: RefKey[]; // blocked_by edges whose target is not closed or merged
   advisory_refs: RefKey[];
-  blocking_refs: RefKey[];          // this item's open "blocks" targets
-  edges: RelationEdge[];            // every edge, sorted
+  blocking_refs: RefKey[]; // this item's open "blocks" targets
+  edges: RelationEdge[]; // every edge, sorted
   cycles: RefKey[][];
 }
 ```
@@ -156,13 +156,13 @@ Each delivery is normalized to:
 ```ts
 interface ActivityItem {
   source: string;
-  source_id: string;              // source-native id (HYD-06 §2.1)
-  position: string | null;        // source sequence as a decimal string, when the source has one
-  revision: number;               // 1 for the first landing of an id; +1 per distinct digest
-  digest: string;                 // over the item's body-of-record
-  occurred_at: string | null;     // source-claimed
+  source_id: string; // source-native id (HYD-06 §2.1)
+  position: string | null; // source sequence as a decimal string, when the source has one
+  revision: number; // 1 for the first landing of an id; +1 per distinct digest
+  digest: string; // over the item's body-of-record
+  occurred_at: string | null; // source-claimed
   source_updated_at: string | null;
-  observed_at: string;            // Fleet-authoritative
+  observed_at: string; // Fleet-authoritative
   ref: RefKey | null;
   kind: string;
   visibility: "public" | "private";
@@ -217,7 +217,7 @@ interface OutcomesSection {
     task_id: string;
     outcome: "verified_complete" | "pending_sync" | "partial" | "conflict" | "uncertain" | "rejected" | "none";
     receipt_ref: string | null;
-    freshness: "current" | "limited" | "unknown";  // REL-09's Freshness (Current | Limited), carried; "unknown" when no receipt pins one
+    freshness: "current" | "limited" | "unknown"; // REL-09's Freshness (Current | Limited), carried; "unknown" when no receipt pins one
   }[];
   issue_state: "open" | "closed" | "unknown";
   display_done: boolean;
@@ -255,8 +255,8 @@ doesn't infer it, and the caller doesn't assemble it.
 ```ts
 interface ViewReceipt {
   schema_version: "pm_view_receipt/v1";
-  view: string;                    // "recently_changed", "blocking_others", ...
-  filter: Record<string, string>;  // canonical, sorted keys; exactly what was applied
+  view: string; // "recently_changed", "blocking_others", ...
+  filter: Record<string, string>; // canonical, sorted keys; exactly what was applied
   generated_at: string;
   sources: {
     source: string;
@@ -267,8 +267,8 @@ interface ViewReceipt {
   }[];
   open_gaps: { source: string; from: string; to: string | null }[];
   hidden_private: number;
-  complete: boolean;               // true only when every source is current and no gap overlaps the window
-  digest: string;                  // over the sorted view rows + this receipt minus digest and generated_at
+  complete: boolean; // true only when every source is current and no gap overlaps the window
+  digest: string; // over the sorted view rows + this receipt minus digest and generated_at
 }
 ```
 

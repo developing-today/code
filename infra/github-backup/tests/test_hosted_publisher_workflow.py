@@ -20,6 +20,22 @@ REGISTRY = ROOT / "doc/fleet-schedule-registry.md"
 
 
 class HostedPublisherWorkflowTests(unittest.TestCase):
+    def test_each_r2_publisher_uses_bucket_scoped_remote_settings(self):
+        # Oracle: the proven laptop/probe remote contract skips HeadBucket,
+        # which the bucket-scoped R2 token cannot perform (#15511).
+        workflow = WORKFLOW.read_text()
+        steps = re.split(r"(?m)^      - name: ", workflow)
+        for name in ("Upload verified R2 bundles", "Publish verified rehost packs"):
+            with self.subTest(step=name):
+                step = next(step for step in steps if step.startswith(name + "\n"))
+                self.assertRegex(
+                    step, r"(?m)^          RCLONE_CONFIG_R2BAK_REGION: auto$"
+                )
+                self.assertRegex(
+                    step,
+                    r'(?m)^          RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET: "true"$',
+                )
+
     def test_workflow_is_dispatchable_scheduled_and_registered(self):
         workflow = WORKFLOW.read_text()
         registry = REGISTRY.read_text()
@@ -53,6 +69,7 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         )
         self.assertIn("owner: developing-today", workflow)
         self.assertIn("permission-contents: write", workflow)
+        self.assertIn("permission-workflows: write", workflow)
         for repo in (
             "code-mirror",
             "fleet-mirror",
@@ -67,8 +84,14 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         self.assertIn("python3 infra/github-backup/bin/hosted_seed_fleet.py", workflow)
         self.assertIn("python3 infra/github-backup/bin/plain_mirror_all.py", workflow)
         self.assertNotIn("python3 -I infra/github-backup/bin/", workflow)
-        self.assertIn("RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}", workflow)
-        self.assertIn("RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}", workflow)
+        self.assertIn(
+            "RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}",
+            workflow,
+        )
+        self.assertIn(
+            "RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}",
+            workflow,
+        )
         self.assertIn("Install rclone for R2 bundles", workflow)
         self.assertIn(
             "python3 infra/github-backup/bin/bundle_r2_all.py --bucket supabase-backups --root",
@@ -80,7 +103,23 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         )
         self.assertLess(
             workflow.index("bundle_r2_all.py --bucket supabase-backups"),
+            workflow.index("rehost_publish_all.py --bucket fleet-git-rehost"),
+        )
+        self.assertLess(
+            workflow.index("rehost_publish_all.py --bucket fleet-git-rehost"),
+            workflow.index("verify_rehost_clones.py --root"),
+        )
+        self.assertLess(
+            workflow.index("verify_rehost_clones.py --root"),
             workflow.index("Remove ephemeral backup root"),
+        )
+        self.assertIn(
+            "python3 infra/github-backup/bin/rehost_publish_all.py --bucket fleet-git-rehost --root",
+            workflow,
+        )
+        self.assertIn(
+            "python3 infra/github-backup/bin/verify_rehost_clones.py --root",
+            workflow,
         )
         self.assertIn("cancel-in-progress: false", workflow)
 

@@ -121,3 +121,15 @@ separate from laptop-ssh's master); `fleet ssh close` tears it
 down. The honest limit: sshd owns the remote process, so a
 client-side kill ends the session but cannot cancel the remote
 command protocol-side.
+
+`sessions` lists only tmux sessions whose names begin with `fleet-`;
+it is read-only. `sweep --idle-for DURATION [--dry-run]` considers
+only detached `fleet-*` sessions whose `session_activity` is older
+than the duration, measured against the laptop host clock read over
+SSH. Durations
+accept seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare
+seconds. Before each kill, the remote command checks again that the
+exact session has no attached client. `--dry-run` prints eligible
+sessions without removing them. The `fleet-` prefix is reserved for
+callers that use this cleanup; callers that start unnamed tmux
+sessions own their cleanup.

@@ -53,7 +53,9 @@ def main(argv: list[str]) -> int:
 
     here = Path(__file__).resolve().parent
     repo = here.parent.parent
-    record = (here / "2026-11-26T07-44-48Z_verification_15339-conductor-gating.md").read_text()
+    record = (
+        here / "2026-11-26T07-44-48Z_verification_15339-conductor-gating.md"
+    ).read_text()
     registry = (repo / "doc" / "fleet-schedule-registry.md").read_text()
 
     failures: list[str] = []
@@ -63,7 +65,9 @@ def main(argv: list[str]) -> int:
         if row is None:
             failures.append(f"registry has no Surface 1 row for {job}")
         elif "| disabled |" not in row:
-            failures.append(f"registry row for {job} is not recorded disabled: {row.strip()[:120]}")
+            failures.append(
+                f"registry row for {job} is not recorded disabled: {row.strip()[:120]}"
+            )
 
     for expected in EXPECTED_GAP_ROWS:
         if expected not in record:
@@ -77,8 +81,10 @@ def main(argv: list[str]) -> int:
             print(f"FAIL: {failure}")
         return 1
 
-    print("ok: registry records all three conductor jobs disabled; "
-          "record gap states (1 closed, 2 open, 3 closed, 4 open) and verdict agree")
+    print(
+        "ok: registry records all three conductor jobs disabled; "
+        "record gap states (1 closed, 2 open, 3 closed, 4 open) and verdict agree"
+    )
     return 0
 
 

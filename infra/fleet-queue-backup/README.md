@@ -29,6 +29,18 @@ decisions.
   counts against the counts the export recorded in the copy's
   `_fleet_queue_backup_meta` table.
 - `bin/fq_common.py` — the shared clients and the dump builder.
+- `bin/export_d1_to_d1.py` — the CF-3 leg (#14943): a full logical
+  export of the live D1 `fleet-queue` plane into the backup D1
+  `fleet-queue-backup`, through `fq_common.D1SourceClient` (the D1
+  query API presented in the dump builder's client shape), with the
+  same read-back count verification. It refuses to run when source
+  and target names coincide. This leg succeeds the Turso -> D1 leg
+  as the daily export once CF-2's cutover is verified (activation in
+  `docs/RUNBOOK.md`).
+- `bin/restore_drill_d1.py` — the CF-3 restore drill: rebuilds the
+  backup D1 copy into a scratch D1 database and verifies its counts
+  and table set against the export record in the backup's meta
+  table; `--drop-scratch` deletes the scratch after a clean drill.
 - `bin/export_to_turso.py` — the reverse leg (backup mesh class D,
   #13458): a weekly export of the `fleet-queue-backup` D1 database
   into its dedicated Turso home `d1-backup-fleet-queue-backup`,
@@ -41,7 +53,10 @@ decisions.
 - `systemd/` — a daily user timer (`fleet-queue-backup-export.timer`,
   02:15 + up to 30 min randomized delay) and a weekly one
   (`fleet-queue-backup-d1-home.timer`, Sundays 03:40) whose wrappers
-  fetch the credentials from Bitwarden by name at runtime. Both
+  fetch the credentials from Bitwarden by name at runtime. The CF-3
+  successor pair (`fleet-queue-backup-export-d1.service/.timer`,
+  wrapper `run-export-d1.sh`, same 02:15 slot) is installed by
+  `install-units.sh` but not enabled until CF-3 activation. Both
   services first run `systemd/update-checkout.sh` as ExecStartPre,
   which brings the service-owned checkout they were installed from
   to origin/main (refusing a dirty tree; warning and continuing on a
@@ -55,6 +70,7 @@ decisions.
   `python3 -I tests/test_restore_drill.py`,
   `python3 -I tests/test_export_to_turso.py`,
   `python3 -I tests/test_restore_drill_d1_home.py`,
+  `python3 -I tests/test_d1_plane.py`,
   `bash systemd/test-export-arguments.sh`,
   `bash systemd/test-update-checkout.sh`.
 

@@ -130,6 +130,74 @@ impl CallMetrics {
     }
 }
 
+/// How many compiled guest modules [`compiled_module`] keeps. Unit
+/// tests compile many modules on parallel threads; they keep more so
+/// that one test's second compile is not evicted by its neighbours.
+const COMPILED_MODULES_KEPT: usize = if cfg!(test) { 256 } else { 4 };
+
+/// Recently compiled guest modules, keyed by the BLAKE3 hash of their
+/// bytes, newest last (#13941). One dev-loop edit used to compile the
+/// same candidate three times (the compiler's output validation, the
+/// fixture gate and the candidate launch), and a Wasm compile is the
+/// costliest step of each. Only the compiled code is shared: every
+/// [`Sandbox::compile`] still applies its own limits and export
+/// policy, and every instance gets its own store, fuel and memory.
+static COMPILED_MODULES: std::sync::Mutex<Vec<([u8; 32], Engine, Module)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The engine every guest module is compiled under. This config is
+/// identical on every call (the limits are applied per store at
+/// instantiation), which is what makes both module caches sound:
+/// codegen is a pure function of the module bytes under this fixed
+/// config (see [`MODULE_CACHE_SALT`]).
+fn sandbox_engine() -> Result<Engine> {
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    config.max_wasm_stack(512 * 1024);
+    config.wasm_multi_memory(false);
+    config.wasm_memory64(false);
+    Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))
+}
+
+/// The compiled module for `wasm` under [`sandbox_engine`]. With
+/// `keep`, a module kept from an earlier compile of the same bytes in
+/// this process is returned as is, and a new one is kept; otherwise,
+/// and on a miss, it comes from [`load_or_compile_module`]. A failed
+/// compile is not kept.
+fn compiled_module(wasm: &[u8], cache_dir: Option<&Path>, keep: bool) -> Result<(Engine, Module)> {
+    if !keep {
+        let engine = sandbox_engine()?;
+        let module = load_or_compile_module(&engine, wasm, cache_dir)?;
+        return Ok((engine, module));
+    }
+    let key = *blake3::hash(wasm).as_bytes();
+    // A poisoned lock only means another compile panicked while it
+    // held the list; the entries in it are still whole.
+    {
+        let mut kept = COMPILED_MODULES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = kept.iter().position(|(hash, ..)| *hash == key) {
+            let entry = kept.remove(index);
+            let found = (entry.1.clone(), entry.2.clone());
+            kept.push(entry);
+            return Ok(found);
+        }
+    }
+    let engine = sandbox_engine()?;
+    let module = load_or_compile_module(&engine, wasm, cache_dir)?;
+    let mut kept = COMPILED_MODULES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kept.iter().any(|(hash, ..)| *hash == key) {
+        if kept.len() >= COMPILED_MODULES_KEPT {
+            kept.remove(0);
+        }
+        kept.push((key, engine.clone(), module.clone()));
+    }
+    Ok((engine, module))
+}
+
 /// Validated, compiled, import-free Wasm module.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
@@ -218,19 +286,16 @@ fn load_cached_module(engine: &Engine, path: &Path) -> Option<Module> {
     unsafe { Module::deserialize(engine, payload) }.ok()
 }
 
-/// Best-effort write of the precompiled form of `wasm` to the cache
-/// entry at `path`, framed as the SHA-256 of the payload followed by
-/// the payload. Every failure is ignored: the cache is an
+/// Best-effort write of `payload`, the precompiled form of a module,
+/// to the cache entry at `path`, framed as the SHA-256 of the payload
+/// followed by the payload. Every failure is ignored: the cache is an
 /// optimisation, and a compile that succeeded must not fail because
 /// its cache write did.
-fn store_cached_module(engine: &Engine, wasm: &[u8], path: &Path) {
+fn store_cached_module(payload: &[u8], path: &Path) {
     use sha2::Digest as _;
-    let Ok(payload) = engine.precompile_module(wasm) else {
-        return;
-    };
     let mut framed = Vec::with_capacity(32 + payload.len());
-    framed.extend_from_slice(&sha2::Sha256::digest(&payload));
-    framed.extend_from_slice(&payload);
+    framed.extend_from_slice(&sha2::Sha256::digest(payload));
+    framed.extend_from_slice(payload);
     let Some(dir) = path.parent() else {
         return;
     };
@@ -282,41 +347,63 @@ fn evict_cache_to_fit(dir: &Path, incoming: u64) {
 
 /// Obtain the compiled module for `wasm`: a cache hit when
 /// `cache_dir` names an entry that loads, otherwise a fresh compile
-/// whose precompiled form is then cached best-effort.
+/// whose precompiled form is then cached best-effort. The fresh
+/// compile runs once: with a cache, the module is loaded from the
+/// very bytes that are cached, rather than compiled a second time to
+/// produce them (#13941).
+#[allow(unsafe_code)]
 fn load_or_compile_module(
     engine: &Engine,
     wasm: &[u8],
     cache_dir: Option<&Path>,
 ) -> Result<Module> {
-    let entry = cache_dir.map(|dir| dir.join(module_cache_key(wasm)));
-    if let Some(module) = entry
-        .as_ref()
-        .and_then(|entry| load_cached_module(engine, entry))
-    {
+    fn compile_error(e: impl std::fmt::Display) -> anyhow::Error {
+        anyhow::anyhow!("compile Wasm module: {e}")
+    }
+    let Some(entry) = cache_dir.map(|dir| dir.join(module_cache_key(wasm))) else {
+        return Module::new(engine, wasm).map_err(compile_error);
+    };
+    if let Some(module) = load_cached_module(engine, &entry) {
         return Ok(module);
     }
-    let module =
-        Module::new(engine, wasm).map_err(|e| anyhow::anyhow!("compile Wasm module: {e}"))?;
-    if let Some(entry) = &entry {
-        store_cached_module(engine, wasm, entry);
-    }
+    let payload = engine.precompile_module(wasm).map_err(compile_error)?;
+    // Safety: `payload` was produced just above by
+    // `Engine::precompile_module` on this same engine and has not left
+    // this process's memory, so it is exactly the precompiled form
+    // `deserialize` expects.
+    let module = unsafe { Module::deserialize(engine, &payload) }.map_err(compile_error)?;
+    store_cached_module(&payload, &entry);
     Ok(module)
 }
 
 impl Sandbox {
     /// Compile and validate a guest module against the no-import policy.
     pub fn compile(wasm: &[u8], limits: SandboxLimits) -> Result<Self> {
-        Self::compile_with_cache(wasm, limits, module_cache_dir().as_deref())
+        Self::compile_kept(wasm, limits, module_cache_dir().as_deref(), true)
     }
 
     /// [`Sandbox::compile`] over an explicit compilation cache
     /// directory (`None` disables the cache). The seam exists for
     /// tests, which must not share cache state through the
     /// process-wide environment or temp dir.
+    #[cfg(test)]
     fn compile_with_cache(
         wasm: &[u8],
         limits: SandboxLimits,
         cache_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::compile_kept(wasm, limits, cache_dir, false)
+    }
+
+    /// The body of [`Sandbox::compile`]. `keep` puts the compiled
+    /// module in the in-process list [`compiled_module`] serves from;
+    /// the test-only `compile_with_cache` leaves it out so that its tests
+    /// see the on-disk cache alone.
+    fn compile_kept(
+        wasm: &[u8],
+        limits: SandboxLimits,
+        cache_dir: Option<&Path>,
+        keep: bool,
     ) -> Result<Self> {
         ensure!(
             wasm.len() <= limits.module_bytes,
@@ -333,21 +420,9 @@ impl Sandbox {
             "sandbox message limit must be nonzero"
         );
 
-        // This config is identical on every call — the limits are
-        // applied per store at instantiation — which is what makes
-        // the compilation cache below sound: codegen is a pure
-        // function of the module bytes under this fixed config (see
-        // MODULE_CACHE_SALT).
-        let mut config = Config::new();
-        config.consume_fuel(true);
-        config.max_wasm_stack(512 * 1024);
-        config.wasm_multi_memory(false);
-        config.wasm_memory64(false);
-        let engine =
-            Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))?;
-        // A cache hit returns the identical compiled module; the ABI
-        // validation below runs on it exactly as on a fresh compile.
-        let module = load_or_compile_module(&engine, wasm, cache_dir)?;
+        // A kept or cached module is the identical compiled code; the
+        // ABI validation below runs on it exactly as on a fresh compile.
+        let (engine, module) = compiled_module(wasm, cache_dir, keep)?;
         let imports: Vec<_> = module
             .imports()
             .map(|i| format!("{}::{}", i.module(), i.name()))
@@ -1388,6 +1463,45 @@ mod tests {
     fn compile(wat: &str, limits: SandboxLimits) -> Result<Sandbox> {
         let wasm = wat::parse_str(wat)?;
         Sandbox::compile(&wasm, limits)
+    }
+
+    #[test]
+    fn compiling_the_same_bytes_again_shares_the_code_not_the_limits() {
+        // #13941: a dev-loop edit compiled one candidate three times.
+        // The second compile of the same bytes reuses the compiled
+        // code, but keeps the limits it was given and still yields
+        // instances that share nothing.
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let first = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let tight = SandboxLimits {
+            fuel: 1_000,
+            ..SandboxLimits::default()
+        };
+        let second = Sandbox::compile(&wasm, tight).unwrap();
+        assert!(Module::same(&first.module, &second.module));
+        assert_eq!(second.limits.fuel, 1_000);
+        assert_eq!(first.limits.fuel, SandboxLimits::default().fuel);
+        let mut a = first.instantiate(1).unwrap();
+        let mut b = second.instantiate(1).unwrap();
+        assert_eq!(a.view().unwrap(), b"hello");
+        assert_eq!(b.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_kept_module_still_answers_to_the_export_policy() {
+        // The compiled code is kept even when the export policy then
+        // refuses it; the next compile of the same bytes must be
+        // refused the same way, not served past the check.
+        let wasm =
+            wat::parse_str(r#"(module (memory (export "memory") 1 1) (func (export "rogue")))"#)
+                .unwrap();
+        for _ in 0..2 {
+            let refused = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap_err();
+            assert!(
+                refused.to_string().contains("not in the ABI allowlist"),
+                "{refused:#}"
+            );
+        }
     }
 
     #[test]

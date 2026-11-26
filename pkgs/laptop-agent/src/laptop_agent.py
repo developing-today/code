@@ -1709,9 +1709,7 @@ class Handler(BaseHTTPRequestHandler):
                 "duration_ms": int((time.time() - t0) * 1000),
                 "truncated": False,
             }
-            return self._send(
-                200, {"results": [result], "_t_received": t_received_ms}
-            )
+            return self._send(200, {"results": [result], "_t_received": t_received_ms})
         proc = job["proc"]
         with EXEC_PROCS_LOCK:
             EXEC_PROCS.setdefault(trip, set()).add(proc)

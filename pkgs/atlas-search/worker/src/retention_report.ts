@@ -15,7 +15,7 @@
  * and only after it appears unchanged in the two latest scheduled reports
  * (rule engine §5). On-demand reports never count toward promotion.
  */
-import { CLASS_NAMES, type Family, type RetentionClassName } from "./retained_object";
+import { CLASS_NAMES, RetainedObjectStore, type Family, type RetentionClassName } from "./retained_object";
 
 export const ENGINE_VERSION = "atlas-retained-report-v1";
 
@@ -237,4 +237,69 @@ export async function promoteClass(db: D1Database, name: string): Promise<string
     .first<{ class: string }>();
   if (!updated) throw new RetentionReportError("not_earned", `class ${name} changed while it was being promoted`);
   return earned;
+}
+
+/**
+ * The most objects one scheduled cycle retires in. Each object is one D1
+ * write, so a cycle stays well inside a Worker invocation's query budget;
+ * the rest are retired by the next cycle, whose report still lists them.
+ */
+export const MAX_RETIRE_OBJECTS_PER_CYCLE = 200;
+
+/** What one scheduled retention cycle did (#9140 slice 7). */
+export interface ScheduledCycle {
+  run_id: string;
+  /** False when a cycle for the same scheduled time already stored its report. */
+  ran: boolean;
+  /** Versions retired, as `object_id@version`, in `live-cold` classes only. */
+  retired: string[];
+  /** Objects with candidates left for the next cycle by the per-cycle cap. */
+  deferred: number;
+}
+
+/** The report run id of the cycle the cron scheduled at `scheduledTime`. */
+export function scheduledRunId(scheduledTime: number): string {
+  return `scheduled-${new Date(scheduledTime).toISOString()}`;
+}
+
+/**
+ * One cron cycle: store the scheduled report (the reports promotion counts),
+ * then retire what it lists in classes an admin has promoted to `live-cold`.
+ * A `dry-run` class is reported and never touched. Retiring marks versions
+ * cold; nothing deletes. A second delivery of the same cron time finds its
+ * report already stored and does nothing.
+ */
+export async function runScheduledCycle(
+  db: D1Database,
+  scheduledTime: number,
+  now: () => number = Date.now,
+): Promise<ScheduledCycle> {
+  const runId = scheduledRunId(scheduledTime);
+  let report: RetentionReport;
+  try {
+    report = await runRetentionReport(db, runId, "scheduled", now);
+  } catch (error) {
+    if (error instanceof RetentionReportError && error.code === "duplicate_run") {
+      return { run_id: runId, ran: false, retired: [], deferred: 0 };
+    }
+    throw error;
+  }
+  const objects = [
+    ...new Set(
+      report.classes
+        .filter((section) => section.rule.mode === "live-cold")
+        .flatMap((section) => section.versions.map((version) => version.object_id)),
+    ),
+  ].sort();
+  const store = new RetainedObjectStore(db, now);
+  const retired: string[] = [];
+  for (const objectId of objects.slice(0, MAX_RETIRE_OBJECTS_PER_CYCLE)) {
+    for (const version of await store.retireExpired(objectId)) retired.push(`${objectId}@${version}`);
+  }
+  return {
+    run_id: runId,
+    ran: true,
+    retired,
+    deferred: Math.max(0, objects.length - MAX_RETIRE_OBJECTS_PER_CYCLE),
+  };
 }
