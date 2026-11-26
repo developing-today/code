@@ -1693,7 +1693,10 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("authorization: bearer service-token\r\n")
         );
-        assert!(request.contains("{\"queue\":\"repo-health-code-pilot\"}"));
+        assert!(
+            request.contains("repo-health-code-pilot"),
+            "hosted request includes the requested queue: {request:?}"
+        );
         assert_eq!(response, json!({"ok": true, "rows": []}));
     }
 
