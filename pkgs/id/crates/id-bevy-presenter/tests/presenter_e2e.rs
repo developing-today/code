@@ -93,7 +93,7 @@ fn it_joins_a_world_in_another_process_and_projects_it() {
             ("beacon-north".to_owned(), [0.0, 96.0]),
         ]
     );
-    assert_eq!(run.events, [] as [PresenterEvent; 0]);
+    assert_eq!(run.events, Vec::<PresenterEvent>::new());
 }
 
 #[test]
@@ -184,16 +184,16 @@ fn only_the_surfaces_the_world_grants_are_produced() {
     // Render only: the world is drawn, input is ignored, no cue sounds.
     let run = Host::start(Some("Screen")).run("R");
     assert_eq!(run.surfaces, ["render"]);
-    assert_eq!(run.events, [] as [PresenterEvent; 0]);
+    assert_eq!(run.events, Vec::<PresenterEvent>::new());
     assert_eq!(run.sprites.len(), 3);
-    assert_eq!(run.cues, [] as [Cue; 0]);
+    assert_eq!(run.cues, Vec::<Cue>::new());
     assert_eq!(run.frames.last().unwrap().applied, Some(2));
 
     // Input and audio without render: moves still go through the gate,
     // but nothing is drawn.
     let run = Host::start(Some("Key,speech.synthesize")).run("R");
     assert_eq!(run.surfaces, ["input", "audio_out"]);
-    assert_eq!(run.sprites, [] as [(String, [f32; 2]); 0]);
+    assert_eq!(run.sprites, Vec::<(String, [f32; 2])>::new());
     assert_eq!(run.cues, [Cue::Confirm]);
     assert_eq!(run.frames.last().unwrap().applied, Some(3));
     assert_eq!(run.replay, Ok(()));

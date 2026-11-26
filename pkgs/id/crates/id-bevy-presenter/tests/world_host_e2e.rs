@@ -115,8 +115,8 @@ fn the_hosts_own_presenter_takes_the_same_path_as_a_remote_one() {
 
     // Both presenters hold the same world, written only by the bridge.
     let own_state = own.world_state();
-    let watched = watcher.world_state();
-    assert_eq!(own_state, watched);
+    let remote_state = watcher.world_state();
+    assert_eq!(own_state, remote_state);
     assert_eq!(own_state.unmapped_world_state, 0);
     assert_eq!(own_state.applied, Some(5));
     assert_eq!(

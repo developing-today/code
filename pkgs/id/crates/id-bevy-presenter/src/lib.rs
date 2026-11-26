@@ -61,7 +61,6 @@ pub const TICKS_PER_PRESS: usize = 3;
 
 /// An app with the presenter wired in and no window: for scripts and
 /// tests.
-#[must_use]
 pub fn headless_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins).add_plugins(PresenterPlugin);

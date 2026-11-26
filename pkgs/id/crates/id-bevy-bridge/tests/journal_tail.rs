@@ -307,7 +307,7 @@ fn an_accepted_intent_becomes_world_state_only_at_its_confirming_position() {
     assert_eq!(position(&world, "avatar"), Some(origin));
     assert_eq!(
         world.resource::<IntentLedger>().settled(),
-        &[] as &[IntentOutcome]
+        Vec::<IntentOutcome>::new()
     );
 
     // Tick 4: the confirming position applies. The move is now world

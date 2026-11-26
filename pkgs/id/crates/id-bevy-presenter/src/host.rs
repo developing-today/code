@@ -67,10 +67,10 @@ pub fn arena_genesis() -> Vec<Vec<JournalDelta>> {
     ]
 }
 
-/// The arena's world rule: true when `frame` carries an intent that
-/// moves something to a position more than `half_extent` from the
-/// centre on either axis. A frame that is not an intent is left to the
-/// gate's own decoding.
+/// The arena's world rule: true when `frame` moves something out of bounds.
+///
+/// Out of bounds is more than `half_extent` from the centre on either
+/// axis. A frame that is not an intent is left to the gate's own decoding.
 #[must_use]
 pub fn outside_arena(frame: &serde_json::Value, half_extent: f64) -> bool {
     let Ok(Intent {

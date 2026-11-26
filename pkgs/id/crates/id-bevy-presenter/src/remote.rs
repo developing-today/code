@@ -236,11 +236,11 @@ impl RemoteWorld {
 }
 
 fn exchange(link: &mut Link, request: &Request) -> Result<Reply, RemoteError> {
-    let mut line =
+    let mut encoded =
         serde_json::to_string(request).map_err(|error| RemoteError::Link(error.to_string()))?;
-    line.push('\n');
+    encoded.push('\n');
     link.writer
-        .write_all(line.as_bytes())
+        .write_all(encoded.as_bytes())
         .and_then(|()| link.writer.flush())
         .map_err(|error| RemoteError::Link(error.to_string()))?;
     let mut reply = String::new();

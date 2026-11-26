@@ -198,6 +198,11 @@ impl Cue {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioCue(pub Cue);
 
+/// Where a cue stands among those queued: the index of the presenter event
+/// that raised it. Entity order is not spawn order once entities recycle.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CueOrder(usize);
+
 /// Wires the bridge and the presenter's systems into an app.
 ///
 /// The app still needs the world: [`connect`] inserts the tail, the gate,
@@ -359,14 +364,14 @@ fn queue_cues(
     mut seen: bevy::prelude::Local<'_, usize>,
     mut commands: Commands<'_, '_>,
 ) {
-    for event in log.events.iter().skip(*seen) {
+    for (order, event) in log.events.iter().enumerate().skip(*seen) {
         let cue = match event {
             PresenterEvent::Reconciled { .. } => Some(Cue::Confirm),
             PresenterEvent::SnappedBack { .. } => Some(Cue::SnapBack),
             PresenterEvent::Predicted { .. } => None,
         };
         if let Some(cue) = cue {
-            commands.spawn((AudioCue(cue), LocalOnly));
+            commands.spawn((AudioCue(cue), CueOrder(order), LocalOnly));
         }
     }
     *seen = log.events.len();
@@ -518,12 +523,12 @@ pub fn drawn_sprites(world: &mut World) -> Vec<(String, [f32; 2])> {
 
 /// The cues queued on the audio surface so far, oldest first.
 pub fn queued_cues(world: &mut World) -> Vec<Cue> {
-    let mut query = world.query::<(Entity, &AudioCue)>();
-    let mut cues: Vec<(Entity, Cue)> = query
+    let mut query = world.query::<(&CueOrder, &AudioCue)>();
+    let mut cues: Vec<(CueOrder, Cue)> = query
         .iter(world)
-        .map(|(entity, cue)| (entity, cue.0))
+        .map(|(order, cue)| (*order, cue.0))
         .collect();
-    cues.sort_by_key(|(entity, _)| *entity);
+    cues.sort_by_key(|(order, _)| *order);
     cues.into_iter().map(|(_, cue)| cue).collect()
 }
 
