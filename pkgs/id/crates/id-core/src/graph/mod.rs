@@ -15,6 +15,7 @@ pub mod cursor;
 pub mod delegation;
 pub mod feed_cursor;
 pub mod navigation;
+pub mod navigation_wire;
 pub mod query;
 pub mod record;
 pub mod social;

@@ -114,6 +114,7 @@ pub mod gallery;
 pub mod groups;
 pub mod host;
 pub mod match_audit;
+pub mod nav;
 pub mod petname;
 pub mod tag;
 pub mod talk;
@@ -127,6 +128,7 @@ pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 pub use host::HostCommand;
 pub use match_audit::MatchAuditCommand;
+pub use nav::{NavArgs, NavOp};
 pub use petname::PetnameCommand;
 pub use tag::TagCommand;
 pub use talk::TalkCommand;
@@ -1506,6 +1508,20 @@ pub enum Command {
         #[command(subcommand)]
         command: ClaimCommand,
     },
+    /// Walk a typed graph snapshot: neighbors, backlinks, threads,
+    /// history, or a bounded path (native graph navigation, #7612).
+    ///
+    /// The CLI runs the same executor as the script/API and agent
+    /// surfaces, so answers match them item for item; only the printing
+    /// differs. Pages end with a `next:` cursor to pass back with
+    /// `--cursor`, and a bound that cut a result is named, never silent.
+    ///
+    /// ```bash
+    /// id nav neighbors NOTE --graph graph.json
+    /// id nav backlinks NOTE --graph graph.json --edge references
+    /// id nav path NOTE --to REPLY --max-depth 4 --graph graph.json --json
+    /// ```
+    Nav(NavArgs),
     /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
     ///
     /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
