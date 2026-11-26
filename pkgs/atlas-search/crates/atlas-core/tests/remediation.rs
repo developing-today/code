@@ -154,29 +154,53 @@ fn temp_path(tag: &str) -> PathBuf {
     dir.join("run.json")
 }
 
-fn create_db(path: &Path, rows: &[(i64, &str, Option<&str>, bool)]) {
+fn create_db(path: &Path, rows: &[(i64, &str, Option<&str>, Option<&str>, bool)]) {
     let con = rusqlite::Connection::open(path).expect("create db");
     con.execute_batch(&format!(
         "CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, \
            chunk_idx INTEGER, text TEXT NOT NULL, content_hash TEXT UNIQUE NOT NULL, \
            sensitivity TEXT);
+         CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT, text TEXT);
+         CREATE TABLE session_labels (session_id TEXT PRIMARY KEY, sensitivity TEXT);
          CREATE TABLE {DEFAULT_VEC_TABLE} (chunk_id INTEGER PRIMARY KEY, vec BLOB NOT NULL);"
     ))
     .expect("schema");
-    for (id, hash, sens, has_vec) in rows {
+    for (id, hash, sens, session_sens, has_vec) in rows {
+        let session_id = format!("s{id}");
         con.execute(
             "INSERT INTO chunks VALUES (?, ?, 0, ?, ?, ?)",
             rusqlite::params![id, format!("m{id}"), "REDACTED", hash, sens],
         )
         .expect("chunk");
+        con.execute(
+            "INSERT INTO messages VALUES (?, ?, 'user', 'FIXTURE')",
+            rusqlite::params![format!("m{id}"), session_id],
+        )
+        .expect("message");
+        if let Some(sensitivity) = session_sens {
+            con.execute(
+                "INSERT INTO session_labels VALUES (?, ?)",
+                rusqlite::params![session_id, sensitivity],
+            )
+            .expect("session label");
+        }
         if *has_vec {
             con.execute(
                 &format!("INSERT INTO {DEFAULT_VEC_TABLE} VALUES (?, ?)"),
-                rusqlite::params![id, vec![0u8; 4]],
+                rusqlite::params![id, vec![0u8; 768 * 4]],
             )
             .expect("vec");
         }
     }
+}
+
+fn replace_vector(path: &Path, id: i64, vector: &[u8]) {
+    let con = rusqlite::Connection::open(path).expect("open fixture");
+    con.execute(
+        &format!("UPDATE {DEFAULT_VEC_TABLE} SET vec = ?1 WHERE chunk_id = ?2"),
+        rusqlite::params![vector, id],
+    )
+    .expect("replace vector fixture");
 }
 
 #[test]
@@ -187,17 +211,36 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
     create_db(
         &src_path,
         &[
-            (1, "h1", Some("secret-bearing"), true),
-            (2, "h2", Some("secret-bearing"), true),
-            (3, "h3", Some("personal"), true),
+            (
+                1,
+                "h1",
+                Some("secret-bearing"),
+                Some("secret-bearing"),
+                true,
+            ),
+            (
+                2,
+                "h2",
+                Some("secret-bearing"),
+                Some("secret-bearing"),
+                true,
+            ),
+            (3, "h3", Some("personal"), Some("personal"), true),
+            (4, "h4", None, Some("secret-bearing"), true),
         ],
     )
     .expect("valid fixture hashes");
     create_db(
         &dst_path,
         &[
-            (1, "h1", Some("secret-bearing"), true),
-            // h2 is absent at the destination.
+            (
+                1,
+                "h1",
+                Some("secret-bearing"),
+                Some("secret-bearing"),
+                true,
+            ),
+            (4, "h4", None, Some("secret-bearing"), true),
         ],
     )
     .expect("valid fixture hashes");
@@ -215,11 +258,48 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
     .expect("inventory");
 
     // The personal row is not part of the secret-bearing inventory.
-    assert_eq!(r.counts.source, 2);
-    assert_eq!(r.counts.verified, 1);
+    assert_eq!(r.counts.source, 3);
+    assert_eq!(r.counts.verified, 2);
     assert_eq!(r.counts.missing_destination, 1);
     assert_eq!(r.unverified_source_ids, vec![2]);
     assert!(!r.destination_complete());
+}
+
+#[test]
+fn destination_vector_must_match_source_vector_bytes() {
+    let dir = temp_path("vector-mismatch");
+    let source_path = dir.with_file_name("vector-source.db");
+    let destination_path = dir.with_file_name("vector-destination.db");
+    let row = [(
+        1,
+        "same-content",
+        Some("secret-bearing"),
+        Some("secret-bearing"),
+        true,
+    )];
+    create_db(&source_path, &row);
+    create_db(&destination_path, &row);
+    replace_vector(&source_path, 1, &vec![1u8; 768 * 4]);
+    replace_vector(&destination_path, 1, &vec![2u8; 768 * 4]);
+
+    let source = LocalShardTransport::open(&source_path).expect("source");
+    let destination = LocalShardTransport::open(&destination_path).expect("destination");
+    let report = inventory(
+        &source,
+        &destination,
+        "fixture://monolith",
+        "fixture://secret",
+        Sensitivity::SecretBearing,
+        DEFAULT_VEC_TABLE,
+    )
+    .expect("inventory");
+
+    assert!(
+        !report.destination_complete(),
+        "vector presence alone does not verify the destination embedding"
+    );
+    let _ = std::fs::remove_file(source_path);
+    let _ = std::fs::remove_file(destination_path);
 }
 
 #[test]
