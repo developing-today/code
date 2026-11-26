@@ -103,15 +103,104 @@ pub fn resize_frame_for_window(
     resize_frame(width, height)
 }
 
+/// Convert a window's logical size to contract resize dimensions,
+/// given one cell's logical size (the Bevy window reports logical
+/// pixels, and the renderer's cell metrics are logical too).
+///
+/// Floor division, clamped into the contract bounds exactly like
+/// [`resize_dimensions`]. A non-finite or non-positive cell size, or a
+/// non-finite window size, maps to the minimum 1 rather than a
+/// garbage grid.
+#[must_use]
+pub fn resize_dimensions_logical(
+    window_width: f32,
+    window_height: f32,
+    cell_width: f32,
+    cell_height: f32,
+) -> (u16, u16) {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn cells(window: f32, cell: f32, max: u16) -> u16 {
+        if !(window.is_finite() && cell.is_finite() && cell > 0.0) {
+            return 1;
+        }
+        // Clamped into 1..=max first, so the cast is exact.
+        (window / cell).floor().clamp(1.0, f32::from(max)) as u16
+    }
+    (
+        cells(window_width, cell_width, MAX_RESIZE_WIDTH),
+        cells(window_height, cell_height, MAX_RESIZE_HEIGHT),
+    )
+}
+
+/// The grid size last sent to one session, so the session gets a
+/// `resize` frame when its window grid changes (and once when it
+/// opens) but never twice for the same size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResizeTracker {
+    sent: Option<(u16, u16)>,
+}
+
+impl ResizeTracker {
+    /// The resize event the session still needs for the current grid,
+    /// or `None` when it already has this size.
+    #[must_use]
+    pub fn pending(&self, grid: (u16, u16)) -> Option<NativeEvent> {
+        (self.sent != Some(grid)).then_some(NativeEvent::Resize {
+            width: grid.0,
+            height: grid.1,
+        })
+    }
+
+    /// Record that a resize to `grid` was queued for the session. A
+    /// resize that could not be queued is not recorded, so it is
+    /// offered again on the next frame.
+    pub const fn mark_sent(&mut self, grid: (u16, u16)) {
+        self.sent = Some(grid);
+    }
+}
+
 /// Modifier keys held during one key press, as far as the terminal
-/// byte mapping cares. Shift is already folded into the produced
-/// text by the platform; Super/Meta have no terminal encoding.
+/// byte mapping and the paste chord care. Shift is already folded
+/// into the produced text by the platform, so the byte mapping
+/// ignores it; it only tells the paste chord apart from a plain
+/// Ctrl+V or Insert. Super/Meta have no terminal encoding.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
     /// A Control key is held.
     pub ctrl: bool,
     /// An Alt key is held.
     pub alt: bool,
+    /// A Shift key is held.
+    pub shift: bool,
+}
+
+/// Whether a key press is the paste chord rather than a key to send.
+///
+/// The chords are the terminal emulators' own: Ctrl+Shift+V, since a
+/// plain Ctrl+V is the literal-next control byte a world may want,
+/// and Shift+Insert. Alt with either is not a paste, so the chords
+/// never shadow an Alt-prefixed key.
+#[must_use]
+pub fn is_paste_chord(key: &Key, modifiers: KeyModifiers) -> bool {
+    if modifiers.alt || !modifiers.shift {
+        return false;
+    }
+    match key {
+        Key::Character(character) => modifiers.ctrl && character.eq_ignore_ascii_case("v"),
+        Key::Insert => !modifiers.ctrl,
+        _ => false,
+    }
+}
+
+/// The native event for one clipboard read on the paste chord, or
+/// `None` for an empty clipboard (nothing to paste, so nothing is
+/// sent). Text over [`crate::MAX_PASTE_BYTES`] is still returned:
+/// [`native_event_frame`] refuses it, and the caller surfaces that
+/// refusal, because the contract delivers a paste as one bounded
+/// event and never as a split or truncated one.
+#[must_use]
+pub fn paste_event(clipboard_text: &str) -> Option<NativeEvent> {
+    (!clipboard_text.is_empty()).then(|| NativeEvent::Paste(clipboard_text.to_string()))
 }
 
 /// The control byte a terminal sends for Ctrl plus `c`, if any.
@@ -258,6 +347,66 @@ mod tests {
     }
 
     #[test]
+    fn logical_window_sizes_convert_and_clamp_to_contract_cells() {
+        // 960x480 logical at 12x24 cells is an 80x20 grid; a partial
+        // cell is not counted.
+        assert_eq!(
+            resize_dimensions_logical(960.0, 480.0, 12.0, 24.0),
+            (80, 20)
+        );
+        assert_eq!(
+            resize_dimensions_logical(971.9, 503.9, 12.0, 24.0),
+            (80, 20)
+        );
+        // Smaller than a cell, zero, negative or NaN: the 1x1 minimum.
+        assert_eq!(resize_dimensions_logical(5.0, 5.0, 12.0, 24.0), (1, 1));
+        assert_eq!(resize_dimensions_logical(0.0, -3.0, 12.0, 24.0), (1, 1));
+        assert_eq!(
+            resize_dimensions_logical(f32::NAN, f32::INFINITY, 12.0, 24.0),
+            (1, 1)
+        );
+        assert_eq!(resize_dimensions_logical(960.0, 480.0, 0.0, -1.0), (1, 1));
+        // A huge window clamps to the contract maximum, not beyond.
+        assert_eq!(
+            resize_dimensions_logical(1.0e9, 1.0e9, 12.0, 24.0),
+            (MAX_RESIZE_WIDTH, MAX_RESIZE_HEIGHT)
+        );
+        // Every output is a frame the contract builder accepts.
+        let (width, height) = resize_dimensions_logical(1.0e9, 0.0, 12.0, 24.0);
+        assert!(resize_frame(width, height).is_ok());
+    }
+
+    #[test]
+    fn a_session_gets_each_grid_size_once() {
+        let mut tracker = ResizeTracker::default();
+        // A fresh session has no size yet, so the current grid is due.
+        assert_eq!(
+            tracker.pending((80, 24)),
+            Some(NativeEvent::Resize {
+                width: 80,
+                height: 24
+            })
+        );
+        // Not queued (full channel): still due on the next frame.
+        assert!(tracker.pending((80, 24)).is_some());
+        tracker.mark_sent((80, 24));
+        // Same size again: nothing to send.
+        assert_eq!(tracker.pending((80, 24)), None);
+        // The window changed: the new size is due, and only it.
+        assert_eq!(
+            tracker.pending((100, 30)),
+            Some(NativeEvent::Resize {
+                width: 100,
+                height: 30
+            })
+        );
+        tracker.mark_sent((100, 30));
+        assert_eq!(tracker.pending((100, 30)), None);
+        // Back to an earlier size is a change too.
+        assert!(tracker.pending((80, 24)).is_some());
+    }
+
+    #[test]
     fn window_pixels_convert_and_clamp_to_contract_cells() {
         assert_eq!(resize_dimensions(800, 480, 10, 20), (80, 24));
         // A window smaller than one cell still yields a legal 1x1.
@@ -282,14 +431,17 @@ mod tests {
     const PLAIN: KeyModifiers = KeyModifiers {
         ctrl: false,
         alt: false,
+        shift: false,
     };
     const CTRL: KeyModifiers = KeyModifiers {
         ctrl: true,
         alt: false,
+        shift: false,
     };
     const ALT: KeyModifiers = KeyModifiers {
         ctrl: false,
         alt: true,
+        shift: false,
     };
 
     #[test]
@@ -388,7 +540,8 @@ mod tests {
                 None,
                 KeyModifiers {
                     ctrl: true,
-                    alt: true
+                    alt: true,
+                    shift: false,
                 }
             ),
             Some(vec![0x1b, 0x18])
@@ -416,6 +569,67 @@ mod tests {
                 PLAIN
             ),
             None
+        );
+    }
+
+    const CTRL_SHIFT: KeyModifiers = KeyModifiers {
+        ctrl: true,
+        alt: false,
+        shift: true,
+    };
+    const SHIFT: KeyModifiers = KeyModifiers {
+        ctrl: false,
+        alt: false,
+        shift: true,
+    };
+
+    #[test]
+    fn paste_chords_are_ctrl_shift_v_and_shift_insert() {
+        assert!(is_paste_chord(&character("V"), CTRL_SHIFT));
+        assert!(is_paste_chord(&character("v"), CTRL_SHIFT));
+        assert!(is_paste_chord(&Key::Insert, SHIFT));
+        // Ctrl+V alone stays the literal-next byte, Insert alone and
+        // Shift+V stay keys, and Alt never makes a paste.
+        assert!(!is_paste_chord(&character("v"), CTRL));
+        assert_eq!(
+            key_input_bytes(&character("v"), None, CTRL),
+            Some(vec![0x16])
+        );
+        assert!(!is_paste_chord(&Key::Insert, PLAIN));
+        assert!(!is_paste_chord(&character("V"), SHIFT));
+        assert!(!is_paste_chord(&Key::Insert, CTRL_SHIFT));
+        assert!(!is_paste_chord(
+            &character("v"),
+            KeyModifiers {
+                alt: true,
+                ..CTRL_SHIFT
+            }
+        ));
+        assert!(!is_paste_chord(&character("b"), CTRL_SHIFT));
+    }
+
+    #[test]
+    fn a_clipboard_read_becomes_one_contract_paste_frame() {
+        assert_eq!(paste_event(""), None);
+        let text = "line one\nline two\t\u{e9}";
+        assert_eq!(
+            native_event_frame(&paste_event(text).unwrap()).unwrap(),
+            json!({"type": "paste", "text": text})
+        );
+        assert_eq!(
+            native_event_frame(&paste_event(text).unwrap()).unwrap(),
+            paste_frame(text).unwrap()
+        );
+        // At the bound it is one frame; one byte over is refused whole,
+        // never split into several pastes or truncated.
+        let at_bound = "x".repeat(crate::MAX_PASTE_BYTES);
+        assert!(native_event_frame(&paste_event(&at_bound).unwrap()).is_ok());
+        let over = format!("{at_bound}y");
+        assert_eq!(
+            native_event_frame(&paste_event(&over).unwrap()),
+            Err(FrameError::PasteTooLarge {
+                bytes: crate::MAX_PASTE_BYTES + 1
+            })
         );
     }
 

@@ -193,6 +193,12 @@ in
     stopIfChanged = false;
   };
 
+  # CF-9 (#14949, #14107 M2): the laptop PM edition follows main hourly
+  # through this switch. The timer itself, pm-stack-follow-main, is
+  # defined once, in nixos/services/pm-stack (its schedule of record is
+  # the doc/fleet-schedule-registry.md row); defining it here too made
+  # the amd evaluation fail on conflicting values.
+
   security.polkit.extraConfig = ''
     polkit.addRule(function (action, subject) {
       if (

@@ -483,6 +483,39 @@ pub trait Secrets {
     }
 }
 
+/// A [`Secrets`] seen through a name scope (#10358 D11): reads and
+/// writes both map the caller's name to its full stored name first,
+/// so a scoped bridge reads what it wrote. [`Scope::none`] passes
+/// every name through unchanged.
+///
+/// [`Scope::none`]: fleet_secrets::Scope::none
+pub struct ScopedSecrets<S> {
+    scope: fleet_secrets::Scope,
+    inner: S,
+}
+
+impl<S: Secrets> ScopedSecrets<S> {
+    pub fn new(scope: fleet_secrets::Scope, inner: S) -> ScopedSecrets<S> {
+        ScopedSecrets { scope, inner }
+    }
+
+    fn full(&self, name: &str) -> Result<String, String> {
+        self.scope.to_full(name).map_err(|e| e.to_string())
+    }
+}
+
+impl<S: Secrets> Secrets for ScopedSecrets<S> {
+    fn resolve(&self, name: &str) -> Result<String, String> {
+        self.inner.resolve(&self.full(name)?)
+    }
+
+    fn store(&self, name: &str, value: &str) -> Result<(), String> {
+        self.inner.store(&self.full(name)?, value)
+    }
+}
+
+/// The real chain, taking full stored names; [`run`] wraps it in the
+/// instance's scope.
 struct ChainSecrets<'a>(&'a Config);
 
 impl Secrets for ChainSecrets<'_> {
@@ -1914,7 +1947,14 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             return e.exit_code();
         }
     };
-    let secrets = ChainSecrets(config);
+    let scope = match fleet_secrets::Scope::from_config(config) {
+        Ok(scope) => scope,
+        Err(e) => {
+            eprintln!("fleet bridge: secrets prefix: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let secrets = ScopedSecrets::new(scope, ChainSecrets(config));
     let mut stdin = std::io::stdin();
     let sleep = |d: Duration| std::thread::sleep(d);
     let mut ctx = Ctx {

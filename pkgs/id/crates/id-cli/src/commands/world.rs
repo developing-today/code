@@ -29,6 +29,7 @@ mod announce;
 mod journal;
 mod owner;
 mod scaffold;
+mod template;
 #[cfg(test)]
 use journal::check_journal_bytes;
 use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
@@ -1062,6 +1063,41 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             template,
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
+        WorldCommand::TemplateExport {
+            dir,
+            out,
+            keep_state,
+            json,
+        } => template::export_world_template(&dir, &out, &keep_state, json),
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateCreate {
+            template,
+            dir,
+            name,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => {
+            template::create_world_from_template_file(
+                &template,
+                &dir,
+                name.as_deref(),
+                &bundles,
+                &trust_keys,
+                seed,
+                json,
+            )
+            .await
+        }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateResume {
+            dir,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => template::resume_template_world_dir(&dir, &bundles, &trust_keys, seed, json).await,
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
         WorldCommand::Owner { dir, since, json } => owner::print_world_owner(&dir, since, json),
         WorldCommand::Journal(args) => match args.action {

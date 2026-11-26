@@ -67,6 +67,8 @@ mod gh_cache;
 #[cfg(feature = "gh")]
 mod gh_closure;
 #[cfg(feature = "gh")]
+mod gh_content_ledger;
+#[cfg(feature = "gh")]
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
@@ -83,6 +85,8 @@ mod invocation_ledger;
 mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
+#[cfg(feature = "host")]
+mod host;
 mod session_state;
 #[cfg(feature = "ssh")]
 mod ssh;
@@ -526,12 +530,11 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             let sub = args.first().map(|s| s.as_str());
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
-                Some("connect") | Some("init") | Some("ssh") | Some("get") | Some("put") => {
-                    Ok(Capability::ProxyConnect)
-                }
+                Some("connect") | Some("init") | Some("ssh") | Some("get") | Some("put")
+                | Some("copy") => Ok(Capability::ProxyConnect),
                 Some("splice") => Ok(Capability::ProxyRawSplice),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, init, ssh, splice, get, or put",
+                    "'fleet proxy' needs a command: serve, connect, init, ssh, splice, get, put, or copy",
                 )),
             }
         }
@@ -1077,6 +1080,12 @@ fn run_domain_with_initializer(
             if d.name == "laptop" {
                 return laptop::run(&surface.config, args);
             }
+            // developing-today/code#14716: host resolution and
+            // selection over the #13717 forms, through fleet-pool.
+            #[cfg(feature = "host")]
+            if d.name == "host" {
+                return host::run(args);
+            }
             // #13774: the actions domain runs for real — live exec
             // sessions inside Actions runners (seat + agent + put).
             #[cfg(feature = "actions")]
@@ -1354,6 +1363,29 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
                 }
             };
             match fleet_proxy::files::run_put(&parsed, config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
+        Some("copy") => {
+            if args[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--help" | "-h"))
+            {
+                println!("{}", fleet_proxy::copy::COPY_USAGE);
+                return EXIT_OK;
+            }
+            let parsed = match fleet_proxy::copy::CopyArgs::parse(&args[1..]) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    return e.exit_code();
+                }
+            };
+            match fleet_proxy::copy::run_copy(&parsed, config, &client, &capabilities) {
                 Ok(code) => code,
                 Err(e) => {
                     eprintln!("fleet: {e}");

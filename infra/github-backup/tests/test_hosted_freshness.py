@@ -151,6 +151,170 @@ class BundleLegTests(unittest.TestCase):
         self.assertEqual(mod, datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc))
 
 
+B = HEAD_B
+
+
+class LagTests(unittest.TestCase):
+    """A copy behind the source is judged by lag when a lag fetcher exists."""
+
+    def lagging(self, hours, behind_by=3, relation="behind", calls=None):
+        def lag(repo, copy_head, source_head):
+            if calls is not None:
+                calls.append((repo, copy_head, source_head))
+            return {
+                "relation": relation,
+                "behind_by": behind_by,
+                "moved_past_at": NOW - timedelta(hours=hours),
+            }
+
+        return lag
+
+    def behind(self, lag, **overrides):
+        base = dict(
+            lag=lag,
+            mirror_head=lambda repo: HEAD_B,
+            rehost_head=lambda repo: HEAD_B,
+            bundle=lambda repo: (HEAD_B, NOW - timedelta(hours=1)),
+        )
+        base.update(overrides)
+        return hf.build_report(REPOS, fetchers(**base), NOW, "r")
+
+    def test_copy_within_slo_lag_is_fresh_on_every_leg(self):
+        calls = []
+        report = self.behind(self.lagging(2, calls=calls))
+        for leg in ("plain_mirror", "cloudflare_rehost", "r2_bundles"):
+            entry = report["legs"][leg]["repos"][REPOS[0]]
+            self.assertEqual(entry["status"], hf.FRESH, leg)
+            self.assertEqual(entry["copy_head"], HEAD_B, leg)
+            self.assertEqual(entry["behind_by"], 3, leg)
+            self.assertEqual(entry["moved_past_at"], "2026-11-25T10:00:00Z", leg)
+        self.assertEqual(report["verdict"], "fresh")
+        # One compare per distinct copy head per repo, copy...source order.
+        self.assertEqual(calls, [(r, HEAD_B, HEAD_A) for r in REPOS])
+
+    def test_copy_lag_beyond_slo_is_stale(self):
+        report = self.behind(self.lagging(30))
+        for leg in ("plain_mirror", "cloudflare_rehost", "r2_bundles"):
+            entry = report["legs"][leg]["repos"][REPOS[0]]
+            self.assertEqual(entry["status"], hf.STALE, leg)
+            self.assertIn("beyond the 26h SLO", entry["detail"], leg)
+
+    def test_diverged_or_ahead_copy_is_stale(self):
+        for relation in ("diverged", "ahead"):
+            report = self.behind(self.lagging(1, relation=relation))
+            entry = report["legs"]["plain_mirror"]["repos"][REPOS[0]]
+            self.assertEqual(entry["status"], hf.STALE, relation)
+
+    def test_copy_head_unknown_to_source_is_stale(self):
+        report = self.behind(lambda repo, copy_head, source_head: None)
+        entry = report["legs"]["plain_mirror"]["repos"][REPOS[0]]
+        self.assertEqual(entry["status"], hf.STALE)
+        self.assertIn("not in the source", entry["detail"])
+
+    def test_compare_error_is_stale_not_fresh(self):
+        def boom(repo, copy_head, source_head):
+            raise RuntimeError("gh api 502")
+
+        report = self.behind(boom)
+        for leg in ("plain_mirror", "cloudflare_rehost", "r2_bundles"):
+            entry = report["legs"][leg]["repos"][REPOS[0]]
+            self.assertEqual(entry["status"], hf.STALE, leg)
+            self.assertIn("lag unavailable", entry["detail"], leg)
+
+    def test_unmeasurable_lag_is_stale(self):
+        for behind_by in (0, None):
+            report = self.behind(self.lagging(1, behind_by=behind_by))
+            entry = report["legs"]["plain_mirror"]["repos"][REPOS[0]]
+            self.assertEqual(entry["status"], hf.STALE, behind_by)
+
+    def test_lagging_bundle_beyond_modtime_slo_is_stale(self):
+        report = self.behind(
+            self.lagging(2), bundle=lambda repo: (HEAD_B, NOW - timedelta(hours=30))
+        )
+        entry = report["legs"]["r2_bundles"]["repos"][REPOS[0]]
+        self.assertEqual(entry["status"], hf.STALE)
+        self.assertIn("old, beyond the 26h SLO", entry["detail"])
+
+    def test_no_compare_when_heads_match(self):
+        calls = []
+        report = hf.build_report(
+            REPOS, fetchers(lag=self.lagging(1, calls=calls)), NOW, "r"
+        )
+        self.assertEqual(report["verdict"], "fresh")
+        self.assertEqual(calls, [])
+
+    def test_fetch_lag_refuses_non_sha_input(self):
+        with self.assertRaises(RuntimeError):
+            hf.fetch_lag("developing-today/code", "main", HEAD_A)
+
+    def test_fetch_lag_maps_compare_answer(self):
+        C = "c" * 40
+        D = "d" * 40
+        # Source A is a merge (first parent C) of a branch commit D that
+        # was committed long before; C is the commit that left copy B
+        # behind. The lag runs from C, not from the old branch commit.
+        listing = "\n".join(
+            [
+                f"{D}\t{B}\t2026-11-20T00:00:00Z",
+                f"{C}\t{B}\t2026-11-25T09:00:00Z",
+                f"{HEAD_A}\t{C}\t2026-11-25T11:00:00Z",
+            ]
+        )
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            if "--paginate" in args:
+                return listing
+            return '{"status":"ahead","ahead_by":3}'
+
+        original = hf._gh_text
+        try:
+            hf._gh_text = gh
+            got = hf.fetch_lag("developing-today/code", B, HEAD_A)
+            self.assertEqual(got["relation"], "behind")
+            self.assertEqual(got["behind_by"], 3)
+            self.assertEqual(
+                got["moved_past_at"], datetime(2026, 11, 25, 9, tzinfo=timezone.utc)
+            )
+
+            hf._gh_text = lambda args: '{"status":"diverged","ahead_by":2}'
+            got = hf.fetch_lag("developing-today/code", B, HEAD_A)
+            self.assertEqual(got["relation"], "diverged")
+            self.assertIsNone(got["moved_past_at"])
+
+            def missing(args):
+                raise RuntimeError("gh api failed: HTTP 404 Not Found")
+
+            hf._gh_text = missing
+            self.assertIsNone(hf.fetch_lag("developing-today/code", B, HEAD_A))
+        finally:
+            hf._gh_text = original
+        self.assertTrue(any("--paginate" in args for args in calls))
+
+    def test_lag_beyond_cap_is_unmeasurable(self):
+        original = hf._gh_text
+        try:
+            hf._gh_text = lambda args: '{"status":"ahead","ahead_by":5000}'
+            got = hf.fetch_lag("developing-today/code", B, HEAD_A)
+        finally:
+            hf._gh_text = original
+        self.assertIsNone(got["moved_past_at"])
+
+    def test_first_parent_walk(self):
+        C = "c" * 40
+        t1 = datetime(2026, 11, 25, 9, tzinfo=timezone.utc)
+        t2 = datetime(2026, 11, 25, 11, tzinfo=timezone.utc)
+        rows = [(C, B, t1), (HEAD_A, C, t2)]
+        self.assertEqual(hf.first_parent_moved_at(rows, B, HEAD_A), t1)
+        # A line that leaves the rows without reaching the copy.
+        self.assertIsNone(hf.first_parent_moved_at([(HEAD_A, C, t2)], B, HEAD_A))
+        # A cycle never loops forever.
+        self.assertIsNone(
+            hf.first_parent_moved_at([(HEAD_A, C, t2), (C, HEAD_A, t1)], B, HEAD_A)
+        )
+
+
 class D1LegTests(unittest.TestCase):
     def test_recent_export_is_fresh(self):
         report = hf.build_report(REPOS, fetchers(), NOW, "r")
