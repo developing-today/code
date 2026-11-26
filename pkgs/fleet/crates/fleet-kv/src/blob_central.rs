@@ -41,7 +41,7 @@ pub(crate) const BLOB_PUBLISH: &str = "INSERT INTO kv_blobs (
 pub(crate) const BLOB_PUBLISHED_READ: &str = "SELECT bytes_len FROM kv_blobs
     WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3";
 
-/// Claim up to ?5 deleted content ids whose bytes are not purged yet, under
+/// Claim up to ?5 (none when NULL) deleted content ids whose bytes are not purged yet, under
 /// attempt ?6 at ?3. Content a published row names again is skipped (its
 /// bytes are live), and so is content another purge claimed at or after
 /// ?4; an older claim is taken over.
@@ -58,7 +58,7 @@ pub(crate) const BLOB_PURGE_CLAIM: &str = "INSERT OR REPLACE INTO kv_blob_purges
             WHERE purge.jurisdiction = ?1 AND purge.tier = ?2
                 AND purge.content_id = deletion.content_id AND purge.claimed_ms >= ?4)
     ORDER BY deletion.content_id
-    LIMIT ?5
+    LIMIT IFNULL(?5, 0)
     RETURNING content_id";
 
 /// The bytes are gone: mark every unpurged deletion of the content, only
