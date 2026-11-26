@@ -153,6 +153,9 @@
         "mcp"
       ];
       "command" = "go";
+      "mcpx" = {
+        "scope" = "worktree";
+      };
     };
     "mcp-server-neon" = {
       "args" = [
