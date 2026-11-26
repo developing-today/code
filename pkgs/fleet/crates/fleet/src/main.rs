@@ -176,6 +176,9 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "actions") {
         caps.insert(Capability::Actions);
     }
+    if cfg!(feature = "id") {
+        caps.insert(Capability::Id);
+    }
     caps
 }
 
