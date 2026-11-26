@@ -705,6 +705,20 @@ pub fn create_root_set(req: &RootCreateRequest, out_dir: &Path) -> Result<Bundle
 /// root plus the direct cross-sign variants the policy realizes.
 /// Root signing keys come only from `req.root_signer` (§24.3).
 pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<BundleManifest> {
+    create_issuer_set_at(req, out_dir, None, None)
+}
+
+/// [`create_issuer_set`] with the issuer key generation set
+/// explicitly (`None` = the root set's generation, as at first
+/// creation) and an optional predecessor bundle to trace to. Issuer
+/// rotation uses both: the next generation, traced to the set it
+/// replaces.
+fn create_issuer_set_at(
+    req: &IssuerCreateRequest,
+    out_dir: &Path,
+    generation: Option<u32>,
+    predecessor: Option<String>,
+) -> Result<BundleManifest> {
     let slot_algos: Vec<AlgorithmId> = req.slots.iter().map(|(a, _)| *a).collect();
     check_ca_policy(&slot_algos, req.allow_legacy_root_strength)?;
     let root_bundle = load_bundle(&req.root_bundle)?;
@@ -771,8 +785,9 @@ pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<Bu
     let mut artifacts: Vec<Artifact> = Vec::new();
     let mut records = Vec::new();
     let mut warnings = Vec::new();
+    let generation = generation.unwrap_or(root_bundle.manifest.generation);
     for (algo, partition) in &req.slots {
-        let gp = GenerationPartition::new(root_bundle.manifest.generation, partition)?;
+        let gp = GenerationPartition::new(generation, partition)?;
         let key = generate_key(*algo)?;
         let cn = format!(
             "{} {} Issuing {} CA {}",
@@ -867,7 +882,6 @@ pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<Bu
             .map(|r| r.fingerprint_sha256.clone())
             .collect(),
     };
-    let generation = root_bundle.manifest.generation;
     let mut manifest = base_manifest(
         BundleType::IssuerSet,
         &req.name,
@@ -880,6 +894,7 @@ pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<Bu
         Some(req.cross_signing.as_str().to_string()),
         warnings,
     )?;
+    manifest.predecessor = predecessor;
     manifest.bundle_id = format!(
         "issuerset-{}-{}",
         manifest.slug,
@@ -971,6 +986,42 @@ fn first_certificate_der(bundle: &Bundle, rel_path: &str) -> Result<Vec<u8>> {
     .ok_or_else(|| CertError::manifest(format!("no CERTIFICATE block in {rel_path}")))
 }
 
+/// Refuse a root set the issuer set was not made under: the issuer
+/// set's recorded parent must be this root set's bundle id with the
+/// same anchors.
+fn check_root_parent(issuers: &Bundle, root_bundle: &Bundle, root_path: &Path) -> Result<()> {
+    let root_records: Vec<&CertRecord> = root_bundle
+        .manifest
+        .certificates
+        .iter()
+        .filter(|r| r.role == "root")
+        .collect();
+    let parent = issuers
+        .manifest
+        .parent
+        .as_ref()
+        .ok_or_else(|| CertError::manifest("the issuer set records no parent root set"))?;
+    let mut anchors: Vec<&str> = root_records
+        .iter()
+        .map(|r| r.fingerprint_sha256.as_str())
+        .collect();
+    anchors.sort_unstable();
+    let mut recorded: Vec<&str> = parent
+        .anchor_fingerprints
+        .iter()
+        .map(String::as_str)
+        .collect();
+    recorded.sort_unstable();
+    if parent.bundle_id != root_bundle.manifest.bundle_id || anchors != recorded {
+        return Err(CertError::policy(format!(
+            "{} is not the root set this issuer set chains to (recorded parent {})",
+            root_path.display(),
+            parent.bundle_id
+        )));
+    }
+    Ok(())
+}
+
 /// `cert issuer renew` (§5.2): reissue every certificate of an
 /// issuer set on the keys it already has, signed by the same roots.
 ///
@@ -1017,29 +1068,7 @@ pub fn renew_issuer_set(
         .iter()
         .filter(|r| r.role == "root")
         .collect();
-    // The root set must be the one the issuer set was made under:
-    // same bundle id and the same anchors.
-    let parent = old.manifest.parent.as_ref().ok_or_else(|| {
-        CertError::manifest("the issuer set records no parent root set to renew under")
-    })?;
-    let mut anchors: Vec<&str> = root_records
-        .iter()
-        .map(|r| r.fingerprint_sha256.as_str())
-        .collect();
-    anchors.sort_unstable();
-    let mut recorded: Vec<&str> = parent
-        .anchor_fingerprints
-        .iter()
-        .map(String::as_str)
-        .collect();
-    recorded.sort_unstable();
-    if parent.bundle_id != root_bundle.manifest.bundle_id || anchors != recorded {
-        return Err(CertError::policy(format!(
-            "{} is not the root set this issuer set chains to (recorded parent {})",
-            req.root_bundle.display(),
-            parent.bundle_id
-        )));
-    }
+    check_root_parent(&old, &root_bundle, &req.root_bundle)?;
 
     let mut root_handles: BTreeMap<AlgorithmId, CaHandle> = BTreeMap::new();
     for record in &root_records {
@@ -1219,6 +1248,79 @@ pub fn renew_issuer_set(
     manifest.certificates = records;
     let manifest = write_bundle(out_dir, manifest, &artifacts)?;
     Ok(manifest)
+}
+
+/// `cert issuer rotate` (§5.2): replace every issuer key of an issuer
+/// set with a fresh one, in the next key generation.
+///
+/// The new set keeps the predecessor's shape: name, purpose, OU,
+/// permitted DNS name constraints, slots (algorithm and partition)
+/// and cross-signing mode, under the same root set. Each slot gets a
+/// new key; the generation moves to the predecessor's + 1, so subject
+/// names move from `.. A G1` to `.. A G2` and the partition is kept.
+/// The manifest traces to the predecessor; its revision starts again
+/// at 1, since nothing in it is a reissue. The predecessor bundle is
+/// left as it is: leaves it signed stay valid until they expire.
+pub fn rotate_issuer_set(
+    req: &crate::model::IssuerRotateRequest,
+    out_dir: &Path,
+) -> Result<BundleManifest> {
+    let old = load_bundle(&req.issuer_bundle)?;
+    if old.manifest.bundle_type != BundleType::IssuerSet {
+        return Err(CertError::usage(format!(
+            "{} is a {} bundle, not an issuer set",
+            req.issuer_bundle.display(),
+            old.manifest.bundle_type.as_str()
+        )));
+    }
+    let root_bundle = load_bundle(&req.root_bundle)?;
+    check_root_parent(&old, &root_bundle, &req.root_bundle)?;
+    let primaries: Vec<&CertRecord> = old
+        .manifest
+        .certificates
+        .iter()
+        .filter(|r| r.role == "issuer" && r.primary)
+        .collect();
+    let first = primaries.first().ok_or_else(|| {
+        CertError::manifest("the issuer set holds no primary issuer certificates")
+    })?;
+    let purpose = crate::model::IssuerPurpose::parse(
+        old.manifest
+            .purpose
+            .as_deref()
+            .ok_or_else(|| CertError::manifest("the issuer set records no purpose"))?,
+    )?;
+    let cross_signing = CrossSigningMode::parse(
+        old.manifest
+            .cross_signing
+            .as_deref()
+            .ok_or_else(|| CertError::manifest("the issuer set records no cross-signing mode"))?,
+    )?;
+    let first_der = first_certificate_der(&old, &first.cert_path)?;
+    let permitted_dns = issued_facts(&first_der, &first.cert_path)?.permitted_dns;
+    let create = IssuerCreateRequest {
+        root_bundle: req.root_bundle.clone(),
+        root_signer: req.root_signer.clone(),
+        name: old.manifest.name.clone(),
+        purpose,
+        ou: extract_ou(&first.subject_dn),
+        slots: primaries
+            .iter()
+            .map(|r| (r.algorithm, r.partition.clone()))
+            .collect(),
+        cross_signing,
+        not_before: req.not_before,
+        not_after: req.not_after,
+        allow_legacy_root_strength: req.allow_legacy_root_strength,
+        permitted_dns,
+        private_store: req.private_store.clone(),
+    };
+    create_issuer_set_at(
+        &create,
+        out_dir,
+        Some(old.manifest.generation + 1),
+        Some(old.manifest.bundle_id.clone()),
+    )
 }
 
 fn extract_cn(dn: &str) -> Option<String> {
