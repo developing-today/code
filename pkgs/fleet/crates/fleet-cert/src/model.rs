@@ -111,6 +111,14 @@ pub struct LeafIssueRequest {
     pub name: String,
     pub common_name: Option<String>,
     pub dns_names: Vec<String>,
+    /// IP address SANs (the broker profiles require a tailnet IP).
+    pub ip_addresses: Vec<std::net::IpAddr>,
+    /// A PKCS#10 CSR (PEM or DER) carrying a key generated on the
+    /// subject's host. When set, the leaf certifies that key and no
+    /// private key is generated or written; the CSR's own subject,
+    /// SANs and extensions are ignored in favour of the request and
+    /// the profile. The `broker-*` profiles require it.
+    pub csr: Option<PathBuf>,
     /// Subject key algorithm; `None` = the profile's key algorithm.
     pub key_algorithm: Option<AlgorithmId>,
     /// Which issuer key signs: (algorithm, partition). `None` =
@@ -176,6 +184,10 @@ pub enum BundleType {
     RootSet,
     IssuerSet,
     Leaf,
+    /// A §3.5 trust-store install bundle: the program roots,
+    /// repackaged for distribution to trust consumers (BT-2,
+    /// #14400). Carries no key material, ever.
+    Trust,
 }
 
 impl BundleType {
@@ -184,6 +196,7 @@ impl BundleType {
             BundleType::RootSet => "root-set",
             BundleType::IssuerSet => "issuer-set",
             BundleType::Leaf => "leaf",
+            BundleType::Trust => "trust",
         }
     }
 }
@@ -257,8 +270,10 @@ pub struct BundleManifest {
     /// fleet-cert crate version that created the bundle.
     pub engine_version: String,
     pub parent: Option<ParentRef>,
-    /// `bundle-private` | `external-store` (§7.1: the manifest
-    /// records the custody class, never a secret value).
+    /// `bundle-private` | `external-store` | `host-local` (§7.1: the
+    /// manifest records the custody class, never a secret value;
+    /// `host-local` is a CSR-issued leaf whose key never left the
+    /// subject's host).
     pub key_location: String,
     pub cross_signing: Option<String>,
     pub certificates: Vec<CertRecord>,

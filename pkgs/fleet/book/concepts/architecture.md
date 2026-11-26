@@ -11,12 +11,12 @@ of 2 MiB, stripped.
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/Cargo.toml
 
-## The crates map: 16 crates
+## The crates map: 18 crates
 
 | Crate                 | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fleet` (the bin)     | The multicall entrypoint (`src/main.rs`), root built-ins, dispatch and the stub machinery, plus the domains that live in the bin crate itself: `secrets` verbs (over `fleet-secrets`), and `gh` with its cache, closure, guard, and metadata modules.                                                                                                                                                                                                                                                                               |
-| `fleet-registry`      | The domain registry: the 22 capability atoms, the three variants and their capability sets, the 19 domain entries (name, summary, capabilities, primary capability, aliases, subcommand inventory), and the argv0 alias map. Dependency-free; compiled into every variant so help is always complete.                                                                                                                                                                                                                               |
+| `fleet-registry`      | The domain registry: the 24 capability atoms, the three variants and their capability sets, the 22 domain entries (name, summary, capabilities, primary capability, aliases, subcommand inventory), and the argv0 alias map. Dependency-free; compiled into every variant so help is always complete.                                                                                                                                                                                                                               |
 | `fleet-config`        | The one place config resolves: `fleet.toml` (default `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`, overridable with `FLEET_CONFIG`), the `[domains]` switches, `[proxy]`, `[secrets]`, `[queue-broker]`, `[secrets-broker]`, `[dispatch]`, `[host]` sections, and the fleet's path/port/socket constants. Resolution order is environment → config file → compiled-in defaults. A missing file is not an error; a malformed file — including unknown sections or keys — is a loud error on every path, never a silent fallback. |
 | `fleet-secrets`       | The secret resolver library: the broker-first, Bitwarden-fallback chain, by name only. Every domain that needs a secret resolves it through this crate; no domain shells out to `bws` or reads a token file on its own.                                                                                                                                                                                                                                                                                                             |
 | `fleet-proxy-proto`   | The session-broker wire protocol: 8-byte big-endian length-prefixed JSON frames, the hello/capability handshake, and the protocol version window (current and previous major, plus legacy proto 0).                                                                                                                                                                                                                                                                                                                                 |
@@ -29,9 +29,11 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/Cargo.toml
 | `fleet-bridge`        | The `bridge` domain: the mailbox client for the message bridge (send/agents/log for central; hello/inbox/post/ack/health for agents).                                                                                                                                                                                                                                                                                                                                                                                               |
 | `fleet-agent`         | The `agent` and `shell` domains: kinds, enrolment, doctor, the intake ladder (`next`), the shortlist, and the shell target planner. It links only `fleet-config`: it runs the other domains' verbs through this same binary rather than linking them.                                                                                                                                                                                                                                                                               |
 
-| `fleet-kv` | Identity-scoped local SQLite storage: the local store other fleet surfaces build on. |
+| `fleet-kv` | Identity-scoped local SQLite storage: the local store other fleet surfaces build on, and the library under the `kv` domain. |
+| `fleet-transport` | Transport declarations, asymmetric route resolution, and direction-level enforcement. A library crate; it owns no domain. |
 | `fleet-cert` | The `cert` domain: PKI/X.509 roots, issuers, leaves, chains and bundles over a library-first Rust API, plus the OCSP verb group. |
 | `fleet-orgs` | The `orgs` domain: the Turso-backed org/App registry, synced from each GitHub App's own JWT. |
+| `fleet-pool` | The generic pooling primitive: members in nested groups, scope-keyed walls, the selection strategies and the mandatory decision log. A library crate; it owns no domain. |
 
 Domain ownership, one line each: `queue` → `fleet-queue`; `serve` → bin-crate
 glue over `fleet-queue` / `fleet-search` / `fleet-proxy`; `proxy` →
@@ -39,7 +41,10 @@ glue over `fleet-queue` / `fleet-search` / `fleet-proxy`; `proxy` →
 `dispatch-test` → `fleet-dispatch-test`; `secrets` → the bin crate over
 `fleet-secrets`; `gh` → the bin crate; `bridge` → `fleet-bridge`; `agent` and
 `shell` → `fleet-agent`; `search` → `fleet-search`; `orgs` → `fleet-orgs`; `cert` → `fleet-cert`; `laptop-agent` →
-`fleet-laptop-agent`.
+`fleet-laptop-agent`; `kv` → `fleet-kv` (bin-crate glue in
+`crates/fleet/src/kv.rs`); `id` → the bin crate
+(`crates/fleet/src/id_key.rs`); `host` → the bin crate over
+`fleet-pool` (`crates/fleet/src/host.rs`).
 
 ## The brokers and their ports and sockets
 
