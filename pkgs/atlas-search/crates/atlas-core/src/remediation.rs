@@ -31,10 +31,11 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 use crate::filters::Sensitivity;
 use crate::shards::ShardTransport;
-use crate::types::{Stmt, Value};
+use crate::types::{Row, Stmt, Value};
 
 /// Format marker for a persisted inventory run.
 pub const INVENTORY_FORMAT: &str = "atlas-remediation-inventory/v2";
+const SHA256_HEX_LENGTH: usize = 64;
 
 /// Serialized run record. Deliberately contains no chunk text: only ids,
 /// content hashes and counts.
@@ -138,32 +139,37 @@ pub fn read_source(
     transport: &dyn ShardTransport,
     sensitivity: Sensitivity,
 ) -> Result<Vec<SourceChunk>> {
-    let statements = [
-        Stmt::new(
-            "SELECT COUNT(*) AS total FROM chunks WHERE sensitivity = ?1",
+    let mut results = transport
+        .pipeline(&[Stmt::new(
+            "WITH selected AS ( \
+               SELECT id AS id, content_hash AS h FROM chunks WHERE sensitivity = ?1 \
+             ), counts AS (SELECT COUNT(*) AS total FROM selected) \
+             SELECT counts.total AS total, selected.id AS id, selected.h AS h \
+             FROM counts LEFT JOIN selected ON 1=1 ORDER BY selected.id",
             vec![Value::text(sensitivity.name())],
-        ),
-        Stmt::new(
-            "SELECT id AS id, content_hash AS h FROM chunks \
-             WHERE sensitivity = ?1 ORDER BY id",
-            vec![Value::text(sensitivity.name())],
-        ),
-    ];
-    let mut results = transport.pipeline(&statements)?.into_iter();
-    let count = results
-        .next()
-        .and_then(|rows| rows.into_iter().next())
-        .and_then(|row| row.get_i64("total"))
-        .filter(|count| *count >= 0)
-        .ok_or_else(|| Error::backend("remediation: source count result missing or invalid"))?
-        as u64;
+        )])?
+        .into_iter();
     let rows = results
         .next()
-        .ok_or_else(|| Error::backend("remediation: source row result missing"))?;
+        .ok_or_else(|| Error::backend("remediation: source statement result missing"))?;
     if results.next().is_some() {
         return Err(Error::backend(
             "remediation: source returned extra statement results",
         ));
+    }
+    let first = rows
+        .first()
+        .ok_or_else(|| Error::backend("remediation: source statement rows missing"))?;
+    let count = first
+        .get_i64("total")
+        .filter(|count| *count >= 0)
+        .ok_or_else(|| Error::backend("remediation: source count result missing or invalid"))?
+        as u64;
+    if count == 0 {
+        if rows.len() == 1 && is_null_column(first, "id") && is_null_column(first, "h") {
+            return Ok(Vec::new());
+        }
+        return Err(Error::backend("remediation: malformed empty source result"));
     }
     if count != rows.len() as u64 {
         return Err(Error::backend(format!(
@@ -172,7 +178,12 @@ pub fn read_source(
         )));
     }
     let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
+    for r in &rows {
+        if r.get_i64("total") != Some(count as i64) {
+            return Err(Error::backend(
+                "remediation: source result count changed within snapshot",
+            ));
+        }
         let id = r
             .get_i64("id")
             .ok_or_else(|| Error::backend("remediation: source chunk id unreadable"))?;
@@ -180,6 +191,11 @@ pub fn read_source(
             .get_text("h")
             .ok_or_else(|| Error::backend(format!("remediation: source chunk {id} has no hash")))?
             .to_string();
+        if !is_sha256_hex(&content_hash) {
+            return Err(Error::backend(format!(
+                "remediation: source chunk {id} has an invalid SHA-256 content_hash"
+            )));
+        }
         out.push(SourceChunk { id, content_hash });
     }
     Ok(out)
@@ -197,30 +213,40 @@ pub fn read_destination(
         )));
     }
     let sql = format!(
-        "SELECT c.id AS id, c.content_hash AS h, \
-                (v.chunk_id IS NOT NULL) AS has_vec \
-         FROM chunks c LEFT JOIN {vec_table} v ON v.chunk_id = c.id \
-         ORDER BY c.id"
+        "WITH selected AS ( \
+           SELECT c.id AS id, c.content_hash AS h, (v.chunk_id IS NOT NULL) AS has_vec \
+           FROM chunks c LEFT JOIN {vec_table} v ON v.chunk_id = c.id \
+         ), counts AS (SELECT COUNT(*) AS total FROM selected) \
+         SELECT counts.total AS total, selected.id AS id, selected.h AS h, selected.has_vec AS has_vec \
+         FROM counts LEFT JOIN selected ON 1=1 ORDER BY selected.id"
     );
-    let mut results = transport
-        .pipeline(&[
-            Stmt::new("SELECT COUNT(*) AS total FROM chunks", vec![]),
-            Stmt::new(sql, vec![]),
-        ])?
-        .into_iter();
-    let count = results
-        .next()
-        .and_then(|rows| rows.into_iter().next())
-        .and_then(|row| row.get_i64("total"))
-        .filter(|count| *count >= 0)
-        .ok_or_else(|| Error::backend("remediation: destination count result missing or invalid"))?
-        as u64;
+    let mut results = transport.pipeline(&[Stmt::new(sql, vec![])])?.into_iter();
     let rows = results
         .next()
-        .ok_or_else(|| Error::backend("remediation: destination row result missing"))?;
+        .ok_or_else(|| Error::backend("remediation: destination statement result missing"))?;
     if results.next().is_some() {
         return Err(Error::backend(
             "remediation: destination returned extra statement results",
+        ));
+    }
+    let first = rows
+        .first()
+        .ok_or_else(|| Error::backend("remediation: destination statement rows missing"))?;
+    let count = first
+        .get_i64("total")
+        .filter(|count| *count >= 0)
+        .ok_or_else(|| Error::backend("remediation: destination count result missing or invalid"))?
+        as u64;
+    if count == 0 {
+        if rows.len() == 1
+            && is_null_column(first, "id")
+            && is_null_column(first, "h")
+            && is_null_column(first, "has_vec")
+        {
+            return Ok(Vec::new());
+        }
+        return Err(Error::backend(
+            "remediation: malformed empty destination result",
         ));
     }
     if count != rows.len() as u64 {
@@ -230,7 +256,12 @@ pub fn read_destination(
         )));
     }
     let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
+    for r in &rows {
+        if r.get_i64("total") != Some(count as i64) {
+            return Err(Error::backend(
+                "remediation: destination result count changed within snapshot",
+            ));
+        }
         let id = r
             .get_i64("id")
             .ok_or_else(|| Error::backend("remediation: destination chunk id unreadable"))?;
@@ -240,6 +271,11 @@ pub fn read_destination(
                 Error::backend(format!("remediation: destination chunk {id} has no hash"))
             })?
             .to_string();
+        if !is_sha256_hex(&content_hash) {
+            return Err(Error::backend(format!(
+                "remediation: destination chunk {id} has an invalid SHA-256 content_hash"
+            )));
+        }
         let has_vector = r.get_i64("has_vec").is_some_and(|n| n != 0);
         out.push(DestinationChunk {
             id,
@@ -262,13 +298,7 @@ pub fn inventory(
 ) -> Result<InventoryReport> {
     let src = read_source(source, sensitivity)?;
     let dst = read_destination(destination, vec_table)?;
-    Ok(build_report(
-        source_name,
-        destination_name,
-        sensitivity,
-        &src,
-        &dst,
-    ))
+    build_report(source_name, destination_name, sensitivity, &src, &dst)
 }
 
 /// Pure mapping step, split out so it can be tested without transports.
@@ -278,7 +308,23 @@ pub fn build_report(
     sensitivity: Sensitivity,
     src: &[SourceChunk],
     dst: &[DestinationChunk],
-) -> InventoryReport {
+) -> Result<InventoryReport> {
+    for chunk in src {
+        if !is_sha256_hex(&chunk.content_hash) {
+            return Err(Error::backend(format!(
+                "remediation: source chunk {} has an invalid SHA-256 content_hash",
+                chunk.id
+            )));
+        }
+    }
+    for chunk in dst {
+        if !is_sha256_hex(&chunk.content_hash) {
+            return Err(Error::backend(format!(
+                "remediation: destination chunk {} has an invalid SHA-256 content_hash",
+                chunk.id
+            )));
+        }
+    }
     // Content hash -> destination rows (ids are unique; hashes are unique in
     // the chunk schema, but a map of the first wins defensively).
     let mut by_hash: BTreeMap<&str, &DestinationChunk> = BTreeMap::new();
@@ -379,7 +425,7 @@ pub fn build_report(
     let run_id = run_identity(source_name, destination_name, sensitivity, src);
     let destination_fingerprint = destination_fingerprint(dst);
 
-    InventoryReport {
+    Ok(InventoryReport {
         format: INVENTORY_FORMAT.to_string(),
         run_id,
         source: source_name.to_string(),
@@ -390,7 +436,18 @@ pub fn build_report(
         mappings,
         unverified_source_ids,
         destination_only_ids,
-    }
+    })
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == SHA256_HEX_LENGTH
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_null_column(row: &Row, column: &str) -> bool {
+    row.get(column).is_some_and(Value::is_null)
 }
 
 /// Stable identity over canonical endpoints and source ID/hash rows. The

@@ -11,7 +11,7 @@
 //!
 //! Run on an operator host with explicit endpoint hosts:
 //! ```sh
-//! MONOLITH_HOST=... SECRET_HOST=... MONOLITH_TOKEN=... SECRET_TOKEN=... \
+//! MONOLITH_HOST=... SECRET_HOST=... MONOLITH_TOKEN=... SECRET_TOKEN=... TURSO_API_TOKEN=... \
 //!   cargo run -p atlas-core --example remediation_inventory --release \
 //!     -- --out /path/to/new-report.json [--resume /path/to/prior-report.json] \
 //!     [--vec-table TABLE]
@@ -22,7 +22,7 @@ use atlas_core::filters::Sensitivity;
 use atlas_core::remediation::{
     inventory, is_valid_vector_table_identifier, read_run, validate_resume, write_run,
 };
-use atlas_core::shards::LocalShardTransport;
+use atlas_core::shards::{LocalShardTransport, ShardLister, ShardLocation, TursoApiLister};
 use atlas_core::turso::HttpTransport;
 
 fn env(name: &str) -> String {
@@ -45,7 +45,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     while let Some(flag) = args.next() {
         let value = args
             .next()
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.is_empty() && !value.starts_with("--"))
             .ok_or_else(|| format!("{flag} requires a non-empty value"))?;
         match flag.as_str() {
             "--out" if out.is_none() => out = Some(PathBuf::from(value)),
@@ -82,6 +82,41 @@ fn ensure_new_output(path: &Path) -> Result<(), String> {
     }
 }
 
+const SECRET_DATABASE: &str = "atlas-core-secret-main-01";
+
+fn listed_secret_host() -> Result<String, String> {
+    let endpoints = TursoApiLister::from_env("dezren39")
+        .and_then(|lister| lister.list())
+        .map_err(|error| error.to_string())?;
+    let endpoint = endpoints
+        .into_iter()
+        .find(|endpoint| endpoint.name == SECRET_DATABASE)
+        .ok_or_else(|| format!("Turso platform listing has no {SECRET_DATABASE} database"))?;
+    match endpoint.location {
+        ShardLocation::Turso { host } => Ok(host),
+        ShardLocation::File(_) => Err("secret-tier database resolved to a local file".to_string()),
+    }
+}
+
+fn validate_remote_endpoints(
+    monolith_host: &str,
+    secret_host: &str,
+    listed_secret: &str,
+) -> Result<(), String> {
+    if !monolith_host.eq_ignore_ascii_case(atlas_core::turso::TURSO_HOST) {
+        return Err("MONOLITH_HOST does not match the configured atlas database host".to_string());
+    }
+    if !secret_host.eq_ignore_ascii_case(listed_secret) {
+        return Err(
+            "SECRET_HOST does not match the platform listing for the secret database".to_string(),
+        );
+    }
+    if monolith_host.eq_ignore_ascii_case(secret_host) {
+        return Err("monolith and secret-tier endpoints must be distinct databases".to_string());
+    }
+    Ok(())
+}
+
 fn main() {
     let args = parse_args(std::env::args().skip(1)).unwrap_or_else(|error| {
         eprintln!("usage: remediation_inventory --out PATH [--resume PATH] [--vec-table IDENTIFIER]: {error}");
@@ -106,12 +141,20 @@ fn main() {
         let canonical_path = std::fs::canonicalize(&path).expect("canonicalize local replica");
         let monolith = LocalShardTransport::open(&canonical_path).expect("open local replica");
         let secret_host = env("SECRET_HOST");
-        let secret = HttpTransport::new(&secret_host, env("SECRET_TOKEN"));
+        let actual_secret_host = listed_secret_host().unwrap_or_else(|error| {
+            eprintln!("cannot verify secret-tier endpoint: {error}");
+            std::process::exit(2);
+        });
+        if !secret_host.eq_ignore_ascii_case(&actual_secret_host) {
+            eprintln!("SECRET_HOST does not match the platform listing for the secret database");
+            std::process::exit(2);
+        }
+        let secret = HttpTransport::new(&actual_secret_host, env("SECRET_TOKEN"));
         let report = inventory(
             &monolith,
             &secret,
             &format!("file://{}", canonical_path.display()),
-            &format!("turso://{secret_host}/atlas-core-secret-main-01"),
+            &format!("turso://{actual_secret_host}/{SECRET_DATABASE}"),
             Sensitivity::SecretBearing,
             &args.vec_table,
         )
@@ -136,13 +179,22 @@ fn main() {
     }
     let monolith_host = env("MONOLITH_HOST");
     let secret_host = env("SECRET_HOST");
+    let actual_secret_host = listed_secret_host().unwrap_or_else(|error| {
+        eprintln!("cannot verify secret-tier endpoint: {error}");
+        std::process::exit(2);
+    });
+    if let Err(error) = validate_remote_endpoints(&monolith_host, &secret_host, &actual_secret_host)
+    {
+        eprintln!("invalid inventory endpoints: {error}");
+        std::process::exit(2);
+    }
     let monolith = HttpTransport::new(&monolith_host, env("MONOLITH_TOKEN"));
-    let secret = HttpTransport::new(&secret_host, env("SECRET_TOKEN"));
+    let secret = HttpTransport::new(&actual_secret_host, env("SECRET_TOKEN"));
     let report = inventory(
         &monolith,
         &secret,
         &format!("turso://{monolith_host}/atlas"),
-        &format!("turso://{secret_host}/atlas-core-secret-main-01"),
+        &format!("turso://{actual_secret_host}/{SECRET_DATABASE}"),
         Sensitivity::SecretBearing,
         &args.vec_table,
     )
@@ -199,6 +251,15 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn remote_endpoint_hosts_must_be_distinct_and_match_their_sources() {
+        let monolith = atlas_core::turso::TURSO_HOST;
+        assert!(validate_remote_endpoints(monolith, "secret-host", "secret-host").is_ok());
+        assert!(validate_remote_endpoints("wrong-monolith", "secret-host", "secret-host").is_err());
+        assert!(validate_remote_endpoints(monolith, "wrong-secret", "secret-host").is_err());
+        assert!(validate_remote_endpoints(monolith, monolith, monolith).is_err());
     }
 
     #[test]
