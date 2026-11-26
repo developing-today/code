@@ -85,6 +85,7 @@ fn signed_event(seed: u8, seq: SeqNum, backlink: Option<Hash>) -> Event {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     };
     sign(&key, seq, backlink, None, ext).unwrap()
 }
@@ -303,6 +304,7 @@ fn gate_refusals_never_reach_the_store() {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(&chain_key(11), 0, None, Some(b"rival"), ext).unwrap()
     };
@@ -488,7 +490,7 @@ fn happy_path_stores_the_event_through_the_pipeline() {
         "the store accepted the admitted event: {ingest:?}"
     );
     assert_eq!(policy_epoch, 3);
-    assert!(pending_outbox.is_empty());
+    assert_eq!(pending_outbox, [] as [HookId; 0]);
     assert_eq!(
         *rig.trace.lock().unwrap(),
         ["prepare:a", "reauthorize", "outbox:deliver"],

@@ -216,3 +216,68 @@ cd pm-stack/pm-service && bun test test/agent-credentials.test.ts test/front-doo
 
 Dispatch this command remotely using Fleet; no production credentials
 are needed (tests sign ephemeral fixture tokens).
+
+## CF-5c — async serving substrate + Worker entry (#14969)
+
+The read API was born over the synchronous `SqlDb` surface, whose
+only adapter is bun:sqlite — fine for tests and local tooling, but
+a Worker cannot run it, and the tenant plane (Turso/libSQL over
+HTTP) is async. This slice adds the async twin without touching
+the synchronous path's behaviour:
+
+- `src/tenant-store/libsql-http.ts` — `AsyncSqlDb` (the one method
+  the read path needs) and `libsqlHttpDb`, its adapter over the
+  libSQL server protocol (Hrana v3 over HTTP, plain fetch). The
+  tenant DB URL/token live only in the adapter's closure, supplied
+  from Worker secrets; nothing on the read path reads, logs, or
+  persists a token (E §2.3).
+- `src/read-api/async-store.ts` — the four read loads awaited.
+  Every SQL string and row→shape mapping is imported from
+  `store.ts` / `collector/store.ts` (whose mappings were extracted
+  for exactly this sharing), so the served shapes cannot drift.
+- `src/read-api/async-api.ts` — the same four routes over the
+  async store; `test/read-api-async.test.ts` pins every route's
+  status and body byte-identical to the synchronous handler's.
+- `src/worker.ts` + `wrangler.toml` — the Worker entry. `/health`
+  reports `{ ok, service, version }` with the VERSION var the
+  deploy workflow stamps per deploy; until the
+  `PM_TENANT_DB_URL` / `PM_TENANT_DB_TOKEN` secrets are set, the
+  API routes answer a structured 503 (an unconfigured store is an
+  honest state, never invented data).
+- `.github/workflows/pm-service-deploy.yml` — the design §4
+  versions standard: test, `wrangler versions upload` stamped
+  with the full commit SHA, health gate against the version's
+  preview URL (`scripts/check-health.mjs`), `versions deploy`
+  promotion, and rollback by promoting a previous version id
+  (the `rollback_version` dispatch input).
+
+```sh
+cd pm-stack/pm-service && bun test && bun run typecheck
+```
+
+## Slice 4 — dashboard surfaces (#12829)
+
+`src/dashboard/dashboard.ts` serves the design §4 V1 parity list as
+server-rendered HTML, read through the same async loads the JSON API
+uses, so a page and its JSON twin cannot disagree. The Worker routes
+dashboard paths first and falls through to the API for the rest.
+
+| Path          | Page                                                                                |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `/`           | every board in the registry, its latest snapshot and status counts                  |
+| `/board/<id>` | one board's items from its latest snapshot                                          |
+| `/item/<ref>` | item detail: genealogy header (root first), sentence, release, after, fields        |
+| `/roadmap`    | overall priorities (rows grouped by priority) and the per-project roadmap (by area) |
+| `/releases`   | milestone close-out cards with carried-over epics                                   |
+| `/attention`  | open reconcile findings plus the coverage checks over each board's snapshot         |
+| `/quota`      | names quota/usage as not yet in the tenant store                                    |
+
+GETs only (anything else is a 405), SELECTs only, no token on the
+path. Absence renders as absence: a board with no snapshot says so,
+an unknown board or item is a 404 page, and quota shows no numbers it
+cannot back (#14065). Pages behind the same 503 as the API until the
+tenant store secrets are set.
+
+Not in this slice, each tracked separately: quota/usage data in the
+tenant store, the Kaneo/Pad/Grist embeds, dispatch intake, the console
+gate, push notifications and the AA extras.

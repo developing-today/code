@@ -69,6 +69,13 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   branches/tags and verifies destination refs against the source. The command
   does not create repositories or provision credentials; targets must exist
   before the first run.
+- **Hosted publisher inputs:** `bin/hosted_seed_fleet.py --root PATH` rebuilds
+  the four fleet source mirrors directly from GitHub under a fresh runner-local
+  root and writes `plan.json` only after all four bare mirrors validate. It
+  does not read the laptop backup tree or reuse local alternates; a hosted
+  publisher workflow can consume the resulting root with the existing
+  `plain_mirror_all.py`, `bundle_r2_all.py`, and `rehost_publish_all.py`
+  drivers.
 
 ## System contract — a mirror is what it can prove (design #3282)
 

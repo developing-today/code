@@ -101,6 +101,19 @@ export type SloBudget = {
   unknownSamples: number;
 };
 
+/** One sample per minute, the last one written for it (#14062): a minute
+ * sampled twice (two writers, a restart inside the minute) is still one
+ * minute of the budget, never two bad minutes. Sorted by time. */
+function onePerMinute(samples: readonly SloSample[]): SloSample[] {
+  const byMinute = new Map<number, SloSample>();
+  for (const sample of samples) {
+    const minute = Math.floor(sample.atMs / MINUTE) * MINUTE;
+    const held = byMinute.get(minute);
+    if (held === undefined || sample.atMs >= held.atMs) byMinute.set(minute, sample);
+  }
+  return [...byMinute.values()].sort((a, b) => a.atMs - b.atMs);
+}
+
 /** Compute budget from observations in the rolling window. A missing minute
  * is explicitly charged for up facets and excluded-but-counted for age facets. */
 export function computeSloBudget(
@@ -110,10 +123,7 @@ export function computeSloBudget(
   observedSinceMs?: number,
 ): SloBudget {
   const start = nowMs - definition.windowMs;
-  const inWindow = samples
-    .filter((s) => s.atMs > start && s.atMs <= nowMs)
-    .slice()
-    .sort((a, b) => a.atMs - b.atMs);
+  const inWindow = onePerMinute(samples.filter((s) => s.atMs > start && s.atMs <= nowMs));
   const windowStart = observedSinceMs === undefined ? start : Math.max(start, observedSinceMs - MINUTE);
   const firstExpected = Math.floor(windowStart / MINUTE) * MINUTE + MINUTE;
   const lastExpected = Math.floor(nowMs / MINUTE) * MINUTE;
@@ -196,6 +206,9 @@ export function summarizeSloFacet(
     sourced,
     latestBad: latest?.bad ?? null,
     budgetRemainingPercent: sourced ? budget.budgetRemainingPercent : null,
+    // #14062: a facet with no signal source shows no burn either; a
+    // burn figure beside "unknown" reads as a measurement it is not.
+    burnRate1h: sourced ? budget.burnRate1h : null,
     state: sourced ? budget.state : "unknown",
   };
 }

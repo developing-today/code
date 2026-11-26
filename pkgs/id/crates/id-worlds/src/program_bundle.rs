@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(identity.name, "chess");
         assert_eq!(identity.version, 3);
         assert_eq!(identity.content_hash, module_hash(PAYLOAD));
-        assert!(decoded.manifest().lineage.is_empty());
+        assert_eq!(decoded.manifest().lineage, [] as [ProgramIdentity; 0]);
         assert_eq!(decoded.manifest().licence.as_deref(), Some("MIT"));
         assert_eq!(decoded.manifest().abi, AbiDescriptor::plaza_v1());
     }

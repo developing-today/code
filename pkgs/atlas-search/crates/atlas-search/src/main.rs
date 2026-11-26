@@ -58,7 +58,6 @@ use serde_json::Value as Json;
 #[derive(Parser)]
 #[command(
     name = "atlas-search",
-    version,
     about = "atlas-search — the Atlas access layer: hybrid search over the corpus."
 )]
 struct Cli {
@@ -1417,6 +1416,16 @@ fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 fn main() -> ExitCode {
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-search {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let cli = <Cli as clap::Parser>::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

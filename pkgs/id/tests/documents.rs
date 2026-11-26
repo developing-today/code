@@ -112,6 +112,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 
@@ -133,6 +134,7 @@ fn tag_ext(op: TagOp, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 
@@ -365,7 +367,10 @@ fn test_a_document_event_with_a_payload_body_is_refused() {
         matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
         "{outcome:?}"
     );
-    assert!(store.documents().unwrap().is_empty());
+    assert_eq!(
+        store.documents().unwrap(),
+        [] as [id::documents::DocumentRecord; 0]
+    );
 }
 
 #[test]
@@ -390,6 +395,7 @@ fn test_a_document_event_that_does_not_fit_its_kind_is_not_signed() {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     };
     assert!(sign(&key, 0, None, None, missing).is_err());
     let with_tag = ChainExt {

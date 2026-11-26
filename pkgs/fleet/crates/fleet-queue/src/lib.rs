@@ -64,7 +64,7 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
 #[cfg(feature = "client")]
-pub mod needs_drew;
+pub mod needs_user;
 pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;
@@ -74,6 +74,11 @@ pub mod queue_broker;
 pub mod secrets_broker;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 mod tcp_http;
+// BT-3 (#14401): broker TLS Phase 1 — the server half serves
+// the queue broker's TCP leg; the client half validates it
+// against the BT-2 trust store.
+#[cfg(any(feature = "client", feature = "queue-broker"))]
+pub mod broker_tls;
 #[cfg(feature = "queue-broker")]
 pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]

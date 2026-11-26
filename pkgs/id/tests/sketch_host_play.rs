@@ -50,10 +50,12 @@ struct Host {
 impl Host {
     /// Open a fresh instance from the checked-in guest module.
     fn open(seed: u64) -> Self {
-        let sandbox = Sandbox::compile(SKETCH_WASM, SandboxLimits::default())
-            .expect("sketch.wasm compiles");
+        let sandbox =
+            Sandbox::compile(SKETCH_WASM, SandboxLimits::default()).expect("sketch.wasm compiles");
         Self {
-            world: sandbox.instantiate(seed).expect("sketch guest instantiates"),
+            world: sandbox
+                .instantiate(seed)
+                .expect("sketch guest instantiates"),
         }
     }
 
@@ -122,7 +124,10 @@ fn host_loads_and_plays_the_six_step_literal_vector() {
     assert_eq!(host.records(), expected(COMMITTED_A1));
     assert_eq!(host.view(), "Sketch: 1 committed stroke(s)");
 
-    host.play(AUTHOR, r#"{"kind":"UndoOwnStroke","id":"A.1","event":"u1"}"#);
+    host.play(
+        AUTHOR,
+        r#"{"kind":"UndoOwnStroke","id":"A.1","event":"u1"}"#,
+    );
     assert_eq!(host.records(), expected(TOMBSTONED_A1));
 
     host.play(
@@ -201,8 +206,7 @@ fn draft_vertices_are_temporary_ui_state_and_never_reach_records() {
         .collect();
     keys.sort_unstable();
     assert_eq!(keys, ["tombstones", "visible_strokes"]);
-    let snapshot: Value =
-        serde_json::from_slice(&host.snapshot()).expect("snapshot is JSON");
+    let snapshot: Value = serde_json::from_slice(&host.snapshot()).expect("snapshot is JSON");
     assert!(snapshot.get("folded").is_some());
     assert!(records.get("folded").is_none());
 
@@ -234,10 +238,7 @@ fn host_participant_ids_gate_permissions_and_guest_strings_grant_nothing() {
     assert_eq!(host.records(), expected(COMMITTED_A1));
 
     // The other participant cannot undo the author's stroke...
-    host.play(
-        OTHER,
-        r#"{"kind":"UndoOwnStroke","id":"A.1","event":"u9"}"#,
-    );
+    host.play(OTHER, r#"{"kind":"UndoOwnStroke","id":"A.1","event":"u9"}"#);
     assert_eq!(host.records(), expected(COMMITTED_A1));
 
     // ...nor copy it, even while claiming an author in the event body.
