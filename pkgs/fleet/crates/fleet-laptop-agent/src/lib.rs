@@ -14,6 +14,7 @@ pub mod client;
 pub mod guard;
 pub mod ladder;
 pub mod legs;
+pub mod tls;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
