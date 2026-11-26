@@ -1356,6 +1356,26 @@ struct Attempt {
     stderr: Vec<u8>,
 }
 
+/// Remedy for a `gh` spawn failure (#10311 (d)): the binary is
+/// missing or not executable. Names the fix so the caller is not
+/// left guessing: install `gh`, or point FLEET_GH_BIN at it.
+fn spawn_failure_message(gh_bin: &str, e: &std::io::Error) -> String {
+    format!("failed to run '{gh_bin}': {e} (install gh, or set FLEET_GH_BIN to the gh binary)")
+}
+
+/// Distinct provider errors, first-seen order (#10311 (d)): every
+/// source that fails the same way (e.g. the same broker outage)
+/// reports once, then the summary line.
+fn distinct_errors(errors: &[String]) -> Vec<&str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for e in errors {
+        if !seen.contains(&e.as_str()) {
+            seen.push(e.as_str());
+        }
+    }
+    seen
+}
+
 /// The gh-fleet shim's recursion guard (pkgs/gh-fleet): a child
 /// `gh` that sees this set to 1 execs the pristine gh directly
 /// instead of routing through `fleet gh`. Fleet sets it on every
@@ -1585,7 +1605,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
         let attempt = match run_gh_once_with_stdin(gh_bin, args, &token, stdin_bytes) {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
+                eprintln!("fleet gh: {}", spawn_failure_message(gh_bin, &e));
                 return (EXIT_UNRESOLVED, None);
             }
         };
@@ -1630,7 +1650,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
         emit(&attempt);
         return (code, captured);
     }
-    for e in &provider_errors {
+    for e in distinct_errors(&provider_errors) {
         eprintln!("fleet gh: {e}");
     }
     eprintln!("fleet gh: no token source could be resolved");
@@ -1719,7 +1739,7 @@ fn run_tiers(config: &Config, addrs: Vec<String>, all: bool) -> i32 {
                 any_down = true;
             }
             Err(e) => {
-                println!("{label}\tDOWN\tfailed to run '{gh_bin}': {e}");
+                println!("{label}\tDOWN\t{}", spawn_failure_message(&gh_bin, &e));
                 any_down = true;
             }
         }
@@ -1824,7 +1844,7 @@ fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
-            eprintln!("fleet gh --raw: failed to run '{gh_bin}': {e}");
+            eprintln!("fleet gh --raw: {}", spawn_failure_message(gh_bin, &e));
             EXIT_UNRESOLVED
         }
     }
@@ -3528,6 +3548,52 @@ mod tests {
             format!("{ambient}\n"),
             "exactly one call, with no token injected: {calls:?}"
         );
+    }
+
+    // oracle: #10311 (d) — a missing `gh` binary must name the
+    // remedy (install gh, or set FLEET_GH_BIN); the spawn-error
+    // path returns exit 3 with no attempt made.
+    #[test]
+    fn missing_gh_error_names_the_remedy() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let msg = spawn_failure_message("gh", &e);
+        assert!(msg.contains("install gh"), "no install remedy: {msg}");
+        assert!(msg.contains("FLEET_GH_BIN"), "no FLEET_GH_BIN remedy: {msg}");
+        assert!(msg.contains("'gh'"), "binary name lost: {msg}");
+    }
+
+    #[test]
+    fn missing_gh_spawn_returns_unresolved() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let sources = vec![TokenSource::Personal];
+        let code = run_with_provider(
+            &mut provider,
+            "/nonexistent/fleet-gh-test-gh",
+            &args,
+            &sources,
+            false,
+        );
+        assert_eq!(code, EXIT_UNRESOLVED, "spawn failure must exit 3");
+    }
+
+    // oracle: #10311 (d) — the no-credentials path prints each
+    // distinct provider error once, first-seen order.
+    #[test]
+    fn provider_errors_printed_once() {
+        let errors = vec![
+            "broker unreachable".to_string(),
+            "broker unreachable".to_string(),
+            "cache daemon down".to_string(),
+            "broker unreachable".to_string(),
+        ];
+        assert_eq!(
+            distinct_errors(&errors),
+            vec!["broker unreachable", "cache daemon down"]
+        );
+        assert!(distinct_errors(&[]).is_empty());
     }
 }
 
