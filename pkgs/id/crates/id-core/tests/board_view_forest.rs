@@ -32,6 +32,7 @@ fn topic(id: u8) -> SocialObject {
         content_ref: oid(100 + id),
         schema_version: 1,
         succeeds_ref: None,
+        target_ref: None,
     }
 }
 
@@ -45,6 +46,7 @@ fn comment(id: u8, parent: Option<u8>) -> SocialObject {
         content_ref: oid(100 + id),
         schema_version: 1,
         succeeds_ref: None,
+        target_ref: None,
     }
 }
 
