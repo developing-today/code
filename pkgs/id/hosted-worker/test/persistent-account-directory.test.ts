@@ -453,20 +453,26 @@ test("directory migration CHECK constraints reject malformed identity and routin
   }
 });
 
-test("persistent reads reject records outside the current stable account contract", async () => {
+test("persistent reads reject records outside the per-phase account contract", async () => {
   const { db, directory: accountDirectory } = await createTestDirectory();
   const invalidRows = [
-    ["pending jurisdiction", "us", null, "stable", 0],
-    ["migration id", null, "migration-1", "stable", 0],
-    ["non-zero routing epoch", null, null, "stable", 1],
-    ["unknown phase", null, null, "moving", 0],
+    ["stable with pending jurisdiction", "us", "eu", null, "stable", 0],
+    ["stable with migration id", "us", null, "migration-1", "stable", 0],
+    ["unknown phase", "us", null, null, "moving", 0],
+    ["pending without migration id", "us", "eu", null, "pending", 1],
+    ["pending without target", "us", null, "m-1", "pending", 1],
+    ["pending to the same jurisdiction", "us", "us", "m-1", "pending", 1],
+    ["pending at epoch 0", "us", "eu", "m-1", "pending", 0],
+    ["malformed migration id", "us", "eu", "bad id!", "frozen", 1],
+    ["switched with pending jurisdiction", "eu", "us", "m-1", "switched", 2],
+    ["switched below epoch 2", "eu", null, "m-1", "switched", 1],
   ] as const;
 
   try {
-    for (const [index, [name, pending, migrationId, phase, epoch]] of invalidRows.entries()) {
+    for (const [index, [name, jurisdiction, pending, migrationId, phase, epoch]] of invalidRows.entries()) {
       db.prepare(
         "INSERT INTO hosted_accounts (subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(`subject-${index}`, BINDING, "us", pending, migrationId, phase, epoch);
+      ).run(`subject-${index}`, BINDING, jurisdiction, pending, migrationId, phase, epoch);
 
       await assert.rejects(
         accountDirectory.get(`subject-${index}`),
@@ -476,6 +482,105 @@ test("persistent reads reject records outside the current stable account contrac
       );
       db.exec("DELETE FROM hosted_accounts");
     }
+  } finally {
+    db.close();
+  }
+});
+
+test("directory migration transitions advance epochs by compare-and-set (#3404)", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const stable = await directory.signup({ subjectKey: "s", bindingId: BINDING, jurisdiction: "us" });
+    const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
+    assert.deepEqual(
+      [pending.phase, pending.jurisdiction, pending.jurisdictionPending, pending.migrationId, pending.routingEpoch],
+      ["pending", "us", "eu", "m-1", 1],
+    );
+    const frozen = await directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" });
+    const verified = await directory.transition(frozen, { type: "snapshot-verified", migrationId: "m-1" });
+    assert.deepEqual([frozen.phase, verified.phase, verified.routingEpoch], ["frozen", "verified", 1]);
+    const switched = await directory.transition(verified, { type: "switch", migrationId: "m-1" });
+    assert.deepEqual(
+      [switched.phase, switched.jurisdiction, switched.jurisdictionPending, switched.routingEpoch],
+      ["switched", "eu", null, 2],
+    );
+    const done = await directory.transition(switched, { type: "complete", migrationId: "m-1" });
+    assert.deepEqual(
+      [done.phase, done.jurisdiction, done.jurisdictionPending, done.migrationId, done.routingEpoch],
+      ["stable", "eu", null, null, 2],
+    );
+    assert.deepEqual(await directory.get("s"), done, "the stored row is the completed record");
+    assert.equal(done.bindingId, BINDING, "the binding never changes across a migration");
+  } finally {
+    db.close();
+  }
+});
+
+test("a retried transition returns the applied row; a stale one conflicts (#3404)", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const stable = await directory.signup({ subjectKey: "s", bindingId: BINDING, jurisdiction: "us" });
+    const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
+    const replay = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
+    assert.deepEqual(replay, pending, "a retried begin is idempotent");
+
+    await assert.rejects(
+      directory.transition(stable, { type: "begin", migrationId: "m-2", targetJurisdiction: "eu" }),
+      (e: unknown) => e instanceof FailClosed && e.status === 409 && e.code === "directory_cas_conflict",
+      "a second coordinator with another migration loses",
+    );
+
+    const aborted = await directory.transition(pending, { type: "abort", migrationId: "m-1" });
+    assert.deepEqual(
+      [aborted.phase, aborted.jurisdiction, aborted.migrationId, aborted.routingEpoch],
+      ["stable", "us", null, 2],
+      "abort returns to the source at a fresh epoch",
+    );
+    await assert.rejects(
+      directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" }),
+      (e: unknown) => e instanceof FailClosed && e.code === "directory_cas_conflict",
+      "a stale coordinator cannot resurrect the aborted attempt",
+    );
+    assert.deepEqual(await directory.get("s"), aborted);
+
+    const ghost = { ...stable, subjectKey: "nobody" };
+    await assert.rejects(
+      directory.transition(ghost, { type: "begin", migrationId: "m-3", targetJurisdiction: "eu" }),
+      (e: unknown) => e instanceof FailClosed && e.status === 404,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("transitions refuse steps out of order, foreign migration ids and bad targets (#3404)", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const stable = await directory.signup({ subjectKey: "s", bindingId: BINDING, jurisdiction: "us" });
+    const refused = (e: unknown) => e instanceof FailClosed && e.code === "directory_transition_refused";
+    await assert.rejects(directory.transition(stable, { type: "switch", migrationId: "m-1" }), refused);
+    await assert.rejects(
+      directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "us" }),
+      refused,
+      "the target must differ",
+    );
+    await assert.rejects(
+      directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "mars" }),
+      (e: unknown) => e instanceof FailClosed && e.code === "unsupported_jurisdiction",
+    );
+    await assert.rejects(
+      directory.transition(stable, { type: "begin", migrationId: "bad id!", targetJurisdiction: "eu" }),
+      (e: unknown) => e instanceof FailClosed && e.code === "invalid_migration_id",
+    );
+    const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
+    await assert.rejects(directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-9" }), refused);
+    await assert.rejects(directory.transition(pending, { type: "switch", migrationId: "m-1" }), refused, "switch needs a verified snapshot");
+    await assert.rejects(directory.transition(pending, { type: "begin", migrationId: "m-2", targetJurisdiction: "fedramp" }), refused);
+    const frozen = await directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" });
+    const verified = await directory.transition(frozen, { type: "snapshot-verified", migrationId: "m-1" });
+    const switched = await directory.transition(verified, { type: "switch", migrationId: "m-1" });
+    await assert.rejects(directory.transition(switched, { type: "abort", migrationId: "m-1" }), refused, "no abort after the switch");
+    assert.deepEqual(await directory.get("s"), switched, "refused steps write nothing");
   } finally {
     db.close();
   }
