@@ -443,6 +443,32 @@ fn inspection_lines(seen: &WorldInspection) -> String {
         "bytes journal={} modules={} other={}{missing}",
         seen.storage.journal_bytes, seen.storage.modules_bytes, seen.storage.other_bytes
     );
+    match &seen.last_recovery {
+        None => {
+            let _ = writeln!(out, "recovery none");
+        }
+        Some(recovery) => {
+            let _ = match &recovery.error {
+                Some(error) => writeln!(
+                    out,
+                    "recovery {} failed torn-tail={}: {error}",
+                    recovery.at_secs, recovery.torn_tail
+                ),
+                None => writeln!(
+                    out,
+                    "recovery {} replayed sequence={} entries={} inputs={} torn-tail={}",
+                    recovery.at_secs,
+                    recovery.sequence,
+                    recovery.journal_entries,
+                    recovery.replayed_inputs,
+                    recovery.torn_tail
+                ),
+            };
+            if let Some(error) = &recovery.program_error {
+                let _ = writeln!(out, "recovery program unavailable: {error}");
+            }
+        }
+    }
     if seen.history.is_empty() {
         let _ = writeln!(out, "history none");
     }
@@ -534,6 +560,35 @@ mod tests {
         assert!(text.contains(" ops from asleep\n"), "{text}");
         let alpha = inspection_lines(&inspect_world(root.path(), &file, "alpha").unwrap());
         assert!(alpha.contains("history none\n"), "{alpha}");
+        assert!(alpha.contains("\nrecovery none\n"), "{alpha}");
+        let mut recovered = seen.clone();
+        recovered.last_recovery = Some(id_worlds::host::RecoveryRecord {
+            at_secs: 7,
+            torn_tail: true,
+            sequence: 3,
+            journal_entries: 4,
+            replayed_inputs: 2,
+            program_error: Some("no module".to_owned()),
+            error: None,
+        });
+        let text = inspection_lines(&recovered);
+        assert!(
+            text.contains(
+                "\nrecovery 7 replayed sequence=3 entries=4 inputs=2 torn-tail=true\n\
+                 recovery program unavailable: no module\n"
+            ),
+            "{text}"
+        );
+        recovered.last_recovery = Some(id_worlds::host::RecoveryRecord {
+            at_secs: 9,
+            error: Some("version 99".to_owned()),
+            ..id_worlds::host::RecoveryRecord::default()
+        });
+        let text = inspection_lines(&recovered);
+        assert!(
+            text.contains("\nrecovery 9 failed torn-tail=false: version 99\n"),
+            "{text}"
+        );
         assert!(inspect_world(root.path(), &file, "gamma").is_err());
     }
 

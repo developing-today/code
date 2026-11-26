@@ -150,6 +150,59 @@ pub struct WorldRecord {
     /// How the world wakes from asleep.
     #[serde(default, skip_serializing_if = "WakeMode::is_default")]
     pub wake: WakeMode,
+    /// What the host found the last time it replayed this world while
+    /// opening the data root, after a restart or a crash (#10696).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recovery: Option<RecoveryRecord>,
+}
+
+/// The result of replaying a world the host file recorded live, when a
+/// host opened the data root: the world was live when the last host
+/// stopped, by shutdown or by crash.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryRecord {
+    /// Unix seconds (UTC) when the replay finished.
+    pub at_secs: u64,
+    /// The journal ended in an incomplete line before the replay: the
+    /// last append was cut off, and only the complete entries replayed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub torn_tail: bool,
+    /// Last committed sequence after the replay.
+    pub sequence: u64,
+    /// Journal entries after the replay.
+    pub journal_entries: u64,
+    /// Inputs replayed into the restored program.
+    pub replayed_inputs: u64,
+    /// Why the program could not be restored, when the world opened
+    /// without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_error: Option<String>,
+    /// Why the replay failed, when it did; the world stays recorded live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl RecoveryRecord {
+    fn replayed(at_secs: u64, torn_tail: bool, report: &OpenReport) -> Self {
+        Self {
+            at_secs,
+            torn_tail,
+            sequence: report.sequence,
+            journal_entries: u64::try_from(report.journal_entries).unwrap_or(u64::MAX),
+            replayed_inputs: u64::try_from(report.replayed_inputs).unwrap_or(u64::MAX),
+            program_error: report.program_error.clone(),
+            error: None,
+        }
+    }
+
+    fn failed(at_secs: u64, torn_tail: bool, error: String) -> Self {
+        Self {
+            at_secs,
+            torn_tail,
+            error: Some(error),
+            ..Self::default()
+        }
+    }
 }
 
 /// The host file beside the data root: which worlds exist, their
@@ -848,6 +901,8 @@ pub struct WorldInspection {
     pub module_count: u64,
     /// The world's storage row, as `id host list` shows it.
     pub storage: WorldCensus,
+    /// What the last restart replay found, when there was one.
+    pub last_recovery: Option<RecoveryRecord>,
 }
 
 /// Inspect `name` in the data root `root` that `file` describes, reading
@@ -889,6 +944,7 @@ pub fn inspect_world(root: &Path, file: &HostFile, name: &str) -> Result<WorldIn
         journal_error,
         module_count,
         storage,
+        last_recovery: record.last_recovery.clone(),
     })
 }
 
@@ -1012,10 +1068,27 @@ impl Supervisor {
             .map(|(name, _)| name.clone())
             .collect();
         let mut failures = Vec::new();
-        for name in live_names {
-            if let Err(error) = supervisor.replay_live(&name).await {
+        let mut recovered = supervisor.file.clone();
+        for name in &live_names {
+            let torn_tail = journal_facts(&supervisor.root.join(name).join(JOURNAL_FILE))
+                .is_ok_and(|facts| facts.torn_tail);
+            let outcome = supervisor.replay_live(name).await;
+            let record = match &outcome {
+                Ok(report) => RecoveryRecord::replayed(now_secs(), torn_tail, report),
+                Err(error) => RecoveryRecord::failed(now_secs(), torn_tail, format!("{error:#}")),
+            };
+            if let Some(world) = recovered.worlds.get_mut(name) {
+                world.last_recovery = Some(record);
+            }
+            if let Err(error) = outcome {
                 failures.push(format!("{name}: {error:#}"));
             }
+        }
+        if !live_names.is_empty() {
+            recovered
+                .save(&supervisor.root)
+                .context("recording the restart replay in the host file")?;
+            supervisor.file = recovered;
         }
         if !failures.is_empty() {
             bail!(
@@ -1421,6 +1494,7 @@ mod tests {
             std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         let sup2 = Supervisor::open(root.path()).await.unwrap();
         assert!(sup2.live_names().is_empty());
+        assert_eq!(sup2.file().worlds["alpha"].last_recovery, None);
         drop(sup2);
         assert_eq!(
             std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap(),
@@ -1439,6 +1513,10 @@ mod tests {
         assert_eq!(sup3.live_names(), vec!["alpha".to_owned()]);
         let reopened = sup3.live_report("alpha").unwrap();
         assert!(reopened.journal_entries >= before);
+        let recovery = sup3.file().worlds["alpha"].last_recovery.clone().unwrap();
+        assert!(!recovery.torn_tail);
+        assert_eq!(recovery.error, None);
+        assert_eq!(recovery.sequence, reopened.sequence);
         let replayed = std::fs::read(root.path().join("alpha").join("journal.jsonl")).unwrap();
         assert!(replayed.starts_with(&journal_before));
     }
@@ -1803,6 +1881,17 @@ mod tests {
         );
         assert_eq!(want_isolation, Isolation::Unisolated);
         sup.shutdown().await.unwrap();
+        let recovery = HostFile::load(root.path()).unwrap().worlds["alpha"]
+            .last_recovery
+            .clone()
+            .unwrap();
+        assert!(recovery.torn_tail);
+        assert_eq!(recovery.error, None);
+        assert_eq!(recovery.sequence, want.sequence);
+        assert_eq!(
+            recovery.journal_entries,
+            u64::try_from(want.journal_entries).unwrap()
+        );
         // No partial application: the torn bytes were never kept as an
         // entry, and every fsynced byte survives.
         let after = std::fs::read(&journal).unwrap();
@@ -1848,6 +1937,13 @@ mod tests {
         let file = HostFile::load(root.path()).unwrap();
         assert_eq!(file.worlds["future"].state, LifecycleState::Live);
         assert_eq!(file.worlds["fine"].state, LifecycleState::Asleep);
+        // The failed replay is recorded for `id host inspect`.
+        let recovery = file.worlds["future"].last_recovery.clone().unwrap();
+        let recorded = recovery.error.unwrap();
+        assert!(recorded.contains(&future.to_string()), "{recorded}");
+        assert_eq!(file.worlds["fine"].last_recovery, None);
+        let seen = inspect_world(root.path(), &file, "future").unwrap();
+        assert!(seen.last_recovery.is_some());
     }
 
     #[test]
@@ -1937,8 +2033,9 @@ mod tests {
             proptest::collection::vec(change, 0..4),
             proptest::bool::ANY,
             proptest::bool::ANY,
+            proptest::option::of((0u64..u32::MAX as u64, proptest::bool::ANY, 0u64..64)),
         )
-            .prop_map(|(state, history, pinned, operator)| WorldRecord {
+            .prop_map(|(state, history, pinned, operator, recovery)| WorldRecord {
                 state,
                 history,
                 pinned,
@@ -1947,6 +2044,15 @@ mod tests {
                 } else {
                     WakeMode::Connect
                 },
+                last_recovery: recovery.map(|(at_secs, torn_tail, entries)| RecoveryRecord {
+                    at_secs,
+                    torn_tail,
+                    sequence: entries,
+                    journal_entries: entries,
+                    replayed_inputs: 0,
+                    program_error: None,
+                    error: (entries % 2 == 1).then(|| "replay failed".to_owned()),
+                }),
             });
         let file = (
             proptest::collection::hash_map(name, record, 0..5),
