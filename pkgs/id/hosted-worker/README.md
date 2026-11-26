@@ -115,10 +115,20 @@ jurisdiction. So locally the application worker fails closed with
 the designed behaviour, not a bug: falling back to the unrestricted
 namespace would silently create the second, unrestricted store the
 design forbids. Residency on a real account can only be established by
-the deployed canary gated on #2285 (still open/escalated) — this
-package makes no residency claim and authorizes no deployment, no
-production binding/config, and no billable resource (#3403 stays
-blocked pending user authorization).
+the deployed canary and resource read-back; local tests do not establish
+where production data resides. Production signup and migration remain
+disabled until that validation passes.
+
+The hosted account directory is one shared D1 database and is the **single
+shared durable-directory residency exception**. Its allowlisted records
+contain pseudonymous subject keys and minimal binding, jurisdiction, and
+migration metadata. A hashed subject is potentially personal data, not
+anonymous. The directory does not hold graph content, journals, blob bytes,
+or private profile data. This exception describes D1 only and is not an
+end-to-end residency claim: KV caches may be global; logs and request
+processing may occur outside a tenant's jurisdiction; vendor backup
+placement is a separate, unverified residency gap. These locations and
+processing paths need their own disclosure and evidence.
 
 ## The signed-object bridge (#3818)
 
