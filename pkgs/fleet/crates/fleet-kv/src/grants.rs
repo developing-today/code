@@ -104,7 +104,7 @@ impl GrantError {
             Self::NotNamespaceOwner { .. } => "not_namespace_owner",
             Self::GroupDbUnprovisioned { .. } => "group_db_unprovisioned",
             Self::BlobRequiresSharedPrimary { .. } => "blob_requires_shared_primary",
-            Self::Malformed(code) => *code,
+            Self::Malformed(code) => code,
         }
     }
 }
