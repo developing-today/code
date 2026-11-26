@@ -305,6 +305,7 @@
         "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/request-cap.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts",
         "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
