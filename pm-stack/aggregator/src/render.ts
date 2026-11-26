@@ -4085,11 +4085,11 @@ function queueRows(rows: QueueRow[], empty: string): string {
 
 /** The queue page body is also the Datastar fragment and JSON's source view. */
 export function renderQueueBody(view: QueueView): string {
-  return `<p class="muted">Cross-project work, reconciled from the existing board, Project pool, and orchestration inputs. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
-<h2>In progress <span class="badge">${view.inProgress.length}</span></h2>${queueRows(view.inProgress, "Nothing is in progress.")}
-<h2>Blocked <span class="badge">${view.blocked.length}</span></h2>${queueRows(view.blocked, "Nothing is blocked.")}
+  return `<p class="muted">Board-derived work items — reconciled from the existing board, the Project pool, and orchestration inputs. These are not fleet queue tasks: the queue broker's live task state is the console Now page's counts (same words, different source). <a href="/console/#now">Console Now — what its counts mean</a>. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
+<h2>In progress <span class="badge">${view.inProgress.length}</span></h2><p class="muted">Board-derived work items, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.inProgress, "Nothing is in progress.")}
+<h2>Blocked <span class="badge">${view.blocked.length}</span></h2><p class="muted">Board-derived work items, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.blocked, "Nothing is blocked.")}
 <h2>Done recently <span class="badge">${view.doneRecently.length}</span></h2><p class="muted">Completed or merged in the last 7 days; retired bookkeeping cards are excluded.</p>${queueRows(view.doneRecently, "Nothing completed in the last 7 days.")}
-<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
+<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder. Board-derived, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
 }
 
 export function renderQueue(view: QueueView, provenance: Provenance, detail?: ProvenanceDetail): string {
@@ -4283,12 +4283,12 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")}</ul>`
     : `<p class="muted">Nothing in progress from the Project, active-session, or open-PR signals.</p>`;
-  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
-<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
+  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. In-progress and blocked counts here are board-derived work items, not fleet queue tasks — the console Now page counts the queue broker's live tasks instead (same words, different source). Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
+<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2><p class="muted">The NEEDS USER intake queue — the queue the orchestrator works first, escalating only what genuinely requires the user. The console's need-you set is a different set (open questions plus hands, reviews, and escalated items). <a href="/attention">What this count means</a>.</p>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${feedStaleBanner}${healthStrip}
-<h2>In progress</h2>${inProgressItems}
+<h2>In progress</h2><p class="muted">Board-derived work items (Project Status, active sessions lined up, and open PRs) — one row per work item, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
