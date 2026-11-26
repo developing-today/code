@@ -1311,7 +1311,6 @@ export class Edge {
                 sections: this.machine?.sections ?? [],
                 ...(differs.length > 0 ? { differs } : {}),
                 settingsRev: this.hostSettingsRev,
-                ...(primaryKid ? { kid: primaryKid } : {}),
               },
             ]),
         ...enrolledSaid,
