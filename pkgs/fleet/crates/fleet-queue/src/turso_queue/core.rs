@@ -7,7 +7,7 @@
 
 use super::*;
 
-pub const DEFAULT_TURSO_URL: &str = "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
+pub const DEFAULT_TURSO_URL: &str = "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, \
