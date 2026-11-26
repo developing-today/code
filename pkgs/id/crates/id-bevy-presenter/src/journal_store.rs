@@ -280,15 +280,15 @@ impl JournalStore {
     }
 }
 
-const fn restamp(delta: JournalDelta, position: u64) -> JournalDelta {
-    match delta {
-        JournalDelta::Upsert { id, values, .. } => JournalDelta::Upsert {
-            position,
-            id,
-            values,
-        },
-        JournalDelta::Retract { id, .. } => JournalDelta::Retract { position, id },
+const fn restamp(mut delta: JournalDelta, position: u64) -> JournalDelta {
+    // Rewrite the position in place: destructuring by value would drop the
+    // ignored fields, which a `const fn` cannot do.
+    match &mut delta {
+        JournalDelta::Upsert { position: at, .. } | JournalDelta::Retract { position: at, .. } => {
+            *at = position;
+        }
     }
+    delta
 }
 
 fn check_batch(batch: &PositionBatch, expected: u64) -> Result<(), String> {

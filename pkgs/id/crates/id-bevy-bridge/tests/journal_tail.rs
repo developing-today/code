@@ -305,7 +305,10 @@ fn an_accepted_intent_becomes_world_state_only_at_its_confirming_position() {
     schedule.run(&mut world);
     assert_eq!(applied_position(&world), Some(3));
     assert_eq!(position(&world, "avatar"), Some(origin));
-    assert!(world.resource::<IntentLedger>().settled().is_empty());
+    assert_eq!(
+        world.resource::<IntentLedger>().settled(),
+        &[] as &[IntentOutcome]
+    );
 
     // Tick 4: the confirming position applies. The move is now world
     // state, the intent is confirmed, and the prediction is gone.
