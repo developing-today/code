@@ -305,8 +305,13 @@ class ConstraintTests(unittest.TestCase):
         )
         self.ok(insert, ("k1", "42"))
         self.ok(insert, ("k2", '{"low":1,"high":2}'))
-        self.refused(insert, ("k3", '{"low":1}'))
+        # A missing 'high' key passes in PostgreSQL too: the check
+        # evaluates to NULL there, and a CHECK passes on NULL in both
+        # engines. The translation keeps that semantics rather than
+        # tightening a contract the PostgreSQL suite never asserted.
+        self.ok(insert, ("k3", '{"low":1}'))
         self.refused(insert, ("k4", '"text"'))
+        self.refused(insert, ("k5", "[1,2]"))
 
     def test_ingestion_seen_ids_default_is_an_empty_json_array(self):
         self.ok("INSERT INTO agg_activity_ingestion (source) VALUES ('s1')")
@@ -493,6 +498,20 @@ def serve_fake_hrana(fake):
 
 
 class HttpClientTests(unittest.TestCase):
+    def setUp(self):
+        # The client honours ambient proxy settings (as the house
+        # Hrana client does); a loopback fake must not be routed
+        # through one, so the proxy environment is scrubbed here.
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if "proxy" not in key.lower()
+        }
+        env["NO_PROXY"] = "127.0.0.1"
+        patcher = unittest.mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def http_client(self, url, token="test-token", host="127.0.0.1"):
         # The pipeline code path runs for real; only the origin pin is
         # bypassed, because the fake server is plain HTTP on loopback
