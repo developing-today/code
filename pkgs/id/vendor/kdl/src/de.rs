@@ -1257,6 +1257,7 @@ impl<'a> NodeMapAccess<'a> {
             if let Some(fields) = fields {
                 let hash_name = format!("#@{name}");
                 let ty_name = format!("{hash_name}#type");
+                let ann_name = format!("{hash_name}{ENTRY_ANNOTATIONS_SUFFIX}");
                 if fields.contains(&hash_name.as_ref()) {
                     entries.push((hash_name.into(), NodeMapValue::Arg(prop)));
                 }
@@ -1265,7 +1266,6 @@ impl<'a> NodeMapAccess<'a> {
                 {
                     entries.push((ty_name.into(), NodeMapValue::Ident(ty)));
                 }
-                let ann_name = format!("{hash_name}{ENTRY_ANNOTATIONS_SUFFIX}");
                 if fields.contains(&ann_name.as_ref()) {
                     entries.push((
                         ann_name.into(),
