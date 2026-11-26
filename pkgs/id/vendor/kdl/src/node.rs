@@ -914,6 +914,10 @@ impl KdlNode {
             }) = self.format()
             {
                 write!(f, "{before_children}")?;
+                // A children-block annotation must not run into the node name or last entry.
+                if before_children.is_empty() && !self.children_annotations.is_empty() {
+                    write!(f, " ")?;
+                }
             } else if space_before_children {
                 write!(f, " ")?;
             }
