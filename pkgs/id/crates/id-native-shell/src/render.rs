@@ -27,8 +27,8 @@
 //! grid the window can actually show.
 
 use bevy::prelude::{
-    App, Color, Commands, Component, Entity, Plugin, Query, Res, Resource, Startup, Text,
-    TextColor, TextSpan, Update, With, World,
+    App, Color, Commands, Component, Entity, Plugin, PositionType, Query, Res, Resource, Startup,
+    Text, TextColor, TextSpan, Update, Val, With, World,
 };
 use bevy::text::{FontSize, LineHeight, TextFont};
 use id::world_presentation::WorldSurface;
@@ -336,9 +336,13 @@ fn spawn_root(mut commands: Commands<'_, '_>) {
     commands.spawn((
         ScreenRoot,
         bevy::prelude::Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(crate::directory::DIRECTORY_PANEL_PERCENT),
+            top: Val::Percent(0.0),
             flex_direction: bevy::prelude::FlexDirection::Column,
-            width: bevy::prelude::Val::Percent(100.0),
-            height: bevy::prelude::Val::Percent(100.0),
+            width: Val::Percent(100.0 - crate::directory::DIRECTORY_PANEL_PERCENT),
+            height: Val::Percent(100.0),
+            overflow: bevy::prelude::Overflow::clip(),
             ..Default::default()
         },
     ));

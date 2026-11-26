@@ -179,18 +179,24 @@ fn sync_session_size(
     }
 }
 
-/// Directory mode: every live world session shares the one window,
-/// so each is kept at the window's grid — a newly entered world gets
-/// it at once, and a background world already has the right size
+/// Directory mode: every live world session shares the right-hand
+/// panel, so each is kept at that panel's grid — a newly entered world
+/// gets it at once, and a background world already has the right size
 /// when it is brought back to the foreground.
 #[allow(clippy::needless_pass_by_value)]
 fn sync_world_sizes(
     windows: Query<'_, '_, &Window, With<PrimaryWindow>>,
     mut sessions: ResMut<'_, WorldSessions>,
 ) {
-    let Some(grid) = window_grid(&windows) else {
+    let Some(window) = windows.single().ok() else {
         return;
     };
+    let grid = resize_dimensions_logical(
+        window.width() * (100.0 - crate::directory::DIRECTORY_PANEL_PERCENT) / 100.0,
+        window.height(),
+        CELL_WIDTH_PX,
+        CELL_HEIGHT_PX,
+    );
     for session in sessions.0.values_mut() {
         sync_size(&mut session.bridge, grid);
     }

@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use bevy::input::ButtonInput;
 use bevy::prelude::{
-    App, Commands, Component, Entity, IntoScheduleConfigs, KeyCode, Local, Node, Plugin, Query,
-    Res, Resource, Startup, SystemSet, Text, Update, With,
+    App, BackgroundColor, Color, Commands, Component, Entity, IntoScheduleConfigs, KeyCode, Local,
+    Node, Plugin, Query, Res, Resource, Startup, SystemSet, Text, Update, Val, With,
 };
 use serde_json::{Value, json};
 
@@ -687,6 +687,35 @@ pub const fn key_code_to_directory_key(code: KeyCode) -> Option<DirectoryKey> {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DirectoryInputSystems;
 
+/// Share of the window reserved for the accessible world directory.
+pub(crate) const DIRECTORY_PANEL_PERCENT: f32 = 28.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PanelBounds {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+fn directory_session_bounds(width: f32, height: f32) -> (PanelBounds, PanelBounds) {
+    let split = width * DIRECTORY_PANEL_PERCENT / 100.0;
+    (
+        PanelBounds {
+            left: 0.0,
+            top: 0.0,
+            right: split,
+            bottom: height,
+        },
+        PanelBounds {
+            left: split,
+            top: 0.0,
+            right: width,
+            bottom: height,
+        },
+    )
+}
+
 /// Marker for the root UI node the directory presenter owns.
 #[derive(Component)]
 struct DirectoryRoot;
@@ -723,10 +752,16 @@ fn spawn_directory_root(mut commands: Commands<'_, '_>) {
     commands.spawn((
         DirectoryRoot,
         Node {
+            position_type: bevy::prelude::PositionType::Absolute,
+            left: Val::Percent(0.0),
+            top: Val::Percent(0.0),
             flex_direction: bevy::prelude::FlexDirection::Column,
-            width: bevy::prelude::Val::Percent(100.0),
+            width: Val::Percent(DIRECTORY_PANEL_PERCENT),
+            height: Val::Percent(100.0),
+            overflow: bevy::prelude::Overflow::clip(),
             ..Default::default()
         },
+        BackgroundColor(Color::srgb(0.08, 0.09, 0.12)),
     ));
 }
 
@@ -747,8 +782,8 @@ fn directory_keyboard(
 }
 
 /// Rebuild the directory rows when the rendered table changes.
-/// In session focus the directory renders nothing: the session's
-/// own presenters own the window.
+/// The directory stays visible as the left panel in session focus;
+/// shell presenters occupy the disjoint right panel.
 #[allow(clippy::needless_pass_by_value)]
 fn rebuild_directory_rows(
     directory: bevy::prelude::Res<'_, DirectoryApp>,
@@ -757,10 +792,7 @@ fn rebuild_directory_rows(
     rows: Query<'_, '_, Entity, With<DirectoryRow>>,
     mut commands: Commands<'_, '_>,
 ) {
-    let table = match directory.focus {
-        DirectoryFocus::Directory => Some(directory.text_table()),
-        DirectoryFocus::Session => None,
-    };
+    let table = Some(directory.text_table());
     if table == *last_table {
         return;
     }
