@@ -12,10 +12,12 @@
 //!   [`world_functions`], [`world_native`], [`world_fixture`],
 //!   [`world_cache`] and, under the `sandbox` feature, [`sandbox`] —
 //!   the wasmtime guest runner whose fuel budgets are the split's
-//!   determinism canary.
+//!   determinism canary — and `world_function_host`, the per-function
+//!   instances behind [`world_functions`].
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
-//!   the replaying supervisor over one data root.
+//!   the replaying supervisor over one data root; [`host_opener`] puts
+//!   its admission rule around a hub's storage opener.
 //! - [`creator_announcements`]: scheduled creator announcements — the
 //!   durable local schedule and its evaluator, which fires late after
 //!   downtime and records the lateness (#13743).
@@ -75,9 +77,12 @@ pub mod guest_burn;
 pub mod host;
 #[cfg(unix)]
 pub mod host_control;
+pub mod host_opener;
 pub mod input_framing;
 pub mod kitty_graphics;
 pub mod kitty_still;
+#[cfg(unix)]
+pub mod node_control;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
@@ -103,6 +108,8 @@ pub mod world_dev;
 pub mod world_doctor;
 pub mod world_export;
 pub mod world_fixture;
+#[cfg(feature = "sandbox")]
+pub mod world_function_host;
 pub mod world_functions;
 pub mod world_hub;
 pub mod world_line;

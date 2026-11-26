@@ -70,14 +70,14 @@ test("the asking: size, one count per table the app reads, and the schema versio
 });
 
 test("an answer is read against the numbers the stand-in sent", () => {
-  const got = storeAnswered(platform, answer([[4096], [3], [0], [12], [1], [2], [0], [5], [7]]).results.map((r) => r.response.result));
+  const got = storeAnswered(platform, answer([[4096], [3], [0], [12], [1], [2], [0], [5], [7]]).results.map((r) => r.response?.result));
   expect(got.answers).toBe(true);
   expect(got.error).toBeNull();
   expect(got.sizeBytes).toBe(4096);
   expect(Object.values(got.rows)).toEqual([3, 0, 12, 1, 2, 0, 5]);
   expect(got.liveSchemaVersion).toBe("7");
   // A statement the store refused leaves only its own count null.
-  const partial = storeAnswered(platform, [answer([[4096]]).results[0].response.result, undefined]);
+  const partial = storeAnswered(platform, [answer([[4096]]).results[0]?.response?.result, undefined]);
   expect(partial.answers).toBe(true);
   expect(partial.sizeBytes).toBe(4096);
   expect(Object.values(partial.rows).every((n) => n === null)).toBe(true);
@@ -203,7 +203,7 @@ test("a rotated token is fetched again, once, and the store then answers", async
 });
 
 test("the screen's words: an answering store shows its numbers; one that does not is said as not answering", () => {
-  const liveStore = storeAnswered(queue, answer([[2048], [3]]).results.map((r) => r.response.result));
+  const liveStore = storeAnswered(queue, answer([[2048], [3]]).results.map((r) => r.response?.result));
   expect(storeSaid(liveStore).text).toContain("Answers. Size 2.0 KiB. Schema version 3.");
   const down = storeNotAnswering(queue, "the store answered http 503");
   const said = storeSaid(down);

@@ -20,14 +20,14 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::SigningKey;
 use id_core::hex::hex_encode;
 
 use std::collections::BTreeSet;
 
 use crate::keyset::{
-    checkpoint_final_heads, fold_with_finality, KeysetEntry, KeysetRecord, KeysetState, Log,
+    KeysetEntry, KeysetRecord, KeysetState, Log, checkpoint_final_heads, fold_with_finality,
 };
 use crate::keyset_pairing::{DeviceQr, EnrolAccept, EnrolOffer};
 
@@ -604,8 +604,8 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("not an active admin"));
         // Revoking a device the keyset never enrolled folds nowhere.
-        assert!(file
-            .append(
+        assert!(
+            file.append(
                 &key(1),
                 KeysetEntry::DeviceRevoked {
                     device_key: public(9),
@@ -613,7 +613,8 @@ mod tests {
                 },
                 None,
             )
-            .is_err());
+            .is_err()
+        );
         let (reopened, _) = KeysetFile::open_or_migrate(&path, &key(1)).unwrap();
         assert_eq!(reopened.records().count(), 1);
         assert_eq!(reopened.state().unwrap().records_folded, 1);

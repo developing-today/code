@@ -21,11 +21,15 @@
 import { createDashboardHandler } from "./dashboard/dashboard.ts";
 import { createAsyncReadApiHandler } from "./read-api/async-api.ts";
 import { libsqlHttpDb } from "./tenant-store/libsql-http.ts";
+import { BoardDO } from "./board-do.ts";
+
+export { BoardDO };
 
 export interface PmServiceEnv {
   VERSION?: string;
   PM_TENANT_DB_URL?: string;
   PM_TENANT_DB_TOKEN?: string;
+  BOARD_DO?: DurableObjectNamespace;
 }
 
 const json = (body: unknown, status = 200): Response =>
@@ -35,6 +39,16 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
   const path = new URL(req.url).pathname;
   if (req.method === "GET" && path === "/health") {
     return json({ ok: true, service: "pm-service", version: env.VERSION ?? "unknown" });
+  }
+  const boardMatch = /^\/api\/boards\/([^/]+)\/subscribe$/.exec(path);
+  if (boardMatch && req.method === "GET") {
+    if (!env.BOARD_DO) return json({ error: "BoardDO is not configured" }, 503);
+    let boardId: string;
+    try { boardId = decodeURIComponent(boardMatch[1] as string); }
+    catch { return json({ error: "malformed board id" }, 400); }
+    return env.BOARD_DO.get(env.BOARD_DO.idFromName(boardId)).fetch(
+      new Request(`https://board-do/subscribe${new URL(req.url).search}`, req),
+    );
   }
   if (!env.PM_TENANT_DB_URL) {
     return json({ error: "pm-service tenant store is not configured" }, 503);

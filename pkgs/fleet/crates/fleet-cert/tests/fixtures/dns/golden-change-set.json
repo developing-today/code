@@ -2,7 +2,10 @@
   "schema": "fleet.pki.dns/v1",
   "zone": "example.test",
   "generated_at": "2026-06-01T00:00:00Z",
-  "source_bundles": ["{{BUNDLE_1}}", "{{BUNDLE_2}}"],
+  "source_bundles": [
+    "{{BUNDLE_1}}",
+    "{{BUNDLE_2}}"
+  ],
   "records": [
     {
       "type": "TLSA",
@@ -10,7 +13,9 @@
       "ttl": 3600,
       "value": "3 1 1 {{LEAF_SPKI_SHA256}}",
       "action": "conditional-create",
-      "requires": ["dnssec"],
+      "requires": [
+        "dnssec"
+      ],
       "note": "DANE-EE pin of the leaf {{LEAF_ALG}} key (partition {{LEAF_PART}}, certificate {{LEAF_FP}}); TLS terminated by: the svc process on the fixture host"
     },
     {
@@ -19,7 +24,9 @@
       "ttl": 3600,
       "value": "2 1 1 {{ISSUER_SPKI_SHA256}}",
       "action": "conditional-create",
-      "requires": ["dnssec"],
+      "requires": [
+        "dnssec"
+      ],
       "note": "DANE-TA pin of the issuer ed25519 key (partition a, certificate {{ISSUER_FP}}); TLS terminated by: unstated: the operator must confirm this host terminates TLS itself"
     },
     {

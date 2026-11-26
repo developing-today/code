@@ -13,6 +13,8 @@
 //! session is reset to the host's fresh snapshot. Divergence is never
 //! merged.
 
+use std::collections::BTreeMap;
+
 use id::shell_contract::ShellContract;
 use serde_json::Value;
 
@@ -71,6 +73,7 @@ pub struct Session {
     view: Option<Value>,
     records: Option<Value>,
     last_form_status: Option<Value>,
+    participants: BTreeMap<u64, String>,
 }
 
 impl Session {
@@ -123,6 +126,13 @@ impl Session {
         self.last_form_status.as_ref()
     }
 
+    /// Display names from the last snapshot, keyed by participant
+    /// id. A snapshot without a participant list leaves this empty.
+    #[must_use]
+    pub const fn participants(&self) -> &BTreeMap<u64, String> {
+        &self.participants
+    }
+
     /// Prepare a reconnect: remember that the next durable event must
     /// continue contiguously from the last applied sequence. The
     /// caller builds the `join` with [`crate::frames::join`] using
@@ -151,6 +161,16 @@ impl Session {
                 self.last_sequence = snapshot["current_sequence"]
                     .as_u64()
                     .ok_or(SessionError::Malformed("snapshot has no current_sequence"))?;
+                self.participants = snapshot["participants"]
+                    .as_array()
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|p| {
+                                Some((p["id"].as_u64()?, p["display_name"].as_str()?.to_owned()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.events.clear();
                 self.view = None;
                 self.resume_expect = None;

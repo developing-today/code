@@ -23,6 +23,10 @@ export const TURSO_GROUP = "great-star-lord";
 export const TURSO_OPERATIONS = ["create-db", "mint-token"] as const;
 export type TursoOperation = (typeof TURSO_OPERATIONS)[number];
 
+function isTursoOperation(value: unknown): value is TursoOperation {
+  return TURSO_OPERATIONS.some((operation) => operation === value);
+}
+
 const DATABASE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
 const EXPIRY = /^([0-9]+[dwmy]|never)$/;
@@ -52,7 +56,7 @@ export interface TursoAdminRequest {
  * workflow must not be asked to do is refused here, before dispatch. */
 export function tursoAdminRequest(args: Record<string, unknown>): TursoAdminRequest {
   const operation = args.operation;
-  if (!(TURSO_OPERATIONS as readonly unknown[]).includes(operation)) {
+  if (!isTursoOperation(operation)) {
     throw new OpError(400, "operation: create-db or mint-token");
   }
   const database = args.database;
