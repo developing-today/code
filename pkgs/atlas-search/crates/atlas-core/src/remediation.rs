@@ -14,11 +14,15 @@
 //!   `id`, `content_hash`, `sensitivity`, and the presence of a vector row.
 //! * No write ever reaches a shard: every query is a `SELECT`.
 //! * The run record is trace-safe: identifiers, checksums and counts only.
-//! * A run is resumable: [`read_run`] refuses a record whose source or
-//!   destination identity has drifted, so a resume cannot silently verify
-//!   the wrong pair.
+//! * A run is resumable: [`validate_resume`] pins the canonical endpoints and
+//!   source set, then compares a separate destination fingerprint before the
+//!   prior run is reused.
 
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -30,14 +34,14 @@ use crate::shards::ShardTransport;
 use crate::types::{Stmt, Value};
 
 /// Format marker for a persisted inventory run.
-pub const INVENTORY_FORMAT: &str = "atlas-remediation-inventory/v1";
+pub const INVENTORY_FORMAT: &str = "atlas-remediation-inventory/v2";
 
 /// Serialized run record. Deliberately contains no chunk text: only ids,
 /// content hashes and counts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryReport {
     pub format: String,
-    /// Stable identity of the (source, destination, expected set) triple.
+    /// Stable identity of the endpoints and source ID/hash set.
     pub run_id: String,
     pub source: String,
     pub destination: String,
@@ -45,6 +49,9 @@ pub struct InventoryReport {
     /// `secret-bearing` for #8479, but kept explicit so the tool cannot
     /// silently inventory a different class).
     pub sensitivity: String,
+    /// Snapshot of the complete destination id/hash/vector set. It is kept
+    /// separate from `run_id`, which identifies the stable source and endpoints.
+    pub destination_fingerprint: String,
     pub counts: InventoryCounts,
     pub mappings: Vec<MappingEntry>,
     /// Source chunk ids with no verified destination copy. These must stay
@@ -131,15 +138,39 @@ pub fn read_source(
     transport: &dyn ShardTransport,
     sensitivity: Sensitivity,
 ) -> Result<Vec<SourceChunk>> {
-    let rows = transport
-        .pipeline(&[Stmt::new(
+    let statements = [
+        Stmt::new(
+            "SELECT COUNT(*) AS total FROM chunks WHERE sensitivity = ?1",
+            vec![Value::text(sensitivity.name())],
+        ),
+        Stmt::new(
             "SELECT id AS id, content_hash AS h FROM chunks \
              WHERE sensitivity = ?1 ORDER BY id",
             vec![Value::text(sensitivity.name())],
-        )])?
-        .into_iter()
+        ),
+    ];
+    let mut results = transport.pipeline(&statements)?.into_iter();
+    let count = results
         .next()
-        .unwrap_or_default();
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.get_i64("total"))
+        .filter(|count| *count >= 0)
+        .ok_or_else(|| Error::backend("remediation: source count result missing or invalid"))?
+        as u64;
+    let rows = results
+        .next()
+        .ok_or_else(|| Error::backend("remediation: source row result missing"))?;
+    if results.next().is_some() {
+        return Err(Error::backend(
+            "remediation: source returned extra statement results",
+        ));
+    }
+    if count != rows.len() as u64 {
+        return Err(Error::backend(format!(
+            "remediation: source count {count} disagrees with {} returned rows",
+            rows.len()
+        )));
+    }
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let id = r
@@ -154,23 +185,50 @@ pub fn read_source(
     Ok(out)
 }
 
-/// Read every destination chunk with vector presence. The vector table name
-/// is trusted configuration, the same assumption the scan statements make.
+/// Read every destination chunk with vector presence. Validate the vector
+/// table as a plain SQL identifier before interpolating it into the SELECT.
 pub fn read_destination(
     transport: &dyn ShardTransport,
     vec_table: &str,
 ) -> Result<Vec<DestinationChunk>> {
+    if !is_valid_vector_table_identifier(vec_table) {
+        return Err(Error::fatal(format!(
+            "remediation: invalid vector table identifier `{vec_table}`"
+        )));
+    }
     let sql = format!(
         "SELECT c.id AS id, c.content_hash AS h, \
                 (v.chunk_id IS NOT NULL) AS has_vec \
          FROM chunks c LEFT JOIN {vec_table} v ON v.chunk_id = c.id \
          ORDER BY c.id"
     );
-    let rows = transport
-        .pipeline(&[Stmt::new(sql, vec![])])?
-        .into_iter()
+    let mut results = transport
+        .pipeline(&[
+            Stmt::new("SELECT COUNT(*) AS total FROM chunks", vec![]),
+            Stmt::new(sql, vec![]),
+        ])?
+        .into_iter();
+    let count = results
         .next()
-        .unwrap_or_default();
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.get_i64("total"))
+        .filter(|count| *count >= 0)
+        .ok_or_else(|| Error::backend("remediation: destination count result missing or invalid"))?
+        as u64;
+    let rows = results
+        .next()
+        .ok_or_else(|| Error::backend("remediation: destination row result missing"))?;
+    if results.next().is_some() {
+        return Err(Error::backend(
+            "remediation: destination returned extra statement results",
+        ));
+    }
+    if count != rows.len() as u64 {
+        return Err(Error::backend(format!(
+            "remediation: destination count {count} disagrees with {} returned rows",
+            rows.len()
+        )));
+    }
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let id = r
@@ -318,7 +376,8 @@ pub fn build_report(
         .map(|d| d.id)
         .collect();
 
-    let run_id = run_identity(source_name, destination_name, sensitivity, &mappings);
+    let run_id = run_identity(source_name, destination_name, sensitivity, src);
+    let destination_fingerprint = destination_fingerprint(dst);
 
     InventoryReport {
         format: INVENTORY_FORMAT.to_string(),
@@ -326,6 +385,7 @@ pub fn build_report(
         source: source_name.to_string(),
         destination: destination_name.to_string(),
         sensitivity: sensitivity.name().to_string(),
+        destination_fingerprint,
         counts,
         mappings,
         unverified_source_ids,
@@ -333,14 +393,14 @@ pub fn build_report(
     }
 }
 
-/// Stable run identity over the pair and the mapped (id, hash) set. Sorted so
-/// the same inputs always yield the same id, which is what makes a resume
-/// comparable.
+/// Stable identity over canonical endpoints and source ID/hash rows. The
+/// destination snapshot is fingerprinted separately so resumes can reject
+/// destination drift without changing the run identity.
 fn run_identity(
     source: &str,
     destination: &str,
     sensitivity: Sensitivity,
-    mappings: &[MappingEntry],
+    source_chunks: &[SourceChunk],
 ) -> String {
     let mut h = Sha256::new();
     h.update(INVENTORY_FORMAT.as_bytes());
@@ -350,15 +410,68 @@ fn run_identity(
     h.update(destination.as_bytes());
     h.update(b"\0");
     h.update(sensitivity.name().as_bytes());
-    for m in mappings {
+    let mut source_chunks = source_chunks.iter().collect::<Vec<_>>();
+    source_chunks
+        .sort_by(|left, right| (left.id, &left.content_hash).cmp(&(right.id, &right.content_hash)));
+    for chunk in source_chunks {
         h.update(b"\0");
-        h.update(m.source_chunk_id.to_string().as_bytes());
+        h.update(chunk.id.to_string().as_bytes());
         h.update(b":");
-        h.update(m.source_content_hash.as_bytes());
-        h.update(b":");
-        h.update(m.status.as_str().as_bytes());
+        h.update(chunk.content_hash.as_bytes());
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn destination_fingerprint(destination: &[DestinationChunk]) -> String {
+    let mut destination = destination.iter().collect::<Vec<_>>();
+    destination.sort_by(|left, right| {
+        (left.id, &left.content_hash, left.has_vector).cmp(&(
+            right.id,
+            &right.content_hash,
+            right.has_vector,
+        ))
+    });
+    let mut h = Sha256::new();
+    h.update(INVENTORY_FORMAT.as_bytes());
+    h.update(b"\0destination\0");
+    for chunk in destination {
+        h.update(chunk.id.to_string().as_bytes());
+        h.update(b":");
+        h.update(chunk.content_hash.as_bytes());
+        h.update(if chunk.has_vector { b":1" } else { b":0" });
+        h.update(b"\0");
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Refuse resume when the source or destination snapshot differs from the
+/// record. The stable run id pins endpoints and source content; the separate
+/// destination fingerprint detects repair or drift between reads.
+pub fn validate_resume(previous: &InventoryReport, fresh: &InventoryReport) -> Result<()> {
+    if previous.format != INVENTORY_FORMAT || fresh.format != INVENTORY_FORMAT {
+        return Err(Error::fatal(
+            "remediation: cannot resume a foreign report format",
+        ));
+    }
+    if previous.run_id != fresh.run_id {
+        return Err(Error::fatal(
+            "remediation: source identity or source set changed; start a new inventory run",
+        ));
+    }
+    if previous.destination_fingerprint != fresh.destination_fingerprint
+        || previous.mappings != fresh.mappings
+    {
+        return Err(Error::fatal(
+            "remediation: destination mapping changed since the saved run; re-inventory before resuming",
+        ));
+    }
+    Ok(())
+}
+
+pub fn is_valid_vector_table_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 impl MappingStatus {
@@ -372,17 +485,24 @@ impl MappingStatus {
     }
 }
 
-/// Write the run record as JSON. Identifiers, hashes and counts only.
+/// Write the run record as JSON without replacing an existing file. This also
+/// prevents an output path that aliases a local source shard from truncating it.
 pub fn write_run(path: &Path, report: &InventoryReport) -> Result<()> {
     let json = serde_json::to_vec_pretty(report)
         .map_err(|e| Error::backend(format!("remediation: serialize run: {e}")))?;
-    std::fs::write(path, json)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .map_err(|e| Error::backend(format!("remediation: create {}: {e}", path.display())))?;
+    file.write_all(&json)
         .map_err(|e| Error::backend(format!("remediation: write {}: {e}", path.display())))
 }
 
-/// Read a previous run record for resume. Refuses a malformed record or one
-/// written by a different format; drift detection against a fresh inventory is
-/// the caller's job via [`InventoryReport::run_id`].
+/// Read a previous run record for resume. Refuses malformed or foreign-format
+/// records; compare it with a fresh inventory using [`validate_resume`].
 pub fn read_run(path: &Path) -> Result<InventoryReport> {
     let bytes = std::fs::read(path)
         .map_err(|e| Error::backend(format!("remediation: read {}: {e}", path.display())))?;

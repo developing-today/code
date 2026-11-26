@@ -10,13 +10,15 @@
 
 use std::path::{Path, PathBuf};
 
+use atlas_core::error::Result;
 use atlas_core::filters::Sensitivity;
 use atlas_core::remediation::{
     DestinationChunk, InventoryReport, MappingStatus, SourceChunk, build_report, inventory,
-    read_run, write_run,
+    read_destination, read_run, read_source, validate_resume, write_run,
 };
 use atlas_core::shards::LocalShardTransport;
-use atlas_core::types::DEFAULT_VEC_TABLE;
+use atlas_core::turso::PipelineTransport;
+use atlas_core::types::{DEFAULT_VEC_TABLE, Row, Stmt, Value};
 
 fn s(id: i64, hash: &str) -> SourceChunk {
     SourceChunk {
@@ -207,6 +209,132 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
 fn absence_predicate_holds_only_at_zero_remaining_rows() {
     assert!(InventoryReport::absence_holds(0));
     assert!(!InventoryReport::absence_holds(1));
+}
+
+#[derive(Clone)]
+struct StaticTransport {
+    results: Vec<Vec<Row>>,
+}
+
+impl PipelineTransport for StaticTransport {
+    fn pipeline(&self, _stmts: &[Stmt]) -> Result<Vec<Vec<Row>>> {
+        Ok(self.results.clone())
+    }
+}
+
+struct UnexpectedQuery;
+
+impl PipelineTransport for UnexpectedQuery {
+    fn pipeline(&self, _stmts: &[Stmt]) -> Result<Vec<Vec<Row>>> {
+        panic!("invalid SQL identifier must be rejected before a query")
+    }
+}
+
+#[test]
+fn missing_or_malformed_statement_results_fail_closed() {
+    let no_results = StaticTransport { results: vec![] };
+    let malformed_count = StaticTransport {
+        results: vec![vec![], vec![]],
+    };
+    let count_row_without_data_result = StaticTransport {
+        results: vec![vec![Row::new(vec![("total".into(), Value::Integer(0))])]],
+    };
+
+    for transport in [
+        &no_results,
+        &malformed_count,
+        &count_row_without_data_result,
+    ] {
+        assert!(read_source(transport, Sensitivity::SecretBearing).is_err());
+        assert!(read_destination(transport, DEFAULT_VEC_TABLE).is_err());
+    }
+}
+
+#[test]
+fn vector_table_identifier_is_rejected_before_query() {
+    let err = read_destination(
+        &UnexpectedQuery,
+        "chunks v ON v.id = c.id UNION SELECT id,text,1 FROM chunks --",
+    )
+    .expect_err("SQL input must be rejected before interpolation");
+    assert!(err.to_string().contains("invalid vector table identifier"));
+}
+
+#[test]
+fn resume_keeps_endpoint_and_source_identity_stable_but_rejects_destination_drift() {
+    let source = [s(1, "source-hash")];
+    let old = build_report(
+        "turso://monolith/atlas",
+        "turso://secret/atlas-core-secret-main-01",
+        Sensitivity::SecretBearing,
+        &source,
+        &[d(9, "source-hash", false)],
+    );
+    let repaired = build_report(
+        "turso://monolith/atlas",
+        "turso://secret/atlas-core-secret-main-01",
+        Sensitivity::SecretBearing,
+        &source,
+        &[d(9, "source-hash", true)],
+    );
+    assert_eq!(old.run_id, repaired.run_id);
+    assert_ne!(
+        old.destination_fingerprint,
+        repaired.destination_fingerprint
+    );
+    assert!(validate_resume(&old, &repaired).is_err());
+
+    let other_endpoint = build_report(
+        "turso://other-monolith/atlas",
+        "turso://secret/atlas-core-secret-main-01",
+        Sensitivity::SecretBearing,
+        &source,
+        &[d(9, "source-hash", false)],
+    );
+    assert_ne!(old.run_id, other_endpoint.run_id);
+    assert!(validate_resume(&old, &other_endpoint).is_err());
+}
+
+#[test]
+fn write_run_refuses_to_replace_an_existing_file() {
+    let path = temp_path("existing");
+    let sentinel = b"local replica must not be truncated";
+    std::fs::write(&path, sentinel).expect("create existing output");
+    let report = build_report(
+        "turso://monolith/atlas",
+        "turso://secret/atlas-core-secret-main-01",
+        Sensitivity::SecretBearing,
+        &[s(1, "hash")],
+        &[d(1, "hash", true)],
+    );
+
+    assert!(write_run(&path, &report).is_err());
+    assert_eq!(std::fs::read(&path).expect("read unchanged file"), sentinel);
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_run_creates_private_report_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = temp_path("private");
+    let report = build_report(
+        "turso://monolith/atlas",
+        "turso://secret/atlas-core-secret-main-01",
+        Sensitivity::SecretBearing,
+        &[s(1, "hash")],
+        &[d(1, "hash", true)],
+    );
+
+    write_run(&path, &report).expect("write private report");
+    let mode = std::fs::metadata(&path)
+        .expect("report metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

@@ -5,53 +5,121 @@
 //! text is ever selected. Writes NOTHING to any shard; the JSON report goes
 //! to a local file. Trace-safe: identifiers, hashes and counts only.
 //!
-//! Run on the laptop from the task worktree:
+//! The complete CLI is `remediation_inventory --out PATH [--resume PATH]
+//! [--vec-table IDENTIFIER]`. Repeated, unknown, missing, or empty arguments
+//! are rejected before any network request or file write.
+//!
+//! Run on an operator host with explicit endpoint hosts:
 //! ```sh
-//! MONOLITH_URL=... SECRET_URL=... MONOLITH_TOKEN=... SECRET_TOKEN=... \
+//! MONOLITH_HOST=... SECRET_HOST=... MONOLITH_TOKEN=... SECRET_TOKEN=... \
 //!   cargo run -p atlas-core --example remediation_inventory --release \
-//!     -- --out /path/to/report.json [--vec-table TABLE]
+//!     -- --out /path/to/new-report.json [--resume /path/to/prior-report.json] \
+//!     [--vec-table TABLE]
 //! ```
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use atlas_core::filters::Sensitivity;
-use atlas_core::remediation::{inventory, write_run};
+use atlas_core::remediation::{
+    inventory, is_valid_vector_table_identifier, read_run, validate_resume, write_run,
+};
 use atlas_core::shards::LocalShardTransport;
 use atlas_core::turso::HttpTransport;
 
 fn env(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"))
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| panic!("{name} is not set or is empty"))
+}
+
+struct Args {
+    out: PathBuf,
+    resume: Option<PathBuf>,
+    vec_table: String,
+}
+
+fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
+    let mut out = None;
+    let mut resume = None;
+    let mut vec_table = None;
+    while let Some(flag) = args.next() {
+        let value = args
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{flag} requires a non-empty value"))?;
+        match flag.as_str() {
+            "--out" if out.is_none() => out = Some(PathBuf::from(value)),
+            "--resume" if resume.is_none() => resume = Some(PathBuf::from(value)),
+            "--vec-table" if vec_table.is_none() => vec_table = Some(value),
+            "--out" | "--resume" | "--vec-table" => {
+                return Err(format!("{flag} may be specified only once"));
+            }
+            _ => return Err(format!("unknown argument {flag}")),
+        }
+    }
+    let vec_table = vec_table.unwrap_or_else(|| atlas_core::types::DEFAULT_VEC_TABLE.to_string());
+    if !is_valid_vector_table_identifier(&vec_table) {
+        return Err("--vec-table must be a plain SQL identifier".to_string());
+    }
+    Ok(Args {
+        out: out.ok_or_else(|| "--out <path> is required".to_string())?,
+        resume,
+        vec_table,
+    })
+}
+
+fn ensure_new_output(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(format!(
+            "output already exists; choose a new path: {}",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot inspect output path {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 fn main() {
-    let mut out: Option<PathBuf> = None;
-    let mut vec_table = atlas_core::types::DEFAULT_VEC_TABLE.to_string();
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--out" => out = Some(PathBuf::from(args.next().expect("--out needs a path"))),
-            "--vec-table" => vec_table = args.next().expect("--vec-table needs a value"),
-            other => panic!("unknown arg {other}"),
-        }
-    }
-    let out = out.expect("--out <report.json> is required");
+    let args = parse_args(std::env::args().skip(1)).unwrap_or_else(|error| {
+        eprintln!("usage: remediation_inventory --out PATH [--resume PATH] [--vec-table IDENTIFIER]: {error}");
+        std::process::exit(2);
+    });
+    ensure_new_output(&args.out).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
+    let previous = args
+        .resume
+        .as_ref()
+        .map(|path| read_run(path))
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!("invalid prior run: {error}");
+            std::process::exit(2);
+        });
     // Local replica source: MONOLITH_FILE=<path> selects the read-only
     // LocalShardTransport; otherwise the hosted monolith is used.
     if let Ok(path) = std::env::var("MONOLITH_FILE") {
-        let monolith =
-            LocalShardTransport::open(std::path::Path::new(&path)).expect("open local replica");
-        let secret_host = std::env::var("SECRET_HOST")
-            .unwrap_or_else(|_| panic!("SECRET_HOST is required with MONOLITH_FILE"));
+        let canonical_path = std::fs::canonicalize(&path).expect("canonicalize local replica");
+        let monolith = LocalShardTransport::open(&canonical_path).expect("open local replica");
+        let secret_host = env("SECRET_HOST");
         let secret = HttpTransport::new(&secret_host, env("SECRET_TOKEN"));
         let report = inventory(
             &monolith,
             &secret,
-            &format!("replica:{path}"),
-            "atlas-core-secret-main-01",
+            &format!("file://{}", canonical_path.display()),
+            &format!("turso://{secret_host}/atlas-core-secret-main-01"),
             Sensitivity::SecretBearing,
-            &vec_table,
+            &args.vec_table,
         )
         .expect("inventory failed");
-        write_run(&out, &report).expect("write report failed");
+        if let Some(previous) = &previous {
+            validate_resume(previous, &report).expect("resume drift check");
+        }
+        write_run(&args.out, &report).expect("write report failed");
         println!(
             "source={} destination={} verified={} missing_destination={} hash_mismatch={} missing_vector={} destination_complete={} run_id={}",
             report.counts.source,
@@ -63,30 +131,26 @@ fn main() {
             report.destination_complete(),
             report.run_id,
         );
-        println!("report: {}", out.display());
+        println!("report: {}", args.out.display());
         return;
     }
-    let monolith_host = std::env::var("MONOLITH_HOST")
-        .unwrap_or_else(|_| atlas_core::turso::TURSO_HOST.to_string());
-    let secret_host = std::env::var("SECRET_HOST").unwrap_or_else(|_| {
-        let prefix = monolith_host
-            .split_once('.')
-            .map(|x| x.0)
-            .unwrap_or(&monolith_host);
-        format!("{prefix}-auth.aws-us-east-1.turso.io")
-    });
+    let monolith_host = env("MONOLITH_HOST");
+    let secret_host = env("SECRET_HOST");
     let monolith = HttpTransport::new(&monolith_host, env("MONOLITH_TOKEN"));
     let secret = HttpTransport::new(&secret_host, env("SECRET_TOKEN"));
     let report = inventory(
         &monolith,
         &secret,
-        "monolith",
-        "atlas-core-secret-main-01",
+        &format!("turso://{monolith_host}/atlas"),
+        &format!("turso://{secret_host}/atlas-core-secret-main-01"),
         Sensitivity::SecretBearing,
-        &vec_table,
+        &args.vec_table,
     )
     .expect("inventory failed");
-    write_run(&out, &report).expect("write report failed");
+    if let Some(previous) = &previous {
+        validate_resume(previous, &report).expect("resume drift check");
+    }
+    write_run(&args.out, &report).expect("write report failed");
     println!(
         "source={} destination={} verified={} missing_destination={} hash_mismatch={} missing_vector={} destination_complete={} run_id={}",
         report.counts.source,
@@ -98,5 +162,66 @@ fn main() {
         report.destination_complete(),
         report.run_id,
     );
-    println!("report: {}", out.display());
+    println!("report: {}", args.out.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Result<Args, String> {
+        parse_args(values.iter().map(|value| (*value).to_string()))
+    }
+
+    #[test]
+    fn cli_contract_accepts_only_unique_declared_arguments() {
+        let parsed = args(&[
+            "--out",
+            "report.json",
+            "--resume",
+            "prior.json",
+            "--vec-table",
+            "vectors",
+        ])
+        .expect("declared arguments");
+        assert_eq!(parsed.out, PathBuf::from("report.json"));
+        assert_eq!(parsed.resume, Some(PathBuf::from("prior.json")));
+        assert_eq!(parsed.vec_table, "vectors");
+        assert!(args(&["--out", "report.json", "--out", "other.json"]).is_err());
+        assert!(args(&["--out", "report.json", "--unknown", "value"]).is_err());
+        assert!(
+            args(&[
+                "--out",
+                "report.json",
+                "--vec-table",
+                "vectors;DROP TABLE chunks"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn output_guard_rejects_hard_link_alias_to_source() {
+        let source = std::env::temp_dir().join(format!(
+            "atlas-remediation-source-{}.db",
+            std::process::id()
+        ));
+        let output = std::env::temp_dir().join(format!(
+            "atlas-remediation-output-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&output);
+        std::fs::write(&source, b"source shard bytes").expect("create source fixture");
+        std::fs::hard_link(&source, &output).expect("link report path to source");
+
+        assert!(ensure_new_output(&output).is_err());
+        assert_eq!(
+            std::fs::read(&source).expect("source remains"),
+            b"source shard bytes"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(output);
+    }
 }
