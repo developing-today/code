@@ -1796,7 +1796,10 @@ mod tests {
             b"error: nope\n"
         );
         let mut empty = std::io::Cursor::new(Vec::new());
-        assert_eq!(read_capture_tail(&mut empty, MAX_CAPTURE_BYTES), [] as [u8; 0]);
+        assert_eq!(
+            read_capture_tail(&mut empty, MAX_CAPTURE_BYTES),
+            [] as [u8; 0]
+        );
     }
 
     /// A reader whose first read fails with `Interrupted`, then yields

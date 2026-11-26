@@ -4993,7 +4993,10 @@ mod tests {
     #[test]
     fn world_line_buffer_discards_overlong_line_until_newline() {
         let mut input = WorldLineBuffer::default();
-        assert_eq!(input.push(&vec![b'x'; MAX_LINE + 1]), [] as [WorldCommand; 0]);
+        assert_eq!(
+            input.push(&vec![b'x'; MAX_LINE + 1]),
+            [] as [WorldCommand; 0]
+        );
         assert_eq!(
             input.push(b"tail\nokay\n"),
             vec![WorldCommand::Chat("okay".into())]
