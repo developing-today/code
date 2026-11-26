@@ -1030,8 +1030,13 @@ export class UserDO {
       onSettled: (snapshot) => {
         if (snapshot.authed) {
           const coord = this.syncCoord(attachment.bindingId);
-          if (snapshot.closed) coord.end(attachment.irohHex, attachment.sid);
-          else coord.own(attachment.irohHex, attachment.sid, this.bridgeStore().heads());
+          if (snapshot.closed) {
+            coord.end(attachment.irohHex, attachment.sid);
+          } else if (coord.get(attachment.irohHex)?.session_id === attachment.sid) {
+            coord.advance(attachment.irohHex, attachment.sid, this.bridgeStore().heads());
+          } else {
+            coord.own(attachment.irohHex, attachment.sid, this.bridgeStore().heads());
+          }
         }
         this.saveBridgeSession(attachment.sid, snapshot);
       },

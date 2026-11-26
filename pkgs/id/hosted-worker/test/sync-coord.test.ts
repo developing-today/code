@@ -57,5 +57,5 @@ test("SyncCoord expires abandoned live ownership without losing its watermark", 
   now += 24 * 60 * 60 * 1000 + 1;
   const replacement = coord.own("peer-a", "recovered", []);
   assert.equal(replacement.session_id, "recovered");
-  assert.deepEqual(replacement.watermark, []);
+  assert.deepEqual(replacement.watermark, initial, "expired ownership does not discard the resume watermark");
 });

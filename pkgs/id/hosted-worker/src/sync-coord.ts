@@ -67,7 +67,11 @@ export class SyncCoord {
     ) {
       throw new SyncCoordConflict();
     }
-    const started = prior?.session_id === sessionId ? prior.started_ms : now;
+    const sameSession = prior?.session_id === sessionId;
+    const started = sameSession ? prior.started_ms : now;
+    // A newly owned session resumes from the database's last durable
+    // watermark. Only advance() may replace that point after progress.
+    const durableWatermark = prior && !sameSession ? prior.watermark : watermark;
     this.sql.exec(
       `INSERT INTO sync_coord (tenant_id, peer_id, session_id, state, watermark, started_ms, updated_ms)
        VALUES (?, ?, ?, 'active', ?, ?, ?)
@@ -80,7 +84,7 @@ export class SyncCoord {
       this.tenantId,
       peerId,
       sessionId,
-      JSON.stringify(canonicalWatermark(watermark)),
+      JSON.stringify(canonicalWatermark(durableWatermark)),
       started,
       now,
     );
