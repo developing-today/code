@@ -1,4 +1,4 @@
-use idp_provider::{app_from_config, Config};
+use idp_provider::{Config, app_from_config};
 use std::sync::Arc;
 
 /// Operator identity-store commands (#13415): link / unlink / links.

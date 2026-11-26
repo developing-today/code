@@ -24,15 +24,15 @@ use crate::audit::AuditLog;
 use crate::doors::PendingDoor;
 use crate::identities::IdentityStore;
 use crate::registry::{
-    now_unix, random_b64url, url_encode, verify_credential, ProviderConfig, LOCAL_DOOR_PROVIDER,
+    LOCAL_DOOR_PROVIDER, ProviderConfig, now_unix, random_b64url, url_encode, verify_credential,
 };
 use crate::signing::TokenSigner;
 use crate::upstream::DoorRuntime;
 use axum::{
-    extract::{Form, Query, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
     Json,
+    extract::{Form, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

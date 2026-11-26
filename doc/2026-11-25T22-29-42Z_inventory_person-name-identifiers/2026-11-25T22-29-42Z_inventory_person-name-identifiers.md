@@ -11,17 +11,17 @@ The bridge already shows the pattern to follow: `pkgs/message-bridge/worker/src/
 
 ## Counts (non-Markdown lines, outside dated docs)
 
-| Form | Lines | Where |
-|---|---|---|
-| `needs-drew` | 273 | pm-stack/aggregator 172, pkgs/fleet 24, notify-relay 14, console 7, nixos/home 5 |
-| `needsDrew` | 277 | aggregator 225, shared-schema 16, pkgs/fleet 16, notify-relay 11 |
-| `NeedsDrew` | 269 | aggregator 242, pkgs/fleet 17, console 6, notify-relay 1 |
-| `needs_drew` | 66 | pkgs/fleet 45, aggregator 1 |
-| `NEEDS_DREW` | 36 | aggregator 22, exporters 7, console 2, notify-relay 1 |
-| `drew-cli` | 12 | pkgs/fleet 8, pkgs/atlas-search 2 |
-| `drew_decision` | 4 | pkgs/fleet 2 (one in a SQL migration) |
-| `awaiting drew` | 2 | pkgs/fleet 1 |
-| bare `"drew"` value | ~40 | atlas-core requester kind, message-bridge relay/wake, fleet-kv and bridge test fixtures |
+| Form                | Lines | Where                                                                                   |
+| ------------------- | ----- | --------------------------------------------------------------------------------------- |
+| `needs-drew`        | 273   | pm-stack/aggregator 172, pkgs/fleet 24, notify-relay 14, console 7, nixos/home 5        |
+| `needsDrew`         | 277   | aggregator 225, shared-schema 16, pkgs/fleet 16, notify-relay 11                        |
+| `NeedsDrew`         | 269   | aggregator 242, pkgs/fleet 17, console 6, notify-relay 1                                |
+| `needs_drew`        | 66    | pkgs/fleet 45, aggregator 1                                                             |
+| `NEEDS_DREW`        | 36    | aggregator 22, exporters 7, console 2, notify-relay 1                                   |
+| `drew-cli`          | 12    | pkgs/fleet 8, pkgs/atlas-search 2                                                       |
+| `drew_decision`     | 4     | pkgs/fleet 2 (one in a SQL migration)                                                   |
+| `awaiting drew`     | 2     | pkgs/fleet 1                                                                            |
+| bare `"drew"` value | ~40   | atlas-core requester kind, message-bridge relay/wake, fleet-kv and bridge test fixtures |
 
 ## A. Wire and stored values (rename only with aliases)
 
@@ -50,14 +50,14 @@ No stored or wire value depends on these: the Rust module `fleet_queue::needs_dr
 
 ## Proposed role terms
 
-| Old | Proposed | Why |
-|---|---|---|
+| Old                                                          | Proposed                                                     | Why                                                                                                                       |
+| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | needs-drew / needsDrew / NeedsDrew / needs_drew / NEEDS_DREW | needs-user / needsUser / NeedsUser / needs_user / NEEDS_USER | Matches the #13392 prose term "needs user" and the existing labels `user/review`, `user/escalated` that the census reads. |
-| `drew_decision` | `user_decision` | Sits beside `escalated-to-user`. |
-| `awaiting drew` (text) | keep; `awaiting owner` already matches | Free-text matcher, see B. |
-| Atlas kind `drew` | `owner` | `user` is taken by another kind; "owner" is the bridge's existing alias. |
-| `drew-cli` | `owner-cli` | Same reasoning as the Atlas kind. |
-| bridge address `drew` | `owner` (already accepted) | Only the default shown address changes. |
+| `drew_decision`                                              | `user_decision`                                              | Sits beside `escalated-to-user`.                                                                                          |
+| `awaiting drew` (text)                                       | keep; `awaiting owner` already matches                       | Free-text matcher, see B.                                                                                                 |
+| Atlas kind `drew`                                            | `owner`                                                      | `user` is taken by another kind; "owner" is the bridge's existing alias.                                                  |
+| `drew-cli`                                                   | `owner-cli`                                                  | Same reasoning as the Atlas kind.                                                                                         |
+| bridge address `drew`                                        | `owner` (already accepted)                                   | Only the default shown address changes.                                                                                   |
 
 ## Suggested order of slices
 

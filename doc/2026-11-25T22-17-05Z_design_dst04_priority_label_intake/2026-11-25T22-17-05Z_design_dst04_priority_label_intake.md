@@ -150,6 +150,7 @@ Delivery dedupe and command identity stay separate (#9200, DSP-01):
   A redelivery of the same delivery produces the same key, and so the
   sink returns its stored receipt. The timestamp is part of identity
   only. It never orders commands.
+
 - **Polls do not create commands.** Reconcile reads (`/reconcile`)
   update the projection only. If they could also forward, one act would
   arrive under two identities.
@@ -248,6 +249,7 @@ LabelEnvelope {
 ```
 
 DST-03's `distribution.rs` maps it to the shared `Command`:
+
 - `kind` is `priority.set_band` or `priority.request_triage`;
 - `actor_ref` is `github:user:<id>`, which is recorded and never used
   for authority;
@@ -306,6 +308,7 @@ Further oracles:
 
 The Projector suite, `test/priority-webhook.test.ts`, checks four
 things:
+
 - a priority label event forwards exactly one envelope;
 - a non-priority label forwards none;
 - a reconcile poll forwards none;

@@ -95,10 +95,10 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-25T12:24:06Z'
+      last_seen: "2026-11-25T12:24:06Z"
       status: unreachable
       checks:
-        reported_at: '2026-11-26T02:24:15Z'
+        reported_at: "2026-11-26T02:24:15Z"
         reachable:
           state: failed
           ssh: true
@@ -120,7 +120,7 @@ machines:
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: '23812'
+          task_id: "23812"
           queue: repo-health-code-pilot
           worker: agent-next-26-local
-          completed_at: '2026-11-25T13:50:44Z'
+          completed_at: "2026-11-25T13:50:44Z"

@@ -336,11 +336,7 @@ export const STALE_ACT_ERROR =
  * from the platform's. One that says `sure` was looked at again by the
  * owner and goes as it is. One that says nothing of when it was done
  * claims to be done now, and is taken as that. */
-export function staleAct(
-  kind: string,
-  body: { at?: unknown; sent?: unknown; sure?: unknown },
-  now: number,
-): boolean {
+export function staleAct(kind: string, body: { at?: unknown; sent?: unknown; sure?: unknown }, now: number): boolean {
   if (!TIMELY.has(kind) || body.sure === true) return false;
   const at = body.at;
   if (typeof at !== "number" || !Number.isFinite(at)) return false;

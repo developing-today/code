@@ -50,8 +50,8 @@ no live run.
 ## Verified state on `origin/main` `510e50de`
 
 - `src/work-action-contract.ts` (MOB-05) has the states `draft,
-  previewed, accepted, running, pending_sync, partial, conflict,
-  uncertain, rejected, verified_complete` and these edges out of the
+previewed, accepted, running, pending_sync, partial, conflict,
+uncertain, rejected, verified_complete` and these edges out of the
   middle states:
   - `running → pending_sync | partial | conflict | uncertain | rejected | verified_complete`
   - `pending_sync → verified_complete | partial | uncertain`

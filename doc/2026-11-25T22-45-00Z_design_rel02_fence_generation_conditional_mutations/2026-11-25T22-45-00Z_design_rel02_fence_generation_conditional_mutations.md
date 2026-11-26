@@ -8,6 +8,7 @@ Status: **design proposal — not an authorization to implement.**
 This record elaborates the REL-02 row of the merged design package
 (`doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/`,
 PR #9225). The row says:
+
 - Goal: "stale claimant cannot mutate local lifecycle after takeover".
 - First oracle: `pmo_rel_stale_generation_cannot_write_after_reclaim`,
   which races a generation N mutation with an N+1 takeover.
@@ -17,6 +18,7 @@ PR #9225). The row says:
   release/park/checkpoint, DB busy".
 
 This record _decides_:
+
 - what the fence generation is;
 - exactly when it changes;
 - how every holder mutation is conditioned on it;
@@ -48,20 +50,21 @@ Governing decisions consumed, not re-opened:
 
   REL-02 only puts the fence into the **first** statement of a
   mutation. It does not re-decide multi-statement atomicity.
+
 - **CEN-04** (#9434, record merged): §3.4 owns lease and claim fields,
   §5 admits no persisted field without a row, and §7 makes rollback
   disable-only.
 
 ## Verified state at `origin/main` `db23862b`
 
-| Surface | What it does today | Gap for REL-02 |
-| --- | --- | --- |
-| Holder identity | Holder writes check `status = 'claimed' AND worker_id = ?`, mostly through a separate `claimed_by` read (`turso_queue/lifecycle.rs:1651`). The claim code notes that "every lane shares worker_id repo-worker-code" (`lifecycle.rs:459`). | The worker id cannot tell two holders apart. A stale session and its replacement often carry the same id. |
-| `heartbeat` (`turso_queue/heartbeat.sql`) | One conditional `UPDATE … WHERE worker_id = ? AND claimed_at IS ? AND lane_id IS ? AND attempts = ?`. | The strongest fence today, but by proxy. `claimed_at` is a one-second ISO string from the broker's clock. `attempts` does not increase on a claim from `parked`/`handed_off` (`claim.rs:1251`) or on a transfer (`lifecycle.rs:317`). Two holders can share the tuple. |
-| `release` (`lifecycle.rs:2209`), `park` (`:2053`, `:2073`), checkpoint progress (`:1854`), `complete` (`admin.rs:~1604`) | Each reads the row with `claimed_by`, then writes `… WHERE id = ?` with no ownership condition. | Check-then-act. A take-over or sweep between the read and the write is overwritten: a stale holder can release, park, checkpoint or complete a task someone else now holds. These are the row's "stale release/park/checkpoint" negatives, present today. |
-| `block_task` (`admin.rs:92`), transfer (`lifecycle.rs:317`) | Conditional on `status = 'claimed' AND worker_id = ?`. | Conditional, but on the shared worker id. |
-| Lease time | The broker computes `now_unix()` from its own system clock (`turso_queue/core.rs:68`) and passes it as a parameter. `expire_leases` (`core.rs:2582`) and the heartbeat's `julianday(?1)` compare against that parameter. | Two broker processes, or a broker and a repair tool, with different clocks disagree on whether a lease is live. |
-| Generation field | `Command.lease_generation: Option<String>` (`work/contracts.rs:648`) and `OwnershipExecutionProjection.lease_generation: Option<u64>` (`work/lifecycle.rs:255`) exist in the models. | No column stores it, no claim returns it, and no write checks it. |
+| Surface                                                                                                                  | What it does today                                                                                                                                                                                                                        | Gap for REL-02                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Holder identity                                                                                                          | Holder writes check `status = 'claimed' AND worker_id = ?`, mostly through a separate `claimed_by` read (`turso_queue/lifecycle.rs:1651`). The claim code notes that "every lane shares worker_id repo-worker-code" (`lifecycle.rs:459`). | The worker id cannot tell two holders apart. A stale session and its replacement often carry the same id.                                                                                                                                                              |
+| `heartbeat` (`turso_queue/heartbeat.sql`)                                                                                | One conditional `UPDATE … WHERE worker_id = ? AND claimed_at IS ? AND lane_id IS ? AND attempts = ?`.                                                                                                                                     | The strongest fence today, but by proxy. `claimed_at` is a one-second ISO string from the broker's clock. `attempts` does not increase on a claim from `parked`/`handed_off` (`claim.rs:1251`) or on a transfer (`lifecycle.rs:317`). Two holders can share the tuple. |
+| `release` (`lifecycle.rs:2209`), `park` (`:2053`, `:2073`), checkpoint progress (`:1854`), `complete` (`admin.rs:~1604`) | Each reads the row with `claimed_by`, then writes `… WHERE id = ?` with no ownership condition.                                                                                                                                           | Check-then-act. A take-over or sweep between the read and the write is overwritten: a stale holder can release, park, checkpoint or complete a task someone else now holds. These are the row's "stale release/park/checkpoint" negatives, present today.              |
+| `block_task` (`admin.rs:92`), transfer (`lifecycle.rs:317`)                                                              | Conditional on `status = 'claimed' AND worker_id = ?`.                                                                                                                                                                                    | Conditional, but on the shared worker id.                                                                                                                                                                                                                              |
+| Lease time                                                                                                               | The broker computes `now_unix()` from its own system clock (`turso_queue/core.rs:68`) and passes it as a parameter. `expire_leases` (`core.rs:2582`) and the heartbeat's `julianday(?1)` compare against that parameter.                  | Two broker processes, or a broker and a repair tool, with different clocks disagree on whether a lease is live.                                                                                                                                                        |
+| Generation field                                                                                                         | `Command.lease_generation: Option<String>` (`work/contracts.rs:648`) and `OwnershipExecutionProjection.lease_generation: Option<u64>` (`work/lifecycle.rs:255`) exist in the models.                                                      | No column stores it, no claim returns it, and no write checks it.                                                                                                                                                                                                      |
 
 ## 1. Intent
 
@@ -80,15 +83,15 @@ holders write.
 
 ## 2. Ownership
 
-| Concern | Owner |
-| --- | --- |
-| The fence generation, its increments, the fenced write rule, the clock rule, legacy and rollback behavior (this record) | **REL-02** |
-| Which doors exist and who may use them | REL-01 + #9178 implementation slices |
-| Multi-statement atomicity, row version, follow-on guards | REL-04 (#9514) |
-| Carrying the generation on operations and relay acks | REL-03 receipt (provenance), REL-05 (#9515) relay |
-| Remote preconditions | REL-06 (#9516) |
-| The column and its migration | the queue broker as store owner, through CEN-04 §5 |
-| CLI flags and env that carry the generation to a worker | CLI-05 / CLI-13 |
+| Concern                                                                                                                 | Owner                                              |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| The fence generation, its increments, the fenced write rule, the clock rule, legacy and rollback behavior (this record) | **REL-02**                                         |
+| Which doors exist and who may use them                                                                                  | REL-01 + #9178 implementation slices               |
+| Multi-statement atomicity, row version, follow-on guards                                                                | REL-04 (#9514)                                     |
+| Carrying the generation on operations and relay acks                                                                    | REL-03 receipt (provenance), REL-05 (#9515) relay  |
+| Remote preconditions                                                                                                    | REL-06 (#9516)                                     |
+| The column and its migration                                                                                            | the queue broker as store owner, through CEN-04 §5 |
+| CLI flags and env that carry the generation to a worker                                                                 | CLI-05 / CLI-13                                    |
 
 ## 3. The fence generation
 
@@ -101,14 +104,14 @@ and returned to callers as a canonical decimal string. `"0"` means
 It increases by **exactly one** every time the **holder** of the
 claim changes, and at no other time:
 
-| Event | Generation |
-| --- | --- |
-| Any door moves the row into `claimed` (pick, by id, batch, sink claim, override claim) | +1, in the same statement |
-| Transfer with the holder's consent | +1, in the same statement |
-| Take-over without consent (FDR-0003) | +1, in the same statement |
-| Heartbeat, checkpoint, progress update by the holder | unchanged |
-| Exit from `claimed` (release, park, block, complete, hand-off, sweep expiry, admin requeue) | unchanged |
-| Any write to a row that is not `claimed` | unchanged |
+| Event                                                                                       | Generation                |
+| ------------------------------------------------------------------------------------------- | ------------------------- |
+| Any door moves the row into `claimed` (pick, by id, batch, sink claim, override claim)      | +1, in the same statement |
+| Transfer with the holder's consent                                                          | +1, in the same statement |
+| Take-over without consent (FDR-0003)                                                        | +1, in the same statement |
+| Heartbeat, checkpoint, progress update by the holder                                        | unchanged                 |
+| Exit from `claimed` (release, park, block, complete, hand-off, sweep expiry, admin requeue) | unchanged                 |
+| Any write to a row that is not `claimed`                                                    | unchanged                 |
 
 Exits do not need an increment. Every holder write is conditional on
 `status = 'claimed'` as well as the generation (§4), so after an exit
@@ -152,6 +155,7 @@ WHERE id = ? AND status = 'claimed' AND claim_generation = ?
 
 with the generation the request carries. The affected-row count of
 that statement is the authorization decision:
+
 - **1**: the request was made by the current holder, and the
   mutation proceeds.
 - **0**: the request is fenced, and nothing else in the mutation may
@@ -162,15 +166,15 @@ A preceding read, such as `claimed_by`, may stay to build a precise
 error message. It never authorizes. This replaces every check-then-act
 write in the verified-state table:
 
-| Verb | First statement gains |
-| --- | --- |
-| heartbeat | `claim_generation = ?` replaces the `claimed_at`/`lane_id`/`attempts` proxy (which may stay as a diagnostic) |
-| checkpoint (task progress) | the full fence; today `WHERE id = ?` |
-| park, hand-off | the full fence; today `WHERE id = ?` |
-| release | the full fence; today `WHERE id = ?` |
-| complete | the full fence; today `WHERE id = ?` |
-| block | `claim_generation = ?` alongside the current worker check |
-| transfer (by the holder) | the full fence, then +1 in the same statement |
+| Verb                       | First statement gains                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| heartbeat                  | `claim_generation = ?` replaces the `claimed_at`/`lane_id`/`attempts` proxy (which may stay as a diagnostic) |
+| checkpoint (task progress) | the full fence; today `WHERE id = ?`                                                                         |
+| park, hand-off             | the full fence; today `WHERE id = ?`                                                                         |
+| release                    | the full fence; today `WHERE id = ?`                                                                         |
+| complete                   | the full fence; today `WHERE id = ?`                                                                         |
+| block                      | `claim_generation = ?` alongside the current worker check                                                    |
+| transfer (by the holder)   | the full fence, then +1 in the same statement                                                                |
 
 Take-over is not a holder write. It is conditional on the row's
 current generation as the take-over reads it, so two concurrent
@@ -179,8 +183,9 @@ take-overs cannot both win.
 ### 4.2 Refusals
 
 A fenced write returns a typed refusal, never a string to parse:
+
 - `FENCED { task_id, presented_generation, current_generation,
-  current_status }` when the generation or status no longer matches.
+current_status }` when the generation or status no longer matches.
 - `FENCE_REQUIRED` when a request without a generation reaches a
   task claimed under fencing (§8).
 
@@ -207,6 +212,7 @@ its local claim.
 
 Every lease time decision is made in SQL against the store's own
 clock, never against a time the broker passes in:
+
 - whether a lease is live;
 - whether it has lapsed for the sweep;
 - the new `lease_until` on claim and heartbeat;
@@ -252,6 +258,7 @@ Because the fence (§4) carries safety:
   Heartbeat and checkpoint are safe to retry blindly. Release, park
   and complete reach a non-`claimed` status, so a duplicate is fenced
   on status, not applied twice.
+
 - **Busy during a claim.** The claim's own conditional `UPDATE`
   either increments once or does nothing. A retried claim is a new
   claim attempt through its door.
@@ -297,7 +304,7 @@ Because the fence (§4) carries safety:
   the generation, so a holder change during the rollback window would
   leave two holders on the same number. **Re-enabling** therefore
   runs one statement that sets `claim_generation =
-  claim_generation + 1` for every row of the queue, still monotone,
+claim_generation + 1` for every row of the queue, still monotone,
   and moves `fence_enabled_at` to the re-enable time. Every token from
   before the rollback is dead, and claims made during the window are
   legacy claims under the rule above. Nothing is deleted.
@@ -368,13 +375,13 @@ Full per-occurrence text is in
 `doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/requirements-crosswalk.jsonl`.
 This is design coverage, not implementation.
 
-| IDs | Theme (from the crosswalk's source quotes) | Where addressed |
-| --- | --- | --- |
-| C-R134, C-R135, H-R014, O-R027, O-R035 | atomic claim issuing a fencing counter; a stale agent cannot overwrite a newer claim; two claimers, one lease | §3, §4 |
-| C-R144, P-R023 | completion validates the lease before it acts | §4.1 (`complete` row) |
-| C-R151, C-R153, O-R052, P-R007 | park, resume and near-timeout checkpoint across interruptions | §4.1, §6 |
-| H-R006, P-R001, P-R011, P-R020 | claiming among lanes and work operations | §3.3 (shared worker ids), §4 |
-| C-R005, C-R009, C-R107, C-R108, C-R110, C-R145, H-R016, H-R017, H-R024, H-R031, O-R023, O-R032, P-R006, P-R009, P-R025, P-R033 | structured refusals, preserved inventory, crash and recovery | §4.2, §6, §8 |
+| IDs                                                                                                                            | Theme (from the crosswalk's source quotes)                                                                    | Where addressed              |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| C-R134, C-R135, H-R014, O-R027, O-R035                                                                                         | atomic claim issuing a fencing counter; a stale agent cannot overwrite a newer claim; two claimers, one lease | §3, §4                       |
+| C-R144, P-R023                                                                                                                 | completion validates the lease before it acts                                                                 | §4.1 (`complete` row)        |
+| C-R151, C-R153, O-R052, P-R007                                                                                                 | park, resume and near-timeout checkpoint across interruptions                                                 | §4.1, §6                     |
+| H-R006, P-R001, P-R011, P-R020                                                                                                 | claiming among lanes and work operations                                                                      | §3.3 (shared worker ids), §4 |
+| C-R005, C-R009, C-R107, C-R108, C-R110, C-R145, H-R016, H-R017, H-R024, H-R031, O-R023, O-R032, P-R006, P-R009, P-R025, P-R033 | structured refusals, preserved inventory, crash and recovery                                                  | §4.2, §6, §8                 |
 
 ## 12. Non-goals
 

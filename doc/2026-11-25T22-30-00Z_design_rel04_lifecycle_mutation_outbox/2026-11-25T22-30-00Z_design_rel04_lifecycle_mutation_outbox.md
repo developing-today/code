@@ -60,15 +60,15 @@ The REL-04 row names "a proven DB transaction contract" as a hard
 blocker. Reading the broker's Turso backend shows why: the contract
 is not proven today, and two of its gaps are concrete.
 
-| Surface | What exists | What it means for REL-04 |
-| --- | --- | --- |
-| `turso_queue/core.rs` `pipeline` (`:705`) and `exec_batch` (`:834`) | One HTTP POST to Hrana `/v2/pipeline` carrying one `execute` request per statement plus `close`. The client walks the results and returns `Err` at the **first** non-`ok` result. | Callers build transactions as `[BEGIN IMMEDIATE, …, COMMIT]` inside one pipeline. The client learns of a failed statement only after the server has processed the whole request list, including the trailing `COMMIT`. Nothing in the request makes later statements conditional on earlier ones, so "the pipeline returned `Err`" does not prove "nothing committed". No `ROLLBACK` is ever sent on this path, and Hrana `batch` step conditions are not used anywhere in `fleet-queue`. |
-| Guarded writes, e.g. `links.rs` `GUARDED_DEP_INSERT_SQL` (`:567`) | Follow-on inserts carry `WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND <expected post-state>)`, so a lost state CAS turns them into no-ops inside the same transaction. | This is the right in-pipeline pattern, and REL-04 adopts it (§4.2). It keys on a post-state that two writers can both produce, so it is a weak guard. |
-| `turso_queue/admin.rs` `block_task` (`:87-140`) | State CAS `UPDATE tasks … WHERE id = ? AND status = 'claimed' AND worker_id = ?`, guarded dep writes, then an **unguarded** `DELETE FROM leases WHERE task_id = ?`, then `COMMIT`. Afterwards it checks `results[1].affected == 0` and returns "claim changed before the block committed". | When the CAS loses, the unguarded `DELETE` has already committed, and it deletes whatever lease the new owner holds (`leases` is keyed by `task_id` alone, `core.rs:1083`). The post-commit affected-row check reports the race but cannot undo it. This is the "guard does not stop the statements after it" gap in one place. |
-| `turso_queue/core.rs` `event` (`:1684`) | Writes the `events` row (and, for a status transition, a history row) in its **own** pipeline. Callers such as `block_task` call it after their state transaction committed. | State and timeline are two transactions today. A crash or a store error between them leaves a committed state change with no event. That is exactly the "intent absent when state commits" negative, already present for the timeline. |
-| `creation_outbox.rs` + `turso_queue/stacks_outbox.rs` | One scoped producer: dedupe by `(repo, dedup_key)`, `payload_hash`, states `pending/leased/uncertain/done/blocked`, a single serial drainer with a lease, a persisted rate-limit circuit, and `github_number`/`github_url` read-back. Approved as a bounded pilot. | Useful prior art for payload hashing, serial draining and `uncertain`. CEN-04 §3.9 refuses treating it as the general outbox, and the REL-04 row says the pilot stays isolated. |
-| `work/operations.rs` DSP-01 `AcceptanceLedger` | In-memory receipts and effects; REL-03 §7 states its delta. | No persistence. REL-04's rows are where REL-03's receipt is stored. |
-| Operation, intent or attempt tables | None (CEN-04 §3.9). | Everything in §5 is `absent — gated` until admitted through CEN-04 §5. |
+| Surface                                                             | What exists                                                                                                                                                                                                                                                                                | What it means for REL-04                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `turso_queue/core.rs` `pipeline` (`:705`) and `exec_batch` (`:834`) | One HTTP POST to Hrana `/v2/pipeline` carrying one `execute` request per statement plus `close`. The client walks the results and returns `Err` at the **first** non-`ok` result.                                                                                                          | Callers build transactions as `[BEGIN IMMEDIATE, …, COMMIT]` inside one pipeline. The client learns of a failed statement only after the server has processed the whole request list, including the trailing `COMMIT`. Nothing in the request makes later statements conditional on earlier ones, so "the pipeline returned `Err`" does not prove "nothing committed". No `ROLLBACK` is ever sent on this path, and Hrana `batch` step conditions are not used anywhere in `fleet-queue`. |
+| Guarded writes, e.g. `links.rs` `GUARDED_DEP_INSERT_SQL` (`:567`)   | Follow-on inserts carry `WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND <expected post-state>)`, so a lost state CAS turns them into no-ops inside the same transaction.                                                                                                               | This is the right in-pipeline pattern, and REL-04 adopts it (§4.2). It keys on a post-state that two writers can both produce, so it is a weak guard.                                                                                                                                                                                                                                                                                                                                     |
+| `turso_queue/admin.rs` `block_task` (`:87-140`)                     | State CAS `UPDATE tasks … WHERE id = ? AND status = 'claimed' AND worker_id = ?`, guarded dep writes, then an **unguarded** `DELETE FROM leases WHERE task_id = ?`, then `COMMIT`. Afterwards it checks `results[1].affected == 0` and returns "claim changed before the block committed". | When the CAS loses, the unguarded `DELETE` has already committed, and it deletes whatever lease the new owner holds (`leases` is keyed by `task_id` alone, `core.rs:1083`). The post-commit affected-row check reports the race but cannot undo it. This is the "guard does not stop the statements after it" gap in one place.                                                                                                                                                           |
+| `turso_queue/core.rs` `event` (`:1684`)                             | Writes the `events` row (and, for a status transition, a history row) in its **own** pipeline. Callers such as `block_task` call it after their state transaction committed.                                                                                                               | State and timeline are two transactions today. A crash or a store error between them leaves a committed state change with no event. That is exactly the "intent absent when state commits" negative, already present for the timeline.                                                                                                                                                                                                                                                    |
+| `creation_outbox.rs` + `turso_queue/stacks_outbox.rs`               | One scoped producer: dedupe by `(repo, dedup_key)`, `payload_hash`, states `pending/leased/uncertain/done/blocked`, a single serial drainer with a lease, a persisted rate-limit circuit, and `github_number`/`github_url` read-back. Approved as a bounded pilot.                         | Useful prior art for payload hashing, serial draining and `uncertain`. CEN-04 §3.9 refuses treating it as the general outbox, and the REL-04 row says the pilot stays isolated.                                                                                                                                                                                                                                                                                                           |
+| `work/operations.rs` DSP-01 `AcceptanceLedger`                      | In-memory receipts and effects; REL-03 §7 states its delta.                                                                                                                                                                                                                                | No persistence. REL-04's rows are where REL-03's receipt is stored.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Operation, intent or attempt tables                                 | None (CEN-04 §3.9).                                                                                                                                                                                                                                                                        | Everything in §5 is `absent — gated` until admitted through CEN-04 §5.                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ## 1. Intent
 
@@ -83,17 +83,17 @@ new state with its intent pending. Never one without the other.
 
 ## 2. Ownership: who writes what
 
-| Concern | Owner |
-| --- | --- |
-| The local mutation transaction, intent immutability, status transition table, attempt log, per-target order (this record) | **REL-04** |
-| Idempotency scope, lookup order, receipt identity block, status→outcome rendering | REL-03 (#9513, record merged) |
-| Remote preconditions, read-back, resolving `unknown` | REL-06 (#9516) |
-| Stale relay acknowledgements that would regress an operation | REL-05, consuming §6 of this record (`pmo_rel_stale_relay_ack_cannot_regress_operation`) |
-| Claim leases and fence generation | REL-01 (#9512) and #9487 |
-| The #9208 journal and its home | JRN-01/02, through CEN-04 §5 |
-| Persisted tables and columns, migration, rollback of storage | REL-07 + the #9198 store owner, through CEN-04 §5 |
-| Operator inspection of stuck, `unknown` or `conflict` operations | REL-08 |
-| `creation_outbox` and its drainer | the landed creation pilot, unchanged |
+| Concern                                                                                                                   | Owner                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| The local mutation transaction, intent immutability, status transition table, attempt log, per-target order (this record) | **REL-04**                                                                               |
+| Idempotency scope, lookup order, receipt identity block, status→outcome rendering                                         | REL-03 (#9513, record merged)                                                            |
+| Remote preconditions, read-back, resolving `unknown`                                                                      | REL-06 (#9516)                                                                           |
+| Stale relay acknowledgements that would regress an operation                                                              | REL-05, consuming §6 of this record (`pmo_rel_stale_relay_ack_cannot_regress_operation`) |
+| Claim leases and fence generation                                                                                         | REL-01 (#9512) and #9487                                                                 |
+| The #9208 journal and its home                                                                                            | JRN-01/02, through CEN-04 §5                                                             |
+| Persisted tables and columns, migration, rollback of storage                                                              | REL-07 + the #9198 store owner, through CEN-04 §5                                        |
+| Operator inspection of stuck, `unknown` or `conflict` operations                                                          | REL-08                                                                                   |
+| `creation_outbox` and its drainer                                                                                         | the landed creation pilot, unchanged                                                     |
 
 REL-04 adds no database, queue, relay, service, scheduler or GitHub
 client. Its storage is rows in the existing broker store.
@@ -203,20 +203,20 @@ path.
 
 ### 5.1 Fields
 
-| Field | Set when | Mutable? |
-| --- | --- | --- |
-| `intent_id` | the local mutation | never |
-| `operation_id` (REL-03 §3.4) | the local mutation | never |
-| `target_ref` (e.g. `github:<owner>/<repo>#<n>`, the work item the effect lands on) | the local mutation | never |
-| `target_seq` (per-target sequence, §7) | the local mutation | never |
-| `effect_kind` (a registered `contracts::Effect` kind) | the local mutation | never |
-| `payload` (canonical JSON of what will be sent) | the local mutation | never |
-| `payload_hash` (`sha256:` over the canonical payload) | the local mutation | never |
-| `preconditions` (REL-06's expected remote state, e.g. head SHA, body hash) | the local mutation | never |
-| `status` | the local mutation (`pending`) | only by §6's table |
-| `attempts` (count) and `next_attempt_at` | each attempt | yes |
-| `remote_ref` (comment id, PR number, URL) and read-back evidence | REL-06 read-back | fill once; never cleared |
-| `status_changed_at` | each transition | yes, with `status` |
+| Field                                                                              | Set when                       | Mutable?                 |
+| ---------------------------------------------------------------------------------- | ------------------------------ | ------------------------ |
+| `intent_id`                                                                        | the local mutation             | never                    |
+| `operation_id` (REL-03 §3.4)                                                       | the local mutation             | never                    |
+| `target_ref` (e.g. `github:<owner>/<repo>#<n>`, the work item the effect lands on) | the local mutation             | never                    |
+| `target_seq` (per-target sequence, §7)                                             | the local mutation             | never                    |
+| `effect_kind` (a registered `contracts::Effect` kind)                              | the local mutation             | never                    |
+| `payload` (canonical JSON of what will be sent)                                    | the local mutation             | never                    |
+| `payload_hash` (`sha256:` over the canonical payload)                              | the local mutation             | never                    |
+| `preconditions` (REL-06's expected remote state, e.g. head SHA, body hash)         | the local mutation             | never                    |
+| `status`                                                                           | the local mutation (`pending`) | only by §6's table       |
+| `attempts` (count) and `next_attempt_at`                                           | each attempt                   | yes                      |
+| `remote_ref` (comment id, PR number, URL) and read-back evidence                   | REL-06 read-back               | fill once; never cleared |
+| `status_changed_at`                                                                | each transition                | yes, with `status`       |
 
 ### 5.2 Immutability
 
@@ -254,20 +254,20 @@ example, one intent `conflict` and another `terminal_failure` gives
 `conflict`, and one `confirmed` with one `pending` gives `pending`.
 The table below is for one intent.
 
-| From | To | Who | Condition |
-| --- | --- | --- | --- |
-| (none) | `pending` | the local mutation | in the same transaction as the state CAS |
-| `pending` | `delivering` | the sender | it holds the target's send lease and this is the lowest unconfirmed `target_seq` (§7) |
-| `delivering` | `confirmed` | REL-06 read-back | the effect is observed and verified |
-| `delivering` | `retryable_failure` | the sender | a failure that provably happened before the remote accepted anything (connection refused, 429, 5xx with no side effect per REL-06) |
-| `delivering` | `unknown` | the sender | a timeout or lost response after the request may have reached the remote |
-| `delivering` | `unknown` | the next sender | the holder's send lease on the target has lapsed. Whether the request was ever issued is not known, so the intent goes to read-back (§9) |
-| `delivering` | `conflict` | the sender | a REL-06 precondition failed |
-| `delivering` | `terminal_failure` | the sender | a non-retryable error, attempts exhausted, or `INTENT_PAYLOAD_TAMPERED` |
-| `retryable_failure` | `delivering` | the sender | `next_attempt_at` reached, same lease and order rules as `pending` |
-| `unknown` | `confirmed` / `retryable_failure` / `conflict` | REL-06 read-back only | read-back shows the effect present, absent and safe to retry under §9.1, or a precondition now false |
-| `conflict`, `terminal_failure` | none | — | terminal. An operator can only start a new operation (REL-08) |
-| `confirmed` | none | — | terminal. **No transition leaves `confirmed`**, whatever a late or replayed acknowledgement says |
+| From                           | To                                             | Who                   | Condition                                                                                                                                |
+| ------------------------------ | ---------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| (none)                         | `pending`                                      | the local mutation    | in the same transaction as the state CAS                                                                                                 |
+| `pending`                      | `delivering`                                   | the sender            | it holds the target's send lease and this is the lowest unconfirmed `target_seq` (§7)                                                    |
+| `delivering`                   | `confirmed`                                    | REL-06 read-back      | the effect is observed and verified                                                                                                      |
+| `delivering`                   | `retryable_failure`                            | the sender            | a failure that provably happened before the remote accepted anything (connection refused, 429, 5xx with no side effect per REL-06)       |
+| `delivering`                   | `unknown`                                      | the sender            | a timeout or lost response after the request may have reached the remote                                                                 |
+| `delivering`                   | `unknown`                                      | the next sender       | the holder's send lease on the target has lapsed. Whether the request was ever issued is not known, so the intent goes to read-back (§9) |
+| `delivering`                   | `conflict`                                     | the sender            | a REL-06 precondition failed                                                                                                             |
+| `delivering`                   | `terminal_failure`                             | the sender            | a non-retryable error, attempts exhausted, or `INTENT_PAYLOAD_TAMPERED`                                                                  |
+| `retryable_failure`            | `delivering`                                   | the sender            | `next_attempt_at` reached, same lease and order rules as `pending`                                                                       |
+| `unknown`                      | `confirmed` / `retryable_failure` / `conflict` | REL-06 read-back only | read-back shows the effect present, absent and safe to retry under §9.1, or a precondition now false                                     |
+| `conflict`, `terminal_failure` | none                                           | —                     | terminal. An operator can only start a new operation (REL-08)                                                                            |
+| `confirmed`                    | none                                           | —                     | terminal. **No transition leaves `confirmed`**, whatever a late or replayed acknowledgement says                                         |
 
 Rules the table encodes:
 
@@ -275,7 +275,7 @@ Rules the table encodes:
   an `unknown` intent stops, because §6 of #9209 forbids a second
   POST on a timeout. Only read-back moves it.
 - Every transition is itself a CAS on `(intent_id, status,
-  attempts)`, so two senders, or a sender and a stale relay ack,
+attempts)`, so two senders, or a sender and a stale relay ack,
   cannot both apply. A transition that loses its CAS is dropped, and
   REL-05's stale-ack oracle checks that it never regresses an
   operation.
@@ -308,7 +308,7 @@ Two records, with different jobs:
 
 - **The attempt row**, one per delivery attempt:
   `(intent_id, attempt_no, started_at, finished_at, outcome_status,
-  error_code, remote_status, remote_ref)`. `attempt_no` is dense from
+error_code, remote_status, remote_ref)`. `attempt_no` is dense from
   1 and unique per intent. The row is **opened** in the same
   transaction as the move to `delivering`, with the outcome fields
   empty. It is **closed exactly once**, in the same transaction as
@@ -486,12 +486,12 @@ Full per-occurrence text is in
 This table records where this design speaks to each group of
 allocated IDs. It is design coverage, not implementation.
 
-| IDs | Theme | Where addressed |
-| --- | --- | --- |
-| C-R138, C-R139, C-R140, O-R032, P-R006, P-R021, H-R015 | stable operation ids, durable intent, outbox states, no duplicate effects | §3, §5, §6 |
-| H-R016, P-R022, P-R033, P-R038 | crash after mutation, lost acknowledgement, partial outcomes | §6 `unknown`, §9 |
-| C-R007, C-R145, P-R009 | direct completion and ordered effects | §6, §7 |
-| C-R005, C-R009, C-R107, C-R108, C-R110, C-R133, H-R001, H-R017, H-R024, H-R031, O-R022, O-R023, O-R038, P-R025, P-R027, P-R028, P-R029 | preserved inventory, structured history, inspectable operations | §8, §11 storage admission, REL-08 hand-off |
+| IDs                                                                                                                                    | Theme                                                                     | Where addressed                            |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------ |
+| C-R138, C-R139, C-R140, O-R032, P-R006, P-R021, H-R015                                                                                 | stable operation ids, durable intent, outbox states, no duplicate effects | §3, §5, §6                                 |
+| H-R016, P-R022, P-R033, P-R038                                                                                                         | crash after mutation, lost acknowledgement, partial outcomes              | §6 `unknown`, §9                           |
+| C-R007, C-R145, P-R009                                                                                                                 | direct completion and ordered effects                                     | §6, §7                                     |
+| C-R005, C-R009, C-R107, C-R108, C-R110, C-R133, H-R001, H-R017, H-R024, H-R031, O-R022, O-R023, O-R038, P-R025, P-R027, P-R028, P-R029 | preserved inventory, structured history, inspectable operations           | §8, §11 storage admission, REL-08 hand-off |
 
 ## 14. Non-goals
 

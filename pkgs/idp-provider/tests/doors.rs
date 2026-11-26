@@ -16,20 +16,20 @@
 //! without its client secret denies at start.
 
 use axum::{
+    Json, Router,
     extract::{Form, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use idp_provider::audit::AuditLog;
 use idp_provider::flow::FlowState;
 use idp_provider::identities::IdentityStore;
-use idp_provider::registry::{now_unix, Account, Client, Identity, ProviderConfig, UpstreamDoor};
+use idp_provider::registry::{Account, Client, Identity, ProviderConfig, UpstreamDoor, now_unix};
 use idp_provider::signing::TokenSigner;
 use idp_provider::upstream::DoorRuntime;
-use idp_provider::{b64url, build_app_with_flow, Config, Jwk, Jwks};
+use idp_provider::{Config, Jwk, Jwks, b64url, build_app_with_flow};
 use rand_core::OsRng;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
@@ -590,10 +590,11 @@ async fn pending_identity_is_acknowledged_without_issuing_a_code() {
     let mut allowlist = baseline_allowlist();
     allowlist.push(format!("google:{PENDING_SUB}"));
     let h = harness_with_allowlist(allowlist).await;
-    assert!(h
-        .identities
-        .register_pending("google", PENDING_SUB, "drew", "email-match")
-        .unwrap());
+    assert!(
+        h.identities
+            .register_pending("google", PENDING_SUB, "drew", "email-match")
+            .unwrap()
+    );
     *h.mock.subject.lock().unwrap() = PENDING_SUB.to_string();
 
     let resp = drive_door(&h, "google").await;
@@ -616,29 +617,38 @@ async fn pending_identity_is_acknowledged_without_issuing_a_code() {
             .as_deref(),
         Some("pending")
     );
-    assert!(h
-        .identities
-        .events()
-        .unwrap()
-        .iter()
-        .any(|e| e.event == "register"));
+    assert!(
+        h.identities
+            .events()
+            .unwrap()
+            .iter()
+            .any(|e| e.event == "register")
+    );
 }
 
 #[test]
 fn identity_history_records_pending_disposition_and_provisioning_events() {
     let store = IdentityStore::open(None).unwrap();
-    assert!(store
-        .register_pending("google", "approved-sub", "drew", "session-add")
-        .unwrap());
-    assert!(store
-        .approve_pending("google", "approved-sub", "established-session")
-        .unwrap());
-    assert!(store
-        .register_pending("microsoft", "rejected-sub", "drew", "email-match")
-        .unwrap());
-    assert!(store
-        .reject_pending("microsoft", "rejected-sub", "established-session")
-        .unwrap());
+    assert!(
+        store
+            .register_pending("google", "approved-sub", "drew", "session-add")
+            .unwrap()
+    );
+    assert!(
+        store
+            .approve_pending("google", "approved-sub", "established-session")
+            .unwrap()
+    );
+    assert!(
+        store
+            .register_pending("microsoft", "rejected-sub", "drew", "email-match")
+            .unwrap()
+    );
+    assert!(
+        store
+            .reject_pending("microsoft", "rejected-sub", "established-session")
+            .unwrap()
+    );
     store
         .record_provision("github", "new-sub", "new-account", "provisioner")
         .unwrap();
@@ -684,9 +694,11 @@ fn enrolled_identity_can_be_relinked_to_another_account_by_an_operator() {
     // The explicit afterwards grant (#15249): an operator unlinks
     // and re-links the identity onto the owner account, and the
     // row itself moves — not just the event.
-    assert!(store
-        .unlink("google", "teammate-sub", "operator-cli")
-        .unwrap());
+    assert!(
+        store
+            .unlink("google", "teammate-sub", "operator-cli")
+            .unwrap()
+    );
     assert_eq!(
         store
             .link("google", "teammate-sub", "drew", "operator-cli")
@@ -841,10 +853,11 @@ async fn unlinked_identity_denied_but_account_reachable_via_local_door() {
     assert_eq!(resp.status(), 302);
     let _ = exchange_and_verify(&h, &location(&resp)).await;
     // Operator unlinks the Google door.
-    assert!(h
-        .identities
-        .unlink("google", GOOGLE_SUB, "operator-cli")
-        .unwrap());
+    assert!(
+        h.identities
+            .unlink("google", GOOGLE_SUB, "operator-cli")
+            .unwrap()
+    );
     // The door now denies, with the history intact.
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), 403);
@@ -863,12 +876,16 @@ async fn unlinked_identity_denied_but_account_reachable_via_local_door() {
     assert_eq!(row.status, "unlinked");
     assert!(row.unlinked_at.is_some());
     let events = h.identities.events().unwrap();
-    assert!(events
-        .iter()
-        .any(|e| e.event == "seed" && e.provider == "google"));
-    assert!(events
-        .iter()
-        .any(|e| e.event == "unlink" && e.provider == "google"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "seed" && e.provider == "google")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "unlink" && e.provider == "google")
+    );
 
     // The account is still reachable via the local door.
     let (verifier, challenge) = pkce();

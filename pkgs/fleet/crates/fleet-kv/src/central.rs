@@ -296,10 +296,7 @@ impl SqlitePrimary {
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
             let mut prepared = transaction.prepare(&statement.sql).map_err(store)?;
-            let columns: Vec<String> = prepared
-                .column_names()
-                .map(str::to_string)
-                .collect();
+            let columns: Vec<String> = prepared.column_names().map(str::to_string).collect();
             let mut rows = prepared
                 .query(rusqlite::params_from_iter(statement.args.iter()))
                 .map_err(store)?;

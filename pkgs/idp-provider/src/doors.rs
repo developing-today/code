@@ -29,16 +29,16 @@
 //!   audited; a failed audit write fails the attempt closed.
 
 use crate::flow::{
-    denied, err_json, issue_code, validate_authorize_request, AuthorizeParams, FlowState,
+    AuthorizeParams, FlowState, denied, err_json, issue_code, validate_authorize_request,
 };
 use crate::registry::{now_unix, random_b64url, url_encode};
 use crate::upstream::{
-    exchange_upstream_code, fetch_github_user, fetch_upstream_jwks, subject_from_claims,
-    verify_upstream_id_token, DoorRuntime,
+    DoorRuntime, exchange_upstream_code, fetch_github_user, fetch_upstream_jwks,
+    subject_from_claims, verify_upstream_id_token,
 };
 use axum::{
     extract::{Path, Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
