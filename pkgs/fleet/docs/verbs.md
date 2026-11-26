@@ -166,7 +166,7 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 | Command                     | Purpose                                                                    |
 | --------------------------- | -------------------------------------------------------------------------- |
-| `tiers`                     | Show token-source rate-limit headroom.                                     |
+| `tiers [--all]`             | Show token-source rate-limit headroom; `--all` lists every App installation. |
 | `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                   |
 | `cache-status`              | Probe configured token-cache daemons.                                      |
 | `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number. |
