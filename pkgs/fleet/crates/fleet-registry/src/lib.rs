@@ -505,7 +505,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopSsh],
         primary: Capability::LaptopSsh,
         aliases: &[],
-        subcommands: &["health", "exec", "close"],
+        subcommands: &["health", "sessions", "sweep", "exec", "close"],
     },
     Domain {
         name: "laptop",
