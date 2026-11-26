@@ -25,6 +25,10 @@ export default defineConfig({
     },
     env: {
       PUBLIC_HOST: bindings.text("pm.security.cab"),
+      // CF-5 flip (owner ruling 2026-11-26 on #14866): the console ledgers
+      // read from D1. Keep in sync with the vars in wrangler.jsonc.
+      LEDGER_PAGES: bindings.text("on"),
+      LEDGER_STORE: bindings.text("d1"),
       // The health check verifies the commit currently serving on workers.dev.
       VERSION: bindings.text(processEnv.GITHUB_SHA?.slice(0, 12) ?? "local"),
       PM: bindings.durableObject({ worker: "pm-console-edge", exportName: "PmEdge" }),
