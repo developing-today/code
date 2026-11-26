@@ -1264,12 +1264,37 @@ function questionCard(q) {
   );
 }
 
+/** The decision sets the edge discovered at the decision-events
+ * Worker itself (#13491): there even while the laptop is away, and
+ * said to be discovery only — a set's questions, and answering them,
+ * still come with the laptop's report. */
+function questionSetsNodes(doc) {
+  const found = doc.questionSets;
+  if (!found || !Array.isArray(found.sets) || !found.sets.length) return [];
+  return [
+    card(
+      h("h3", {}, "Decision sets, read at the edge"),
+      h("p", { class: "meta" }, found.note || ""),
+      ...found.sets.map((s) =>
+        h(
+          "p",
+          { class: "meta" },
+          `${s.setId} · ${s.events} events · last ${s.lastType ?? "nothing"} ${s.lastTs ?? ""}`.trim() +
+            (s.state ? ` · ${s.state.fannedOut ?? "—"} fanned out` : " · its state could not be read"),
+        ),
+      ),
+    ),
+  ];
+}
+
 function viewQuestions() {
   const doc = docs.questions;
   if (!doc) return [empty("Loading the questions…")];
   const all = doc.questions?.open || [];
   const out = [...notices(doc)];
-  if (!all.length) return [...out, empty("No open questions.")];
+  const discovered = questionSetsNodes(doc);
+  if (!all.length) return [...out, ...discovered, empty("No open questions.")];
+  out.push(...discovered);
   // Every recommendation at once: the fleet put these with an answer it
   // recommends, and one word from the owner takes them all. Done a set
   // at a time, as accepting one set is, so whatever cannot go now is

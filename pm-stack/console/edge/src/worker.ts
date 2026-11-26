@@ -31,6 +31,13 @@ interface Env {
    * from the bridge; without either, those stay a machine's. */
   BRIDGE?: { fetch(request: Request): Promise<Response> };
   BRIDGE_TOKEN?: string;
+  /** The decision-events Worker (#13491): its address and the shared
+   * secret its reads take, the secret a Worker secret like the two
+   * tokens. With both, the edge reads the Questions discovery section
+   * (the sets the Worker holds, and each set's state) itself, with no
+   * machine; without either, that section stays a machine's. */
+  DECISION_EVENTS_URL?: string;
+  DECISION_EVENTS_SECRET?: string;
   /** The fleet-platform ledger the hosted M4 ledger surfaces read
    * (#14968), and their opt-in flag: off unless it reads `on`, and
    * only after the #14865 gate check recorded on #14968. Which store
@@ -117,6 +124,10 @@ export class PmEdge extends DurableObject<Env> {
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
         bridgeToken: env.BRIDGE_TOKEN,
+        decisionEvents:
+          env.DECISION_EVENTS_URL && env.DECISION_EVENTS_SECRET
+            ? { url: env.DECISION_EVENTS_URL, secret: <redacted> }
+            : undefined,
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.
         bridgeFetch: bridge
