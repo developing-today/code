@@ -58,8 +58,8 @@ export function freshnessFromSummaries(summaries: readonly BoardSummary[]): Fres
 export interface ProgramGroup {
   /** The canonical Project ref for this Epic, whether or not it is in this pool. */
   ref: string;
-  /** Null when the referenced Epic is outside the current pool. */
-  epic: ProjectPoolItem | null;
+  /** All pool rows for this Epic; empty when the header is outside the pool. */
+  headers: ProjectPoolItem[];
   /** Non-Epic pool items whose nearest Epic ancestor is ref, in pool order. */
   items: ProjectPoolItem[];
 }
@@ -72,7 +72,7 @@ export interface ProgramView {
 }
 
 /** Build the program view from the collector's existing Epic ancestry.
- * Missing Epic headers remain explicit as null; the view never infers
+ * Missing Epic headers remain explicit as empty arrays; the view never infers
  * membership from titles or invents a source item. */
 export function programFromPool(pool: readonly ProjectPoolItem[]): ProgramView {
   const groups = new Map<string, ProgramGroup>();
@@ -80,7 +80,7 @@ export function programFromPool(pool: readonly ProjectPoolItem[]): ProgramView {
   const groupFor = (ref: string): ProgramGroup => {
     let group = groups.get(ref);
     if (!group) {
-      group = { ref, epic: null, items: [] };
+      group = { ref, headers: [], items: [] };
       groups.set(ref, group);
     }
     return group;
@@ -88,8 +88,7 @@ export function programFromPool(pool: readonly ProjectPoolItem[]): ProgramView {
 
   for (const item of pool) {
     if (item.kind?.toLowerCase() === "epic") {
-      const group = groupFor(item.ref);
-      group.epic ??= item;
+      groupFor(item.ref).headers.push(item);
     } else if (item.epicRef) {
       groupFor(item.epicRef).items.push(item);
     } else {
