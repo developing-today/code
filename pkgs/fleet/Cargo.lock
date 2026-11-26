@@ -933,6 +933,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-transport"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
