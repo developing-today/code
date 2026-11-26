@@ -44,6 +44,7 @@
 //!   claim        Tag claims on any subject (set, clear, list, search)
 //!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
 //!   talk         Talk pages: post on and list an object's discussion
+//!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -114,6 +115,7 @@ pub mod doc;
 pub mod gallery;
 pub mod groups;
 pub mod host;
+pub mod hosted;
 pub mod match_audit;
 pub mod nav;
 pub mod petname;
@@ -128,6 +130,7 @@ pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 pub use host::HostCommand;
+pub use hosted::{HostedCommand, HostedTarget};
 pub use match_audit::MatchAuditCommand;
 pub use nav::{NavArgs, NavOp};
 pub use petname::PetnameCommand;
@@ -1579,6 +1582,28 @@ pub enum Command {
         /// The talk action to run.
         #[command(subcommand)]
         command: TalkCommand,
+    },
+    /// Push to and pull from your hosted ID store over the bridge.
+    ///
+    /// Every call proves possession of the ID key the binding names, so
+    /// run it with this node's key or pass `--key-file`. Refused calls
+    /// (a wrong key, an unknown binding, a full store) fail with the
+    /// hosted store's own error code.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id hosted heads --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// id hosted push --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// ID_HOSTED_URL=https://id.example ID_HOSTED_BINDING=0123456789abcdef0123456789abcdef id hosted pull
+    /// ```
+    Hosted {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The hosted action to run.
+        #[command(subcommand)]
+        command: HostedCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).

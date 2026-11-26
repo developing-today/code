@@ -48,12 +48,7 @@ fn fake_seat() -> (TestDir, PathBuf, String) {
 case "$1" in
   list-sessions)
     now=$(date +%s)
-    case "$3" in
-      *session_activity*)
-        printf 'fleet-a\t%s\t0\nwork\t%s\t0\nfleet-attached\t%s\t1\nfleet-fresh\t%s\t0\n' "$((now - 3600))" "$((now - 3600))" "$((now - 3600))" "$now"
-        ;;
-      *) printf 'fleet-a\nwork\nfleet-attached\nfleet-b\nfleet-fresh\n' ;;
-    esac
+    printf '0 %s fleet-a\n0 %s work\n1 %s fleet-attached\n0 %s fleet-fresh\n' "$((now - 7200))" "$((now - 7200))" "$((now - 7200))" "$now"
     ;;
   display-message)
     target=''
@@ -120,6 +115,18 @@ fn run_fleet(
 }
 
 #[test]
+fn ssh_registry_help_lists_sessions_and_sweep() {
+    let output = Command::new(env!("CARGO_BIN_EXE_fleet"))
+        .args(["help", "ssh"])
+        .output()
+        .expect("run fleet help");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 help");
+    assert!(stdout.contains("sessions"), "{stdout}");
+    assert!(stdout.contains("sweep"), "{stdout}");
+}
+
+#[test]
 fn sessions_lists_only_fleet_owned_tmux_sessions() {
     let (dir, kill_log, path) = fake_seat();
     let output = run_fleet(&dir, &kill_log, &path, &["ssh", "sessions"], false);
@@ -132,7 +139,7 @@ fn sessions_lists_only_fleet_owned_tmux_sessions() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).expect("UTF-8 output"),
-        "fleet-a\nfleet-attached\nfleet-b\nfleet-fresh\n"
+        "fleet-a\tattached=0\tidle=7200s\nfleet-attached\tattached=1\tidle=7200s\nfleet-fresh\tattached=0\tidle=0s\n"
     );
 }
 
@@ -180,10 +187,7 @@ fn sweep_rechecks_attachment_before_killing() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("UTF-8 output"),
-        "skipped fleet-a (attached)\n"
-    );
+    assert_eq!(String::from_utf8(output.stdout).expect("UTF-8 output"), "");
     assert!(!kill_log.exists(), "attached session must not be killed");
 }
 

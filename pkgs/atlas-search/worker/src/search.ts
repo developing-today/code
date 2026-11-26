@@ -9,6 +9,8 @@
  */
 import { queryKey } from "./key";
 import { CONTEXT } from "./space";
+import { tryServeFromHotCache, type HotCacheReader, type SkipLog } from "./read_path";
+import type { WatermarkSource } from "./freshness";
 
 export const DEFAULT_K = 10;
 export const MAX_K = 50;
@@ -21,6 +23,20 @@ export function clampK(raw: unknown): number {
 /** The slice of the Worker environment the search path needs. */
 export interface SearchEnv {
   QUERY_CACHE: DurableObjectNamespace;
+  /**
+   * Hot-tier read deps (#13105). Absent by default — and no caller
+   * provides them yet (tenant provisioning and the Turso
+   * watermark source are follow-on work) — so the pre-cache path
+   * below runs exactly as before. When present, a fresh Class B
+   * row for the query key short-circuits the DO fan-out.
+   */
+  hotCache?: {
+    reader: HotCacheReader;
+    source: WatermarkSource;
+    tenantId: string;
+    nowSeconds?: () => number;
+    onSkip?: (log: SkipLog) => void;
+  };
 }
 
 /**
@@ -62,6 +78,22 @@ export interface SearchOutcome {
  */
 export async function executeSearch(env: SearchEnv, query: string, k: number): Promise<SearchOutcome> {
   const key = await queryKey({ q: query, k, context: CONTEXT });
+  if (env.hotCache) {
+    const hot = env.hotCache;
+    const outcome = await tryServeFromHotCache({
+      store: hot.reader,
+      source: hot.source,
+      tenantId: hot.tenantId,
+      cacheKey: key,
+      dataClass: "B",
+      nowSeconds: hot.nowSeconds ?? (() => Math.floor(Date.now() / 1000)),
+      onSkip: hot.onSkip,
+    });
+    if (outcome.served) {
+      const body = JSON.parse(new TextDecoder().decode(outcome.entry.payload)) as Record<string, unknown>;
+      return { status: 200, payload: { cache: "hot", key, query, ...body } };
+    }
+  }
   const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
   const resp = await stub.fetch("https://do/query", {
     method: "POST",
