@@ -794,6 +794,31 @@ pub fn headless_app() -> App {
 mod tests {
     use super::*;
 
+    #[test]
+    fn directory_session_layout_has_disjoint_panels_and_preserves_sessions() {
+        for (width, height) in [(640.0, 480.0), (1280.0, 720.0)] {
+            let (directory, session) = directory_session_bounds(width, height);
+            // Oracle: independent panel geometry must stay within the
+            // viewport, share one edge, and have no positive-area overlap.
+            assert_eq!(directory.left, 0.0);
+            assert_eq!(directory.top, 0.0);
+            assert_eq!(directory.bottom, height);
+            assert_eq!(session.left, directory.right);
+            assert_eq!(session.right, width);
+            assert_eq!(session.top, 0.0);
+            assert_eq!(session.bottom, height);
+            assert!(directory.right > directory.left);
+            assert!(session.right > session.left);
+        }
+
+        let mut registry = SessionRegistry::default();
+        assert!(registry.enter("lobby"));
+        assert!(registry.enter("annex"));
+        registry.leave();
+        assert!(registry.is_live("lobby"));
+        assert!(registry.is_live("annex"));
+    }
+
     fn listing() -> Vec<(String, bool, usize)> {
         vec![
             ("annex".to_string(), true, 1),
