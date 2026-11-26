@@ -106,10 +106,7 @@ const projects = IS_NIX_BUILD && !IS_VM_TEST ? [firefoxProject] : [chromiumProje
 const WORLD_ADMIN_TOKEN = process.env.ID_E2E_WORLD_ADMIN_TOKEN ?? "e2e-world-admin-token";
 // Absolute path: `id --data-dir` chdirs the server into its data dir, so a
 // cwd-relative module path would no longer resolve to the checked-in fixture.
-const WORLD_MODULE = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "fixtures/roc-screen.wasm",
-);
+const WORLD_MODULE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/roc-screen.wasm");
 const WORLD_FLAGS = `--world --world-admin-token ${WORLD_ADMIN_TOKEN} --world-module ${WORLD_MODULE}`;
 
 // Each server gets its own data dir (#15145): the two config-managed servers

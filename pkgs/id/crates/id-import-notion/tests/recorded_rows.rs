@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use id_import_notion::{
     Inventory, Manifest, NOTION_API_VERSION, Outcome, Stage,
     databases::convert_database,
-    rows::{ExternalisedReason, RelationType, RowClaimKind, convert_row},
+    rows::{ExternalisedReason, ExternalisedRelation, RelationType, RowClaimKind, convert_row},
 };
 use tempfile::tempdir;
 
@@ -146,7 +146,7 @@ fn recorded_multi_source_rows_validate_per_source_and_relations_resolve() {
             }
         }
     );
-    assert!(a1.externalised.is_empty());
+    assert_eq!(a1.externalised, [] as [ExternalisedRelation; 0]);
     for beta_row in ["row-b1", "row-b2"] {
         assert!(conversions[beta_row].references.is_empty(), "{beta_row}");
         assert!(conversions[beta_row].externalised.is_empty(), "{beta_row}");

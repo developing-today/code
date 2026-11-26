@@ -53,7 +53,7 @@ function fakeBucket() {
   };
 }
 
-function makeDO() {
+function makeDO(jurisdiction: "us" | "eu") {
   const bucket = fakeBucket();
   const state = {
     id: { name: A },
@@ -62,7 +62,8 @@ function makeDO() {
     acceptWebSocket: () => {},
     getWebSockets: () => [],
   };
-  return { d: new UserDO(state as never, { BLOBS: bucket } as never), bucket };
+  const env = jurisdiction === "us" ? { BLOBS_US: bucket } : { BLOBS_EU: bucket };
+  return { d: new UserDO(state as never, env as never), bucket };
 }
 
 /** Lets a test make the k-th directory transition commit and then
@@ -99,7 +100,7 @@ function world(faults: Faults = { loseTransition: 0 }) {
     },
   };
   const directory = new PersistentHostedAccountDirectory(adapter);
-  const objects = { us: makeDO(), eu: makeDO() } as Record<string, ReturnType<typeof makeDO>>;
+  const objects = { us: makeDO("us"), eu: makeDO("eu") } as Record<string, ReturnType<typeof makeDO>>;
   const users = {
     jurisdiction(j: string) {
       return {

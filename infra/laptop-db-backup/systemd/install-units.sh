@@ -13,9 +13,9 @@ set -euo pipefail
 LDB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
-for u in laptop-db-backup-pm-projector.service laptop-db-backup-pm-projector.timer; do
+for u in laptop-db-backup-pm-projector.service laptop-db-backup-pm-projector.timer laptop-db-backup-fleet-metadata.service laptop-db-backup-fleet-metadata.timer; do
   sed "s#__LDB_DIR__#$LDB_DIR#g" "$LDB_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 systemctl --user daemon-reload
-systemctl --user enable --now laptop-db-backup-pm-projector.timer
+systemctl --user enable --now laptop-db-backup-pm-projector.timer laptop-db-backup-fleet-metadata.timer
 systemctl --user list-timers 'laptop-db-backup-*' --no-pager

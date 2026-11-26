@@ -20,6 +20,7 @@ default = []
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
@@ -38,6 +39,12 @@ p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e
 p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
 redb = "=5.0.0"
+# The tenant DB store adapter (turso.rs, E6 of #9083): SQLite-over-HTTP
+# via the Turso pipeline endpoint. Same pin and TLS stack as id-sync and
+# id-worlds; blocking because the store traits are synchronous. No SQL
+# library ships: statements travel as protocol JSON, so the no-SQLite
+# rule for the shipped build (see tests/store_traits.rs) is untouched.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

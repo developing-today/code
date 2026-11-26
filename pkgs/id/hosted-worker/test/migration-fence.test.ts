@@ -89,7 +89,7 @@ function makeDO(sockets: FakeSocket[] = []) {
     acceptWebSocket: () => {},
     getWebSockets: () => sockets,
   };
-  return { d: new UserDO(state as never, { BLOBS: bucket } as never), bucket };
+  return { d: new UserDO(state as never, { BLOBS_US: bucket } as never), bucket };
 }
 
 function routed(path: string, init: RequestInit = {}): Request {
@@ -290,7 +290,7 @@ test("control routes ignore the request cap and reject bad bodies", async () => 
     storage: { sql: fakeSql() },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  const d = new UserDO(state as never, { BLOBS: bucket, USER_REQUEST_CEILING: "1", USER_REQUEST_WINDOW_SECONDS: "60" } as never);
+  const d = new UserDO(state as never, { BLOBS_US: bucket, USER_REQUEST_CEILING: "1", USER_REQUEST_WINDOW_SECONDS: "60" } as never);
   assert.equal((await d.fetch(put("k", "v"))).status, 200);
   assert.equal((await d.fetch(put("k", "w"))).status, 429);
   assert.equal((await freeze(d)).status, 200, "a capped tenant can still be frozen");

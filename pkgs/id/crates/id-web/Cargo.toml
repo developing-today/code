@@ -15,9 +15,14 @@ license = "MIT OR Apache-2.0"
 # (axum, tower, rust-embed, comrak, ...) moved here from the facade
 # manifest with the code.
 
+# No cargo features: production code here keys on nothing, and the
+# wasmtime-backed world-WS *tests* get their execution support from the
+# dev-dependency below (id-worlds with `sandbox` + `test-utils`). The old
+# `sandbox` feature gated only test helpers, so it was dead in every
+# production build and present only under --all-features; S2 of #14056
+# removed it on that evidence (pkgs/id/composition/s2-feature-hygiene.md).
 [features]
 default = []
-sandbox = ["id-worlds/sandbox"]
 
 [dependencies]
 anyhow = "1"

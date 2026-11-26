@@ -43,6 +43,7 @@ use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
 use id_core::waiting::AuthorKey;
+use id_store::event_rows::RowRead;
 
 use super::{
     ACTIONS, APPLIED, BODIES, CHAINS, COMPACTED, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS,
@@ -218,6 +219,31 @@ pub(super) fn load_residue_read(txn: &redb::ReadTransaction) -> Result<Vec<Resid
         Err(redb::TableError::TableDoesNotExist(_)) => Ok(Vec::new()),
         Err(err) => Err(err.into()),
     }
+}
+
+/// Every residue row read through the backend-neutral event row interface.
+pub(super) fn load_residue_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+) -> Result<Vec<Residue>, StoreError> {
+    rows.scan_all("compacted")?
+        .into_iter()
+        .map(|(position, value)| {
+            let (author, seq) = split_position(&position)?;
+            decode_residue(author, seq, &value)
+        })
+        .collect()
+}
+
+/// The residue at `(author, seq)`, using a backend-neutral row read.
+pub(super) fn residue_at_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<Residue>, StoreError> {
+    let key = position_key(author, seq);
+    rows.get("compacted", &key)?
+        .map(|value| decode_residue(*author, seq, &value))
+        .transpose()
 }
 
 impl EventStore {
@@ -911,7 +937,10 @@ mod tests {
         assert_eq!(pruned, 6, "four residue positions and two stored events");
         assert_eq!(residue_count(&store), 0);
         assert_eq!(store.chain(&who).unwrap(), None);
-        assert!(store.sync_entries().unwrap().is_empty());
+        assert_eq!(
+            store.sync_entries().unwrap(),
+            [] as [(id_store::range::Key, id_store::range::Id); 0]
+        );
         for (index, event) in events.iter().enumerate() {
             assert_eq!(
                 store.validity_now(&event.id).unwrap(),

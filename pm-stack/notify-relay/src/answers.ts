@@ -88,22 +88,28 @@ export interface MirroredQuestionEvent {
   payload: Record<string, unknown>;
 }
 
+/** Legacy and role-term object refs remain readable during the cutover. */
 export const needsDrewObjectRef = (ledgerId: string): string => `needs-drew:${ledgerId}`;
+export const needsUserObjectRef = (ledgerId: string): string => `needs-user:${ledgerId}`;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Read the answerable question out of a mirrored `raised` event's
- * payload, or null when it does not carry one (an event mirrored
- * before step 3, or any other class). */
+ * legacy or role-term payload, or null when it does not carry one. */
 export function questionFromEvent(event: MirroredQuestionEvent): AnswerableQuestion | null {
   if (event.transition !== "raised" || event.payload.class !== "needs-user") return null;
-  const nd = event.payload.needsDrew;
+  if ("needsDrew" in event.payload && "needsUser" in event.payload) return null;
+  const nd = "needsUser" in event.payload ? event.payload.needsUser : event.payload.needsDrew;
   if (!isRecord(nd)) return null;
   const { ledgerId, question, context, answerType, links, tokenHash } = nd;
   // The aggregator mirrors every answerable option (Send back
   // included) as answerOptions; options is the push's button list.
   const options = Array.isArray(nd.answerOptions) ? nd.answerOptions : nd.options;
-  if (typeof ledgerId !== "string" || !ledgerId || event.objectRef !== needsDrewObjectRef(ledgerId)) return null;
+  if (
+    typeof ledgerId !== "string" ||
+    !ledgerId ||
+    ![needsDrewObjectRef(ledgerId), needsUserObjectRef(ledgerId)].includes(event.objectRef)
+  ) return null;
   if (typeof question !== "string" || !question) return null;
   if (typeof tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(tokenHash)) return null;
   if (!Array.isArray(options) || options.length < 1 || options.length > MAX_OPTIONS) return null;
@@ -138,14 +144,14 @@ export type QuestionLookup =
   | { kind: "expired"; question: AnswerableQuestion };
 
 /** Find a question by ledger id in the mirror log. The newest event
- * for its object ref decides: `raised` with a token hash is open
- * (until it ages out), `cleared` withdraws the last raised copy. */
+ * across its legacy and role-term object refs decides. A `raised` event
+ * with a token hash is open until it ages out; `cleared` withdraws it. */
 export function lookupQuestion(events: MirroredQuestionEvent[], ledgerId: string, now: number): QuestionLookup {
-  const ref = needsDrewObjectRef(ledgerId);
+  const refs = new Set([needsDrewObjectRef(ledgerId), needsUserObjectRef(ledgerId)]);
   let latest: MirroredQuestionEvent | null = null;
   let lastRaised: AnswerableQuestion | null = null;
   for (const event of events) {
-    if (event.objectRef !== ref) continue;
+    if (!refs.has(event.objectRef)) continue;
     if (event.transition === "raised") {
       const parsed = questionFromEvent(event);
       if (!parsed) continue;
@@ -371,7 +377,7 @@ export function renderAnswerPage(question: AnswerableQuestion, token: string): s
         : question.options
             .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
             .join("");
-  const endpoint = `/api/needs-drew/${encodeURIComponent(question.ledgerId)}/answer`;
+  const endpoint = `/api/needs-user/${encodeURIComponent(question.ledgerId)}/answer`;
   return page(
     "Needs Drew",
     `<h1>${esc(question.question)}</h1>

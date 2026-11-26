@@ -225,7 +225,7 @@ test("alerts partial-index dedupe, JSON preference merge and ack are preserved",
   db.exec(`create table alerts_incidents(id text primary key default (lower(hex(randomblob(16)))), source text, incident_key text, severity text, title text, body text, status text default 'open', occurrences integer default 1, first_seen_at text default (strftime('%Y-%m-%dT%H:%M:%fZ','now')), last_seen_at text, delivered_at text, escalated_at text, acked_at text, closed_at text);
     create unique index alert_open_key on alerts_incidents(source,incident_key) where status <> 'closed';
     create table alerts_incident_events(id integer primary key, incident_id text, kind text, detail text);
-    create table alerts_notification_sends(id integer primary key, class text, object_ref text, incident_id text, outcome text, acted_on_at text);
+    create table alerts_notification_sends(id integer primary key, class text, object_ref text, incident_id text, outcome text, sent_at text, acted_on_at text);
     create table alerts_push_subscriptions(id text default 'sub', endpoint text unique, p256dh text, auth text, classes text, quiet text, user_agent text, last_seen_at text, created_at text, gone_count integer default 0);`);
   const store = new AlertsStore(localClient(db));
   const a = await store.postIncident({ source: "test", key: "same", severity: "critical", title: "now() ::jsonb" });
@@ -248,6 +248,7 @@ test("alerts partial-index dedupe, JSON preference merge and ack are preserved",
   expect(await store.pendingEscalations(15)).toEqual([]);
   await store.logSend({ class: "critical", objectRef: "test", incidentId: c.incident.id, outcome: "sent" });
   expect((await store.listSends()).length).toBe(1);
+  expect((await store.listSends())[0].sent_at).toBeTruthy();
   await store.ackIncident(c.incident.id);
   expect((await store.listSends())[0].acted_on_at).not.toBeNull();
   expect((await store.closeIncident(c.incident.id)).transitioned).toBe(true);
