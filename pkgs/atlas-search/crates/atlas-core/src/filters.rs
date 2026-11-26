@@ -898,14 +898,14 @@ mod tests {
         // {2, 3}; the unfiltered set is {1, 2, 3}.
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
-            "CREATE TABLE chunks (id INTEGER PRIMARY KEY, sensitivity TEXT NOT NULL);
+            "CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, sensitivity TEXT NOT NULL);
              CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
              CREATE TABLE sessions (id TEXT PRIMARY KEY, client TEXT, created_at TEXT);
              CREATE TABLE session_labels (session_id TEXT PRIMARY KEY, kind TEXT, topics TEXT, projects TEXT);
              CREATE TABLE generic_labels (session_id TEXT NOT NULL, dimension TEXT NOT NULL, values_json TEXT NOT NULL, PRIMARY KEY (session_id, dimension));
              INSERT INTO sessions VALUES ('s1', 'cli', '2026-01-01'), ('s2', 'cli', '2026-01-01'), ('s3', 'cli', '2026-01-01');
              INSERT INTO messages VALUES ('m1', 's1'), ('m2', 's2'), ('m3', 's3');
-             INSERT INTO chunks VALUES (1, 'personal'), (2, 'personal'), (3, 'personal');
+             INSERT INTO chunks VALUES (1, 'm1', 'personal'), (2, 'm2', 'personal'), (3, 'm3', 'personal');
              INSERT INTO session_labels VALUES ('s1', 'chat', '[]', '[]'), ('s2', 'chat', '[]', '[]'), ('s3', 'chat', '[]', '[]');
              INSERT INTO generic_labels VALUES ('s1', 'source_app', '[\"mail\"]'), ('s2', 'source_app', '[\"chat\"]'), ('s3', 'source_app', '[\"mail\", \"chat\"]');",
         )
