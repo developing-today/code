@@ -39,6 +39,11 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal
 
+      # atlas-core's native LanceDB reader (PR #14492) pulls in lance,
+      # whose lance-encoding build script (prost) requires protoc.
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Test atlas-search
         run: cargo +1.99.1 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search --all-targets
 
