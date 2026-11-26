@@ -122,7 +122,7 @@ describe("answer page", () => {
     expect(body).toContain('data-option="yes"');
     expect(body).toContain("https://example.com/pr/1");
     expect(body).not.toContain("javascript:alert");
-    expect(body).toContain("/api/needs-drew/q-1/answer");
+    expect(body).toContain("/api/needs-user/q-1/answer");
   });
 
   test("a needs-user mirror key and object ref use the same answer flow as the legacy form", async () => {
