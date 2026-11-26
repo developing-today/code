@@ -603,7 +603,7 @@ mod tests {
             Some(&data)
         );
 
-        let back = dir.join("nested").join("back.bin");
+        let back = dir.join("back.bin");
         let down = plan(
             resolve(parse_side("laptop:/srv/copy.bin"), None).unwrap(),
             Endpoint::Local(back.clone()),
