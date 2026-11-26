@@ -24,16 +24,20 @@ const queue = listed.find((s) => s.name === "fleet-queue") as StoreRow;
 const platform = listed.find((s) => s.name === "fleet-platform") as StoreRow;
 
 /** A pipeline answer in the wire shape: one result per statement. */
-const answer = (values: (number | null)[][]) => ({
-  results: values.map((row) => ({
-    type: "ok",
-    response: {
-      result: {
-        cols: [{ name: "n" }],
-        rows: [row.map((v) => ({ type: v === null ? "null" : "integer", value: v === null ? null : String(v) }))],
-      },
-    },
-  })),
+const answer = (values: (number | null)[][], refused: number[] = []) => ({
+  results: values.map((row, i) =>
+    refused.includes(i)
+      ? { type: "error" }
+      : {
+          type: "ok",
+          response: {
+            result: {
+              cols: [{ name: "n" }],
+              rows: [row.map((v) => ({ type: v === null ? "null" : "integer", value: v === null ? null : String(v) }))],
+            },
+          },
+        },
+  ),
 });
 
 /** An Ops whose GitHub serves the list, whose secrets are the
@@ -122,6 +126,54 @@ test("read through the fleet binary and a stand-in store: live rows for the answ
   expect(JSON.stringify(got)).not.toContain("queue-token");
   expect(JSON.stringify(got)).not.toContain("platform-token");
   expect(seen.every((s) => s.auth.startsWith("Bearer "))).toBe(true);
+});
+
+test("when size is refused but counts and schema answer, the store stays answered with those numbers", async () => {
+  const fetchImpl: Fetch = async (url) => {
+    if (url.startsWith(platform.address)) {
+      return { ok: true, status: 200, json: async () => answer([[8192], [1], [2], [3], [4], [5], [6], [7], [9]], [0]) };
+    }
+    return { ok: false, status: 503, json: async () => ({}) };
+  };
+  const ops = opsWith(
+    { "turso.fleet-queue-rw-token": "queue-token", "turso.fleet-platform-rw-token": "platform-token" },
+    fetchImpl,
+  );
+  const got = await ops.platformStores();
+  const livePlatform = got.stores.find((s) => s.name === "fleet-platform");
+  expect(livePlatform).toMatchObject({
+    answers: true,
+    error: null,
+    sizeBytes: null,
+    rows: { incidents: 1 },
+    liveSchemaVersion: "9",
+  });
+  expect(Object.values(livePlatform?.rows ?? {})).toEqual([1, 2, 3, 4, 5, 6, 7]);
+});
+
+test("when the store refuses every measurement statement, it is said as not answering", async () => {
+  const count = 2 + platform.tables.length;
+  const fetchImpl: Fetch = async (url) => {
+    if (url.startsWith(platform.address)) {
+      const values = Array.from({ length: count }, () => [0]);
+      const refused = Array.from({ length: count }, (_, i) => i);
+      return { ok: true, status: 200, json: async () => answer(values, refused) };
+    }
+    return { ok: false, status: 503, json: async () => ({}) };
+  };
+  const ops = opsWith(
+    { "turso.fleet-queue-rw-token": "queue-token", "turso.fleet-platform-rw-token": "platform-token" },
+    fetchImpl,
+  );
+  const got = await ops.platformStores();
+  const livePlatform = got.stores.find((s) => s.name === "fleet-platform");
+  expect(livePlatform).toMatchObject({
+    answers: false,
+    error: "the store refused the asking",
+    sizeBytes: null,
+    liveSchemaVersion: null,
+  });
+  expect(Object.values(livePlatform?.rows ?? {}).every((n) => n === null)).toBe(true);
 });
 
 test("a rotated token is fetched again, once, and the store then answers", async () => {

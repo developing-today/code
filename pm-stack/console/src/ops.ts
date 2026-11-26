@@ -1479,7 +1479,9 @@ export class Ops {
       const results = (answered.body?.results ?? []).map((r) =>
         r?.type === "ok" ? r.response?.result : undefined,
       );
-      if (results[0] === undefined) return storeNotAnswering(store, "the store refused the asking");
+      if (!results.some((result) => result !== undefined)) {
+        return storeNotAnswering(store, "the store refused the asking");
+      }
       return storeAnswered(store, results);
     } catch (error) {
       if ((error as Error).name === "TimeoutError") {
