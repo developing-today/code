@@ -6,7 +6,8 @@ import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import type { DashAction } from "./actions.ts";
 import { commentKindCounts, queuedComments } from "./comments.ts";
 import { ageMsText } from "./feed.ts";
-import type { HealthView, PageHealth } from "./health.ts";
+import { dedupeGathererProviders, type HealthView, type PageHealth } from "./health.ts";
+import { PROMPT_MODES, PROMPT_TARGETS, type PromptRecord } from "./prompts.ts";
 import type { DashComment, Provenance, ProvenanceDetail, SessionRecord } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { CANONICAL_STATUSES, STATUS_SOURCE_LABELS, STATUS_TAXONOMY } from "./status-taxonomy.ts";
@@ -26,8 +27,7 @@ import {
   commentThreadHtml,
 } from "./render-core.ts";
 import {
-  FIXTURE_COMMENTS_CAUSE,
-  commentsFixtureSourced,
+  commentsMissingCause,
   fixtureCommentsBannerHtml,
   sessionRecordLine,
 } from "./render-board.ts";
@@ -108,14 +108,16 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
-// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+// --- Source-conflict inbox (#1282, slices 1-2) --------------------------------
 
 /**
- * /conflicts — the read-only source-conflict inbox. Every disagreement the
- * facets already report, in one queue, grouped by conflict class, each entry
- * naming the item, both sources, both values and how long the pair has been
- * on record. It resolves nothing: slice 1 projects only, so this page is the
- * same list /api/conflicts.json serves, rendered.
+ * /conflicts — the source-conflict inbox. Every live disagreement the
+ * facets already report, in one queue, grouped by conflict class, each
+ * entry naming the item, both sources, both values and how long the pair
+ * has been on record. Slice 2 adds per-class trust rulings for the
+ * Project-vs-derived class: a standing ruling suppresses that class's
+ * entries (listed below with their suppressed count) and renders apply
+ * the trusted value; revoking re-surfaces the current disagreements.
  */
 export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
   const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
@@ -146,8 +148,31 @@ export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, de
     .join("");
   const oldest =
     inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const rulings = inbox.rulings ?? [];
+  const suppressed = inbox.suppressed ?? [];
+  const suppressedByClass = inbox.suppressedByClass ?? [];
+  const rulingFor = (classId: string) => rulings.find((r) => r.classId === classId) ?? null;
+  const projectRuling = rulingFor("project-vs-derived");
+  const rulingsHtml = `<h2>Trust rulings</h2>
+<p class="muted">One ruling per class, stored as data and applied to renders. Slice 2 rules only the Project-vs-derived class; revoking re-surfaces that class's current disagreements.</p>
+<div class="board">
+<div class="card"><strong>Project Status vs derived state</strong><br>${
+    projectRuling
+      ? `trusts <strong>${esc(projectRuling.trusted)}</strong> since ${esc(fmtDate(projectRuling.createdAt))} · suppresses <strong>${suppressed.length}</strong> entr${suppressed.length === 1 ? "y" : "ies"}`
+      : "no ruling — disagreements show as ⚠"
+  }${projectRuling?.reason ? `<br><span class="muted">${esc(projectRuling.reason)}</span>` : ""}</div>
+<div class="card"><strong>Quota records vs recorded reads</strong><br>no ruling path — always listed</div>
+</div>
+<div class="card"><strong>Record a ruling</strong><br><span class="muted">Owner-verified (Drew) write: POST /api/conflicts/rulings with <code>{"classId":"project-vs-derived","trusted":"project"|"derived"}</code>. Revoke with DELETE /api/conflicts/rulings with <code>{"classId":"project-vs-derived"}</code>.</span></div>`;
+  const suppressedNote = projectRuling
+    ? `<p class="muted">A trust ruling stands for Project Status vs derived state (trusts <strong>${esc(projectRuling.trusted)}</strong>): <strong>${suppressed.length}</strong> current disagreement${suppressed.length === 1 ? "" : "s"} suppressed from this queue while renders apply the trusted value. Revoking re-surfaces them.</p>`
+    : "";
+  const suppressedLine = suppressedByClass
+    .filter((c) => c.count > 0)
+    .map((c) => ` · ${esc(c.label)}: ${c.count} suppressed`)
+    .join("");
   const body = `<h1>Source conflicts</h1>
-<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}${suppressedLine}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>.${projectRuling ? "" : " No trust ruling stands, so nothing is suppressed."}</p>${suppressedNote}${rulingsHtml}
 <div class="board">
 <div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
 ${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
@@ -195,7 +220,7 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       const port = s.def.port !== null ? String(s.def.port) : "—";
       const upWhen = s.def.upWhen ? `<br><span class="muted">up = ${esc(s.def.upWhen)}</span>` : "";
       const notes = s.def.notes ? `<br><span class="muted">${esc(s.def.notes)}</span>` : "";
-      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
+      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state === "late" ? "stale" : s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
     })
     .join("");
   const sectionRows = view.feed.sections.length
@@ -210,14 +235,22 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
         })
         .join("")
     : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
-  const gathererRows = view.quotaGatherer?.providers.length
-    ? view.quotaGatherer.providers
+  // #14062: one row per provider, service and credential (the gatherer can
+  // list one more than once), the gatherer's own error text on a failed row,
+  // and the lag note said once under the table rather than on every row.
+  const gathererProviders = dedupeGathererProviders(view.quotaGatherer?.providers ?? []);
+  const gathererLagNotes = [...new Set(gathererProviders.map((p) => p.lagNote).filter(Boolean))];
+  const gathererRows = gathererProviders.length
+    ? gathererProviders
         .map(
           (p) =>
-            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}</td><td>unknown</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "—"}</td><td>${esc(p.lagNote)}</td></tr>`,
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}${p.state === "error" || p.state === "lapsed" ? ` <span class="muted">\u2014 ${p.error ? esc(p.error) : "the gatherer gave no reason"}</span>` : ""}</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "\u2014"}</td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="6" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
+    : `<tr><td colspan="4" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
+  const gathererNote = gathererLagNotes.length
+    ? `<p class="muted">Behind by is not shown: ${gathererLagNotes.map((note) => esc(note)).join("; ")}.</p>`
+    : "";
   const orch = view.jobs.orchestration;
   const orchLine = orch.generatedAt
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
@@ -292,7 +325,13 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
               : "up";
       const remaining = s.budgetRemainingPercent === null ? "\u2014" : `${s.budgetRemainingPercent.toFixed(1)}%`;
       const burn = s.burnRate1h === null ? "\u2014" : s.burnRate1h.toFixed(2);
-      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${esc(s.state)}</td></tr>`;
+      // #14062: a budget spent earlier in the window while the facet reads
+      // inside its target now says both, so the row never contradicts itself.
+      const state =
+        s.state === "exhausted" && s.latestBad === false
+          ? `exhausted over the window <span class="muted">\u00b7 now within target</span>`
+          : esc(s.state);
+      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${state}</td></tr>`;
     })
     .join("");
   const sloSection = view.slo
@@ -327,9 +366,29 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     view.mode === "fixtures"
       ? `<div class="banner">Fixtures mode — no live probes are made in this deployment; every service reports “fixtures”.</div>`
       : "";
+  const bootMs = Date.parse(view.bootAt);
+  const uptimeMs = Number.isFinite(bootMs) ? Math.max(0, nowMs - bootMs) : NaN;
+  // #14059(b): surface the deployed commit + its age from the same
+  // HealthView.version / bootAt that /api/health serves — the page and
+  // the API cannot disagree because both read this view.
+  const buildLine =
+    view.version === "unknown"
+      ? `<div class="card">Build <strong>unknown</strong> — this process was not deployed with PM_AGG_BUILD_VERSION, so the deployed commit cannot be shown (boot ${esc(view.bootAt)}).</div>`
+      : `<div class="card">Build <code title="${esc(view.version)}">${esc(view.version.slice(0, 8))}</code> <span class="muted">(<code>${esc(view.version)}</code> · boot ${esc(view.bootAt)} · up ${esc(ageMsText(uptimeMs))})</span> — same commit <a href="/api/health">/api/health</a> serves as version.</div>`;
+  // CF-9 (#14949): the edition's drift vs main, from the same
+  // HealthView /api/health serves. Unassembled (fixtures/tests)
+  // renders nothing; unknown renders its reason, never a guess.
+  const editionLine = !view.edition
+    ? ""
+    : view.edition.state === "unknown"
+      ? `<div class="card">Edition drift <strong>unknown</strong> — ${esc(view.edition.reason ?? "not measured")}.</div>`
+      : view.edition.state === "in-sync"
+        ? `<div class="card">Edition <strong>in sync</strong> with main at <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>.</div>`
+        : `<div class="card">Edition <strong>${view.edition.stale ? "STALE" : "behind"}</strong> — deployed <code>${esc((view.edition.deployedCommit ?? "").slice(0, 8))}</code> (${esc(view.edition.deployedCommitAt ?? "")}), main <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>, ${esc(String(view.edition.behindBy ?? "?"))} commits behind; main has carried newer code for ${esc(ageMsText(view.edition.driftMs ?? 0))}${view.edition.stale ? " — past the drift threshold; the merge → switch flip is overdue" : ""}.</div>`;
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
-${degraded}${modeNote}
+${buildLine}
+${editionLine}${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
@@ -339,7 +398,8 @@ ${sloSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Quota gatherer sources</h2>
-<div class="tblwrap"><table><caption>Quota-gatherer provider freshness and lag</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th></tr>${gathererRows}</table></div>
+<div class="tblwrap"><table><caption>Quota-gatherer provider freshness</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Last sync</th></tr>${gathererRows}</table></div>
+${gathererNote}
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -384,9 +444,10 @@ export function renderDiscuss(
   // #1500: the same fixture banner + honest empty wording as the item
   // page, keyed off the comments provenance this page already receives.
   const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussMissingCause = commentsMissingCause(provenance);
   const discussEmptyWording =
-    commentsFixtureSourced(provenance) && comments.length === 0
-      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+    discussMissingCause && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${discussMissingCause}</p>`
       : "";
   const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
@@ -423,6 +484,183 @@ ${list}`;
   return layout("Comments queue", body, provenance, "/comments");
 }
 
+// --- Chat/session surface (#10035 S6, design #9539 §4) ---------------------
+// The threaded view over the prompt store: every submission in its
+// thread (a "session"), oldest first inside the thread, threads by
+// latest activity. Reply posts replyTo the specific prompt (the store
+// inherits its thread); refs render as cross-reference links to the
+// referenced prompt's card; archive/read toggles PATCH the record.
+// Archived prompts are hidden by default, per the design — the
+// ?archived=1 view shows them, marked. The page script (CHAT_SCRIPT)
+// only wires the buttons/forms to the existing API; a no-JS browser
+// still gets the full read view.
+
+const CHAT_EXCERPT_CHARS = 80;
+
+function chatExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > CHAT_EXCERPT_CHARS ? `${flat.slice(0, CHAT_EXCERPT_CHARS - 1)}…` : flat;
+}
+
+function chatReplyForm(p: PromptRecord): string {
+  const targets = PROMPT_TARGETS.map(
+    (t) => `<option value="${t}"${t === p.target ? " selected" : ""}>${esc(t)}</option>`,
+  ).join("");
+  const modes = PROMPT_MODES.map(
+    (m) => `<option value="${m}"${m === p.mode ? " selected" : ""}>${esc(m)}</option>`,
+  ).join("");
+  return (
+    `<details class="chat-reply"><summary>Reply</summary>` +
+    `<form class="prompt-widget chat-reply-form" method="post" action="/api/prompt" enctype="multipart/form-data">` +
+    `<input type="hidden" name="scope" value="${esc(p.scope)}">` +
+    `<input type="hidden" name="page" value="${esc(p.page)}">` +
+    (p.sectionRef ? `<input type="hidden" name="sectionRef" value="${esc(p.sectionRef)}">` : "") +
+    `<input type="hidden" name="replyTo" value="${esc(p.id)}">` +
+    `<textarea name="prompt" rows="2" required aria-label="Reply"></textarea>` +
+    `<select name="target" aria-label="Target">${targets}</select>` +
+    `<select name="mode" aria-label="Mode">${modes}</select>` +
+    `<label><input type="checkbox" name="notify" value="true"> Notify me</label>` +
+    `<button type="submit">Reply</button>` +
+    `<span class="status muted" role="status"></span>` +
+    `</form></details>`
+  );
+}
+
+function chatPromptHtml(p: PromptRecord, byId: Map<string, PromptRecord>, visible: Set<string>): string {
+  const badges = [
+    `<span class="badge">${esc(p.status)}</span>`,
+    p.archived ? `<span class="badge closed">archived</span>` : "",
+    !p.read ? `<span class="badge msg">unread</span>` : "",
+    `<span class="muted">${esc(p.target)} · ${esc(p.mode)} · ${esc(p.page)}</span>`,
+    `<time datetime="${esc(p.createdAt)}">${esc(p.createdAt)}</time>`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const parent = p.replyTo ? byId.get(p.replyTo) : undefined;
+  const replyLine = p.replyTo
+    ? `<p class="muted">in reply to ${
+        parent ? `<a href="#prompt-${esc(parent.id)}">${esc(chatExcerpt(parent.prompt))}</a>` : esc(p.replyTo)
+      }</p>`
+    : "";
+  const refs = p.refs.length
+    ? `<p>Cross-references: ${p.refs
+        .map((ref) => {
+          const target = byId.get(ref);
+          if (!target) return `<span class="badge closed">↪ ${esc(ref)} · unknown</span>`;
+          if (!visible.has(ref))
+            return `<a class="badge" href="/chat?archived=1#prompt-${esc(ref)}">↪ ${esc(chatExcerpt(target.prompt))} (archived)</a>`;
+          return `<a class="badge" href="#prompt-${esc(ref)}">↪ ${esc(chatExcerpt(target.prompt))}</a>`;
+        })
+        .join(" ")}</p>`
+    : "";
+  const answer = p.answer ? `<div class="chat-answer"><strong>Answer</strong><p>${esc(p.answer)}</p></div>` : "";
+  const error = p.error ? `<p class="chat-error"><strong>Error:</strong> ${esc(p.error)}</p>` : "";
+  const attachments = p.attachments.length
+    ? `<p>Attachments: ${p.attachments
+        .map(
+          (a) =>
+            `<a href="/api/prompt/${encodeURIComponent(p.id)}/attachments/${encodeURIComponent(a.ref)}">${esc(a.name)}</a>`,
+        )
+        .join(" · ")}</p>`
+    : "";
+  const toggles = [
+    p.read
+      ? ""
+      : `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="read" data-patch-value="true">Mark read</button>`,
+    p.archived
+      ? `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="archived" data-patch-value="false">Unarchive</button>`
+      : `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="archived" data-patch-value="true">Archive</button>`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="card chat-prompt${p.read ? "" : " unread"}" id="prompt-${esc(p.id)}"><p>${esc(p.prompt)}</p>${replyLine}<p>${badges}</p>${answer}${error}${refs}${attachments}<p>${toggles}</p>${chatReplyForm(p)}</div>`;
+}
+
+const CHAT_SCRIPT = `<script>
+document.querySelectorAll('[data-prompt-patch]').forEach(function (btn) {
+  btn.addEventListener('click', async function () {
+    var body = {};
+    body[btn.dataset.patchKey] = btn.dataset.patchValue === 'true';
+    btn.disabled = true;
+    try {
+      var r = await fetch('/api/prompt/' + encodeURIComponent(btn.dataset.promptId), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      window.location.reload();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Failed: ' + e.message;
+    }
+  });
+});
+document.querySelectorAll('form.chat-reply-form').forEach(function (form) {
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    var status = form.querySelector('.status');
+    var button = form.querySelector('button[type=submit]');
+    button.disabled = true;
+    if (status) status.textContent = 'Sending…';
+    try {
+      var r = await fetch('/api/prompt', { method: 'POST', body: new FormData(form) });
+      var body = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(body.error || 'HTTP ' + r.status);
+      window.location.reload();
+    } catch (e) {
+      if (status) status.textContent = 'Not sent: ' + e.message;
+      button.disabled = false;
+    }
+  });
+});
+</script>`;
+
+export function renderChat(
+  prompts: PromptRecord[],
+  provenance: Provenance,
+  opts: { showArchived?: boolean } = {},
+): string {
+  const showArchived = opts.showArchived === true;
+  const byId = new Map(prompts.map((p) => [p.id, p]));
+  const visiblePrompts = prompts.filter((p) => showArchived || !p.archived);
+  const visible = new Set(visiblePrompts.map((p) => p.id));
+  const archivedCount = prompts.filter((p) => p.archived).length;
+  const unreadCount = prompts.filter((p) => !p.read && !p.archived).length;
+  const byThread = new Map<string, PromptRecord[]>();
+  for (const p of visiblePrompts) {
+    const arr = byThread.get(p.threadId) ?? [];
+    arr.push(p);
+    byThread.set(p.threadId, arr);
+  }
+  const threads = [...byThread.entries()]
+    .map(([threadId, ps]) => {
+      const ordered = ps.slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      return { threadId, prompts: ordered, latest: ordered[ordered.length - 1]?.createdAt ?? "" };
+    })
+    .sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : 0));
+  const threadHtml = threads.length
+    ? threads
+        .map((t) => {
+          const root = t.prompts.find((p) => p.replyTo === null) ?? t.prompts[0];
+          return `<section class="chat-thread"><h2>${esc(chatExcerpt(root.prompt))}</h2>\n${t.prompts
+            .map((p) => chatPromptHtml(p, byId, visible))
+            .join("\n")}</section>`;
+        })
+        .join("\n")
+    : `<p class="muted">No prompts yet — submissions from the prompt widgets land here, one thread per session.</p>`;
+  const toggle = showArchived
+    ? `<a href="/chat">Hide archived</a>`
+    : archivedCount > 0
+      ? `<a href="/chat?archived=1">Show archived (${archivedCount})</a>`
+      : "";
+  const body = `<h1>Chat</h1>
+<p class="muted">Every prompt submission in its thread (#10035, design #9539 §4): reply in context, cross-reference other prompts, archive when done. Archived prompts are hidden by default. Machine-first: <a href="/api/prompt/threads">/api/prompt/threads</a> · <a href="/api/prompt/unread-count">/api/prompt/unread-count</a>.</p>
+<p>${threads.length} thread${threads.length === 1 ? "" : "s"} · ${unreadCount} unread${toggle ? ` · ${toggle}` : ""}</p>
+${threadHtml}`;
+  return layout("Chat", body, provenance, "/chat", CHAT_SCRIPT);
+}
+
 // --- Projects page (#910 stage 5: the live GitHub Project pool) ------------
 // New function only (parallel agents own the other render functions).
 // Renders the feed's Project pool; where the Project Status and the
@@ -440,7 +678,7 @@ export function coverageSectionHtml(coverage: CoverageSnapshotFile | null | unde
   const cell = (
     repo: string,
     v: number | null,
-    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues",
   ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
@@ -462,7 +700,7 @@ export function coverageSectionHtml(coverage: CoverageSnapshotFile | null | unde
       const collectedAt = r.staleIssuesCollectedAt
         ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
         : "—";
-      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${cell(r.repo, r.staleOpenIssues, "staleOpenIssues")}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
     })
     .join("");
   const note = baseline

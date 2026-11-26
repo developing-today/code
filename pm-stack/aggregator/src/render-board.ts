@@ -167,7 +167,7 @@ export function renderBoardBody(
               }
             }
           }
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}${renderSectionPrompt("board", item.id)}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -348,6 +348,7 @@ function roadmapCard(
   spend?: SpendCardsView | null,
   epicRollups?: Map<string, EpicRollup>,
   showRowNotes = false,
+  promptPage?: string,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -389,7 +390,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}${promptPage ? renderSectionPrompt(promptPage, row.subject) : ""}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -405,7 +406,7 @@ export function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
-  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean },
+  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean; promptPage?: string },
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -415,7 +416,7 @@ export function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes, options?.promptPage)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -485,9 +486,13 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No priority rows in the current roadmap source.</p>';
   } else if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend, {
+      promptPage: "roadmap",
+    });
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend, {
+      promptPage: "roadmap",
+    });
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const byTheme = new Map<string, RoadmapRow[]>();
@@ -502,7 +507,19 @@ export function renderRoadmap(
             const cards = (laneRows: RoadmapRow[]) =>
               laneRows
                 .map((row) =>
-                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                  roadmapCard(
+                    row,
+                    items,
+                    counts,
+                    drill?.get(row.subject),
+                    annotations,
+                    briefs,
+                    forecasts,
+                    spend,
+                    undefined,
+                    false,
+                    "roadmap",
+                  ),
                 )
                 .join("");
             const lanes = dg.lanes
@@ -620,7 +637,26 @@ export function commentsFixtureSourced(provenance: Provenance): boolean {
   return provenance.comments.startsWith("fixtures");
 }
 
+/** #14065 slice 3: live mode withholds fixture comments when the
+ * projector is off or unreachable, so the stream is plainly empty. */
+export const UNAVAILABLE_COMMENTS_CAUSE =
+  "the comment stream is unavailable while the projector is off or unreachable (#14065)";
+
+export function commentsUnavailable(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("unavailable");
+}
+
+/** Why an empty comment stream may not mean "no discussion", or null. */
+export function commentsMissingCause(provenance: Provenance): string | null {
+  if (commentsFixtureSourced(provenance)) return FIXTURE_COMMENTS_CAUSE;
+  if (commentsUnavailable(provenance)) return UNAVAILABLE_COMMENTS_CAUSE;
+  return null;
+}
+
 export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  if (commentsUnavailable(provenance)) {
+    return `<div class="banner">The comment stream is unavailable while the projector is off or unreachable (#14065) — GitHub comments are not shown, and an empty stream does not mean the work has no discussion.</div>`;
+  }
   return commentsFixtureSourced(provenance)
     ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
     : "";
@@ -662,12 +698,16 @@ export function renderItem(
           /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
           provenance.items.startsWith("fixtures")
             ? "resolution fell back to fixtures (projector off, #1199)"
-            : "some linked refs could not be resolved from the current sources"
+            : /\+ unavailable for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
+                provenance.items.startsWith("unavailable")
+              ? "the projector is off or unreachable, so refs outside the project pool are unresolved (#14065)"
+              : "some linked refs could not be resolved from the current sources"
         }`
       : "Linked issues / PRs";
   const commentsBanner = fixtureCommentsBannerHtml(provenance);
-  const emptyCommentRow = commentsFixtureSourced(provenance)
-    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+  const missingCause = commentsMissingCause(provenance);
+  const emptyCommentRow = missingCause
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${missingCause}</td></tr>`
     : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${

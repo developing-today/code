@@ -5,7 +5,7 @@ import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { ageMsText } from "./feed.ts";
 import type { AaCaiRow, AaConfig, AaFeedSection, AaSection, AaTestRun, Provenance, ProvenanceDetail } from "./model.ts";
 
-import { esc, fmtDate, freshnessChips, layout } from "./render-core.ts";
+import { esc, fmtDate, freshnessChips, layout, pct } from "./render-core.ts";
 
 // --- AA cost explorer page (ainventory import data via the fleet feed) -----
 
@@ -17,7 +17,7 @@ import { esc, fmtDate, freshnessChips, layout } from "./render-core.ts";
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, costScoreEnvelope, costScoreOls, costScoreTail, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -124,6 +124,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     sel: null,
     hidden: [],
     sizeBy: {},
+    overlays: {},
     tasksMode: "per",
     baseline: "",
     pfCut: "50",
@@ -290,6 +291,35 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     var fr = rows.filter(function (p) { return p[cfg.flag]; }).sort(function (a, b) { return cfg.x(a) - cfg.x(b); });
     if (fr.length > 1) {
       g += '<polyline points="' + fr.map(function (p) { return X(cfg.x(p)).toFixed(1) + "," + Y(cfg.y(p)).toFixed(1); }).join(" ") + '" fill="none" stroke="#e6edf3" stroke-width="1.4" opacity="0.65" stroke-dasharray="5 3"/>';
+    }
+    // comparison-line overlays (#1400): Cost x Score only, toggleable,
+    // off by default. All three read the same visible rows the dots use
+    // and draw in data coordinates through this chart's own X/Y scales.
+    if (id === "xpl-c2") {
+      var ovRows = rows.map(function (p) { return { cost: cfg.x(p), score: cfg.y(p) }; });
+      if (S.overlays.trend) {
+        var fit = costScoreOls(ovRows);
+        if (fit) {
+          var tLo = Math.max(xlo, fit.costMin), tHi = Math.min(xhi, fit.costMax);
+          var yAt = function (c) {
+            var y = fit.intercept + fit.slope * Math.log10(Math.max(c, tLo));
+            return Math.min(Math.max(y, ylo), yhi);
+          };
+          g += '<polyline class="xpl-overlay" points="' + X(tLo).toFixed(1) + "," + Y(yAt(tLo)).toFixed(1) + " " + X(tHi).toFixed(1) + "," + Y(yAt(tHi)).toFixed(1) + '" fill="none" stroke="#e3b341" stroke-width="1.6" opacity="0.85"><title>OLS cost–score trend (score on log10 cost, n=' + fit.n + ")</title></polyline>";
+        }
+      }
+      if (S.overlays.envelope) {
+        var env = costScoreEnvelope(ovRows);
+        if (env.length > 1) {
+          g += '<polyline class="xpl-overlay" points="' + env.map(function (pt) { return X(pt.cost).toFixed(1) + "," + Y(pt.score).toFixed(1); }).join(" ") + '" fill="none" stroke="#3fb950" stroke-width="1.6" opacity="0.85" stroke-dasharray="7 3"><title>Smoothed upper-envelope frontier (cost/score Pareto set)</title></polyline>';
+        }
+      }
+      if (S.overlays.tail) {
+        var tail = costScoreTail(ovRows, 8);
+        if (tail.length > 1) {
+          g += '<polyline class="xpl-overlay" points="' + tail.map(function (pt) { return X(pt.cost).toFixed(1) + "," + Y(pt.score).toFixed(1); }).join(" ") + '" fill="none" stroke="#79c0ff" stroke-width="1.6" opacity="0.85" stroke-dasharray="2 3"><title>Smoothed upper-tail expectation (mean of the top half per log-cost bin)</title></polyline>';
+        }
+      }
     }
     // dot sizing by the chart's third metric (reference design's toggle)
     var sizeVals = null, sizeLo = 0, sizeHi = 1;
@@ -1453,7 +1483,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   var bandsEl = document.getElementById("xf-bands");
   if (bandsEl) bandsEl.addEventListener("change", function (ev) { S.bandCount = Number(ev.target.value); renderRecs(); renderBandComparisons(); enhanceCharts(); });
   var bandScaleEl = document.getElementById("xf-bandscale");
-  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); });
+  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); enhanceCharts(); });
   function syncRecInputs() {
     document.querySelectorAll("[data-rec]").forEach(function (el) {
       var f = el.getAttribute("data-rec");
@@ -1541,6 +1571,9 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   document.querySelectorAll("[data-sizeby]").forEach(function (cb) {
     cb.addEventListener("change", function () { S.sizeBy[cb.getAttribute("data-sizeby")] = cb.checked; drawCharts(); });
   });
+  document.querySelectorAll("[data-overlay]").forEach(function (cb) {
+    cb.addEventListener("change", function () { S.overlays[cb.getAttribute("data-overlay")] = cb.checked; drawCharts(); });
+  });
   document.querySelectorAll("[data-dl]").forEach(function (b) {
     b.addEventListener("click", function () { downloadPng(b.getAttribute("data-dl")); });
   });
@@ -1588,7 +1621,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     return JSON.parse(JSON.stringify({
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
       effortAny: S.effortAny, efforts: S.efforts, providerAny: S.providerAny, providers: S.providers, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
-      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
+      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy, overlays: S.overlays,
       tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
     }));
@@ -1607,11 +1640,12 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
     document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
     document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
+    document.querySelectorAll("[data-overlay]").forEach(function (cb) { cb.checked = !!S.overlays[cb.getAttribute("data-overlay")]; });
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
     ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "providerAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "providers", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "providers", "off", "hidden", "sizeBy", "overlays", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -1924,7 +1958,7 @@ ${aaTabAge}
 <div id="xpl-legend" class="strip"></div>
 <div class="xpl-charts" id="xpl-charts">
 <div class="chart" data-chart="xpl-c1"><h3>Completion time × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c1"> size dots by cost</label><button type="button" data-dl="xpl-c1">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c1"><button type="button" data-zact="expand" data-zfor="xpl-c1">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c1" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c1" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c1" aria-label="Reset view">⟲</button></span><svg id="xpl-c1" viewBox="0 0 680 400" role="img" aria-label="Completion time by score scatter chart"></svg><p class="muted" data-note></p></div>
-<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c2"><button type="button" data-zact="expand" data-zfor="xpl-c2">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c2" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c2" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c2" aria-label="Reset view">⟲</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><label><input type="checkbox" data-overlay="trend"> trend</label><label><input type="checkbox" data-overlay="envelope"> envelope</label><label><input type="checkbox" data-overlay="tail"> tail</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c2"><button type="button" data-zact="expand" data-zfor="xpl-c2">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c2" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c2" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c2" aria-label="Reset view">⟲</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c3"><h3>Cost × Completion time</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c3"> size dots by score</label><button type="button" data-dl="xpl-c3">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c3"><button type="button" data-zact="expand" data-zfor="xpl-c3">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c3" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c3" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c3" aria-label="Reset view">⟲</button></span><svg id="xpl-c3" viewBox="0 0 680 400" role="img" aria-label="Cost by completion time scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c4"><h3>Tasks completed vs duration</h3><span class="xpl-ctl"><button type="button" data-tmode="per">Seconds per task</button><button type="button" data-tmode="tot">Total time to finish all tasks</button><button type="button" data-dl="xpl-c4">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c4"><button type="button" data-zact="expand" data-zfor="xpl-c4">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c4" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c4" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c4" aria-label="Reset view">⟲</button></span><svg id="xpl-c4" viewBox="0 0 680 400" role="img" aria-label="Tasks completed by duration scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>

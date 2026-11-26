@@ -116,3 +116,6 @@ export {
 } from "./render-program.ts";
 export { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest } from "./render-alerts.ts";
 export type { AlertsPageView, NotificationPreferencesView, NotificationsPageView } from "./render-alerts.ts";
+export { UNAVAILABLE_COMMENTS_CAUSE, commentsMissingCause, commentsUnavailable } from "./render-board.ts";
+export { renderChat } from "./render-views.ts";
+export { unavailableSinceText } from "./render-core.ts";

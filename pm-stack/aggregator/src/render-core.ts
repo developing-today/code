@@ -31,6 +31,7 @@ import {
   refUrl,
 } from "./model.ts";
 import { groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
+import { renderPromptDock } from "./prompt-widget.ts";
 import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import { CANONICAL_STATUSES } from "./status-taxonomy.ts";
 import type { ItemBrief } from "./brief.ts";
@@ -69,6 +70,10 @@ const centralFmt = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
   timeZoneName: "short",
 });
+
+export function pct(ratio: number | null): string {
+  return ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
+}
 
 export function fmtCentral(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -368,6 +373,13 @@ const FACET_LABELS: Record<keyof Provenance, string> = {
   aa: "aa",
 };
 
+/** #14065: "2026-11-26 03:40 UTC" from an ISO time. */
+export function unavailableSinceText(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return iso;
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
 /**
  * Per-source freshness chips (#1138): only the sources the page being
  * rendered actually uses, each with its state word, its age when the
@@ -382,7 +394,10 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
       const facet = detail[key];
       const count = facet.count !== undefined ? ` · ${facet.count} ${esc(facet.countLabel ?? "")}`.trimEnd() : "";
       const age = facet.ageMs !== undefined && facet.state !== "fixtures" ? ` · ${ageMsText(facet.ageMs)}` : "";
-      return `<span class="fchip ${facet.state}" title="${esc(facet.text)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}</span>`;
+      // #14065: an unavailable facet says since when, in UTC minutes.
+      const since = facet.unavailableSince ? ` · since ${esc(unavailableSinceText(facet.unavailableSince))}` : "";
+      const title = facet.unavailableSince ? `${facet.text} (unavailable since ${facet.unavailableSince})` : facet.text;
+      return `<span class="fchip ${facet.state}" title="${esc(title)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}${since}</span>`;
     })
     .join("");
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
@@ -469,12 +484,21 @@ export function layout(
   // the sections as <optgroup>s, and both list every page.
   const links = navLinks(active);
   const dropdown = pageDropdown(active);
+  // #10032 S1: the prompt dock. A page reports its own manifest id; a
+  // sub-page (item, project detail) reports the page that reaches it.
+  const exactPage = pageByRoute(active)?.id;
+  const promptPage = exactPage ?? pageByRoute(manifestRouteFor(active) ?? "/")?.id ?? "overview";
+  const promptDock = renderPromptDock({
+    page: promptPage,
+    pageScope: exactPage !== undefined && PRIMARY_PROMPT_PAGES.includes(exactPage),
+  });
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
+<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}<a class="badge prompt-unread" href="/chat" data-prompt-unread hidden>✉ <span data-prompt-unread-count>0</span> unread</a>${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
+${promptDock}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script><script src="/assets/prompt-badge.js?v=prompt-badge-2026-11-23" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
 /** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */

@@ -23,7 +23,7 @@ import {
 } from "./model.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
-import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { derivedProjectState, PROJECT_URL } from "./projects.ts";
 import {
   PHASE12_ISSUE_URL,
   joinPhase12Steps,
@@ -55,6 +55,8 @@ import {
   type F12PrRef,
 } from "./f12-readiness.ts";
 import { canonicalStatusFor } from "./status-taxonomy.ts";
+import { effectiveProjectDisagreement, resolveTrustedProjectValue } from "./conflicts.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
 import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
@@ -111,6 +113,10 @@ export function projectsBodyHtml(
     /** Spend beside progress (#4824): the #4823 rollup store's
      * reader view. Absent/null: cards render exactly as before. */
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282): a standing project-vs-derived
+     *  ruling suppresses the ⚠ clash badge — the card applies the
+     *  trusted value and says so, instead of showing both sides. */
+    ruling?: ConflictRuling | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -178,13 +184,22 @@ export function projectsBodyHtml(
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
-      const derived = derivedProjectState(p, opts.orchestration);
-      const clash = projectDisagreement(p, opts.orchestration);
+      const detected = derivedProjectState(p, opts.orchestration);
+      // #1282 slice 2: a standing ruling suppresses the clash — the
+      // card applies the trusted value and labels it, so the page
+      // cannot show a ⚠ the inbox no longer lists.
+      const clash = effectiveProjectDisagreement(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const trusted = !clash && opts.ruling?.classId === "project-vs-derived" && p.status ? opts.ruling.trusted : null;
+      const trustedValue = resolveTrustedProjectValue(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const appliedStatus = trustedValue ?? p.status;
+      const appliedDerived = trustedValue ?? detected;
       const clashBadge = clash
         ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(clash.project)} · derived: ${esc(clash.derived)}</span>`
-        : "";
-      const statusBadge = p.status
-        ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+        : trusted
+          ? ` <span class="badge src" title="A trust ruling stands for Project Status vs derived state (recorded in the source-conflict inbox): this card applies the trusted ${esc(trusted)} value while the disagreement is suppressed — revoke the ruling to re-surface it">trusts ${esc(trusted)}</span>`
+          : "";
+      const statusBadge = appliedStatus
+        ? `<span class="badge ${appliedStatus === "Done" ? "merged" : appliedStatus === "Todo" ? "closed" : "implementing"}">${esc(appliedStatus)}</span>`
         : `<span class="badge">no status</span>`;
       const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
       // #5082: only active work (canonical Project status
@@ -227,7 +242,7 @@ export function projectsBodyHtml(
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
         p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
         `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
-        `<span class="badge src">derived: ${esc(derived)}</span>`,
+        `<span class="badge src">derived: ${esc(appliedDerived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
       const statusCtl = opts.identities
@@ -237,12 +252,12 @@ export function projectsBodyHtml(
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
       const spendCard = opts.spend?.byScope.get(p.ref);
       const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
-      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
+      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration, ruling: opts.ruling ?? null });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
       return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
-  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values — unless a trust ruling stands for the class, in which case the card applies the trusted value and says so. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 <div class="chips"><span class="muted">Status:</span> ${[
     `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
@@ -302,6 +317,8 @@ export function renderProjects(
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282), passed through to the pool cards. */
+    ruling?: ConflictRuling | null;
   } = {},
 ): string {
   return layout(
@@ -380,7 +397,7 @@ function projectCard(s: ProjectSummary): string {
   const homeLine = s.homeDoc
     ? `<br><span class="muted">Home doc: <a href="${esc(s.homeDoc.url)}">${esc(s.homeDoc.path)}</a></span>`
     : "";
-  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a></div>`;
+  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a>${renderSectionPrompt("program", s.id)}</div>`;
 }
 
 /** /program as the projects index (#1121): one card per configured
@@ -411,12 +428,14 @@ export function renderProgram(
     flowAnalytics?: FlowAnalytics;
     /** Spend beside progress (#4824) for the pool section. */
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282), passed through to the pool cards. */
+    ruling?: ConflictRuling | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend, ruling: poolSection.ruling ?? null })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
@@ -855,8 +874,9 @@ export function phase12PanelHtml(
  * F-item progress counted from #1235's ordered step list, and Phases
  * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
  * (the source of record, #9923 step 3) when the source carries it;
- * Phases 0-10 have no F-item numbering in their plans, so they state
- * that gap instead of showing a fabricated percentage. */
+ * Phases 0-10 joined that table for #13944 (F-numbering mirroring
+ * their plans' P-step lists, refs = their validation audits), so
+ * they derive from the same mapping instead of stating a gap. */
 export function phaseTrackerPanelHtml(
   items: Map<RefKey, GhItem>,
   phase12: Phase12Snapshot | null = null,
@@ -866,7 +886,7 @@ export function phaseTrackerPanelHtml(
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
   const progress = derivePhase12Progress(phase12, items);
   const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `All phases except 12 count the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state — for Phases 0–10 the F-numbering mirrors their plans' P-step lists and each item's ref is its phase's validation audit (#1075–#1077); ` : "The F-item mapping is unavailable in the current source, so no mapped percentage is shown — a number is never invented."}</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -892,9 +912,7 @@ export function phaseTrackerPanelHtml(
             : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
           : mapped
             ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
-            : r.phase <= 10
-              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
-              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
+            : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
       return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");
@@ -1017,7 +1035,8 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
   }
   const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
-  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  const historySource = snapshot.history ? " + /history-since" : "";
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list${historySource} (read-only), fetched ${esc(fetchedIso)}.</p>`;
   if (!snapshot.available || snapshot.stale) {
     const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
     return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
@@ -1054,7 +1073,29 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const items = idItems.length
     ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
     : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
-  return `${head}${sourceLine}${streams}${items}`;
+  const history = snapshot.history;
+  let historyHtml = "";
+  if (history) {
+    if (!history.available) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">History feed unavailable at cursor ${history.cursor}: ${esc(history.error ?? "no error detail")}.</p>`;
+    } else if (history.rows.length === 0) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">No new transitions after history cursor ${history.cursor}.</p>`;
+    } else {
+      const rows = [...history.rows]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 20)
+        .map((event) => {
+          const transition = `${event.fromStatus ?? "\u2014"} \u2192 ${event.toStatus ?? event.kind}`;
+          return `<tr><td>${event.id}</td><td>${event.taskId}</td><td>${esc(event.kind)}</td><td>${esc(transition)}</td><td>${esc(event.actor ?? "\u2014")}</td><td>${esc(event.createdAt)}</td></tr>`;
+        })
+        .join("");
+      const more = history.hasMore
+        ? `<p class="muted">More history remains after cursor ${history.cursor}; the next read resumes there.</p>`
+        : "";
+      historyHtml = `<h3>Recent task changes</h3><table><caption>Task history after cursor ${history.cursor}</caption><thead><tr><th scope="col">History id</th><th scope="col">Task</th><th scope="col">Kind</th><th scope="col">Transition</th><th scope="col">Actor</th><th scope="col">At</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
+    }
+  }
+  return `${head}${sourceLine}${streams}${items}${historyHtml}`;
 }
 
 export function renderProgramProject(

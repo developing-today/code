@@ -7,6 +7,7 @@ import { cardState } from "./card-state.ts";
 import { AA_PLAN_FACTS } from "./aa.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
+import { renderSectionPrompt } from "./prompt-widget.ts";
 import {
   reconciledInProgress,
   type InProgressSignal,
@@ -205,7 +206,7 @@ export function renderTodayBody(
     ? allObjectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}${renderSectionPrompt("today", o.ref || `objective:${i + 1}`)}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -321,18 +322,18 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
       const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}</article>`;
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}${renderSectionPrompt("queue", item.ref || item.title)}</article>`;
     })
     .join("")}</div>`;
 }
 
 /** The queue page body is also the Datastar fragment and JSON's source view. */
 export function renderQueueBody(view: QueueView): string {
-  return `<p class="muted">Cross-project work, reconciled from the existing board, Project pool, and orchestration inputs. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
-<h2>In progress <span class="badge">${view.inProgress.length}</span></h2>${queueRows(view.inProgress, "Nothing is in progress.")}
-<h2>Blocked <span class="badge">${view.blocked.length}</span></h2>${queueRows(view.blocked, "Nothing is blocked.")}
+  return `<p class="muted">Board-derived work items — reconciled from the existing board, the Project pool, and orchestration inputs. These are not fleet queue tasks: the queue broker's live task state is the console Now page's counts (same words, different source). <a href="/console/#now">Console Now — what its counts mean</a>. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
+<h2>In progress <span class="badge">${view.inProgress.length}</span></h2><p class="muted">Board-derived work items, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.inProgress, "Nothing is in progress.")}
+<h2>Blocked <span class="badge">${view.blocked.length}</span></h2><p class="muted">Board-derived work items, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.blocked, "Nothing is blocked.")}
 <h2>Done recently <span class="badge">${view.doneRecently.length}</span></h2><p class="muted">Completed or merged in the last 7 days; retired bookkeeping cards are excluded.</p>${queueRows(view.doneRecently, "Nothing completed in the last 7 days.")}
-<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
+<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder. Board-derived, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
 }
 
 export function renderQueue(view: QueueView, provenance: Provenance, detail?: ProvenanceDetail): string {
@@ -380,6 +381,9 @@ export interface OverviewData {
    *  the same render-time suppression as /attention (Codex review on
    *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
   actionsByObject?: Map<string, DashAction[]>;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement on the reconciled in-progress list while it stands. */
+  ruling?: ConflictRuling | null;
 }
 
 export type OverviewInProgressSignal = InProgressSignal;
@@ -460,7 +464,7 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
       .sort(byRecency)
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
-    inProgress: reconciledInProgress(data),
+    inProgress: reconciledInProgress({ ...data, ruling: data.ruling ?? null }),
   };
 }
 
@@ -493,7 +497,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
-  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))}` : ""} — <a href="/health">health</a></div>`;
   // #1116 item (5): when the feed itself has crossed the staleness
   // threshold the dashboard must say so visibly — a "feed X old" suffix
   // is not an actionable warning. The data-signal hook is what the
@@ -523,12 +527,12 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")}</ul>`
     : `<p class="muted">Nothing in progress from the Project, active-session, or open-PR signals.</p>`;
-  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
-<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
+  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. In-progress and blocked counts here are board-derived work items, not fleet queue tasks — the console Now page counts the queue broker's live tasks instead (same words, different source). Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
+<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2><p class="muted">The NEEDS USER intake queue — the queue the orchestrator works first, escalating only what genuinely requires the user. The console's need-you set is a different set (open questions plus hands, reviews, and escalated items). <a href="/attention">What this count means</a>.</p>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${feedStaleBanner}${healthStrip}
-<h2>In progress</h2>${inProgressItems}
+<h2>In progress</h2><p class="muted">Board-derived work items (Project Status, active sessions lined up, and open PRs) — one row per work item, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
