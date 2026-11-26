@@ -203,7 +203,20 @@ function makeFrontEnv(bucket: ReturnType<typeof fakeBucket>) {
       return { fetch: (r: Request) => userDO.fetch(r) };
     },
   };
-  return { USERS: ns };
+  const TENANCY_DB = {
+    prepare() {
+      return {
+        bind(bindingId: string) {
+          return {
+            async first() {
+              return { binding_id: bindingId, binding_status: "active", account_state: "active" };
+            },
+          };
+        },
+      };
+    },
+  };
+  return { USERS: ns, TENANCY_DB };
 }
 
 function front(path: string, init: RequestInit = {}): Request {
