@@ -43,12 +43,11 @@ use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
 use id_core::waiting::AuthorKey;
-use id_store::chain::Event;
 
 use super::{
     ACTIONS, APPLIED, BODIES, CHAINS, COMPACTED, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS,
-    GROUPS, PROOF_HEADERS, PROOF_IDS, StoreError, WAITING_BY_DEP, corrupt, lowest_proof,
-    position_key, split_position,
+    GROUPS, PROOF_HEADERS, PROOF_IDS, StoreError, WAITING_BY_DEP, corrupt, decode_stored,
+    lowest_proof, position_key, split_position,
 };
 
 /// The caller's retention policy for one compaction pass: which kinds are
@@ -237,21 +236,14 @@ impl EventStore {
             return Err(StoreError::Unusable);
         }
         let txn = self.db.begin_write()?;
-        let count = compact_in(&txn, policy, |bytes| self.decode_stored_event(bytes))?;
+        let count = compact_in(&txn, policy)?;
         txn.commit()?;
         Ok(count)
     }
 }
 
 /// The compaction pass itself, inside the caller's transaction.
-fn compact_in<F>(
-    txn: &WriteTransaction,
-    policy: &CompactionPolicy,
-    mut decode: F,
-) -> Result<usize, StoreError>
-where
-    F: FnMut(&[u8]) -> Result<Event, StoreError>,
-{
+fn compact_in(txn: &WriteTransaction, policy: &CompactionPolicy) -> Result<usize, StoreError> {
     // The per-author state the eligibility rules read.
     let mut chains: HashMap<AuthorKey, Chain> = HashMap::new();
     {
@@ -280,7 +272,7 @@ where
         for row in events.iter()? {
             let (position, bytes) = row?;
             let (author, seq) = split_position(position.value())?;
-            let event = decode(bytes.value())?;
+            let event = decode_stored(bytes.value())?;
             let kind = &event.header.extensions.kind;
             if !policy.live_kinds.contains(kind) || is_durable_kind(kind) {
                 continue;

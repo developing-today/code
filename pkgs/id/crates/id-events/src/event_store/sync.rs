@@ -428,7 +428,7 @@ impl EventStore {
         }
         for row in headers.iter()? {
             let (_id, bytes) = row?;
-            let header = self.decode_stored_event(bytes.value())?;
+            let header = decode_stored(bytes.value())?;
             let author = *header.header.verifying_key.as_bytes();
             let position = position_key(&author, header.header.seq_num);
             let id = *header.id.as_bytes();

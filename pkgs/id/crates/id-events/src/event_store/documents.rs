@@ -29,6 +29,7 @@ use redb::{ReadableDatabase, ReadableTable};
 use super::resolve::{self, author_of};
 use super::{
     ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
+    decode_stored,
 };
 use crate::groups::{Projection, Role as GroupRole};
 use id_core::waiting::AuthorKey;
@@ -127,14 +128,7 @@ impl EventStore {
             let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load_with_decoder(
-                &events,
-                &actions,
-                &device_ops,
-                &forks,
-                &proof_headers,
-                |bytes| self.decode_stored_event(bytes),
-            )?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let residue = super::compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
@@ -187,7 +181,7 @@ impl EventStore {
         let mut references = Vec::new();
         for row in events.iter()? {
             let (_position, bytes) = row?;
-            let event = self.decode_stored_event(bytes.value())?;
+            let event = decode_stored(bytes.value())?;
             if removed.contains(event.id.as_bytes()) {
                 continue;
             }

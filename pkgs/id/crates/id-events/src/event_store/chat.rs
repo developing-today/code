@@ -21,6 +21,7 @@ use redb::{ReadableDatabase, ReadableTable};
 use super::resolve::{self, author_of};
 use super::{
     ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
+    decode_stored,
 };
 use crate::groups::policy::{History, Policy};
 use id_core::membership::AuthId;
@@ -44,7 +45,7 @@ impl EventStore {
         let mut applied_events = Vec::new();
         for row in events.iter()? {
             let (_position, bytes) = row?;
-            let event = self.decode_stored_event(bytes.value())?;
+            let event = decode_stored(bytes.value())?;
             if applied_table.get(event.id.as_bytes().as_slice())?.is_none() {
                 continue;
             }
@@ -131,14 +132,7 @@ impl EventStore {
             let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load_with_decoder(
-                &events,
-                &actions,
-                &device_ops,
-                &forks,
-                &proof_headers,
-                |bytes| self.decode_stored_event(bytes),
-            )?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let residue = super::compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
@@ -174,14 +168,7 @@ impl EventStore {
             let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load_with_decoder(
-                &events,
-                &actions,
-                &device_ops,
-                &forks,
-                &proof_headers,
-                |bytes| self.decode_stored_event(bytes),
-            )?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let residue = super::compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;

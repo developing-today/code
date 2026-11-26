@@ -32,7 +32,7 @@ use id_core::waiting::AuthorKey;
 use id_store::chain::Event;
 use id_store::tag_claims::TagOp;
 
-use super::{APPLIED, EVENTS, EventStore, StoreError, position_key};
+use super::{APPLIED, EVENTS, EventStore, StoreError, decode_stored, position_key};
 use crate::idset::project::{Snapshot, SnapshotEvent};
 use crate::idset::view::{ExpandedWriters, ProjectionError};
 
@@ -160,7 +160,7 @@ impl EventStore {
                 break;
             }
             let (_position, bytes) = row?;
-            let event = self.decode_stored_event(bytes.value())?;
+            let event = decode_stored(bytes.value())?;
             let is_applied = applied.get(event.id.as_bytes().as_slice())?.is_some();
             found.push(AuthorEvent::from_event(&event, is_applied));
         }
