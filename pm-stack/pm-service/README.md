@@ -160,11 +160,6 @@ not caller input. Every accepted request awaits an attribution audit
 Actions still need their own operation/outcome audit at the API layer.
 
 This is an unwired acceptance seam, **not a production surface**.
-Remaining H4 work: authenticated owner issuance API/UI, metadata schema
-extension/adapter for agent credentials (the existing E4 credential
-table scopes are DB permissions), provider client-credentials exchange,
-and HTTP handler integration. H2's identity-link library accepts a
-resolved session; it does not itself mint a browser session.
 Provisional provider contract: `jti` names the revocable credential
 metadata handle, `scope` is the tenant binding, `roles` is `["agent"]`.
 No token/secret values are stored by this module.
@@ -175,5 +170,148 @@ Focused oracle tests live in `test/front-door.test.ts` alongside H1:
 cd pm-stack/pm-service && bun test test/front-door.test.ts
 ```
 
+## H4 slice 2 — issuance, metadata store, exchange, surface C HTTP (#14262)
+
+`src/agent-credentials.ts`, `src/agent-credential-store.ts`, and
+`src/surface-c-api.ts` complete the H4 server-side path on top of the
+acceptance seam above:
+
+- **Issuance** (`issueAgentCredential`): minted from the H2 owner
+  session (the front-door-resolved principal). Only `owner` /
+  `orchestrator` sessions mint; the tenant is the session's own
+  binding, exactly one tenant, never `'*'`; TTL is at most 30 days,
+  rotation by re-issuance. The secret is generated at issuance,
+  returned exactly once, and never stored.
+- **Metadata store**: the central tenancy plane (E's `credential`
+  home), NOT a tenant-DB migration — the tenant plane holds no
+  credential rows. A row is metadata (`jti`, owner
+  `account_id`/`binding_id`, `tenant_id`, audience, lifetime,
+  revocation stamp) plus a SHA-256 digest of the secret so the
+  exchange can verify a presented secret; presenting the digest
+  itself does not authenticate. In-memory and `SqlDb` adapters are
+  provided; every read is live, so revocation by `jti` lands within
+  one request.
+- **Exchange** (`exchangeClientCredentials`): the surface C
+  client-credentials flow. A live, unrevoked, unexpired credential
+  plus its secret exchanges for an audience-bound token with a
+  15-minute TTL and no refresh token; signing is injected (the
+  provider owns the keys). All failures are one `invalid_client`.
+- **HTTP** (`createSurfaceCHandler`): `POST /api/agent-credentials`
+  (owner session; the 201 is the only response that ever shows a
+  secret), `DELETE /api/agent-credentials/<jti>` (owner-scoped
+  revocation), `POST /oauth/token` (the exchange), and
+  `GET /api/agent/whoami` — a protected resource accepted only
+  through `resolveAgentFrontDoor`, returning the agent principal
+  plus its audit attribution (`jti` + owning account/binding).
+
+Remaining before H4 closes: the browser issuance UI (the API above
+is its backend) and wiring this handler into the deployed Worker
+entry with the real H2 session resolver and provider signer.
+
+Oracle tests live in `test/agent-credentials.test.ts`:
+
+```sh
+cd pm-stack/pm-service && bun test test/agent-credentials.test.ts test/front-door.test.ts
+```
+
 Dispatch this command remotely using Fleet; no production credentials
 are needed (tests sign ephemeral fixture tokens).
+
+## CF-5c — async serving substrate + Worker entry (#14969)
+
+The read API was born over the synchronous `SqlDb` surface, whose
+only adapter is bun:sqlite — fine for tests and local tooling, but
+a Worker cannot run it, and the tenant plane (Turso/libSQL over
+HTTP) is async. This slice adds the async twin without touching
+the synchronous path's behaviour:
+
+- `src/tenant-store/libsql-http.ts` — `AsyncSqlDb` (the one method
+  the read path needs) and `libsqlHttpDb`, its adapter over the
+  libSQL server protocol (Hrana v3 over HTTP, plain fetch). The
+  tenant DB URL/token live only in the adapter's closure, supplied
+  from Worker secrets; nothing on the read path reads, logs, or
+  persists a token (E §2.3).
+- `src/read-api/async-store.ts` — the four read loads awaited.
+  Every SQL string and row→shape mapping is imported from
+  `store.ts` / `collector/store.ts` (whose mappings were extracted
+  for exactly this sharing), so the served shapes cannot drift.
+- `src/read-api/async-api.ts` — the same four routes over the
+  async store; `test/read-api-async.test.ts` pins every route's
+  status and body byte-identical to the synchronous handler's.
+- `src/worker.ts` + `wrangler.toml` — the Worker entry. `/health`
+  reports `{ ok, service, version }` with the VERSION var the
+  deploy workflow stamps per deploy; until the
+  `PM_TENANT_DB_URL` / `PM_TENANT_DB_TOKEN` secrets are set, the
+  API routes answer a structured 503 (an unconfigured store is an
+  honest state, never invented data).
+- `.github/workflows/pm-service-deploy.yml` — the design §4
+  versions standard: test, `wrangler versions upload` stamped
+  with the full commit SHA, health gate against the version's
+  preview URL (`scripts/check-health.mjs`), `versions deploy`
+  promotion, and rollback by promoting a previous version id
+  (the `rollback_version` dispatch input).
+
+```sh
+cd pm-stack/pm-service && bun test && bun run typecheck
+```
+
+## CF-5d — M5 read waves over tenant-DB projections (#14970)
+
+First wave of the CF-5 programme's M5 surfaces. Per-surface record:
+
+- **Overview — moved.** `GET /api/overview.json`: pool-wide totals
+  (boards / items / open / closed / merged / drafts) and breakdowns
+  by state, status, area, horizon, kind, and content kind, plus the
+  board summaries it derives from.
+- **Queue — moved.** `GET /api/queue.json`: the open pool grouped
+  by project Status, split into `blocked` (held by a still-open
+  pool item) and `readyRefs` (no live blocker) — the hosted half of
+  the console's Now/queue family.
+- **Stayed (later waves):** board and roadmap already serve as the
+  §6 routes above; program, quota, events, today, digest, reports,
+  /aa, and /chat remain on their current stacks. Their data is not
+  in the tenant projections yet, so their waves land their
+  projection first — nothing here fabricates them.
+
+Both new routes are pure derivations in `src/read-api/waves.ts`
+over the projections the existing routes already read (merged pool
++ board summaries), served by both handlers (`api.ts` /
+`async-api.ts`); the async parity suite pins them byte-identical.
+
+- **Freshness visible:** every wave response carries `freshness` —
+  the per-board latest snapshot stamps and the newest as
+  `latestSnapshotAt` (null when no snapshot has landed).
+- **Write-amplification check (#14865 gate):** zero new writes.
+  This wave adds no projection, table, or write path; it issues
+  only the SELECTs the existing routes already issue, so the
+  collector's snapshot landing remains the sole writer.
+- **Live cutover** follows the CF-5c deploy: the routes ship with
+  the Worker on its next versions deploy; until the tenant secrets
+  land (#14969's remaining acceptance) the Worker serves them as
+  the designed honest 503, like the §6 routes.
+## Slice 4 — dashboard surfaces (#12829)
+
+`src/dashboard/dashboard.ts` serves the design §4 V1 parity list as
+server-rendered HTML, read through the same async loads the JSON API
+uses, so a page and its JSON twin cannot disagree. The Worker routes
+dashboard paths first and falls through to the API for the rest.
+
+| Path          | Page                                                                                |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `/`           | every board in the registry, its latest snapshot and status counts                  |
+| `/board/<id>` | one board's items from its latest snapshot                                          |
+| `/item/<ref>` | item detail: genealogy header (root first), sentence, release, after, fields        |
+| `/roadmap`    | overall priorities (rows grouped by priority) and the per-project roadmap (by area) |
+| `/releases`   | milestone close-out cards with carried-over epics                                   |
+| `/attention`  | open reconcile findings plus the coverage checks over each board's snapshot         |
+| `/quota`      | names quota/usage as not yet in the tenant store                                    |
+
+GETs only (anything else is a 405), SELECTs only, no token on the
+path. Absence renders as absence: a board with no snapshot says so,
+an unknown board or item is a 404 page, and quota shows no numbers it
+cannot back (#14065). Pages behind the same 503 as the API until the
+tenant store secrets are set.
+
+Not in this slice, each tracked separately: quota/usage data in the
+tenant store, the Kaneo/Pad/Grist embeds, dispatch intake, the console
+gate, push notifications and the AA extras.

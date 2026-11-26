@@ -100,8 +100,9 @@ var allowed = map[string]string{
 	// formula masks a hash to MaxInt63, and (1<<63 - 1) is that value
 	// by definition; the formula is pinned to two other implementations
 	// by the seed package's tests.
-	"1<<63":              "the MaxInt63 mask in testsupport/seed's shuffle derivation",
-	"2*time.Millisecond": "the poll interval in artifacts' schema-migration race guard (ensureLastTouched): a bounded loop waiting out a concurrent opener's ALTER; race arbitration, not a policy value",
+	"1<<63":               "the MaxInt63 mask in testsupport/seed's shuffle derivation",
+	"2*time.Millisecond":  "the poll interval in artifacts' schema-migration race guard (ensureLastTouched): a bounded loop waiting out a concurrent opener's ALTER; race arbitration, not a policy value",
+	"50*time.Millisecond": "the poll interval in daemon's post-takeover adopt retry (adoptDetachRetryInterval): how often the successor re-checks for the predecessor's detach; race arbitration, not a policy value",
 }
 
 // outOfScope names files owned by work happening in parallel. Their inline

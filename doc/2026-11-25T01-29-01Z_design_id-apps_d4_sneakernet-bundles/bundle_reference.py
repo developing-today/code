@@ -280,6 +280,7 @@ class Manifest:
     scope: str | None = None
     renewal_note: str | None = None
     ignored_tags: list[int] = field(default_factory=list)
+    grants: bytes | None = None  # slice 2; see grants_reference.py
 
 
 @dataclass
@@ -315,6 +316,8 @@ def encode_manifest(m: Manifest) -> bytes:
         )
         body += _u64(e.size) + bytes([e.kind])
     recs[0x07] = body
+    if m.grants is not None:
+        recs[0x08] = m.grants
     if m.scope is not None:
         recs[0x09] = m.scope.encode("ascii")
     if m.renewal_note is not None:
@@ -415,13 +418,15 @@ def _parse_entries(v: bytes) -> list[Entry]:
     return out
 
 
-def parse_manifest(body: bytes) -> Manifest:
+def parse_manifest(body: bytes, grants: bool = False) -> Manifest:
+    """`grants=True` is a slice-2 reader: it carries tag 0x08 through as raw
+    bytes for grants_reference.py to parse. A slice-1 reader rejects it."""
     recs = _parse_records(body)
     if not REQUIRED_TAGS <= recs.keys():
         raise BundleError("missing_required_field")
     if recs[0x01] != FORMAT:
         raise BundleError("unknown_format")
-    if 0x08 in recs:
+    if 0x08 in recs and not grants:
         raise BundleError("grants_reserved_slice_2")
     key = recs[0x03]
     if len(key) != 33 or key[0] != 0x01:
@@ -433,6 +438,7 @@ def parse_manifest(body: bytes) -> Manifest:
         entries=_parse_entries(recs[0x07]),
         creator_binding=recs.get(0x04),
         ignored_tags=[t for t in recs if t >= 0x80 and t not in KNOWN_TAGS],
+        grants=recs.get(0x08),
     )
     if 0x06 in recs:
         m.expires_at = _u64_field(recs[0x06], "bad_time")
@@ -450,7 +456,7 @@ def parse_manifest(body: bytes) -> Manifest:
     return m
 
 
-def read_a(blob: bytes, now: int | None = None) -> Report:
+def read_a(blob: bytes, now: int | None = None, grants: bool = False) -> Report:
     head, pos = _take(blob, 0, 14, "truncated_header")
     if head[:8] != MAGIC:
         raise BundleError("bad_magic")
@@ -461,7 +467,7 @@ def read_a(blob: bytes, now: int | None = None) -> Report:
         raise BundleError("manifest_too_large")
     body, pos = _take(blob, pos, mlen, "truncated_manifest")
     sig_head, pos = _take(blob, pos, 65, "truncated_signature")
-    m = parse_manifest(body)
+    m = parse_manifest(body, grants)
     if sig_head[0] != 0x01:
         raise BundleError("unknown_signature_alg")
     if not ed25519_verify(m.signing_key, DOMAIN + body, sig_head[1:]):

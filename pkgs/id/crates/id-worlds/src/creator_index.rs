@@ -811,7 +811,7 @@ mod tests {
             .unwrap();
         assert_eq!(quiz_v2.state, ProgramPublishState::Draft);
         assert_eq!(quiz_v2.description, None);
-        assert!(quiz_v2.tags.is_empty());
+        assert_eq!(quiz_v2.tags, [] as [String; 0]);
         assert!(!quiz_v2.installed && !quiz_v2.active);
         assert!(index.programs.iter().all(|p| p.program.author == my_key()));
     }
@@ -885,12 +885,12 @@ mod tests {
             }),
             vec!["paint@3"]
         );
-        assert!(
+        assert_eq!(
             query(IndexQuery {
                 text: Some("nothing like this".to_owned()),
                 ..IndexQuery::default()
-            })
-            .is_empty()
+            }),
+            [] as [String; 0]
         );
     }
 

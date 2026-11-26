@@ -618,3 +618,20 @@ fn a_type_mapping_failure_ends_a_live_read_as_an_error() {
     .unwrap_err();
     assert_eq!(err.code(), "type_mapping_failed");
 }
+
+#[test]
+fn drop_columns_removes_cursor_only_columns_and_keeps_the_rest() {
+    // Oracle: #15010 — the reader strips the columns it fetched only for
+    // the cursor, leaving the projection the caller asked for.
+    let decoder = decoder(&PgType::Text);
+    let mut rows = decoder.decode(br#"[{"v":"a","id":7}]"#).unwrap();
+    let mut row = rows.remove(0);
+    assert_eq!(
+        decoder.cursor(&row, &order(&["id"])).unwrap(),
+        vec![Value::Int(7)]
+    );
+    decoder.drop_columns(&mut row, &["id".to_owned(), "absent".to_owned()]);
+    assert_eq!(row.get("id"), None);
+    assert_eq!(row.get("v"), Some(&MappedValue::String("a".to_owned())));
+    assert_eq!(row.columns.len(), 1);
+}

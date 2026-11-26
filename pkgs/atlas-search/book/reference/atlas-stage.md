@@ -20,7 +20,7 @@ Commands:
   units      List units in a lifecycle state (open|closing|merged)
 ```
 
-`--version` / `-V` prints `atlas-stage 0.1.0` (the crate version), exit 0 — the command definition carries a version, as `atlas-search`'s does. `-h, --help` works as usual for a clap binary.
+`--version` / `-V` prints `atlas-stage 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history), exit 0 — answered before clap parsing, like `atlas-search`'s. `-h, --help` works as usual for a clap binary.
 
 All output is one JSON object per line on stdout. Errors print `atlas-stage: &lt;msg&gt;` on stderr.
 

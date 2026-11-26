@@ -1,11 +1,13 @@
-// Source-conflict inbox (#1282, slice 1): ONE read-only queue over every
+// Source-conflict inbox (#1282, slices 1-2): ONE queue over every
 // disagreement the facets already record, instead of a ⚠ badge that only
 // exists where it happens to render.
 //
-// This slice projects; it never resolves. There is no ruling store here and
-// nothing on a render changes because of this module — the entries name the
-// item, the two sources, both values, and how long the pair has been on
-// record. Slice 2 (trust rulings) is what suppresses a class.
+// Slice 1 projects; it never resolves. Slice 2 adds per-class trust
+// rulings for the Project-vs-derived class only (see
+// conflict-rulings.ts): when a ruling stands, that class's entries are
+// suppressed from the inbox and renders apply the trusted value instead
+// of showing both sides as a clash. Nothing else changes: the quota
+// class has no ruling path and is never suppressed.
 //
 // Honesty rules, same as the rest of the dashboard:
 // - Only disagreements a facet ACTUALLY reports become entries. We do not
@@ -17,7 +19,8 @@
 //   clash is months old — so every entry states its ageBasis and the page
 //   says "at least", never "exactly".
 import type { OrchestrationSection, ProjectPoolItem, RefKey, SaasService } from "./model.ts";
-import { projectDisagreement } from "./projects.ts";
+import type { ConflictRuling, TrustedSource } from "./conflict-rulings.ts";
+import { derivedProjectState, projectDisagreement } from "./projects.ts";
 
 /** Closed set of disagreement classes this slice knows how to collect. */
 export type ConflictClassId = "project-vs-derived" | "quota-records";
@@ -69,6 +72,12 @@ export interface ConflictInbox {
   /** Oldest entry's ageDays, or null when no entry carries a date. */
   oldestAgeDays: number | null;
   entries: ConflictEntry[];
+  /** Rulings that were applied to build this inbox (slice 2, data not code). */
+  rulings: ConflictRuling[];
+  /** Entries suppressed by a ruling — same shape, kept for audit, never counted. */
+  suppressed: ConflictEntry[];
+  /** How many entries each class suppressed (only project-vs-derived can be non-zero). */
+  suppressedByClass: ConflictCountByClass[];
 }
 
 export interface ConflictInputs {
@@ -82,6 +91,8 @@ export interface ConflictInputs {
   services?: ReadonlyArray<SaasService>;
   /** Injectable clock (tests); defaults to now. */
   now?: number;
+  /** Slice-2 trust rulings (data). Only project-vs-derived is honored. */
+  rulings?: ReadonlyArray<ConflictRuling>;
 }
 
 const DAY_MS = 86_400_000;
@@ -144,20 +155,76 @@ function quotaEntries(inputs: ConflictInputs, nowMs: number): ConflictEntry[] {
  * Collect every disagreement the facets already report. Read-only and pure
  * apart from the injected clock: the same inputs always yield the same
  * inbox, which is what lets the page and /api/conflicts.json be one truth.
+ * Rulings never change detection — they only suppress at the inbox layer.
  */
 export function detectConflicts(inputs: ConflictInputs): ConflictEntry[] {
   const nowMs = inputs.now ?? Date.now();
   return [...projectEntries(inputs, nowMs), ...quotaEntries(inputs, nowMs)];
 }
 
-/** The inbox summary the health surface counts and /conflicts renders. */
+/** The ruling that suppresses project-vs-derived entries, if one stands. */
+export function rulingForClass(
+  rulings: ReadonlyArray<ConflictRuling> | undefined,
+  classId: string,
+): ConflictRuling | null {
+  if (!rulings) return null;
+  return rulings.find((r) => r.classId === classId) ?? null;
+}
+
+/**
+ * The disagreement to display for one item after applying the ruling.
+ * Null means "no clash to show": either the sources agree (slice 1 rule)
+ * or a ruling trusts one side (slice 2 rule). Callers that render the
+ * effective value use resolveTrustedProjectValue for the display value.
+ */
+export function effectiveProjectDisagreement(
+  item: ProjectPoolItem,
+  orchestration?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
+  ruling?: ConflictRuling | null,
+): { project: string; derived: string } | null {
+  const clash = projectDisagreement(item, orchestration, additionalInProgressRefs);
+  if (!clash) return null;
+  if (ruling && ruling.classId === "project-vs-derived") return null;
+  return clash;
+}
+
+/**
+ * The value renders apply while a project-vs-derived ruling stands: the
+ * trusted side's value for an item that currently disagrees, or the
+ * agreed value (either side) when the sources already agree. Null when
+ * the item carries no Project Status to rule on.
+ */
+export function resolveTrustedProjectValue(
+  item: ProjectPoolItem,
+  orchestration?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
+  ruling?: ConflictRuling | null,
+): string | null {
+  if (!item.status) return null;
+  if (!ruling || ruling.classId !== "project-vs-derived") return null;
+  const trusted: TrustedSource = ruling.trusted;
+  if (trusted === "project") return item.status;
+  return derivedProjectState(item, orchestration, additionalInProgressRefs);
+}
+
+// The inbox summary the health surface counts and /conflicts renders. */
 export function conflictInbox(inputs: ConflictInputs): ConflictInbox {
   const nowMs = inputs.now ?? Date.now();
-  const entries = detectConflicts(inputs);
+  const all = detectConflicts(inputs);
+  const ruling = rulingForClass(inputs.rulings, "project-vs-derived");
+  const suppressed = ruling ? all.filter((e) => e.classId === "project-vs-derived") : [];
+  const suppressedIds = new Set(suppressed.map((e) => e.id));
+  const entries = ruling ? all.filter((e) => !suppressedIds.has(e.id)) : all;
   const byClass = CONFLICT_CLASSES.map((cls) => ({
     classId: cls.id,
     label: cls.label,
     count: entries.filter((e) => e.classId === cls.id).length,
+  }));
+  const suppressedByClass = CONFLICT_CLASSES.map((cls) => ({
+    classId: cls.id,
+    label: cls.label,
+    count: suppressed.filter((e) => e.classId === cls.id).length,
   }));
   const ages = entries.map((e) => e.ageDays).filter((d): d is number => d !== null);
   return {
@@ -166,5 +233,8 @@ export function conflictInbox(inputs: ConflictInputs): ConflictInbox {
     byClass,
     oldestAgeDays: ages.length ? Math.max(...ages) : null,
     entries,
+    rulings: ruling ? [ruling] : [],
+    suppressed,
+    suppressedByClass,
   };
 }
