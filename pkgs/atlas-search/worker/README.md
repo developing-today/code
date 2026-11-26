@@ -164,6 +164,19 @@ fields, added, removed and moved items, score changes (only within one rule
 id), and added or removed search result refs. Both routes sit behind the
 gate token and answer 503 without a `RETAINED` binding.
 
+Slice 6 (`src/retention_report.ts`, `migrations/0005_retention_modes_and_reports.sql`):
+retention wiring after the rule engine design (#6041). Every class has a
+mode and starts in `dry-run`, where nothing is retired. A report lists, per
+class, the live versions past the class window and outside its floor
+(action `report-only`, or `cold-tier` once live), the versions the floor
+protected, and deltas against the previous report of the same kind; it
+names versions by id only. `promoteClass` moves a class to `live-cold` only
+after it appears unchanged in the two latest scheduled reports, and
+changing a class's window or floor returns it to `dry-run`. Nothing
+deletes. `POST /v1/admin/retained/report` runs an on-demand report, which
+never counts toward promotion; scheduled reports need a cron trigger that
+is not configured yet.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client

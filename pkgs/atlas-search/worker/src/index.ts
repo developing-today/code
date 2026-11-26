@@ -18,6 +18,7 @@
  *   POST /mcp                       (gated) -> MCP endpoint (#8625; src/mcp.ts)
  *   POST /v1/admin/retained/audit {object, version} (gated) -> pin a version for audit (#9140)
  *   GET  /v1/admin/retained/compare?object=&from=&to= (gated) -> before/after report (#9140)
+ *   POST /v1/admin/retained/report  (gated) -> on-demand retention dry-run report (#9140)
  */
 import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
@@ -26,6 +27,7 @@ import { handleMcp } from "./mcp";
 import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
 import { AuditError, compareAudited, pinForAudit } from "./audit_report";
 import { RetainedObjectError } from "./retained_object";
+import { RetentionReportError, runRetentionReport } from "./retention_report";
 import { recordSearch, validSession } from "./search_history";
 import { CONTEXT } from "./space";
 
@@ -60,7 +62,7 @@ function versionNumber(value: unknown): number | undefined {
   return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? n : undefined;
 }
 
-/** The admin audit routes (#9140 slice 5). */
+/** The admin retained-object routes (#9140 slices 5 and 6). */
 async function retainedAdmin(req: Request, env: Env, url: URL): Promise<Response> {
   const db = env.RETAINED;
   if (!db) return errorJson(503, "retained_off", "no retained-object store is configured");
@@ -93,14 +95,21 @@ async function retainedAdmin(req: Request, env: Env, url: URL): Promise<Response
       }
       return Response.json(await compareAudited(db, object, from, to));
     }
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/report") {
+      // On-demand only: these reports never count toward promotion.
+      return Response.json(await runRetentionReport(db, `on-demand-${crypto.randomUUID()}`, "on-demand"));
+    }
   } catch (error) {
     if (error instanceof AuditError) {
       return errorJson(error.code === "family_mismatch" ? 409 : 404, error.code, error.message);
     }
     if (error instanceof RetainedObjectError) return errorJson(409, error.code, error.message);
+    if (error instanceof RetentionReportError) return errorJson(409, error.code, error.message);
     throw error;
   }
-  return errorJson(405, "method_not_allowed", "use POST for audit and GET for compare");
+  const known = ["/v1/admin/retained/audit", "/v1/admin/retained/compare", "/v1/admin/retained/report"];
+  if (!known.includes(url.pathname)) return errorJson(404, "not_found", "no route");
+  return errorJson(405, "method_not_allowed", "use POST for audit and report, GET for compare");
 }
 
 /** Constant-time bearer comparison (via digests, so length-safe). */
@@ -235,7 +244,7 @@ export default {
       return Response.json({ key, query, purged: result.purged });
     }
 
-    if (url.pathname === "/v1/admin/retained/audit" || url.pathname === "/v1/admin/retained/compare") {
+    if (url.pathname.startsWith("/v1/admin/retained/")) {
       if (!(await gateOk(env, req))) {
         return errorJson(401, "unauthorized", "missing or invalid gate token");
       }
