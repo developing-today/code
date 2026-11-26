@@ -1026,7 +1026,7 @@ mod archive_owner_read_tests {
             .await;
         FAIL_OWNER_READS.with(|fail| fail.set(false));
         result.unwrap();
-        assert!(owner_values(&env.tags, ARCHIVE).await.is_empty());
+        assert_eq!(owner_values(&env.tags, ARCHIVE).await, [] as [Vec<u8>; 0]);
     }
 
     #[tokio::test]

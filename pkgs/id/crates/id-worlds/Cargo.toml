@@ -55,6 +55,10 @@ ed25519-dalek = { version = "3", features = ["rand_core"] }
 # already in the workspace graph through id-core's `world` feature.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-lite = "2"
+# Decodes and resizes kitty graphics stills (kitty_graphics::fit_still,
+# #13623). Already in the workspace graph through bevy; this edge turns
+# on its PNG codec only, which adds the `png` and `fdeflate` crates.
+image = { version = "0.25", default-features = false, features = ["png"] }
 id-caps = { path = "../id-caps", default-features = false }
 id-core = { path = "../id-core", default-features = false, features = [
   "world",
@@ -182,5 +186,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

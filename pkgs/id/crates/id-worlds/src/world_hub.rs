@@ -1382,14 +1382,9 @@ mod tests {
             .issue("bea", WorldScopes::GUEST)
             .await
             .unwrap();
-        assert!(
-            b.service()
-                .world()
-                .snapshot(token_b)
-                .await
-                .unwrap()
-                .events
-                .is_empty()
+        assert_eq!(
+            b.service().world().snapshot(token_b).await.unwrap().events,
+            [] as [crate::world::WorldEvent; 0]
         );
     }
 

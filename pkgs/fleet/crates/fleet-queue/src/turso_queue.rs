@@ -41,7 +41,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::validate::{task_from_packet, validate_packet};
+use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
@@ -49,6 +49,8 @@ mod claim;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
+#[cfg(all(test, feature = "queue-broker"))]
+mod hrana_double;
 mod label_enrich;
 mod lifecycle;
 mod links;
@@ -300,6 +302,122 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn enqueue_route_declaration_15070() {
+        // #15070 oracle (validation + dry-run halves): a packet whose
+        // payload carries a valid structured route declaration
+        // enqueues (dry-run) with the declaration intact on the row
+        // shape; packets with a malformed declaration — unknown
+        // family, blank reason, unknown field, non-object — are
+        // refused at validation, naming payload.route. A packet
+        // without a route is untouched by all of this.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let base = packet_12744(15070, 30);
+        let mut routed = base.clone();
+        routed["payload"]["route"] = json!({
+            "platform": "openchamber",
+            "reason": "works in the laptop checkout of openchamber"
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": routed,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["route"]["platform"], "openchamber",
+            "{out}"
+        );
+        assert_eq!(
+            crate::validate::route_declaration(&out["task"]["payload"]),
+            Some((
+                "openchamber".to_string(),
+                "works in the laptop checkout of openchamber".to_string()
+            )),
+            "{out}"
+        );
+        for bad in [
+            json!({"platform": "code-a", "reason": "r"}),
+            json!({"platform": "muse", "reason": "  "}),
+            json!({"platform": "muse"}),
+            json!({"platform": "muse", "reason": "r", "lane": "xaltha"}),
+            json!("openchamber"),
+        ] {
+            let mut packet = base.clone();
+            packet["payload"]["route"] = bad.clone();
+            let req = json!({
+                "queue": "repo-health-code-pilot",
+                "packet": packet,
+                "dry_run": true
+            });
+            let out = verb_enqueue(&backend, &req);
+            assert_eq!(out["ok"], false, "route {bad} must be refused: {out}");
+            assert!(
+                out["errors"]
+                    .as_array()
+                    .map(|errs| {
+                        errs.iter()
+                            .any(|e| e.as_str().unwrap_or("").contains("payload.route"))
+                    })
+                    .unwrap_or(false),
+                "route {bad} refusal names payload.route: {out}"
+            );
+        }
+        // No route: route_declaration reads None (unrouted, legacy).
+        assert_eq!(
+            crate::validate::route_declaration(&base["payload"]),
+            None
+        );
+    }
+
+    #[test]
+    fn enqueue_translates_route_to_ledger_platform_limit_15070() {
+        // #15070 oracle (broker half): verb_enqueue translates the
+        // declaration into the lane ledger's platform limitation at
+        // creation — the INSERT names platform_limit and
+        // platform_limit_reason and sits in verb_enqueue's own
+        // segment, after the task INSERT (the row it limits must
+        // exist first), and the translation is gated on the parsed
+        // declaration so unrouted packets create no ledger row.
+        let src = &test_source();
+        let seg = src
+            .split("pub(crate) fn verb_enqueue(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\npub(crate) fn ")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("route_declaration"),
+            "verb_enqueue parses the route declaration"
+        );
+        assert!(
+            seg.contains("platform_limit_error("),
+            "verb_enqueue rechecks the declaration as a platform limitation"
+        );
+        let task_insert = seg
+            .find("INSERT INTO tasks")
+            .expect("verb_enqueue inserts the task row");
+        let ledger_insert = seg
+            .find("INSERT INTO repo_task_lane_ledger")
+            .expect("verb_enqueue inserts the ledger limitation row");
+        assert!(
+            task_insert < ledger_insert,
+            "the ledger limitation is stamped after the task row exists"
+        );
+        let ledger_seg = &seg[ledger_insert..];
+        assert!(ledger_seg.contains("platform_limit, platform_limit_reason"));
+        assert!(
+            seg.contains("\"route_declared\""),
+            "the translation leaves a route_declared audit event"
+        );
     }
 
     /// A one-shot stub of the Turso pipeline endpoint for the
@@ -3728,6 +3846,71 @@ mod tests {
             gate(&slice, &json!({"commit": "abc123"})).is_ok(),
             "a commit is slice evidence too"
         );
+    }
+
+    #[test]
+    fn suspect_completion_stamp_14268() {
+        // #14268 ask 2 oracle: the stamp fires exactly on the
+        // false-completion signature — the completion carries no
+        // result and no worker activity was recorded since the
+        // claim. Any result content, or any recorded activity,
+        // clears it.
+        let stamp = suspect_completion_stamp(&json!({}), 0)
+            .expect("empty result + no activity is the suspect shape");
+        assert_eq!(
+            stamp["reason"],
+            "done_with_no_result_and_no_activity_history"
+        );
+        assert!(suspect_completion_stamp(&json!(null), 0).is_some());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 0).is_none());
+        assert!(suspect_completion_stamp(&json!({}), 1).is_none());
+        assert!(suspect_completion_stamp(&json!({"note": "did the work"}), 3).is_none());
+        // A non-object result is content, never the empty shape.
+        assert!(suspect_completion_stamp(&json!("done"), 0).is_none());
+    }
+
+    #[test]
+    fn verb_complete_surfaces_suspect_completions_14268() {
+        // #14268 ask 2, source oracle: verb_complete counts the
+        // task's activity, stamps the stored result with the
+        // verdict, flags the completed event and writes the
+        // dedicated suspect_completion event. The activity count
+        // excludes the claim ceremony's own writes, so a bare
+        // claim can never clear the shape by itself.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_complete(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("activity_event_count(t, task_id)"),
+            "verb_complete counts prior activity before mutating"
+        );
+        assert!(
+            seg.contains("suspect_completion_stamp(&result, n)"),
+            "verb_complete stamps the suspect shape on the result"
+        );
+        assert!(
+            seg.contains("\"suspect_completion\""),
+            "verb_complete writes the suspect_completion event"
+        );
+        let counter = src
+            .split("fn activity_event_count(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        for kind in [
+            "'claimed'",
+            "'session_bound'",
+            "'lane_session_bound'",
+            "'model_stamp'",
+        ] {
+            assert!(
+                counter.contains(kind),
+                "activity count excludes claim-ceremony kind {kind}"
+            );
+        }
     }
 
     #[test]

@@ -2288,8 +2288,8 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
             .and_then(|v| v.as_i64())
             .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         let to_sink = expired_claim_returns_to_sink(&progress);
-        let fail_at_cap = !to_sink
-            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let fail_at_cap =
+            !to_sink && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let (progress, cleared) = clear_binding(&progress, "release_repo_task");
         let cap_error = format!("released at attempt cap ({attempts}/{max_attempts}): {reason}");
         let mut args = vec![];
@@ -2392,7 +2392,13 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 }),
             )
         };
-        event(t, Some(&worker), Some(task_id), kind, &with_marks(&detail, &row))?;
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            kind,
+            &with_marks(&detail, &row),
+        )?;
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
         Ok(ok(json!({ "row": row })))
     })();

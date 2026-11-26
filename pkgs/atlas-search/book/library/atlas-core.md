@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 44 public modules, grouped by job
+## The 46 public modules, grouped by job
 
-`lib.rs` declares 44 public modules. Grouped by the job they do:
+`lib.rs` declares 46 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -79,6 +79,7 @@ fixtures recorded from the production Python module.
 | `consumer_preset`    | The attested-only consumer view preset (#13766): a consumer-side selection over one pinned publication — exactly the versions whose batch has a published `attestation.claim`, joined on `batch_id`. Any inconsistency refuses the whole selection rather than returning a partial one |
 | `sweep`              | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                                                                           |
 | `github_comments`    | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                                                                                 |
+| `session_stage`     | Shared staging core for conversation-export adapters: retains user-facing messages, chunks text at paragraph boundaries, and stages each message with stable IDs and source metadata                                                                                                                                 |
 | `trace_ingest`       | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                                                                        |
 
 ### Classification
@@ -103,13 +104,14 @@ fixtures recorded from the production Python module.
 
 ### Support
 
-| Module            | Job                                                                                                                                                                                                                                                        |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types`           | The shared value and row model between the Turso pipeline encoding and rusqlite: values, rows, statements, branch hits and pools, chunk details, and the canonical defaults (the default model and the default vector table, `vec_snowflake_m_v2_768_f32`) |
-| `error`           | The error type and the crate's `Result` alias; see the error vocabulary below                                                                                                                                                                              |
-| `aggregate`       | The staging aggregator: embed-at-promotion. It reads one staging unit, embeds every chunk document-side, writes one new core scan shard, stamps provenance and promotes the unit through the registry                                                      |
-| `owner_inventory` | The owner inventory matcher (`atlas-owner-inventory/v1`): a narrow, fail-closed component whose findings carry a class and an opaque record id, never a matched value                                                                                      |
-| `shingles`        | Token shingles and the Jaccard rescore signal: a third signal applied only at rescore time over the fused candidate union, never a retrieval scorer. Off by default in the shipped parameters                                                              |
+| Module            | Job                                                                                                                                                                                                                                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types`           | The shared value and row model between the Turso pipeline encoding and rusqlite: values, rows, statements, branch hits and pools, chunk details, and the canonical defaults (the default model and the default vector table, `vec_snowflake_m_v2_768_f32`)                                           |
+| `error`           | The error type and the crate's `Result` alias; see the error vocabulary below                                                                                                                                                                                                                        |
+| `aggregate`       | The staging aggregator: embed-at-promotion. It reads one staging unit, embeds every chunk document-side, writes one new core scan shard, stamps provenance and promotes the unit through the registry                                                                                                |
+| `owner_inventory` | The owner inventory matcher (`atlas-owner-inventory/v1`): a narrow, fail-closed component whose findings carry a class and an opaque record id, never a matched value                                                                                                                                |
+| `shingles`        | Token shingles and the Jaccard rescore signal: a third signal applied only at rescore time over the fused candidate union, never a retrieval scorer. Off by default in the shipped parameters                                                                                                        |
+| `version`         | The version strings for the Atlas CLI family (#13279 part 2): every Atlas binary reports `<package version>+g<source revision>` from `--version`, with the revision baked by atlas-core's build script (`ATLAS_SOURCE_REV`); a build with no git history reports `unknown` rather than inventing one |
 
 Four binaries live in this crate's `src/bin/` — `atlas-classify`,
 `atlas-eval`, `atlas-github-comments` and `atlas-sweep` — each a thin front

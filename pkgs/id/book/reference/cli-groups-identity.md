@@ -711,6 +711,45 @@ $ id writer-sets discover --scope toy-metrics
 
 Failures: none specific to this subcommand beyond the common exit behaviour.
 
+## `hosted`
+
+Moves events between the local event store (the global `--event-store`) and your store on a hosted ID instance, over the signed-object bridge. Every request carries a fresh proof signed by the ID key your binding names, so the key file must be the one you bound. Each action takes the same target flags:
+
+| Flag         | Argument | Default                            | Meaning                                                                                       |
+| ------------ | -------- | ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| `--url`      | URL      | `ID_HOSTED_URL`, else required     | The instance's front-door origin. `http://` is accepted only for localhost or `127.0.0.1`.    |
+| `--binding`  | hex      | `ID_HOSTED_BINDING`, else required | Your binding id: 32 lowercase hex characters.                                                 |
+| `--key-file` | path     | this node's key file               | The key file holding the ID key the binding names. A missing file fails; no key is generated. |
+| `--json`     | switch   | off                                | Parent flag: print one JSON object instead of lines.                                          |
+
+### `hosted heads`
+
+Prints the hosted store's chain heads, one `head author=<HEX> next_seq=<N> head=<ID|->` line per author.
+
+```
+id hosted heads --url https://id.example --binding <HEX>
+```
+
+### `hosted push`
+
+Sends every local event the hosted store has not applied, each author's chain from the hosted next sequence on, in batches within the bridge's bounds. Running it again is safe: a re-sent event counts as a duplicate.
+
+```
+id hosted push --url https://id.example --binding <HEX>
+```
+
+### `hosted pull`
+
+Reads everything the hosted store holds past the local heads, page by page, and ingests it into the local event store.
+
+```
+id hosted pull --url https://id.example --binding <HEX>
+```
+
+`push` and `pull` print one line, `<push|pull> events=<N> calls=<N> accepted=<N> duplicate=<N> waiting=<N> forks=<N> refused=<N>`, then one `refused <reason>: <message>` line per refused event.
+
+Failures: a wrong key or binding fails with the instance's error; any refused event fails the command, exit `1`, after the summary prints, so a script never mistakes a partial transfer for a complete one.
+
 ## `id`
 
 Prints the local node's public ID. The command name collides with the binary name by design: the invocation is `id id`. The node ID is derived from the keypair and is what remote nodes connect to.

@@ -1525,6 +1525,26 @@ pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()>
     Ok(())
 }
 
+/// Project a durable world on disk into a template source (#8282).
+///
+/// Reads `dir/journal.jsonl` as [`fork_world`] does, tolerating a torn
+/// final entry, and hands the entries to
+/// [`crate::world_template::template_source_from_journal`]. Only the
+/// `kv` keys in `keep_state` become template state.
+///
+/// # Errors
+///
+/// A missing or corrupt journal, or any refusal of the projection.
+pub fn template_source_from_dir(
+    dir: &Path,
+    keep_state: &[String],
+) -> Result<crate::world_template::TemplateSource> {
+    let entries = read_journal_entries(&dir.join("journal.jsonl"))?;
+    Ok(crate::world_template::template_source_from_journal(
+        &entries, keep_state,
+    )?)
+}
+
 #[derive(Debug, Default)]
 struct EmptyProgram;
 impl WorldProgram for EmptyProgram {}
@@ -1633,6 +1653,40 @@ mod tests {
         let mut line = serde_json::to_vec(entry).unwrap();
         line.push(b'\n');
         line
+    }
+
+    #[test]
+    fn a_world_on_disk_projects_its_kept_state_into_a_template_source() {
+        // Oracle: the store reads the journal as fork does, a torn
+        // final entry included, and only the named kv keys come along.
+        let dir = TempDir::new().unwrap();
+        let mut bytes = Vec::new();
+        for entry in [
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::KvSet {
+                key: "layout".to_owned(),
+                value: "1".to_owned(),
+            },
+            JournalEntry::KvSet {
+                key: "scratch".to_owned(),
+                value: "2".to_owned(),
+            },
+        ] {
+            bytes.extend(journal_line(&entry));
+        }
+        bytes.extend_from_slice(b"{torn");
+        std::fs::write(dir.path().join("journal.jsonl"), bytes).unwrap();
+
+        let source = template_source_from_dir(dir.path(), &["layout".to_owned()]).unwrap();
+        assert!(source.programs.is_empty());
+        assert_eq!(
+            source.state.into_iter().collect::<Vec<_>>(),
+            vec![("layout".to_owned(), "1".to_owned())]
+        );
+        assert!(template_source_from_dir(dir.path(), &["absent".to_owned()]).is_err());
     }
 
     #[test]
@@ -4728,7 +4782,10 @@ mod tests {
             .unwrap()
             .view;
         let me = view.accounts.iter().find(|a| a.name == "Ann").unwrap();
-        assert!(me.outgoing.as_deref().unwrap_or_default().is_empty());
+        assert_eq!(
+            me.outgoing.as_deref().unwrap_or_default(),
+            [] as [String; 0]
+        );
     }
 
     #[tokio::test]

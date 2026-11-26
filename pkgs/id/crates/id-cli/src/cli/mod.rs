@@ -42,7 +42,9 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
 //!   talk         Talk pages: post on and list an object's discussion
+//!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -113,7 +115,9 @@ pub mod doc;
 pub mod gallery;
 pub mod groups;
 pub mod host;
+pub mod hosted;
 pub mod match_audit;
+pub mod nav;
 pub mod petname;
 pub mod tag;
 pub mod talk;
@@ -126,7 +130,9 @@ pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 pub use host::HostCommand;
+pub use hosted::{HostedCommand, HostedTarget};
 pub use match_audit::MatchAuditCommand;
+pub use nav::{NavArgs, NavOp};
 pub use petname::PetnameCommand;
 pub use tag::TagCommand;
 pub use talk::TalkCommand;
@@ -344,6 +350,21 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
         Ok(0) => Err("zero is not a valid limit: use at least 1".to_owned()),
         Ok(n) => Ok(n),
         Err(err) => Err(err.to_string()),
+    }
+}
+
+/// A `--world-partition` label: lowercase `[a-z0-9-]`, 1 to 63 bytes, the
+/// same syntax the journal partition fence accepts.
+fn parse_world_partition(raw: &str) -> Result<String, String> {
+    if !raw.is_empty()
+        && raw.len() <= 63
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Ok(raw.to_owned())
+    } else {
+        Err("a partition label is 1 to 63 bytes of lowercase a-z, 0-9 and -".to_owned())
     }
 }
 
@@ -570,6 +591,19 @@ pub struct ServeArgs {
     /// `id host list` shows the states.
     #[arg(long, requires = "world", conflicts_with = "ephemeral")]
     pub world_host: bool,
+    /// Serve worlds inside one jurisdiction partition (#3898). Every world
+    /// this server creates is bound to the label before its first journal
+    /// byte; a world bound to another partition, or never bound, is treated
+    /// as absent: it is not listed, cannot be opened or created, and reads
+    /// exactly like a name that does not exist. The label is lowercase
+    /// `[a-z0-9-]`, at most 63 bytes, and comes only from the operator.
+    #[arg(
+        long,
+        requires = "world",
+        conflicts_with_all = ["ephemeral", "world_host"],
+        value_parser = parse_world_partition
+    )]
+    pub world_partition: Option<String>,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.
@@ -1506,6 +1540,20 @@ pub enum Command {
         #[command(subcommand)]
         command: ClaimCommand,
     },
+    /// Walk a typed graph snapshot: neighbors, backlinks, threads,
+    /// history, or a bounded path (native graph navigation, #7612).
+    ///
+    /// The CLI runs the same executor as the script/API and agent
+    /// surfaces, so answers match them item for item; only the printing
+    /// differs. Pages end with a `next:` cursor to pass back with
+    /// `--cursor`, and a bound that cut a result is named, never silent.
+    ///
+    /// ```bash
+    /// id nav neighbors NOTE --graph graph.json
+    /// id nav backlinks NOTE --graph graph.json --edge references
+    /// id nav path NOTE --to REPLY --max-depth 4 --graph graph.json --json
+    /// ```
+    Nav(NavArgs),
     /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
     ///
     /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
@@ -1534,6 +1582,28 @@ pub enum Command {
         /// The talk action to run.
         #[command(subcommand)]
         command: TalkCommand,
+    },
+    /// Push to and pull from your hosted ID store over the bridge.
+    ///
+    /// Every call proves possession of the ID key the binding names, so
+    /// run it with this node's key or pass `--key-file`. Refused calls
+    /// (a wrong key, an unknown binding, a full store) fail with the
+    /// hosted store's own error code.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id hosted heads --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// id hosted push --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// ID_HOSTED_URL=https://id.example ID_HOSTED_BINDING=0123456789abcdef0123456789abcdef id hosted pull
+    /// ```
+    Hosted {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The hosted action to run.
+        #[command(subcommand)]
+        command: HostedCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).

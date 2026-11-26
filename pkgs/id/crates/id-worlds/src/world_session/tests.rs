@@ -2235,7 +2235,7 @@ mod tests {
             .map(|i| format!("doc-{i:04}-{}", "x".repeat(500)))
             .collect();
         let (page, next_after) = document_names_page(&names).unwrap();
-        assert!(!page.is_empty());
+        assert_ne!(page, [] as [String; 0]);
         assert!(page.len() < names.len());
         assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
         let used: usize = page.iter().map(|name| name.len() + 1).sum();

@@ -11,7 +11,7 @@ atlas-eval <eval.json> <dev|test>
 atlas-eval --precision-at-k <k> <eval.json> <dev|test>
 ```
 
-The original invocation remains unchanged and prints the existing `atlas-eval-report/v1` output. `--precision-at-k` selects a separate report, leaving all callers of the original command and its output unchanged. `--help` / `-h` prints both usage forms to stdout and exits 0; `--version` / `-V` prints `atlas-eval 0.1.0`, exit 0. The literal word `help` is not recognised and exits 2.
+The original invocation remains unchanged and prints the existing `atlas-eval-report/v1` output. `--precision-at-k` selects a separate report, leaving all callers of the original command and its output unchanged. `--help` / `-h` prints both usage forms to stdout and exits 0; `--version` / `-V` prints `atlas-eval 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history), exit 0. The literal word `help` is not recognised and exits 2.
 
 | Flag                               | Argument                            | Default  | Meaning                                                                                                                    |
 | ---------------------------------- | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |

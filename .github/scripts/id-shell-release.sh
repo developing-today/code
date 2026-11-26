@@ -33,7 +33,7 @@ usage() {
 }
 
 plan_only=0
-if [[ "${1:-}" == "--plan" ]]; then
+if [[ ${1:-} == "--plan" ]]; then
   plan_only=1
   shift
 fi
@@ -41,7 +41,7 @@ fi
 app=$1
 platform=$2
 outdir=${3:-}
-[[ $plan_only == 1 || -n "$outdir" ]] || usage
+[[ $plan_only == 1 || -n $outdir ]] || usage
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 idroot="$root/pkgs/id"
@@ -49,19 +49,19 @@ idroot="$root/pkgs/id"
 # Supported (app, platform) pairs and what gates them. A pair is added
 # here when its package and its gate exist; anything else is refused.
 case "$app/$platform" in
-  id-native-shell/linux-x86_64)
-    system=x86_64-linux
-    gate_check=test-native-shell
-    ;;
-  *)
-    echo "id-shell-release: unsupported app/platform: $app/$platform" >&2
-    exit 2
-    ;;
+id-native-shell/linux-x86_64)
+  system=x86_64-linux
+  gate_check=test-native-shell
+  ;;
+*)
+  echo "id-shell-release: unsupported app/platform: $app/$platform" >&2
+  exit 2
+  ;;
 esac
 
 manifest="$idroot/crates/$app/Cargo.toml"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$manifest" | head -n 1)
-[[ -n "$version" ]] || {
+[[ -n $version ]] || {
   echo "id-shell-release: no version in $manifest" >&2
   exit 1
 }

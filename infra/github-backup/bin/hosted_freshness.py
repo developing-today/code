@@ -25,11 +25,32 @@ refs. Every leg is observed through a hosted surface only:
 Each leg carries an explicit SLO (SLO_HOURS). A per-repo leg result is
 one of:
 
-- fresh:   the copy provably matches the source head (git legs), or
-           its timestamped proof is within the leg's SLO (r2_bundles,
-           d1_export; r2_bundles must also name the source head).
-- stale:   a copy exists but is behind the source head, or its proof
-           is older than the leg's SLO.
+- fresh:   the copy provably matches the source head, or provably
+           lags it by less than the leg's SLO (git legs); or its
+           timestamped proof is within the leg's SLO (r2_bundles,
+           d1_export; r2_bundles must also name the source head or a
+           head that lags it by less than the SLO).
+
+Lag, not head equality, is the bar for a copy that is behind: a daily
+publisher can never hold the head of a repo that merges many times an
+hour, so head equality alone would leave such a repo stale forever.
+The lag of a copy is measured from the moment the source moved past
+it: the committer time of the first commit on the source's
+first-parent line after the copy head (GitHub's compare API, copy
+head...source head). That commit is the merge or push that left the
+copy behind, so its time is when the copy stopped being current. The
+oldest commit the copy lacks is not that moment: a long-lived branch
+merged today brings in commits committed days ago, and judging by
+those would call a copy taken an hour ago days stale. The lag is
+measured only when the source is strictly ahead of the copy: a
+diverged or unrelated copy, a copy head the source does not know, a
+first-parent line that does not lead back to the copy within the
+compare, more than MAX_LAG_COMMITS commits of lag, or a compare that
+cannot run all stay stale, so a lag that cannot be proven is never
+read as fresh.
+- stale:   a copy exists but is behind the source head by more than
+           the leg's SLO, has diverged from it, or its proof is older
+           than the leg's SLO.
 - missing: no copy exists at all (no mirror repo, no bundle object,
            no rehost advertisement, no export meta record).
 - failed:  the check itself could not run (transport/API error, an
@@ -111,36 +132,100 @@ def result(status, detail, **evidence):
 
 
 # ------------------------------------------------------------ judging
-def judge_head_leg(source_head, copy_head):
-    """Git-shaped legs: the copy is fresh only at the source head."""
-    if copy_head is None:
-        return result(MISSING, "no copy exists")
-    if copy_head != source_head:
+def judge_lag(source_head, copy_head, lag, now, slo_hours, evidence):
+    """Judge a copy whose head differs from the source head.
+
+    lag is the lag fetcher's answer (see fetch_lag), None when the
+    copy head is not a commit of the source, or an Exception when the
+    compare could not run. Fresh only when the source is strictly
+    ahead of the copy and the oldest commit the copy lacks is within
+    the SLO; everything else is stale with the reason as detail.
+    """
+    base = f"copy head {copy_head} != source head {source_head}"
+    if isinstance(lag, Exception):
+        return result(STALE, f"{base}; lag unavailable: {lag}", **evidence)
+    if lag is None:
+        return result(STALE, f"{base}; copy head is not in the source", **evidence)
+    relation = lag.get("relation")
+    if relation != "behind":
+        phrase = {
+            "ahead": "copy is ahead of the source",
+            "diverged": "copy has diverged from the source",
+        }.get(relation, f"compare reports {relation!r}")
+        return result(STALE, f"{base}; {phrase}", **evidence)
+    behind_by = lag.get("behind_by")
+    moved = lag.get("moved_past_at")
+    if not isinstance(behind_by, int) or behind_by < 1 or moved is None:
+        return result(STALE, f"{base}; lag unmeasurable", **evidence)
+    evidence = dict(evidence, behind_by=behind_by, moved_past_at=iso(moved))
+    age = now - moved
+    if age > timedelta(hours=slo_hours):
         return result(
             STALE,
-            f"copy head {copy_head} != source head {source_head}",
-            copy_head=copy_head,
+            f"{base}; {behind_by} commit(s) behind, the source moved past the "
+            f"copy {age} ago, beyond the {slo_hours}h SLO",
+            **evidence,
         )
-    return result(FRESH, "copy head matches source head", copy_head=copy_head)
+    return result(
+        FRESH,
+        f"{behind_by} commit(s) behind the source head; the source moved past "
+        f"the copy {age} ago, within the {slo_hours}h SLO",
+        **evidence,
+    )
 
 
-def judge_bundle_result(source_head, bundle, now, slo_hours):
-    """bundle: (head, modtime) of the newest bundle, or None."""
+def judge_head_leg(source_head, copy_head, lag=None, now=None, slo_hours=None):
+    """Git-shaped legs: fresh at the source head, or within the SLO lag.
+
+    Without a lag answer (lag=None and no now) a differing head is
+    stale, the strict judgement.
+    """
+    if copy_head is None:
+        return result(MISSING, "no copy exists")
+    if copy_head == source_head:
+        return result(FRESH, "copy head matches source head", copy_head=copy_head)
+    evidence = {"copy_head": copy_head}
+    if now is None or slo_hours is None:
+        return result(
+            STALE, f"copy head {copy_head} != source head {source_head}", **evidence
+        )
+    return judge_lag(source_head, copy_head, lag, now, slo_hours, evidence)
+
+
+def judge_bundle_result(source_head, bundle, now, slo_hours, lag=None, lagged=False):
+    """bundle: (head, modtime) of the newest bundle, or None.
+
+    lagged says whether a lag answer was fetched for a bundle whose
+    head differs from the source head; without one the judgement is
+    strict head equality.
+    """
     if bundle is None:
         return result(MISSING, "no bundle object names a captured head")
     head, modtime = bundle
     evidence = {"copy_head": head, "bundle_at": iso(modtime)}
     if head != source_head:
-        return result(
-            STALE,
-            f"newest bundle names head {head} != source head {source_head}",
-            **evidence,
-        )
+        if not lagged:
+            return result(
+                STALE,
+                f"newest bundle names head {head} != source head {source_head}",
+                **evidence,
+            )
+        lag_result = judge_lag(source_head, head, lag, now, slo_hours, evidence)
+        if lag_result["status"] != FRESH:
+            return lag_result
+        evidence = {k: v for k, v in lag_result.items() if k not in ("status", "detail")}
     age = now - modtime
     if age > timedelta(hours=slo_hours):
         return result(
             STALE,
             f"newest bundle is {age} old, beyond the {slo_hours}h SLO",
+            **evidence,
+        )
+    if head != source_head:
+        return result(
+            FRESH,
+            f"newest bundle is {evidence['behind_by']} commit(s) behind the "
+            f"source head, within the {slo_hours}h SLO",
             **evidence,
         )
     return result(FRESH, "newest bundle names the source head", **evidence)
@@ -263,8 +348,85 @@ def fetch_rehost_head(repo, base):
     return freshness_probe.parse_advertised_head(body)
 
 
+SHA_CHARS = frozenset("0123456789abcdef")
+
+
+def is_sha(value):
+    return isinstance(value, str) and len(value) == 40 and set(value) <= SHA_CHARS
+
+
+MAX_LAG_COMMITS = 1000
+
+
+def first_parent_moved_at(rows, copy_head, source_head):
+    """When the source moved past the copy, from compare rows.
+
+    rows: (sha, first_parent_sha, committer_time) for every commit the
+    copy lacks. Walks the source's first-parent line back from the
+    source head; the last commit before reaching the copy head is the
+    one that left the copy behind, and its committer time is returned.
+    None when the line leaves the rows without reaching the copy.
+    """
+    by_sha = {sha: (parent, when) for sha, parent, when in rows}
+    current, last = source_head, None
+    for _ in range(len(by_sha) + 1):
+        if current == copy_head:
+            return by_sha[last][1] if last is not None else None
+        if current not in by_sha:
+            return None
+        last = current
+        current = by_sha[current][0]
+    return None
+
+
+def fetch_lag(repo, copy_head, source_head):
+    """How far a copy head lags the source head, via GitHub compare.
+
+    Returns None when the source does not know the copy head (404),
+    else {"relation", "behind_by", "moved_past_at"}: relation is
+    "behind" when the source is strictly ahead of the copy (the copy
+    lacks behind_by commits, and the source moved past it at
+    moved_past_at, None when that cannot be measured), "identical",
+    "ahead" or "diverged" otherwise. Raises on any other failure.
+    """
+    if not (is_sha(copy_head) and is_sha(source_head)):
+        raise RuntimeError("compare needs two full commit SHAs")
+    path = f"repos/{repo}/compare/{copy_head}...{source_head}"
+    try:
+        raw = _gh_text([f"{path}?per_page=1&page=1", "--jq", "{status, ahead_by}"])
+    except RuntimeError as exc:
+        if "404" in str(exc):
+            return None
+        raise
+    data = json.loads(raw)
+    status = data.get("status")
+    relation = {"ahead": "behind", "behind": "ahead"}.get(status, status)
+    behind_by = data.get("ahead_by")
+    moved = None
+    if relation == "behind" and isinstance(behind_by, int) and 0 < behind_by <= MAX_LAG_COMMITS:
+        listing = _gh_text(
+            [
+                "--paginate",
+                f"{path}?per_page=100",
+                "--jq",
+                ".commits[] | [.sha, (.parents[0].sha // \"\"), .commit.committer.date] | @tsv",
+            ]
+        )
+        rows = []
+        for line in listing.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            when = freshness_readout.parse_time(parts[2], "compare committer date")
+            if when is not None:
+                rows.append((parts[0], parts[1], when))
+        moved = first_parent_moved_at(rows, copy_head, source_head)
+    return {"relation": relation, "behind_by": behind_by, "moved_past_at": moved}
+
+
 def real_fetchers(bucket, rehost_base):
     return {
+        "lag": fetch_lag,
         "source_head": fetch_source_head,
         "mirror_head": fetch_mirror_head,
         "bundle": lambda repo: fetch_bundle(repo, bucket),
@@ -274,12 +436,32 @@ def real_fetchers(bucket, rehost_base):
 
 
 # ------------------------------------------------------------ evaluation
-def evaluate_repo(repo, fetchers):
+def lag_lookup(repo, source_head, fetchers):
+    """A memoising lag(copy_head) for one repo, or None without a lag
+    fetcher. A compare that raises is returned as the exception so the
+    judgement can name it; it is never read as fresh."""
+    fetch = fetchers.get("lag")
+    if fetch is None:
+        return None
+    cache = {}
+
+    def lag(copy_head):
+        if copy_head not in cache:
+            try:
+                cache[copy_head] = fetch(repo, copy_head, source_head)
+            except Exception as exc:
+                cache[copy_head] = exc
+        return cache[copy_head]
+
+    return lag
+
+
+def evaluate_repo(repo, fetchers, now=None):
     """Per-leg results for one repo; fetcher errors become FAILED.
 
     Returns (source_head, legs). The r2_bundles entry is deferred as
-    ("bundle", value) because judging it needs `now` and the leg SLO;
-    evaluate() resolves it. A source failure fails every copy leg for
+    ("bundle", value, lag, lagged) because judging it needs `now` and
+    the leg SLO; evaluate() resolves it. A source failure fails every copy leg for
     the repo: without the source head there is nothing to judge a
     copy against, and reporting the copies as anything else would be
     inventing evidence.
@@ -290,16 +472,28 @@ def evaluate_repo(repo, fetchers):
         detail = f"source head unavailable: {exc}"
         return None, {leg: result(FAILED, detail) for leg in (*GIT_LEGS, "r2_bundles")}
     legs = {}
+    lag = lag_lookup(repo, source_head, fetchers) if now is not None else None
     for leg, key in (
         ("plain_mirror", "mirror_head"),
         ("cloudflare_rehost", "rehost_head"),
     ):
         try:
-            legs[leg] = judge_head_leg(source_head, fetchers[key](repo))
+            copy_head = fetchers[key](repo)
         except Exception as exc:
             legs[leg] = result(FAILED, f"check could not run: {exc}")
+            continue
+        if lag is None or copy_head is None or copy_head == source_head:
+            legs[leg] = judge_head_leg(source_head, copy_head)
+        else:
+            legs[leg] = judge_head_leg(
+                source_head, copy_head, lag(copy_head), now, SLO_HOURS[leg]
+            )
     try:
-        legs["r2_bundles"] = ("bundle", fetchers["bundle"](repo))
+        bundle = fetchers["bundle"](repo)
+        if lag is not None and bundle is not None and bundle[0] != source_head:
+            legs["r2_bundles"] = ("bundle", bundle, lag(bundle[0]), True)
+        else:
+            legs["r2_bundles"] = ("bundle", bundle, None, False)
     except Exception as exc:
         legs["r2_bundles"] = result(FAILED, f"check could not run: {exc}")
     return source_head, legs
@@ -310,12 +504,13 @@ def evaluate(repos, fetchers, now):
     per_repo = {}
     source_heads = {}
     for repo in repos:
-        source_head, legs = evaluate_repo(repo, fetchers)
+        source_head, legs = evaluate_repo(repo, fetchers, now)
         source_heads[repo] = source_head
         bundle_entry = legs.get("r2_bundles")
         if isinstance(bundle_entry, tuple):
+            _, bundle, bundle_lag, lagged = bundle_entry
             legs["r2_bundles"] = judge_bundle_result(
-                source_head, bundle_entry[1], now, SLO_HOURS["r2_bundles"]
+                source_head, bundle, now, SLO_HOURS["r2_bundles"], bundle_lag, lagged
             )
         per_repo[repo] = legs
 

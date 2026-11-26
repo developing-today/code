@@ -7,12 +7,17 @@
 // only when the Worker's LEDGER_PAGES flag reads "on"; without it the
 // paths stay the host's, exactly as before.
 //
-// Data plane (design §2 of doc/2026-11-25_design_cloudflare-first-
-// migration.md): the alerts/push ledgers stay fleet-platform Turso.
-// The tables are the ones the laptop aggregator's AlertsStore and
-// comments store read (aggregator/src/alerts.ts, remote-stores.ts),
-// under their SQLite names in that DB: alerts_incidents,
+// Data plane: the tables are the ones the laptop aggregator's
+// AlertsStore and comments store read (aggregator/src/alerts.ts,
+// remote-stores.ts), under their SQLite names: alerts_incidents,
 // alerts_incident_events, alerts_notification_sends, shared_comments.
+// Design §2 of doc/2026-11-25_design_cloudflare-first-migration.md
+// originally kept these ledgers in the fleet-platform Turso; the
+// owner ruling of 2026-11-26 on #14866 superseded that — the target
+// is now the D1 database named fleet-platform (the same schema,
+// imported whole), selected by the Worker's LEDGER_STORE var reading
+// "d1". The Turso path stays beside it, selected by LEDGER_STORE
+// reading anything else, so the flip back is the same var.
 //
 // Freshness (#14065: no tier renders invented data to fill a gap):
 // every answer carries the read time and the newest row timestamp of
@@ -102,6 +107,44 @@ export function createLedgerQuery(fetchImpl: typeof fetch, url: string, token?: 
         const name = result.cols[i].name as string;
         row[name] = JSON_COLUMNS.has(name) && typeof value === "string" ? safeJson(value) : value;
       });
+      return row;
+    });
+  };
+}
+
+/** The slice of a D1 database binding this module needs (the
+ * platform's D1Database satisfies it structurally): one prepared
+ * statement, read whole. SQL here is the same fixed text the Turso
+ * path runs — no request input ever reaches a statement. */
+export interface LedgerD1Database {
+  prepare: (sql: string) => {
+    all: () => Promise<{ results?: Record<string, unknown>[] }>;
+  };
+}
+
+/** The same read against the D1 copy of the ledger (owner ruling
+ * 2026-11-26 on #14866: D1 is the ledgers' home now). Rows come back
+ * decoded by the binding; the decoding rules are the Turso path's —
+ * the JSON text columns are parsed, numbers must be finite (and safe
+ * integers when whole), and anything else (a blob, a nested value)
+ * fails the read, so a surface answers 503 rather than render a
+ * shape it does not understand. */
+export function createD1LedgerQuery(db: LedgerD1Database | undefined): LedgerPagesIo["query"] {
+  return async (sql: string): Promise<Record<string, unknown>[]> => {
+    if (!db) throw new Error("ledger store not configured");
+    const out = await db.prepare(sql).all();
+    if (!out || !Array.isArray(out.results)) throw new Error("ledger query failed or returned a malformed result");
+    return out.results.map((raw) => {
+      const row: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(raw)) {
+        if (value === null) row[name] = null;
+        else if (typeof value === "string") row[name] = JSON_COLUMNS.has(name) ? safeJson(value) : value;
+        else if (typeof value === "number") {
+          if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)))
+            throw new Error("unsafe ledger numeric value");
+          row[name] = value;
+        } else throw new Error("unsupported ledger cell");
+      }
       return row;
     });
   };

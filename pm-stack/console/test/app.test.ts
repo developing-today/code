@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import {
   plainWords,
   ASK_KINDS,
+  NEEDS_SET_SOURCE,
+  NOW_COUNTS_SOURCE,
   ago,
   askArgs,
   askKind,
@@ -1747,6 +1749,22 @@ test("each list that could not be read is said on the screens that show it, with
   }
 });
 
+// #14063: the Now and Needs screens each name their own need-you/count
+// source, so the same words as the aggregator are not read as the same
+// counts. The oracle is the exported wording plus the cross-links in
+// the rendered page source.
+test("the Now and Needs screens name their own source and cross-link the aggregator (#14063)", () => {
+  expect(NOW_COUNTS_SOURCE).toContain("queue-broker");
+  expect(NOW_COUNTS_SOURCE).toContain("Same words as the aggregator's board-derived work-item counts, different source");
+  expect(NEEDS_SET_SOURCE).toContain("console's need-you set");
+  expect(NEEDS_SET_SOURCE).toContain("Different from the aggregator's NEEDS USER intake queue");
+  const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  expect(source).toContain('href: "/queue"');
+  expect(source).toContain('href: "/attention"');
+  expect(source).toContain("Aggregator /queue");
+  expect(source).toContain("Aggregator Needs you");
+});
+
 test("words written for a Markdown file are shown as plain words", () => {
   // A row of the PM stack's roadmap, as its file has it (seen raw on the Roadmap screen on 2026-11-24).
   expect(
@@ -1827,14 +1845,19 @@ test("a platform setting is said with its value, whose it is and since when, and
   });
   // Main's, and changeable: no main's beside it, since it is main's.
   expect(
-    settingSaid({ name: "needsRepos", source: "repository", since: null, value: ["a/b", "c/d"], repository: ["a/b", "c/d"] }, now),
+    settingSaid(
+      { name: "needsRepos", source: "repository", since: null, value: ["a/b", "c/d"], repository: ["a/b", "c/d"] },
+      now,
+    ),
   ).toMatchObject({ value: "a/b and c/d", whose: "Main's.", main: null, changeable: true, changed: false });
   // A machine's list, for now.
   expect(settingSaid({ name: "needsRepos", source: "machine", since: null, value: ["a/b"] }, now).whose).toBe(
     "The machine's: Cloudflare goes by the list it reports until it runs main's.",
   );
   // Main's alone decides it: nothing to press.
-  expect(settingSaid({ name: "queue", source: "repository", since: null, value: "repo-health-code-pilot" }, now)).toMatchObject({
+  expect(
+    settingSaid({ name: "queue", source: "repository", since: null, value: "repo-health-code-pilot" }, now),
+  ).toMatchObject({
     what: "The queue",
     changeable: false,
     changed: false,
@@ -1857,9 +1880,17 @@ test("a machine that has not taken the owner's latest change to the settings is 
   // It runs with the latest.
   expect(settingsTakenSaid(3, 3)).toBe("");
   // It is behind: it takes it with its next report.
-  expect(settingsTakenSaid(2, 3)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
-  expect(settingsTakenSaid(0, 1)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
+  expect(settingsTakenSaid(2, 3)).toBe(
+    "It has not taken your latest change to the settings yet: it will with its next report.",
+  );
+  expect(settingsTakenSaid(0, 1)).toBe(
+    "It has not taken your latest change to the settings yet: it will with its next report.",
+  );
   // Its console does not take them at all.
-  expect(settingsTakenSaid(null, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
-  expect(settingsTakenSaid(undefined, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
+  expect(settingsTakenSaid(null, 1)).toBe(
+    "Its console is older than changing the settings from here: it runs with its own.",
+  );
+  expect(settingsTakenSaid(undefined, 1)).toBe(
+    "Its console is older than changing the settings from here: it runs with its own.",
+  );
 });

@@ -164,16 +164,35 @@ function isDataPlaneCredential(payload: Record<string, unknown>): boolean {
 
 export async function authenticate(req: Request, deps: AuthDeps): Promise<CallerContext> {
   const { config } = deps;
-  if (!config.authConfigured || !config.rp || !config.tenancy) {
+  // Per-credential-kind configuration (#14978 / CF-2b): the tenancy
+  // directory is required for every caller kind — it is where both
+  // subject records and service-token records live. The RP issuer is
+  // required only for JWT callers (rp / agent kinds): an opaque
+  // service token is validated against the tenancy directory alone
+  // (SHA-256 lookup, route scope, active flag), so a deployment with
+  // a tenancy directory but no RP issuer yet — the #9077 provider is
+  // still design-stage — can still serve its service-token callers
+  // (e.g. the native queue broker calling the queue door) instead of
+  // failing every route closed. JWT callers still fail closed with
+  // the same 503 until an issuer is configured; nothing fails open:
+  // no tenancy directory still refuses every caller.
+  if (!config.tenancy) {
     throw new FailClosed(
       503,
       "auth_not_configured",
-      "this deployment has no RP issuer / tenancy directory configured; failing closed",
+      "this deployment has no tenancy directory configured; failing closed",
     );
   }
   const token = bearerToken(req);
 
   if (looksLikeJwt(token)) {
+    if (!config.rp) {
+      throw new FailClosed(
+        503,
+        "auth_not_configured",
+        "this deployment has no RP issuer configured; JWT callers fail closed",
+      );
+    }
     const { payload } = parseJwt(token);
     if (isDataPlaneCredential(payload)) {
       throw new FailClosed(

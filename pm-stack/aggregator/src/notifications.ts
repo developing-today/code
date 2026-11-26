@@ -748,14 +748,61 @@ export const ROLLING_WEEKS = 4;
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 export const PROPOSAL_THRESHOLD = 0.1;
 
-/** The send's timestamp: the ledger's insert-time column. Rows the
- * store writes carry no explicit timestamp, so the row's defaulted
- * column is the send time — named `at` in the live Turso ledger and
- * `created_at` in the local store's shape; sent_at wins when a row
- * carries one. (#15090; the hosted port in console/edge reads the
- * same precedence.) */
+/** #14419: normalize a ledger timestamp to ISO-8601 UTC, or null.
+ * Legacy rows carry the column-default format the live stores emit —
+ * `YYYY-MM-DD HH:MM:SS[.fff]` (space separator, no zone) from
+ * SQLite/Turso defaults, and Postgres-style `+00` offsets — which
+ * Date.parse does not reliably parse. Those are UTC by construction
+ * (the defaults are UTC), so normalize them explicitly instead of
+ * excluding the rows. Oracle: Date.parse on the normalized string. */
+export function normalizeSendTimestamp(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const value = raw.trim();
+  if (!value) return null;
+  const direct = Date.parse(value);
+  if (Number.isFinite(direct) && (value.includes("T") || value.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(value))) {
+    return new Date(direct).toISOString();
+  }
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(value);
+  if (m) {
+    const zone = m[3] ? (m[3] === "Z" ? "Z" : m[3]) : "Z";
+    const parsed = Date.parse(`${m[1]}T${m[2]}${zone}`);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.exec(value);
+  if (dateOnly) {
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+  return Number.isFinite(direct) ? new Date(direct).toISOString() : null;
+}
+
+/** The send's timestamp (#14419): sent_at (stamped explicitly by
+ * logSend in ISO-8601 UTC) wins; a legacy row's defaulted created_at
+ * is repaired by normalization when sent_at is absent/unusable; the
+ * live Turso ledger's defaulted `at` column (#15090) is the final
+ * fallback, with the same normalization applied. */
 export function sendTimestamp(row: NotificationSendRow): string | null {
-  return row.sent_at ?? row.created_at ?? row.at ?? null;
+  for (const raw of [row.sent_at, row.created_at, row.at]) {
+    if (!raw) continue;
+    const value = raw.trim();
+    if (!value) continue;
+    // Already-ISO values pass through verbatim (#15090's contract);
+    // legacy column-default formats are repaired by normalization.
+    if (value.includes("T") && Number.isFinite(Date.parse(value))) return value;
+    const normalized = normalizeSendTimestamp(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+/** #14419: backfill sent_at for a recoverable legacy row (its
+ * created_at normalizes); unrecoverable rows are returned unchanged
+ * and are counted as undated/excluded by the roll-up. */
+export function repairLegacySendRow(row: NotificationSendRow): NotificationSendRow {
+  if (normalizeSendTimestamp(row.sent_at)) return row;
+  const repaired = normalizeSendTimestamp(row.created_at) ?? normalizeSendTimestamp(row.at);
+  return repaired ? { ...row, sent_at: repaired } : row;
 }
 
 export interface NotificationWeekRollup {
@@ -787,6 +834,12 @@ export interface NotificationRollup {
   classes: NotificationClassRollup[];
   /** Ledger rows skipped because they carry no usable send timestamp. */
   undated: number;
+  /** Total outcome=sent ledger rows considered (dated + undated). */
+  total: number;
+  /** #14419 alarm: true when every sent row was excluded as undated
+   * (excluded == total and total > 0) — the measurement page would
+   * otherwise silently report no sends at all. */
+  alarm: boolean;
 }
 
 export function rollupNotificationSends(
@@ -798,8 +851,10 @@ export function rollupNotificationSends(
   const windowStartMs = asOfMs - weeks * WEEK_MS;
   const byClass = new Map<string, { sent: number[]; acted: number[] }>();
   let undated = 0;
+  let total = 0;
   for (const row of rows) {
     if (row.outcome !== "sent") continue;
+    total += 1;
     const tsRaw = sendTimestamp(row);
     const ts = tsRaw ? Date.parse(tsRaw) : Number.NaN;
     if (!Number.isFinite(ts)) {
@@ -848,5 +903,7 @@ export function rollupNotificationSends(
     windowStart: new Date(windowStartMs).toISOString(),
     classes,
     undated,
+    total,
+    alarm: total > 0 && undated === total,
   };
 }

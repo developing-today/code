@@ -306,7 +306,7 @@ fn test_cli_parse_serve() {
             assert!(!no_gossip);
             assert!(!web);
             assert_eq!(port, 3000);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -326,12 +326,12 @@ fn test_cli_parse_serve() {
             assert_eq!(world_max_sessions, 1024);
             assert_eq!(world_idle_secs, None);
             assert_eq!(world_boot_window_secs, 600);
-            assert!(world_caps.is_empty());
+            assert_eq!(world_caps, [] as [String; 0]);
             assert_eq!(world_cap_policy, "deny");
             assert!(roc_bin.is_none());
             assert!(roc_platform.is_none());
             assert!(!world_native);
-            assert!(allow_node.is_empty());
+            assert_eq!(allow_node, [] as [String; 0]);
             assert!(!open_writes);
         }
         _ => panic!("Expected Serve command"),
@@ -363,7 +363,7 @@ fn test_cli_parse_serve_with_flags() {
             assert!(!no_gossip);
             assert!(!web);
             assert_eq!(port, 3000);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -822,7 +822,7 @@ fn test_cli_parse_peers_default() {
             assert_eq!(depth, 1);
             assert_eq!(max_peers, 1000);
             assert_eq!(timeout, 30);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -1240,7 +1240,7 @@ fn test_cli_parse_show() {
             assert!(output.is_none());
             assert!(first.is_none());
             assert!(last.is_none());
-            assert!(exclude.is_empty());
+            assert_eq!(exclude, [] as [String; 0]);
         }
         _ => panic!("Expected Show command"),
     }
@@ -2281,6 +2281,59 @@ fn test_cli_parse_world_boot_window() {
         Some(Command::Serve(args)) => assert_eq!(args.world_boot_window_secs, 0),
         _ => panic!("Expected Serve command"),
     }
+}
+
+#[test]
+fn test_cli_parse_world_partition() {
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-partition",
+        "eu-west",
+    ]);
+    match cli.command {
+        Some(Command::Serve(args)) => {
+            assert_eq!(args.world_partition.as_deref(), Some("eu-west"));
+        }
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(args.world_partition.is_none()),
+        _ => panic!("Expected Serve command"),
+    }
+    for bad in ["", "EU", "eu/us", "../eu", &"a".repeat(64)] {
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world", "--world-partition", bad]).is_err(),
+            "{bad:?}"
+        );
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--world-partition", "eu"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-host",
+            "--world-partition",
+            "eu"
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--ephemeral",
+            "--world-partition",
+            "eu"
+        ])
+        .is_err()
+    );
 }
 
 #[test]
@@ -3509,4 +3562,60 @@ fn test_cli_parse_host_key_export_import() {
         _ => panic!("Expected host import"),
     }
     assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
+}
+
+const HOSTED_BINDING: &str = "0123456789abcdef0123456789abcdef";
+
+fn parse_hosted(args: &[&str]) -> Result<(bool, HostedCommand), clap::Error> {
+    let cli = Cli::try_parse_from(args)?;
+    match cli.command {
+        Some(Command::Hosted { json, command }) => Ok((json, command)),
+        other => panic!("expected `hosted`, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_cli_parse_hosted_actions() {
+    for (action, expect) in [("heads", 0), ("push", 1), ("pull", 2)] {
+        let (json, command) = parse_hosted(&[
+            "id",
+            "hosted",
+            action,
+            "--url",
+            "https://id.example/",
+            "--binding",
+            HOSTED_BINDING,
+            "--key-file",
+            "k.key",
+            "--json",
+        ])
+        .expect("hosted parses");
+        assert!(json);
+        let index = match command {
+            HostedCommand::Heads { .. } => 0,
+            HostedCommand::Push { .. } => 1,
+            HostedCommand::Pull { .. } => 2,
+        };
+        assert_eq!(index, expect, "{action}");
+        let target = command.target();
+        assert_eq!(target.url, "https://id.example");
+        assert_eq!(target.binding, HOSTED_BINDING);
+        assert_eq!(target.key_file, Some(std::path::PathBuf::from("k.key")));
+    }
+}
+
+#[test]
+fn test_cli_parse_hosted_rejects_bad_targets() {
+    let parse = |url: &str, binding: &str| {
+        parse_hosted(&["id", "hosted", "push", "--url", url, "--binding", binding])
+    };
+    assert!(parse("https://id.example", HOSTED_BINDING).is_ok());
+    assert!(parse("http://localhost:8787", HOSTED_BINDING).is_ok());
+    assert!(parse("http://127.0.0.1", HOSTED_BINDING).is_ok());
+    assert!(parse("http://id.example", HOSTED_BINDING).is_err());
+    assert!(parse("http://localhost.evil.example", HOSTED_BINDING).is_err());
+    assert!(parse("ftp://id.example", HOSTED_BINDING).is_err());
+    assert!(parse("https://", HOSTED_BINDING).is_err());
+    assert!(parse("https://id.example", "0123456789ABCDEF0123456789ABCDEF").is_err());
+    assert!(parse("https://id.example", "abc").is_err());
 }

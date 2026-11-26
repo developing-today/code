@@ -87,6 +87,7 @@ import {
   insertHeld,
 } from "./edge-shared.ts";
 import { Builds } from "./release.ts";
+import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -150,7 +151,8 @@ import {
 } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
-import { createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
+import { createD1LedgerQuery, createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
+import { DNS_PAGE_PATHS, dnsPage } from "./dns-pages.ts";
 
 /** Where the settings the owner changed are kept: beside "cfg", never in it. */
 export const OWNER_SETTINGS_KEY = "ownerSettings";
@@ -205,6 +207,7 @@ export class Edge {
   private fetchImpl: typeof fetch;
   private direct?: EdgeOptions["direct"];
   private ledgerPages?: EdgeOptions["ledgerPages"];
+  private dnsPages?: EdgeOptions["dnsPages"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -364,6 +367,7 @@ export class Edge {
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
     this.ledgerPages = options.ledgerPages;
+    this.dnsPages = options.dnsPages;
     if (options.quota?.enabled && options.quota.envelope) {
       try {
         this.quotaStore.applySuccess(options.quota.envelope);
@@ -533,6 +537,30 @@ export class Edge {
   private async toldConfig(): Promise<EdgeConfig | null> {
     if (this.told === undefined) this.told = edgeConfig(await this.kv.get("cfg"));
     return this.told;
+  }
+
+  /** The per-surface route state (#14944, CF-4), kept under its own
+   * key in this object's storage: rebuildable front-door data, read
+   * as route state or as none. */
+  private async routes(): Promise<RouteState> {
+    return routeState(await this.kv.get("routes"));
+  }
+
+  /** A flip of one surface's declared tier, on the trusted internal
+   * channel only (the stateless Worker's own calls, like
+   * /internal/key): the operator / deploy-pipeline operation of the
+   * design (§5.1). The flip is kept whole and said back as health
+   * will say it. Anything that is not a surface name and a tier is
+   * refused and changes nothing. */
+  private async routeFlip(req: Request): Promise<Response> {
+    const body = (await req.json().catch(() => null)) as { surface?: unknown; tier?: unknown } | null;
+    try {
+      const next = flipRoute(await this.routes(), body?.surface as string, body?.tier as "hosted" | "tunnel");
+      await this.kv.put("routes", next);
+      return json({ ok: true, routes: healthRoutes(next) });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 400);
+    }
   }
 
   /** What this side goes by; null until a machine has said who may
@@ -2110,6 +2138,7 @@ export class Edge {
       if (path === "/internal/key") return this.enroll(req);
       if (path === "/internal/hold") return this.hold(req);
       if (path === "/internal/relayed") return this.relayed(req);
+      if (path === "/internal/route") return this.routeFlip(req);
       return json({ error: "not found" }, 404);
     }
 
@@ -2173,6 +2202,11 @@ export class Edge {
         // only; or a machine that was given it or may have got it.
         // Counts, and nothing of what they are.
         held: await this.heldCounts(cfg),
+        // Per-surface route state (#14944, CF-4): each surface's
+        // declared tier, the tier actually serving it, and any
+        // automatic fall — the front door's flips are visible here,
+        // never a silent setting. Empty until a surface is flipped.
+        routes: healthRoutes(await this.routes()),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
@@ -2188,9 +2222,7 @@ export class Edge {
         // with the owner's change is said by the revision it has taken
         // (#14957), not as a difference from main.
         machineSettingsDiffer:
-          told === null
-            ? null
-            : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
+          told === null ? null : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
         // Which source each of the platform's settings is in force from
         // (the owner's change, a machine's word, or the repository's),
         // and since when for an owner's change: by name and source,
@@ -2252,7 +2284,21 @@ export class Edge {
     // request goes on exactly as it did before.
     if (this.ledgerPages && LEDGER_PAGE_PATHS.has(path)) {
       const response = await ledgerPage(req, {
-        query: createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
+        query:
+          this.ledgerPages.store === "d1"
+            ? createD1LedgerQuery(this.ledgerPages.db)
+            : createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
+        now: () => this.now(),
+      });
+      if (response) return response;
+    }
+    // Hosted /dns (#14968 slice 2), when its own flag is on: the owner
+    // is verified (above), so this side answers from the #902 register
+    // snapshot in the same D1 database. Off, or for any other path,
+    // the request goes on exactly as it did before.
+    if (this.dnsPages && DNS_PAGE_PATHS.has(path)) {
+      const response = await dnsPage(req, {
+        query: createD1LedgerQuery(this.dnsPages.db),
         now: () => this.now(),
       });
       if (response) return response;
@@ -2412,6 +2458,20 @@ export class Edge {
       }
       if (method !== "POST") return json({ error: "method not allowed" }, 405);
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
+      if (seg.length === 1 && seg[0] === "route") {
+        // The owner's route flip (#14944, CF-4): the operator surface
+        // for the same flip the deploy pipeline makes on the internal
+        // channel (/internal/route). The owner is verified above and
+        // the write is same-site, as for every action; the flip itself
+        // — what counts as a surface and a tier, and what is refused —
+        // is routeFlip's, shared with the internal channel so the two
+        // can never disagree. A flip changes declared state only: it
+        // is what /console/health says, and undoing it is flipping
+        // back. It is never relayed to a machine: route state is this
+        // side's own, rebuildable front-door data.
+        if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
+        return this.routeFlip(req);
+      }
       if (!(seg.length === 1 && seg[0] === "act")) return next("relay", { mode: "live" });
       if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
       let body: { kind?: unknown; args?: unknown; id?: unknown; at?: unknown; sent?: unknown; sure?: unknown };

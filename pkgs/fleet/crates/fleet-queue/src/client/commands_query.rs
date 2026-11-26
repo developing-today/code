@@ -625,6 +625,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let response = call(
             "/events-list",
@@ -1209,6 +1210,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let resp = call(
             "/events-list",

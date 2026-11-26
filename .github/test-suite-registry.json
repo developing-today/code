@@ -71,7 +71,7 @@
     5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092, 6093, 6099, 5582, 5937, 5945, 5951, 6034,
     6081, 6090, 6094, 6095, 6178, 6179
   ],
-  "uncovered_count": 41,
+  "uncovered_count": 42,
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
@@ -89,7 +89,7 @@
     },
     {
       "id": "id.rust.unit",
-      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
+      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**", "pkgs/id/crates/id-store/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -303,6 +303,7 @@
         "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
         "pkgs/id/hosted-worker/test/enablement.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
@@ -315,11 +316,17 @@
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
         "pkgs/id/hosted-worker/test/bridge-do.test.ts",
         "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
+        "pkgs/id/hosted-worker/test/tenant-ops.test.ts",
+        "pkgs/id/hosted-worker/test/identity-link.test.ts",
+        "pkgs/id/hosted-worker/test/credentials.test.ts",
         "pkgs/id/hosted-worker/test/export.test.ts",
         "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
-        "pkgs/id/hosted-worker/test/migration-control.test.ts"
+        "pkgs/id/hosted-worker/test/migration-control.test.ts",
+        "pkgs/id/hosted-worker/test/object-plane-r2.test.ts",
+        "pkgs/id/hosted-worker/test/references.test.ts",
+        "pkgs/id/hosted-worker/test/reference-index.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -358,10 +365,7 @@
     },
     {
       "id": "id.android-remote.session",
-      "paths": [
-        "pkgs/id/crates/id-android-remote/src/lib.rs",
-        "pkgs/id/crates/id-android-remote/tests/*.rs"
-      ],
+      "paths": ["pkgs/id/crates/id-android-remote/src/lib.rs", "pkgs/id/crates/id-android-remote/tests/*.rs"],
       "invocation": "nix flake check ./pkgs/id (check test-android-remote runs cargo test -p id-android-remote)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -1075,6 +1079,15 @@
       "status": "mapped",
       "related_issues": [10423],
       "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
+    },
+    {
+      "id": "doc.15340-gap-evidence",
+      "paths": ["doc/2026-11-26T07-46-31Z_verification_15340-monitoring-gaps/test_gap_evidence.py"],
+      "invocation": "python3 -m unittest discover -s doc/2026-11-26T07-46-31Z_verification_15340-monitoring-gaps -p 'test_*.py'",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 15340,
+      "reason": "Evidence-anchor checks for the #15340 criterion-1 verification record; no CI venue runs doc-folder suites yet, verified by remote dispatch on its PR."
     },
     {
       "id": "pm-stack.host-health-collector",

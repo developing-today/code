@@ -943,10 +943,9 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            projection
-                .resolutions_producing(&object(1), &hash(61))
-                .is_empty()
+        assert_eq!(
+            projection.resolutions_producing(&object(1), &hash(61)),
+            [] as [&ResolutionRecord; 0]
         );
     }
 
@@ -983,7 +982,7 @@ mod tests {
             writers: None,
         };
         let projection = project_threads([event], [], &authority);
-        assert!(projection.resolutions.is_empty());
+        assert_eq!(projection.resolutions, [] as [ThreadResolution; 0]);
         assert_eq!(projection.refused, vec![hash(1)]);
     }
 
@@ -1165,7 +1164,7 @@ mod tests {
             projection.visible_to(&|thread| *thread != hash(52), &|obj| *obj != hidden_object);
         assert!(view.resolution_of(&hash(50)).is_none());
         assert!(view.resolution_of(&hash(51)).is_some());
-        assert!(view.proposals.is_empty());
+        assert_eq!(view.proposals, [] as [ProposalRecord; 0]);
     }
 
     fn arb_event() -> impl Strategy<Value = ThreadEventRecord> {

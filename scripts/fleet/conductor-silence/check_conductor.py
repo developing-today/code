@@ -113,8 +113,7 @@ def evaluate(cycles: list[datetime], now: datetime, threshold_hours: float) -> d
 
 def tracking_title() -> str:
     return (
-        f"{TRACKING_TITLE_PREFIX}fleet-conductor — no completed cycle "
-        "within threshold"
+        f"{TRACKING_TITLE_PREFIX}fleet-conductor — no completed cycle within threshold"
     )
 
 

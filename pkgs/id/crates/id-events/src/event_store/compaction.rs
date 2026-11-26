@@ -911,7 +911,10 @@ mod tests {
         assert_eq!(pruned, 6, "four residue positions and two stored events");
         assert_eq!(residue_count(&store), 0);
         assert_eq!(store.chain(&who).unwrap(), None);
-        assert!(store.sync_entries().unwrap().is_empty());
+        assert_eq!(
+            store.sync_entries().unwrap(),
+            [] as [(id_store::range::Key, id_store::range::Id); 0]
+        );
         for (index, event) in events.iter().enumerate() {
             assert_eq!(
                 store.validity_now(&event.id).unwrap(),

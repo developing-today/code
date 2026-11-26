@@ -93,7 +93,7 @@ def judge_heartbeat(heartbeat, now, slo_hours=PROBE_SLO_HOURS):
         return {
             "status": MISSED,
             "detail": "no probe heartbeat exists in R2; "
-                      "the probe has never published a run record",
+            "the probe has never published a run record",
             "last_run_id": None,
             "last_generated_at": None,
             "age_hours": None,
@@ -102,13 +102,15 @@ def judge_heartbeat(heartbeat, now, slo_hours=PROBE_SLO_HOURS):
         return {
             "status": FAILED,
             "detail": f"heartbeat is not a {hf.PROBE_ID} record: "
-                      f"probe={heartbeat.get('probe')!r}",
+            f"probe={heartbeat.get('probe')!r}",
             "last_run_id": heartbeat.get("run_id"),
             "last_generated_at": heartbeat.get("generated_at"),
             "age_hours": None,
         }
     raw = heartbeat.get("generated_at")
-    generated = freshness_readout.parse_time(raw, "heartbeat generated_at") if raw else None
+    generated = (
+        freshness_readout.parse_time(raw, "heartbeat generated_at") if raw else None
+    )
     if generated is None:
         return {
             "status": FAILED,
@@ -136,13 +138,13 @@ def judge_heartbeat(heartbeat, now, slo_hours=PROBE_SLO_HOURS):
         return {
             "status": MISSED,
             "detail": f"newest probe heartbeat is {age} old, beyond the "
-                      f"{slo_hours}h cadence SLO (last run {raw})",
+            f"{slo_hours}h cadence SLO (last run {raw})",
             **evidence,
         }
     return {
         "status": OK,
         "detail": f"newest probe heartbeat is {age} old, within the "
-                  f"{slo_hours}h cadence SLO",
+        f"{slo_hours}h cadence SLO",
         **evidence,
     }
 
@@ -206,51 +208,59 @@ def plan_watchdog_actions(judgement, issues, watchdog_run_id, checked_at):
     if status == OK:
         if current is None:
             return []
-        return [{
-            "action": "resolve",
+        return [
+            {
+                "action": "resolve",
+                "leg": PROBE_LEG,
+                "repo": ha.GLOBAL_REPO,
+                "issue": current["number"],
+                "status": status,
+                "run_id": judgement["last_run_id"],
+                "comment": (
+                    f"Resolved by hosted watchdog run {watchdog_run_id} "
+                    f"({checked_at}): probe heartbeat observed from run "
+                    f"{judgement['last_run_id']} ({judgement['last_generated_at']}), "
+                    f"within the {PROBE_SLO_HOURS}h cadence SLO."
+                ),
+            }
+        ]
+    # missed
+    if current is None:
+        return [
+            {
+                "action": "create",
+                "leg": PROBE_LEG,
+                "repo": ha.GLOBAL_REPO,
+                "status": status,
+                "run_id": judgement["last_run_id"],
+                "title": alert_title(),
+                "body": alert_body(judgement, watchdog_run_id, checked_at),
+            }
+        ]
+    recorded = ha.RUN_RE.search(current.get("body") or "")
+    if recorded and recorded.group("run") == evidence_run(judgement):
+        return [
+            {
+                "action": "noop",
+                "leg": PROBE_LEG,
+                "repo": ha.GLOBAL_REPO,
+                "issue": current["number"],
+                "status": status,
+                "run_id": judgement["last_run_id"],
+            }
+        ]
+    return [
+        {
+            "action": "update",
             "leg": PROBE_LEG,
             "repo": ha.GLOBAL_REPO,
             "issue": current["number"],
-            "status": status,
-            "run_id": judgement["last_run_id"],
-            "comment": (
-                f"Resolved by hosted watchdog run {watchdog_run_id} "
-                f"({checked_at}): probe heartbeat observed from run "
-                f"{judgement['last_run_id']} ({judgement['last_generated_at']}), "
-                f"within the {PROBE_SLO_HOURS}h cadence SLO."
-            ),
-        }]
-    # missed
-    if current is None:
-        return [{
-            "action": "create",
-            "leg": PROBE_LEG,
-            "repo": ha.GLOBAL_REPO,
             "status": status,
             "run_id": judgement["last_run_id"],
             "title": alert_title(),
             "body": alert_body(judgement, watchdog_run_id, checked_at),
-        }]
-    recorded = ha.RUN_RE.search(current.get("body") or "")
-    if recorded and recorded.group("run") == evidence_run(judgement):
-        return [{
-            "action": "noop",
-            "leg": PROBE_LEG,
-            "repo": ha.GLOBAL_REPO,
-            "issue": current["number"],
-            "status": status,
-            "run_id": judgement["last_run_id"],
-        }]
-    return [{
-        "action": "update",
-        "leg": PROBE_LEG,
-        "repo": ha.GLOBAL_REPO,
-        "issue": current["number"],
-        "status": status,
-        "run_id": judgement["last_run_id"],
-        "title": alert_title(),
-        "body": alert_body(judgement, watchdog_run_id, checked_at),
-    }]
+        }
+    ]
 
 
 # ------------------------------------------------------------ fetching
@@ -294,15 +304,24 @@ def parse_args(argv):
         "--run-id",
         default=None,
         help="evidence identity for this watchdog run "
-             "(default: $GITHUB_RUN_ID or 'local')",
+        "(default: $GITHUB_RUN_ID or 'local')",
     )
-    parser.add_argument("--existing", default=None,
-                        help="JSON file of existing open issues "
-                             "(default: fetch via gh api when --apply)")
-    parser.add_argument("--repo", default="developing-today/code",
-                        help="repository that hosts the alert issues")
-    parser.add_argument("--apply", action="store_true",
-                        help="execute the plan via gh api (default: dry-run plan only)")
+    parser.add_argument(
+        "--existing",
+        default=None,
+        help="JSON file of existing open issues "
+        "(default: fetch via gh api when --apply)",
+    )
+    parser.add_argument(
+        "--repo",
+        default="developing-today/code",
+        help="repository that hosts the alert issues",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="execute the plan via gh api (default: dry-run plan only)",
+    )
     return parser.parse_args(argv)
 
 
@@ -324,8 +343,7 @@ def run(now, watchdog_run_id, fetch_heartbeat_fn, issues, apply, repo):
         actions = []
     else:
         judgement = judge_heartbeat(heartbeat, now)
-        actions = plan_watchdog_actions(
-            judgement, issues, watchdog_run_id, checked_at)
+        actions = plan_watchdog_actions(judgement, issues, watchdog_run_id, checked_at)
     if apply and actions:
         actions = ha.apply_actions(actions, ha.gh_executor(repo))
     readout = {
@@ -357,16 +375,22 @@ def main(argv=None):
             with open(args.existing, encoding="utf-8") as handle:
                 issues = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"hosted_watchdog: unusable --existing {args.existing!r}: {exc}",
-                  file=sys.stderr)
+            print(
+                f"hosted_watchdog: unusable --existing {args.existing!r}: {exc}",
+                file=sys.stderr,
+            )
             return 2
     elif args.apply:
         issues = ha.fetch_existing(args.repo)
     else:
         issues = []
     readout, exit_code = run(
-        now, watchdog_run_id, real_fetcher(args.bucket),
-        issues, args.apply, args.repo,
+        now,
+        watchdog_run_id,
+        real_fetcher(args.bucket),
+        issues,
+        args.apply,
+        args.repo,
     )
     print(json.dumps(readout, indent=2, sort_keys=True))
     return exit_code
