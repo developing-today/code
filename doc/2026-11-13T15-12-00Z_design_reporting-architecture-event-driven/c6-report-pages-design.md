@@ -69,15 +69,12 @@ and attributed editorial blocks; the page renderer does not own those facts.
     "budget_seconds": 900,
     "last_source_event_at": "<ISO-8601 UTC>",
     "state": "fresh | stale | unavailable",
-    "reason": null
+    "reason": null,
   },
-  "sources": [{ "id": "<stable source id>", "cursor": "<opaque cursor>",
-                "observed_at": "<ISO-8601 UTC>" }],
+  "sources": [{ "id": "<stable source id>", "cursor": "<opaque cursor>", "observed_at": "<ISO-8601 UTC>" }],
   "template": { "id": "<template id>", "version": 1 },
-  "sections": [{ "id": "<stable section id>", "title": "...",
-                  "kind": "facts | narrative | chart | questions | comments",
-                  "data": {} }],
-  "links": [{ "rel": "timeline | issue | incident | source", "href": "..." }]
+  "sections": [{ "id": "<stable section id>", "title": "...", "kind": "facts | narrative | chart | questions | comments", "data": {} }],
+  "links": [{ "rel": "timeline | issue | incident | source", "href": "..." }],
 }
 ```
 
@@ -103,14 +100,14 @@ page. Event-driven producers refresh
 on relevant source events; a lightweight scheduled reconciliation may detect
 missed events, but does not become a second data producer.
 
-| Page class | Freshness budget | On breach |
-| --- | ---: | --- |
-| Quota / pool status | 15 minutes | Mark stale, retain last-good values, alert Reports and enqueue one deduplicated refresh/diagnosis task. |
-| Service / health status | 5 minutes while a check is expected; otherwise show the check's declared cadence | Mark the specific check stale; use the existing page-health-push exception path for actionable failure. |
-| Active incident | 15 minutes while incident is open | Show last update and stale badge; enqueue a follow-up and notify the incident/report sink. |
-| Closed incident | 24 hours after a new linked finding; otherwise immutable | Append a versioned update when new evidence arrives; do not poll unchanged history. |
-| Period / forecast report | 1 hour while its source window is open; at least one final refresh at close | Show `as_of`; stale breach creates a Reports exception, not a fabricated estimate. C4's prediction freshness remains authoritative for forecast facts. |
-| Reports index | 15 minutes after a report create/update event | Retain searchable last-good index and enqueue a deduplicated rebuild. |
+| Page class               |                                                                 Freshness budget | On breach                                                                                                                                              |
+| ------------------------ | -------------------------------------------------------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Quota / pool status      |                                                                       15 minutes | Mark stale, retain last-good values, alert Reports and enqueue one deduplicated refresh/diagnosis task.                                                |
+| Service / health status  | 5 minutes while a check is expected; otherwise show the check's declared cadence | Mark the specific check stale; use the existing page-health-push exception path for actionable failure.                                                |
+| Active incident          |                                                15 minutes while incident is open | Show last update and stale badge; enqueue a follow-up and notify the incident/report sink.                                                             |
+| Closed incident          |                         24 hours after a new linked finding; otherwise immutable | Append a versioned update when new evidence arrives; do not poll unchanged history.                                                                    |
+| Period / forecast report |      1 hour while its source window is open; at least one final refresh at close | Show `as_of`; stale breach creates a Reports exception, not a fabricated estimate. C4's prediction freshness remains authoritative for forecast facts. |
+| Reports index            |                                    15 minutes after a report create/update event | Retain searchable last-good index and enqueue a deduplicated rebuild.                                                                                  |
 
 The producer records the failed source, attempted time, error class and
 recovery reference in the health/exception record. Exceptions are deduped by
@@ -126,7 +123,7 @@ of staleness.
    cursors; it queues a refresh, it does not render inline in a webhook.
 2. One worker builds the complete envelope from an explicit source snapshot.
    It uses idempotency key `(page_id, schema, sorted source cursors, template
-   version)`; retries of the same inputs cannot duplicate blocks or edits.
+version)`; retries of the same inputs cannot duplicate blocks or edits.
 3. Validate the envelope and render a preview. Persist the immutable canonical
    report record and version metadata, then compare-and-swap the current
    pointer against the source version observed when this worker started. If a

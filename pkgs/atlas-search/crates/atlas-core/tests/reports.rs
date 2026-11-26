@@ -129,7 +129,10 @@ fn an_edited_report_restages_exactly_its_own_chunks() {
         assert_eq!(b.id, a.id);
         assert_eq!(b.text, a.text);
         assert_eq!(b.chunk_count, a.chunk_count);
-        assert_eq!(b.meta, a.meta, "an unchanged re-scan rewrites no provenance");
+        assert_eq!(
+            b.meta, a.meta,
+            "an unchanged re-scan rewrites no provenance"
+        );
     }
 
     // Edit one report: exactly its item is re-staged.
@@ -146,7 +149,11 @@ fn an_edited_report_restages_exactly_its_own_chunks() {
         .find(|i| i.source.as_deref() == Some("research-reports:atlas-brief.md"))
         .map(|i| i.id)
         .expect("brief item");
-    assert_eq!(restaged, vec![edited_id], "only the edited report re-stages");
+    assert_eq!(
+        restaged,
+        vec![edited_id],
+        "only the edited report re-stages"
+    );
 
     let after = list_staged_items_in_db(&db, Some(RESEARCH_REPORTS_UNIT)).unwrap();
     for item in &after {

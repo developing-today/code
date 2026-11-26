@@ -139,7 +139,7 @@ fn the_same_request_direct_and_relayed_is_a_duplicate_not_a_loop() {
     assert_eq!(notice.kind, NoticeKind::DuplicateInFlight);
     assert_eq!(notice.sender, Some(id(3)));
     assert_eq!(notice.recipients(), vec![q.origin, id(3)]);
-    assert!(notice.evidence.is_empty());
+    assert_eq!(notice.evidence, [] as [RelayGrant; 0]);
     check_layout(&notice);
     assert_eq!(verify_notice(&q, &notice), Ok(()));
 }

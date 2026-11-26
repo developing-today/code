@@ -89,11 +89,35 @@ function resolveMonth(now: Date): number {
   return month;
 }
 
+// Validate the user value's SHAPE before any gh call (#15329). The
+// #3419 guard checked only presence/non-blank and returned the raw,
+// untrimmed string, so `--user "a/b"` rewrote the gh api path to a
+// different endpoint and `--user "foo bar"` / `--user " octocat "`
+// failed downstream with the token-scope misdiagnosis #3419 set out
+// to eliminate. A GitHub username is alphanumeric/hyphen, 1–39 chars,
+// with no leading/trailing hyphen; anything else (spaces, slashes,
+// surrounding whitespace) is a usage error (exit 2) naming the value.
+// The GH_BILLING_USER fallback goes through the same validation —
+// it previously received none at all.
+const GITHUB_USERNAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+
+function validateUser(raw: string, source: string): string {
+  if (!GITHUB_USERNAME.test(raw))
+    usageError(
+      `${source} must be a valid GitHub username (alphanumeric or hyphens, no spaces or slashes, got ${JSON.stringify(raw)})`,
+    );
+  return raw;
+}
+
 function resolveUser(): string {
-  if (!process.argv.includes("--user")) return process.env.GH_BILLING_USER ?? "dezren39";
+  if (!process.argv.includes("--user")) {
+    const env = process.env.GH_BILLING_USER;
+    if (env === undefined) return "dezren39";
+    return validateUser(env, "GH_BILLING_USER");
+  }
   const raw = explicitArg("--user");
   if (raw.trim() === "") usageError(`--user requires a non-empty name (got ${JSON.stringify(raw)})`);
-  return raw;
+  return validateUser(raw, "--user");
 }
 
 function fetchUsageItems(user: string, year: number, month: number): BillingUsageItem[] {

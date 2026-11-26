@@ -184,6 +184,10 @@ pub enum BundleType {
     RootSet,
     IssuerSet,
     Leaf,
+    /// A §3.5 trust-store install bundle: the program roots,
+    /// repackaged for distribution to trust consumers (BT-2,
+    /// #14400). Carries no key material, ever.
+    Trust,
 }
 
 impl BundleType {
@@ -192,6 +196,7 @@ impl BundleType {
             BundleType::RootSet => "root-set",
             BundleType::IssuerSet => "issuer-set",
             BundleType::Leaf => "leaf",
+            BundleType::Trust => "trust",
         }
     }
 }

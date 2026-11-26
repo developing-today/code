@@ -110,5 +110,6 @@ The isolation unit is the **instance**: a fresh Wasmtime instance per function v
 - The persistent content-addressed compile cache (§2.2 step 6).
 - Per-function instances, publish/swap bookkeeping, and pending-activation state in the session layer (§3).
 - The interface-descriptor canonicalization that the interface hash (§1.2) is computed over.
+- Implemented: the interface-descriptor canonicalization and interface hash (§1.2) with the §1.3 activation check, as `FunctionInterface`, `FunctionBinding` and `check_activation` in `pkgs/id/crates/id-worlds/src/world_compile.rs`; this covers the item above.
 
 Implementation of the mechanism is explicitly out of this doc's scope, per the task packet.

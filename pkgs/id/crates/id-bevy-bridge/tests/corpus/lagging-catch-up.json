@@ -1,0 +1,233 @@
+{
+  "name": "lagging-catch-up",
+  "description": "The app catches up one position per tick while another writer keeps appending. Intents proposed against a stale view of an entity the writer has since touched are rejected; an intent on an entity nobody else touched is accepted while the app still lags, and confirms only once the tail reaches it.",
+  "budget": 1,
+  "steps": [
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "p1",
+          "values": [["name", "Player one"], ["position", [0.0, 0.0]]]
+        }
+      ]
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "p2",
+          "values": [["name", "Player two"], ["position", [5.0, 5.0]]]
+        }
+      ]
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "p1",
+          "values": [["position", [1.0, 0.0]]]
+        }
+      ]
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "p1",
+          "values": [["position", [2.0, 0.0]]]
+        }
+      ]
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "upsert",
+        "id": "p1",
+        "values": [["position", [0.5, 0.5]]]
+      },
+      "predict": [0.5, 0.5]
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "p3",
+          "values": [["name", "Player three"]]
+        }
+      ]
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "upsert",
+        "id": "p2",
+        "values": [["position", [6.0, 6.0]]]
+      },
+      "predict": [6.0, 6.0]
+    },
+    {
+      "step": "tick",
+      "times": 1
+    },
+    {
+      "step": "append",
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 0,
+          "id": "p2",
+          "values": [["name", "Player two, renamed"]]
+        }
+      ]
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "upsert",
+        "id": "p2",
+        "values": [["position", [6.5, 6.5]]]
+      }
+    },
+    {
+      "step": "propose",
+      "proposal": {
+        "op": "retract",
+        "id": "p3"
+      }
+    },
+    {
+      "step": "tick",
+      "times": 12
+    }
+  ],
+  "journal": [
+    {
+      "position": 1,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 1,
+          "id": "p1",
+          "values": [["name", "Player one"], ["position", [0.0, 0.0]]]
+        }
+      ]
+    },
+    {
+      "position": 2,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 2,
+          "id": "p2",
+          "values": [["name", "Player two"], ["position", [5.0, 5.0]]]
+        }
+      ]
+    },
+    {
+      "position": 3,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 3,
+          "id": "p1",
+          "values": [["position", [1.0, 0.0]]]
+        }
+      ]
+    },
+    {
+      "position": 4,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 4,
+          "id": "p1",
+          "values": [["position", [2.0, 0.0]]]
+        }
+      ]
+    },
+    {
+      "position": 5,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 5,
+          "id": "p3",
+          "values": [["name", "Player three"]]
+        }
+      ]
+    },
+    {
+      "position": 6,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 6,
+          "id": "p2",
+          "values": [["position", [6.0, 6.0]]]
+        }
+      ]
+    },
+    {
+      "position": 7,
+      "deltas": [
+        {
+          "op": "upsert",
+          "position": 7,
+          "id": "p2",
+          "values": [["name", "Player two, renamed"]]
+        }
+      ]
+    }
+  ],
+  "outcomes": {
+    "confirmed": [[2, 6]],
+    "rejected": [
+      [1, "stale: `p1` changed after the intent's position"],
+      [3, "stale: `p2` changed after the intent's position"],
+      [4, "stale: `p3` changed after the intent's position"]
+    ]
+  },
+  "expected": {
+    "applied": 7,
+    "entities": {
+      "p1": {
+        "mapped_at": 1,
+        "name": "Player one",
+        "position": [2.0, 0.0]
+      },
+      "p2": {
+        "mapped_at": 2,
+        "name": "Player two, renamed",
+        "position": [6.0, 6.0]
+      },
+      "p3": {
+        "mapped_at": 5,
+        "name": "Player three",
+        "position": null
+      }
+    }
+  }
+}

@@ -102,7 +102,10 @@ Tests run under cargo-nextest where the justfile uses it. The recipes:
 | `just test-unit` | `cargo nextest run --all-features --lib`. Alias: `test-lib`. |
 | `just test-crate-integration` | Five named integration targets in sub-crates the root shards do not cover: `id-caps` `roc_import_policy`, `id-cli` `aliases`, `id-core` `probe_petname_load`, `id-store` `store_traits`, `id-web` `web_router_security`. |
 | `just test-native-shell` | `cargo nextest run -p id-native-shell`. A separate recipe because the crate is not a default member. |
+| `just test-android-remote` | `cargo test -p id-android-remote`. A separate recipe because the Android bridge is a non-default workspace member. |
 | `just test-hw-shell` | `cargo nextest run -p id-hw-shell`. Same reason. |
+| `just test-bevy-bridge` | `cargo nextest run -p id-bevy-bridge`. Same reason. Its replay oracle is the acceptance gate for a bump of the bridge's pinned `bevy_ecs` (#13704). |
+| `just test-bevy-presenter` | `cargo nextest run -p id-bevy-presenter`. Same reason. It runs the 2D presenter-client app headless against a demo world hosted in a separate process (#13705), and the host posture, where the Bevy process hosts the world with its journal on disk and admits other presenters (#13706). |
 | `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml`, `examples/rust-counter/Cargo.toml`, `examples/rust-cells/Cargo.toml`, `examples/rust-orbit/Cargo.toml` and `examples/rust-colony/Cargo.toml` — standalone crates outside the workspace. |
 | `just test-integration` | `cargo nextest run --all-features --test cli_integration`. Alias: `test-int`. |
 | `just test-web-unit` | `cd web && bun run test` (Vitest), then the build-manifest shell test. |
@@ -120,12 +123,12 @@ Run one test by name with the recipe `test-one`, which takes the test name as it
 | `just cargo-check` | `cargo check --all-targets --all-features`. |
 | `just clippy-lint` | `cargo clippy --all-targets --all-features`. `clippy-native-shell` runs clippy for the non-default `id-native-shell` member separately. |
 | `just fmt-check` | `cargo-fmt-check` (`cargo fmt -- --check`) plus `web-fmt-check` (Biome format over the web and e2e sources). |
-| `just ci` | The read-only CI set, in recipe order: `cargo-fmt-check`, `web-fmt-check`, `cargo-check`, `clippy-lint`, `clippy-native-shell`, `web-lint`, `test-sandbox`, `test-native-shell`, `test-hw-shell`, `test-rust-examples`, `test-web-unit`, `test-web-typecheck`, `roc-test`, `doc`, `build`, `release`. |
+| `just ci` | The read-only CI set, in recipe order: `cargo-fmt-check`, `web-fmt-check`, `cargo-check`, `clippy-lint`, `clippy-native-shell`, `clippy-bevy-bridge`, `clippy-bevy-presenter`, `web-lint`, `test-sandbox`, `test-native-shell`, `test-android-remote`, `test-hw-shell`, `test-bevy-bridge`, `test-bevy-presenter`, `test-rust-examples`, `test-web-unit`, `test-web-typecheck`, `roc-test`, `doc`, `build`, `release`. |
 | `just check` | `fix` first (auto-fix formatting and lints), then `ci`. Alias: `check-all`. |
 | `just doc` | `cargo doc --no-deps --document-private-items`. |
 | `just test-nix` | `nix flake check` in `pkgs/id`. Aliases: `check-nix`, `nix-check`. |
 
-The flake's `checks` set in `pkgs/id/flake.nix` exposes the CI set as individual named checks — among them `cargo-fmt-check`, `clippy-lint`, `clippy-native-shell`, `web-lint`, `test` (which runs the `test-sandbox` recipe), `test-unit`, `test-crate-integration`, `test-native-shell`, `test-hw-shell`, `test-rust-examples`, `test-int`, the four integration shards `test-shard-0` to `test-shard-3`, `roc-test`, `roc-examples`, `doc`, `cargo-check`, `prod-lines-check`, the five `crash-gate` checks and `just-recipes-drift` — plus NixOS VM checks for serve and end-to-end tests on Linux. The `default` check runs the `ci` recipe.
+The flake's `checks` set in `pkgs/id/flake.nix` exposes the CI set as individual named checks — among them `cargo-fmt-check`, `clippy-lint`, `clippy-native-shell`, `web-lint`, `test` (which runs the `test-sandbox` recipe), `test-unit`, `test-crate-integration`, `test-native-shell`, `test-android-remote`, `test-hw-shell`, `test-rust-examples`, `test-int`, the four integration shards `test-shard-0` to `test-shard-3`, `roc-test`, `roc-examples`, `doc`, `cargo-check`, `prod-lines-check`, the five `crash-gate` checks and `just-recipes-drift` — plus NixOS VM checks for serve and end-to-end tests on Linux. The `default` check runs the `ci` recipe.
 
 Two counts once circulated for this check set and disagreed — disagreement DES-4 in the book's research: `ARCHITECTURE.md` stated 11 CI checks in its build-system section and 27 checks in its testing section, and the justfile's `test-nix` comments also stated 27. All three were wrong. Measured on 2026-11-23 at `06450991e33`, `checks.x86_64-linux` has 50 attributes, from `nix eval '.#checks.x86_64-linux' --apply 'x: builtins.length (builtins.attrNames x)'` in `pkgs/id`; `ARCHITECTURE.md` now records that measurement and its method, and the justfile no longer states a fixed total.
 

@@ -47,6 +47,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::Policy { .. } => "policy",
         ServerFrame::Caps { .. } => "caps",
         ServerFrame::ExecutionProfile { .. } => "execution_profile",
+        ServerFrame::PresentationPolicy { .. } => "presentation_policy",
         ServerFrame::CapsCeiling { .. } => "caps_ceiling",
         ServerFrame::Schedules { .. } => "schedules",
         ServerFrame::WorldState { .. } => "world_state",
@@ -86,6 +87,7 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "policy",
     "caps",
     "execution_profile",
+    "presentation_policy",
     "caps_ceiling",
     "schedules",
     "world_state",
@@ -606,7 +608,7 @@ fn pointer_and_hover_frames_conform_to_the_input_event_model() {
     // (class event), hover is ephemeral, refusals name a reason from
     // the design's table, and scroll deltas are signed cell units.
     let contract = contract();
-    assert_eq!(contract.revision, 16);
+    assert_eq!(contract.revision, 17);
     assert_eq!(contract.client_frames["pointer"].class, FrameClass::Event);
     assert_eq!(contract.client_frames["hover"].class, FrameClass::Ephemeral);
     assert_eq!(
@@ -719,7 +721,7 @@ fn agent_profile_frames_conform_and_are_additive() {
     // stale-decision token on agent input frames. Human shells, which
     // never set the flag or send the new frames, are unaffected.
     let contract = contract();
-    assert_eq!(contract.revision, 16);
+    assert_eq!(contract.revision, 17);
     assert_eq!(
         contract.client_frames["screen_subscribe"].class,
         FrameClass::Ephemeral
@@ -872,7 +874,10 @@ fn the_shipped_suite_passes_on_its_recorded_sessions() {
         .filter(|verdict| verdict.recorded)
         .map(|verdict| verdict.name.as_str())
         .collect();
-    assert_eq!(recorded, BTreeSet::from(["native", "terminal"]));
+    assert_eq!(
+        recorded,
+        BTreeSet::from(["browser", "hardware", "native", "terminal"])
+    );
 }
 
 #[test]

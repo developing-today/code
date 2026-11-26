@@ -14,7 +14,11 @@
  *   routes answer a structured 503 — an unconfigured store is an
  *   honest state, never invented data (#14065) — while /health
  *   keeps answering so the deploy gate can still verify the build.
+ *
+ * The dashboard pages (dashboard/dashboard.ts, #12829) are served
+ * first; any path they do not own falls through to the JSON API.
  */
+import { createDashboardHandler } from "./dashboard/dashboard.ts";
 import { createAsyncReadApiHandler } from "./read-api/async-api.ts";
 import { libsqlHttpDb } from "./tenant-store/libsql-http.ts";
 
@@ -35,10 +39,10 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
   if (!env.PM_TENANT_DB_URL) {
     return json({ error: "pm-service tenant store is not configured" }, 503);
   }
-  const handler = createAsyncReadApiHandler({
-    db: libsqlHttpDb({ url: env.PM_TENANT_DB_URL, token: env.PM_TENANT_DB_TOKEN }),
-  });
-  return handler(req);
+  const db = libsqlHttpDb({ url: env.PM_TENANT_DB_URL, token: env.PM_TENANT_DB_TOKEN });
+  const page = await createDashboardHandler({ db })(req);
+  if (page) return page;
+  return createAsyncReadApiHandler({ db })(req);
 }
 
 export default {

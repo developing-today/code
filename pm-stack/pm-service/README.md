@@ -215,3 +215,30 @@ the synchronous path's behaviour:
 ```sh
 cd pm-stack/pm-service && bun test && bun run typecheck
 ```
+
+## Slice 4 — dashboard surfaces (#12829)
+
+`src/dashboard/dashboard.ts` serves the design §4 V1 parity list as
+server-rendered HTML, read through the same async loads the JSON API
+uses, so a page and its JSON twin cannot disagree. The Worker routes
+dashboard paths first and falls through to the API for the rest.
+
+| Path          | Page                                                                                |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `/`           | every board in the registry, its latest snapshot and status counts                  |
+| `/board/<id>` | one board's items from its latest snapshot                                          |
+| `/item/<ref>` | item detail: genealogy header (root first), sentence, release, after, fields        |
+| `/roadmap`    | overall priorities (rows grouped by priority) and the per-project roadmap (by area) |
+| `/releases`   | milestone close-out cards with carried-over epics                                   |
+| `/attention`  | open reconcile findings plus the coverage checks over each board's snapshot         |
+| `/quota`      | names quota/usage as not yet in the tenant store                                    |
+
+GETs only (anything else is a 405), SELECTs only, no token on the
+path. Absence renders as absence: a board with no snapshot says so,
+an unknown board or item is a 404 page, and quota shows no numbers it
+cannot back (#14065). Pages behind the same 503 as the API until the
+tenant store secrets are set.
+
+Not in this slice, each tracked separately: quota/usage data in the
+tenant store, the Kaneo/Pad/Grist embeds, dispatch intake, the console
+gate, push notifications and the AA extras.
