@@ -8,6 +8,20 @@
 //! never on a served result, whatever its exit code — and it
 //! reports the tier that served.
 //!
+//! Selection goes through `fleet-pool` (#14722, design #13752
+//! §3.5 step 1 — the walker is the primitive's first adopter):
+//! the tiers are pool members under one host group, the pool's
+//! selection picks each attempt, and each attempt's outcome is
+//! classified back into the pool (`Served` is a success; `Failed`
+//! and `TimedOut` are serve-failures, whose classification always
+//! advances). The walker's own ladder code is gone; the only
+//! walker-specific piece left is the attempted-set strategy
+//! below, the same shape the crate's walker oracle tests use
+//! (`crates/fleet-pool/tests/walker.rs`): a form already attempted
+//! in this walk is not re-selected, because a single walk tries
+//! each tier at most once even though a first serve-failure only
+//! demotes the member in the pool's longer-lived state machine.
+//!
 //! Tier 0 deliberately does not fall through to the wrapper (T7):
 //! when tier 0 fails, the individual forms come into play as their
 //! own literal commands — the subcommands again, then the raw
@@ -16,9 +30,21 @@
 //! the standalone command, and gate behaviour keys on the literal
 //! shape.
 
-use fleet_config::Config;
+use std::collections::HashSet;
 
-use crate::forms::{FORMS, Form, ServeOutcome, WALK_ORDER};
+use fleet_config::Config;
+use fleet_pool::{
+    AttemptKind, Candidate, Classification, NodeId, Pool, ServedDisposition, Strategy,
+};
+
+use crate::forms::{FORMS, Form, ServeOutcome, T1, T2, T3};
+
+/// The fleet subcommand tiers tier 0 walks, in declaration order:
+/// the members of the walk's pool. The wrapper (T7) is
+/// deliberately NOT a member: it is the agent's own final step
+/// after tier 0 and the individual forms, never something tier 0
+/// papers over.
+const WALK_FORMS: [Form; 3] = [T1, T2, T3];
 
 const EXIT_USAGE: i32 = 2;
 const DEFAULT_TIMEOUT_S: u64 = 120;
@@ -143,6 +169,103 @@ fn attempt(
     }
 }
 
+/// The walker's cursor over the pool: declaration order over the
+/// forms it has not attempted yet this walk. The pool supplies
+/// availability (a walled form never becomes a candidate), state,
+/// advance verdicts, and the decision log; the cursor is the
+/// walker's own, exactly as in the `fleet-pool` walker oracle
+/// tests (crates/fleet-pool/tests/walker.rs).
+#[derive(Default)]
+struct WalkOrder {
+    attempted: HashSet<NodeId>,
+}
+
+impl Strategy for WalkOrder {
+    fn name(&self) -> &str {
+        "walker-ordered"
+    }
+
+    fn select(&mut self, candidates: &[Candidate]) -> Option<usize> {
+        candidates
+            .iter()
+            .position(|c| !self.attempted.contains(&c.id))
+    }
+}
+
+/// Classify a form that did not serve: a serve-failure, which the
+/// pool always advances past.
+fn serve_failure(member: &NodeId, evidence: String) -> Classification {
+    Classification {
+        kind: AttemptKind::ServeFailure,
+        served_disposition: ServedDisposition::Hold,
+        advance: true,
+        evidence_scope: member.clone(),
+        reset_hint: None,
+        evidence,
+    }
+}
+
+/// One tier-0 walk over `forms`, selecting through `fleet-pool`.
+/// `attempt_fn` runs one form and reports how it ended. Returns
+/// the serving form and the served exit code, or `None` when no
+/// form served. Oracle: #13717 — advance only on a failure to
+/// serve, never on a served result; every result names the
+/// serving form (the `Served` arm's form, also the last selection
+/// in the pool's decision log).
+fn walk_forms(
+    forms: &[Form],
+    timeout_s: u64,
+    mut attempt_fn: impl FnMut(Form) -> ServeOutcome,
+) -> Option<(Form, i32)> {
+    let mut pool = Pool::new();
+    let host = NodeId::new("host");
+    pool.add_group(host.clone(), None);
+    for form in forms {
+        pool.add_member(NodeId::new(form.id), Some(&host));
+    }
+    let mut order = WalkOrder::default();
+    // The pool is per-walk and time is its logical clock; a single
+    // walk happens at one logical instant.
+    let now = 0;
+    loop {
+        let Some(member) = pool.select(&mut order, &|_| None, now) else {
+            return None;
+        };
+        order.attempted.insert(member.clone());
+        let form = forms
+            .iter()
+            .find(|f| f.id == member.as_str())
+            .copied()
+            .expect("the pool only selects members the walker added");
+        eprintln!("fleet: trying form {}", form.label());
+        match attempt_fn(form) {
+            ServeOutcome::Served(code) => {
+                pool.record_success(&member, now);
+                eprintln!("fleet: served by form {}", form.label());
+                return Some((form, code));
+            }
+            ServeOutcome::TimedOut => {
+                let fx = pool.record_outcome(
+                    &member,
+                    &serve_failure(&member, "timed out".to_string()),
+                    now,
+                );
+                debug_assert!(fx.advance, "a failure to serve always advances");
+                eprintln!(
+                    "fleet: form {} timed out after {}s; trying next",
+                    form.label(),
+                    timeout_s
+                );
+            }
+            ServeOutcome::Failed(m) => {
+                let fx = pool.record_outcome(&member, &serve_failure(&member, m.clone()), now);
+                debug_assert!(fx.advance, "a failure to serve always advances");
+                eprintln!("fleet: form {} failed: {m}; trying next", form.label());
+            }
+        }
+    }
+}
+
 fn walk(config: &Config, args: &[String]) -> i32 {
     let parsed = match parse_walk_args(args) {
         Ok(p) => p,
@@ -151,9 +274,9 @@ fn walk(config: &Config, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    let order: Vec<Form> = match parsed.form {
+    let forms: Vec<Form> = match parsed.form {
         Some(f) => {
-            if !WALK_ORDER.contains(&f) {
+            if !WALK_FORMS.contains(&f) {
                 eprintln!(
                     "laptop: --form {} cannot be attempted by tier 0 (raw forms and the \
                      wrapper are run as their own literal commands)",
@@ -163,37 +286,83 @@ fn walk(config: &Config, args: &[String]) -> i32 {
             }
             vec![f]
         }
-        None => WALK_ORDER.to_vec(),
+        None => WALK_FORMS.to_vec(),
     };
-    for form in order {
-        eprintln!("fleet: trying form {}", form.label());
-        match attempt(
+    match walk_forms(&forms, parsed.timeout_s, |form| {
+        attempt(
             config,
             form,
             parsed.cwd.as_deref(),
             parsed.timeout_s,
             &parsed.cmd,
-        ) {
-            ServeOutcome::Served(code) => {
-                eprintln!("fleet: served by form {}", form.label());
-                return code;
-            }
-            ServeOutcome::TimedOut => {
-                eprintln!(
-                    "fleet: form {} timed out after {}s; trying next",
-                    form.label(),
-                    parsed.timeout_s
-                );
-            }
-            ServeOutcome::Failed(m) => {
-                eprintln!("fleet: form {} failed: {m}; trying next", form.label());
-            }
+        )
+    }) {
+        Some((_form, code)) => code,
+        None => {
+            eprintln!(
+                "fleet: no tier served the call (the individual forms, then the raw forms, then laptop-ssh remain)"
+            );
+            1
         }
     }
-    eprintln!(
-        "fleet: no tier served the call (the individual forms, then the raw forms, then laptop-ssh remain)"
-    );
-    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::forms::{T1, T2, T3};
+    use std::cell::RefCell;
+
+    /// Run one scripted walk over T1–T3 and return the outcome
+    /// plus the forms attempted, in order.
+    fn scripted_walk(script: impl Fn(Form) -> ServeOutcome) -> (Option<(Form, i32)>, Vec<Form>) {
+        let attempted = RefCell::new(Vec::new());
+        let out = walk_forms(&WALK_FORMS, 120, |form| {
+            attempted.borrow_mut().push(form);
+            script(form)
+        });
+        (out, attempted.into_inner())
+    }
+
+    // Oracle: #13717 — the first form serves on a healthy estate
+    // and the result names it; no other form is attempted.
+    #[test]
+    fn walker_serves_via_first_form_and_names_it() {
+        let (out, attempted) = scripted_walk(|_| ServeOutcome::Served(0));
+        assert_eq!(out, Some((T1, 0)));
+        assert_eq!(attempted, vec![T1]);
+    }
+
+    // Oracle: #13717 — the walk advances only when a form fails
+    // to serve (transport failure or a tier-level timeout).
+    #[test]
+    fn walker_advances_only_on_failure_to_serve() {
+        let (out, attempted) = scripted_walk(|form| match form.id {
+            "T1" => ServeOutcome::Failed("connect".into()),
+            "T2" => ServeOutcome::TimedOut,
+            _ => ServeOutcome::Served(7),
+        });
+        assert_eq!(out, Some((T3, 7)));
+        assert_eq!(attempted, vec![T1, T2, T3]);
+    }
+
+    // Oracle: #13717 — a served result is never routed around,
+    // whatever its exit code.
+    #[test]
+    fn walker_never_advances_on_a_served_result() {
+        let (out, attempted) = scripted_walk(|_| ServeOutcome::Served(42));
+        assert_eq!(out, Some((T1, 42)));
+        assert_eq!(attempted, vec![T1]);
+    }
+
+    // Oracle: #13717 — when no form serves, the walk exhausts
+    // every form exactly once and reports no server.
+    #[test]
+    fn walker_exhausts_when_no_form_serves() {
+        let (out, attempted) = scripted_walk(|_| ServeOutcome::Failed("down".into()));
+        assert_eq!(out, None);
+        assert_eq!(attempted, vec![T1, T2, T3]);
+    }
 }
 
 pub fn run(config: &Config, args: &[String]) -> i32 {

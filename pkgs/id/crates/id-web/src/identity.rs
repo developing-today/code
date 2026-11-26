@@ -453,6 +453,20 @@ impl IdentityStore {
         self.verifying_key.to_bytes()
     }
 
+    /// Signs a changelog entry with this server's key (#14272): the
+    /// `session` entry a note session ends with is attributed to the
+    /// same key its checkpoints are signed under ([`Self::author_key`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the changelog's refusal when the draft breaks its rules.
+    pub fn sign_changelog_entry(
+        &self,
+        draft: id_store::talk_page::EntryDraft,
+    ) -> Result<id_store::talk_page::SignedEntry, id_store::talk_page::TalkPageError> {
+        id_store::talk_page::SignedEntry::sign(draft, &self.signing_key)
+    }
+
     /// Update a client's display name.
     ///
     /// Returns the updated identity on success, or `None` if the client
@@ -701,7 +715,7 @@ impl IdentityDb {
             .open(&temp)
             .with_context(|| format!("failed to create identity store {}", temp.display()))?;
         let db = Database::builder()
-            .create_file(file)
+            .create_with_backend(redb::backends::FileBackend::new(file))
             .map_err(|e| store_error(&temp, e))?;
         let created = Self::load(db, key)?;
         std::fs::rename(&temp, path).with_context(|| {

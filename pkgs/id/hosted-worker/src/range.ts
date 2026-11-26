@@ -142,14 +142,18 @@ export class RangeParty {
   private xor: Uint8Array[] = [];
 
   constructor(entries: SyncKey[]) {
-    const sorted = [...entries].sort((a, b) => compareBytes(keyBytes(a), keyBytes(b)));
-    for (let i = 1; i < sorted.length; i++) {
-      if (compareBytes(keyBytes(sorted[i - 1]), keyBytes(sorted[i])) === 0) {
+    // Encode each key once: keyBytes parses hex and walks a BigInt, so
+    // calling it inside the comparator costs O(n log n) encodings.
+    const encoded = entries.map((key) => ({ key, raw: keyBytes(key) }));
+    encoded.sort((a, b) => compareBytes(a.raw, b.raw));
+    for (let i = 1; i < encoded.length; i++) {
+      if (compareBytes(encoded[i - 1].raw, encoded[i].raw) === 0) {
         throw new Error("sync keys are not distinct");
       }
     }
+    const sorted = encoded.map((e) => e.key);
     this.keys = sorted;
-    this.keyRaw = sorted.map(keyBytes);
+    this.keyRaw = encoded.map((e) => e.raw);
     this.ids = sorted.map((k) => k.id);
     const acc = new Uint8Array(16);
     this.xor = [new Uint8Array(acc)];

@@ -168,3 +168,236 @@ pub(crate) fn enrich_payload_labels(
 pub(crate) fn band_or_inherited(payload: &Value, inherited: Option<i64>) -> Option<i64> {
     crate::validate::label_band_priority(payload).or(inherited)
 }
+
+// ---------------------------------------------------------------------------
+// #14170 Q5 — the task-row label cache (`tasks.labels`)
+// ---------------------------------------------------------------------------
+//
+// The mirror stays the source of truth for an issue's current GitHub
+// labels; `tasks.labels` is a cache for the readers that cannot join
+// per row (list filtering, held-set audits). It holds the mirror's
+// exact shape (a JSON array of names) and `labels_synced_at` stamps
+// the moment it was copied, so a reader sees staleness instead of
+// trusting silently. A task whose issue has no mirror row keeps its
+// `[]` and a NULL stamp, which reads honestly as "never synced".
+//
+// Refresh moments: every lifecycle transition (core::event, which
+// covers enqueue and claim), plus the hourly actionable-only sweep
+// that rides /sweep, plus /labels-sync on demand (`all: true` is
+// the one-off backfill over every task). Every refresh is fail-open:
+// the mirror is a read model and never gates work (#8575).
+
+/// Statuses the hourly sweep keeps fresh: the items a reader is about
+/// to act on. Terminal rows are refreshed only by `/labels-sync` with
+/// `all: true`.
+pub(crate) const LABEL_SYNC_STATUSES: [&str; 4] = ["queued", "claimed", "parked", "blocked"];
+
+/// How long the sweep waits between label passes (seconds).
+pub(crate) const LABEL_SYNC_INTERVAL_SECONDS: i64 = 3600;
+
+/// One task's cache refresh from the mirror. Binds: repo, number,
+/// synced_at, task id, repo, number. Writes nothing (and leaves the
+/// stamp alone) when the mirror has no row for the issue; a mirror
+/// row whose labels are absent or not a JSON array caches `[]`.
+pub(crate) const LABELS_REFRESH_SQL: &str = "UPDATE tasks SET \
+    labels = COALESCE((SELECT CASE WHEN json_valid(m.labels) AND json_type(m.labels) = 'array' \
+        THEN m.labels ELSE '[]' END FROM github_mirror_issues m WHERE m.repo = ? AND m.number = ?), '[]'), \
+    labels_synced_at = ? \
+    WHERE id = ? AND EXISTS (SELECT 1 FROM github_mirror_issues m WHERE m.repo = ? AND m.number = ?)";
+
+/// The bound arguments for LABELS_REFRESH_SQL.
+pub(crate) fn labels_refresh_args(
+    task_id: i64,
+    repo: &str,
+    number: i64,
+    synced_at: &str,
+) -> Vec<Arg> {
+    vec![
+        Arg::Text(repo.to_string()),
+        Arg::Int(number),
+        Arg::Text(synced_at.to_string()),
+        Arg::Int(task_id),
+        Arg::Text(repo.to_string()),
+        Arg::Int(number),
+    ]
+}
+
+/// The issue ref of a stored task row (payload + dedupe_key), by the
+/// same rule enqueue enrichment uses.
+fn row_issue_ref(row: &Value) -> Option<(String, i64)> {
+    let payload = match row.get("payload") {
+        Some(Value::String(s)) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
+        Some(v) => v.clone(),
+        None => Value::Null,
+    };
+    payload_issue_ref(&payload, row.get("dedupe_key").and_then(|v| v.as_str()))
+}
+
+/// Refresh one task's label cache from the mirror. Ok(false) when the
+/// task has no issue ref (nothing to look up); Ok(true) when the
+/// refresh ran (the row is stamped only if the mirror has the issue).
+/// Err when the store or the mirror table could not be read — the
+/// caller ignores it (fail-open).
+pub(crate) fn refresh_task_labels(t: &TursoBackend, task_id: i64) -> Result<bool, TErr> {
+    let rows = t.query_objs(
+        "SELECT payload, dedupe_key FROM tasks WHERE id = ?",
+        &[Arg::Int(task_id)],
+        &[],
+    )?;
+    let Some((repo, number)) = rows.first().and_then(row_issue_ref) else {
+        return Ok(false);
+    };
+    t.exec(
+        LABELS_REFRESH_SQL,
+        &labels_refresh_args(task_id, &repo, number, &now_iso()),
+    )?;
+    Ok(true)
+}
+
+/// Refresh the label cache for many tasks: every actionable task, or
+/// every task with `all`. Rows are read in id pages and refreshed in
+/// one pipeline per page. Reports what it scanned, how many rows had
+/// an issue ref, and how many the mirror actually stamped.
+pub(crate) fn sync_task_labels(t: &TursoBackend, all: bool, page_size: i64) -> Result<Value, TErr> {
+    let page_size = page_size.clamp(1, 1000);
+    let synced_at = now_iso();
+    let status_cond = if all {
+        String::new()
+    } else {
+        let list = LABEL_SYNC_STATUSES
+            .iter()
+            .map(|s| format!("'{s}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(" AND status IN ({list})")
+    };
+    let (mut scanned, mut with_ref, mut after) = (0i64, 0i64, 0i64);
+    loop {
+        let rows = t.query_objs(
+            &format!(
+                "SELECT id, payload, dedupe_key FROM tasks WHERE id > ?{status_cond} \
+                 ORDER BY id LIMIT {page_size}"
+            ),
+            &[Arg::Int(after)],
+            &[],
+        )?;
+        let Some(last) = rows
+            .last()
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_i64())
+        else {
+            break;
+        };
+        after = last;
+        scanned += rows.len() as i64;
+        let stmts: Vec<(&str, Vec<Arg>)> = rows
+            .iter()
+            .filter_map(|r| {
+                let id = r.get("id").and_then(|v| v.as_i64())?;
+                let (repo, number) = row_issue_ref(r)?;
+                Some((
+                    LABELS_REFRESH_SQL,
+                    labels_refresh_args(id, &repo, number, &synced_at),
+                ))
+            })
+            .collect();
+        with_ref += stmts.len() as i64;
+        if !stmts.is_empty() {
+            t.exec_batch(&stmts)?;
+        }
+        if (rows.len() as i64) < page_size {
+            break;
+        }
+    }
+    let stamped = t
+        .query_objs(
+            "SELECT COUNT(*) AS n FROM tasks WHERE labels_synced_at = ?",
+            &[Arg::Text(synced_at.clone())],
+            &[],
+        )?
+        .first()
+        .and_then(|r| r.get("n"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    Ok(json!({
+        "scope": if all { "all" } else { "actionable" },
+        "scanned": scanned,
+        "with_issue_ref": with_ref,
+        "stamped": stamped,
+        "synced_at": synced_at,
+    }))
+}
+
+/// The sweep's hourly label pass: runs when the last pass is older
+/// than LABEL_SYNC_INTERVAL_SECONDS (or never ran), records the pass
+/// in checkpoints, and never fails the sweep — its error is reported
+/// inside its own summary. Ok(None) when the interval has not passed.
+pub(crate) fn sweep_task_labels(t: &TursoBackend, force: bool) -> Option<Value> {
+    let work = || -> Result<Option<Value>, TErr> {
+        if !force {
+            let last = t
+                .query_objs(
+                    "SELECT updated_at FROM checkpoints \
+                     WHERE worker_id = 'fleet-sweeper' AND key = 'labels_sync'",
+                    &[],
+                    &[],
+                )?
+                .first()
+                .and_then(|r| r.get("updated_at"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let due_before = iso(now_unix() - LABEL_SYNC_INTERVAL_SECONDS);
+            if last.is_some_and(|l| l > due_before) {
+                return Ok(None);
+            }
+        }
+        let summary = sync_task_labels(t, false, 500)?;
+        t.exec(
+            "INSERT INTO checkpoints (worker_id, key, value, updated_at) \
+             VALUES ('fleet-sweeper', 'labels_sync', ?, ?) \
+             ON CONFLICT(worker_id, key) DO UPDATE SET \
+               value = excluded.value, updated_at = excluded.updated_at",
+            &[Arg::Text(summary.to_string()), Arg::Text(now_iso())],
+        )?;
+        Ok(Some(summary))
+    };
+    match work() {
+        Ok(v) => v,
+        Err(e) => Some(json!({"error": e})),
+    }
+}
+
+/// `/labels-sync` (#14170 Q5): refresh the task label cache now.
+/// `all: true` covers every task (the one-off backfill); otherwise
+/// only actionable statuses. `page_size` bounds each read page.
+pub(crate) fn verb_labels_sync(t: &TursoBackend, req: &Value) -> Value {
+    let all = req_bool(req, "all").unwrap_or(false);
+    let page = req_i64(req, "page_size").unwrap_or(500);
+    match sync_task_labels(t, all, page) {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// The list filter for one `--label` value: an exact label name, or
+/// a prefix glob ending in `*` (`user/*`). Returns the SQL condition
+/// and its bound argument.
+pub(crate) fn label_filter_cond(label: &str) -> (&'static str, Arg) {
+    match label.strip_suffix('*') {
+        Some(prefix) => {
+            let escaped = prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            (
+                " AND EXISTS (SELECT 1 FROM json_each(tasks.labels) \
+                 WHERE json_each.value LIKE ? ESCAPE '\\')",
+                Arg::Text(format!("{escaped}%")),
+            )
+        }
+        None => (
+            " AND EXISTS (SELECT 1 FROM json_each(tasks.labels) WHERE json_each.value = ?)",
+            Arg::Text(label.to_string()),
+        ),
+    }
+}

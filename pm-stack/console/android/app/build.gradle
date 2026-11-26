@@ -21,12 +21,12 @@ def releaseName = System.getenv('PM_ANDROID_VERSION_NAME')
 
 android {
     namespace 'today.developing.pmconsole'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId 'today.developing.pmconsole'
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode releaseCode ? releaseCode.toInteger() : 3
         versionName releaseName ?: '0.3.0'
         // The site the app opens. The offline check builds it against
@@ -77,5 +77,5 @@ android {
 }
 
 dependencies {
-    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.4'
 }

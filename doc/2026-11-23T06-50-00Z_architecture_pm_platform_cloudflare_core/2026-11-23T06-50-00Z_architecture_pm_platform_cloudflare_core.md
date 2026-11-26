@@ -1456,3 +1456,534 @@ lists of what it does and reads.
 comment, each with the Worker's token and once, no machine asked, and
 the item gone from the next look. Nine faults planted one at a time
 under bun, each caught.
+
+## 2026-11-24T08:25Z Correction: the dashboard's census was not failing in service (#14103)
+
+The section of 06:55Z says the dashboard's census "asked GitHub's
+search for `repo:<repo> state:open label:"<label>"`, which GitHub
+answers 422 to". That was read from what GitHub answered the token of
+the session that wrote it, and never checked against the dashboard that
+runs. Checked on the machine that runs it (`amd`, 08:10Z):
+
+- `GET http://127.0.0.1:4870/api/needs-drew.json`: `complete: true`,
+  eight of eight sources good, 54 items, fetched a minute before.
+- The search in the old form, asked with the fleet's identity:
+  `total_count 13`. The repository's own list: the same 13.
+
+So the 422 is what GitHub gives some tokens (a GitHub App's) and not
+the one the dashboard runs with. Nothing the owner saw was broken, and
+nothing was fixed for him by #14165. What stands of it: the census
+reads the same items from the list, on the core allowance, whichever
+kind of token it is given; and the console's list of repositories is
+the dashboard's. The issue's title, its priority and the comments in
+the code that said "every query failed" are corrected.
+
+**What it shows about checking.** A claim about what is in service was
+made from outside the service. The machine can be asked now (below),
+and a claim of that kind is made from its answer.
+
+## 2026-11-24T08:30Z Update: the live pages, looked at on the machine
+
+The console at main, started on the machine beside the one in service
+(its own port, its own empty state, no report to the edge), read by a
+headless browser at a phone's width. What was wrong, and what was done:
+
+- **"394 need you"** on the first screen, and "99+" on the tab: 347 of
+  them were questions the fleet had put with an answer it recommends.
+  What leads now is what only the owner can do (29); the tab's count
+  adds the reviews asked of him. The Needs screen opens on that list,
+  and the questions have one button that takes every recommendation.
+- **"Why 272 tasks are blocked"** stood above six lines that added up
+  to fifteen: almost every blocked task carries a reason of its own, so
+  the commonest six said nothing of the rest. The board now counts them
+  by the kind of reason (one written on the task, a time waited for and
+  whether it has passed, other tasks, none), which adds up to all of
+  them. The query is run on a real SQLite in its test.
+- **A task being worked on could not be steered from its card.** It has
+  "Comment" (on its issue, which Cloudflare posts itself) and "Message
+  its agent".
+- **"failed · failed"** on a failed unit: said once.
+- The console in service on the machine runs from `~/git/code`, which
+  was on a lane's branch: the app it served was that branch's, and its
+  code was seven hours behind main (#13833). Not fixed by this.
+
+## 2026-11-24T08:40Z Update: the app is told when something changes
+
+**Intent.** The app looked every twenty seconds. What changed in
+between was seen at the next look, and every look was a request
+whether or not anything had changed. The owner asked for an app that
+receives events as they happen.
+
+**Done.** The documents class says when what a document would say has
+changed (`Docs.onChange`: a section read with other content or another
+health, a value beside the sections, what the owner did), and never
+for a read that changed nothing. The Worker's object holds a WebSocket
+for each open copy of the app, by the platform's hibernation API, and
+passes those changes on: which documents, once for however many changes
+arrive together. The app reads them again by their tags. While someone
+is connected the object wakes every twenty seconds to read what has
+gone stale; with nobody connected it does not.
+
+**Not over the connection.** What the owner does. It goes by requests
+that are kept on the device and sent again, which a connection that may
+drop is no place for.
+
+**Checked.** In the real Worker runtime, with a real WebSocket: the
+owner is connected and a stranger is not (401), the platform answers
+the app's ping, something the owner does is said to the connected app
+by the document's name, and nobody is counted as connected after the
+app goes away. Nineteen faults planted one at a time: eighteen caught,
+and the nineteenth showed a flag that did nothing, which was removed.
+
+**Not seen.** A phone connected in service: `listening` in the health
+answer says when one is.
+
+## 2026-11-24T08:45Z Update: a notification carries what can be done about it
+
+**Intent.** A notification said that something had happened and opened
+the app. The owner asked for notifications with the details in them and
+buttons that answer.
+
+**Done.** Each message has up to two buttons, most useful first: on a
+reply from the fleet, "Reply" (typed on the notification where the
+device can take a line of text; where it cannot, the thread is opened)
+and "Close it"; on something only he can do, "I did it" and "Open"; on
+a unit that failed, "Restart it" and "Look". The body says enough to
+act on. Pressing a button that does something goes through the same
+keeping and sending as the app: written down on the device first, sent
+under a name, kept and sent later with no connection, never done twice.
+The Android app shows the site's notifications as its own, so it has
+the buttons too.
+
+A message had no bound on its length: a body of twenty thousand
+characters was sealed and posted as twenty thousand bytes, which a push
+service refuses (it takes 4096, RFC 8030 section 7.2). With fuller
+bodies that mattered more, so a message that would be too long as it is
+sealed is now cut to the longest start that fits, in whole characters,
+marked as cut, with its buttons kept.
+
+**Checked.** The service worker's file is run against a stand-in for
+the browser's worker scope: the buttons shown, what pressing each does
+(one request, as the app would send it), a typed reply, no text given,
+no connection, the platform turning it down, the app open. Fourteen
+faults planted one at a time, all caught. The cut is measured on what
+is really posted, against the 4096 bytes, and read back the way a phone
+reads it, for characters of one, two and four bytes and one that JSON
+writes as two; eight faults planted, all caught. (Cutting by code unit
+and not by character would give the same result, since half a
+character costs more bytes written out than the whole one: it is cut
+by character because that is what makes the search plainly right.)
+
+**Not seen.** A real phone showing the buttons: it takes a real push to
+a subscribed device, which is the owner's.
+
+## 2026-11-24T09:25Z Update: what was finished lately
+
+**Intent.** The app said what is happening, what is next and what needs
+the owner. It did not say what was done. He asked for that.
+
+**Done.** A `done` document, read by Cloudflare itself like the rest of
+the core: the tasks the queue says were finished, the pull requests
+merged and the issues closed, newest first, with how many of each in
+the last day. Now has a fifth tile for it; the Done screen lists each
+kind, with what came of a task (merged, issue closed, left as a draft
+with a follow-up, superseded, no work) and links to its pull request
+and issue.
+
+**How it is read.** The queue has some seventeen thousand finished
+tasks and keeps no order of when each was finished, so going through
+them would read every one, every time. The events that say a task was
+finished are kept in order of time: the read starts from those of the
+last week and looks each task up by its number. SQLite's own plan for
+the statements is checked in the tests (the events by their index, the
+tasks by their key, nothing gone through whole). GitHub is asked for
+one page of what is closed, most lately touched first, at one unchanging
+address, so an unchanged answer is "not modified" and costs nothing.
+
+**Checked.** The statements are run in SQLite on the queue's own tables
+with rows written the way the fleet writes them: finished once, twice,
+taken up again, another queue's, older than the week, written by
+something older. GitHub's list is given as GitHub documents it. In the
+Worker's real runtime the document is read with no machine. Fifty
+faults planted one at a time across the read, the wiring and the app's
+words, all caught after three tests were tightened.
+
+**Seen on the machine,** drawn from the live queue and GitHub: 715
+tasks finished in a day (292 second passes over an issue, 142 feature
+slices, 140 small fixes, 130 triage), at least 46 pull requests merged
+and at least 39 issues closed. That look changed the screen. Of the
+forty latest finished tasks, thirty-seven were second passes with no
+record of what came of them, so the tasks tab now says the day by kind
+and lists the tasks with a result on record first. Every merged pull
+request said the same author (the owner's name, which his agents work
+under), so the author is said only where they differ. A lane the pool
+made up ran across two lines as forty letters, and is said as a pooled
+lane.
+
+**Not seen.** The screen as Cloudflare serves it to a signed-in owner.
+
+## 2026-11-24T09:29Z Correction: whole numbers from the queue's store came as text
+
+**Found.** The first look at the Done screen on the machine, drawn from
+the live queue: 709 tasks finished in the last day, and not one of them
+showed its issue. The tasks had issues. The queue's store sends a whole
+number over HTTP as text marked as an integer (`{"type":"integer","value":"7920"}`),
+and the console read the text and dropped the mark. Every screen so far
+had coped, by treating numbers loosely. The new read asked for a number
+and, given text, showed nothing.
+
+**Why the tests had not said so.** The tests' stand-in for the store
+answered with plain numbers, which the store never does. The oracle did
+not match the thing it stood in for.
+
+**Fixed.** The store's values are read by their marks: a whole number
+that a number can hold exactly is read as that number, one that is too
+large stays the text it came as, and text that looks like a number
+stays text. The work tests' store now answers the way the real one
+does, so a read that mishandles it fails there. Checked against the
+store's own format, six faults planted and caught, and seen on the
+machine afterwards: each of the forty latest with its issue, where none
+had shown one.
+
+## 2026-11-24T09:55Z Update: a question, something to do, or a standing instruction
+
+**Intent.** Ask had one box, and everything typed into it became
+"something he wants done, or a question he wants answered", for an
+agent to work out which. He asked to be able to ask questions and give
+general directives as well as start work.
+
+**Done.** He says which it is: "Do this", "Answer this" or "From now
+on". The issue is titled for it and its note and task ask for what that
+kind needs. A question is answered in a comment with what the answer
+rests on; nothing is changed to answer it, and the issue is left open
+for him to close. A standing instruction is recorded where every agent
+reads it, by a merged pull request, and work already queued or under
+way is brought in line with it. Something to do is as it always was,
+down to the last character of what is filed and queued. The kind
+travels with the task when Cloudflare files the issue and a machine
+files the task later, and a reply on a question is queued as a question.
+The list marks questions and standing instructions, a kept one is said
+as what it is, and the fleet's reply on a question is announced as its
+answer.
+
+**What it does not do.** A standing instruction is still carried out by
+whichever agent takes its task: nothing here writes to AGENTS.md
+itself. The queue has one key for "someone must look at this issue",
+and all three kinds use it, so an issue never has two tasks.
+
+**Checked.** The issue and the packet for each kind are compared with
+what each must make an agent do differently, written out in the tests;
+something to do is compared with what was filed before, whole.
+Twenty-two faults planted one at a time, all caught. In the Worker's
+real runtime, 54 of 54.
+
+## 2026-11-24T10:14Z Update: a machine's console runs from its own copy of main
+
+**What was wrong.** On the laptop the console ran from the checkout the
+fleet's lanes work in. That checkout is not kept at main: lanes leave it
+on their own branches, with half-written files, and the unit that would
+pull main into it rightly refuses to. So the console in service was
+main's code from the day before, and from 08:39Z on 2026-11-24 another
+branch's code altogether (`9c2b4ad096e3`, a commit of a design branch),
+put into service by the console's own redeploy when the checkout was
+switched to that branch. Five passes over #13833 by five lanes each
+found it still so, and changed nothing.
+
+**The source of truth is GitHub's main, not a directory on the laptop.**
+A machine's console now runs from a copy that is its own, under
+`~/.local/share/pm-console`: a clone that fetches only main and only
+the console's part of the tree, a release laid out for each commit, and
+a link to the one in service. Every minute `redeploy.sh` asks GitHub
+for main; when the console's code there is not what is in service it
+lays the commit out as a release, starts it in a self-check, and only
+then moves the link and runs the release's own `install.sh`, which
+restarts the service and waits for it to answer its health check as
+that commit. A release that does not start or does not come up does not
+stay: the one before it is put back and the unit fails, where the
+Services screen and the notifications show it. GitHub out of reach
+changes nothing, and is a failure after half an hour.
+
+**What a machine is, after this.** Still one of the machines that
+report to Cloudflare, with what only a machine has: its units, the
+dashboard, the fleet's own commands. What code it runs is no longer a
+fact about a directory someone works in.
+
+**Checked.** Both scripts are run for real: against a bare repository
+standing in for GitHub (reached over git's own protocol, allowing the
+partial fetches GitHub allows), with stand-ins only for the program
+that runs the self-check, for `systemctl` and for the health check.
+What is in service is compared with the files of the commit pushed to
+main, read back from git. A checkout on another branch with
+half-written files, the script run from inside it: main is what goes
+into service, and the checkout is left as it was. Thirty-three faults
+planted one at a time, all caught after one test was tightened.
+
+**Not yet.** The edge still cannot tell by itself that a machine runs
+other console code than it does: each says a commit, and two commits
+can hold the same console. A release now records its console's tree
+beside its commit, which is what the two sides would compare (#13833's
+third point).
+
+## 2026-11-24T10:36Z Seen in service: the laptop follows main by itself
+
+**The move.** At 10:19Z on 2026-11-24 the new `redeploy.sh` was run once
+by hand on `amd`. It made the console's own copy of main, checked it
+with the service's settings, and put it into service:
+`redeploy: e16c2459a649 is in service`, with the service's working
+directory a release under `~/.local/share/pm-console`. The unit files
+from before are kept on that machine at
+`/tmp/pm-review-claude/units-backup`. It had first been run there
+against GitHub with a made-up home directory and stand-ins for
+`systemctl` and the health check, which took 23 seconds and passed.
+
+**By itself.** Two merges later the same morning were followed with
+nobody at the machine: `6dfb0637a5bb` at 10:23:27Z, about a minute after
+it merged, and `4a7a5161e257` at 10:33:32Z, before Cloudflare's own
+deploy of the same commit had finished. Read from outside at 10:35Z,
+`version` and `hostVersion` were both `4a7a5161e257`. The console's
+other two timers (the public address, the Android release) have each
+run from the new place and finished.
+
+**What else it settled.** `machineSettingsDiffer` on the Worker's health
+went from `["needsRepos"]` to empty: the laptop had been telling the
+list of repositories that its old code held, and main's console takes
+the platform's.
+
+**What stopped a deploy on the way.** The console's deploy for the
+change itself (`e87bfb92c726`) failed at its tests, on a test that had
+nothing to do with it: the repository's list of Workers had changed on
+main hours before (`1ea1346348`), a console test said how many Workers
+and reads to expect, and nothing had run the console's tests for that
+change. The test now takes what it expects from the list (#14290). The
+gap is #14297: the console's tests run only when the console deploys.
+The laptop took `e87bfb92c726`'s console regardless, since it follows
+main and not the Worker's deploy.
+
+**The same fault elsewhere.** The Services screen, looked at on the
+machine, listed `fleet-queue-backup-export.service` as failed: last
+night's export of the queue store did not run, because its unit points
+into a lane's worktree that has been removed (#14302). A service on the
+laptop running out of a directory someone works in is what #13833 was.
+
+## 2026-11-24T13:34:00Z Feature: the app's look is the owner's to choose
+
+**Asked for.** "Implement a wide variety of themes", "multiple full
+black OLED themes to choose from, high contrast, and settings to change
+the font, along with a dozen or more fonts", "to change the spacing
+around elements", and that "consistent UI elements are used throughout"
+and it is "straightforward to implement new pages".
+
+**What was built.** A screen, More → Appearance, with three parts:
+colours (33 themes: Slate and Paper as before, eight true black, three
+high contrast, thirteen dark, seven light), typeface (22: three of the
+device's own and nineteen the app carries, each under the SIL Open Font
+License), and size and spacing (seven text sizes, five amounts of room,
+four kinds of corner, movement on, off or as the device asks). The app
+follows the system between a theme for light and a theme for dark, each
+chosen, or wears one always.
+
+**How.** Each choice is one attribute on the root element. `look.js`
+(a plain script in the page's head, after the style sheets) reads the
+choices from the device and sets the attributes before anything is
+drawn; `themes.css` has a block of thirteen colours per theme, and
+`look.css` a rule per typeface and per step. Nothing writes a style, so
+the content policy is untouched. A theme block put on any element
+colours just that element, which is how the chooser shows every theme
+at once without a second copy of any colour.
+
+The style sheet was already drawn from thirteen colour variables. What
+it lacked was the same for everything else, so every padding, margin
+and gap now goes by `--space`, every corner by `--round`, every hairline
+by `--edge`, the text size by `--scale` and the typeface by `--font`;
+the one rule with colours of its own (the badge on a tab) takes the
+theme's. With every setting at its default the page is pixel for pixel
+what it was. Tests refuse a rule that writes its own colour, a bare
+pixel padding or a bare radius, which is what keeps one element looking
+like the next as screens are added.
+
+**Decisions.**
+
+- _Kept on the device, not with the account._ A phone with an OLED
+  screen and a monitor want different things, and the choice has to be
+  there before the first read of anything.
+- _Contrast is a rule, not a hope._ Every theme is held, by the WCAG
+  formula, to 7 to 1 for text and 4.5 to 1 for small print, the status
+  colours and the ink on each; the high-contrast ones to 15, 10 and 7,
+  with edges at 3 to 1. The well-known palettes are their makers'
+  colours with any that missed a rule moved toward white or black until
+  it met it. Paper's own edge colour measures 1.29 to 1 on the page; the
+  rule for an edge was set at 1.25 so that the look the app shipped with
+  is not changed by this.
+- _True black means `#000000`._ The page and the panels of a true-black
+  theme are exactly that; a card is told from the page by its edge.
+- _Typefaces are carried, and fetched only when used._ They are the
+  Latin files Fontsource publishes (npm), 19 families in 22 files, 870
+  kB in all, with each licence beside them. A browser fetches a file
+  only when something is set in it; the service worker keeps what was
+  fetched. Opening the typeface chooser shows each as itself, which
+  fetches them all once.
+- _One list of the app's files._ Adding the style sheets and typefaces
+  would have meant editing four lists (the laptop's service, the Worker,
+  its build, the service worker) that a test held together.
+  `public/files.json` is now the only one, read by all four; the service
+  worker reads it when installed and keeps what it marks as needed to
+  open. A new file for the app is one line.
+
+**Checked.** 594 tests. Thirty-four faults were planted one at a time
+(a faint colour, a near-black called black, day and night swapped, a
+choice not kept, a typeface missing from the list, the build shipping
+less, a bare padding, and so on) and each was caught. In the real
+Worker runtime the smoke run fetches all 31 files as the signed-in
+owner and compares each with the file on disk (56 checks pass). On the
+laptop, a copy of the branch was opened in Chromium at a phone's width
+and driven: the default look is unchanged; choosing Black with Inter
+gives a page whose background the browser reports as `rgb(0, 0, 0)`
+and a bar colour of `#000000`; all 22 typeface files load; pressing a
+theme, then "One theme", then another keeps and shows each.
+
+## 2026-11-24T14:26:00Z Feature: Trends, read and kept by Cloudflare; charts; pages as modules
+
+**Asked for.** "Build some analytics dashboard pages that show: trends
+over time, PRs merged, major feature items merged per project, and so
+on", and that it be "straightforward to implement new pages for both
+the website and the app".
+
+**What was built.** A Trends screen (More → Trends) over 7, 14, 30 or 90
+days: pull requests merged by kind, features merged by project with
+each project's latest features listed, issues opened against closed,
+bugs reported against fixed, the middle time from opened to merged, and
+tasks finished by kind; five leading numbers, each set against the same
+number of days before. A chart kit (`public/charts.js`) and the first
+page that is a module of its own (`public/pages/trends.js`).
+
+**Where the numbers come from.** Whoever serves the app reads them, by
+the same code on Cloudflare and on a machine (`src/trends.ts`); no
+machine is needed.
+
+- _Tasks_ are one read of the queue's finishing events grouped by day,
+  by the index the Done screen uses, each task once on the day it was
+  last finished.
+- _GitHub has no "merged per day" to ask for._ Search would answer it,
+  and is refused to some tokens and limited to thirty questions a
+  minute. The list of issues is not: asked for everything changed at or
+  after a time, oldest change first, it gives every issue and pull
+  request once, at its last change (checked on GitHub itself: an item
+  is in the answer to its own time). Read a page at a time, each page's
+  last change being where the next starts, that is everything touched
+  since, each seen at least once in its present state however they
+  change meanwhile. What a pull request is comes from its title
+  (`feat(scope): …`); the project from the scope.
+- _Newest first._ The first version read from ninety days back toward
+  now, which made the days anyone looks at the last to be whole. It is
+  read in stretches instead: the last day to the end of the list (that
+  reading then goes on for good, asking from where it stopped), then
+  three days back, a week, two weeks, a month, two months, ninety days,
+  each up to where the one after it began. The screen says from which
+  day on the counts are whole, and a total is set against the days
+  before only when those are whole too.
+- _Kept small, in the Worker's own storage_: per day, the numbers of
+  what was opened and closed, and for a merged pull request its kind,
+  project, minutes open and (a feature only) its words. A day is about
+  50 kB at this repository's rate.
+- _Not kept among the answers it asks for again._ The Worker remembers
+  GitHub's answers by address to ask "changed?" cheaply. An address
+  with a time in it is never asked twice, so those are not remembered:
+  they would push out the ones that are.
+- _The screen waits for GitHub only when the wait is short._ Looked at
+  on the laptop, a screen that read three pages on at every opening
+  made every opening slow for as long as the older stretches were
+  coming in. It waits now only for the first reading (until the last
+  day is in), for one look at what changed once the history is whole,
+  and when the owner presses refresh. In between it answers from what
+  is kept and says how far back that is whole; the rest is read behind
+  it, by Cloudflare's clock, or after the answer on a machine.
+- _It reads on only while somebody looks._ For a day after the screen
+  was last asked for, the object's own clock reads the history on (six
+  pages a minute until whole, then what changed, each half hour). After
+  that it does not wake for it, which keeps to the rule that an object
+  nobody needs is not kept awake; the tests that hold that rule pass
+  unchanged.
+
+**Measured on the laptop, reading the real repository** (the machine's
+own reader, through the fleet binary): after 44 asks of the screen
+(three pages each) in about eight and a half minutes, everything
+changed in the last two weeks had been read. A day of changes here is
+several thousand items, because sweeps touch old ones.
+With the history whole back to 11 November, the 23rd read as 526 pull
+requests merged: 151 features, 95 fixes, 71 docs, 29 tests, 180 other;
+the middle pull request of the week waited five minutes to merge.
+
+**Charts.** The kit's rules are written at the top of the file and held
+by its tests. Colour says which series a mark belongs to and nothing
+else: six colours in a fixed order (blue, orange, aqua, yellow, magenta,
+green), in a set stepped for dark themes and a set for light ones,
+chosen with a palette validator that measures whether neighbours can be
+told apart under each kind of colour vision. Run against the card
+colour of all 33 themes, nothing failed; on eleven (the light ones,
+Nord and Dracula) one or more colours has under 3 to 1 against the
+card, which the rule answers with what every chart has anyway: a legend
+with each series' total, every series read out for the day pointed at,
+and the numbers as a table. "Everything else" is always grey; the
+status colours are never used for a series. One scale to a chart;
+columns at most 24 wide with gaps and rounded tops; today drawn fainter
+because it is not over; arrow keys, a pointer or a finger choose a day.
+Nothing writes a style: marks take classes, the classes take the
+theme's variables.
+
+**Pages as modules.** `app.js` is one file of four thousand lines. A new
+screen can now be a file in `public/pages/` that exports its address,
+title, tile and `view`; the app gives it its route, its tile on More
+and its offline copy, and hands it the app's own parts. Adding one is
+the file, a line in `pages/index.js` and a line in `files.json`; a test
+checks the three agree. The element builder moved to `public/ui.js` so
+that pages and the app build with the same one.
+
+**Checked.** 636 tests. Sixty-five faults planted one at a time; the
+five that survived were closed (a one-word scope taken for a kind; an
+older stretch counting what was not its own, now held by which days it
+writes; a condition that could not be false, removed; the dot at the
+end of a tile's shape drawn half off its edge, which is how it first
+looked on the laptop; Cloudflare reading on behind an answer instead of
+by its clock). In the real
+Worker runtime (58 checks) the Worker reads the history from the
+stand-in GitHub, keeps it in its storage, and answers a second ask
+without asking again. In Chromium on the laptop, on the real
+repository's numbers, in a dark theme and a light one: the charts draw,
+the series take the theme's colours, and arrowing to a day reads it
+out.
+
+## 2026-11-24T14:46:00Z Feature: reports, made when asked for
+
+**Asked for.** "To request reports which generate and are accessible
+through the app."
+
+**What was built.** More → Reports: a day, a week or thirty days in
+sentences. What merged and how that stands against the time before, the
+features by project with the latest three of each to open, issues
+opened and closed and what that did to the backlog, bugs, the queue's
+finished tasks, and, in a report that ends today, the queue as it
+stands. Earlier and Later step a report back and forth by its own
+length as far as the history goes. Copy and Share give it as text.
+
+**Decisions.**
+
+- _Made from the history, not written and stored._ The history behind
+  Trends is kept by day, so a report for any stretch of it can be made
+  at any time; the read was given a day to end on, and a single day as
+  a window. That leaves nothing to store, nothing to go stale, and no
+  machine in it. The second page written as a module of its own, it is
+  one file, a line in the list of pages and a line in the list of
+  files.
+- _It says what it cannot vouch for._ A total is set against the days
+  before only when those are whole; a report over days not yet read
+  says from which day on its numbers are whole; one that ends today
+  says the day is not over.
+- _What it does not cover goes to Ask._ A question there is answered by
+  an agent, with what the answer rests on. A kind of ask that is "a
+  report" with its own listing on this screen is not built: it needs
+  the queue task filed, which is still a machine's (#13490).
+
+**Checked.** 639 tests; every sentence of a report is worked out by
+hand from a small history written out in the test. Fourteen faults
+planted, the one survivor closed (every feature listed instead of the
+latest three).

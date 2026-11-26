@@ -7,8 +7,8 @@
 
 ## 1. Problem and context
 
-The router needs to distinguish *what operation a model can perform* from
-*what data it can receive or produce*. Without both distinctions, a route can
+The router needs to distinguish _what operation a model can perform_ from
+_what data it can receive or produce_. Without both distinctions, a route can
 select a model that accepts the wrong request protocol or cannot consume the
 request's attachments. A typed decision endpoint is not a chat endpoint; an
 embedding model does not produce a chat completion; and an image-capable model
@@ -70,14 +70,14 @@ proposed runtime behavior exists today.
 
 ## 3. Alternatives considered
 
-| Option | Advantages | Costs / reason not chosen |
-| --- | --- | --- |
-| Do nothing; rely on comments and provider errors | No migration or router changes | Keeps wrong-family routes expressible; errors occur after dispatch, may leak attachments to an incompatible provider, and cannot provide predictable fallback. |
-| One boolean `kind` per model | Simple validation and UI | A single exclusive kind cannot express a model that supports both chat and decision, or providers exposing multiple API families. It also conflates operation with input/output data. |
-| Capability flags only (for example `vision: true`) | Small schema, familiar | Does not distinguish chat from embedding/rerank/decision; booleans do not express required combinations, direction, document parsing, or pool policy. |
-| Put all metadata on pools | Lets operators control routes locally | Duplicates model facts across pools, drifts as the same model is seated elsewhere, and cannot support catalog reconciliation. Keep pool declarations as *allow policy*, not the source of model facts. |
-| Put all metadata on providers | Captures endpoint families | A provider may serve models with different capabilities and model IDs may vary by endpoint/version. Provider endpoint support and model-specific capability claims must remain distinct. |
-| One shared model designation plus pool policy (chosen) | Extends existing `model_designations`; separates model facts, endpoint-family support, request requirements, and pool allow-lists; supports multi-purpose models | Needs a closed vocabulary, migration of unclassified routes, source reconciliation, and runtime enforcement across all route compositions. |
+| Option                                                 | Advantages                                                                                                                                                       | Costs / reason not chosen                                                                                                                                                                              |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Do nothing; rely on comments and provider errors       | No migration or router changes                                                                                                                                   | Keeps wrong-family routes expressible; errors occur after dispatch, may leak attachments to an incompatible provider, and cannot provide predictable fallback.                                         |
+| One boolean `kind` per model                           | Simple validation and UI                                                                                                                                         | A single exclusive kind cannot express a model that supports both chat and decision, or providers exposing multiple API families. It also conflates operation with input/output data.                  |
+| Capability flags only (for example `vision: true`)     | Small schema, familiar                                                                                                                                           | Does not distinguish chat from embedding/rerank/decision; booleans do not express required combinations, direction, document parsing, or pool policy.                                                  |
+| Put all metadata on pools                              | Lets operators control routes locally                                                                                                                            | Duplicates model facts across pools, drifts as the same model is seated elsewhere, and cannot support catalog reconciliation. Keep pool declarations as _allow policy_, not the source of model facts. |
+| Put all metadata on providers                          | Captures endpoint families                                                                                                                                       | A provider may serve models with different capabilities and model IDs may vary by endpoint/version. Provider endpoint support and model-specific capability claims must remain distinct.               |
+| One shared model designation plus pool policy (chosen) | Extends existing `model_designations`; separates model facts, endpoint-family support, request requirements, and pool allow-lists; supports multi-purpose models | Needs a closed vocabulary, migration of unclassified routes, source reconciliation, and runtime enforcement across all route compositions.                                                             |
 
 ## 4. Chosen approach and contracts
 
@@ -121,7 +121,7 @@ compatibility mapping and all consumers are tested.
   knob is forbidden. Compatibility façade translation remains one layer, as
   required by the issue's Cohere example.
 - **Pool policy:** a pool declares allowed purposes and an array of accepted
-  *sets* of input/output/transport requirements. Model facts flow upward when
+  _sets_ of input/output/transport requirements. Model facts flow upward when
   a pool has no policy. An explicit wrapper/pool policy narrows that branch;
   nested policies compose by intersection, never by widening a child. This
   preserves the supplement's `Luna text` wrapper example and prevents a

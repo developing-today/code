@@ -58,7 +58,6 @@ use serde_json::Value as Json;
 #[derive(Parser)]
 #[command(
     name = "atlas-search",
-    version,
     about = "atlas-search — the Atlas access layer: hybrid search over the corpus."
 )]
 struct Cli {
@@ -373,7 +372,7 @@ struct SearchArgs {
     /// YYYY-MM-DD, on sessions.created_at (inclusive)
     #[arg(long)]
     until: Option<String>,
-    /// ceiling in shareable<personal<local-only<secret-bearing (default personal; secret-bearing must be spelled out)
+    /// ceiling in shareable<personal<local-only<secret-bearing, or the canonical public<internal<private<sensitive (default personal; the top rung must be spelled out)
     #[arg(long, default_value = "personal")]
     max_sensitivity: String,
     /// disclosure context of the destination surface (#12404): fleet-internal (default; this CLI serves fleet surfaces), hosted-per-user, public-surface, or local-owner. The context ceiling intersects --max-sensitivity; neither widens the other, and excluded content is never served
@@ -448,6 +447,9 @@ struct SearchArgs {
     /// EXPERIMENTAL, off by default: serve the vector branch from the atlas core shard fan-out (dir:<path> or turso[:<org>]); FTS, details and --expand stay on the backend (issue #5755). Skips --via-service.
     #[arg(long, env = "ATLAS_SHARDS")]
     shards: Option<String>,
+    /// path to the catalog/source-registry database for occurrence attribution (#3125 slice 7): with --shards, occurrence rows resolve their source locators to registered roots (root_id). Requires --shards.
+    #[arg(long = "source-registry", env = "ATLAS_SOURCE_REGISTRY")]
+    source_registry: Option<PathBuf>,
     #[command(flatten)]
     backend: BackendArgs,
     #[command(flatten)]
@@ -764,7 +766,7 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
             since: args.since.clone(),
             until: args.until.clone(),
         },
-        ceiling: ProtoSensitivity::from_name(&args.max_sensitivity)
+        ceiling: ProtoSensitivity::from_ceiling_name(&args.max_sensitivity)
             .unwrap_or(ProtoSensitivity::Personal),
         k: u(args.k),
         pool: u(args.pool),
@@ -830,7 +832,7 @@ fn try_via_service_search(args: &SearchArgs) -> Result<Option<Json>, String> {
     if !via_requested(&args.backend) {
         return Ok(None);
     }
-    if ProtoSensitivity::from_name(&args.max_sensitivity).is_none() {
+    if ProtoSensitivity::from_ceiling_name(&args.max_sensitivity).is_none() {
         // Let the standalone path produce the Python's exact
         // validation fatal rather than silently clamping here.
         return Ok(None);
@@ -943,6 +945,13 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     // The disclosure context validates up front too (#12404),
     // so a bad value fails identically on every path.
     let context = parse_context(&args.context)?;
+    if args.source_registry.is_some() && args.shards.is_none() {
+        return Err((
+            2,
+            "--source-registry requires --shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        ));
+    }
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
     // honor it yet, so a via-service answer would silently come
@@ -975,7 +984,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             &args.vector.vec_table,
         )
         .map_err(map_err)?;
-        backend = Box::new(ShardedBackend::new(backend, set));
+        let mut sharded = ShardedBackend::new(backend, set);
+        if let Some(path) = args.source_registry.as_deref() {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            sharded = sharded.with_source_registry(conn);
+        }
+        backend = Box::new(sharded);
     }
     let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
     let opts = SearchOptions {
@@ -1099,11 +1113,15 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     if let Some(spec) = &settings.shards {
         let ceiling = serve_discovery_ceiling(&settings.clients);
         let set = open_from_spec(spec, ceiling, &settings.vec_table).map_err(map_err)?;
-        let backend = ShardedBackend::new(backend, set).with_refresh(
+        let mut backend = ShardedBackend::new(backend, set).with_refresh(
             spec.clone(),
             ceiling,
             settings.shard_refresh,
         );
+        if let Some(path) = &settings.source_registry {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            backend = backend.with_source_registry(conn);
+        }
         let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
             std::sync::Arc::new(backend),
             shared,
@@ -1398,6 +1416,16 @@ fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 fn main() -> ExitCode {
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-search {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let cli = <Cli as clap::Parser>::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

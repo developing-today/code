@@ -13,7 +13,8 @@
 //! `legs::http_ladder`: the SSH leg is excluded by construction, so
 //! this tier can never silently become the ssh tier.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +29,11 @@ use crate::forms::{ServeOutcome, T2, announce};
 const EXIT_TIMEOUT: i32 = 124;
 const EXIT_USAGE: i32 = 2;
 const DEFAULT_TIMEOUT_S: u64 = 300;
+/// The exec grace window (developing-today/code#15420, design #10356
+/// section 3.4): how long the daemon keeps a dropped `exec` running
+/// for `fleet http attach`. 0 is the immediate reap.
+const DEFAULT_GRACE_S: u64 = 60;
+const MAX_GRACE_S: u64 = 600;
 
 const USAGE: &str = "\
 Usage: fleet http <command> [args...]
@@ -40,13 +46,25 @@ Commands:
   health   Daemon reachability (GET /health through the ladder)
   jobs     List daemon jobs
   kill JOB Terminate a daemon job
-  exec [--cwd D] [--timeout S] [--shell] -- cmd...
+  exec [--cwd D] [--timeout S] [--grace S] [--shell] -- cmd...
            Run synchronously; the daemon's exit code propagates.
            --timeout is in seconds and always applies (default
-           300); a daemon-side timeout exits 124.
+           300); a daemon-side timeout exits 124. If the connection
+           drops, the command keeps running for --grace seconds
+           (0-600, default 60) and the error names the
+           `fleet http attach` command that picks it up; --grace 0
+           reaps it at once. The daemon has no stdin channel: exec
+           refuses piped or redirected stdin that carries data
+           (exit 2). Stage data with `fleet proxy put`, or use
+           `fleet ssh exec` for interactive input.
   run [--cwd D] [--shell] -- cmd...
            Submit as a background job; prints the job id
   poll JOB [--wait S]   Poll a job, optionally waiting
+  sessions [--json]     Daemon jobs as connect sessions: id, origin,
+                        state, start, spooled bytes, bytes dropped,
+                        owning context id (#15420)
+  attach JOB [--wait S] Stream a session's output from the saved
+                        cursor; a finished session is read to the end
   fetch REMOTE LOCAL    Fetch a file written by a job";
 
 fn build_ladder(config: &Config) -> Result<Arc<Ladder>, String> {
@@ -112,11 +130,35 @@ fn render_exec_reply(body: &Value) -> i32 {
         .unwrap_or(1)
 }
 
+/// The `/exec` request body. A grace of 0 sends no `grace_s`, so the
+/// request is byte-for-byte what it was before the grace window.
+fn exec_body(spec: Value, timeout_s: u64, grace_s: u64) -> Value {
+    let mut body = json!({ "cmds": [spec], "timeout_s": timeout_s });
+    if grace_s > 0 {
+        body["grace_s"] = json!(grace_s);
+    }
+    body
+}
+
+/// The error for an exec whose connection failed mid-flight. With a
+/// grace window the command is still running on the laptop under the
+/// trip id, so the message names the exact command that attaches.
+fn exec_failure(err: &str, trip: &str, grace_s: u64) -> String {
+    if grace_s == 0 {
+        return err.to_string();
+    }
+    format!(
+        "{err}\nhttp: the command keeps running on the laptop for {grace_s}s; \
+         attach with: fleet http attach {trip}"
+    )
+}
+
 fn serve_with_ladder(
     ladder: &Arc<Ladder>,
     cwd: Option<&str>,
     shell: bool,
     timeout_s: u64,
+    grace_s: u64,
     cmd: &[String],
 ) -> ServeOutcome {
     if let Err(m) = guard::check_job(cwd, cmd) {
@@ -130,22 +172,26 @@ fn serve_with_ladder(
     let spec = client::command_spec(cwd, shell, cmd);
     let trip = new_trip();
     let deadline = Duration::from_secs(timeout_s + fleet_laptop_agent::TRANSPORT_GRACE_S);
-    let body = json!({ "cmds": [spec], "timeout_s": timeout_s });
+    let body = exec_body(spec, timeout_s, grace_s);
     match client::call(ladder, &trip, "POST", "/exec", Some(body), false, deadline) {
         Ok(reply) => ServeOutcome::Served(render_exec_reply(&reply.body)),
         Err(client::CallFailure::Deadline) => {
             client::cancel(ladder, &trip);
             ServeOutcome::TimedOut
         }
+        Err(e @ client::CallFailure::Transport(_)) => {
+            ServeOutcome::Failed(exec_failure(&e.to_string(), &trip, grace_s))
+        }
         Err(e) => ServeOutcome::Failed(e.to_string()),
     }
 }
 
-/// Serve one exec through this tier. Used by the standalone verb
-/// and by tier 0.
+/// Serve one exec through this tier for tier 0. Tier 0 moves on to the
+/// next form when this one fails, so a dropped command must not keep
+/// running here: no grace window, the immediate reap.
 pub fn serve(config: &Config, cwd: Option<&str>, timeout_s: u64, cmd: &[String]) -> ServeOutcome {
     match build_ladder(config) {
-        Ok(ladder) => serve_with_ladder(&ladder, cwd, false, timeout_s, cmd),
+        Ok(ladder) => serve_with_ladder(&ladder, cwd, false, timeout_s, 0, cmd),
         Err(m) => ServeOutcome::Failed(m),
     }
 }
@@ -153,6 +199,7 @@ pub fn serve(config: &Config, cwd: Option<&str>, timeout_s: u64, cmd: &[String])
 struct ExecArgs {
     cwd: Option<String>,
     timeout_s: u64,
+    grace_s: u64,
     shell: bool,
     cmd: Vec<String>,
 }
@@ -160,6 +207,7 @@ struct ExecArgs {
 fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, String> {
     let mut cwd = None;
     let mut timeout_s = DEFAULT_TIMEOUT_S;
+    let mut grace_s = DEFAULT_GRACE_S;
     let mut shell = false;
     let mut i = 0;
     while i < args.len() {
@@ -172,6 +220,7 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
             return Ok(ExecArgs {
                 cwd,
                 timeout_s,
+                grace_s,
                 shell,
                 cmd,
             });
@@ -194,6 +243,14 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
             timeout_s = v
                 .parse()
                 .map_err(|_| "--timeout must be seconds".to_string())?;
+        } else if a == "--grace" && with_timeout {
+            i += 1;
+            grace_s = parse_grace(args.get(i).ok_or("--grace needs a value")?)?;
+        } else if let Some(v) = a.strip_prefix("--grace=") {
+            if !with_timeout {
+                return Err("--grace is not taken here".into());
+            }
+            grace_s = parse_grace(v)?;
         } else if a == "--shell" {
             shell = true;
         } else {
@@ -204,11 +261,118 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
     Err("missing -- before the command".into())
 }
 
+fn parse_grace(v: &str) -> Result<u64, String> {
+    v.parse::<u64>()
+        .ok()
+        .filter(|g| *g <= MAX_GRACE_S)
+        .ok_or_else(|| format!("--grace must be seconds 0-{MAX_GRACE_S}"))
+}
+
+/// What the caller's stdin holds, for the stdin contract of
+/// developing-today/code#10356 §4: the daemon has no stdin channel,
+/// so `exec` must refuse data rather than silently drop it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StdinKind {
+    /// A terminal: nothing is piped, and nothing is read from it.
+    Terminal,
+    /// Closed, `/dev/null`, an empty file, or a pipe with nothing
+    /// ready: nothing would be lost.
+    Empty,
+    /// A file or pipe that carries bytes the daemon would never see.
+    Data,
+}
+
+/// How long to wait for a pipe to show data before calling it empty.
+const STDIN_PROBE_MS: i32 = 50;
+
+/// Classify `fd` without consuming anything from it.
+fn classify_stdin_fd(fd: RawFd) -> StdinKind {
+    // SAFETY: isatty, fstat, poll and ioctl only inspect the fd.
+    if unsafe { libc::isatty(fd) } == 1 {
+        return StdinKind::Terminal;
+    }
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        // Closed or invalid: there is nothing to forward.
+        return StdinKind::Empty;
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFREG => {
+            // Bytes left from the current offset onward.
+            let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+            let pos = if pos < 0 { 0 } else { pos };
+            if st.st_size > pos {
+                StdinKind::Data
+            } else {
+                StdinKind::Empty
+            }
+        }
+        libc::S_IFIFO | libc::S_IFSOCK => {
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pfd, 1, STDIN_PROBE_MS) };
+            if ready <= 0 || pfd.revents & libc::POLLIN == 0 {
+                // Nothing within the probe window, or hung up empty.
+                return StdinKind::Empty;
+            }
+            let mut avail: libc::c_int = 0;
+            if unsafe { libc::ioctl(fd, libc::FIONREAD, &mut avail) } == 0 && avail > 0 {
+                StdinKind::Data
+            } else {
+                StdinKind::Empty
+            }
+        }
+        // Character devices (/dev/null) and anything else.
+        _ => StdinKind::Empty,
+    }
+}
+
+fn classify_stdin() -> StdinKind {
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return StdinKind::Terminal;
+    }
+    classify_stdin_fd(stdin.as_raw_fd())
+}
+
+/// The usage error `exec` prints when stdin carries data
+/// (developing-today/code#10356 §4).
+const STDIN_REFUSAL: &str = "\
+http: exec: stdin carries data, but the laptop-agent daemon has no stdin
+channel, so it would be dropped (developing-today/code#10356 section 4).
+Stage the data first, then read it from the laptop path:
+  fleet proxy put <local-file|-> <laptop-path>
+  fleet http exec -- sh -c 'cmd < <laptop-path>'
+For interactive input, use `fleet ssh exec` (tier T3).";
+
+/// `None` lets exec go ahead; `Some(message)` is the refusal.
+fn stdin_refusal(kind: StdinKind) -> Option<&'static str> {
+    match kind {
+        StdinKind::Data => Some(STDIN_REFUSAL),
+        StdinKind::Terminal | StdinKind::Empty => None,
+    }
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
     let verb = args.first().map(|s| s.as_str());
     if verb.is_none() || matches!(verb, Some("--help") | Some("-h")) {
         println!("{USAGE}");
         return if verb.is_none() { EXIT_USAGE } else { 0 };
+    }
+    if verb == Some("exec") {
+        // Usage errors (bad flags, data on stdin) win before the
+        // ladder is built, so nothing is sent and nothing is dialed.
+        if let Err(m) = parse_exec_args(&args[1..], true) {
+            eprintln!("http: exec: {m}\n{USAGE}");
+            return EXIT_USAGE;
+        }
+        if let Some(m) = stdin_refusal(classify_stdin()) {
+            eprintln!("{m}");
+            return EXIT_USAGE;
+        }
     }
     let ladder = match build_ladder(config) {
         Ok(l) => l,
@@ -241,6 +405,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
                 parsed.cwd.as_deref(),
                 parsed.shell,
                 parsed.timeout_s,
+                parsed.grace_s,
                 &parsed.cmd,
             ) {
                 ServeOutcome::Served(code) => code,
@@ -275,9 +440,17 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
                 client::command_spec(parsed.cwd.as_deref(), parsed.shell, &parsed.cmd),
             )
         }
-        "poll" => {
+        "sessions" => match args.get(1).map(String::as_str) {
+            None => client::sessions(&ladder, false),
+            Some("--json") => client::sessions(&ladder, true),
+            Some(other) => {
+                eprintln!("http: sessions: unexpected argument {other}\n{USAGE}");
+                EXIT_USAGE
+            }
+        },
+        "poll" | "attach" => {
             let Some(job) = args.get(1) else {
-                eprintln!("http: poll needs a job id\n{USAGE}");
+                eprintln!("http: {} needs a job id\n{USAGE}", args[0]);
                 return EXIT_USAGE;
             };
             let mut wait: u64 = 30;
@@ -304,5 +477,158 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             eprintln!("http: unknown command {other}\n{USAGE}");
             EXIT_USAGE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn exec_grace_defaults_to_60_and_takes_0_to_600_15420() {
+        let p = parse_exec_args(&strs(&["--", "true"]), true).unwrap();
+        assert_eq!(p.grace_s, 60);
+        for (args, want) in [
+            (&["--grace", "0", "--", "true"][..], 0),
+            (&["--grace=600", "--", "true"][..], 600),
+            (&["--grace", "5", "--timeout", "9", "--", "true"][..], 5),
+        ] {
+            let p = parse_exec_args(&strs(args), true).unwrap();
+            assert_eq!(p.grace_s, want, "{args:?}");
+        }
+        for bad in ["601", "-1", "x", ""] {
+            let e = parse_exec_args(&strs(&["--grace", bad, "--", "true"]), true)
+                .err()
+                .unwrap();
+            assert!(e.contains("--grace must be seconds 0-600"), "{bad}: {e}");
+        }
+        // run takes no grace: it is already a job.
+        assert!(parse_exec_args(&strs(&["--grace=5", "--", "true"]), false).is_err());
+    }
+
+    #[test]
+    fn exec_body_sends_grace_only_when_set_15420() {
+        let spec = json!({"argv": ["true"]});
+        let plain = exec_body(spec.clone(), 30, 0);
+        assert_eq!(
+            plain,
+            json!({"cmds": [{"argv": ["true"]}], "timeout_s": 30})
+        );
+        let graced = exec_body(spec, 30, 60);
+        assert_eq!(graced["grace_s"], 60);
+    }
+
+    #[test]
+    fn dropped_exec_names_the_attach_command_15420() {
+        let m = exec_failure("transport error: reset", "a1b2c3d4e5f6", 60);
+        assert!(m.starts_with("transport error: reset"), "{m}");
+        assert!(m.contains("keeps running on the laptop for 60s"), "{m}");
+        assert!(m.contains("fleet http attach a1b2c3d4e5f6"), "{m}");
+        assert_eq!(
+            exec_failure("transport error: reset", "t", 0),
+            "transport error: reset"
+        );
+    }
+
+    #[test]
+    fn usage_names_the_grace_flag_15420() {
+        assert!(USAGE.contains("--grace S"));
+        assert!(USAGE.contains("fleet http attach"));
+    }
+
+    fn pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: pipe() just returned two fresh fds we now own.
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    fn temp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "fleet-http-stdin-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    #[test]
+    fn http_exec_refuses_piped_stdin_naming_proxy_put() {
+        let m = stdin_refusal(StdinKind::Data).expect("data on stdin is refused");
+        assert!(m.contains("fleet proxy put"), "{m}");
+        assert!(m.contains("fleet ssh exec"), "{m}");
+        assert!(m.contains("10356"), "{m}");
+        assert_eq!(stdin_refusal(StdinKind::Terminal), None);
+        assert_eq!(stdin_refusal(StdinKind::Empty), None);
+    }
+
+    #[test]
+    fn usage_names_the_stdin_rule() {
+        assert!(USAGE.contains("stdin channel"));
+        assert!(USAGE.contains("fleet proxy put"));
+    }
+
+    #[test]
+    fn pipe_with_data_is_data() {
+        let (r, w) = pipe();
+        let n = unsafe { libc::write(w.as_raw_fd(), b"hello".as_ptr().cast(), 5) };
+        assert_eq!(n, 5);
+        assert_eq!(classify_stdin_fd(r.as_raw_fd()), StdinKind::Data);
+        // Classifying consumed nothing.
+        let mut avail: libc::c_int = 0;
+        assert_eq!(
+            unsafe { libc::ioctl(r.as_raw_fd(), libc::FIONREAD, &mut avail) },
+            0
+        );
+        assert_eq!(avail, 5);
+    }
+
+    #[test]
+    fn pipe_with_data_and_closed_writer_is_data() {
+        let (r, w) = pipe();
+        let n = unsafe { libc::write(w.as_raw_fd(), b"x".as_ptr().cast(), 1) };
+        assert_eq!(n, 1);
+        drop(w);
+        assert_eq!(classify_stdin_fd(r.as_raw_fd()), StdinKind::Data);
+    }
+
+    #[test]
+    fn empty_pipe_with_closed_writer_is_empty() {
+        let (r, w) = pipe();
+        drop(w);
+        assert_eq!(classify_stdin_fd(r.as_raw_fd()), StdinKind::Empty);
+    }
+
+    #[test]
+    fn empty_pipe_with_open_writer_is_empty() {
+        let (r, _w) = pipe();
+        assert_eq!(classify_stdin_fd(r.as_raw_fd()), StdinKind::Empty);
+    }
+
+    #[test]
+    fn regular_files_by_content() {
+        let full = temp_path("full");
+        std::fs::write(&full, b"data").unwrap();
+        let f = std::fs::File::open(&full).unwrap();
+        assert_eq!(classify_stdin_fd(f.as_raw_fd()), StdinKind::Data);
+        drop(f);
+        let _ = std::fs::remove_file(&full);
+
+        let empty = temp_path("empty");
+        std::fs::write(&empty, b"").unwrap();
+        let f = std::fs::File::open(&empty).unwrap();
+        assert_eq!(classify_stdin_fd(f.as_raw_fd()), StdinKind::Empty);
+        drop(f);
+        let _ = std::fs::remove_file(&empty);
+    }
+
+    #[test]
+    fn dev_null_is_empty() {
+        let f = std::fs::File::open("/dev/null").unwrap();
+        assert_eq!(classify_stdin_fd(f.as_raw_fd()), StdinKind::Empty);
     }
 }

@@ -642,7 +642,7 @@ pub(crate) fn collect_boundary_kinds(
 pub(crate) fn is_delimiter_wrapper(value: &NodeValue) -> bool {
     matches!(
         value,
-        NodeValue::Emph | NodeValue::Strong | NodeValue::Strikethrough
+        NodeValue::Emph(_) | NodeValue::Strong(_) | NodeValue::Strikethrough(_)
     )
 }
 
@@ -1247,7 +1247,7 @@ pub(crate) fn is_block_node(node: &AstNode<'_>) -> bool {
             | NodeValue::TaskItem(_)
             | NodeValue::CodeBlock(_)
             | NodeValue::HtmlBlock(_)
-            | NodeValue::ThematicBreak
+            | NodeValue::ThematicBreak(_)
             | NodeValue::FrontMatter(_)
             | NodeValue::Table(_)
             | NodeValue::FootnoteDefinition(_)

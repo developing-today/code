@@ -234,10 +234,13 @@ class TestLaunchStep(unittest.TestCase):
             argv = [str(part) for part in cmd]
             if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
                 return handback_fake(cmd, **kwargs)
-            if argv and argv[0] == "gh":
+            # The issue reads and notes go through the fleet gh sync
+            # verbs (code#10973): sync-labels is the step-4a2 held-label
+            # read (no labels), sync-comment posts a note.
+            if argv[1:3] == ["gh", "sync-labels"]:
+                return Result(0, "[]")
+            if argv[1:3] == ["gh", "sync-comment"]:
                 calls["gh"].append(argv)
-                if "view" in argv:
-                    return Result(0, "[]")
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
 
@@ -1775,6 +1778,8 @@ class TestSinkClaimDiagnostics(unittest.TestCase):
             (Result(13, "private"), "cli_nonzero"),
             (Result(0, "private"), "invalid_json"),
             (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"ignored":"private"}'), "cli_nonzero"),
             (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
         )
         for fixture, category in fixtures:
@@ -1806,6 +1811,131 @@ class TestSinkClaimDiagnostics(unittest.TestCase):
             )
         self.assertEqual(diagnostic["category"], "row_returned")
         self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
+
+
+class TestSinkByIdFallback(unittest.TestCase):
+    """#6533: a handed-off candidate the broker's handoff pick did not
+    return is revived by one by-id claim (the #8097 Rule 1 exception
+    tool), never under an inherited lane, and every failure names a
+    fixed category plus the action it calls for."""
+
+    PARKED = dict(CANDIDATE, id=888, status="handed_off", queue=claimant.QUEUES[0])
+
+    def run_fire(self, handoff_reply, by_id_reply):
+        binds = []
+        claims = []
+        envs = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "claim" in argv:
+                claims.append(argv)
+                envs.append(kwargs.get("env"))
+                return handoff_reply if "--handoff" in argv else by_id_reply
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.dict(os.environ, {"REPO_QUEUE_LANE": "code-g"}),
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(self.PARKED)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        return launched, skips, claims, envs, binds
+
+    def test_no_match_handoff_pick_falls_back_to_one_by_id_claim(self):
+        launched, skips, claims, envs, binds = self.run_fire(
+            Result(5, json.dumps({"task": None})),
+            Result(0, json.dumps({"id": 888, "status": "claimed"})),
+        )
+        self.assertEqual(skips, [])
+        self.assertEqual([entry["task_id"] for entry in launched], [888])
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(len(claims), 2)
+        by_id = claims[1]
+        self.assertEqual(by_id[by_id.index("--task") + 1], "888")
+        self.assertEqual(by_id[by_id.index("--worker") + 1], claimant.CLAIMANT_WORKER)
+        self.assertEqual(by_id[by_id.index("--platform") + 1], "openchamber")
+        self.assertNotIn("--lane", by_id)
+        self.assertIsNotNone(envs[1])
+        self.assertNotIn("REPO_QUEUE_LANE", envs[1])
+
+    def test_refused_fallback_is_a_distinct_actionable_skip(self):
+        launched, skips, claims, _envs, binds = self.run_fire(
+            Result(5, json.dumps({"task": None})),
+            Result(5, json.dumps({"task": None, "private": "not copied"})),
+        )
+        self.assertEqual(launched, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(len(claims), 2)
+        self.assertEqual(len(skips), 1)
+        skip = skips[0]
+        self.assertEqual(skip["reason"], "sink_claim_failed")
+        self.assertEqual(skip["sink_claim"]["category"], "no_match")
+        self.assertEqual(skip["by_id_fallback"]["category"], "no_match")
+        self.assertEqual(skip["action"], claimant.SINK_CLAIM_ACTIONS["no_match"])
+        self.assertNotIn("private", json.dumps(skip))
+
+    def test_fallback_that_returns_another_row_is_different_row(self):
+        launched, skips, _claims, _envs, binds = self.run_fire(
+            Result(5, json.dumps({"task": None})),
+            Result(0, json.dumps({"id": 999, "status": "claimed"})),
+        )
+        self.assertEqual(launched, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(skips[0]["by_id_fallback"]["category"], "different_row")
+        self.assertEqual(
+            skips[0]["action"], claimant.SINK_CLAIM_ACTIONS["different_row"]
+        )
+
+    def test_broker_failure_gets_no_fallback_and_names_the_check(self):
+        launched, skips, claims, _envs, binds = self.run_fire(
+            Result(13, "broker exploded"),
+            Result(0, json.dumps({"id": 888, "status": "claimed"})),
+        )
+        self.assertEqual(launched, [])
+        self.assertEqual(binds, [])
+        # A broken broker is not retried by id: one handoff claim only.
+        self.assertEqual(len(claims), 1)
+        self.assertNotIn("by_id_fallback", skips[0])
+        self.assertEqual(skips[0]["sink_claim"]["category"], "cli_nonzero")
+        self.assertEqual(skips[0]["action"], claimant.SINK_CLAIM_ACTIONS["cli_nonzero"])
+        self.assertNotIn("broker exploded", json.dumps(skips[0]))
+
+    def test_by_id_claim_unwraps_the_task_wrapper(self):
+        with patch.object(
+            claimant.subprocess,
+            "run",
+            return_value=Result(0, json.dumps({"task": {"id": 888}})),
+        ):
+            diagnostic = {}
+            row = claimant._claim_sink_by_id("q1", 888, diagnostic=diagnostic)
+        self.assertEqual(row, {"id": 888})
+        self.assertEqual(diagnostic["category"], "row_returned")
+
+    def test_inherited_lane_is_dropped_from_the_environment(self):
+        environ = {"REPO_QUEUE_LANE": "code-g", "HOME": "/home/x"}
+        self.assertEqual(claimant._drop_inherited_lane(environ), "code-g")
+        self.assertEqual(environ, {"HOME": "/home/x"})
+        self.assertIsNone(claimant._drop_inherited_lane(environ))
+        with patch.dict(os.environ, {"REPO_QUEUE_LANE": "code-g"}):
+            self.assertNotIn("REPO_QUEUE_LANE", claimant._queue_env())
+
+    def test_every_category_has_an_action(self):
+        for category in (
+            "no_match",
+            "different_row",
+            "cli_nonzero",
+            "invalid_json",
+            "missing_claim_row",
+            "timeout",
+            "spawn_error",
+            "unexpected_error",
+            "not_attempted",
+        ):
+            self.assertTrue(claimant.SINK_CLAIM_ACTIONS[category], category)
 
 
 if __name__ == "__main__":

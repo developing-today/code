@@ -220,12 +220,18 @@ impl Shortlist {
         true
     }
 
-    /// Hand out the soonest entry: lowest rank, then oldest.
+    /// Hand out the soonest entry: lowest rank, then oldest. An
+    /// entry handed out here within the window is never handed out
+    /// again, even when a stale row for it is still listed: a
+    /// priority reservation removes its row (see
+    /// [`Shortlist::reserve_from`]), but a row written before that,
+    /// or restored from an old file, must not resurrect the issue.
     pub fn take(&mut self, to: &str, now: u64) -> Option<Entry> {
         let index = self
             .entries
             .iter()
             .enumerate()
+            .filter(|(_, e)| !self.recently_handed(&e.repo, e.issue))
             .min_by_key(|(_, e)| (e.rank, e.added_at, e.issue))
             .map(|(i, _)| i)?;
         let entry = self.entries.remove(index);
@@ -236,6 +242,27 @@ impl Shortlist {
             at: now,
         });
         Some(entry)
+    }
+
+    /// Record a priority hand-out: the first of `found` not handed
+    /// out here within the window. The hand-out is total: any
+    /// shortlist row for the same repo/issue is removed in the same
+    /// step, so a later [`Shortlist::take`] cannot hand the issue
+    /// out a second time (#14651).
+    pub fn reserve_from(&mut self, to: &str, now: u64, found: &[Entry]) -> Option<Entry> {
+        let pick = found
+            .iter()
+            .find(|e| !self.recently_handed(&e.repo, e.issue))
+            .cloned()?;
+        self.entries
+            .retain(|e| !(e.repo == pick.repo && e.issue == pick.issue));
+        self.handed.push(Handed {
+            repo: pick.repo.clone(),
+            issue: pick.issue,
+            to: to.to_string(),
+            at: now,
+        });
+        Some(pick)
     }
 
     pub fn is_low(&self, low_water: u64) -> bool {
@@ -390,21 +417,7 @@ pub fn update<T>(path: &Path, now: u64, change: impl FnOnce(&mut Shortlist) -> T
 /// outside the lock would let two runs at the same moment both pick
 /// the same issue.
 pub fn reserve(path: &Path, now: u64, to: &str, found: &[Entry]) -> R<Option<Entry>> {
-    update(path, now, |list| {
-        let pick = found
-            .iter()
-            .find(|e| !list.recently_handed(&e.repo, e.issue))
-            .cloned();
-        if let Some(entry) = &pick {
-            list.handed.push(Handed {
-                repo: entry.repo.clone(),
-                issue: entry.issue,
-                to: to.to_string(),
-                at: now,
-            });
-        }
-        pick
-    })
+    update(path, now, |list| list.reserve_from(to, now, found))
 }
 
 // ---- the verbs ----

@@ -55,18 +55,35 @@ export interface R2BucketLike {
   delete(key: string): Promise<void>;
 }
 
-/** The #2283 jurisdiction seam for blob storage: the bucket binding
- * is chosen per jurisdiction HERE, in the routing module, never
- * inline at a call site. Today every supported jurisdiction resolves
- * to the package's single local binding (BLOBS); per-jurisdiction
- * production buckets plug in at this one point when the #3403
- * provisioning gate lands. A missing binding fails closed. */
-export function blobsBindingFor(env: { BLOBS?: R2BucketLike }, jurisdiction: Jurisdiction): R2BucketLike {
-  void jurisdiction;
-  if (!env.BLOBS) {
-    throw new FailClosed(503, "blobs_unavailable", "no blob bucket binding is configured; failing closed");
+/** One immutable R2 bucket per supported jurisdiction (#3401;
+ * design doc/2026-11-01_jurisdiction_aware_user_store_design.md §5–6).
+ * The binding is chosen strictly from the authoritative jurisdiction
+ * HERE, in the routing module, never inline at a call site. Unknown or
+ * missing binding is a fail-closed error; there is no fallback and no
+ * cross-jurisdiction sharing: dedup and GC stay within each bucket. */
+export interface BlobsEnv {
+  BLOBS_US?: R2BucketLike;
+  BLOBS_EU?: R2BucketLike;
+  BLOBS_FEDRAMP?: R2BucketLike;
+}
+
+const BLOBS_BINDING_FOR_JURISDICTION = {
+  us: "BLOBS_US",
+  eu: "BLOBS_EU",
+  fedramp: "BLOBS_FEDRAMP",
+} as const;
+
+export function blobsBindingFor(env: BlobsEnv, jurisdiction: Jurisdiction): R2BucketLike {
+  const binding = BLOBS_BINDING_FOR_JURISDICTION[jurisdiction];
+  const bucket = env[binding];
+  if (!bucket) {
+    throw new FailClosed(
+      503,
+      "blobs_unavailable",
+      `no blob bucket binding ${binding} is configured for jurisdiction ${jurisdiction}; failing closed`,
+    );
   }
-  return env.BLOBS;
+  return bucket;
 }
 
 export interface ObjectNamespaceLike {
