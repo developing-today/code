@@ -5,6 +5,7 @@
 import { join, dirname } from "node:path";
 import { requireHome } from "./home.ts";
 import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
+import { needsUserStatePath } from "./needs-user-state-path.ts";
 
 // A default may be a thunk, so a HOME-derived default is resolved only when its
 // setting is not given (#8220): an explicit override never needs HOME.
@@ -322,7 +323,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_NOTIFICATIONS_FILE,
       fromHome("PM_AGG_NOTIFICATIONS_FILE", ...AGG_STATE, "notifications.jsonl"),
     ),
-    needsDrewFile: s(env.PM_AGG_NEEDS_DREW_FILE, fromHome("PM_AGG_NEEDS_DREW_FILE", ...AGG_STATE, "needs-drew.json")),
+    needsDrewFile: needsUserStatePath(env, fromHome("PM_AGG_NEEDS_USER_FILE", ...AGG_STATE)),
     decisionsFile: s(env.PM_AGG_DECISIONS_FILE, fromHome("PM_AGG_DECISIONS_FILE", ...AGG_STATE, "decisions.json")),
     decisionsEventsFile: s(
       env.PM_AGG_DECISION_EVENTS_FILE,
