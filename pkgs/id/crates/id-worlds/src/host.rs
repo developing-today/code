@@ -373,6 +373,7 @@ impl HostFile {
             .with_context(|| format!("unknown world {name:?}"))?;
         let prior = record.state;
         check_transition(name, prior, to)?;
+        check_automation(name, record, to, actor)?;
         record.state = to;
         record.history.push(StateChange {
             at_secs,
@@ -591,8 +592,109 @@ pub const IDLE_CLOSE: &str = "idle";
 /// a served data root.
 pub const ADMIN_CREATE: &str = "admin-create";
 
+/// One transition the host makes on its own, with no operator act
+/// (#13748, hosted worlds v2 Q4).
+///
+/// F1 of the v1 design: zero clients never
+/// archives or deletes a world, so automation may only move a world
+/// between asleep and live, and only on these terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomatedTransition {
+    /// The actor the host file records for it.
+    pub actor: &'static str,
+    /// The state it leaves.
+    pub from: LifecycleState,
+    /// The state it enters.
+    pub to: LifecycleState,
+    /// What the world's record must say for it to be allowed.
+    pub condition: &'static str,
+}
+
+/// The automation allow-list (#13748): every transition the host makes
+/// without an operator.
+///
+/// Anything else recorded under one of these actors
+/// is refused, and no operator act may be recorded under them, so a
+/// world's history always tells automation and operators apart. Archive,
+/// restore and delete stay operator acts; [`ADMIN_CREATE`] records a new
+/// world as it is created and is never a transition of a known one.
+pub const AUTOMATED_TRANSITIONS: [AutomatedTransition; 2] = [
+    AutomatedTransition {
+        actor: WAKE_ON_CONNECT,
+        from: LifecycleState::Asleep,
+        to: LifecycleState::Live,
+        condition: "wake mode is connect",
+    },
+    AutomatedTransition {
+        actor: IDLE_CLOSE,
+        from: LifecycleState::Live,
+        to: LifecycleState::Asleep,
+        condition: "the world is not pinned",
+    },
+];
+
+/// Whether `actor` is one the host records for itself rather than for
+/// an operator.
+#[must_use]
+pub fn is_automated_actor(actor: &str) -> bool {
+    actor == ADMIN_CREATE || AUTOMATED_TRANSITIONS.iter().any(|t| t.actor == actor)
+}
+
+/// Refuse an operator act recorded under a name the host keeps for its
+/// own automated transitions (#13748).
+///
+/// # Errors
+///
+/// Fails when `actor` is one of [`AUTOMATED_TRANSITIONS`]' actors or
+/// [`ADMIN_CREATE`].
+pub fn check_operator_actor(actor: &str) -> Result<()> {
+    if is_automated_actor(actor) {
+        bail!("{actor:?} is recorded only by the host itself, not for an operator act");
+    }
+    Ok(())
+}
+
+/// Check one transition against the automation allow-list: an operator
+/// act passes, an automated one must be on [`AUTOMATED_TRANSITIONS`] with
+/// its condition met by `record`.
+fn check_automation(
+    name: &str,
+    record: &WorldRecord,
+    to: LifecycleState,
+    actor: &str,
+) -> Result<()> {
+    if !is_automated_actor(actor) {
+        return Ok(());
+    }
+    let from = record.state;
+    let Some(allowed) = AUTOMATED_TRANSITIONS
+        .iter()
+        .find(|t| t.actor == actor && t.from == from && t.to == to)
+    else {
+        bail!(
+            "automation ({actor}) may not move world {name:?} from {from} to {to}: \
+             an operator must"
+        );
+    };
+    let met = match allowed.actor {
+        WAKE_ON_CONNECT => record.wake == WakeMode::Connect,
+        IDLE_CLOSE => !record.pinned,
+        _ => false,
+    };
+    if !met {
+        bail!(
+            "automation ({actor}) may not move world {name:?} from {from} to {to}: \
+             only when {}",
+            allowed.condition
+        );
+    }
+    Ok(())
+}
+
 /// The host file of a data root, shared by a serving process that opens
-/// worlds on demand (#10693 serve-attach). A client naming an asleep
+/// worlds on demand (#10693 serve-attach).
+///
+/// A client naming an asleep
 /// world wakes it ([`HostLifecycle::admit_wake`]); the hub closing an
 /// idle world records it asleep again ([`HostLifecycle::record_closed`]).
 /// Archived and unknown worlds are refused: waking never restores an
@@ -844,6 +946,7 @@ impl HostLifecycle {
         to: LifecycleState,
         actor: &str,
     ) -> Result<()> {
+        check_operator_actor(actor)?;
         let mut file = self.lock();
         match file.worlds.get(name).map(|record| record.state) {
             None => bail!("no world {name:?} in this data root"),
@@ -891,14 +994,20 @@ impl HostLifecycle {
     }
 
     /// The hub closed `name` (idle, or to make room): record it asleep by
-    /// [`IDLE_CLOSE`]. A world not recorded live is left as it is.
+    /// [`IDLE_CLOSE`]. A world not recorded live is left as it is, and so
+    /// is a pinned one: a pin keeps a world live across closes and
+    /// restarts, and automation never sleeps it (#13748).
     ///
     /// # Errors
     ///
     /// Fails when the save fails; nothing is recorded then.
     pub fn record_closed(&self, name: &str) -> Result<()> {
         let mut file = self.lock();
-        if file.worlds.get(name).map(|record| record.state) != Some(LifecycleState::Live) {
+        if !file
+            .worlds
+            .get(name)
+            .is_some_and(|record| record.state == LifecycleState::Live && !record.pinned)
+        {
             return Ok(());
         }
         self.record(&mut file, name, LifecycleState::Asleep, IDLE_CLOSE)
@@ -1373,6 +1482,7 @@ impl Supervisor {
     /// Fails for archived worlds (restore first), live worlds, unknown
     /// names, and replay failures (the world stays asleep).
     pub async fn start(&mut self, name: &str, actor: &str) -> Result<OpenReport> {
+        check_operator_actor(actor)?;
         let at_secs = now_secs();
         self.file
             .transition(name, LifecycleState::Live, actor, at_secs)?;
@@ -1399,6 +1509,7 @@ impl Supervisor {
     ///
     /// Fails for worlds that are not live or not held.
     pub async fn stop(&mut self, name: &str, actor: &str) -> Result<()> {
+        check_operator_actor(actor)?;
         let held = self
             .live
             .remove(name)
@@ -1417,6 +1528,7 @@ impl Supervisor {
     /// Archive an asleep world. Live worlds must be stopped first;
     /// archived worlds refuse to start until restored.
     pub fn archive(&mut self, name: &str, actor: &str) -> Result<()> {
+        check_operator_actor(actor)?;
         self.file
             .transition(name, LifecycleState::Archived, actor, now_secs())?;
         self.file.save(&self.root)?;
@@ -1425,6 +1537,7 @@ impl Supervisor {
 
     /// Restore an archived world to asleep (operator act, recorded).
     pub fn restore(&mut self, name: &str, actor: &str) -> Result<()> {
+        check_operator_actor(actor)?;
         self.file
             .transition(name, LifecycleState::Asleep, actor, now_secs())?;
         self.file.save(&self.root)?;
@@ -2160,10 +2273,145 @@ mod tests {
         // writes the last good file back.
         std::fs::write(HostFile::path_for(root.path()), b"not json").unwrap();
         assert!(host.pinned("w"));
-        host.record_closed("w").unwrap();
+        host.set_wake("w", WakeMode::Operator).unwrap();
         let saved = HostFile::load(root.path()).unwrap();
         assert!(saved.worlds["w"].pinned);
-        assert_eq!(saved.worlds["w"].state, LifecycleState::Asleep);
+        assert_eq!(saved.worlds["w"].wake, WakeMode::Operator);
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Live);
+    }
+
+    #[test]
+    fn automation_moves_worlds_only_as_its_allow_list_says() {
+        // Oracle (#13748, F1): every (actor, from, to, pin, wake mode)
+        // an automated actor could record is refused unless it is on
+        // AUTOMATED_TRANSITIONS with its condition met. Nothing automated
+        // ever archives or restores.
+        let automated = [WAKE_ON_CONNECT, IDLE_CLOSE, ADMIN_CREATE];
+        let mut allowed = Vec::new();
+        for actor in automated {
+            for from in LifecycleState::ALL {
+                for to in LifecycleState::ALL {
+                    for pinned in [false, true] {
+                        for wake in [WakeMode::Connect, WakeMode::Operator] {
+                            let mut file = HostFile::empty(Path::new("/nowhere"));
+                            file.worlds.insert(
+                                "w".to_owned(),
+                                WorldRecord {
+                                    state: from,
+                                    pinned,
+                                    wake,
+                                    ..WorldRecord::default()
+                                },
+                            );
+                            if file.transition("w", to, actor, 1).is_ok() {
+                                allowed.push((actor, from, to, pinned, wake));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            allowed,
+            [
+                (
+                    WAKE_ON_CONNECT,
+                    LifecycleState::Asleep,
+                    LifecycleState::Live,
+                    false,
+                    WakeMode::Connect
+                ),
+                (
+                    WAKE_ON_CONNECT,
+                    LifecycleState::Asleep,
+                    LifecycleState::Live,
+                    true,
+                    WakeMode::Connect
+                ),
+                (
+                    IDLE_CLOSE,
+                    LifecycleState::Live,
+                    LifecycleState::Asleep,
+                    false,
+                    WakeMode::Connect
+                ),
+                (
+                    IDLE_CLOSE,
+                    LifecycleState::Live,
+                    LifecycleState::Asleep,
+                    false,
+                    WakeMode::Operator
+                ),
+            ]
+        );
+        assert!(
+            AUTOMATED_TRANSITIONS
+                .iter()
+                .all(|t| t.to != LifecycleState::Archived && t.from != LifecycleState::Archived)
+        );
+        let refused = {
+            let mut file = HostFile::empty(Path::new("/nowhere"));
+            file.worlds.insert("w".to_owned(), WorldRecord::default());
+            file.transition("w", LifecycleState::Archived, IDLE_CLOSE, 1)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(refused.contains("an operator must"), "{refused}");
+    }
+
+    #[test]
+    fn operator_acts_may_not_borrow_an_automated_actor() {
+        let root = data_root_with(&["w"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        for actor in [WAKE_ON_CONNECT, IDLE_CLOSE, ADMIN_CREATE] {
+            assert!(is_automated_actor(actor));
+            let refused = host
+                .operator_transition("w", LifecycleState::Asleep, LifecycleState::Archived, actor)
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("host itself"), "{refused}");
+        }
+        assert!(!is_automated_actor(actor()));
+        assert_eq!(host.state("w"), Some(LifecycleState::Asleep));
+        assert_eq!(
+            HostFile::load(root.path()).unwrap().worlds["w"].history,
+            Vec::<StateChange>::new()
+        );
+        host.operator_transition(
+            "w",
+            LifecycleState::Asleep,
+            LifecycleState::Archived,
+            actor(),
+        )
+        .unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Archived));
+    }
+
+    #[test]
+    fn idle_close_never_sleeps_a_pinned_world() {
+        // Oracle (#13748): auto-sleep honours operator pins. A pinned
+        // world the hub closes stays recorded live, so a restart reopens
+        // it; unpinned, the same close records it asleep.
+        let root = data_root_with(&["w"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        host.set_pinned("w", true).unwrap();
+        assert_eq!(host.admit_wake("w").unwrap(), Admission::Woken);
+        host.record_closed("w").unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Live));
+        let saved = HostFile::load(root.path()).unwrap();
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Live);
+        assert_eq!(saved.worlds["w"].history.len(), 1);
+
+        host.set_pinned("w", false).unwrap();
+        host.record_closed("w").unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Asleep));
+        let saved = HostFile::load(root.path()).unwrap();
+        let actors: Vec<&str> = saved.worlds["w"]
+            .history
+            .iter()
+            .map(|c| c.actor.as_str())
+            .collect();
+        assert_eq!(actors, [WAKE_ON_CONNECT, IDLE_CLOSE]);
     }
 
     #[test]
