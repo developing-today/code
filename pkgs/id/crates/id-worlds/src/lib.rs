@@ -16,7 +16,8 @@
 //!   instances behind [`world_functions`].
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
-//!   the replaying supervisor over one data root.
+//!   the replaying supervisor over one data root; [`host_opener`] puts
+//!   its admission rule around a hub's storage opener.
 //! - [`creator_announcements`]: scheduled creator announcements — the
 //!   durable local schedule and its evaluator, which fires late after
 //!   downtime and records the lateness (#13743).
@@ -76,6 +77,7 @@ pub mod guest_burn;
 pub mod host;
 #[cfg(unix)]
 pub mod host_control;
+pub mod host_opener;
 pub mod input_framing;
 pub mod kitty_graphics;
 pub mod kitty_still;
