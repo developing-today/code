@@ -38,7 +38,7 @@
 # Usage:
 #   check-fork-schedule-stall.sh --runs-json FILE [--now ISO8601] [--min-silent-days N]
 #   check-fork-schedule-stall.sh --help
-# Exit: 0 = classified (verdict line always present); 1 = usage/read/parse error.
+# Exit: 0 = classified (verdict line always present); 2 = usage error; 1 = read/parse error.
 set -euo pipefail
 
 usage() {
@@ -48,30 +48,47 @@ usage() {
 RUNS_JSON=""
 NOW=""
 MIN_SILENT_DAYS="2"
+SEEN_RUNS_JSON=0
+SEEN_NOW=0
+SEEN_MIN_SILENT_DAYS=0
+
+usage_error() {
+  echo "check-fork-schedule-stall: $1" >&2
+  echo "usage: check-fork-schedule-stall.sh --runs-json FILE [--now ISO8601] [--min-silent-days N]" >&2
+  exit 2
+}
+
+require_option_value() {
+  local option="$1" value="${2-}"
+  if [ -z "$value" ] || [[ "$value" == --* ]]; then
+    usage_error "$option needs a value"
+  fi
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
   --runs-json)
-    [ "$#" -ge 2 ] || { echo "check-fork-schedule-stall: --runs-json needs a value" >&2; exit 1; }
-    RUNS_JSON="$2"; shift 2 ;;
+    [ "$SEEN_RUNS_JSON" -eq 0 ] || usage_error "--runs-json may only be specified once"
+    require_option_value --runs-json "${2-}"
+    SEEN_RUNS_JSON=1; RUNS_JSON="$2"; shift 2 ;;
   --now)
-    [ "$#" -ge 2 ] || { echo "check-fork-schedule-stall: --now needs a value" >&2; exit 1; }
-    NOW="$2"; shift 2 ;;
+    [ "$SEEN_NOW" -eq 0 ] || usage_error "--now may only be specified once"
+    require_option_value --now "${2-}"
+    SEEN_NOW=1; NOW="$2"; shift 2 ;;
   --min-silent-days)
-    [ "$#" -ge 2 ] || { echo "check-fork-schedule-stall: --min-silent-days needs a value" >&2; exit 1; }
-    MIN_SILENT_DAYS="$2"; shift 2 ;;
+    [ "$SEEN_MIN_SILENT_DAYS" -eq 0 ] || usage_error "--min-silent-days may only be specified once"
+    require_option_value --min-silent-days "${2-}"
+    SEEN_MIN_SILENT_DAYS=1; MIN_SILENT_DAYS="$2"; shift 2 ;;
   --help | -h) usage; exit 0 ;;
   *)
-    echo "check-fork-schedule-stall: unexpected argument '$1'" >&2
-    echo "usage: check-fork-schedule-stall.sh --runs-json FILE [--now ISO8601] [--min-silent-days N]" >&2
-    exit 1 ;;
+    usage_error "unexpected argument '$1'" ;;
   esac
 done
 
-[ -n "$RUNS_JSON" ] || { echo "check-fork-schedule-stall: --runs-json is required" >&2; exit 1; }
+[ -n "$RUNS_JSON" ] || usage_error "--runs-json is required"
 [ -r "$RUNS_JSON" ] || { echo "check-fork-schedule-stall: cannot read $RUNS_JSON" >&2; exit 1; }
 case "$MIN_SILENT_DAYS" in
-'' | *[!0-9]*) echo "check-fork-schedule-stall: --min-silent-days must be a non-negative integer" >&2; exit 1 ;;
+'' | *[!0-9]*) usage_error "--min-silent-days must be a non-negative integer" ;;
 esac
 
 exec python3 - "$RUNS_JSON" "$NOW" "$MIN_SILENT_DAYS" <<'PYEOF'
@@ -81,7 +98,16 @@ from datetime import datetime, timezone
 path, now_arg, min_days_arg = sys.argv[1], sys.argv[2], int(sys.argv[3])
 
 def parse_ts(s):
-    return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+try:
+    now = parse_ts(now_arg) if now_arg else datetime.now(timezone.utc)
+except Exception as exc:
+    print(f"check-fork-schedule-stall: invalid --now value: {exc}", file=sys.stderr)
+    sys.exit(2)
 
 try:
     with open(path, encoding="utf-8") as fh:
@@ -95,8 +121,6 @@ if not isinstance(runs, list):
     print("check-fork-schedule-stall: expected an object with .workflow_runs or a bare array",
           file=sys.stderr)
     sys.exit(1)
-
-now = parse_ts(now_arg) if now_arg else datetime.now(timezone.utc)
 
 sched = [r for r in runs if isinstance(r, dict) and r.get("event") == "schedule"
          and r.get("created_at")]

@@ -101,22 +101,34 @@ json.dump(runs, open(sys.argv[2], "w"))
 PYEOF
 expect_verdict "$TMP/bare.json" "$NOW" "repo-wide-cron-silence"
 
-# Strict contract: unknown flags and missing input are usage errors.
-if bash "$CHECK" --bogus-flag 2>/dev/null; then
-  echo "FAIL usage: unknown flag accepted"; fail_count=$((fail_count + 1))
-else
-  echo "pass usage-unknown-flag"
-fi
-if bash "$CHECK" --runs-json "$TMP/missing.json" 2>/dev/null; then
-  echo "FAIL usage: missing file accepted"; fail_count=$((fail_count + 1))
-else
-  echo "pass usage-missing-file"
-fi
-if bash "$CHECK" 2>/dev/null; then
-  echo "FAIL usage: missing --runs-json accepted"; fail_count=$((fail_count + 1))
-else
-  echo "pass usage-missing-arg"
-fi
+# Strict contract: usage errors have exit 2, and a present-but-empty
+# option or a following flag cannot silently become a value/default.
+expect_exit() {
+  local name="$1" want_rc="$2"
+  shift 2
+  local rc
+  if bash "$CHECK" "$@" >"$TMP/$name.out" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -ne "$want_rc" ]; then
+    echo "FAIL $name: expected exit $want_rc, got $rc"
+    cat "$TMP/$name.out"
+    fail_count=$((fail_count + 1))
+  else
+    echo "pass $name"
+  fi
+}
+
+expect_exit usage-unknown-flag 2 --bogus-flag
+expect_exit usage-missing-argument 2
+expect_exit usage-missing-runs-json-value 2 --runs-json
+expect_exit usage-next-option-is-not-value 2 --runs-json --now "$NOW"
+expect_exit usage-empty-now 2 --runs-json "$TMP/stall.json" --now ""
+expect_exit usage-invalid-now 2 --runs-json "$TMP/stall.json" --now not-a-timestamp
+expect_exit usage-duplicate-option 2 --runs-json "$TMP/stall.json" --runs-json "$TMP/idle.json"
+expect_exit input-missing-file 1 --runs-json "$TMP/missing.json"
 
 if [ "$fail_count" -ne 0 ]; then
   echo "$fail_count failure(s)" >&2
