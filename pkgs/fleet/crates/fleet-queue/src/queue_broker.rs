@@ -13,7 +13,9 @@
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
 //!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800,
 //!      or unix://<path> for the secrets broker's socket, #6218),
-//!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
+//!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
+//!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
+//!      read-only hosted-door probe at POST /door-health).
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -68,12 +70,7 @@ impl HostedQueueDoor {
                 if !url.starts_with("https://") || url.len() <= "https://".len() {
                     return Err("QUEUE_BROKER_DOOR_URL must be an HTTPS origin".into());
                 }
-                let token = std::fs::read_to_string(&token_file)
-                    .map_err(|e| format!("cannot read QUEUE_BROKER_DOOR_TOKEN_FILE: {e}"))?;
-                let token = token.trim().to_string();
-                if token.is_empty() {
-                    return Err("QUEUE_BROKER_DOOR_TOKEN_FILE contains an empty token".into());
-                }
+                let token = crate::token_file::load_token_file(&token_file)?;
                 Ok(Some(Self {
                     base_url: url.to_string(),
                     token,
