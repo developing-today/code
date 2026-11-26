@@ -743,10 +743,19 @@ mod tests {
             txt_records(&dns, &world, "_idg").unwrap(),
             vec![b"one".to_vec(), long]
         );
-        assert!(txt_records(&dns, &world, RECORD_LABEL).unwrap().is_empty());
-        assert!(announcement_records(&dns, &world).unwrap().is_empty());
+        assert_eq!(
+            txt_records(&dns, &world, RECORD_LABEL).unwrap(),
+            [] as [Vec<u8>; 0]
+        );
+        assert_eq!(
+            announcement_records(&dns, &world).unwrap(),
+            [] as [Vec<u8>; 0]
+        );
         let other = world_key(&SigningKey::from_bytes(&[10; 32]));
-        assert!(txt_records(&dns, &other, "_idg").unwrap().is_empty());
+        assert_eq!(
+            txt_records(&dns, &other, "_idg").unwrap(),
+            [] as [Vec<u8>; 0]
+        );
     }
 
     #[test]

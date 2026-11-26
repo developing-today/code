@@ -96,7 +96,7 @@ fn orders_by_priority_then_list_position() {
         NOW,
     );
     assert_eq!(p.order, names(&["b", "a", "d", "c"]));
-    assert!(p.skipped.is_empty());
+    assert_eq!(p.skipped, [] as [(PeerId, SkipReason); 0]);
     assert_eq!(p.request_id, rid());
 }
 
@@ -278,7 +278,7 @@ fn all_negatives_still_name_each_peer_and_stop_as_exhausted() {
     assert!(o.results.is_empty());
     assert_eq!(o.absent_at, names(&["a"]));
     assert_eq!(o.failed_at, names(&["b"]));
-    assert!(o.not_asked.is_empty());
+    assert_eq!(o.not_asked, [] as [String; 0]);
     assert_eq!(o.pending, None);
 }
 
@@ -332,7 +332,7 @@ fn deadline_stops_and_marks_the_peer_in_flight_failed() {
     assert_eq!(o.pending, None);
     assert_eq!(o.not_asked, names(&["b"]));
     assert!(o.results.is_empty());
-    assert!(o.absent_at.is_empty());
+    assert_eq!(o.absent_at, [] as [String; 0]);
 }
 
 #[test]

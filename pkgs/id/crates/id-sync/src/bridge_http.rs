@@ -867,7 +867,7 @@ mod tests {
     async fn heads_on_an_empty_store() {
         let mut mirror = MirrorDo::new(1);
         let heads = client(1).heads(&mut mirror).await.unwrap();
-        assert!(heads.is_empty());
+        assert_eq!(heads, [] as [Head; 0]);
         assert_eq!(
             mirror.seen,
             ["GET /v1/bridge/challenge", "GET /v1/bridge/heads"]
@@ -953,7 +953,7 @@ mod tests {
         // A caller already at the head pulls nothing.
         let positions: Vec<PullPosition> = heads.iter().map(PullPosition::from).collect();
         let caught_up = client.pull(&mut mirror, &positions, None).await.unwrap();
-        assert!(caught_up.events.is_empty());
+        assert_eq!(caught_up.events, [] as [Vec<u8>; 0]);
         assert!(!caught_up.more);
     }
 
@@ -1067,6 +1067,6 @@ mod tests {
         let err = client(1).push(&mut mirror, &[oversize]).await.unwrap_err();
         assert!(format!("{err}").contains("over the"));
         // Not even the challenge was fetched: the bound is local.
-        assert!(mirror.seen.is_empty());
+        assert_eq!(mirror.seen, [] as [String; 0]);
     }
 }
