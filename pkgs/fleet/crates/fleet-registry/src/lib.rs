@@ -517,11 +517,11 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "host",
-        summary: "Host resolution and selection over the #13717 forms (#14716): resolve a host name via the machine registry into (transport offer × invocation form) candidates and select through the fleet-pool primitive; `fleet host laptop` resolves the amd record.",
+        summary: "Resolve a host name through the machine registry and select a transport offer × invocation form with fleet-pool (#14716); `fleet host laptop` resolves the amd record.",
         capabilities: &[Capability::Laptop],
         primary: Capability::Laptop,
         aliases: &[],
-        subcommands: &["resolve"],
+        subcommands: &[],
     },
     Domain {
         name: "actions",

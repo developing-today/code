@@ -168,9 +168,9 @@ commander = ["dep:fleet-secrets", "dep:ureq"]
 http = ["dep:fleet-laptop-agent"]
 ssh = []
 laptop = ["commander", "http", "ssh", "dep:fleet-pool"]
-# The host domain (#14716): registry-driven host resolution and
-# selection through fleet-pool. Full only (a working-seat client).
-host = ["dep:fleet-pool"]
+# The host domain (#14716) is a working-seat client on the laptop
+# capability; include its compiled capability and the pool primitive.
+host = ["laptop"]
 # The actions domain (#13774): live exec sessions inside Actions
 # runners — seat verbs over the queue client, the runner-side
 # agent, and the R2 egress helper (SigV4 over sha2). Full only.
