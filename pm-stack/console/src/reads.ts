@@ -37,6 +37,16 @@ export async function platformRead(
         return ops.releases();
       case "platform":
         return ops.platform();
+      // The Cloudflare configuration's last successful apply (#13495):
+      // the apply workflow's runs are GitHub's record, so this is
+      // answered wherever the app is served from, like the rest here.
+      case "cloudflare-apply":
+        return ops.cloudflareApply();
+      // The stores, asked live (#14254). Where a store's token
+      // cannot be fetched (the edge holds none by name), that store
+      // answers as not answering; the others still show.
+      case "stores":
+        return ops.platformStores();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":
@@ -72,6 +82,11 @@ export async function platformRead(
       // never a hash or a value.
       case "enroll-tokens":
         return ops.enrollTokens();
+      // The wake hooks (#14544), for the Agents screen's hook card.
+      // Same bridge story again — the list is a read; setting and
+      // removing are actions (actions.ts), never reads.
+      case "wake-hooks":
+        return ops.wakeHooks();
       case "trends":
         return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }

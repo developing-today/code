@@ -10,6 +10,8 @@
 //! random source. This byte ABI is deliberately separate from Roc's internal
 //! ABI; a versioned Roc platform adapter must compile to this boundary.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result, ensure};
 use wasmtime::{
     Config, Engine, Instance, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
@@ -128,6 +130,74 @@ impl CallMetrics {
     }
 }
 
+/// How many compiled guest modules [`compiled_module`] keeps. Unit
+/// tests compile many modules on parallel threads; they keep more so
+/// that one test's second compile is not evicted by its neighbours.
+const COMPILED_MODULES_KEPT: usize = if cfg!(test) { 256 } else { 4 };
+
+/// Recently compiled guest modules, keyed by the BLAKE3 hash of their
+/// bytes, newest last (#13941). One dev-loop edit used to compile the
+/// same candidate three times (the compiler's output validation, the
+/// fixture gate and the candidate launch), and a Wasm compile is the
+/// costliest step of each. Only the compiled code is shared: every
+/// [`Sandbox::compile`] still applies its own limits and export
+/// policy, and every instance gets its own store, fuel and memory.
+static COMPILED_MODULES: std::sync::Mutex<Vec<([u8; 32], Engine, Module)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The engine every guest module is compiled under. This config is
+/// identical on every call (the limits are applied per store at
+/// instantiation), which is what makes both module caches sound:
+/// codegen is a pure function of the module bytes under this fixed
+/// config (see [`MODULE_CACHE_SALT`]).
+fn sandbox_engine() -> Result<Engine> {
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    config.max_wasm_stack(512 * 1024);
+    config.wasm_multi_memory(false);
+    config.wasm_memory64(false);
+    Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))
+}
+
+/// The compiled module for `wasm` under [`sandbox_engine`]. With
+/// `keep`, a module kept from an earlier compile of the same bytes in
+/// this process is returned as is, and a new one is kept; otherwise,
+/// and on a miss, it comes from [`load_or_compile_module`]. A failed
+/// compile is not kept.
+fn compiled_module(wasm: &[u8], cache_dir: Option<&Path>, keep: bool) -> Result<(Engine, Module)> {
+    if !keep {
+        let engine = sandbox_engine()?;
+        let module = load_or_compile_module(&engine, wasm, cache_dir)?;
+        return Ok((engine, module));
+    }
+    let key = *blake3::hash(wasm).as_bytes();
+    // A poisoned lock only means another compile panicked while it
+    // held the list; the entries in it are still whole.
+    {
+        let mut kept = COMPILED_MODULES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = kept.iter().position(|(hash, ..)| *hash == key) {
+            let entry = kept.remove(index);
+            let found = (entry.1.clone(), entry.2.clone());
+            kept.push(entry);
+            return Ok(found);
+        }
+    }
+    let engine = sandbox_engine()?;
+    let module = load_or_compile_module(&engine, wasm, cache_dir)?;
+    let mut kept = COMPILED_MODULES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kept.iter().any(|(hash, ..)| *hash == key) {
+        if kept.len() >= COMPILED_MODULES_KEPT {
+            kept.remove(0);
+        }
+        kept.push((key, engine.clone(), module.clone()));
+    }
+    Ok((engine, module))
+}
+
 /// Validated, compiled, import-free Wasm module.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
@@ -136,9 +206,205 @@ pub struct Sandbox {
     limits: SandboxLimits,
 }
 
+/// Environment variable naming the guest-module compilation cache
+/// directory. Unset (or empty): a per-machine directory under the OS
+/// temp dir. `off`: the cache is disabled. Any other value: that
+/// directory — hosts that want the cache to survive reboots point it
+/// at a durable per-machine directory.
+const MODULE_CACHE_ENV: &str = "ID_WORLDS_MODULE_CACHE_DIR";
+
+/// Salt in every cache file name. It stands for the `Config` built in
+/// [`Sandbox::compile_with_cache`] (fuel on, 512 KiB max stack, no
+/// multi-memory, no memory64): any change to that config must bump
+/// this value. The wasmtime version needs no representation here —
+/// [`Module::deserialize`] refuses bytes precompiled for an
+/// incompatible engine or wasmtime version, and such an entry is
+/// simply recompiled.
+const MODULE_CACHE_SALT: &str = "cfg1";
+
+/// Total size bound for the cache directory. When a new entry would
+/// push the directory past the bound, oldest entries are evicted
+/// until it fits. Best-effort: eviction failure never fails a write,
+/// and a write failure never fails a compile.
+const MODULE_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The compilation cache directory for [`Sandbox::compile`], or
+/// `None` when the cache is disabled (see [`MODULE_CACHE_ENV`]).
+fn module_cache_dir() -> Option<PathBuf> {
+    match std::env::var_os(MODULE_CACHE_ENV) {
+        None => Some(std::env::temp_dir().join("id-worlds-module-cache")),
+        Some(value) => {
+            if value.is_empty() {
+                Some(std::env::temp_dir().join("id-worlds-module-cache"))
+            } else if value == "off" {
+                None
+            } else {
+                Some(PathBuf::from(value))
+            }
+        }
+    }
+}
+
+/// Cache file name for `wasm`: the salt plus the hex SHA-256 of the
+/// module bytes. Compilation under [`Sandbox::compile_with_cache`]'s
+/// fixed config is a pure function of the bytes, so the digest is
+/// the whole key.
+fn module_cache_key(wasm: &[u8]) -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+    let digest = sha2::Sha256::digest(wasm);
+    let mut key = String::with_capacity(MODULE_CACHE_SALT.len() + 1 + digest.len() * 2 + 6);
+    key.push_str(MODULE_CACHE_SALT);
+    key.push('-');
+    for byte in digest {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key.push_str(".cwasm");
+    key
+}
+
+/// Load a precompiled module from the cache entry at `path`, or
+/// `None` on any doubt: unreadable file, truncated or corrupt
+/// contents (the stored SHA-256 of the payload must match), or
+/// bytes [`Module::deserialize`] rejects as incompatible with
+/// `engine`. `None` always means "compile fresh", never an error.
+#[allow(unsafe_code)]
+fn load_cached_module(engine: &Engine, path: &Path) -> Option<Module> {
+    use sha2::Digest as _;
+    let raw = std::fs::read(path).ok()?;
+    let (checksum, payload) = raw.split_at_checked(32)?;
+    if sha2::Sha256::digest(payload).as_slice() != checksum {
+        return None;
+    }
+    // Safety: the payload comes from our own cache directory and is
+    // integrity-checked against the checksum stored with it above,
+    // so it is bytes this process (or a sibling on the same machine)
+    // wrote from `Engine::precompile_module`. `deserialize` itself
+    // validates that the bytes are a precompiled module compatible
+    // with this engine and wasmtime version and errors otherwise;
+    // any error is treated as a cache miss by the caller.
+    unsafe { Module::deserialize(engine, payload) }.ok()
+}
+
+/// Best-effort write of `payload`, the precompiled form of a module,
+/// to the cache entry at `path`, framed as the SHA-256 of the payload
+/// followed by the payload. Every failure is ignored: the cache is an
+/// optimisation, and a compile that succeeded must not fail because
+/// its cache write did.
+fn store_cached_module(payload: &[u8], path: &Path) {
+    use sha2::Digest as _;
+    let mut framed = Vec::with_capacity(32 + payload.len());
+    framed.extend_from_slice(&sha2::Sha256::digest(payload));
+    framed.extend_from_slice(payload);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    evict_cache_to_fit(dir, framed.len() as u64);
+    // Write beside the entry and rename over it, so a concurrent
+    // reader never sees a partial file.
+    let staging = dir.join(format!(".staging-{}", std::process::id()));
+    if std::fs::write(&staging, &framed).is_ok() && std::fs::rename(&staging, path).is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+}
+
+/// Remove oldest cache entries in `dir` until a new entry of
+/// `incoming` bytes fits under [`MODULE_CACHE_MAX_BYTES`].
+/// Best-effort throughout.
+fn evict_cache_to_fit(dir: &Path, incoming: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "cwasm") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        total += metadata.len();
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        files.push((modified, metadata.len(), path));
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, len, path) in files {
+        if total + incoming <= MODULE_CACHE_MAX_BYTES {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+/// Obtain the compiled module for `wasm`: a cache hit when
+/// `cache_dir` names an entry that loads, otherwise a fresh compile
+/// whose precompiled form is then cached best-effort. The fresh
+/// compile runs once: with a cache, the module is loaded from the
+/// very bytes that are cached, rather than compiled a second time to
+/// produce them (#13941).
+#[allow(unsafe_code)]
+fn load_or_compile_module(
+    engine: &Engine,
+    wasm: &[u8],
+    cache_dir: Option<&Path>,
+) -> Result<Module> {
+    fn compile_error(e: impl std::fmt::Display) -> anyhow::Error {
+        anyhow::anyhow!("compile Wasm module: {e}")
+    }
+    let Some(entry) = cache_dir.map(|dir| dir.join(module_cache_key(wasm))) else {
+        return Module::new(engine, wasm).map_err(compile_error);
+    };
+    if let Some(module) = load_cached_module(engine, &entry) {
+        return Ok(module);
+    }
+    let payload = engine.precompile_module(wasm).map_err(compile_error)?;
+    // Safety: `payload` was produced just above by
+    // `Engine::precompile_module` on this same engine and has not left
+    // this process's memory, so it is exactly the precompiled form
+    // `deserialize` expects.
+    let module = unsafe { Module::deserialize(engine, &payload) }.map_err(compile_error)?;
+    store_cached_module(&payload, &entry);
+    Ok(module)
+}
+
 impl Sandbox {
     /// Compile and validate a guest module against the no-import policy.
     pub fn compile(wasm: &[u8], limits: SandboxLimits) -> Result<Self> {
+        Self::compile_kept(wasm, limits, module_cache_dir().as_deref(), true)
+    }
+
+    /// [`Sandbox::compile`] over an explicit compilation cache
+    /// directory (`None` disables the cache). The seam exists for
+    /// tests, which must not share cache state through the
+    /// process-wide environment or temp dir.
+    #[cfg(test)]
+    fn compile_with_cache(
+        wasm: &[u8],
+        limits: SandboxLimits,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::compile_kept(wasm, limits, cache_dir, false)
+    }
+
+    /// The body of [`Sandbox::compile`]. `keep` puts the compiled
+    /// module in the in-process list [`compiled_module`] serves from;
+    /// the test-only `compile_with_cache` leaves it out so that its tests
+    /// see the on-disk cache alone.
+    fn compile_kept(
+        wasm: &[u8],
+        limits: SandboxLimits,
+        cache_dir: Option<&Path>,
+        keep: bool,
+    ) -> Result<Self> {
         ensure!(
             wasm.len() <= limits.module_bytes,
             "guest module exceeds {} bytes",
@@ -154,15 +420,9 @@ impl Sandbox {
             "sandbox message limit must be nonzero"
         );
 
-        let mut config = Config::new();
-        config.consume_fuel(true);
-        config.max_wasm_stack(512 * 1024);
-        config.wasm_multi_memory(false);
-        config.wasm_memory64(false);
-        let engine =
-            Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))?;
-        let module =
-            Module::new(&engine, wasm).map_err(|e| anyhow::anyhow!("compile Wasm module: {e}"))?;
+        // A kept or cached module is the identical compiled code; the
+        // ABI validation below runs on it exactly as on a fresh compile.
+        let (engine, module) = compiled_module(wasm, cache_dir, keep)?;
         let imports: Vec<_> = module
             .imports()
             .map(|i| format!("{}::{}", i.module(), i.name()))
@@ -355,6 +615,9 @@ impl Sandbox {
             seed,
             limits: self.limits,
             metrics,
+            fuel_rate: None,
+            #[cfg(test)]
+            fuel_now: None,
             trap_fuel: None,
             burn_budget: crate::guest_burn::GuestBurnBudget::shared(),
             charge_key: next_guest_charge_key(),
@@ -390,6 +653,19 @@ pub struct WorldInstance {
     seed: u64,
     limits: SandboxLimits,
     metrics: CallMetrics,
+    /// The owning account's fuel-rate budget (#1067, F12.10), when the
+    /// host installed one for this world. Every [`Self::update`]
+    /// admission charges it the invocation's fuel allowance; `None` —
+    /// every host that has not wired account quotas yet — leaves
+    /// invocation admission exactly as it was before F12.10.
+    fuel_rate: Option<id_caps::account_quota::FuelRateBudget>,
+    /// Test-only admission clock (#1067): when set,
+    /// [`Self::charge_fuel_rate`] charges at this instant instead of
+    /// `Instant::now()`, so admission tests can pin the budget's
+    /// window — or step it by hand — instead of racing the wall
+    /// clock. `None` everywhere except tests that set it.
+    #[cfg(test)]
+    fuel_now: Option<std::time::Instant>,
     /// Fuel a trapped call had spent, captured before the diagnostic getters
     /// refill the store; taken by [`Self::settle`].
     trap_fuel: Option<u64>,
@@ -467,6 +743,55 @@ impl WorldInstance {
     /// In-memory only: never journaled, sent on the wire, or snapshotted.
     pub const fn metrics(&self) -> &CallMetrics {
         &self.metrics
+    }
+
+    /// Install the owning account's fuel-rate budget (#1067, F12.10).
+    ///
+    /// From the next [`Self::update`] on, every invocation admission
+    /// charges this budget the invocation's fuel allowance, and an
+    /// account at its rate has its updates refused until the budget's
+    /// window rolls. Installing replaces any budget already installed;
+    /// the replaced budget's accounting is discarded with it. Hosts
+    /// that never call this leave the instance uncharged, exactly as
+    /// before F12.10.
+    pub fn set_fuel_rate_budget(&mut self, budget: id_caps::account_quota::FuelRateBudget) {
+        self.fuel_rate = Some(budget);
+    }
+
+    /// The installed fuel-rate budget, if any (#1067). For reporting:
+    /// its counters say what the account was charged at admission,
+    /// which is deliberately not the metered consumption in
+    /// [`Self::metrics`].
+    pub const fn fuel_rate_budget(&self) -> Option<&id_caps::account_quota::FuelRateBudget> {
+        self.fuel_rate.as_ref()
+    }
+
+    /// Charge this invocation's fuel allowance against the owning
+    /// account's rate budget (#1067), when one is installed.
+    ///
+    /// Admission control, priced at the allowance: the store is about
+    /// to be handed `limits.fuel`, so that is what the account is
+    /// charged — before the guest runs, so a refusal means the
+    /// invocation never happens and nothing is metered. A refusal is
+    /// recoverable: it does not poison the instance, and the same
+    /// call can succeed once the budget's window rolls.
+    ///
+    /// # Errors
+    ///
+    /// The budget's
+    /// [`FuelRateRefusal`](id_caps::account_quota::FuelRateRefusal)
+    /// when the account is at its rate for the current window.
+    fn charge_fuel_rate(&mut self) -> Result<()> {
+        if let Some(budget) = &mut self.fuel_rate {
+            // Tests pin `fuel_now` (#1067); production always reads
+            // the wall clock.
+            #[cfg(test)]
+            let now = self.fuel_now.unwrap_or_else(std::time::Instant::now);
+            #[cfg(not(test))]
+            let now = std::time::Instant::now();
+            budget.try_charge(now, self.limits.fuel)?;
+        }
+        Ok(())
     }
 
     /// Name the key this guest's burns are charged to (the world id,
@@ -621,13 +946,18 @@ impl WorldInstance {
     }
 
     /// Apply one event from `participant`. The model pointer is committed
-    /// only if guest update succeeds.
+    /// only if guest update succeeds. When the owning account has a
+    /// fuel-rate budget installed (#1067), admission charges it and a
+    /// refusal runs nothing — but only after the message-size check:
+    /// an oversized event never runs, so it must not consume the
+    /// account's execution budget.
     pub fn update(&mut self, participant: u64, event: &[u8]) -> Result<()> {
         ensure!(
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
         self.check_message_size(event)?;
+        self.charge_fuel_rate()?;
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
@@ -994,6 +1324,14 @@ impl WorldInstance {
     fn snapshot_via_trait(&mut self) -> Option<String> {
         crate::world::WorldProgram::snapshot(self).unwrap()
     }
+
+    /// Pin the admission clock (#1067): [`Self::charge_fuel_rate`]
+    /// charges at `now` until this is called again, so a test can
+    /// hold the budget's window still — or step it past a rollover —
+    /// without sleeping or racing the wall clock.
+    pub fn set_fuel_now_for_test(&mut self, now: std::time::Instant) {
+        self.fuel_now = Some(now);
+    }
 }
 
 impl crate::world::WorldProgram for WorldInstance {
@@ -1125,6 +1463,45 @@ mod tests {
     fn compile(wat: &str, limits: SandboxLimits) -> Result<Sandbox> {
         let wasm = wat::parse_str(wat)?;
         Sandbox::compile(&wasm, limits)
+    }
+
+    #[test]
+    fn compiling_the_same_bytes_again_shares_the_code_not_the_limits() {
+        // #13941: a dev-loop edit compiled one candidate three times.
+        // The second compile of the same bytes reuses the compiled
+        // code, but keeps the limits it was given and still yields
+        // instances that share nothing.
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let first = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let tight = SandboxLimits {
+            fuel: 1_000,
+            ..SandboxLimits::default()
+        };
+        let second = Sandbox::compile(&wasm, tight).unwrap();
+        assert!(Module::same(&first.module, &second.module));
+        assert_eq!(second.limits.fuel, 1_000);
+        assert_eq!(first.limits.fuel, SandboxLimits::default().fuel);
+        let mut a = first.instantiate(1).unwrap();
+        let mut b = second.instantiate(1).unwrap();
+        assert_eq!(a.view().unwrap(), b"hello");
+        assert_eq!(b.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_kept_module_still_answers_to_the_export_policy() {
+        // The compiled code is kept even when the export policy then
+        // refuses it; the next compile of the same bytes must be
+        // refused the same way, not served past the check.
+        let wasm =
+            wat::parse_str(r#"(module (memory (export "memory") 1 1) (func (export "rogue")))"#)
+                .unwrap();
+        for _ in 0..2 {
+            let refused = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap_err();
+            assert!(
+                refused.to_string().contains("not in the ABI allowlist"),
+                "{refused:#}"
+            );
+        }
     }
 
     #[test]
@@ -1388,6 +1765,219 @@ mod tests {
         assert_eq!(world.view().unwrap(), b"hello");
         world.update(1, b"event").unwrap();
         assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn an_account_at_its_fuel_rate_refuses_the_next_update() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        // One invocation's allowance exactly fills the account's window.
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        world.update(1, b"event").unwrap();
+        let refusal = world
+            .update(1, b"event")
+            .unwrap_err()
+            .downcast::<id_caps::account_quota::FuelRateRefusal>()
+            .unwrap();
+        assert_eq!(refusal.limit_per_second, limits.fuel);
+        assert_eq!(refusal.charged_in_window, limits.fuel);
+        assert_eq!(refusal.requested_fuel, limits.fuel);
+        // The refused invocation never ran: only one update is metered.
+        assert_eq!(world.metrics().get(GuestCall::Update).calls, 1);
+        // A refusal is recoverable, not poisoning: reads still serve.
+        assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_fuel_rate_budget_accounts_each_admitted_allowance() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel * 3));
+        for _ in 0..3 {
+            world.update(1, b"event").unwrap();
+        }
+        assert!(world.update(1, b"event").is_err());
+        let budget = world.fuel_rate_budget().unwrap();
+        assert_eq!(budget.total_charged(), limits.fuel * 3);
+        assert_eq!(budget.charged_in_window(), limits.fuel * 3);
+        assert_eq!(budget.refusal_count(), 1);
+    }
+
+    #[test]
+    fn an_oversized_event_does_not_consume_the_fuel_budget() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let oversized = vec![b'e'; limits.message_bytes + 1];
+        assert!(world.update(1, &oversized).is_err());
+        // The rejected non-invocation charged nothing: the next
+        // valid event still fits the window.
+        world.update(1, b"event").unwrap();
+        let budget = world.fuel_rate_budget().unwrap();
+        assert_eq!(budget.total_charged(), limits.fuel);
+        assert_eq!(budget.refusal_count(), 0);
+    }
+
+    /// Property coverage for the admission accounting invariants
+    /// (Codex review on #12557): generated allowance, quota, event
+    /// size, and admission/refusal sequences, checked against an
+    /// explicit accounting oracle — bounded charges, and refused
+    /// calls that neither execute nor alter invocation metrics nor
+    /// poison the instance. The examples above stay as smoke
+    /// coverage.
+    mod admission_property {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The oracle: what the ledger and the invocation metrics
+        /// must say after each event. The admission clock is pinned
+        /// for the whole case (see below), so no window rolls
+        /// mid-case and the window charge is just the sum of
+        /// admitted allowances; the case then steps the clock by
+        /// hand to cover a rollover deterministically.
+        #[derive(Debug, Default)]
+        struct Oracle {
+            charged: u64,
+            refusals: u64,
+            calls: u64,
+        }
+
+        proptest! {
+            #[test]
+            fn admission_accounting_matches_its_oracle(
+                (fuel, budget_limit) in (10_000u64..=100_000u64)
+                    .prop_flat_map(|fuel| (Just(fuel), 0..=fuel * 5)),
+                ops in prop::collection::vec(
+                    prop_oneof![
+                        8 => 0..=1024usize,
+                        // Past the 1 MiB message ceiling: rejected
+                        // before admission, so it must charge nothing.
+                        2 => (1024 * 1024 + 1usize)..=(1024 * 1024 + 512usize),
+                    ],
+                    0..=32,
+                ),
+            ) {
+                let limits = SandboxLimits {
+                    fuel,
+                    ..SandboxLimits::default()
+                };
+                // Every case runs the identical ECHO module; only the
+                // fuel limit differs. Compiling it per case cost ~28 ms
+                // of the ~30 ms a case spent before its first update
+                // (#15142), so compile once per process and give each
+                // case a runner over the shared engine/module with its
+                // own limits. Validation is unchanged: it runs once, on
+                // the same bytes, at the first case.
+                static ECHO_RUNNER: std::sync::OnceLock<Sandbox> =
+                    std::sync::OnceLock::new();
+                let base = ECHO_RUNNER
+                    .get_or_init(|| compile(ECHO, SandboxLimits::default()).unwrap());
+                let runner = Sandbox {
+                    engine: base.engine.clone(),
+                    module: base.module.clone(),
+                    limits,
+                };
+                let mut world = runner.instantiate(123).unwrap();
+                world.set_fuel_rate_budget(
+                    id_caps::account_quota::FuelRateBudget::new(budget_limit),
+                );
+                // Pin the admission clock (#1067): the budget's
+                // window can only roll when this case steps it, never
+                // because the test process was descheduled mid-case.
+                let fuel_now = std::time::Instant::now();
+                world.set_fuel_now_for_test(fuel_now);
+                let mut oracle = Oracle::default();
+                for len in ops {
+                    let event = vec![b'e'; len];
+                    let result = world.update(1, &event);
+                    if len > limits.message_bytes {
+                        // Oversized: rejected before admission, so
+                        // neither the budget nor the metrics move.
+                        prop_assert!(result.is_err());
+                        prop_assert!(
+                            result
+                                .unwrap_err()
+                                .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+                                .is_none(),
+                            "an oversized event is a size rejection, not a fuel refusal"
+                        );
+                    } else if oracle
+                        .charged
+                        .checked_add(fuel)
+                        .is_none_or(|total| total > budget_limit)
+                    {
+                        // Refused whole at admission: the guest
+                        // never ran, so nothing is metered.
+                        let refusal = result
+                            .unwrap_err()
+                            .downcast::<id_caps::account_quota::FuelRateRefusal>()
+                            .unwrap();
+                        prop_assert_eq!(refusal.charged_in_window, oracle.charged);
+                        prop_assert_eq!(refusal.requested_fuel, fuel);
+                        oracle.refusals += 1;
+                    } else {
+                        prop_assert!(result.is_ok());
+                        oracle.charged += fuel;
+                        oracle.calls += 1;
+                    }
+                    // Bounded charges, exact refusal accounting, and
+                    // metrics that count admitted invocations only —
+                    // after every operation.
+                    let budget = world.fuel_rate_budget().unwrap();
+                    prop_assert_eq!(budget.total_charged(), oracle.charged);
+                    prop_assert_eq!(budget.charged_in_window(), oracle.charged);
+                    prop_assert_eq!(budget.refusal_count(), oracle.refusals);
+                    prop_assert_eq!(world.metrics().get(GuestCall::Update).calls, oracle.calls);
+                    // A refusal never poisons the instance: reads
+                    // still serve. (The view's bytes are not pinned
+                    // here: the echo fixture's allocator returns 0,
+                    // so an event longer than 32 bytes overwrites
+                    // its "hello" data — that is the fixture, not
+                    // poisoning.)
+                    prop_assert!(world.view().is_ok());
+                }
+                // Step the pinned clock past the window (#1067): the
+                // ledger restarts from zero, so an allowance that
+                // fits the limit is admitted fresh, and one larger
+                // than the limit is still refused — now with an
+                // empty window behind it.
+                world.set_fuel_now_for_test(fuel_now + std::time::Duration::from_secs(2));
+                let rolled = world.update(1, &[]);
+                if fuel <= budget_limit {
+                    prop_assert!(rolled.is_ok());
+                    prop_assert_eq!(
+                        world.fuel_rate_budget().unwrap().charged_in_window(),
+                        fuel
+                    );
+                } else {
+                    prop_assert!(rolled.is_err());
+                    prop_assert!(
+                        rolled
+                            .unwrap_err()
+                            .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+                            .is_some(),
+                        "a fresh window still refuses an allowance larger than the limit"
+                    );
+                    prop_assert_eq!(
+                        world.fuel_rate_budget().unwrap().charged_in_window(),
+                        0
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2185,6 +2775,493 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_burrow_replays_detour_to_exit() {
+        // Oracle: burrow/detour-to-exit in app-vectors.json (revision
+        // b9d8177). Inputs are the vector's own, event tags included: the
+        // tag is host journal deduplication metadata and the guest does not
+        // read it. The after states are literal copies of the vector
+        // projections; the outcome is asserted beside them.
+        let wasm = include_bytes!("../../../examples/roc-burrow/burrow.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let expected = |after: serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after;
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let view_rows = |world: &mut WorldInstance| -> Vec<String> {
+            let view = String::from_utf8(world.view().unwrap()).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&view).unwrap()
+            else {
+                panic!("the burrow view must be a structured screen: {view}");
+            };
+            screen
+                .cells
+                .chunks(usize::from(screen.width))
+                .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+                .collect()
+        };
+        assert_eq!(
+            records(&mut live),
+            expected(
+                serde_json::json!({
+                    "digger": [0, 1],
+                    "soil": [[1, 1], [2, 1], [2, 2]],
+                    "cleared_count": 0,
+                    "phase": "digging"
+                }),
+                ""
+            )
+        );
+        // The semantic text grid: digger west, two soil cells and the rock
+        // on the middle row; the third soil and the exit on the bottom row.
+        let rows = view_rows(&mut live);
+        assert!(rows.iter().any(|row| row.contains("A s s #")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains(". . s X")), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("soil left=3 cleared=0/3")),
+            "{rows:?}"
+        );
+        // (input, expected outcome, expected after-state)
+        let steps = [
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d1"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [1, 1],
+                    "soil": [[2, 1], [2, 2]],
+                    "cleared_count": 1,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d2"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [2, 1],
+                    "soil": [[2, 2]],
+                    "cleared_count": 2,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d3"}"#,
+                "blocked-rock",
+                serde_json::json!({
+                    "digger": [2, 1],
+                    "soil": [[2, 2]],
+                    "cleared_count": 2,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"S","event":"d4"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [2, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"E","event":"w1"}"#,
+                "escaped",
+                serde_json::json!({
+                    "digger": [3, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "escaped"
+                }),
+            ),
+        ];
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+        // Escaped: the digger stands on the exit cell, no soil remains,
+        // and a further dig is refused with the state final.
+        let rows = view_rows(&mut live);
+        assert!(rows.iter().any(|row| row.contains(". . . A")), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("soil left=0 cleared=3/3")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("phase=escaped last=escaped")),
+            "{rows:?}"
+        );
+        live.update(1, br#"{"kind":"Dig","direction":"W","event":"d5"}"#)
+            .unwrap();
+        assert_eq!(
+            records(&mut live),
+            expected(
+                serde_json::json!({
+                    "digger": [3, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "escaped"
+                }),
+                "refused"
+            )
+        );
+    }
+
+    #[test]
+    fn checked_in_burrow_snapshot_restore_and_scope_distinctions() {
+        // The snapshot/restore half of the #13603 acceptance, plus the
+        // scope distinctions: host events never drive the guest, the
+        // view's presentation text is not domain state, and refusals the
+        // vector does not exercise still change nothing.
+        let wasm = include_bytes!("../../../examples/roc-burrow/burrow.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let initial = serde_json::json!({
+            "digger": [0, 1],
+            "soil": [[1, 1], [2, 1], [2, 2]],
+            "cleared_count": 0,
+            "phase": "digging",
+            "outcome": ""
+        });
+
+        // Restore a snapshot into a new instance and compare the next
+        // accepted operations through the regular host.
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, br#"{"kind":"Dig","direction":"E","event":"d1"}"#)
+            .unwrap();
+        live.update(1, br#"{"kind":"Dig","direction":"E","event":"d2"}"#)
+            .unwrap();
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut live));
+        assert_eq!(restored.view().unwrap(), live.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for input in [
+            r#"{"kind":"Dig","direction":"E","event":"d3"}"#,
+            r#"{"kind":"Dig","direction":"S","event":"d4"}"#,
+            r#"{"kind":"Walk","direction":"E","event":"w1"}"#,
+        ] {
+            live.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut live), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored)["phase"],
+            serde_json::json!("escaped")
+        );
+
+        // A host (participant 0) delivery is not a player command.
+        let mut host_driven = runner.instantiate(7).unwrap();
+        host_driven
+            .update(0, br#"{"kind":"Dig","direction":"E","event":"d1"}"#)
+            .unwrap();
+        assert_eq!(records(&mut host_driven), initial);
+
+        // Records carry exactly the five domain keys: no grid glyphs, no
+        // status lines, no level constants.
+        let doc = records(&mut host_driven);
+        let mut keys: Vec<&str> = doc
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["cleared_count", "digger", "outcome", "phase", "soil"]
+        );
+        let text = doc.to_string();
+        assert!(!text.contains("soil left"), "{text}");
+        assert!(!text.contains("rock"), "{text}");
+
+        // Walking into uncleared soil and digging off the board edge are
+        // refusals that change nothing but the last outcome.
+        let mut refused = runner.instantiate(7).unwrap();
+        refused
+            .update(1, br#"{"kind":"Walk","direction":"E","event":"w0"}"#)
+            .unwrap();
+        let mut after = initial.clone();
+        after["outcome"] = serde_json::json!("blocked-soil");
+        assert_eq!(records(&mut refused), after);
+        refused
+            .update(1, br#"{"kind":"Dig","direction":"W","event":"d0"}"#)
+            .unwrap();
+        after["outcome"] = serde_json::json!("blocked-edge");
+        assert_eq!(records(&mut refused), after);
+    }
+
+    #[test]
+    #[ignore = "needs ORBIT_WASM=FILE, the built examples/rust-orbit module"]
+    fn built_orbit_arcade_replays_edge_descent() {
+        // Oracle: orbit-arcade/edge-descent in app-vectors.json (revision
+        // b9d8177), played by the regular host. The guest is built from
+        // source, so this test reads the module named by ORBIT_WASM. The
+        // after-states are literal copies of the vector projections; the
+        // outcome is asserted beside them.
+        let Some(path) = std::env::var_os("ORBIT_WASM") else {
+            panic!("set ORBIT_WASM to the built rust_orbit.wasm");
+        };
+        let wasm = std::fs::read(path).unwrap();
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let expected = |after: &serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after.clone();
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let queued = serde_json::json!({
+            "tick": 3, "cannon": [2, 3], "targets": [{"id": "T", "at": [3, 0]}],
+            "formation_direction": "E", "shots": [],
+            "pending": [{"id": "q4", "for_tick": 4, "steer": 1, "fire": true}],
+            "score": 0, "phase": "active"
+        });
+        let after_t4 = serde_json::json!({
+            "tick": 4, "cannon": [3, 3], "targets": [{"id": "T", "at": [3, 1]}],
+            "formation_direction": "W", "shots": [{"id": "q4", "at": [3, 2]}],
+            "pending": [], "score": 0, "phase": "active"
+        });
+        let after_t5 = serde_json::json!({
+            "tick": 5, "cannon": [3, 3], "targets": [], "formation_direction": "W",
+            "shots": [], "pending": [], "score": 10, "phase": "wave-clear"
+        });
+        let steps = [
+            (
+                r#"{"kind":"QueueControls","id":"q4","for_tick":4,"steer":1,"fire":true}"#,
+                "queued",
+                &queued,
+            ),
+            (
+                r#"{"kind":"Redeliver","ref":"q4"}"#,
+                "already-folded",
+                &queued,
+            ),
+            (
+                r#"{"kind":"Tick","number":4,"event":"t4"}"#,
+                "steer-fire-and-descend",
+                &after_t4,
+            ),
+            (
+                r#"{"kind":"RenderFrames","count":120}"#,
+                "presentation-only",
+                &after_t4,
+            ),
+            (
+                r#"{"kind":"Tick","number":5,"event":"t5"}"#,
+                "hit-T-and-clear",
+                &after_t5,
+            ),
+        ];
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            records(&mut live),
+            serde_json::json!({
+                "tick": 3, "cannon": [2, 3], "targets": [{"id": "T", "at": [3, 0]}],
+                "formation_direction": "E", "shots": [], "pending": [],
+                "score": 0, "phase": "active", "outcome": ""
+            })
+        );
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+
+        // Restore a mid-wave snapshot into a new instance and compare the
+        // next accepted operation through the regular host.
+        let mut first = runner.instantiate(7).unwrap();
+        for input in [steps[0].0, steps[2].0] {
+            first.update(1, input.as_bytes()).unwrap();
+        }
+        let snapshot = first.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut first));
+        assert_eq!(restored.view().unwrap(), first.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for input in [steps[1].0, steps[4].0] {
+            first.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut first), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored),
+            expected(&after_t5, "hit-T-and-clear")
+        );
+
+        // Scope: views never tick, host deliveries never drive the wave, the
+        // records hold only domain keys, and the snapshot alone carries the
+        // folded-id deduplication memory.
+        let settled = records(&mut live);
+        for _ in 0..120 {
+            live.view().unwrap();
+        }
+        live.update(0, br#"{"kind":"Tick","number":6}"#).unwrap();
+        assert_eq!(records(&mut live), settled);
+        let mut keys: Vec<String> = settled.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cannon",
+                "formation_direction",
+                "outcome",
+                "pending",
+                "phase",
+                "score",
+                "shots",
+                "targets",
+                "tick"
+            ]
+        );
+        let memory: serde_json::Value =
+            serde_json::from_slice(&live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(memory["folded"], serde_json::json!(["q4"]));
+    }
+
+    #[test]
+    #[ignore = "needs COLONY_WASM=FILE, the built examples/rust-colony module"]
+    fn built_colony_replays_two_deliveries() {
+        // Oracle: colony/two-deliveries in app-vectors.json (revision
+        // b9d8177), played by the regular host. The guest is built from
+        // source, so this test reads the module named by COLONY_WASM. The
+        // after-states are literal copies of the vector projections; the
+        // outcome is asserted beside them.
+        let Some(path) = std::env::var_os("COLONY_WASM") else {
+            panic!("set COLONY_WASM to the built rust_colony.wasm");
+        };
+        let wasm = std::fs::read(path).unwrap();
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let steps = [
+            (
+                r#"{"kind":"Mine","direction":"E","event":"m1"}"#,
+                "extracted",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Mine","direction":"N","event":"m2"}"#,
+                "pack-full",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"W","event":"w1"}"#,
+                "moved",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Deposit","event":"d1"}"#,
+                "stored",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [[1, 0]], "pack_ore": 0, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"E","event":"w2"}"#,
+                "moved",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 0, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Mine","direction":"N","event":"m3"}"#,
+                "extracted",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"W","event":"w3"}"#,
+                "moved",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Deposit","event":"d2"}"#,
+                "supply-goal-met",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [], "pack_ore": 0, "stored_ore": 2, "phase": "supplied"}),
+            ),
+        ];
+        let expected = |after: &serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after.clone();
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            records(&mut live),
+            serde_json::json!({
+                "worker": [1, 1], "ore_cells": [[1, 0], [2, 1]], "pack_ore": 0,
+                "stored_ore": 0, "phase": "working", "outcome": ""
+            })
+        );
+        for (input, outcome, after) in &steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+
+        // Restore a mid-run snapshot (after the first deposit) into a new
+        // instance and compare the next accepted operation through the
+        // regular host.
+        let mut first = runner.instantiate(7).unwrap();
+        for (input, _, _) in &steps[..4] {
+            first.update(1, input.as_bytes()).unwrap();
+        }
+        let snapshot = first.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut first));
+        assert_eq!(restored.view().unwrap(), first.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for (input, _, _) in &steps[4..] {
+            first.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut first), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored),
+            expected(&steps[7].2, "supply-goal-met")
+        );
+
+        // Scope: views never change the domain, host deliveries never drive
+        // the colony, a replayed event folds once, the records hold only
+        // domain keys, and the snapshot alone carries the folded event ids.
+        let settled = records(&mut live);
+        for _ in 0..120 {
+            live.view().unwrap();
+        }
+        live.update(0, steps[0].0.as_bytes()).unwrap();
+        assert_eq!(records(&mut live), settled);
+        live.update(1, steps[7].0.as_bytes()).unwrap();
+        assert_eq!(records(&mut live), expected(&steps[7].2, "already-folded"));
+        let mut keys: Vec<String> = settled.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "ore_cells",
+                "outcome",
+                "pack_ore",
+                "phase",
+                "stored_ore",
+                "worker"
+            ]
+        );
+        let memory: serde_json::Value =
+            serde_json::from_slice(&live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            memory["folded"],
+            serde_json::json!(["m1", "m2", "w1", "d1", "w2", "m3", "w3", "d2"])
+        );
+    }
+
+    #[test]
     fn checked_in_chat_example_sends_and_reads_history() {
         use crate::world::{WorldEvent, WorldEventKind};
 
@@ -2664,6 +3741,105 @@ mod tests {
         assert!(error.to_string().contains("imports are not allowed"));
     }
 
+    /// The one cache entry in `dir`, asserting there is exactly one.
+    fn only_cache_entry(dir: &Path) -> PathBuf {
+        let entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "cwasm"))
+            .collect();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        entries.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn compile_cache_hit_skips_recompile_and_behaves_identically() {
+        // Oracle (#15334): a repeated compile of the same bytes under
+        // the same config is served by the compilation cache —
+        // materially faster, the entry untouched — and the resulting
+        // Sandbox behaves exactly like the fresh compile.
+        let example = examples()
+            .into_iter()
+            .find(|example| example.name == "territory")
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let fresh =
+            Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap();
+        let fresh_time = start.elapsed();
+        let entry = only_cache_entry(dir.path());
+        let entry_bytes = std::fs::read(&entry).unwrap();
+
+        let start = std::time::Instant::now();
+        let cached =
+            Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap();
+        let cached_time = start.elapsed();
+        println!("compile cache: fresh {fresh_time:?}, cached {cached_time:?} (#15334)");
+        assert_eq!(std::fs::read(&entry).unwrap(), entry_bytes);
+        assert!(
+            cached_time * 2 < fresh_time,
+            "cached compile {cached_time:?} not materially cheaper than fresh {fresh_time:?}"
+        );
+
+        let mut fresh_world = fresh.instantiate(7).unwrap();
+        (example.drive)(&mut fresh_world);
+        let mut cached_world = cached.instantiate(7).unwrap();
+        (example.drive)(&mut cached_world);
+        assert_eq!(cached_world.view().unwrap(), fresh_world.view().unwrap());
+    }
+
+    #[test]
+    fn compile_cache_corrupt_entry_falls_back_to_fresh_compile() {
+        // Oracle (#15334): a cache entry that fails its integrity
+        // check is a miss, never an error — the compile succeeds
+        // fresh and repairs the entry.
+        let example = examples()
+            .into_iter()
+            .find(|example| example.name == "tic-tac-toe")
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+            .unwrap();
+        let entry = only_cache_entry(dir.path());
+        std::fs::write(&entry, b"not a precompiled module").unwrap();
+        Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+            .unwrap()
+            .instantiate(3)
+            .unwrap();
+        assert_ne!(
+            std::fs::read(&entry).unwrap(),
+            b"not a precompiled module".as_slice()
+        );
+    }
+
+    #[test]
+    fn compile_cache_rejection_matches_fresh_compile() {
+        // Oracle (#15334): ABI validation runs on every call, cache
+        // hit or not — a module rejected fresh is rejected with the
+        // same error once its precompiled form sits in the cache.
+        let wasm = wat::parse_str(
+            r#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32))))"#,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let fresh_error =
+            Sandbox::compile_with_cache(&wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap_err()
+                .to_string();
+        let cached_error =
+            Sandbox::compile_with_cache(&wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            fresh_error.contains("imports are not allowed"),
+            "{fresh_error}"
+        );
+        assert_eq!(cached_error, fresh_error);
+    }
+
     #[test]
     fn rejects_oversized_input_before_guest_execution() {
         let runner = compile(
@@ -3036,6 +4212,13 @@ mod tests {
     /// does not export are absent.
     fn measure_example(example: &Example) -> Vec<(GuestCall, u64)> {
         let runner = Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap();
+        measure_with_runner(&runner, example)
+    }
+
+    /// [`measure_example`] over a runner the caller already compiled, so
+    /// a test measuring several drive scripts over one module (the two
+    /// territory entries) compiles the module once (#15142).
+    fn measure_with_runner(runner: &Sandbox, example: &Example) -> Vec<(GuestCall, u64)> {
         let mut live = runner.instantiate(7).unwrap();
         (example.drive)(&mut live);
         live.view().unwrap();
@@ -3085,8 +4268,14 @@ mod tests {
     #[test]
     #[ignore = "prints the baseline to re-baseline FUEL_BUDGETS by hand"]
     fn print_fuel_baseline() {
+        let mut runners = std::collections::HashMap::new();
         for example in examples() {
-            for (call, fuel) in measure_example(&example) {
+            let runner = runners
+                .entry((example.wasm.as_ptr().addr(), example.wasm.len()))
+                .or_insert_with(|| {
+                    Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap()
+                });
+            for (call, fuel) in measure_with_runner(runner, &example) {
                 println!(
                     "    (\"{}\", GuestCall::{call:?}, {}), // baseline {fuel}",
                     example.name,
@@ -3258,6 +4447,9 @@ mod tests {
     #[test]
     fn checked_in_examples_stay_within_fuel_budgets() {
         let mut failures = Vec::new();
+        // `territory` and `territory-full` are one module under two
+        // drive scripts; compile each distinct module once (#15142).
+        let mut runners = std::collections::HashMap::new();
         for example in examples() {
             assert!(
                 example.wasm.len() <= 1024 * 1024,
@@ -3265,7 +4457,12 @@ mod tests {
                 example.name,
                 example.wasm.len()
             );
-            for (call, actual) in measure_example(&example) {
+            let runner = runners
+                .entry((example.wasm.as_ptr().addr(), example.wasm.len()))
+                .or_insert_with(|| {
+                    Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap()
+                });
+            for (call, actual) in measure_with_runner(runner, &example) {
                 let budget = FUEL_BUDGETS
                     .iter()
                     .find(|(name, kind, _)| *name == example.name && *kind == call)
@@ -3285,8 +4482,9 @@ mod tests {
                 }
             }
         }
-        assert!(
-            failures.is_empty(),
+        assert_eq!(
+            failures,
+            [] as [String; 0],
             "fuel budgets exceeded:\n{}\nre-baseline deliberately: update the table and say why in the commit",
             failures.join("\n")
         );

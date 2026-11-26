@@ -32,7 +32,14 @@
  *   - Every link and unlink writes an `identity_link_event` audit
  *     row (actor binding + timestamp) in the same operation
  *     (design §§4.3, 4.8: no unaudited identity-state change).
- *     Refusals change nothing and write nothing.
+ *     Refusals change nothing and write nothing. "Same operation"
+ *     is literal (#15024): the state change and its audit row
+ *     commit in one transaction on the SQL seam (see `atomically`
+ *     below), so a failed audit insert leaves no unaudited
+ *     identity mutation behind and the caller can simply retry
+ *     the operation — a retry after a failed link performs the
+ *     full audited link instead of reporting `already_linked`
+ *     for a change that was never audited.
  *
  * DB continuity (design §4.3): tenant access keys off
  * `account_id`/`binding_id`, never off a door. Nothing in this
@@ -56,9 +63,11 @@
  *     uses (the object's SQLite storage locally; the E6 store
  *     adapter is where a Turso-over-HTTP handle plugs in). Like
  *     the TenantOpsDO, this module relies on the caller's
- *     serialisation (the tenancy object's gate) rather than
- *     opening its own transactions: check-then-write sequences
- *     here must run inside that gate.
+ *     serialisation (the tenancy object's gate) for interleaving
+ *     BETWEEN operations: check-then-write sequences here must
+ *     run inside that gate. Within one operation, atomicity is
+ *     the module's own job (#15024): the mutation and its audit
+ *     event commit together or not at all.
  */
 
 export const DOORS = ["github", "google", "microsoft", "devtoday"] as const;
@@ -72,6 +81,53 @@ export interface IdentityLinkSql {
     query: string,
     ...params: (string | null)[]
   ): { toArray(): Record<string, unknown>[] };
+  /**
+   * Optional native atomic block (a Durable Object caller backs
+   * this with `storage.transactionSync`; a Turso adapter with its
+   * own transaction call). When a seam provides it, `atomically`
+   * prefers it; otherwise the module drives
+   * BEGIN IMMEDIATE / COMMIT / ROLLBACK through `exec`, which is
+   * the plain-SQLite path the tests exercise.
+   */
+  transaction?<T>(fn: () => T): T;
+}
+
+/** Seams with an atomic block already open. The mark makes
+ * `atomically` re-entrant: `unlinkDoor`'s replacement swap calls
+ * `linkDoor` inside the swap's block, and the inner call must
+ * join the outer transaction, never open a nested one. */
+const seamsInTransaction = new WeakSet<object>();
+
+/**
+ * Run `fn` atomically on the seam (#15024): every write it makes
+ * commits, or — if any write throws, in particular the audit
+ * event insert — none of them does, and the error propagates.
+ * This is what makes the ceremony's "no unaudited identity-state
+ * change" rule survive persistence failures, for a whole
+ * replacement swap as much as for a single link or unlink.
+ */
+function atomically<T>(sql: IdentityLinkSql, fn: () => T): T {
+  if (seamsInTransaction.has(sql)) return fn();
+  seamsInTransaction.add(sql);
+  try {
+    if (typeof sql.transaction === "function") return sql.transaction(fn);
+    sql.exec("BEGIN IMMEDIATE");
+    try {
+      const out = fn();
+      sql.exec("COMMIT");
+      return out;
+    } catch (err) {
+      // A failed rollback must not mask the original error.
+      try {
+        sql.exec("ROLLBACK");
+      } catch {
+        // The original error is the one the caller needs.
+      }
+      throw err;
+    }
+  } finally {
+    seamsInTransaction.delete(sql);
+  }
 }
 
 /** An authenticated session on an account, resolved by the caller
@@ -278,6 +334,15 @@ export function linkDoor(
   proof: DoorProof,
   deps: IdentityLinkDeps = {},
 ): LinkResult {
+  return atomically(sql, () => linkDoorWithin(sql, session, proof, deps));
+}
+
+function linkDoorWithin(
+  sql: IdentityLinkSql,
+  session: LinkSession,
+  proof: DoorProof,
+  deps: IdentityLinkDeps,
+): LinkResult {
   if (!DOOR_SET.has(proof.door)) return { ok: false, reason: "bad_door" };
   if (!accountExists(sql, session.accountId))
     return { ok: false, reason: "account_not_found" };
@@ -343,6 +408,18 @@ export function unlinkDoor(
   session: LinkSession,
   door: string,
   deps: IdentityLinkDeps = {},
+  replacement?: DoorProof,
+): UnlinkResult {
+  return atomically(sql, () =>
+    unlinkDoorWithin(sql, session, door, deps, replacement),
+  );
+}
+
+function unlinkDoorWithin(
+  sql: IdentityLinkSql,
+  session: LinkSession,
+  door: string,
+  deps: IdentityLinkDeps,
   replacement?: DoorProof,
 ): UnlinkResult {
   if (!DOOR_SET.has(door)) return { ok: false, reason: "bad_door" };

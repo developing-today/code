@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -539,6 +539,22 @@ describe("web shell conformance", () => {
         "records",
         "resize",
       ].sort(),
+    );
+
+    // The main world session is the browser shell's recorded session in
+    // the conformance suite (#10931): the committed transcript must stay
+    // exactly what this shell sends and receives, so it cannot drift.
+    const recorded = session.transcript.map((entry) => JSON.stringify(entry)).join("\n");
+    const sessionPath = resolve(here, "../../contract/sessions/browser.jsonl");
+    if (!existsSync(sessionPath)) {
+      throw new Error(`contract/sessions/browser.jsonl is missing; the browser shell's session is:\n${recorded}`);
+    }
+    const committed = readFileSync(sessionPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as Entry);
+    expect(committed, `browser session drifted; the browser shell's session is now:\n${recorded}`).toEqual(
+      session.transcript,
     );
   });
 

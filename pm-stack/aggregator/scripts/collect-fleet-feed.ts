@@ -74,10 +74,10 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
+import { getDnsPublisher } from "../src/dns-publisher.ts";
 import {
   disabledProvidersFromConfig,
   aaAbsent,
@@ -175,9 +175,10 @@ import { AaLastGoodStore } from "../src/aa-last-good.ts";
 import { createTursoDocumentRemote } from "../src/remote-stores.ts";
 import { parseStoreBackend } from "../src/store-backend.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
+import { requireHome } from "../src/home.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = homedir();
+const HOME = requireHome("the collect-fleet-feed paths");
 const HIDDEN = defaultHiddenDir(HOME);
 
 export type FleetFeedPublication = Readonly<{
@@ -1108,6 +1109,28 @@ export async function main(): Promise<void> {
     } else {
       console.error("collector: DNS register unreadable; section omitted");
       markSection("dns", isMissingInput(mdErr) ? "skipped" : "error", mdErr);
+    }
+  }
+
+  // --- DNS snapshot publication (#14968 slice 2) -------------------------
+  // The hosted /dns surface reads a single-row snapshot of this exact
+  // validated section from fleet-platform D1. Publication is
+  // best-effort beside the fleet-feed write: unconfigured (no D1
+  // account/database env, or no token by name) skips, logged; a failed
+  // publish is logged, never silent, and never fails the collector —
+  // the hosted surface fails visibly on its own 15-minute freshness
+  // rule instead of serving a stale snapshot as current.
+  if (dns) {
+    try {
+      const publisher = await getDnsPublisher();
+      if (publisher) {
+        await publisher.publish(dns, now.toISOString());
+        console.log(`collector: published DNS snapshot to D1 (${dns.entries.length} domains, generated ${dns.generatedAt})`);
+      } else {
+        console.log("collector: DNS snapshot publication not configured; skipping (hosted /dns keeps its last snapshot)");
+      }
+    } catch (err) {
+      console.error(`collector: DNS snapshot publication failed (${sanitizeCollectionError(err)}); fleet feed still written`);
     }
   }
 

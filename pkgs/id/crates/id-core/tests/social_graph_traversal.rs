@@ -38,6 +38,7 @@ fn obj(id: u8, kind: SocialObjectKind, parent: Option<u8>) -> SocialObject {
         content_ref: oid(100 + id),
         schema_version: 1,
         succeeds_ref: None,
+        target_ref: None,
     }
 }
 

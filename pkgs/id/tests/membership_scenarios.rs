@@ -110,6 +110,7 @@ fn operations(events: &[Ev]) -> Vec<AuthOperation> {
                 out.push(AuthOperation {
                     id: ident(event.id),
                     author: key(event.author),
+                    authorization_actor: None,
                     dependencies,
                     group_id: AuthId::Group(group),
                     action: action.clone(),
@@ -186,6 +187,7 @@ fn layer_members(events: &[Ev], order: &[usize]) -> Vec<(AuthId, Access<()>)> {
             None => Role::Other,
             Some(action) => Role::Auth {
                 author: [event.author as u8; 32],
+                authorization_actor: None,
                 group: (!action.is_create()).then(|| ident(GROUP)),
                 action: action.clone(),
             },
