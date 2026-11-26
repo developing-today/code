@@ -68,7 +68,7 @@ def jb(obj):
     return q(json.dumps(obj)) + "::jsonb"
 
 
-EVENTS_TURSO_URL = "https://fleet-queue-dezren39.aws-us-east-1.turso.io"
+EVENTS_TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-queue"
 
 
 def events_sink():
@@ -108,6 +108,8 @@ def turso_pipeline(statements):
         headers={
             "Authorization": f"Bearer {queue_token()}",
             "Content-Type": "application/json",
+            # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+            "User-Agent": "fleet-d1-client/1",
         },
     )
     with urllib.request.urlopen(req, timeout=60) as resp:

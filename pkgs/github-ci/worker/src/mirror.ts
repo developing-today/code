@@ -80,6 +80,19 @@
  * webhook was missed, so history degrades to "as observed", never
  * to fiction. First sights write no rows: a row's first observed
  * state is a defined start, not a change.
+ *
+ * Label history (#14170 Q5, design §7.2): the upserts also
+ * overwrite the label set in place, so the projector records each
+ * observed change in github_label_history — added / removed names
+ * (diffed stored → incoming under the same acceptance rules) plus
+ * the full set after the change, the webhook action, and the
+ * sender. Unlike Q7, labels get a defined START row: the first
+ * time a row's labels are observed (a first sight, or a row that
+ * existed before Q5), one row carries the whole set as `added`
+ * with removed = [] (action = the delivery's action, or
+ * "backfill" from the sweep), written only when the item has no
+ * label history yet — so a reader can replay any item's label
+ * timeline from its first row. Same fail-open rule as Q7.
  */
 import { Turso, iArg, tArg, type TursoArg } from "./turso";
 import { queueNow, type SinkEnv } from "./sink";
@@ -137,6 +150,18 @@ export const MIRROR_DDL: string[] = [
      mirrored_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS github_issue_history_issue
      ON github_issue_history(repo, number, id)`,
+  `CREATE TABLE IF NOT EXISTS github_label_history (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     repo TEXT NOT NULL, number INTEGER NOT NULL,
+     is_pr INTEGER NOT NULL DEFAULT 0,
+     added TEXT NOT NULL DEFAULT '[]',
+     removed TEXT NOT NULL DEFAULT '[]',
+     label_set TEXT NOT NULL,
+     action TEXT NOT NULL,
+     actor TEXT, gh_updated_at TEXT,
+     mirrored_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS github_label_history_issue
+     ON github_label_history(repo, number, id)`,
 ];
 
 type Obj = Record<string, unknown>;
@@ -432,6 +457,13 @@ export interface StoredMirrorRow {
   /** Issues table only; always null for PR rows. */
   parentNumber: number | null;
   tombstoneVersion: string | null;
+  /**
+   * The stored label set as JSON text (#14170 Q5). Optional so the
+   * Q7 callers that build a stored view by hand keep compiling;
+   * absent or null reads as "labels not known" and yields no label
+   * diff.
+   */
+  labels?: string | null;
 }
 
 /**
@@ -453,7 +485,7 @@ export async function readStoredMirrorRow(
   const results = await q.batch([
     {
       sql: `SELECT body_hash, comments, comments_gh_updated_at, gh_updated_at,
-              ${isPr ? "NULL" : "parent_number"}
+              ${isPr ? "NULL" : "parent_number"}, labels
             FROM ${table} WHERE repo = ? AND number = ?`,
       args: [tArg(repo), iArg(number)],
     },
@@ -472,6 +504,7 @@ export async function readStoredMirrorRow(
     ghUpdatedAt: cellText(row, 3),
     parentNumber: cellText(row, 4) === null ? null : Number(cellText(row, 4)),
     tombstoneVersion: !tRow ? null : (cellText(tRow, 0) ?? ""),
+    labels: cellText(row, 5),
   };
 }
 
@@ -588,6 +621,178 @@ export function commentHistory(
   return [{ repo: touch.repo, number, isPr: touch.isPr, kind, detail, actor, ghUpdatedAt: touch.ghUpdatedAt }];
 }
 
+/** One github_label_history row (#14170 Q5, design §7.2). */
+export interface LabelHistoryRow {
+  repo: string;
+  number: number;
+  isPr: boolean;
+  /** Names added by this change, sorted. */
+  added: string[];
+  /** Names removed by this change, sorted. */
+  removed: string[];
+  /** The full set after the change, sorted (the mirror's own shape). */
+  labelSet: string[];
+  /** Webhook action (labeled | unlabeled | opened | edited | …) or "backfill". */
+  action: string;
+  /** Webhook sender login, or "backfill" for sweep-written rows. */
+  actor: string | null;
+  ghUpdatedAt: string | null;
+}
+
+/** Parse a stored label set; null when absent or not a JSON array of names. */
+export function parseLabelSet(json: string | null | undefined): string[] | null {
+  if (json === null || json === undefined) return null;
+  try {
+    const v: unknown = JSON.parse(json);
+    if (!Array.isArray(v) || !v.every((n) => typeof n === "string")) return null;
+    return [...(v as string[])].sort();
+  } catch {
+    return null;
+  }
+}
+
+/** The exact added / removed names between two label sets, each sorted. */
+export function labelDiff(before: string[], after: string[]): { added: string[]; removed: string[] } {
+  const b = new Set(before);
+  const a = new Set(after);
+  return {
+    added: [...a].filter((n) => !b.has(n)).sort(),
+    removed: [...b].filter((n) => !a.has(n)).sort(),
+  };
+}
+
+export function labelHistoryInsertStmt(h: LabelHistoryRow): Stmt {
+  return {
+    sql: `INSERT INTO github_label_history
+            (repo, number, is_pr, added, removed, label_set, action, actor, gh_updated_at, mirrored_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      tArg(h.repo),
+      iArg(h.number),
+      iArg(h.isPr ? 1 : 0),
+      tArg(JSON.stringify(h.added)),
+      tArg(JSON.stringify(h.removed)),
+      tArg(JSON.stringify(h.labelSet)),
+      tArg(h.action),
+      tArg(h.actor),
+      tArg(h.ghUpdatedAt),
+      tArg(queueNow()),
+    ],
+  };
+}
+
+/**
+ * Whether the stored row's labels were ever observed: a row the
+ * comment or sub_issues paths seeded minimal carries the column
+ * default '[]' and no snapshot version, so its set is unknown, not
+ * empty — diffing against it would record a fictional "added".
+ */
+export function storedLabelsObserved(stored: StoredMirrorRow): boolean {
+  return stored.ghUpdatedAt !== null && parseLabelSet(stored.labels) !== null;
+}
+
+/**
+ * The label-history row a snapshot upsert implies (#14170 Q5), or
+ * none when the upsert itself would be refused (tombstone-blocked
+ * or version-stale) or the set did not move. Labels ride the
+ * snapshot version (gh_updated_at), so the same acceptance rules
+ * as snapshotHistory apply. For labeled / unlabeled deliveries the
+ * stored→incoming diff is the payload-named change whenever the
+ * delivery is accepted in order; out-of-order deliveries degrade
+ * to "as observed", like all mirror history.
+ */
+export function snapshotLabelHistory(
+  stored: StoredMirrorRow,
+  row: IssueRow,
+  isPr: boolean,
+  action: string | null,
+  actor: string | null,
+): LabelHistoryRow[] {
+  const number = row.number;
+  if (number === null) return [];
+  if (!storedLabelsObserved(stored)) return [];
+  if (deletionBlocks(stored.tombstoneVersion, row.gh_updated_at)) return [];
+  if (!versionAccepts(row.gh_updated_at, stored.ghUpdatedAt)) return [];
+  const before = parseLabelSet(stored.labels) ?? [];
+  const after = parseLabelSet(row.labels) ?? [];
+  const { added, removed } = labelDiff(before, after);
+  if (added.length === 0 && removed.length === 0) return [];
+  return [
+    {
+      repo: row.repo,
+      number,
+      isPr,
+      added,
+      removed,
+      labelSet: after,
+      action: action ?? "snapshot",
+      actor,
+      ghUpdatedAt: row.gh_updated_at,
+    },
+  ];
+}
+
+/**
+ * The label-history START row (#14170 Q5): the item's current
+ * mirror set as `added`, removed = [], written only when the
+ * mirror row exists with an observed snapshot (gh_updated_at set)
+ * AND the item has no label history yet. Read from the mirror row
+ * itself, so a first-sight upsert the tombstone guard refused
+ * writes nothing (no row to read), and a redelivery writes no
+ * second start. With number = null it seeds every unseeded,
+ * observed row of the repo in one statement — the sweep's form.
+ */
+export function labelStartStmt(
+  repo: string,
+  number: number | null,
+  isPr: boolean,
+  action: string,
+  actor: string | null,
+): Stmt {
+  const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
+  const one = number !== null;
+  return {
+    sql: `INSERT INTO github_label_history
+            (repo, number, is_pr, added, removed, label_set, action, actor, gh_updated_at, mirrored_at)
+          SELECT m.repo, m.number, ?, m.labels, '[]', m.labels, ?, ?, m.gh_updated_at, ?
+          FROM ${table} m
+          WHERE m.repo = ?${one ? " AND m.number = ?" : ""}
+            AND m.gh_updated_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM github_label_history h
+              WHERE h.repo = m.repo AND h.number = m.number AND h.is_pr = ?)`,
+    args: [
+      iArg(isPr ? 1 : 0),
+      tArg(action),
+      tArg(actor),
+      tArg(queueNow()),
+      tArg(repo),
+      ...(one ? [iArg(number)] : []),
+      iArg(isPr ? 1 : 0),
+    ],
+  };
+}
+
+/**
+ * The label-history statements one snapshot event writes: the diff
+ * row when the stored set was observed, else the start row (first
+ * sight, a minimal seed, or a row from before Q5). Both are written
+ * after the mirror batch lands, fail-open.
+ */
+export function labelHistoryStmts(
+  stored: StoredMirrorRow | null,
+  row: IssueRow,
+  isPr: boolean,
+  action: string | null,
+  actor: string | null,
+): Stmt[] {
+  if (row.number === null) return [];
+  if (stored && storedLabelsObserved(stored)) {
+    return snapshotLabelHistory(stored, row, isPr, action, actor).map(labelHistoryInsertStmt);
+  }
+  return [labelStartStmt(row.repo, row.number, isPr, action ?? "snapshot", actor)];
+}
+
 /**
  * Write history rows FAIL-OPEN (design §10.3): their own batch,
  * after the mirror batch has landed, inside a catch. The mirror
@@ -595,13 +800,14 @@ export function commentHistory(
  * write is logged and dropped, and the backfill sweep's diff rows
  * are the repair path.
  */
-export async function writeHistoryFailOpen(env: SinkEnv, rows: HistoryRow[]): Promise<void> {
-  if (rows.length === 0) return;
+export async function writeHistoryFailOpen(env: SinkEnv, rows: HistoryRow[], labelStmts: Stmt[] = []): Promise<void> {
+  const n = rows.length + labelStmts.length;
+  if (n === 0) return;
   try {
     const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
-    await q.batch([...MIRROR_DDL.map((sql) => ({ sql })), ...rows.map(historyInsertStmt)]);
+    await q.batch([...MIRROR_DDL.map((sql) => ({ sql })), ...rows.map(historyInsertStmt), ...labelStmts]);
   } catch (e) {
-    console.error(`github mirror: history write failed open (${rows.length} row(s) dropped): ${String(e)}`);
+    console.error(`github mirror: history write failed open (${n} row(s) dropped): ${String(e)}`);
   }
 }
 
@@ -633,16 +839,16 @@ async function mirrorEvent(
   repo: string,
   isPr: boolean,
   number: number | null,
-  plan: (stored: StoredMirrorRow | null) => { stmts: Stmt[]; history: HistoryRow[] },
+  plan: (stored: StoredMirrorRow | null) => { stmts: Stmt[]; history: HistoryRow[]; labelHistory?: Stmt[] },
 ): Promise<void> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   const at = queueNow();
   await q.batch(MIRROR_DDL.map((sql) => ({ sql })));
   await ensureMirrorColumns(q);
   const stored = number !== null ? await readStoredMirrorRow(q, isPr, repo, number) : null;
-  const { stmts, history } = plan(stored);
+  const { stmts, history, labelHistory } = plan(stored);
   await q.batch([...stmts, metaStamp(repo, event, at)]);
-  await writeHistoryFailOpen(env, history);
+  await writeHistoryFailOpen(env, history, labelHistory ?? []);
 }
 
 /**
@@ -876,6 +1082,8 @@ export async function mirrorIssueEvent(env: SinkEnv, payload: Obj, repo: string)
   await mirrorEvent(env, "issues", repo, false, row.number, (stored) => ({
     stmts: [issueUpsertStmt(row)],
     history: stored ? snapshotHistory(stored, row, row.gh_updated_at, false, senderOf(payload)) : [],
+    // Q5 label history: the diff row, or the item's start row.
+    labelHistory: labelHistoryStmts(stored, row, false, str(payload, "action"), senderOf(payload)),
   }));
 }
 /** The PR snapshot upsert as a statement (shared by the webhook path and the sweep). */
@@ -948,6 +1156,7 @@ export async function mirrorPrEvent(env: SinkEnv, payload: Obj, repo: string): P
   await mirrorEvent(env, "pull_request", repo, true, row.number, (stored) => ({
     stmts: [prUpsertStmt(row)],
     history: stored ? snapshotHistory(stored, row, row.comments_gh_updated_at, true, senderOf(payload)) : [],
+    labelHistory: labelHistoryStmts(stored, row, true, str(payload, "action"), senderOf(payload)),
   }));
 }
 /**

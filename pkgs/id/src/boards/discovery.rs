@@ -334,9 +334,9 @@ mod discovery_tests {
         let authority = StubAuthority::default();
         let boards = vec![facts(board, Discoverability::NotPublic, Some(100), None)];
         let shelves = build_discovery(&viewer, &store, &boards, &authority).unwrap();
-        assert!(shelves.following.is_empty());
-        assert!(shelves.shared_with_you.is_empty());
-        assert!(shelves.public_directory.is_empty());
+        assert_eq!(shelves.following, [] as [DiscoveryEntry; 0]);
+        assert_eq!(shelves.shared_with_you, [] as [DiscoveryEntry; 0]);
+        assert_eq!(shelves.public_directory, [] as [DiscoveryEntry; 0]);
     }
 
     #[test]
@@ -424,7 +424,7 @@ mod discovery_tests {
         assert!(store.unfollow(&viewer, &shared_board));
         assert!(store.unfollow(&viewer, &public_board));
         let after = build_discovery(&viewer, &store, &boards, &authority).unwrap();
-        assert!(after.following.is_empty());
+        assert_eq!(after.following, [] as [DiscoveryEntry; 0]);
         assert_eq!(boards_of(&after.shared_with_you), vec![shared_board]);
         assert_eq!(boards_of(&after.public_directory), vec![public_board]);
     }
@@ -463,7 +463,7 @@ mod discovery_tests {
         };
         let boards = vec![facts(board, Discoverability::default(), Some(100), None)];
         let shelves = build_discovery(&viewer, &store, &boards, &authority).unwrap();
-        assert!(shelves.public_directory.is_empty());
+        assert_eq!(shelves.public_directory, [] as [DiscoveryEntry; 0]);
         assert_eq!(shelves.shared_with_you.len(), 1);
     }
 
@@ -478,9 +478,9 @@ mod discovery_tests {
         let authority = StubAuthority::default();
         let boards = vec![facts(board, Discoverability::Public, Some(100), None)];
         let shelves = build_discovery(&viewer, &store, &boards, &authority).unwrap();
-        assert!(shelves.public_directory.is_empty());
-        assert!(shelves.shared_with_you.is_empty());
-        assert!(shelves.following.is_empty());
+        assert_eq!(shelves.public_directory, [] as [DiscoveryEntry; 0]);
+        assert_eq!(shelves.shared_with_you, [] as [DiscoveryEntry; 0]);
+        assert_eq!(shelves.following, [] as [DiscoveryEntry; 0]);
     }
 
     #[test]
@@ -536,8 +536,8 @@ mod discovery_tests {
         )];
         let shelves = build_discovery(&viewer, &store, &boards, &authority).unwrap();
         assert_eq!(boards_of(&shelves.following), vec![board]);
-        assert!(shelves.shared_with_you.is_empty());
-        assert!(shelves.public_directory.is_empty());
+        assert_eq!(shelves.shared_with_you, [] as [DiscoveryEntry; 0]);
+        assert_eq!(shelves.public_directory, [] as [DiscoveryEntry; 0]);
     }
 
     #[test]

@@ -20,6 +20,12 @@ use crate::types::{Stmt, Value};
 /// below it.
 pub const SENS_ORDER: [&str; 4] = ["shareable", "personal", "local-only", "secret-bearing"];
 
+/// The canonical ladder names (#13506), rung for rung with
+/// [`SENS_ORDER`]. Accepted as ceiling input everywhere a ceiling is
+/// read; stored labels, SQL parameters and emitted JSON keep the
+/// legacy spellings until the label migration and output cutover land.
+pub const CANONICAL_SENS_ORDER: [&str; 4] = ["public", "internal", "private", "sensitive"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Sensitivity {
     Shareable,
@@ -39,8 +45,31 @@ impl Sensitivity {
         }
     }
 
+    /// Parse a caller-supplied ceiling (#13506): the legacy spellings
+    /// in [`SENS_ORDER`] or the canonical ladder names in
+    /// [`CANONICAL_SENS_ORDER`]. Only ceilings take this path. Stored
+    /// labels go through the strict [`Sensitivity::from_name`],
+    /// because a staging database also stores the corpus-tier word
+    /// `internal`, which must never read as a ceiling rung.
+    pub fn from_ceiling_name(name: &str) -> Option<Sensitivity> {
+        Sensitivity::from_name(name).or(match name {
+            "public" => Some(Sensitivity::Shareable),
+            "internal" => Some(Sensitivity::Personal),
+            "private" => Some(Sensitivity::LocalOnly),
+            "sensitive" => Some(Sensitivity::SecretBearing),
+            _ => None,
+        })
+    }
+
     pub fn name(self) -> &'static str {
         SENS_ORDER[self as usize]
+    }
+
+    /// The canonical ladder name for this rung (#13506). Emitted
+    /// values still use [`Sensitivity::name`] until the output
+    /// cutover is decided.
+    pub fn canonical_name(self) -> &'static str {
+        CANONICAL_SENS_ORDER[self as usize]
     }
 
     /// Every level a ceiling admits, in ladder order (the Python's
@@ -119,7 +148,7 @@ impl Filters {
         since: Option<String>,
         until: Option<String>,
     ) -> Result<Filters> {
-        let ceiling = Sensitivity::from_name(max_sensitivity).ok_or_else(|| {
+        let ceiling = Sensitivity::from_ceiling_name(max_sensitivity).ok_or_else(|| {
             Error::fatal(
                 "--max-sensitivity must be one of \
                  ['shareable', 'personal', 'local-only', 'secret-bearing']",
@@ -569,6 +598,27 @@ mod tests {
         );
         assert_eq!(Sensitivity::SecretBearing.allowed(), SENS_ORDER.to_vec());
         assert!(Sensitivity::from_name("bogus").is_none());
+    }
+
+    #[test]
+    fn canonical_names_are_ceilings_but_not_stored_labels() {
+        for (legacy, canonical) in SENS_ORDER.iter().zip(CANONICAL_SENS_ORDER) {
+            let rung = Sensitivity::from_name(legacy).expect("legacy name");
+            assert_eq!(Sensitivity::from_ceiling_name(legacy), Some(rung));
+            assert_eq!(Sensitivity::from_ceiling_name(canonical), Some(rung));
+            assert_eq!(rung.canonical_name(), canonical);
+            // Stored labels stay strict: the tier word `internal` in a
+            // staging database must not parse as a ceiling rung.
+            assert_eq!(Sensitivity::from_name(canonical), None);
+        }
+        assert_eq!(Sensitivity::from_ceiling_name("secret"), None);
+        // A canonical ceiling filters on the legacy stored spellings
+        // and echoes the legacy name until the output cutover.
+        let filters =
+            Filters::new(vec![], vec![], vec![], vec![], "internal", None, None).expect("filters");
+        assert_eq!(filters.max_sensitivity, Sensitivity::Personal);
+        assert_eq!(filters.max_sensitivity.allowed(), vec!["shareable", "personal"]);
+        assert_eq!(filters.max_sensitivity.name(), "personal");
     }
 
     #[test]

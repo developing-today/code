@@ -90,6 +90,11 @@
 //!
 //! Controls (environment):
 //!   FLEET_GH_BIN        the `gh` binary to run (default: `gh`)
+//!   FLEET_GH_SHIM_ACTIVE set to 1 on every child `gh` fleet
+//!                       spawns: the gh-fleet shim's recursion
+//!                       guard, so a PATH `gh` that is the shim
+//!                       execs the pristine gh instead of
+//!                       re-entering a second fleet (#14650)
 //!   FLEET_GH_APP_ID     GitHub App ID (default: 5612056)
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
@@ -131,6 +136,7 @@
 
 use crate::gh_cache;
 use crate::gh_closure;
+use crate::gh_content_ledger;
 use crate::gh_guard;
 use crate::gh_metadata;
 use crate::gh_sync;
@@ -147,6 +153,11 @@ const EXIT_USAGE: i32 = 2;
 /// for "no token source could be resolved at all" (matches the
 /// secrets/dispatch unresolved exit shape).
 const EXIT_UNRESOLVED: i32 = 3;
+/// The shared content-creation ledger refused the reservation, so
+/// the create did not run (code#2227). Mirrors gh-post's exit 5:
+/// an unledgered filing is the failure mode the ledger exists to
+/// kill, so the refusal is loud and counted, never silent.
+const EXIT_LEDGER: i32 = 5;
 
 fn usage_error(message: &str) -> i32 {
     eprintln!("error: {message}");
@@ -1250,13 +1261,26 @@ struct Attempt {
     stderr: Vec<u8>,
 }
 
+/// The gh-fleet shim's recursion guard (pkgs/gh-fleet): a child
+/// `gh` that sees this set to 1 execs the pristine gh directly
+/// instead of routing through `fleet gh`. Fleet sets it on every
+/// `gh` it spawns — fleet IS the routing layer, so a child that
+/// re-entered fleet would run the call through a second, possibly
+/// different-revision fleet, which among other failures rejects
+/// this fleet's own generated closure arguments (#14650). An
+/// explicit FLEET_GH_BIN is untouched: the guard never changes
+/// which binary was chosen, it only tells the shim not to route.
+const SHIM_GUARD_ENV: &str = "FLEET_GH_SHIM_ACTIVE";
+
 /// Run the real `gh` once, under `token`, capturing output for
 /// classification. stdin is inherited so prompts behave; stdout and
-/// stderr are piped (see the module header for why).
+/// stderr are piped (see the module header for why). The child
+/// carries the shim recursion guard (SHIM_GUARD_ENV).
 fn run_gh_once(gh_bin: &str, args: &[String], token: &str) -> std::io::Result<Attempt> {
     let out = Command::new(gh_bin)
         .args(args)
         .env("GH_TOKEN", token)
+        .env(SHIM_GUARD_ENV, "1")
         .stdin(Stdio::inherit())
         .output()?;
     Ok(Attempt {
@@ -1461,10 +1485,14 @@ fn raw_args(args: &[String], raw_env: bool) -> Option<Vec<String>> {
 /// environment untouched — no token resolved, none injected, no
 /// failover. Stdio is inherited (not captured) so interactive
 /// `gh` behaves exactly as it does unwrapped; the exit code is
-/// the child's own.
+/// the child's own. The one deliberate exception to "untouched"
+/// is the shim recursion guard (SHIM_GUARD_ENV): without it a
+/// PATH `gh` that is the gh-fleet shim re-enters fleet instead
+/// of reaching the pristine gh raw mode promises (#14650).
 fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     match Command::new(gh_bin)
         .args(args)
+        .env(SHIM_GUARD_ENV, "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1602,6 +1630,20 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some(prepared) => prepared.args.clone(),
         None => call_args,
     };
+    // Content-creation ledger (code#2227): a classified create
+    // reserves its shared-ledger row BEFORE any GitHub write. The
+    // ledger owns the failure mode — a reservation failure refuses
+    // the create (exit 5), never an unledgered filing.
+    let ledger_pending = match gh_content_ledger::start(&call_args) {
+        Ok(pending) => pending,
+        Err(e) => {
+            eprintln!(
+                "fleet gh: content-ledger reserve failed ({e}); \
+                 refusing to post unledgered (code#2227)"
+            );
+            return EXIT_LEDGER;
+        }
+    };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
@@ -1612,8 +1654,25 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         &call_args,
         &sources,
         trace,
-        prepared_create.is_some(),
+        // The ledger's verify step reads the created item's URL
+        // from stdout (code#2227); capture changes nothing
+        // user-visible — emit() still streams every byte.
+        prepared_create.is_some() || ledger_pending.is_some(),
     );
+    // Content-creation ledger (code#2227): finalise the reservation
+    // with what actually happened, on every path below. The row
+    // records the truth; gh's exit code stands either way (the
+    // metadata create path's posture).
+    if let Some(pending) = &ledger_pending {
+        match gh_content_ledger::finish(pending, code, final_stdout.as_deref()) {
+            Ok(Some(notice)) => eprintln!("fleet gh: {notice}"),
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "fleet gh: content-ledger finalize failed ({e}); \
+                 the create stands, the ledger is short one outcome"
+            ),
+        }
+    }
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -2501,6 +2560,175 @@ mod tests {
             dir.to_string_lossy().to_string(),
             script.to_string_lossy().to_string(),
         )
+    }
+
+    // oracle: the shared-ledger contract in gh_content_ledger — a
+    // reservation must be committed before the external create starts;
+    // empty stdout on exit 0 is finalized failed without rewriting gh's
+    // exit code. CONTENT_LEDGER_PATH points into this test's isolated dir.
+    #[test]
+    fn create_reserves_before_gh_and_empty_output_records_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-gh-ledger-e2e-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.sqlite");
+        let probe = dir.join("probe");
+        let script = format!(
+            "#!/bin/sh\n\
+             python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
+             touch \"{}\"\n\
+             exit 0\n",
+            ledger.display(), probe.display()
+        );
+        let script_path = place_script(&dir, "ledger-gh", &script);
+        let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
+            .iter().map(|s| s.to_string()).collect();
+        let pending = gh_content_ledger::start_at(&args, &ledger)
+            .expect("reserve succeeds")
+            .unwrap();
+        let attempt = run_gh_once(&script_path, &[], "test-token").expect("fake gh runs");
+        assert_eq!(attempt.code, 0, "gh's exit code is preserved");
+        assert!(probe.exists(), "fake gh ran after observing reservation");
+        gh_content_ledger::finish(&pending, attempt.code, Some(&attempt.stdout))
+            .expect("finalize reservation");
+        let conn = rusqlite::Connection::open(&ledger).unwrap();
+        let (outcome, detail): (String, String) = conn
+            .query_row("SELECT outcome, detail FROM events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(outcome, "failed", "empty successful output is not a created item");
+        assert_eq!(detail, "gh exited 0 with empty output");
+    }
+
+    /// Place an executable script the way fake_gh does: the text
+    /// goes to a side file and a separate `cp` (exited before we
+    /// return) writes the file that is executed, so no descriptor
+    /// this process holds open can make a child's exec fail with
+    /// ETXTBSY (#11834). Returns the script's path.
+    fn place_script(dir: &std::path::Path, name: &str, text: &str) -> String {
+        let source = dir.join(format!("{name}.src"));
+        std::fs::write(&source, text).unwrap();
+        let script = dir.join(name);
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the script");
+        assert!(copied.success(), "cp of {name} failed: {copied}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script.to_string_lossy().to_string()
+    }
+
+    /// Build the #14650 shim world: a directory holding three
+    /// executables that reproduce the production gh-fleet boundary
+    /// with the shim's real guard semantics (pkgs/gh-fleet): `gh`
+    /// is the shim — guarded (FLEET_GH_SHIM_ACTIVE=1) it execs the
+    /// pristine gh, unguarded it exports FLEET_GH_BIN + the guard
+    /// and execs `fleet gh`; `fleet` stands in for the nested
+    /// fleet a re-entry would create (it logs the re-entry, then
+    /// does what that fleet would do — run its resolved
+    /// FLEET_GH_BIN); `pristine-gh` is the real gh. Every hop
+    /// appends one line to a log whose path is baked into the
+    /// scripts (no shared env, so parallel tests cannot race).
+    /// Returns (dir, shim path).
+    fn shim_world(tag: &str) -> (String, String) {
+        let dir = std::env::temp_dir().join(format!("fleet-gh-shim-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let log = log.display();
+        let pristine_path = dir.join("pristine-gh").display().to_string();
+        let fleet_path = dir.join("fleet").display().to_string();
+        let pristine = format!(
+            "#!/bin/sh\n\
+             echo \"pristine $*\" >> \"{log}\"\n\
+             echo 'pristine gh output'\n\
+             exit 0\n"
+        );
+        let fleet = format!(
+            "#!/bin/sh\n\
+             echo \"fleet-reentry $*\" >> \"{log}\"\n\
+             exec \"$FLEET_GH_BIN\" \"$@\"\n"
+        );
+        let shim = format!(
+            "#!/bin/sh\n\
+             if [ \"${{FLEET_GH_SHIM_ACTIVE:-}}\" = \"1\" ]; then\n\
+             exec \"{pristine_path}\" \"$@\"\n\
+             fi\n\
+             export FLEET_GH_BIN=\"{pristine_path}\"\n\
+             export FLEET_GH_SHIM_ACTIVE=1\n\
+             exec \"{fleet_path}\" gh \"$@\"\n"
+        );
+        place_script(&dir, "pristine-gh", &pristine);
+        place_script(&dir, "fleet", &fleet);
+        let shim_path = place_script(&dir, "gh", &shim);
+        (dir.to_string_lossy().to_string(), shim_path)
+    }
+
+    // oracle: #14650 — a direct `fleet gh` whose `gh` is the
+    // gh-fleet shim must reach the pristine gh in ONE hop. The
+    // production shim's guard semantics are the truth: guarded,
+    // the shim execs the pristine gh; unguarded, it re-enters
+    // fleet. The scripts' log decides — any "fleet-reentry" line
+    // (or a second line at all) means the guard was not set.
+    #[test]
+    fn run_gh_once_does_not_reenter_fleet_through_the_shim() {
+        // The guard must start absent from the ambient environment,
+        // or the child would inherit it and the test could not tell
+        // whether run_gh_once set it. Nothing else in this crate
+        // reads the variable, so clearing it cannot race a reader.
+        unsafe { std::env::remove_var(SHIM_GUARD_ENV) };
+        let (dir, shim) = shim_world("once");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let attempt = run_gh_once(&shim, &args, "tok-test").unwrap();
+        assert_eq!(attempt.code, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&attempt.stdout),
+            "pristine gh output\n"
+        );
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "exactly one pristine call, no re-entry: {calls}"
+        );
+        assert!(
+            calls.starts_with("pristine "),
+            "the one call is the pristine gh: {calls}"
+        );
+    }
+
+    // oracle: #14650, raw path — the same guard duty on run_raw:
+    // raw mode hands the caller the pristine gh, never a nested
+    // fleet. run_raw inherits stdio, so the scripts' log (not
+    // captured output) is the evidence.
+    #[test]
+    fn run_raw_does_not_reenter_fleet_through_the_shim() {
+        unsafe { std::env::remove_var(SHIM_GUARD_ENV) };
+        let (dir, shim) = shim_world("raw");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let code = run_raw(&shim, &args);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "exactly one pristine call, no re-entry: {calls}"
+        );
+        assert!(
+            calls.starts_with("pristine "),
+            "the one call is the pristine gh: {calls}"
+        );
     }
 
     // oracle: code#8887's headline acceptance — a rate-limited
