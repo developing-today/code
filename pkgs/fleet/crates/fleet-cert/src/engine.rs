@@ -433,6 +433,8 @@ fn base_manifest(
         country: country.to_string(),
         purpose,
         generation,
+        revision: 1,
+        predecessor: None,
         created_at: Rfc3339::now(),
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
         parent,
@@ -878,6 +880,334 @@ pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<Bu
         Some(req.cross_signing.as_str().to_string()),
         warnings,
     )?;
+    manifest.bundle_id = format!(
+        "issuerset-{}-{}",
+        manifest.slug,
+        &records
+            .first()
+            .map(|r| r.fingerprint_sha256[..12].to_string())
+            .unwrap_or_default()
+    );
+    manifest.certificates = records;
+    let manifest = write_bundle(out_dir, manifest, &artifacts)?;
+    Ok(manifest)
+}
+
+/// A subject public key carried over from an issued certificate, so
+/// a renewal can certify the key without loading (or ever needing)
+/// its private half. `raw` is the SPKI bit-string content: the same
+/// bytes [`inspect_key`] returns for the matching private key.
+struct ExistingPublicKey {
+    raw: Vec<u8>,
+    algorithm: &'static rcgen::SignatureAlgorithm,
+}
+
+impl rcgen::PublicKeyData for ExistingPublicKey {
+    fn der_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+        self.algorithm
+    }
+}
+
+fn signature_algorithm_for(algo: AlgorithmId) -> &'static rcgen::SignatureAlgorithm {
+    match algo {
+        AlgorithmId::Ed25519 => &PKCS_ED25519,
+        AlgorithmId::P256 => &PKCS_ECDSA_P256_SHA256,
+        AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => &PKCS_RSA_SHA256,
+        AlgorithmId::MlDsa44 => &PKCS_ML_DSA_44,
+    }
+}
+
+/// What a renewal carries over from one issued issuer certificate:
+/// its subject public key and its permitted DNS name constraints.
+struct IssuedFacts {
+    public_key: Vec<u8>,
+    permitted_dns: Vec<String>,
+}
+
+fn issued_facts(der: &[u8], what: &str) -> Result<IssuedFacts> {
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+    let (_, cert) = x509_parser::prelude::parse_x509_certificate(der)
+        .map_err(|e| CertError::manifest(format!("{what}: certificate parse failed: {e}")))?;
+    let tbs = &cert.tbs_certificate;
+    let mut permitted_dns = Vec::new();
+    for ext in tbs.extensions() {
+        if let ParsedExtension::NameConstraints(nc) = ext.parsed_extension() {
+            if nc.excluded_subtrees.as_ref().is_some_and(|v| !v.is_empty()) {
+                return Err(CertError::policy(format!(
+                    "{what} carries excluded name constraints, which renewal cannot reproduce"
+                )));
+            }
+            for subtree in nc.permitted_subtrees.iter().flatten() {
+                match &subtree.base {
+                    GeneralName::DNSName(name) => permitted_dns.push(name.to_string()),
+                    other => {
+                        return Err(CertError::policy(format!(
+                            "{what} carries a non-DNS permitted name constraint ({other:?}), \
+                             which renewal cannot reproduce"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(IssuedFacts {
+        public_key: tbs.subject_pki.subject_public_key.data.to_vec(),
+        permitted_dns,
+    })
+}
+
+fn first_certificate_der(bundle: &Bundle, rel_path: &str) -> Result<Vec<u8>> {
+    let pem = read_artifact(bundle, rel_path)?;
+    crate::bundle::pem_decode_all(
+        std::str::from_utf8(&pem)
+            .map_err(|_| CertError::manifest(format!("{rel_path} is not UTF-8 PEM")))?,
+    )?
+    .into_iter()
+    .find(|(label, _)| label == "CERTIFICATE")
+    .map(|(_, der)| der)
+    .ok_or_else(|| CertError::manifest(format!("no CERTIFICATE block in {rel_path}")))
+}
+
+/// `cert issuer renew` (§5.2): reissue every certificate of an
+/// issuer set on the keys it already has, signed by the same roots.
+///
+/// Renewal is key reuse, so it runs only with the explicit opt-in.
+/// Each issuer certificate keeps its subject name byte for byte, its
+/// key, its OU and name constraints and its signer; it gets a fresh
+/// serial and the new validity window (clamped to its signer's). The
+/// new bundle records `revision` = predecessor + 1 and the
+/// predecessor's bundle id, and keeps the predecessor's generation:
+/// nothing in it claims the keys rotated. Issuer private keys are
+/// never needed to sign; for bundle-private custody they are copied
+/// into the new bundle (after checking each matches its certificate)
+/// so the renewed set can issue leaves on its own.
+pub fn renew_issuer_set(
+    req: &crate::model::IssuerRenewRequest,
+    out_dir: &Path,
+) -> Result<BundleManifest> {
+    if !req.allow_key_reuse {
+        return Err(CertError::policy(
+            "issuer renew reissues the issuer certificates on the same keys; policy allows key \
+             reuse only when asked for explicitly (--allow-key-reuse). Key rotation is a \
+             separate verb (spec §5.2)",
+        ));
+    }
+    let old = load_bundle(&req.issuer_bundle)?;
+    if old.manifest.bundle_type != BundleType::IssuerSet {
+        return Err(CertError::usage(format!(
+            "{} is a {} bundle, not an issuer set",
+            req.issuer_bundle.display(),
+            old.manifest.bundle_type.as_str()
+        )));
+    }
+    let root_bundle = load_bundle(&req.root_bundle)?;
+    if root_bundle.manifest.bundle_type != BundleType::RootSet {
+        return Err(CertError::usage(format!(
+            "{} is a {} bundle, not a root set",
+            req.root_bundle.display(),
+            root_bundle.manifest.bundle_type.as_str()
+        )));
+    }
+    let root_records: Vec<&CertRecord> = root_bundle
+        .manifest
+        .certificates
+        .iter()
+        .filter(|r| r.role == "root")
+        .collect();
+    // The root set must be the one the issuer set was made under:
+    // same bundle id and the same anchors.
+    let parent = old.manifest.parent.as_ref().ok_or_else(|| {
+        CertError::manifest("the issuer set records no parent root set to renew under")
+    })?;
+    let mut anchors: Vec<&str> = root_records
+        .iter()
+        .map(|r| r.fingerprint_sha256.as_str())
+        .collect();
+    anchors.sort_unstable();
+    let mut recorded: Vec<&str> = parent
+        .anchor_fingerprints
+        .iter()
+        .map(String::as_str)
+        .collect();
+    recorded.sort_unstable();
+    if parent.bundle_id != root_bundle.manifest.bundle_id || anchors != recorded {
+        return Err(CertError::policy(format!(
+            "{} is not the root set this issuer set chains to (recorded parent {})",
+            req.root_bundle.display(),
+            parent.bundle_id
+        )));
+    }
+
+    let mut root_handles: BTreeMap<AlgorithmId, CaHandle> = BTreeMap::new();
+    for record in &root_records {
+        let root_cn = extract_cn(&record.subject_dn).ok_or_else(|| {
+            CertError::manifest(format!(
+                "root record for {} has no CN in its subject DN",
+                record.algorithm.name()
+            ))
+        })?;
+        let handle = load_ca(
+            &root_bundle,
+            record,
+            &req.root_signer,
+            &root_bundle.manifest.organization,
+            &root_bundle.manifest.country,
+            None,
+            &root_cn,
+            1,
+        )?;
+        root_handles.insert(record.algorithm, handle);
+    }
+
+    let bundle_private = old.manifest.key_location == "bundle-private";
+    let mut artifacts: Vec<Artifact> = Vec::new();
+    let mut copied_keys: Vec<String> = Vec::new();
+    let mut records = Vec::new();
+    let mut warnings = Vec::new();
+    let issuers: Vec<&CertRecord> = old
+        .manifest
+        .certificates
+        .iter()
+        .filter(|r| r.role == "issuer")
+        .collect();
+    if issuers.is_empty() {
+        return Err(CertError::manifest(
+            "the issuer set holds no issuer certificates",
+        ));
+    }
+    for record in issuers {
+        let what = format!("{} ({})", record.subject_dn, record.cert_path);
+        let signer_algo = record.signer_algorithm.unwrap_or(record.algorithm);
+        let signer = root_handles.get(&signer_algo).ok_or_else(|| {
+            CertError::policy(format!(
+                "{what} was signed by the {} root, which the root set no longer holds",
+                signer_algo.name()
+            ))
+        })?;
+        let old_der = first_certificate_der(&old, &record.cert_path)?;
+        let old_info = parse_cert(&old_der)?;
+        let facts = issued_facts(&old_der, &what)?;
+        let cn = extract_cn(&record.subject_dn)
+            .ok_or_else(|| CertError::manifest(format!("{what} has no CN in its subject DN")))?;
+        let ou = extract_ou(&record.subject_dn);
+        let (nb, na) = clamp_window(
+            req.not_before,
+            req.not_after,
+            signer.cert.not_before,
+            signer.cert.not_after,
+            &cn,
+            &mut warnings,
+        )?;
+        let mut params = ca_params_for(
+            &old.manifest.organization,
+            &old.manifest.country,
+            ou.as_deref(),
+            &cn,
+            old_info.path_len.unwrap_or(0),
+            nb,
+            na,
+        );
+        if !facts.permitted_dns.is_empty() {
+            params.name_constraints = Some(rcgen::NameConstraints {
+                permitted_subtrees: facts
+                    .permitted_dns
+                    .iter()
+                    .map(|d| rcgen::GeneralSubtree::DnsName(d.clone()))
+                    .collect(),
+                excluded_subtrees: Vec::new(),
+            });
+        }
+        let subject_key = ExistingPublicKey {
+            raw: facts.public_key.clone(),
+            algorithm: signature_algorithm_for(record.algorithm),
+        };
+        let cert = signer.sign(&params, &subject_key)?;
+        let der = cert.der().to_vec();
+        let new_info = parse_cert(&der)?;
+        if new_info.subject_name_der != old_info.subject_name_der {
+            return Err(CertError::engine(format!(
+                "{what}: the reissued subject name does not match the original byte for byte"
+            )));
+        }
+        if crate::dns::spki_der(&der)? != crate::dns::spki_der(&old_der)? {
+            return Err(CertError::engine(format!(
+                "{what}: the reissued certificate does not carry the original key"
+            )));
+        }
+
+        // Bundle-private keys move into the renewed bundle, once per
+        // key, after a check that the key is the certificate's.
+        let key_path = match (&record.key_path, bundle_private) {
+            (Some(rel), true) => {
+                if !copied_keys.contains(rel) {
+                    let pkcs8 = read_artifact(&old, rel)?;
+                    if inspect_key(record.algorithm, &pkcs8)? != facts.public_key {
+                        return Err(CertError::policy(format!(
+                            "{rel} does not hold the private key of {what}"
+                        )));
+                    }
+                    artifacts.push(Artifact {
+                        rel_path: rel.clone(),
+                        kind: "private-key-pkcs8".into(),
+                        visibility: "private".into(),
+                        bytes: pkcs8,
+                    });
+                    copied_keys.push(rel.clone());
+                }
+                Some(rel.clone())
+            }
+            _ => None,
+        };
+        let rel = record.cert_path.clone();
+        artifacts.push(Artifact {
+            rel_path: rel.clone(),
+            kind: "certificate-pem".into(),
+            visibility: "public".into(),
+            bytes: pem_encode("CERTIFICATE", &der).into_bytes(),
+        });
+        let mut rec = record_from_der(
+            &der,
+            "issuer",
+            &record.partition,
+            record.primary,
+            rel,
+            key_path,
+        )?;
+        rec.signer_algorithm = record.signer_algorithm;
+        records.push(rec);
+    }
+
+    let parent = ParentRef {
+        bundle_type: BundleType::RootSet,
+        bundle_id: root_bundle.manifest.bundle_id.clone(),
+        name: root_bundle.manifest.name.clone(),
+        anchor_fingerprints: root_records
+            .iter()
+            .map(|r| r.fingerprint_sha256.clone())
+            .collect(),
+    };
+    let key_location = if bundle_private {
+        "bundle-private"
+    } else {
+        "external-store"
+    };
+    let mut manifest = base_manifest(
+        BundleType::IssuerSet,
+        &old.manifest.name,
+        &old.manifest.organization,
+        &old.manifest.country,
+        old.manifest.purpose.clone(),
+        old.manifest.generation,
+        Some(parent),
+        key_location,
+        old.manifest.cross_signing.clone(),
+        warnings,
+    )?;
+    manifest.revision = old.manifest.revision + 1;
+    manifest.predecessor = Some(old.manifest.bundle_id.clone());
     manifest.bundle_id = format!(
         "issuerset-{}-{}",
         manifest.slug,
