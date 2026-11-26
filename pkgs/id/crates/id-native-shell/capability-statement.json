@@ -31,12 +31,12 @@
   "providers": [
     {
       "declaration": "named in the provider_offer frame at session start; the grant is local and per world, bounded by the F12.4 provider manifest (id_caps::world_caps::CLIENT_FILE_READ_MANIFEST) composed by minimum with the shell's local bounds — a provider only ever narrows the session",
-      "execution": "reads only beneath the granted root (openat2 RESOLVE_BENEATH on Linux); every request is answered with a provider_reply frame and recorded in the shell's local audit",
+      "execution": "reads only beneath the granted root: Linux uses openat2 RESOLVE_BENEATH; non-Linux targets canonicalize the requested path and verify it remains beneath the root before opening. Every request is answered with a provider_reply frame and recorded in the shell's local audit",
       "id": "client.file.read",
       "kind": "client capability provider (F13.7, issue #789)"
     }
   ],
-  "recorded_for": "shells v1 slice 2 (issue #10928); terms per doc/2026-11-10T20-40-00Z_design_more_shells_v1 (issue #6296), section 2 and 'The one gate'",
+  "recorded_for": "shells v1 native target statements (Linux #10928, macOS #12817); terms per doc/2026-11-10T20-40-00Z_design_more_shells_v1 (issue #6296), section 2 and 'The one gate'",
   "sends": [
     "chat",
     "form_result",

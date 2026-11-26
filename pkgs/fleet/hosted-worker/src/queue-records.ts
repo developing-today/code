@@ -40,7 +40,7 @@ export class StoreQueueRecordSource implements QueueRecordSource {
       claimedAt: string | null;
       notBefore: string | null;
     } | null = null;
-    for (const task of this.store.allTasks()) {
+    for (const task of await this.store.allTasks()) {
       const progress = isObj(task.progress) ? task.progress : null;
       if (progress === null || progress["session_id"] !== sessionId) continue;
       if (
@@ -53,7 +53,7 @@ export class StoreQueueRecordSource implements QueueRecordSource {
     }
     if (best === null) return null;
     let workStartedAt: string | null = null;
-    for (const ev of this.store.eventsForTask(best.id)) {
+    for (const ev of await this.store.eventsForTask(best.id)) {
       if (ev.kind !== "session_bound") continue;
       if (isObj(ev.detail) && ev.detail["session_id"] === sessionId) {
         workStartedAt = ev.created_at;

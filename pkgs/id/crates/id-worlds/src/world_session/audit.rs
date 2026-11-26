@@ -25,6 +25,7 @@ pub(super) fn admin_frame_name(frame: &ClientFrame) -> &'static str {
         ClientFrame::InstallBegin { .. } => "InstallBegin",
         ClientFrame::EventHistoryAdmin { .. } => "EventHistoryAdmin",
         ClientFrame::SetExecutionProfile { .. } => "SetExecutionProfile",
+        ClientFrame::SetPresentationPolicy { .. } => "SetPresentationPolicy",
         _ => "Unknown",
     }
 }
@@ -36,7 +37,12 @@ pub(super) fn admin_frame_name(frame: &ClientFrame) -> &'static str {
 /// dispatch path through this module calls this exactly once per admin
 /// frame (the [`frame_admin_token`] set), so every admin frame
 /// produces exactly one line, denials included.
-pub(super) fn audit_admin_frame(world_id: &str, action: &str, outcome: &str, parameters: serde_json::Value) {
+pub(super) fn audit_admin_frame(
+    world_id: &str,
+    action: &str,
+    outcome: &str,
+    parameters: serde_json::Value,
+) {
     emit_audit_record(&AuditRecord {
         schema_version: 2,
         timestamp_ms: audit_now_ms(),

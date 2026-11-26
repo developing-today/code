@@ -215,6 +215,12 @@ sends as few as it can.
 The generated script is validated with the step-1 diagnostics before anything
 runs, and returned rather than run unless `autonomy: run` is asked for.
 
+When the configured provider answers HTTP 402, the answer is still HTTP 200 with
+`model: "none"` and `reason: "provider_payment_required"` beside a fixed
+`message`. That is distinct from a provider that is merely unavailable, which
+keeps the generic no-answer message. The provider's own response body is never
+returned to the caller (#13610).
+
 Whatever is asked for, the daemon's `autonomy.max` is the most it does: a
 request above it — in a body, the `X-Mcpx-Settings` header, the CLI's
 `--run`, an MCP tool call or the plugin — is lowered to it, not refused, and

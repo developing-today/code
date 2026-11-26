@@ -365,6 +365,48 @@ Screen := {
         background = if bg == 0 { "" } else { "\u(1b)[48;5;${U8.to_str(bg)}m" }
         Str.concat(weight, Str.concat(foreground, background))
     }
+
+    ## The cells of `next` that differ from `prev`, in row-major order, each
+    ## with its position and its new content. This is the shared currency of
+    ## the incremental presenters in `Term`: a painter writes exactly these
+    ## cells and nothing else. Frames of different sizes diff as if the
+    ## smaller were blank-padded to the larger, so a resize reports the
+    ## cells the new geometry changes; a host that sees a size change in
+    ## the diff should still prefer a full repaint.
+    diff_cells : Screen, Screen -> List({ x : U64, y : U64, ch : Str, fg : U8, bg : U8, bold : Bool })
+    diff_cells = |prev, next| {
+        width = if prev.width > next.width { prev.width } else { next.width }
+        height = if prev.height > next.height { prev.height } else { next.height }
+        blank = { ch: " ", fg: 0, bg: 0, bold: Bool.False }
+        List.fold(range(0, width * height), [], |acc, index| {
+            x = index % width
+            y = index / width
+            before = cell_or(prev, x, y, blank)
+            after = cell_or(next, x, y, blank)
+            if before == after {
+                acc
+            } else {
+                List.append(acc, { x: x, y: y, ch: after.ch, fg: after.fg, bg: after.bg, bold: after.bold })
+            }
+        })
+    }
+
+    ## The screen's size, for presenters that track frame geometry
+    ## without depending on the cell list's layout.
+    dimensions : Screen -> { width : U64, height : U64 }
+    dimensions = |screen| { width: screen.width, height: screen.height }
+
+    cell_or : Screen, U64, U64, { ch : Str, fg : U8, bg : U8, bold : Bool } -> { ch : Str, fg : U8, bg : U8, bold : Bool }
+    cell_or = |screen, x, y, fallback| {
+        if x < screen.width and y < screen.height {
+            match List.get(screen.cells, y * screen.width + x) {
+                Ok(cell) => cell
+                Err(_) => fallback
+            }
+        } else {
+            fallback
+        }
+    }
 }
 
 expect Screen.chars("ab") == ["a", "b"]
@@ -382,3 +424,8 @@ expect Screen.render_rows_json(3, 1, [[{ text: "a\"", style: { fg: 0, bg: 0, bol
 expect Screen.box_edge(8, "ti") == "+-ti---+"
 expect Screen.box_edge(6, "toolong") == "+-too+"
 expect Screen.box_edge(4, "") == "+--+"
+expect Screen.dimensions(Screen.new(4, 2)) == { width: 4, height: 2 }
+expect Screen.diff_cells(Screen.new(2, 1), Screen.new(2, 1)) == []
+expect Screen.diff_cells(Screen.new(3, 1), Screen.put_text(Screen.new(3, 1), 1, 0, "x", { fg: 0, bg: 0, bold: Bool.False })) == [{ x: 1, y: 0, ch: "x", fg: 0, bg: 0, bold: Bool.False }]
+expect Screen.diff_cells(Screen.put_text(Screen.new(2, 1), 0, 0, "ab", { fg: 0, bg: 0, bold: Bool.False }), Screen.new(2, 1)) == [{ x: 0, y: 0, ch: " ", fg: 0, bg: 0, bold: Bool.False }, { x: 1, y: 0, ch: " ", fg: 0, bg: 0, bold: Bool.False }]
+expect Screen.diff_cells(Screen.new(2, 1), Screen.put_text(Screen.new(2, 1), 0, 0, "a", { fg: 196, bg: 0, bold: Bool.True })) == [{ x: 0, y: 0, ch: "a", fg: 196, bg: 0, bold: Bool.True }]

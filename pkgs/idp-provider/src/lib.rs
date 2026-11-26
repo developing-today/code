@@ -7,9 +7,11 @@
 //! RS256 with the Slice 2 OIDC private key.
 //!
 //! The federated doors (#13411 GitHub, #13412 Google, #13414
-//! Microsoft) hang off `/door/{name}/start|callback` and link into
-//! the same account row; link state lives in the runtime identity
-//! store (#13415), seeded from the provider config. Signing keys
+//! Microsoft) hang off `/door/{name}/start|callback`; link state
+//! lives in the runtime identity store (#13415), seeded from the
+//! provider config. The config account's declared identities link
+//! to that account; any other allowlisted identity enrolls at
+//! first login into its own read-only account (#15249). Signing keys
 //! are a set (Slice 5 rollover): the JWKS can publish several
 //! certificates at once, tokens are signed with the configured
 //! active kid, and verification accepts every published kid.
