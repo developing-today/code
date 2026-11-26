@@ -70,9 +70,7 @@ pub enum KeyError {
 impl std::fmt::Display for KeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KeyError::BadSecretForm => {
-                f.write_str("secret must be 64 hex characters (32 bytes)")
-            }
+            KeyError::BadSecretForm => f.write_str("secret must be 64 hex characters (32 bytes)"),
             KeyError::RngUnavailable => f.write_str("OS RNG unavailable"),
         }
     }
@@ -207,6 +205,8 @@ fn to_hex(bytes: &[u8; 32]) -> String {
 
 const USAGE: &str = "\
 Usage: fleet id session-key [--id-secret <hex>] [--stamp | --node-id]
+       fleet id proxy-mode [--raw] [--opaque] [--alpn <alpn>]
+                           [--mode <1|2|3|name>]  (design §4.2, #15434)
 
 Mint (or adopt, via --id-secret / FLEET_ID_SECRET) this session's
 iroh key and render its stamp (design #10391 §4.1):
@@ -230,6 +230,11 @@ pub fn run(args: &[String]) -> i32 {
     // everything after it is this verb's own.
     match rest.next().map(|s| s.as_str()) {
         Some("session-key") => {}
+        // Slice 2 (#15434, §4.2): mode selection lives in id_proxy.
+        Some("proxy-mode") => {
+            let tail: Vec<String> = rest.cloned().collect();
+            return crate::id_proxy::run_proxy_mode(&tail);
+        }
         Some(other) => {
             eprintln!("error: unknown 'fleet id' command '{other}'\n\n{USAGE}");
             return 2;
@@ -319,7 +324,13 @@ mod tests {
 
     #[test]
     fn malformed_secrets_are_refused() {
-        for bad in ["", "00", &"00".repeat(31), &"00".repeat(33), &"zz".repeat(32)] {
+        for bad in [
+            "",
+            "00",
+            &"00".repeat(31),
+            &"00".repeat(33),
+            &"zz".repeat(32),
+        ] {
             assert_eq!(
                 SessionKey::from_secret_hex(bad).map(|_| ()),
                 Err(KeyError::BadSecretForm),

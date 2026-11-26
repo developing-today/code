@@ -71,6 +71,51 @@ func TestGenerateModelLayerAloneAnswers(t *testing.T) {
 	}
 }
 
+// #13610: a provider's HTTP 402 is a typed payment refusal, distinct from
+// the generic no-answer case a 503 produces, and the provider body never
+// reaches the error text.
+func TestGenerateDistinguishesPaymentRequiredFromUnavailable(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		wantPay bool
+	}{
+		{"402 payment required", http.StatusPaymentRequired, true},
+		{"503 unavailable", http.StatusServiceUnavailable, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"error":"secret-provider-body-do-not-leak"}`)
+			}))
+			defer srv.Close()
+			s := intentTestServer()
+			pol := defaultConsumerPolicy()
+			pol.ModelProvider = "openai"
+			pol.ModelBaseURL = srv.URL
+			pol.ModelDefault = "openai/test-model"
+			pol.ModelTimeout = 5 * time.Second
+			ctx := withPolicy(context.Background(), pol)
+			_, _, err := s.generate(ctx, "get chicago weather", nil, "", "", "")
+			if err == nil {
+				t.Fatal("generate: want an error")
+			}
+			var pay *model.PaymentRequiredError
+			gotPay := errors.As(err, &pay)
+			if gotPay != tc.wantPay {
+				t.Fatalf("payment-required = %v, want %v (err %v)", gotPay, tc.wantPay, err)
+			}
+			if !tc.wantPay && !errors.Is(err, errNoModel) {
+				t.Fatalf("err = %v, want errNoModel", err)
+			}
+			if strings.Contains(err.Error(), "secret-provider-body") {
+				t.Fatalf("provider body leaked into error: %v", err)
+			}
+		})
+	}
+}
+
 func TestGenerateUsesNamedProfileWithProviderNone(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

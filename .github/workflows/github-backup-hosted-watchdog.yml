@@ -65,6 +65,11 @@ jobs:
           RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           RCLONE_CONFIG_R2BAK_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          # The r2-backups token cannot HeadBucket (403); rclone
+          # must skip its bucket check, as in the laptop's proven
+          # r2bak config and the freshness workflow (#15515).
+          RCLONE_CONFIG_R2BAK_REGION: auto
+          RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET: "true"
         run: |
           set +e
           python3 infra/github-backup/bin/hosted_watchdog.py \

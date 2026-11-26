@@ -12,8 +12,10 @@ import { join } from "node:path";
 import "../public/look.js";
 import { routesKnown } from "../public/app.js";
 import { PAGES } from "../public/pages/index.js";
+import components, { ELEMENTS } from "../public/pages/components.js";
 import reports, { dayFrom, reportOf } from "../public/pages/reports.js";
 import trends, { notes, shape, wholeFrom } from "../public/pages/trends.js";
+import { page as domPage, type El } from "./dom.js";
 
 const PUBLIC = join(import.meta.dir, "../public");
 
@@ -442,4 +444,25 @@ test("a report says when its numbers are not whole, and sets nothing against day
     dayFrom("2026-12-31", 1),
   ]).toEqual(["2026-11-17", "2026-10-27", "2026-11-25", "2027-01-01"]);
   expect(reports.route).toBe("more/reports");
+});
+
+test("components page (#14433): the census names every shared element, and the page draws each drawable one once with its shared class", async () => {
+  // Oracle: the issue's own list (card, chip, row, tile, link, option,
+  // seg, sheet, stat, toast, the chart kit) against ELEMENTS, and the
+  // rendered view's classes against app.css's shared classes.
+  const names = ELEMENTS.map((e: { name: string }) => e.name);
+  for (const want of ["card", "chip", "row", "tile", "link", "option", "seg", "stat", "toast", "sheet"])
+    expect(names).toContain(want);
+  expect(ELEMENTS.filter((e: { home: string }) => e.home === "charts.js").length).toBeGreaterThanOrEqual(3);
+  expect(components.route).toBe("more/components");
+  domPage();
+  const out = (await components.view("", {})) as unknown as El[];
+  const all: El[] = out.flatMap((el) => el.all(() => true));
+  const classes = new Set(all.flatMap((el) => el.className.split(/\s+/).filter(Boolean)));
+  for (const cls of ["card", "chip", "row", "tile", "link", "option", "seg", "stat", "fold", "empty", "kpis"])
+    expect([cls, classes.has(cls)]).toEqual([cls, true]);
+  // The chart kit is drawn, not just named: figures from both chart builders.
+  expect(all.filter((el) => el.tag === "figure").length).toBeGreaterThanOrEqual(2);
+  const said = out.map((el) => el.textContent).join(" ");
+  for (const entry of ELEMENTS) expect(said.toLowerCase()).toContain(entry.name.split(" ")[0]);
 });

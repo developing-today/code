@@ -37,6 +37,10 @@
 //!   trust store: two-phase rollover (stage → acknowledge →
 //!   activate → retire) with last-known-good retention (BT-2,
 //!   #14400; spec §27.3 item 9 in its minimal broker form).
+//! - [`trust_consumer`] — operator trust verbs over a root set:
+//!   `inspect`, `pin`, `verify --pins | --store`, and
+//!   `export --target <consumer>` with per-consumer
+//!   install/verify/remove guidance (spec §§6.1, 44; #15612).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -56,6 +60,7 @@ pub mod cli;
 pub mod dns;
 pub mod engine;
 pub mod error;
+pub mod format;
 pub mod graph;
 pub mod inventory;
 pub mod model;
@@ -63,8 +68,10 @@ pub mod naming;
 pub mod ocsp;
 pub mod profile;
 pub mod publish;
+pub mod replace;
 pub mod timeparse;
 pub mod trust;
+pub mod trust_consumer;
 
 pub use error::{CertError, Result};
 

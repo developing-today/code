@@ -39,7 +39,7 @@ which existing spellings stay as they are.
   `fleet_queue::client::run` dispatches: `note`, `link`, `meta` and
   `resolution-backfill`. Domain help therefore under-reports them.
 - `repo-queue note add|list|edit|remove` and `repo-queue link
-  add|remove|list` exist on the legacy client parser. They call the
+add|remove|list` exist on the legacy client parser. They call the
   broker's `/note-*` and `/link-*` verbs.
 - A standalone `repo-queue` binary still builds as the rollback path
   (`fleet-queue/src/bin/repo-queue.rs`) and calls the same
@@ -121,7 +121,7 @@ not copy that table. Instead:
   (CLI-02 owns the type; CLI-13 only reads it).
 - `fleet help work`, `fleet help dependency`, `fleet work --help`,
   `fleet work <op> --help` and the `commands` array of `fleet
-  capabilities` are all rendered from `declarations()` by code in
+capabilities` are all rendered from `declarations()` by code in
   `main.rs`.
 - `fleet_registry` stays std-only and keeps only the domain rows. It
   never gains a per-flag table, so there is nothing to drift.
@@ -218,13 +218,13 @@ Rules behind the table:
    so `/` never means two things.
 2. **No bare numbers.** CLI-02 rejects a bare numeric target. The
    charter's example `fleet dependency add 842 --blocked-by fleet:761
-   --hard` is therefore registered as `fleet dependency add fleet:842
-   --blocked-by fleet:761 --hard`; `842` alone is
+--hard` is therefore registered as `fleet dependency add fleet:842
+--blocked-by fleet:761 --hard`; `842` alone is
    `ambiguous_target_form`, exit 2. A bare `#42` for a GitHub
    reference follows DEP-04: accepted only when the work's own repo
    makes it unambiguous, decided behind the seam.
 3. **Two-word operations.** `note` is an operation group: `fleet work
-   note` needs one more token from the closed set `add`, `list`,
+note` needs one more token from the closed set `add`, `list`,
    `edit`, `remove`, `search`. A missing or unknown verb is
    `unknown_operation`. This narrows CLI-02 §3.1's single-token
    operation to "a token, or a group token plus one verb token". It
@@ -260,7 +260,7 @@ Rules behind the table:
   `observed_at` field with the main commit it was checked at.
 - The CLI-13 implementation PR corrects `fleet.capabilities` this
   way: `status: implemented`, evidence `fleet/src/main.rs
-  print_capabilities`, `observed_at` the main commit. It adds the
+print_capabilities`, `observed_at` the main commit. It adds the
   same for `fleet.help`'s evidence line, which points at a stale line
   number.
 

@@ -1264,7 +1264,12 @@ def _classify_claim_body(data, returncode: int) -> "tuple[Dict | None, str]":
     claimed_id = row.get("id") if isinstance(row, dict) else None
     if claimed_id is not None:
         return row, "row_returned"
-    if row is not None and "task" in row and row["task"] is None and returncode in (0, 5):
+    if (
+        row is not None
+        and "task" in row
+        and row["task"] is None
+        and returncode in (0, 5)
+    ):
         # cmd_claim's "nothing claimable" answer: a well-formed
         # {"task": null} body with exit 5 (or 0). That is the
         # ordinary empty result, not a CLI failure, so classify it
@@ -1904,7 +1909,9 @@ def launch_step(
                     if row is not None:
                         collected[task_id] = row
                 if task_id not in collected:
-                    final = (fallback_diag or sink_diag).get("category", "not_attempted")
+                    final = (fallback_diag or sink_diag).get(
+                        "category", "not_attempted"
+                    )
                     skip = {
                         "task_id": task_id,
                         "reason": "sink_claim_failed",

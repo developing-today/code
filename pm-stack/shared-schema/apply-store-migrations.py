@@ -140,9 +140,7 @@ def dry_run(args, migrations) -> dict:
     if args.local and Path(args.local).exists():
         client = tm.LocalSqliteClient(args.local)
         try:
-            rows = client.query(
-                f"SELECT migration_id FROM {tm.LEDGER_TABLE}"
-            )
+            rows = client.query(f"SELECT migration_id FROM {tm.LEDGER_TABLE}")
             already = [row["migration_id"] for row in rows]
         except Exception:
             already = []

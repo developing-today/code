@@ -63,6 +63,7 @@ pub mod oidc_login;
 pub mod opaque_login;
 pub mod port;
 pub mod presentation_asset;
+pub mod presentation_fallback;
 pub mod presentation_filter;
 pub mod presentation_policy;
 pub mod rejection;

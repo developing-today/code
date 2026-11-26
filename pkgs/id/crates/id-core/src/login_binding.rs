@@ -63,6 +63,9 @@ pub const MAX_SCOPE_ENTRIES: usize = 32;
 /// Most challenges outstanding at once per issuer.
 pub const MAX_OUTSTANDING_CHALLENGES: usize = 4096;
 
+/// Maximum number of accepted binding changes restored from persistent state.
+pub const MAX_BINDING_HISTORY_RECORDS: usize = 100_000;
+
 /// Length of a challenge nonce.
 pub const NONCE_LEN: usize = 32;
 
@@ -332,8 +335,12 @@ impl BindingStatement {
     /// [`BindingError`] describing the first problem found.
     pub fn decode(bytes: &[u8]) -> Result<Self, BindingError> {
         let value = decode_canonical(bytes)?;
+        Self::from_value(&value)
+    }
+
+    fn from_value(value: &Value) -> Result<Self, BindingError> {
         let fields = Fields::new(
-            &value,
+            value,
             &[
                 "v",
                 "id_public_key",
@@ -429,6 +436,50 @@ pub enum BindingAuthority {
     Recovery(Vec<u8>),
 }
 
+impl BindingAuthority {
+    fn to_value(&self) -> Value {
+        match self {
+            Self::CurrentKey { key, signature } => map(vec![
+                ("kind", text("current-key")),
+                ("key", Value::Bytes(key.to_vec())),
+                ("signature", Value::Bytes(signature.to_vec())),
+            ]),
+            Self::Recovery(proof) => map(vec![
+                ("kind", text("recovery")),
+                ("proof", Value::Bytes(proof.clone())),
+            ]),
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<Self, BindingError> {
+        let fields = Fields::new(value, &["kind", "key", "signature", "proof"])?;
+        match fields.text("kind")? {
+            "current-key" => {
+                fields.only(&["kind", "key", "signature"])?;
+                let signature = bytes64(fields.get("signature")?, "signature")?;
+                Ok(Self::CurrentKey {
+                    key: fields.bytes32("key")?,
+                    signature,
+                })
+            }
+            "recovery" => {
+                fields.only(&["kind", "proof"])?;
+                let Value::Bytes(proof) = fields.get("proof")? else {
+                    return Err(BindingError::Field {
+                        field: "proof",
+                        problem: "is not a byte string",
+                    });
+                };
+                Ok(Self::Recovery(proof.clone()))
+            }
+            _ => Err(BindingError::Field {
+                field: "kind",
+                problem: "is not a known binding authority",
+            }),
+        }
+    }
+}
+
 /// Verifies a #5888 recovery-threshold proof for a binding change.
 pub trait RecoveryThreshold {
     /// True when `proof` authorises replacing the binding of `account`
@@ -460,6 +511,30 @@ pub struct SignedBinding {
 }
 
 impl SignedBinding {
+    fn to_value(&self) -> Value {
+        let mut entries = vec![
+            ("statement", self.statement.to_value()),
+            ("self_signature", Value::Bytes(self.self_signature.to_vec())),
+        ];
+        if let Some(authority) = &self.authority {
+            entries.push(("authority", authority.to_value()));
+        }
+        map(entries)
+    }
+
+    fn from_value(value: &Value) -> Result<Self, BindingError> {
+        let fields = Fields::new(value, &["statement", "self_signature", "authority"])?;
+        Ok(Self {
+            statement: BindingStatement::from_value(fields.get("statement")?)?,
+            self_signature: bytes64(fields.get("self_signature")?, "self_signature")?,
+            authority: if fields.has("authority") {
+                Some(BindingAuthority::from_value(fields.get("authority")?)?)
+            } else {
+                None
+            },
+        })
+    }
+
     /// Client side: signs a first binding with the key it binds.
     ///
     /// # Errors
@@ -551,6 +626,7 @@ pub struct StoredBinding {
 #[derive(Debug, Default)]
 pub struct BindingRegistry {
     bindings: BTreeMap<AuthAccount, StoredBinding>,
+    history: Vec<SignedBinding>,
 }
 
 impl BindingRegistry {
@@ -571,6 +647,62 @@ impl BindingRegistry {
             .map(|stored| stored.statement.id_public_key)
     }
 
+    /// Encode the accepted signed binding history for persistent storage.
+    /// Every operation is replayed and re-authorized when restored.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Cbor`] if canonical encoding fails.
+    pub fn history_bytes(&self) -> Result<Vec<u8>, BindingError> {
+        if self.history.len() > MAX_BINDING_HISTORY_RECORDS {
+            return Err(BindingError::Field {
+                field: "history",
+                problem: "has too many records",
+            });
+        }
+        Ok(encode_canonical(&Value::Array(
+            self.history.iter().map(SignedBinding::to_value).collect(),
+        ))?)
+    }
+
+    /// Restore a registry from its signed operation history. Each enrolment,
+    /// current-key update, and recovery update is re-validated in order.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError`] when the history is malformed or any operation fails
+    /// its original authorization checks.
+    pub fn from_history_bytes(
+        bytes: &[u8],
+        recovery: &dyn RecoveryThreshold,
+    ) -> Result<Self, BindingError> {
+        let value = decode_canonical(bytes)?;
+        let Value::Array(entries) = value else {
+            return Err(BindingError::Field {
+                field: "history",
+                problem: "is not an array",
+            });
+        };
+        if entries.len() > MAX_BINDING_HISTORY_RECORDS {
+            return Err(BindingError::Field {
+                field: "history",
+                problem: "has too many records",
+            });
+        }
+        let mut registry = Self::new();
+        for entry in entries {
+            let signed = SignedBinding::from_value(&entry)?;
+            if signed.statement.generation == 1 {
+                let session =
+                    AuthenticatedAccount::from_verified_login(signed.statement.account.clone());
+                registry.enrol(&session, signed)?;
+            } else {
+                registry.update(signed, recovery)?;
+            }
+        }
+        Ok(registry)
+    }
+
     /// First binding of an account, admitted on an authenticated session
     /// for that same account and a self-signature by the bound key.
     ///
@@ -583,6 +715,7 @@ impl BindingRegistry {
         session: &AuthenticatedAccount,
         signed: SignedBinding,
     ) -> Result<&StoredBinding, BindingError> {
+        let history_entry = signed.clone();
         let statement = &signed.statement;
         if &statement.account != session.account() {
             return Err(BindingError::AccountMismatch);
@@ -607,7 +740,9 @@ impl BindingRegistry {
             self_signature: signed.self_signature,
             authority: None,
         };
-        Ok(self.bindings.entry(account).or_insert(stored))
+        self.bindings.insert(account.clone(), stored);
+        self.history.push(history_entry);
+        self.bindings.get(&account).ok_or(BindingError::NotBound)
     }
 
     /// Replaces an account's binding. The change is authorised by the
@@ -624,6 +759,7 @@ impl BindingRegistry {
         signed: SignedBinding,
         recovery: &dyn RecoveryThreshold,
     ) -> Result<&StoredBinding, BindingError> {
+        let history_entry = signed.clone();
         let statement = &signed.statement;
         let current = self
             .bindings
@@ -658,6 +794,7 @@ impl BindingRegistry {
             authority: signed.authority,
         };
         self.bindings.insert(account.clone(), stored);
+        self.history.push(history_entry);
         self.bindings.get(&account).ok_or(BindingError::NotBound)
     }
 }
@@ -926,6 +1063,22 @@ fn text(value: &str) -> Value {
 fn map(mut entries: Vec<(&'static str, Value)>) -> Value {
     entries.sort_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
     Value::Map(entries.into_iter().map(|(k, v)| (text(k), v)).collect())
+}
+
+fn bytes64(value: &Value, field: &'static str) -> Result<[u8; 64], BindingError> {
+    match value {
+        Value::Bytes(bytes) => bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_err| BindingError::Field {
+                field,
+                problem: "is not 64 bytes",
+            }),
+        _ => Err(BindingError::Field {
+            field,
+            problem: "is not a byte string",
+        }),
+    }
 }
 
 /// Strict field access over a decoded map.

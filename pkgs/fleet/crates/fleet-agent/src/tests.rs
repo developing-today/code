@@ -406,6 +406,7 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
         ("code-i", "repo-worker-code"),
         ("code-a", "repo-worker-code"),
         ("code-b", "repo-worker-code"),
+        ("code-g", "repo-worker-code"),
         ("opencode-a", "repo-worker-opencode"),
         ("opencode-b", "repo-worker-opencode"),
         ("openchamber-a", "repo-worker-openchamber"),

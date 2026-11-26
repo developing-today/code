@@ -1,0 +1,316 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Testing - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="testing"><a class="header" href="#testing">Testing</a></h1>
+<p>Fleet’s testing doctrine comes from the repository’s standing rules: property-based tests where code has meaningful invariants, model-based tests where a spec or model exists, and <strong>every automated test names its oracle</strong> — in practice, test names and comments carry the issue number and the invariant they check (<code>Oracle (#7598): …</code>, <code>#12777 oracle: the unblock marker is audit-only…</code>). <code>proptest 1.12</code> is a dev-dependency of the binary crate (for the <code>gh</code> read classifier) and of <code>fleet-queue</code> (for the client parser invariants).</p>
+<p>Run the whole suite from <code>pkgs/fleet/</code>:</p>
+<pre><code class="language-sh">cargo test --workspace
+</code></pre>
+<h2 id="inline-oracle-named-tests-per-crate"><a class="header" href="#inline-oracle-named-tests-per-crate">Inline, oracle-named tests per crate</a></h2>
+<p>Tests are overwhelmingly inline <code>#[cfg(test)] mod tests</code> in the file they test. The shape per crate:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Where the tests live</th></tr>
+</thead>
+<tbody>
+<tr><td><code>fleet</code> (bin)</td><td>Inline tests in <code>src/main.rs</code> (serve-list parsing, proxy-ssh argv building, help-flag positions, broker-role argument rejection) plus integration targets in <code>tests/</code>: <code>invocation_ledger.rs</code>, <code>proxy_ssh.rs</code>, <code>search_serve.rs</code>.</td></tr>
+<tr><td><code>fleet-registry</code></td><td>In-file invariant tests (<code>capability_ids_are_unique_and_stable</code>, <code>variant_profiles_nest</code>, <code>every_domain_primary_is_in_its_surface</code>, <code>aliases_route_to_real_domains</code>, <code>domain_aliases_match_the_argv0_map</code>) plus the integration target <code>tests/pmo_operator_docs.rs</code> — the DOC-01 machine check described in <a href="keeping-this-book-current.html">Keeping this book current</a>.</td></tr>
+<tr><td><code>fleet-queue</code></td><td>A very large inline test module in <code>src/client.rs</code> (parser invariants, the usage↔parser parity test below, timeline rendering), marker-fold oracles in <code>src/fallback.rs</code>, tests in the <code>src/client/</code> command modules, and integration targets gated by feature (next section). Two Python SQL regressions ship as test data: <code>implementation_repo_sql.py</code> and <code>quarantine_atomic_sql.py</code>.</td></tr>
+<tr><td><code>fleet-config</code></td><td>A large inline suite (around fifty tests) plus proptest.</td></tr>
+<tr><td><code>fleet-secrets</code></td><td>A large inline suite (around thirty-five tests).</td></tr>
+<tr><td><code>fleet-search</code></td><td><code>tests/serve_contract.rs</code> for the serve-role contract. The server is a parity-guarded copy of the atlas-search service, also guarded by the <code>fleet-search-parity-guard</code> workflow.</td></tr>
+<tr><td><code>fleet-agent</code></td><td>Inline <code>src/tests.rs</code>; proptest regression seeds are checked in at <code>proptest-regressions/tests.txt</code>.</td></tr>
+<tr><td><code>fleet-dispatch</code>, <code>fleet-laptop-agent</code>, <code>fleet-bridge</code></td><td>Inline tests in <code>src/lib.rs</code> / <code>src/tests.rs</code> and module tests.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="feature-gated-integration-tests-test-required-features"><a class="header" href="#feature-gated-integration-tests-test-required-features">Feature-gated integration tests: <code>[[test]] required-features</code></a></h2>
+<p>Because the workspace is feature-split (see <a href="register-a-domain.html">Register a domain or capability</a>), a test target declares the features it needs, and Cargo only builds it when that surface is compiled. In <code>fleet-queue</code>’s <code>Cargo.toml</code>:</p>
+<ul>
+<li><code>tests/broker_bin_args.rs</code> — <code>required-features = ["queue-broker", "secrets-broker"]</code></li>
+<li><code>tests/chunked_list.rs</code> — <code>required-features = ["client"]</code></li>
+<li><code>tests/person_wait_cli.rs</code> — <code>required-features = ["client"]</code></li>
+</ul>
+<p>The consequence to remember: the fallback module sits behind the <code>client</code> feature (<code>#[cfg(feature = "client")] pub mod fallback;</code> in <code>crates/fleet-queue/src/lib.rs</code>), so <strong>a broker-only test run does not compile the fallback tests at all</strong>. The fallback oracles run only under a client-carrying feature set. The Nix <code>fleet-brokers</code> test flags and the full-variant check phase both carry <code>client</code>; a local <code>cargo test --features queue-broker</code> run silently skips them. When you change fallback behaviour, run a client-carrying test set explicitly.</p>
+<h2 id="pkgsfleettests--the-one-python-test"><a class="header" href="#pkgsfleettests--the-one-python-test"><code>pkgs/fleet/tests/</code> — the one Python test</a></h2>
+<p><code>pkgs/fleet/tests/</code> contains exactly one file, and it is not a Cargo integration test: <code>test_tailnet_proxy_env.py</code>, a Python test of the tailnet proxy environment contract for the Python-side tooling that shares the tree.</p>
+<p>Other test-bearing corners outside the crates: <code>pkgs/fleet/archer-slack/</code> Python tests, <code>pkgs/fleet/hosted-worker/test/</code> TypeScript tests for the hosted Worker edition (including <code>stamp-sig.test.ts</code>, the golden-vector conformance surface the Rust <code>gh</code> domain’s Ed25519 signing must reproduce byte-exact), <code>pkgs/fleet/placement/evaluate_test.go</code> for the Go placement proof of concept, and <code>pkgs/fleet/migrations/*_test.sql</code>.</p>
+<h2 id="smokesh--the-hermetic-post-build-suite"><a class="header" href="#smokesh--the-hermetic-post-build-suite"><code>smoke.sh</code> — the hermetic post-build suite</a></h2>
+<p><code>pkgs/fleet/smoke.sh</code> is the per-variant, post-build smoke suite. It is hermetic by contract: no network, no installs, no state outside a <code>mktemp</code> directory, and it exits non-zero if any check fails.</p>
+<ol>
+<li>
+<p>Build the four outputs (see <a href="building.html">Building fleet</a>).</p>
+</li>
+<li>
+<p>Invoke it with the four Nix package output paths; each argument’s <code>bin/fleet</code> is the artefact under test:</p>
+<pre><code class="language-sh">./pkgs/fleet/smoke.sh ./result ./result-1 ./result-2 ./result-3
+</code></pre>
+</li>
+</ol>
+<p>What it covers:</p>
+<ul>
+<li><strong>Variants</strong> — for each of full, serve, connect, and static: <code>--help</code> renders the full registry with unavailable domains marked, and <code>version</code> lists exactly that variant’s capability set.</li>
+<li><strong>Stubs</strong> — a missing domain stubs with exit 69 and the right wording, reached three ways: <code>fleet &lt;domain&gt;</code>, an argv0 alias symlink, and a hyphenated variant name (which narrows). A config-disabled domain stubs at 69 with the config wording.</li>
+<li><strong>Connect hygiene</strong> — both connect flavours run under <code>env -i</code> and are within the D7 size gate (≤ 2 MiB).</li>
+<li><strong>Search serve role</strong> — reaches the real role rather than a stub; hermetically it stops at config load (exit 2) before any token is needed.</li>
+<li><strong>Proxy domain end to end</strong> — broker auto-start, round-trips, shim materialisation and stale-shim removal on a services-map change, init no-op, location-aware init cases (an unknown location reports and exits 69 with no broker spawned), legacy proto-0 interop, idle exit, pool default rendering, a 32-concurrent burst, and the identity stamp.</li>
+<li><strong>Queue domain</strong> — the secrets-broker role binds and <code>/health</code> answers (in the hermetic world, 503 with <code>serving=false</code> is the <em>pass</em> shape); the queue-broker <code>/healthz</code> answers; client-to-broker wiring (a credential failure surfaces as exit 3 with broker wording); the fallback switch (one JSON object, exit 6) and the operator escape hatch underneath it; client <code>--help</code> / <code>--version</code> through the argv0 route.</li>
+<li><strong>Dispatch domain</strong> — the thin client against a stub pm-dispatch and a stub <code>bws</code> on <code>PATH</code>: the token is resolved by name, presented as <code>Authorization: Bearer</code>, the service JSON is printed verbatim, and a deliberate 409 is passed through.</li>
+<li><strong>Secrets domain</strong> — the broker-first chain against a stub session broker speaking the framed protocol, with the <code>bws</code> fallback behind it.</li>
+</ul>
+<h2 id="ci-main-only"><a class="header" href="#ci-main-only">CI: main only</a></h2>
+<p>Repository policy: CI runs only on <code>main</code>. There are no pull-request runs, required status checks are disabled, and formatting is not a merge gate (it is auto-fixed on <code>main</code>). The fleet-relevant workflows:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Workflow</th><th>Trigger</th><th>What it runs</th></tr>
+</thead>
+<tbody>
+<tr><td><code>fleet-rust-tests.yml</code></td><td>Nightly cron (<code>17 7 * * *</code>) plus <code>workflow_dispatch</code> only</td><td>A contract check (<code>check-fleet-rust-tests.sh</code>, plus that script’s own test), installs toolchain 1.99.1 via rustup (the <code>rust-toolchain.toml</code> pin), then <code>cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked</code>. Its header records why it exists: before it, the workspace’s tests ran in no CI venue at all, and the baseline run found a stale dep-wiring oracle and a parallel-spawn flake in <code>fleet-queue</code>.</td></tr>
+<tr><td><code>fleet-smoke.yml</code></td><td>Push to <code>main</code> with paths under <code>pkgs/fleet/**</code>, the atlas-search manifests/crates, the workflow, and its check scripts; plus <code>workflow_dispatch</code></td><td>Contract checks, the <strong>fleet <code>Cargo.lock</code> versus atlas manifests check</strong> (<code>check-fleet-lock.sh</code> — it fails by name instead of deep inside a derivation when the lockfile has drifted from the atlas-search path dependencies), Nix-builds the four outputs <code>.#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static</code>, runs <code>pkgs/fleet/smoke.sh</code> on them, and greps the log for <code>^smoke: [1-9][0-9]* passed, 0 failed$</code> so a silently skipped suite cannot report green. Timeout 150 minutes (a cold cache compiles ONNX Runtime from source; warm is roughly 40 minutes).</td></tr>
+<tr><td><code>fleet-search-parity-guard.yml</code></td><td>Per its own triggers</td><td>Guards the “verbatim copy” claim of <code>fleet-search</code>’s <code>server.rs</code> against the atlas-search service.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each fleet workflow carries a contract step — a shell check script <em>and that script’s own test</em> run before the real work — so a workflow edited out of sync with the test-suite registry fails by name.</p>
+<blockquote>
+<p>Discrepancy note (workflow text): <code>fleet-rust-tests.yml</code>’s concurrency comment speaks of push-to-main runs, but the workflow has no push trigger at all — nightly plus dispatch only, by a deliberate ruling. The header’s nightly note is the true statement; the comment is leftover boilerplate.</p>
+</blockquote>
+<h2 id="the-usageparser-parity-test--and-what-it-does-not-check"><a class="header" href="#the-usageparser-parity-test--and-what-it-does-not-check">The usage↔parser parity test — and what it does not check</a></h2>
+<p>Queue usage text is hand-maintained in two strings per verb, both in <code>crates/fleet-queue/src/client/support.rs</code>: the one-line synopsis in <code>TOP_USAGE</code> and the long text returned by <code>usage(verb)</code>. The parser is hand-rolled (<code>parse_verb_args</code> / <code>parse_args_inner</code> in the same file). The machine check that keeps them honest is <code>every_verb_usage_matches_its_parser</code> in the <code>client.rs</code> test module: it asserts that every verb’s usage names <em>exactly</em> the flags its parser accepts. Companion tests are <code>usage_covers_the_acceptance_verbs</code> and <code>usage_never_prints_nothing</code> (an unknown verb falls back to <code>TOP_USAGE</code>).</p>
+<p><strong>What it does not cross-check: <code>TOP_USAGE</code>.</strong> The parity test checks each verb’s own <code>usage()</code> text against its parser; it does not check the <code>TOP_USAGE</code> synopsis lines against either. That drift is real today: for <code>release</code>, <code>heartbeat</code>, <code>checkpoint</code>, <code>fail</code>, and <code>complete</code>, the per-verb <code>usage()</code> text carries <code>[--lane &lt;id&gt;]</code> while the <code>TOP_USAGE</code> synopsis omits <code>--lane</code>. The parser is the authority on which spelling is right for each verb. Until a cross-check exists, anyone editing a verb’s flags must update both strings by hand — the procedure in <a href="add-a-flag.html">Add a flag</a> says exactly that.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/building.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../development/add-a-subcommand.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/building.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../development/add-a-subcommand.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

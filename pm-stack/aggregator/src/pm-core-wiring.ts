@@ -13,18 +13,29 @@
  * own argv. The quota gatherer loads the same way for symmetry —
  * startup stays free of script module side effects.
  */
-import { appendFile, mkdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { createPmCoreScheduler, type PmCoreScheduler, type SchedulerAudit } from "./pm-core-scheduler.ts";
+import { promisify } from "node:util";
+import {
+  createPmCoreScheduler,
+  type JobResult,
+  type PmCoreScheduler,
+  type SchedulerAudit,
+} from "./pm-core-scheduler.ts";
 
 export interface PmCoreJobs {
   runQuota: () => Promise<void>;
-  runFleetFeed: () => Promise<void>;
+  runFleetFeed: () => Promise<JobResult>;
 }
 
 export interface PmCoreJobDeps {
   /** The environment the fleet-feed job pins its output path into. */
   env?: Record<string, string | undefined>;
+  /** A present file pauses collector ticks for the laptop chaos drill. */
+  feedPauseFile?: string;
+  /** Refresh the collector's credentials immediately before each collection. */
+  refreshFleetFeedCredentials?: () => Promise<void>;
   /** Injectable for tests; defaults to the gatherer's own main(). */
   loadQuotaMain?: () => Promise<() => Promise<number>>;
   /** Injectable for tests; defaults to the collector's own main(). */
@@ -33,9 +44,17 @@ export interface PmCoreJobDeps {
 
 export function createPmCoreJobs(options: { feedFile: string } & PmCoreJobDeps): PmCoreJobs {
   const env = options.env ?? process.env;
+  const feedPauseFile = options.feedPauseFile ?? env.PM_CORE_FEED_PAUSE_FILE ?? join(dirname(options.feedFile), "fleet-feed.pause");
   const loadQuotaMain = options.loadQuotaMain ?? (async () => (await import("../scripts/gather-quota.ts")).main);
   const loadFleetFeedMain =
     options.loadFleetFeedMain ?? (async () => (await import("../scripts/collect-fleet-feed.ts")).main);
+  const refreshFleetFeedCredentials =
+    options.refreshFleetFeedCredentials ??
+    (async () => {
+      const helper = env.PM_CORE_FEED_CREDENTIAL_REFRESH;
+      if (!helper) return;
+      await promisify(execFile)(helper, { env: env as NodeJS.ProcessEnv });
+    });
 
   return {
     /** The gatherer's main() reports a failed tick as a non-zero exit
@@ -48,13 +67,20 @@ export function createPmCoreJobs(options: { feedFile: string } & PmCoreJobDeps):
         throw new Error(`quota gatherer reported failure (exit ${exitCode})`);
       }
     },
-    async runFleetFeed() {
+    async runFleetFeed(): Promise<JobResult> {
+      try {
+        await access(feedPauseFile);
+        return { skipped: `fleet-feed paused by ${feedPauseFile}` };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       // The collector resolves its output path at module top level from
       // FLEET_FEED_OUT, falling back to a checkout-relative path — so
       // the pin must be in place before the module is first imported.
       // The board reads cfg.feedFile; the in-process collector must
       // publish exactly there. An operator-provided pin always wins.
       if (!env.FLEET_FEED_OUT) env.FLEET_FEED_OUT = options.feedFile;
+      await refreshFleetFeedCredentials();
       const main = await loadFleetFeedMain();
       await main();
     },
@@ -116,6 +142,10 @@ export function startPmCoreSchedulers(options: {
     clearInterval: options.clearInterval,
   });
   scheduler.start();
+  // Preserve the previous startPmCoreJobs behaviour: refresh promptly after
+  // a restart instead of waiting up to one full scheduler cadence.
+  void scheduler.runNow("quota");
+  void scheduler.runNow("fleet-feed");
 
   // Shutdown tied to process signals: stop the schedulers, detach the
   // handlers, then re-send the signal to ourselves so the process

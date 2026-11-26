@@ -71,16 +71,22 @@ def run_all(root):
         return 1
 
     try:
-        save_json(os.path.join(root, "plan.json"), [{"repo": repo} for repo in verified])
+        save_json(
+            os.path.join(root, "plan.json"), [{"repo": repo} for repo in verified]
+        )
     except OSError as exc:
-        print(f"github-backup: could not write hosted source plan: {exc}", file=sys.stderr)
+        print(
+            f"github-backup: could not write hosted source plan: {exc}", file=sys.stderr
+        )
         return 1
     return 0
 
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--root", required=True, help="ephemeral hosted backup tree root")
+    parser.add_argument(
+        "--root", required=True, help="ephemeral hosted backup tree root"
+    )
     return parser
 
 

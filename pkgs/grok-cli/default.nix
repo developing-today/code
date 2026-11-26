@@ -53,6 +53,8 @@ let
     };
 
     postPatch = ''
+      # Keep the package manifest and lock in sync with Dependabot updates.
+      cp ${./package.json} package.json
       cp ${./package-lock.json} package-lock.json
       chmod +w package.json package-lock.json
       ${lib.getExe nodejs} -e '
@@ -65,7 +67,7 @@ let
       '
     '';
 
-    npmDepsHash = "sha256-zJZ2leOpsiismxtYxC4RPzeJFvkpwz61VO54UWL+CEI=";
+    npmDepsHash = "sha256-xw70iEkBSoBVmKp9uZo4P5Lz+3OQxtkpTDXIf+envQA=";
     npmFlags = [
       "--ignore-scripts"
       "--no-audit"
