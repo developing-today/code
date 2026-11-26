@@ -144,6 +144,8 @@ import {
   type OwnerSettings,
   platformSettings,
   settingsDifferences,
+  ownerSettingChange,
+  settingsInForce,
   settingsThatDiffer,
 } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
@@ -180,6 +182,17 @@ export function ownerSettingsRecord(value: unknown): OwnerSettings | null {
     }
   }
   return { rev: v.rev as number, at: v.at, by: v.by, values };
+}
+
+/** Whether the owner changed this setting: a machine is then compared
+ * with the owner's change by the revision it has taken, not with main. */
+function ownerChanged(owner: OwnerSettings | null, name: string): boolean {
+  return owner !== null && Object.prototype.hasOwnProperty.call(owner.values, name);
+}
+
+/** A revision of the owner's settings as a machine said it, or null. */
+function settingsRevSaid(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : null;
 }
 
 /** The app's files and what each is served as: public/files.json is the
@@ -310,6 +323,10 @@ export class Edge {
    * it can do. Null until one has said, or from a console older than
    * the saying. */
   private machine: MachineReport | null = null;
+  /** The revision of the owner's changed settings the machine that
+   * reports last said it runs with; null from a console older than the
+   * saying (#14957). */
+  private hostSettingsRev: number | null = null;
   /** The Android build: the newest released, and the copy kept here. */
   private builds: Builds;
   /** Reports refused per address. Memory only, by decision: a flood
@@ -435,6 +452,37 @@ export class Edge {
         touch: [],
         audit: () => ({}),
       },
+      // The owner changes one of the settings the owner may change, or
+      // puts it back to main's (#14956). Done here and only here: no
+      // machine is in this path, and the host has no such action, so a
+      // request this side is not sure is the owner's cannot do it
+      // anywhere. What is kept in the log is the name, never the value.
+      "settings.set": {
+        run: async (a, by) => {
+          const change = ownerSettingChange(a.name, a.value);
+          if ("error" in change) throw new OpError(400, change.error);
+          await this.settingsBase(a.baseRev);
+          const kept =
+            change.name === "promptLabel"
+              ? await this.setOwnerSetting(this.changedBy(by), "promptLabel", change.value)
+              : await this.setOwnerSetting(this.changedBy(by), "needsRepos", change.value);
+          return { rev: kept.rev };
+        },
+        touch: [],
+        audit: (a) => ({ name: a.name }),
+      },
+      "settings.clear": {
+        run: async (a, by) => {
+          if (a.name !== undefined && !(OWNER_CHANGEABLE as readonly unknown[]).includes(a.name)) {
+            throw new OpError(400, `name: one of ${OWNER_CHANGEABLE.join(", ")}, or none for all of them`);
+          }
+          await this.settingsBase(a.baseRev);
+          const kept = await this.clearOwnerSetting(this.changedBy(by), a.name as OwnerChangeableName | undefined);
+          return { rev: kept?.rev ?? 0 };
+        },
+        touch: [],
+        audit: (a) => ({ name: a.name ?? null }),
+      },
       // Something waiting for a machine is taken back by the owner
       // before one has it. (One a machine was already handed may still
       // be done: its answer then finds nothing waiting, and is let go.)
@@ -559,6 +607,32 @@ export class Edge {
       cleared.map((n) => ({ kind: "setting.clear", name: n })),
     );
     return record;
+  }
+
+  /** Who changes a setting: the owner this side is sure of. */
+  private changedBy(by: string | undefined): string {
+    if (typeof by !== "string" || by === "") throw new OpError(400, "Who is changing this is not known here.");
+    return by;
+  }
+
+  /** A change made from what the owner last saw: refused when the
+   * settings have changed since (another tab, another device), with
+   * what they are now, so the owner looks again and decides again.
+   * Without a revision the change is made over whatever is there. 0 is
+   * the revision before the owner has changed anything. */
+  private async settingsBase(baseRev: unknown): Promise<void> {
+    if (baseRev === undefined) return;
+    if (!Number.isSafeInteger(baseRev) || (baseRev as number) < 0) {
+      throw new OpError(400, "baseRev: the revision the change was made from, a whole number");
+    }
+    const now = await this.ownerSettings();
+    if ((now?.rev ?? 0) !== baseRev) {
+      throw new OpError(
+        409,
+        "The settings were changed meanwhile, somewhere else: look at them again before changing them.",
+        { settings: now },
+      );
+    }
   }
 
   private async keepOwnerSettings(
@@ -1052,7 +1126,8 @@ export class Edge {
     const refused = this.refusedKinds();
     const seen = this.hostSeen || null;
     const told = await this.toldConfig();
-    const differs = told === null ? [] : settingsDifferences(told);
+    const owner = await this.ownerSettings();
+    const differs = told === null ? [] : settingsDifferences(told).filter((d) => !ownerChanged(owner, d.name));
     return {
       served: "edge",
       platform: {
@@ -1066,6 +1141,10 @@ export class Edge {
         ],
         sections: primary ? this.owned(cfg) : [],
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
+        // Which settings are in force, from where, since when, with
+        // their values: this answer is the owner's alone.
+        settings: settingsInForce(told, owner),
+        settingsRev: owner?.rev ?? 0,
       },
       // One machine can report today: the one whose key this side holds.
       machines:
@@ -1080,6 +1159,7 @@ export class Edge {
                 actions: this.machine?.actions ?? [],
                 sections: this.machine?.sections ?? [],
                 ...(differs.length > 0 ? { differs } : {}),
+                settingsRev: this.hostSettingsRev,
               },
             ],
       held: await this.heldSaid(cfg),
@@ -1178,6 +1258,7 @@ export class Edge {
             confirmed?: Record<string, { hash: string; at: number; error: string | null }>;
             version?: string | null;
             machine?: unknown;
+            settingsRev?: number | null;
           }
         | undefined;
       this.hostSeen = host?.seen ?? 0;
@@ -1185,6 +1266,7 @@ export class Edge {
       this.confirmed = host?.confirmed ?? {};
       this.hostVersion = host?.version ?? null;
       this.machine = machineReport(host?.machine);
+      this.hostSettingsRev = settingsRevSaid(host?.settingsRev);
     }
     if (!this.awayRead) {
       this.awayRead = true;
@@ -1779,12 +1861,14 @@ export class Edge {
     this.hostSeq = msg.at;
     this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
     this.machine = machineReport(msg.machine);
+    this.hostSettingsRev = settingsRevSaid(msg.settingsRev);
     await this.kv.put("host", {
       seen: now,
       seq: msg.at,
       confirmed: this.confirmed,
       version: this.hostVersion,
       machine: this.machine,
+      settingsRev: this.hostSettingsRev,
     });
     if (wasSilent) {
       try {
@@ -1847,6 +1931,10 @@ export class Edge {
       }
     }
     if (marked) await this.saveHanded();
+    // The settings the owner changed, for the machine to run with: once
+    // the owner has changed any, every answer says them, so a machine
+    // that missed one answer has them from the next (#14957).
+    const owner = await this.ownerSettings();
     const answer: SyncResponse = {
       ok: true,
       watching,
@@ -1856,6 +1944,7 @@ export class Edge {
       phones,
       // What this side reads itself, and so need not be sent.
       owns: this.owned(settings),
+      ...(owner ? { settings: { rev: owner.rev, values: owner.values } } : {}),
     };
     return json(answer);
   }
@@ -2029,6 +2118,7 @@ export class Edge {
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
       const told = await this.toldConfig();
+      const owner = await this.ownerSettings();
       // The self-check runs when the capability is there: one direct
       // read of each kind, and how it went. Nothing here is a secret.
       await this.maybeSelfCheck(cfg);
@@ -2094,7 +2184,23 @@ export class Edge {
         // name and never by value; null while no machine has said any.
         // A machine on other code than this, or with an environment of
         // its own, shows here. This side goes by its own all the same.
-        machineSettingsDiffer: told === null ? null : settingsThatDiffer(told),
+        // A setting the owner changed is left out: whether a machine runs
+        // with the owner's change is said by the revision it has taken
+        // (#14957), not as a difference from main.
+        machineSettingsDiffer:
+          told === null
+            ? null
+            : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
+        // Which source each of the platform's settings is in force from
+        // (the owner's change, a machine's word, or the repository's),
+        // and since when for an owner's change: by name and source,
+        // never by value or by whom. The values are on the owner's
+        // Machines screen (#14955).
+        settingsInForce: settingsInForce(told, owner).map(({ name, source, since }) => ({
+          name,
+          source,
+          since,
+        })),
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.builds.apkState(),
@@ -2488,7 +2594,7 @@ export class Edge {
 
   /** What a thrown error is answered with. */
   private failed(error: unknown, what: string): Response {
-    if (error instanceof OpError) return json({ error: error.message }, error.status);
+    if (error instanceof OpError) return json({ ...error.said, error: error.message }, error.status);
     console.error(`pm-edge: ${what}: ${(error as Error).message}`);
     return json({ error: "the edge could not do that" }, 500);
   }
@@ -2578,7 +2684,7 @@ export class Edge {
     await this.audit({ ...base, phase: "start" });
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     try {
-      const result = await action.run(args);
+      const result = await action.run(args, by);
       await this.audit({ ...base, phase: "done", ok: true });
       await this.logAct({ ...entry, status: "done" });
       const cfg = await this.config();

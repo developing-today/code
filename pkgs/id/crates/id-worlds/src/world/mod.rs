@@ -1709,7 +1709,9 @@ pub(crate) fn next_schedule_wake(
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
     let wake = now_instant + wait;
     Some(if wait.is_zero() {
-        not_before.filter(|deadline| *deadline > wake).unwrap_or(wake)
+        not_before
+            .filter(|deadline| *deadline > wake)
+            .unwrap_or(wake)
     } else {
         wake
     })

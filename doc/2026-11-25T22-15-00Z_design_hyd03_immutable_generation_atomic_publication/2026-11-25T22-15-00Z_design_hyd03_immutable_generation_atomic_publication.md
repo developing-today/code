@@ -14,6 +14,7 @@ Its acceptance is "old generation stays current on failure; no
 partial current pointer; immutable generations; orphan behavior
 deterministic", and its negatives are "pointer before manifest
 durability, concurrent publishers". This record _decides_:
+
 - the publication protocol and its durability order;
 - the pointer record and its compare-and-swap;
 - which generations may become current;
@@ -48,6 +49,7 @@ Governing decisions consumed, not re-opened:
 
   This record reads HYD-01 as proposed in that PR. If the freeze
   changes before it merges, this record follows it.
+
 - **HYD-04 record** (#9461,
   `doc/2026-11-25T21-40-00Z_design_hyd04_bounded_hydration_adapter_summary/`):
   - HYD-04 writes only into HYD-03's staging area and hands it a
@@ -60,7 +62,7 @@ Governing decisions consumed, not re-opened:
   defers every file name and key inside them to HYD-02.
 - **JRN-03 checkpoint model** (`work/journal.rs:192-200`, landed): a
   checkpoint carries `HydrationRef { generation: <canonical decimal
-  string>, manifest_digest: Option }`. HYD-03 decides which number
+string>, manifest_digest: Option }`. HYD-03 decides which number
   that is (§5).
 - **CEN-04** (#9434, record merged): §5 admits no persisted field
   without a matrix row, and §7 makes rollback disable-only.
@@ -90,6 +92,7 @@ Governing decisions consumed, not re-opened:
 ## 1. Intent
 
 A reader of a work item's context always sees one whole generation:
+
 - the one the pointer named when it looked;
 - its manifest, which validates against its digest;
 - every artifact the manifest lists, present with the recorded hash.
@@ -101,16 +104,16 @@ the pointer moved.
 
 ## 2. Ownership
 
-| Concern | Owner |
-| --- | --- |
-| Staging, manifest-last write, durability order, pointer record and CAS, which generations may become current, publication sequence, orphan rules (this record) | **HYD-03** |
-| Manifest schema, derived status, result envelope | HYD-01 (#9458) |
-| File names and keys inside a generation, path safety | HYD-02 (#9459) |
-| What is fetched and staged, the summary, head binding | HYD-04 (#9461) |
-| Cursor commits for pages a generation summarizes | HYD-05 (#9507) |
-| Commands (`hydrate`, `refresh`, `show`) | HYD-08 (#9510) and CLI-13 |
-| The artifact store and its root | #9198 storage owner, admitted through CEN-04 §5 |
-| The checkpoint that references a generation | JRN-03 (landed model) |
+| Concern                                                                                                                                                        | Owner                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Staging, manifest-last write, durability order, pointer record and CAS, which generations may become current, publication sequence, orphan rules (this record) | **HYD-03**                                      |
+| Manifest schema, derived status, result envelope                                                                                                               | HYD-01 (#9458)                                  |
+| File names and keys inside a generation, path safety                                                                                                           | HYD-02 (#9459)                                  |
+| What is fetched and staged, the summary, head binding                                                                                                          | HYD-04 (#9461)                                  |
+| Cursor commits for pages a generation summarizes                                                                                                               | HYD-05 (#9507)                                  |
+| Commands (`hydrate`, `refresh`, `show`)                                                                                                                        | HYD-08 (#9510) and CLI-13                       |
+| The artifact store and its root                                                                                                                                | #9198 storage owner, admitted through CEN-04 §5 |
+| The checkpoint that references a generation                                                                                                                    | JRN-03 (landed model)                           |
 
 HYD-03 adds no database, queue, service, scheduler or daemon. Its
 code is a publisher in `work/context.rs` and, only if the storage
@@ -161,6 +164,7 @@ directory.
 
    On an object store: each object put has returned success, and a
    read-back of the manifest matches its digest.
+
 4. **Validate.** The publisher re-reads the generation from
    `generations/<id>/`, not from staging. It validates the manifest
    against its digest and HYD-01's schema, and checks that every
@@ -231,6 +235,7 @@ not by timing.
 ### 4.4 Why the swap is atomic without the REL-04 proof
 
 The swap is one atomic operation on the chosen backend:
+
 - one `rename(2)` of a fully written, fsynced temporary pointer file
   over `current.json`, under the publish lock;
 - or one conditional `UPDATE … WHERE work = ? AND publication_seq = ?`
@@ -298,15 +303,16 @@ publish.
 
 Deterministic classification, from the store's contents alone:
 
-| State | Rule |
-| --- | --- |
-| **Staging orphan** | a directory under `staging/`. Never readable. |
-| **Unpublished** | under `generations/`, valid, and never named in the publication log (a CAS loser, or a crash between step 3 and step 5) |
-| **Rejected** | under `generations/` with `rejected.json` |
-| **Published** | named in the publication log |
-| **Pinned** | published and named by `current`, `last_complete`, or any checkpoint's `HydrationRef` |
+| State              | Rule                                                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| **Staging orphan** | a directory under `staging/`. Never readable.                                                                           |
+| **Unpublished**    | under `generations/`, valid, and never named in the publication log (a CAS loser, or a crash between step 3 and step 5) |
+| **Rejected**       | under `generations/` with `rejected.json`                                                                               |
+| **Published**      | named in the publication log                                                                                            |
+| **Pinned**         | published and named by `current`, `last_complete`, or any checkpoint's `HydrationRef`                                   |
 
 Retention:
+
 - Nothing is deleted by HYD-03.
 - Collection is a separate, approved operation (component rollback
   rule: "retain objects until approved GC").
@@ -319,14 +325,14 @@ Retention:
 
 ## 8. Recovery after a crash
 
-| Crash point | State afterwards | What a rerun does |
-| --- | --- | --- |
-| During stage or seal | staging orphan; pointer unchanged | builds a new generation |
-| After the manifest is written, before durability completes | staging orphan, possibly missing files; pointer unchanged | builds a new generation; the orphan is never validated |
-| After the rename to `generations/`, before validation | unpublished; pointer unchanged | builds a new generation; may later validate and publish the old one only if it is still newer than current (§4.2) |
-| After validation, before the CAS | unpublished; pointer unchanged | same as above |
-| After the CAS, before the report | published; pointer moved | the next read sees it; the caller's retry gets the current pointer's generation |
-| Mid pointer write, filesystem | the temporary file is orphaned; `current.json` is the old one, because rename is atomic | nothing to repair |
+| Crash point                                                | State afterwards                                                                        | What a rerun does                                                                                                 |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| During stage or seal                                       | staging orphan; pointer unchanged                                                       | builds a new generation                                                                                           |
+| After the manifest is written, before durability completes | staging orphan, possibly missing files; pointer unchanged                               | builds a new generation; the orphan is never validated                                                            |
+| After the rename to `generations/`, before validation      | unpublished; pointer unchanged                                                          | builds a new generation; may later validate and publish the old one only if it is still newer than current (§4.2) |
+| After validation, before the CAS                           | unpublished; pointer unchanged                                                          | same as above                                                                                                     |
+| After the CAS, before the report                           | published; pointer moved                                                                | the next read sees it; the caller's retry gets the current pointer's generation                                   |
+| Mid pointer write, filesystem                              | the temporary file is orphaned; `current.json` is the old one, because rename is atomic | nothing to repair                                                                                                 |
 
 There is no repair step that edits `current.json` by hand. A pointer
 that fails its own validation (unknown schema, digest mismatch with
@@ -395,12 +401,12 @@ name before it counts, per the row's done command.
 
 ## 11. Requirement trace (design-level)
 
-| IDs | Theme | Where addressed |
-| --- | --- | --- |
-| C-R117 | versioned manifest, generation lifecycle | §4, §5 |
-| H-R001 | immutable, provenance-bearing context | §4.1, §7 |
-| P-R008 | no partially published snapshot | §4.1 order, §4.3, §8 |
-| P-R036 | recovery after interruption | §7, §8 |
+| IDs    | Theme                                    | Where addressed      |
+| ------ | ---------------------------------------- | -------------------- |
+| C-R117 | versioned manifest, generation lifecycle | §4, §5               |
+| H-R001 | immutable, provenance-bearing context    | §4.1, §7             |
+| P-R008 | no partially published snapshot          | §4.1 order, §4.3, §8 |
+| P-R036 | recovery after interruption              | §7, §8               |
 
 Full per-occurrence text is in
 `doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/requirements-crosswalk.jsonl`.

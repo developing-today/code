@@ -106,6 +106,9 @@ test("what may wait, what is sent only while it is fresh, and what needs a conne
     "device.remove",
     "edge.direct",
     "edge.retry",
+    // A setting is changed from what was on the screen just now, or not at all.
+    "settings.set",
+    "settings.clear",
     "something.new",
     "",
   ]) {
@@ -128,6 +131,10 @@ test("each action is said in a line the owner will know it by", () => {
   expect(said("ask.send", { text: "Do it", intent: "task" })).toBe("Prompt: “Do it”");
   expect(said("ask.send", { text: "Do it", intent: "something else" })).toBe("Prompt: “Do it”");
   expect(said("ask.reply", { issue: 201, text: "Yes" })).toBe("Reply on #201: “Yes”");
+  expect(said("settings.set", { name: "promptLabel", value: "owner/x" })).toBe("Change the prompt label");
+  expect(said("settings.set", { name: "needsRepos", value: ["a/b"] })).toBe("Change the repositories looked in");
+  expect(said("settings.clear", { name: "promptLabel" })).toBe("Put the prompt label back to main's");
+  expect(said("settings.clear", {})).toBe("Put the changed settings back to main's");
   expect(said("ask.close", { issue: 202 })).toBe("Mark prompt #202 done");
   expect(said("issue.comment", { issue: 301, text: "" })).toBe("Comment on #301");
   expect(said("issue.rank", { issue: 301, rank: "next" })).toBe("Rank #301 next");
@@ -460,7 +467,13 @@ test("the platform holds every sender to the same ten minutes, and a device keep
   // What goes with an entry: when the owner did it, what this device's
   // clock reads as it goes, and whether the owner looked again.
   const merge = O.make("pr.merge", { pr: 55 }, T0, undefined, "0a000000-0000-4000-8000-000000000101");
-  expect(O.sendBody(merge, T0 + MIN)).toEqual({ kind: "pr.merge", args: { pr: 55 }, id: merge.id, at: T0, sent: T0 + MIN });
+  expect(O.sendBody(merge, T0 + MIN)).toEqual({
+    kind: "pr.merge",
+    args: { pr: 55 },
+    id: merge.id,
+    at: T0,
+    sent: T0 + MIN,
+  });
   expect(O.sendBody({ ...merge, sure: true }, T0 + MIN)).toEqual({
     kind: "pr.merge",
     args: { pr: 55 },
@@ -472,7 +485,11 @@ test("the platform holds every sender to the same ten minutes, and a device keep
   // An entry with no time of its own (written before there was one) says none.
   expect(O.sendBody({ ...merge, at: Number.NaN }, T0)).toEqual({ kind: "pr.merge", args: { pr: 55 }, id: merge.id });
   // The platform's rule, by its clock and by the device's.
-  const body = (at: number, sent?: number, sure?: boolean) => ({ at, ...(sent === undefined ? {} : { sent }), ...(sure ? { sure } : {}) });
+  const body = (at: number, sent?: number, sure?: boolean) => ({
+    at,
+    ...(sent === undefined ? {} : { sent }),
+    ...(sure ? { sure } : {}),
+  });
   expect(staleAct("pr.merge", body(T0, T0), T0 + 10 * MIN)).toBe(false);
   expect(staleAct("pr.merge", body(T0, T0), T0 + 10 * MIN + 1)).toBe(true);
   expect(staleAct("pr.merge", body(T0), T0 + 11 * MIN)).toBe(true);
@@ -498,7 +515,11 @@ test("the platform holds every sender to the same ten minutes, and a device keep
   // and the owner is asked, as for one this device kept back itself.
   const store = O.memoryStore();
   await store.put(merge);
-  const out = await O.flush(store, async () => ({ status: 409, body: { error: STALE_ACT_ERROR, stale: true } }), () => T0 + MIN);
+  const out = await O.flush(
+    store,
+    async () => ({ status: 409, body: { error: STALE_ACT_ERROR, stale: true } }),
+    () => T0 + MIN,
+  );
   expect(out.changed.map((e) => [e.kind, e.state, e.note])).toEqual([["pr.merge", "stale", O.STALE_NOTE]]);
   expect(out.waiting).toBe(0);
   expect(O.summary(await store.all()).stale).toBe(1);

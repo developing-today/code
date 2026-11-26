@@ -223,15 +223,15 @@ server-rendered HTML, read through the same async loads the JSON API
 uses, so a page and its JSON twin cannot disagree. The Worker routes
 dashboard paths first and falls through to the API for the rest.
 
-| Path | Page |
-| --- | --- |
-| `/` | every board in the registry, its latest snapshot and status counts |
-| `/board/<id>` | one board's items from its latest snapshot |
-| `/item/<ref>` | item detail: genealogy header (root first), sentence, release, after, fields |
-| `/roadmap` | overall priorities (rows grouped by priority) and the per-project roadmap (by area) |
-| `/releases` | milestone close-out cards with carried-over epics |
-| `/attention` | open reconcile findings plus the coverage checks over each board's snapshot |
-| `/quota` | names quota/usage as not yet in the tenant store |
+| Path          | Page                                                                                |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `/`           | every board in the registry, its latest snapshot and status counts                  |
+| `/board/<id>` | one board's items from its latest snapshot                                          |
+| `/item/<ref>` | item detail: genealogy header (root first), sentence, release, after, fields        |
+| `/roadmap`    | overall priorities (rows grouped by priority) and the per-project roadmap (by area) |
+| `/releases`   | milestone close-out cards with carried-over epics                                   |
+| `/attention`  | open reconcile findings plus the coverage checks over each board's snapshot         |
+| `/quota`      | names quota/usage as not yet in the tenant store                                    |
 
 GETs only (anything else is a 405), SELECTs only, no token on the
 path. Absence renders as absence: a board with no snapshot says so,

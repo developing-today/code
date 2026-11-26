@@ -528,6 +528,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)

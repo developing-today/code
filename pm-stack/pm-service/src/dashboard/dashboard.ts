@@ -88,7 +88,9 @@ export async function loadOpenFindingsAsync(db: AsyncSqlDb): Promise<OpenFinding
 
 async function loadBoardItemsAsync(db: AsyncSqlDb, boardId: string): Promise<ProjectPoolItem[]> {
   const rows = await db.all<{ board_id: string; item_json: string }>(BOARD_ITEMS_SQL);
-  return rows.filter((r) => String(r.board_id) === boardId).map((r) => JSON.parse(String(r.item_json)) as ProjectPoolItem);
+  return rows
+    .filter((r) => String(r.board_id) === boardId)
+    .map((r) => JSON.parse(String(r.item_json)) as ProjectPoolItem);
 }
 
 /** The invariants the collector checks, read back over the latest
@@ -203,8 +205,11 @@ export function renderBoards(boards: readonly BoardSummary[], renderedAt: string
 export function renderBoard(summary: BoardSummary, items: readonly ProjectPoolItem[], renderedAt: string): Response {
   const { board, snapshot, audit } = summary;
   const head = `<p>${externalLink(board.url, `${board.org} project ${board.number}`)} · ${e(board.role)}</p>`;
-  if (!snapshot) return page(board.title, `${head}<p class="muted">No snapshot has landed for this board yet.</p>`, renderedAt);
-  const views = audit?.views.length ? `<p class="muted">Views: ${audit.views.map((v) => e(v.name)).join(", ")}</p>` : "";
+  if (!snapshot)
+    return page(board.title, `${head}<p class="muted">No snapshot has landed for this board yet.</p>`, renderedAt);
+  const views = audit?.views.length
+    ? `<p class="muted">Views: ${audit.views.map((v) => e(v.name)).join(", ")}</p>`
+    : "";
   const rows = items
     .map(
       (item) => `<tr><td>${itemLink(item.ref)}</td><td>${e(item.title)}</td><td>${e(item.status ?? "")}</td>
@@ -257,7 +262,9 @@ function roadmapTable(rows: readonly RoadmapRow[]): string {
       const after = (row.afterRefs ?? []).map((r) => itemLink(r)).join(", ");
       const release = row.releaseRef ? itemLink(row.releaseRef) : "";
       const links = row.links.map((l) => `${itemLink(l.ref)} <span class="muted">${e(l.relation)}</span>`).join(", ");
-      const horizon = row.horizonError ? `${e(row.horizon)} <span class="sev-warning">${e(row.horizonError)}</span>` : e(row.horizon);
+      const horizon = row.horizonError
+        ? `${e(row.horizon)} <span class="sev-warning">${e(row.horizonError)}</span>`
+        : e(row.horizon);
       return `<tr><td>${e(row.title)}</td><td>${e(row.status)}</td><td>${horizon}</td><td>${links}</td><td>${priority}</td><td>${after}</td><td>${release}</td></tr>`;
     })
     .join("\n");
@@ -265,7 +272,8 @@ function roadmapTable(rows: readonly RoadmapRow[]): string {
 }
 
 export function renderRoadmap(rows: readonly RoadmapRow[], renderedAt: string): Response {
-  if (rows.length === 0) return page("Roadmap", '<p class="muted">The tenant store has no roadmap rows.</p>', renderedAt);
+  if (rows.length === 0)
+    return page("Roadmap", '<p class="muted">The tenant store has no roadmap rows.</p>', renderedAt);
   // Overall priorities: every row that names a priority, grouped by it.
   const byPriority = new Map<string, RoadmapRow[]>();
   for (const row of rows) {
@@ -289,7 +297,8 @@ export function renderRoadmap(rows: readonly RoadmapRow[], renderedAt: string): 
 }
 
 export function renderReleases(releases: readonly ReleaseSnapshot[], renderedAt: string): Response {
-  if (releases.length === 0) return page("Releases", '<p class="muted">No milestones in the tenant store.</p>', renderedAt);
+  if (releases.length === 0)
+    return page("Releases", '<p class="muted">No milestones in the tenant store.</p>', renderedAt);
   const cards = releases
     .map((r) => {
       const c = r.counts;
@@ -301,7 +310,10 @@ export function renderReleases(releases: readonly ReleaseSnapshot[], renderedAt:
 <p>${e(r.descriptionLine)}</p>
 <table><thead><tr><th></th><th>Closed</th><th>Carried over</th><th>Total</th></tr></thead><tbody>
 ${(["issues", "designs", "epics", "total"] as const)
-  .map((k) => `<tr><th>${e(k)}</th><td>${e(c[k].closed)}</td><td>${e(c[k].carriedOver)}</td><td>${e(c[k].total)}</td></tr>`)
+  .map(
+    (k) =>
+      `<tr><th>${e(k)}</th><td>${e(c[k].closed)}</td><td>${e(c[k].carriedOver)}</td><td>${e(c[k].total)}</td></tr>`,
+  )
   .join("")}
 </tbody></table>${carried}</div>`;
     })
@@ -316,7 +328,8 @@ export function renderAttention(
 ): Response {
   const checkRows = checks
     .map(
-      (c) => `<tr><td class="sev-${e(c.severity)}">${e(c.severity)}</td><td><a href="/board/${encodeURIComponent(c.boardId)}">${e(c.boardId)}</a></td><td>${e(c.summary)}</td></tr>`,
+      (c) =>
+        `<tr><td class="sev-${e(c.severity)}">${e(c.severity)}</td><td><a href="/board/${encodeURIComponent(c.boardId)}">${e(c.boardId)}</a></td><td>${e(c.summary)}</td></tr>`,
     )
     .join("\n");
   const findingRows = findings
@@ -368,7 +381,8 @@ export function createDashboardHandler(deps: DashboardDeps): (req: Request) => P
     if (req.method !== "GET") return page("Method not allowed", "<p>The dashboard is read-only.</p>", now(), 405);
     const at = now();
     if (path === "/") return renderBoards(await loadBoardSummariesAsync(deps.db), at);
-    if (path === "/roadmap") return renderRoadmap(await loadRoadmapRowsAsync(deps.db, await loadPoolAsync(deps.db)), at);
+    if (path === "/roadmap")
+      return renderRoadmap(await loadRoadmapRowsAsync(deps.db, await loadPoolAsync(deps.db)), at);
     if (path === "/releases") {
       return renderReleases(await loadReleaseSnapshotsAsync(deps.db, await loadPoolAsync(deps.db)), at);
     }

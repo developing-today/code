@@ -436,7 +436,7 @@ mod tests {
             decision: Hash::digest(b"decision"),
             closed_at_secs: 9000,
         };
-        assert!(sign_closure(&key(6), 1, None, &agreement, &closure, Vec::new()).is_ok());
+        assert!(sign_closure(&key(6), 0, None, &agreement, &closure, Vec::new()).is_ok());
         assert!(matches!(
             sign_closure(&key(3), 0, None, &agreement, &closure, Vec::new()),
             Err(V1SignError::NotReceiptIssuer)
@@ -444,7 +444,7 @@ mod tests {
         let mut stale = closure;
         stale.agreement = Hash::digest(b"another agreement");
         assert!(matches!(
-            sign_closure(&key(6), 1, None, &agreement, &stale, Vec::new()),
+            sign_closure(&key(6), 0, None, &agreement, &stale, Vec::new()),
             Err(V1SignError::WrongAgreement)
         ));
         let mut broken = agreement;

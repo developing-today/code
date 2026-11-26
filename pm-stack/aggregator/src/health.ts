@@ -195,7 +195,6 @@ export function dedupeGathererProviders(
   return [...kept.values()];
 }
 
-
 export interface PageHealth {
   route: string;
   title: string;

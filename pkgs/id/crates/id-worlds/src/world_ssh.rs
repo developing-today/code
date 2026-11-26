@@ -3267,12 +3267,7 @@ mod tests {
 
         // Oracle: design D2 — in text mode no escape sequence is ever
         // written: no display framing, no probe burst, plain text only.
-        let bytes = read_until_bytes(
-            &mut channel,
-            b"join denied",
-            Duration::from_secs(10),
-        )
-        .await;
+        let bytes = read_until_bytes(&mut channel, b"join denied", Duration::from_secs(10)).await;
         assert!(
             String::from_utf8_lossy(&bytes).contains("join denied"),
             "refusal never arrived: {bytes:?}"
@@ -3306,12 +3301,7 @@ mod tests {
         // Oracle: issue #14937 — input in text mode stays line
         // oriented, parsed exactly like command mode's lines. The join
         // banner is the command mode's, in plain text.
-        let banner = read_until_bytes(
-            &mut channel,
-            b"world> ",
-            Duration::from_secs(10),
-        )
-        .await;
+        let banner = read_until_bytes(&mut channel, b"world> ", Duration::from_secs(10)).await;
         assert!(
             String::from_utf8_lossy(&banner).contains("world> "),
             "text session never showed its banner: {banner:?}"
@@ -3338,12 +3328,7 @@ mod tests {
 
         // Slash commands are the shell's own, answered in plain text.
         channel.data(&b"/help\r"[..]).await.unwrap();
-        let help = read_until_bytes(
-            &mut channel,
-            b"Commands:",
-            Duration::from_secs(10),
-        )
-        .await;
+        let help = read_until_bytes(&mut channel, b"Commands:", Duration::from_secs(10)).await;
         assert!(
             String::from_utf8_lossy(&help).contains("Commands:"),
             "shell did not answer /help: {help:?}"

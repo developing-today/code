@@ -91,7 +91,7 @@ reuse.
   `failed` as terminal (`client/transport.rs:17`).
 - **Loss-aware workflow crosswalk (CLI-01, #9501).**
   `map_queue_state` (`work/lifecycle.rs:364-452`) maps `claimed` to
-  workflow `active` as *lossy*, with the declared loss "a claim is
+  workflow `active` as _lossy_, with the declared loss "a claim is
   ownership, not proof a session started" (`:394-400`); `done` maps to
   `completed` only with `verified_completion_receipt`, and is
   explicitly unmapped without it (`:423-448`). `ExecutionState`
@@ -114,7 +114,7 @@ reuse.
   a fresh claim never inherits a binding (`:582-584`).
 - **Binding clearing.** `clear_binding` strips `session_id` and
   `launched_by` and stamps `session_cleared {session_id, cleared_at,
-  via}` (`turso_queue/core.rs:2497-2518`). It runs on park
+via}` (`turso_queue/core.rs:2497-2518`). It runs on park
   (`turso_queue/lifecycle.rs:2026-2029`), release (`:2207`), lease
   expiry (`core.rs:2602`), parked revalidation (`core.rs:2068`), fail
   (`admin.rs:1206`) and claim (`claim.rs:1283`). The terminal verbs
@@ -124,9 +124,9 @@ reuse.
   that still carries `progress.session_id` is a historical record,
   not a live binding.
 - **Lease expiry.** `expire_leases` selects `status = 'claimed' AND
-  lease_until < now` (`core.rs:2582-2592`); it returns rows to
+lease_until < now` (`core.rs:2582-2592`); it returns rows to
   `queued`, or to `failed` with `last_error = "lease expired at
-  attempt cap (n/m)"` when `attempts >= max_attempts`
+attempt cap (n/m)"` when `attempts >= max_attempts`
   (`core.rs:2563-2569`, `:2610-2625`), or to `handed_off` for sink
   rows (`:2625-2640`). Between expiry and the sweep the row still
   reads `claimed`.
@@ -158,7 +158,7 @@ reuse.
   `reconciledInProgress` (`pm-stack/aggregator/src/queue-view.ts:122-200`)
   adds a ref to In Progress on any one of `project-status`
   (Project Status = In Progress), `active-session` (an orchestration
-  lined-up task whose *status text* is `in-progress`) or `open-pr`
+  lined-up task whose _status text_ is `in-progress`) or `open-pr`
   (`:104`, `:154-191`); the page-level `inProgress` list also admits
   a `status/in-progress` or `status/in-review` label (`:305-345`).
   None of these is a verified task/session binding. #9201 V1 already
@@ -188,9 +188,9 @@ reuse.
 
 - Exports `projectWorkView(input: WorkProjectionInput, relations)`,
   `WorkView`, `BoardColumn` = `"Inbox/Triage" | "Backlog" | "Ready" |
-  "In Progress" | "Review" | "Blocked" | "Parked" | "Done"`
+"In Progress" | "Review" | "Blocked" | "Parked" | "Done"`
   (lines 110-118), and `ClaimInput {state, worker, lane, fresh,
-  session_binding: "verified" | "unknown"}` (lines 57-68).
+session_binding: "verified" | "unknown"}` (lines 57-68).
 - Computes the column inline (lines 233-280) in the order Done
   (verified receipt) > Parked > Blocked > In Progress (`claimFresh`)
   > terminal signal without receipt (Backlog + `completion_unverified`)
@@ -209,8 +209,8 @@ reuse.
 ### 1.4 Gap
 
 No module decides the board column from the separate facets under
-one written precedence rule, and nothing today requires *both* a live
-broker claim *and* a confirmed session binding before showing work as
+one written precedence rule, and nothing today requires _both_ a live
+broker claim _and_ a confirmed session binding before showing work as
 active. The existing pages show In Progress from any one signal
 (§1.2), and PR #15188 shows it from a fresh claim alone (D9, item
 1). MOB-02 supplies that rule as a pure, table-tested policy.
@@ -234,16 +234,16 @@ is exactly one precedence implementation in the repository.
 The policy reads seven facets, each kept separate and each with its
 own source and freshness. No facet is derived from another.
 
-| Facet                  | Source (sole)                                    | Values the policy distinguishes                                                                                                                       |
-| ---------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `queue_status`         | fleet broker task read                           | the eight stored spellings verbatim (§1.1); anything else is `unknown_queue_status`                                                                   |
-| `hold`                 | fleet broker task read                           | park `{park_kind, wait_kind, reason, checkpoint_ref, not_before}`; block `{reason_class, blocked_deps, dep_blocked_until}`                            |
-| `eligibility`          | fleet broker read (never recomputed client-side) | `eligible`, `ineligible{reason_codes}`, `manual_only`; `hard_blocker_refs`                                                                            |
-| `claim`                | fleet broker task read                           | `worker_id`, `lease_until`, `attempts`, `max_attempts`, binding `progress_session_id`, `ledger_session_id`                                            |
-| `session`              | provider adapter readback                        | per session: `session_id`, `provider`, `bound_work` (what the adapter says it is bound to), `state`, `last_activity_at`                               |
-| `remote`               | GitHub issue/PR reads, #9070 genealogy           | own issue `open`/`closed`; linked PRs `open`/`closed`/`merged` with `draft`; spawned follow-ups `open`/`closed`                                       |
-| `completion`           | designated completion policy                     | `verified_terminal_receipt` and the reconciliations the receipt requires                                                                              |
-| `policy` (sub-facets)  | fleet policy (#9200) and authorized owner policy | `high_or_above`, `explicitly_prepared`, `owner_assigned`, `triage_required`; each present/absent/error, never inferred from a label                  |
+| Facet                 | Source (sole)                                    | Values the policy distinguishes                                                                                                     |
+| --------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `queue_status`        | fleet broker task read                           | the eight stored spellings verbatim (§1.1); anything else is `unknown_queue_status`                                                 |
+| `hold`                | fleet broker task read                           | park `{park_kind, wait_kind, reason, checkpoint_ref, not_before}`; block `{reason_class, blocked_deps, dep_blocked_until}`          |
+| `eligibility`         | fleet broker read (never recomputed client-side) | `eligible`, `ineligible{reason_codes}`, `manual_only`; `hard_blocker_refs`                                                          |
+| `claim`               | fleet broker task read                           | `worker_id`, `lease_until`, `attempts`, `max_attempts`, binding `progress_session_id`, `ledger_session_id`                          |
+| `session`             | provider adapter readback                        | per session: `session_id`, `provider`, `bound_work` (what the adapter says it is bound to), `state`, `last_activity_at`             |
+| `remote`              | GitHub issue/PR reads, #9070 genealogy           | own issue `open`/`closed`; linked PRs `open`/`closed`/`merged` with `draft`; spawned follow-ups `open`/`closed`                     |
+| `completion`          | designated completion policy                     | `verified_terminal_receipt` and the reconciliations the receipt requires                                                            |
+| `policy` (sub-facets) | fleet policy (#9200) and authorized owner policy | `high_or_above`, `explicitly_prepared`, `owner_assigned`, `triage_required`; each present/absent/error, never inferred from a label |
 
 Project #4 Status is read only to report `project_status_disagrees`
 (MOB-01 D6). It never decides the column, because §3.1 line 70 allows
@@ -266,17 +266,17 @@ reasons (`waiting_on_person`, `session_awaiting_input`,
 `draft_pr_open`, `handed_off_unbound`, `follow_up_open_elsewhere`,
 `held_state_stale`) are added wherever their condition holds.
 
-| Rule | Column         | Fires when                                                                                                                                                                                                                                                              | Primary reason code(s)                                                                                       |
-| ---- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| R0   | `null`         | the broker read is `error`; or `queue_status` is an unknown spelling; or every facet is absent                                                                                                                                                                         | `lifecycle_source_error`, `unknown_queue_status`, `nothing_sourced`                                          |
-| R1   | `Done`         | `completion.verified_terminal_receipt` is present and true, **and** no present facet contradicts it: own issue not `open`, no linked PR `open`, `queue_status` not one of `queued/claimed/parked/blocked/handed_off`                                                  | `verified_terminal_receipt` (plus `follow_up_open_elsewhere` when a spawned follow-up is open)              |
-| R2   | `Parked`       | `queue_status = parked`                                                                                                                                                                                                                                                 | `parked_with_reason`                                                                                         |
-| R3   | `Blocked`      | `queue_status = blocked`, or `eligibility.hard_blocker_refs` non-empty                                                                                                                                                                                                  | `queue_blocked`, `hard_blockers_present`                                                                     |
-| R4   | `In Progress`  | `evaluateClaimBinding` returns `fresh = true` and `session_binding = "verified"` (§3)                                                                                                                                                                                  | `fresh_authoritative_claim`, `verified_session_binding`                                                      |
-| R5   | `Review`       | a linked PR is `open` and not `draft`; or a terminal signal is present (queue `done`, own issue `closed`, a linked PR `merged`) without R1 holding                                                                                                                       | `pr_awaiting_review`, `completion_unverified`                                                                |
-| R6   | `Inbox/Triage` | `triage_required`; or `queue_status` is `failed` or `cancelled`; or `queued` with `attempts >= max_attempts`; or a claim is live but `session_binding = "unknown"` (§3.3)                                                                                               | `triage_required`, `queue_failed`, `queue_cancelled`, `attempt_cap_reached`, `claim_binding_unverified`      |
-| R7   | `Ready`        | `eligibility = eligible` from a fresh read, not `manual_only`, and at least one of `high_or_above`, `explicitly_prepared`, `owner_assigned` is present and true                                                                                                           | `eligible_high_or_above`, `explicitly_prepared`, `owner_assigned`                                            |
-| R8   | `Backlog`      | none of the above                                                                                                                                                                                                                                                       | `not_ready`, `manual_only_excluded_from_automatic_claim`, `no_fleet_task`, `claim_lease_expired_awaiting_reclaim` |
+| Rule | Column         | Fires when                                                                                                                                                                                                           | Primary reason code(s)                                                                                            |
+| ---- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| R0   | `null`         | the broker read is `error`; or `queue_status` is an unknown spelling; or every facet is absent                                                                                                                       | `lifecycle_source_error`, `unknown_queue_status`, `nothing_sourced`                                               |
+| R1   | `Done`         | `completion.verified_terminal_receipt` is present and true, **and** no present facet contradicts it: own issue not `open`, no linked PR `open`, `queue_status` not one of `queued/claimed/parked/blocked/handed_off` | `verified_terminal_receipt` (plus `follow_up_open_elsewhere` when a spawned follow-up is open)                    |
+| R2   | `Parked`       | `queue_status = parked`                                                                                                                                                                                              | `parked_with_reason`                                                                                              |
+| R3   | `Blocked`      | `queue_status = blocked`, or `eligibility.hard_blocker_refs` non-empty                                                                                                                                               | `queue_blocked`, `hard_blockers_present`                                                                          |
+| R4   | `In Progress`  | `evaluateClaimBinding` returns `fresh = true` and `session_binding = "verified"` (§3)                                                                                                                                | `fresh_authoritative_claim`, `verified_session_binding`                                                           |
+| R5   | `Review`       | a linked PR is `open` and not `draft`; or a terminal signal is present (queue `done`, own issue `closed`, a linked PR `merged`) without R1 holding                                                                   | `pr_awaiting_review`, `completion_unverified`                                                                     |
+| R6   | `Inbox/Triage` | `triage_required`; or `queue_status` is `failed` or `cancelled`; or `queued` with `attempts >= max_attempts`; or a claim is live but `session_binding = "unknown"` (§3.3)                                            | `triage_required`, `queue_failed`, `queue_cancelled`, `attempt_cap_reached`, `claim_binding_unverified`           |
+| R7   | `Ready`        | `eligibility = eligible` from a fresh read, not `manual_only`, and at least one of `high_or_above`, `explicitly_prepared`, `owner_assigned` is present and true                                                      | `eligible_high_or_above`, `explicitly_prepared`, `owner_assigned`                                                 |
+| R8   | `Backlog`      | none of the above                                                                                                                                                                                                    | `not_ready`, `manual_only_excluded_from_automatic_claim`, `no_fleet_task`, `claim_lease_expired_awaiting_reclaim` |
 
 This satisfies the slice goal "blocked/parked > eligible Ready >
 Backlog" (R2, R3 before R7 before R8) and the §3.1 line 70 rule that
@@ -337,14 +337,14 @@ lines 145-147), sorted by `code`. It reuses MOB-01 D6's
 `project_status_disagrees`, and PR #15188's `completion_unverified`.
 It adds:
 
-| Code                          | Fires when                                                                                                             |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `claimed_lease_expired`       | `queue_status = claimed` and `lease_until <= broker read observed_at`                                                  |
-| `binding_session_mismatch`    | `progress_session_id` and `ledger_session_id` are both present and differ, or the adapter names a different session    |
-| `session_shell_unbound`       | an adapter session names this work as `bound_work`, but the broker has no binding for it                              |
-| `extra_session_for_work`      | more than one adapter session names this work; at most one matches the broker binding                                  |
-| `bound_session_terminal`      | the broker binding names a session the adapter reports `terminal`                                                      |
-| `work_terminal_pr_open`       | queue `done` or a verified receipt, and a linked PR is still `open`                                                    |
+| Code                       | Fires when                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `claimed_lease_expired`    | `queue_status = claimed` and `lease_until <= broker read observed_at`                                               |
+| `binding_session_mismatch` | `progress_session_id` and `ledger_session_id` are both present and differ, or the adapter names a different session |
+| `session_shell_unbound`    | an adapter session names this work as `bound_work`, but the broker has no binding for it                            |
+| `extra_session_for_work`   | more than one adapter session names this work; at most one matches the broker binding                               |
+| `bound_session_terminal`   | the broker binding names a session the adapter reports `terminal`                                                   |
+| `work_terminal_pr_open`    | queue `done` or a verified receipt, and a linked PR is still `open`                                                 |
 
 `detail` is fixed text per code plus the refs involved; it never
 copies free text from issues, comments or sessions.
@@ -501,10 +501,7 @@ export interface LifecyclePolicyOptions {
   };
 }
 
-export type Read<T> =
-  | { state: "present"; value: T; source: string; observed_at: string; freshness_hint?: "live" | "stale" | "fixtures" }
-  | { state: "absent"; reason: "not_sourced" | "source_has_no_value" }
-  | { state: "error"; source: string; observed_at: string | null; error_code: string };
+export type Read<T> = { state: "present"; value: T; source: string; observed_at: string; freshness_hint?: "live" | "stale" | "fixtures" } | { state: "absent"; reason: "not_sourced" | "source_has_no_value" } | { state: "error"; source: string; observed_at: string | null; error_code: string };
 
 export interface BrokerTaskRead {
   task_id: string;
@@ -623,30 +620,30 @@ derived, not asserted.
 
 ## 5. Edge cases
 
-| Case                                   | Input sketch                                                                                                 | Column         | Rule | Reasons / conflicts                                                                                      |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------- | ---- | -------------------------------------------------------------------------------------------------------- |
-| Claimed but unbound                    | `claimed`, lease live, `progress_session_id` null                                                            | `Inbox/Triage` | R6   | `claim_binding_unverified`, `no_bound_session`; conflict `claimed_binding_unknown`                      |
-| Claimed, broker-bound, no readback     | as above with `progress_session_id = ses_a`, `sessions` absent                                               | `Inbox/Triage` | R6   | `claim_binding_unverified`, `session_readback_absent`; conflict `claimed_binding_unknown`               |
-| Lease expired, sweep not yet run       | `claimed`, `lease_until < observed_at`, attempts below cap                                                   | `Backlog`      | R8   | `claim_lease_expired_awaiting_reclaim`; conflict `claimed_lease_expired`                                 |
-| Lease expired at attempt cap           | as above, `attempts >= max_attempts`                                                                         | `Inbox/Triage` | R6   | `attempt_cap_reached`, `claim_lease_expired_awaiting_reclaim`; conflict `claimed_lease_expired`          |
-| Queued at attempt cap                  | `queued`, `attempts >= max_attempts`, `high_or_above=true`; broker eligibility `ineligible`                  | `Inbox/Triage` | R6   | `attempt_cap_reached`                                                                                    |
-| Failed after cap                       | `failed`, `last_error` "lease expired at attempt cap"                                                        | `Inbox/Triage` | R6   | `queue_failed`                                                                                           |
-| Waiting on a person (block)            | `blocked`, `reason_class = escalated-to-user`                                                                | `Blocked`      | R3   | `queue_blocked`, `waiting_on_person`                                                                     |
-| Waiting on a person (park)             | `parked`, `wait_kind = review`, condition `person_answer`                                                    | `Parked`       | R2   | `parked_with_reason`, `waiting_on_person`                                                                |
-| Working, session asks a question       | R4 evidence holds; adapter `state = awaiting_input`                                                          | `In Progress`  | R4   | `fresh_authoritative_claim`, `verified_session_binding`, `session_awaiting_input`                       |
-| Done, PR still open                    | `done`, receipt verified, linked PR `open`                                                                   | `Review`       | R5   | `pr_awaiting_review`, `completion_unverified`; conflict `work_terminal_pr_open`                          |
-| Done, no receipt, issue open           | `done`, no receipt, issue `open`                                                                             | `Review`       | R5   | `completion_unverified`; conflicts `completion_unverified`, `work_terminal_issue_open`                  |
-| Multiple bindings, broker disagrees    | `claimed` live, `progress_session_id = ses_a`, `ledger_session_id = ses_b`                                   | `Inbox/Triage` | R6   | `claim_binding_unverified`; conflicts `binding_session_mismatch`, `claimed_binding_unknown`              |
-| Multiple adapter sessions              | R4 evidence holds for `ses_a`; a second readback `ses_c` also names this work                                | `In Progress`  | R4   | as R4; conflict `extra_session_for_work`                                                                 |
-| Bound session ended                    | `claimed` live, bound `ses_a`, adapter `ses_a.state = terminal`                                              | `Inbox/Triage` | R6   | `claim_binding_unverified`; conflicts `bound_session_terminal`, `claimed_binding_unknown`               |
-| Parked with stale active binding       | `parked`, adapter `ses_a` active with `bound_work` = this work                                               | `Parked`       | R2   | `parked_with_reason`; conflict `held_with_active_binding`                                                |
-| Handed off to the sink                 | `handed_off`, no worker, no binding, eligible                                                                | `Backlog`      | R8   | `handed_off_unbound`, `not_ready`                                                                        |
-| Cancelled                              | `cancelled`, issue `closed`                                                                                  | `Inbox/Triage` | R6   | `queue_cancelled` (see §11 Q4)                                                                           |
-| No fleet task                          | broker present with `null` value; issue open; Project Todo                                                   | `Backlog`      | R8   | `no_fleet_task`                                                                                          |
-| Broker read failed                     | `broker` error                                                                                               | `null`         | R0   | `lifecycle_source_error`                                                                                 |
-| Unknown stored spelling                | `status = in_progress`                                                                                       | `null`         | R0   | `unknown_queue_status` (value kept verbatim in the facet)                                                |
-| Manual-only, Do Now                    | `queued`, `manual_only`, eligible + High, directive `do_now`                                                 | `Backlog`      | R8   | `manual_only_excluded_from_automatic_claim`                                                              |
-| Draft PR, no claim                     | `queued`, PR `open` `draft`, not High                                                                        | `Backlog`      | R8   | `not_ready`, `draft_pr_open`                                                                             |
+| Case                                | Input sketch                                                                                | Column         | Rule | Reasons / conflicts                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------- | -------------- | ---- | ----------------------------------------------------------------------------------------------- |
+| Claimed but unbound                 | `claimed`, lease live, `progress_session_id` null                                           | `Inbox/Triage` | R6   | `claim_binding_unverified`, `no_bound_session`; conflict `claimed_binding_unknown`              |
+| Claimed, broker-bound, no readback  | as above with `progress_session_id = ses_a`, `sessions` absent                              | `Inbox/Triage` | R6   | `claim_binding_unverified`, `session_readback_absent`; conflict `claimed_binding_unknown`       |
+| Lease expired, sweep not yet run    | `claimed`, `lease_until < observed_at`, attempts below cap                                  | `Backlog`      | R8   | `claim_lease_expired_awaiting_reclaim`; conflict `claimed_lease_expired`                        |
+| Lease expired at attempt cap        | as above, `attempts >= max_attempts`                                                        | `Inbox/Triage` | R6   | `attempt_cap_reached`, `claim_lease_expired_awaiting_reclaim`; conflict `claimed_lease_expired` |
+| Queued at attempt cap               | `queued`, `attempts >= max_attempts`, `high_or_above=true`; broker eligibility `ineligible` | `Inbox/Triage` | R6   | `attempt_cap_reached`                                                                           |
+| Failed after cap                    | `failed`, `last_error` "lease expired at attempt cap"                                       | `Inbox/Triage` | R6   | `queue_failed`                                                                                  |
+| Waiting on a person (block)         | `blocked`, `reason_class = escalated-to-user`                                               | `Blocked`      | R3   | `queue_blocked`, `waiting_on_person`                                                            |
+| Waiting on a person (park)          | `parked`, `wait_kind = review`, condition `person_answer`                                   | `Parked`       | R2   | `parked_with_reason`, `waiting_on_person`                                                       |
+| Working, session asks a question    | R4 evidence holds; adapter `state = awaiting_input`                                         | `In Progress`  | R4   | `fresh_authoritative_claim`, `verified_session_binding`, `session_awaiting_input`               |
+| Done, PR still open                 | `done`, receipt verified, linked PR `open`                                                  | `Review`       | R5   | `pr_awaiting_review`, `completion_unverified`; conflict `work_terminal_pr_open`                 |
+| Done, no receipt, issue open        | `done`, no receipt, issue `open`                                                            | `Review`       | R5   | `completion_unverified`; conflicts `completion_unverified`, `work_terminal_issue_open`          |
+| Multiple bindings, broker disagrees | `claimed` live, `progress_session_id = ses_a`, `ledger_session_id = ses_b`                  | `Inbox/Triage` | R6   | `claim_binding_unverified`; conflicts `binding_session_mismatch`, `claimed_binding_unknown`     |
+| Multiple adapter sessions           | R4 evidence holds for `ses_a`; a second readback `ses_c` also names this work               | `In Progress`  | R4   | as R4; conflict `extra_session_for_work`                                                        |
+| Bound session ended                 | `claimed` live, bound `ses_a`, adapter `ses_a.state = terminal`                             | `Inbox/Triage` | R6   | `claim_binding_unverified`; conflicts `bound_session_terminal`, `claimed_binding_unknown`       |
+| Parked with stale active binding    | `parked`, adapter `ses_a` active with `bound_work` = this work                              | `Parked`       | R2   | `parked_with_reason`; conflict `held_with_active_binding`                                       |
+| Handed off to the sink              | `handed_off`, no worker, no binding, eligible                                               | `Backlog`      | R8   | `handed_off_unbound`, `not_ready`                                                               |
+| Cancelled                           | `cancelled`, issue `closed`                                                                 | `Inbox/Triage` | R6   | `queue_cancelled` (see §11 Q4)                                                                  |
+| No fleet task                       | broker present with `null` value; issue open; Project Todo                                  | `Backlog`      | R8   | `no_fleet_task`                                                                                 |
+| Broker read failed                  | `broker` error                                                                              | `null`         | R0   | `lifecycle_source_error`                                                                        |
+| Unknown stored spelling             | `status = in_progress`                                                                      | `null`         | R0   | `unknown_queue_status` (value kept verbatim in the facet)                                       |
+| Manual-only, Do Now                 | `queued`, `manual_only`, eligible + High, directive `do_now`                                | `Backlog`      | R8   | `manual_only_excluded_from_automatic_claim`                                                     |
+| Draft PR, no claim                  | `queued`, PR `open` `draft`, not High                                                       | `Backlog`      | R8   | `not_ready`, `draft_pr_open`                                                                    |
 
 ## 6. Golden oracle: the issue's pairwise conflicts
 
@@ -658,16 +655,16 @@ and `<name>.result.json`. `now = 2026-11-25T12:00:00Z`; all bounds
 production values are §11 Q1). The expected column and full
 `reason_codes`/`conflicts` are exact.
 
-| Fixture                          | Evidence                                                                                                                          | Expected column | Expected reasons (sorted)                                              | Expected conflicts                                                    |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `hard-blocked-high`              | `queued`, eligibility `ineligible` with `hard_blocker_refs=["fleet://work/9"]`, `high_or_above=true`                              | `Blocked`       | `hard_blockers_present`, `held_not_promoted`                           | none                                                                  |
-| `parked-owner`                   | `parked`, reason + `checkpoint_ref`, `owner_assigned=true`                                                                        | `Parked`        | `held_not_promoted`, `parked_with_reason`                              | none                                                                  |
-| `ready-stale`                    | `queued`, `eligible`, `high_or_above=true`, broker `observed_at` 10 min before `now`                                              | `Backlog`       | `eligibility_stale`, `not_ready`                                       | none                                                                  |
-| `claimed-no-session`             | `claimed`, `lease_until` 10 min after `observed_at`, `progress_session_id=null`                                                   | `Inbox/Triage`  | `claim_binding_unverified`, `no_bound_session`                         | `claimed_binding_unknown`                                             |
-| `session-shell-unbound-task`     | `queued`, `eligible`, not High; adapter `ses_x` active with `bound_work` = this work; broker binding null                         | `Backlog`       | `not_ready`                                                            | `session_shell_unbound`                                               |
-| `pr-merged-issue-open`           | `queued` (no live claim), issue `open`, PR `merged`, no receipt                                                                   | `Review`        | `completion_unverified`                                                | `completion_unverified`, `issue_open_pr_merged`                       |
-| `task-done-followup-open`        | `done`, receipt verified, own issue `closed`, follow-up `owner/repo#2` `open`                                                     | `Done`          | `follow_up_open_elsewhere`, `verified_terminal_receipt`                | none                                                                  |
-| `verified-binding-in-progress`   | `claimed` live, `progress_session_id=ses_a`, ledger `ses_a`, adapter `ses_a` active bound to this work; Project `Todo`            | `In Progress`   | `fresh_authoritative_claim`, `verified_session_binding`                | `project_status_disagrees`                                            |
+| Fixture                        | Evidence                                                                                                               | Expected column | Expected reasons (sorted)                               | Expected conflicts                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------------------- | ----------------------------------------------- |
+| `hard-blocked-high`            | `queued`, eligibility `ineligible` with `hard_blocker_refs=["fleet://work/9"]`, `high_or_above=true`                   | `Blocked`       | `hard_blockers_present`, `held_not_promoted`            | none                                            |
+| `parked-owner`                 | `parked`, reason + `checkpoint_ref`, `owner_assigned=true`                                                             | `Parked`        | `held_not_promoted`, `parked_with_reason`               | none                                            |
+| `ready-stale`                  | `queued`, `eligible`, `high_or_above=true`, broker `observed_at` 10 min before `now`                                   | `Backlog`       | `eligibility_stale`, `not_ready`                        | none                                            |
+| `claimed-no-session`           | `claimed`, `lease_until` 10 min after `observed_at`, `progress_session_id=null`                                        | `Inbox/Triage`  | `claim_binding_unverified`, `no_bound_session`          | `claimed_binding_unknown`                       |
+| `session-shell-unbound-task`   | `queued`, `eligible`, not High; adapter `ses_x` active with `bound_work` = this work; broker binding null              | `Backlog`       | `not_ready`                                             | `session_shell_unbound`                         |
+| `pr-merged-issue-open`         | `queued` (no live claim), issue `open`, PR `merged`, no receipt                                                        | `Review`        | `completion_unverified`                                 | `completion_unverified`, `issue_open_pr_merged` |
+| `task-done-followup-open`      | `done`, receipt verified, own issue `closed`, follow-up `owner/repo#2` `open`                                          | `Done`          | `follow_up_open_elsewhere`, `verified_terminal_receipt` | none                                            |
+| `verified-binding-in-progress` | `claimed` live, `progress_session_id=ses_a`, ledger `ses_a`, adapter `ses_a` active bound to this work; Project `Todo` | `In Progress`   | `fresh_authoritative_claim`, `verified_session_binding` | `project_status_disagrees`                      |
 
 The last row is the positive case the slice's failing-test line
 requires ("verify active verified binding creates In Progress and
@@ -761,15 +758,15 @@ runner); this slice follows the same rule.
 
 ## 8. Requirement trace
 
-| ID                           | Source (path:line)                                                                                | What it asks                                                                                              | Where this record answers                                  | Coverage                                                                                                         |
-| ---------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| C-R080 (C-108)               | `sources/02_charter_v1_1.md:76` (§7 heading); crosswalk row `census/requirements-crosswalk.jsonl:80` | Mobile-first interactive operations                                                                       | D1, D3, §3, §4: one explainable column per item for the mobile board | Partial: the column and explanation only; controls, layout and receipts are MOB-03 to MOB-06                      |
-| H-R011 (H-138)               | `sources/01_handoff_pm_stack_fleet_orchestration.md:103`; crosswalk `:178`                        | Project/epic lifecycle and strategic urgency change effective order, with manual intervention and owner escalation, not arithmetic sorting alone | D3 R2/R3/R7, invariant 6: urgency never overrides held state; `owner_assigned` and `triage_required` are explicit inputs, not computed | Partial: MOB-02 bounds where urgency may act; effective order itself is PRI-01 to PRI-04                         |
-| O-R017 (O-688 to O-698)      | `sources/04_recovered_original_combined_design.md:13` (§17); crosswalk `:247`                     | Project/epic phase, deadlines and dependencies influence order selectively; board explains item and project urgency | D2 keeps urgency facets separate and unmodified; R3 makes hard dependencies a hold | Gap: project-level urgency display (O-697) is not produced here; it belongs to PRI-03/PRI-04 and MOB-03 views     |
-| C-6 (slice text)             | `sources/02_charter_v1_1.md:70,72`                                                                | Columns, Ready definition, triage separation, parked/blocked retain history                               | D3, D9 items 2-3, §5                                      | Design-level complete for the column rule                                                                        |
-| C-7 (slice text)             | `sources/02_charter_v1_1.md:78-80`                                                                | Show accepted/running/blocked/conflicted/verified separately; no client policy                            | D1 (policy in one module, no client recomputation), D7      | Partial: operation outcomes are MOB-05                                                                           |
-| H-SURVIVE-A / H-SCENARIOS    | `sources/01_handoff_pm_stack_fleet_orchestration.md:51-59`                                        | Stale lease, blocked/parked resume, live launch/bind proof scenarios survive refinement                   | §3, §5 (lease expired, bind proof, parked with binding)     | Partial: scenario rows for the read side only                                                                    |
-| O §12.2 to §12.4             | `sources/04_recovered_original_combined_design.md:13`                                             | Column definitions, precedence, picked-up and parked/blocked visibility                                   | D3, §3, §5                                                  | Design-level complete for projection; the Project write in §12.3 is the orchestrator's (out of scope)             |
+| ID                        | Source (path:line)                                                                                   | What it asks                                                                                                                                     | Where this record answers                                                                                                              | Coverage                                                                                                      |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| C-R080 (C-108)            | `sources/02_charter_v1_1.md:76` (§7 heading); crosswalk row `census/requirements-crosswalk.jsonl:80` | Mobile-first interactive operations                                                                                                              | D1, D3, §3, §4: one explainable column per item for the mobile board                                                                   | Partial: the column and explanation only; controls, layout and receipts are MOB-03 to MOB-06                  |
+| H-R011 (H-138)            | `sources/01_handoff_pm_stack_fleet_orchestration.md:103`; crosswalk `:178`                           | Project/epic lifecycle and strategic urgency change effective order, with manual intervention and owner escalation, not arithmetic sorting alone | D3 R2/R3/R7, invariant 6: urgency never overrides held state; `owner_assigned` and `triage_required` are explicit inputs, not computed | Partial: MOB-02 bounds where urgency may act; effective order itself is PRI-01 to PRI-04                      |
+| O-R017 (O-688 to O-698)   | `sources/04_recovered_original_combined_design.md:13` (§17); crosswalk `:247`                        | Project/epic phase, deadlines and dependencies influence order selectively; board explains item and project urgency                              | D2 keeps urgency facets separate and unmodified; R3 makes hard dependencies a hold                                                     | Gap: project-level urgency display (O-697) is not produced here; it belongs to PRI-03/PRI-04 and MOB-03 views |
+| C-6 (slice text)          | `sources/02_charter_v1_1.md:70,72`                                                                   | Columns, Ready definition, triage separation, parked/blocked retain history                                                                      | D3, D9 items 2-3, §5                                                                                                                   | Design-level complete for the column rule                                                                     |
+| C-7 (slice text)          | `sources/02_charter_v1_1.md:78-80`                                                                   | Show accepted/running/blocked/conflicted/verified separately; no client policy                                                                   | D1 (policy in one module, no client recomputation), D7                                                                                 | Partial: operation outcomes are MOB-05                                                                        |
+| H-SURVIVE-A / H-SCENARIOS | `sources/01_handoff_pm_stack_fleet_orchestration.md:51-59`                                           | Stale lease, blocked/parked resume, live launch/bind proof scenarios survive refinement                                                          | §3, §5 (lease expired, bind proof, parked with binding)                                                                                | Partial: scenario rows for the read side only                                                                 |
+| O §12.2 to §12.4          | `sources/04_recovered_original_combined_design.md:13`                                                | Column definitions, precedence, picked-up and parked/blocked visibility                                                                          | D3, §3, §5                                                                                                                             | Design-level complete for projection; the Project write in §12.3 is the orchestrator's (out of scope)         |
 
 The issue's curated trace marks all three IDs `design-only` with
 missing evidence "exact implementation/parser tests for the full

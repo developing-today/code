@@ -458,6 +458,7 @@ pub fn sign_authorisation(
 
             chat: None,
             anchor: None,
+            thread: None,
         },
     )?)
 }
@@ -494,6 +495,7 @@ pub fn sign_revoke(
 
             chat: None,
             anchor: None,
+            thread: None,
         },
     )?)
 }
