@@ -83,9 +83,17 @@ pub fn tls13_client_config() -> Result<Arc<rustls::ClientConfig>> {
 pub fn tls13_client_config_with_roots(
     roots: rustls::RootCertStore,
 ) -> Result<Arc<rustls::ClientConfig>> {
-    let config = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    // The provider is named explicitly: this crate's unified feature
+    // graph enables both rustls providers (ring here, aws-lc-rs via
+    // iroh/quinn), and rustls refuses to guess between them — a leg
+    // built from the auto-detect builder would panic at runtime.
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .context("configuring TLS 1.3 as the leg's only protocol version")?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     Ok(Arc::new(config))
 }
 
@@ -605,9 +613,11 @@ mod tests {
         )
         .unwrap();
 
-        let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
-            &rustls::version::TLS13,
-        ])
+        let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
         .with_no_client_auth()
         .with_single_cert(vec![cert_der.clone()], key_der)
         .unwrap();
