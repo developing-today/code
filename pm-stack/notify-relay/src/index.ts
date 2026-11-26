@@ -14,8 +14,8 @@
 //     edge) Step 3's drain: the answers taken at the edge, then an
 //     ack by answer id that drops them (src/answers.ts).
 //   GET /answer/:ledgerId?t=<token>  (token auth)
-//   POST /api/needs-drew/:ledgerId/answer  (token auth in the body)
-//     Step 3's answer intake: the needs-Drew answer page and its
+//   POST /api/needs-drew|needs-user/:ledgerId/answer  (token auth in the body)
+//     Step 3's answer intake: the answer page and its
 //     POST, the same paths as the laptop's, so a push's answer link
 //     works while the laptop is away. The edge stores only each
 //     question's token hash, mirrored with the question (design §4).
@@ -106,7 +106,7 @@ const ANSWER_CORS = {
 };
 
 const ANSWER_PAGE = /^\/answer\/([^/]+)$/;
-const ANSWER_POST = /^\/api\/needs-drew\/([^/]+)\/answer$/;
+const ANSWER_POST = /^\/api\/needs-(?:drew|user)\/([^/]+)\/answer$/;
 
 /** The ledger id from a matched path segment, or null when it does
  * not decode to a plausible id. */

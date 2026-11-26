@@ -32,7 +32,7 @@ pub const DEFAULT_LEAF_WITHIN: CalendarDuration = CalendarDuration::days(90);
 
 /// Roles that count as CA material for horizon purposes.
 fn is_ca_role(role: &str) -> bool {
-    matches!(role, "root" | "root-cross" | "issuer")
+    matches!(role, "root" | "root-cross" | "issuer" | "issuer-overlap")
 }
 
 /// A read-only inventory request (§6.1).

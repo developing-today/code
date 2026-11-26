@@ -1,5 +1,6 @@
 import { Unpackr } from "msgpackr";
-import type { ScreenPatch } from "./world-surface";
+import type { ScreenPatch, ScreenPatchV2 } from "./world-surface";
+import { isValidTagSet } from "./world-surface";
 
 /**
  * Browser decoder for the negotiated binary screen transport
@@ -140,9 +141,7 @@ export function decodeViewPatch(bytes: Uint8Array): ViewPatchFrame | null {
 async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
   let stream: ReadableStream<Uint8Array>;
   try {
-    stream = new Blob([bytes as BlobPart])
-      .stream()
-      .pipeThrough(new DecompressionStream("deflate-raw"));
+    stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
   } catch {
     return null;
   }
@@ -197,10 +196,7 @@ export async function decodeViewPatchAsync(bytes: Uint8Array): Promise<ViewPatch
   }
   if (!(envelope.payload instanceof Uint8Array)) return null;
   if (envelope.payload.length > MAX_SCREEN_FRAME_BYTES) return null;
-  const inner =
-    envelope.compression === COMPRESSION_NONE
-      ? envelope.payload
-      : await inflateRaw(envelope.payload);
+  const inner = envelope.compression === COMPRESSION_NONE ? envelope.payload : await inflateRaw(envelope.payload);
   if (!inner) return null;
   return decodeViewPatch(inner);
 }
@@ -225,4 +221,115 @@ function decodeFrame(frame: unknown): ViewPatchFrame | null {
     resume_token: frame.resume_token,
     patch,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen v2 tagged patches (#14731 slice 5). The codec envelope is   */
+/* unchanged (version 1, or the version-2 compression envelope via    */
+/* the same payload rule); inside it, the patch is the Screen v2      */
+/* representation: `patch.version === 2` and every cell carries a     */
+/* validated `tags` array. The v1 decoder above rejects such frames   */
+/* (its cell shape has no `tags` key), and this decoder rejects v1    */
+/* patch frames — neither path downgrades the other.                  */
+/* ------------------------------------------------------------------ */
+
+export interface TaggedViewPatchFrame {
+  sequence: number;
+  view_revision: number;
+  base_view_revision: number | null;
+  resume_token: string | null;
+  patch: ScreenPatchV2;
+}
+
+function decodeTaggedCell(value: unknown): ScreenPatchV2["runs"][number]["cells"][number] | null {
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  const allowed = ["symbol", "fg", "bg", "bold", "columns", "token", "tags"];
+  if (!allowed.slice(0, 5).every((key) => key in value)) return null;
+  if (!("tags" in value)) return null;
+  if (!keys.every((key) => allowed.includes(key))) return null;
+  if (typeof value.symbol !== "string") return null;
+  if (!isUint(value.fg, 0xff) || !isUint(value.bg, 0xff) || !isUint(value.columns, 0xff)) return null;
+  if (typeof value.bold !== "boolean") return null;
+  const token = "token" in value ? value.token : null;
+  if (token !== null && (typeof token !== "string" || !STYLE_TOKENS.has(token))) {
+    return null;
+  }
+  if (!isValidTagSet(value.tags)) return null;
+  return {
+    symbol: value.symbol,
+    fg: value.fg,
+    bg: value.bg,
+    bold: value.bold,
+    columns: value.columns,
+    token,
+    tags: [...value.tags],
+  };
+}
+
+function decodeTaggedPatch(value: unknown): ScreenPatchV2 | null {
+  if (!isRecord(value) || !hasExactlyKeys(value, ["version", "width", "height", "runs"])) {
+    return null;
+  }
+  if (value.version !== 2) return null;
+  if (!isUint(value.width, 0xffff) || !isUint(value.height, 0xffff)) {
+    return null;
+  }
+  if (!Array.isArray(value.runs)) return null;
+  const runs: ScreenPatchV2["runs"] = [];
+  for (const runValue of value.runs) {
+    if (!isRecord(runValue) || !hasExactlyKeys(runValue, ["start", "cells"])) return null;
+    if (!isUint(runValue.start, 0xffffffff) || !Array.isArray(runValue.cells)) return null;
+    const cells: ScreenPatchV2["runs"][number]["cells"] = [];
+    for (const cellValue of runValue.cells) {
+      const cell = decodeTaggedCell(cellValue);
+      if (!cell) return null;
+      cells.push(cell);
+    }
+    runs.push({ start: runValue.start, cells });
+  }
+  return { version: 2, width: value.width, height: value.height, runs };
+}
+
+function decodeTaggedFrame(frame: unknown): TaggedViewPatchFrame | null {
+  if (
+    !isRecord(frame) ||
+    !hasExactlyKeys(frame, ["sequence", "view_revision", "base_view_revision", "resume_token", "patch"])
+  ) {
+    return null;
+  }
+  if (!isUint(frame.sequence, Number.MAX_SAFE_INTEGER)) return null;
+  if (!isUint(frame.view_revision, Number.MAX_SAFE_INTEGER)) return null;
+  if (!isUintOrNull(frame.base_view_revision, Number.MAX_SAFE_INTEGER)) return null;
+  if (frame.resume_token !== null && typeof frame.resume_token !== "string") return null;
+  const patch = decodeTaggedPatch(frame.patch);
+  if (!patch) return null;
+  return {
+    sequence: frame.sequence,
+    view_revision: frame.view_revision,
+    base_view_revision: frame.base_view_revision,
+    resume_token: frame.resume_token,
+    patch,
+  };
+}
+
+/**
+ * Decode one binary view-patch frame whose patch is a Screen v2
+ * tagged patch. Handles the plain codec-version-1 envelope only
+ * (mirroring the sync `decodeViewPatch`); returns null for anything
+ * else, including a well-formed v1 patch frame.
+ */
+export function decodeTaggedViewPatch(bytes: Uint8Array): TaggedViewPatchFrame | null {
+  if (bytes.length === 0 || bytes.length > MAX_SCREEN_FRAME_BYTES) return null;
+  let values: unknown[];
+  try {
+    values = unpackr.unpackMultiple(bytes);
+  } catch {
+    return null;
+  }
+  if (values.length !== 1) return null;
+  const envelope = values[0];
+  if (!isRecord(envelope) || !hasExactlyKeys(envelope, ["version", "frame"])) return null;
+  if (envelope.version !== SCREEN_CODEC_VERSION) return null;
+  return decodeTaggedFrame(envelope.frame);
 }

@@ -48,7 +48,10 @@ mod tests {
 
     #[test]
     fn matching_is_case_and_whitespace_tolerant() {
-        assert_eq!(parse_journal_ack_mode("  Batched "), JournalAckMode::Batched);
+        assert_eq!(
+            parse_journal_ack_mode("  Batched "),
+            JournalAckMode::Batched
+        );
         assert_eq!(parse_journal_ack_mode("ASYNC"), JournalAckMode::Async);
     }
 

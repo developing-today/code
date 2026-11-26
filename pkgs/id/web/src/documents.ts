@@ -118,11 +118,7 @@ export const MAX_DOCUMENT_PAGES = 512;
  * Validate one listing continuation. The panel and async collector share
  * this so neither can loop on a repeated cursor or exceed the page bound.
  */
-export function nextDocumentsCursor(
-  after: string | null,
-  nextAfter: string | null,
-  pagesRead: number,
-): string | null {
+export function nextDocumentsCursor(after: string | null, nextAfter: string | null, pagesRead: number): string | null {
   if (nextAfter === null) return null;
   if (nextAfter === after) {
     throw new Error("documents request failed: listing cursor did not advance");
@@ -157,10 +153,7 @@ export async function collectDocuments(requestPage: DocumentsPageRequest): Promi
 }
 
 /** Read one document through a raw-reply request; refusals throw DocumentsRefusal. */
-export async function readDocument(
-  request: (name: string) => Promise<unknown>,
-  name: string,
-): Promise<DocumentRead> {
+export async function readDocument(request: (name: string) => Promise<unknown>, name: string): Promise<DocumentRead> {
   const raw = await request(name);
   const refusal = documentsRefusal(raw);
   if (refusal) throw refusal;
