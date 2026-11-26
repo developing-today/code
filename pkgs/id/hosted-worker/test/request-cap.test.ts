@@ -199,7 +199,7 @@ test("plain export stays available at the request cap and is not counted", async
 test("bridge export stays available at the request cap from a fresh challenge", async () => {
   const clock = { now: 12_000_000 };
   await withClock(clock, async () => {
-    const d = makeDO({ USER_REQUEST_CEILING: "2", USER_REQUEST_WINDOW_SECONDS: "60", BLOBS: emptyBucket() });
+    const d = makeDO({ USER_REQUEST_CEILING: "2", USER_REQUEST_WINDOW_SECONDS: "60", BLOBS_US: emptyBucket() });
     const key = await importIdKey(new Uint8Array(32).fill(61));
     const bridged = (path: string, init: RequestInit = {}): Request => {
       const headers = new Headers(init.headers);
