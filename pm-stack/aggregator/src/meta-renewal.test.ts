@@ -382,8 +382,11 @@ describe("renewMetaSession — browser-jar restore (#10839)", () => {
     expect(a3.alert).toContain("restored the laptop Helium cookie jar");
     expect(setCalls).toBe(3);
 
-    // The read path recovers: episode closes, alert clears.
-    doc = okDoc;
+    // The read path recovers: episode closes, alert clears. The
+    // recovered exporter produces a fresh read at the current time —
+    // an ok read measured hours ago would be stale readings under
+    // the #15114 alert, not a recovery.
+    doc = { status: "ok", measuredAt: new Date(nowMs).toISOString(), attemptedAt: new Date(nowMs).toISOString() };
     const healed = await renewMetaSession(deps);
     expect(healed.status).toBe("valid");
     expect(healed.alert).toBeNull();
