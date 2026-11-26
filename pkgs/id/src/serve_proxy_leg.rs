@@ -460,8 +460,6 @@ pub async fn establish_websocket_leg(
 mod tests {
     use super::*;
     use crate::serve_proxy::{FrameType, MAX_DATA_PAYLOAD};
-    use futures_util::{SinkExt as _, StreamExt as _};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
 
     /// The frame sequence every leg oracle round-trips: one frame of
@@ -603,7 +601,7 @@ mod tests {
         let certified = rcgen::generate_simple_self_signed(vec!["broker.test".to_string()]).unwrap();
         let cert_der = certified.cert.der().clone();
         let key_der = rustls::pki_types::PrivateKeyDer::try_from(
-            certified.key_pair.serialize_der(),
+            certified.signing_key.serialize_der(),
         )
         .unwrap();
 
