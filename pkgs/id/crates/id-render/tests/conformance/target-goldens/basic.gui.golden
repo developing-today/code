@@ -75,6 +75,7 @@
   "report": {
     "applied": [],
     "fallbacks": [],
+    "assertions": [],
     "reported_overrides": []
   }
 }
