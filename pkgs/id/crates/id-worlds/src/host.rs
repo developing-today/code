@@ -1238,9 +1238,10 @@ pub fn settings_body(file: &HostFile, world: &str) -> Result<serde_json::Value> 
     }))
 }
 
-/// Take a set of the live world `name` from its `service` when `policy`
-/// says one is due at `now_secs`, then prune its sets to the policy
-/// (#13739). Both `id host run` and a serving node (`id serve
+/// Take a due snapshot set of a live world, then prune its sets (#13739).
+///
+/// A set of `name` is exported from `service` when `policy` says one is
+/// due at `now_secs`. Both `id host run` and a serving node (`id serve
 /// --world-host`) call this from their schedule.
 ///
 /// A world whose journal has not grown since its newest set gets the
