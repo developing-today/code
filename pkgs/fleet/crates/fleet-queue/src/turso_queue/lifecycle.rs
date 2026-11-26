@@ -3818,10 +3818,10 @@ mod manual_claim_override_audit_tests {
         let id = enqueued["row"]["id"].as_i64().expect("task id");
         t.exec(
             "UPDATE tasks SET status = 'parked', attempts = 2, max_attempts = 5, \
-             not_before = '2099-01-01T00:00:00Z', park_kind = 'backoff', \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
              wait_kind = 'dependency', ready_condition = ?, result = ? WHERE id = ?",
             &[
-                Arg::Text(json!({"kind": "time", "until": "2099-01-01T00:00:00Z"}).to_string()),
+                Arg::Text(json!({"kind": "time", "until": "2027-01-01T00:00:00Z"}).to_string()),
                 Arg::Text(
                     json!({"park_reason": "waiting on dependency", "unrelated": {"keep": true}})
                         .to_string(),
@@ -3886,7 +3886,7 @@ mod manual_claim_override_audit_tests {
         let id = enqueued["row"]["id"].as_i64().expect("task id");
         t.exec(
             "UPDATE tasks SET status = 'parked', attempts = 3, max_attempts = 5, \
-             not_before = '2099-01-01T00:00:00Z', park_kind = 'backoff', \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
              result = ? WHERE id = ?",
             &[
                 Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
@@ -3953,10 +3953,10 @@ mod manual_claim_override_tests {
         let id = enqueued["row"]["id"].as_i64().expect("task id");
         t.exec(
             "UPDATE tasks SET status = 'parked', attempts = 2, max_attempts = 5, \
-             not_before = '2099-01-01T00:00:00Z', park_kind = 'backoff', \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
              wait_kind = 'dependency', ready_condition = ?, result = ? WHERE id = ?",
             &[
-                Arg::Text(json!({"kind": "time", "until": "2099-01-01T00:00:00Z"}).to_string()),
+                Arg::Text(json!({"kind": "time", "until": "2027-01-01T00:00:00Z"}).to_string()),
                 Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
                 Arg::Int(id),
             ],
