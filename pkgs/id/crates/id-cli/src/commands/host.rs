@@ -218,13 +218,12 @@ async fn drill_act(
     use id_worlds::host_drill::{DrillOutcome, append_drill_record, run_drill};
     anyhow::ensure!(root.is_dir(), "no data root at {}", root.display());
     let key = host_key(root).await?;
-    let (temp, dir) = match scratch {
-        Some(dir) => (None, dir),
-        None => {
-            let temp = tempfile::TempDir::new().context("creating drill scratch space")?;
-            let dir = temp.path().join("drill");
-            (Some(temp), dir)
-        }
+    let (temp, dir) = if let Some(dir) = scratch {
+        (None, dir)
+    } else {
+        let temp = tempfile::TempDir::new().context("creating drill scratch space")?;
+        let dir = temp.path().join("drill");
+        (Some(temp), dir)
     };
     let record = run_drill(root, world, &key, &dir).await;
     drop(temp);

@@ -254,7 +254,7 @@ fn copy_world(from: &Path, to: &Path) -> Result<()> {
             .with_context(|| format!("typing {}", entry.path().display()))?;
         if kind.is_dir() {
             copy_world(&entry.path(), &target)?;
-        } else if kind.is_file() {
+        } else {
             std::fs::copy(entry.path(), &target)
                 .with_context(|| format!("copying {}", entry.path().display()))?;
         }
@@ -316,8 +316,7 @@ pub fn read_drill_records(root: &Path) -> Result<Vec<DrillRecord>> {
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
