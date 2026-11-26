@@ -107,6 +107,12 @@ def _safe_slack_text(value: str) -> str:
     return text[:1200]
 
 
+def _safe_request_id(value: str) -> str:
+    """Keep caller IDs stable while preventing Slack markup/mentions in IDs."""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-")[:80]
+    return safe or "alignment-request"
+
+
 def parse_fields(text: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for line in text.splitlines():
@@ -196,7 +202,7 @@ class AlignmentHandler:
         fields = parse_fields(event.get("text") or "")
         user_id = str(event.get("user") or "")
         thread_ts = str(event.get("thread_ts") or message_ts)
-        supplied_id = fields.get("id")
+        supplied_id = _safe_request_id(fields["id"]) if fields.get("id") else None
         if supplied_id:
             previous = self.conn.execute(
                 "SELECT * FROM alignment_requests WHERE request_id=?", (supplied_id,)

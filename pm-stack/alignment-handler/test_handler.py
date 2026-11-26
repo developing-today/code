@@ -173,6 +173,18 @@ class AlignmentHandlerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only send to #alignment"):
             sender.send("C999", "1.0", "hello", "idempotency")
 
+    def test_request_id_cannot_inject_slack_mentions(self):
+        request_id = self.handler.handle_event(
+            event(
+                "103.003",
+                "<@U0CBTJGQQSZ>\nID: @channel\nOwner: @drew\nScope: safe id\n"
+                "Evidence: https://example.invalid/id",
+            ),
+            self.sender,
+        )
+        self.assertEqual(request_id, "channel")
+        self.assertNotIn("@channel", self.sender.messages[0][2])
+
     def test_duplicate_slack_event_does_not_send_twice(self):
         source = event(
             "104.001",
