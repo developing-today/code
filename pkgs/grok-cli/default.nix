@@ -63,7 +63,7 @@ let
       '
     '';
 
-    npmDepsHash = "sha256-SUo8vbwKaOqberL9PyOAqd11sPfbyPdtNKUDIJHlm+I=";
+    npmDepsHash = "sha256-zJZ2leOpsiismxtYxC4RPzeJFvkpwz61VO54UWL+CEI=";
     npmFlags = [
       "--ignore-scripts"
       "--no-audit"
