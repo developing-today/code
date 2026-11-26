@@ -280,9 +280,9 @@ fn stable_arguments(target: &str) -> Vec<String> {
 /// binding's expectation is refused and the published version keeps
 /// running. The persistent compile cache (§2.2 step 6) is
 /// [`compile_function_cached`], keyed by the provenance triple, target and
-/// interface hash. Version assignment, publish/swap bookkeeping, and
-/// per-function instances are placement concerns and arrive with the
-/// later slices.
+/// interface hash. Version assignment and publish/swap bookkeeping are
+/// placement concerns and live in [`crate::world_functions`]; per-function
+/// instances arrive with the later slices.
 
 /// The world-declared function platform a user function compiles against
 /// (design #5964 §2.2 step 2): a platform tree in the same shape the world
