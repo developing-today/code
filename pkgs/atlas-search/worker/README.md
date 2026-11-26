@@ -155,6 +155,15 @@ After each capture the store retires every version older than the class
 window and outside its keep-newest floor. Retiring marks a version cold
 (`retired_at_ms`); nothing is deleted.
 
+Slice 5 (`src/audit_report.ts`): the admin before/after report.
+`POST /v1/admin/retained/audit {object, version}` pins a stored version
+into the `snapshot-audit` set (a copy under `audit:<object>`, refused while
+that class is disabled). `GET /v1/admin/retained/compare?object=&from=&to=`
+compares two pinned versions and reads only the audit set: changed payload
+fields, added, removed and moved items, score changes (only within one rule
+id), and added or removed search result refs. Both routes sit behind the
+gate token and answer 503 without a `RETAINED` binding.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client

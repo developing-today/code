@@ -16,12 +16,16 @@
  *   GET  /v1/cache/inspect?query=&k= (gated) -> DO metadata readback
  *   POST /v1/cache/purge {query, k?} (gated) -> delete one cached query
  *   POST /mcp                       (gated) -> MCP endpoint (#8625; src/mcp.ts)
+ *   POST /v1/admin/retained/audit {object, version} (gated) -> pin a version for audit (#9140)
+ *   GET  /v1/admin/retained/compare?object=&from=&to= (gated) -> before/after report (#9140)
  */
 import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
 import { handleMcp } from "./mcp";
 import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
+import { AuditError, compareAudited, pinForAudit } from "./audit_report";
+import { RetainedObjectError } from "./retained_object";
 import { recordSearch, validSession } from "./search_history";
 import { CONTEXT } from "./space";
 
@@ -36,7 +40,8 @@ export interface Env {
   /** Hot-cache master flag; only the literal "true" enables it. */
   HOT_CACHE_ENABLED?: string;
   /** Retained objects (#9140): search history for callers that name a
-   * session, kept only while its class is enabled there. */
+   * session, kept only while its class is enabled there, and the admin
+   * audit set the comparison report reads. */
   RETAINED?: D1Database;
   GATE_TOKEN: string;
   SERVICE_BASE: string;
@@ -47,6 +52,55 @@ export interface Env {
 
 function errorJson(status: number, code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status });
+}
+
+/** A positive whole version number, or undefined. */
+function versionNumber(value: unknown): number | undefined {
+  const n = typeof value === "string" && /^[0-9]{1,15}$/.test(value) ? Number(value) : value;
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? n : undefined;
+}
+
+/** The admin audit routes (#9140 slice 5). */
+async function retainedAdmin(req: Request, env: Env, url: URL): Promise<Response> {
+  const db = env.RETAINED;
+  if (!db) return errorJson(503, "retained_off", "no retained-object store is configured");
+  try {
+    if (req.method === "POST" && url.pathname === "/v1/admin/retained/audit") {
+      const raw = await readTextUpTo(req);
+      if (raw === null) return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return errorJson(400, "bad_request", "body must be JSON");
+      }
+      const { object, version } = (typeof body === "object" && body !== null ? body : {}) as {
+        object?: unknown;
+        version?: unknown;
+      };
+      const v = versionNumber(version);
+      if (typeof object !== "string" || object.length === 0 || v === undefined) {
+        return errorJson(400, "bad_request", "object must be a non-empty string and version a positive integer");
+      }
+      return Response.json(await pinForAudit(db, object, v));
+    }
+    if (req.method === "GET" && url.pathname === "/v1/admin/retained/compare") {
+      const object = url.searchParams.get("object");
+      const from = versionNumber(url.searchParams.get("from"));
+      const to = versionNumber(url.searchParams.get("to"));
+      if (!object || from === undefined || to === undefined) {
+        return errorJson(400, "bad_request", "object, from and to are required; from and to are positive integers");
+      }
+      return Response.json(await compareAudited(db, object, from, to));
+    }
+  } catch (error) {
+    if (error instanceof AuditError) {
+      return errorJson(error.code === "family_mismatch" ? 409 : 404, error.code, error.message);
+    }
+    if (error instanceof RetainedObjectError) return errorJson(409, error.code, error.message);
+    throw error;
+  }
+  return errorJson(405, "method_not_allowed", "use POST for audit and GET for compare");
 }
 
 /** Constant-time bearer comparison (via digests, so length-safe). */
@@ -179,6 +233,13 @@ export default {
         return Response.json(malformedDoPayload("purge"), { status: 502 });
       }
       return Response.json({ key, query, purged: result.purged });
+    }
+
+    if (url.pathname === "/v1/admin/retained/audit" || url.pathname === "/v1/admin/retained/compare") {
+      if (!(await gateOk(env, req))) {
+        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      }
+      return retainedAdmin(req, env, url);
     }
 
     if (url.pathname === "/mcp") {

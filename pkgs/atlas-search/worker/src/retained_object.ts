@@ -384,6 +384,17 @@ export class RetainedObjectStore {
     return results.map((row) => row.version);
   }
 
+  /** The newest version of one object made from `inputsRef`, if any. */
+  async byInputs(objectId: string, inputsRef: string): Promise<Envelope | undefined> {
+    const row = await this.db
+      .prepare(
+        "SELECT object_id, version, family, class, captured_at, inputs_ref, payload FROM atlas_retained_objects WHERE object_id = ? AND inputs_ref = ? ORDER BY version DESC LIMIT 1",
+      )
+      .bind(objectId, inputsRef)
+      .first<ObjectRow>();
+    return row ? fromObjectRow(row) : undefined;
+  }
+
   /** Every stored version of one object, oldest first. */
   async history(objectId: string): Promise<Envelope[]> {
     const { results } = await this.db
