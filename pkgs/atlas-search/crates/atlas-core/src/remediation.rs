@@ -10,8 +10,8 @@
 //!
 //! Guarantees this module is built to keep (design §8, items 9 and 10):
 //!
-//! * No corpus text is read or reproduced: the only columns queried are
-//!   `id`, `content_hash`, `sensitivity`, and the presence of a vector row.
+//! * No corpus text is read or reproduced: only ids, content hashes,
+//!   sensitivity, and vector bytes (hashed in memory) are queried.
 //! * No write ever reaches a shard: every query is a `SELECT`.
 //! * The run record is trace-safe: identifiers, checksums and counts only.
 //! * A run is resumable: [`validate_resume`] pins the canonical endpoints and
@@ -31,11 +31,12 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 use crate::filters::Sensitivity;
 use crate::shards::ShardTransport;
-use crate::types::{Row, Stmt, Value};
+use crate::types::{DEFAULT_VEC_TABLE, Row, Stmt, Value};
 
 /// Format marker for a persisted inventory run.
-pub const INVENTORY_FORMAT: &str = "atlas-remediation-inventory/v2";
+pub const INVENTORY_FORMAT: &str = "atlas-remediation-inventory/v3";
 const SHA256_HEX_LENGTH: usize = 64;
+const VECTOR_BYTES: usize = 768 * 4;
 
 /// Serialized run record. Deliberately contains no chunk text: only ids,
 /// content hashes and counts.
@@ -71,6 +72,7 @@ pub struct InventoryCounts {
     pub missing_destination: u64,
     pub hash_mismatch: u64,
     pub missing_vector: u64,
+    pub vector_mismatch: u64,
 }
 
 /// One source chunk and the destination record it maps to.
@@ -81,6 +83,8 @@ pub struct MappingEntry {
     /// `None` when no destination chunk carries this content hash.
     pub destination_chunk_id: Option<i64>,
     pub destination_content_hash: Option<String>,
+    pub source_vector_fingerprint: Option<String>,
+    pub destination_vector_fingerprint: Option<String>,
     pub status: MappingStatus,
 }
 
@@ -96,6 +100,8 @@ pub enum MappingStatus {
     HashMismatch,
     /// The content is present but the vector row is missing.
     MissingVector,
+    /// The source and destination have different vector bytes.
+    VectorMismatch,
 }
 
 impl InventoryReport {
@@ -108,6 +114,7 @@ impl InventoryReport {
             && self.counts.missing_destination == 0
             && self.counts.hash_mismatch == 0
             && self.counts.missing_vector == 0
+            && self.counts.vector_mismatch == 0
     }
 
     /// The post-run absence predicate: after a purge, the source must return
@@ -123,31 +130,44 @@ impl InventoryReport {
 pub struct SourceChunk {
     pub id: i64,
     pub content_hash: String,
+    pub vector_fingerprint: Option<String>,
 }
 
-/// A destination chunk with its vector presence.
+/// A destination chunk with a fingerprint of its vector bytes, when present.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestinationChunk {
     pub id: i64,
     pub content_hash: String,
-    pub has_vector: bool,
+    pub vector_fingerprint: Option<String>,
 }
 
-/// Read the labelled source set. Only `id`, `content_hash` and the label are
-/// selected; text is never fetched.
+/// Read the labelled source set. Text is never fetched and vector bytes are
+/// only hashed in memory.
 pub fn read_source(
     transport: &dyn ShardTransport,
     sensitivity: Sensitivity,
 ) -> Result<Vec<SourceChunk>> {
+    let sql = format!(
+        "WITH classified AS ( \
+           SELECT c.id AS id, c.content_hash AS h, v.vec AS vec, \
+                  CASE \
+                    WHEN c.sensitivity IN ('shareable','personal','local-only','secret-bearing') THEN c.sensitivity \
+                    WHEN c.sensitivity IS NOT NULL THEN 'secret-bearing' \
+                    WHEN l.sensitivity IN ('shareable','personal','local-only','secret-bearing') THEN l.sensitivity \
+                    ELSE 'secret-bearing' \
+                  END AS sensitivity \
+           FROM chunks c \
+           LEFT JOIN messages m ON m.id = c.message_id \
+           LEFT JOIN session_labels l ON l.session_id = m.session_id \
+           LEFT JOIN {DEFAULT_VEC_TABLE} v ON v.chunk_id = c.id \
+         ), selected AS ( \
+           SELECT id, h, vec FROM classified WHERE sensitivity = ?1 \
+         ), counts AS (SELECT COUNT(*) AS total FROM selected) \
+         SELECT counts.total AS total, selected.id AS id, selected.h AS h, selected.vec AS vec \
+         FROM counts LEFT JOIN selected ON 1=1 ORDER BY selected.id"
+    );
     let mut results = transport
-        .pipeline(&[Stmt::new(
-            "WITH selected AS ( \
-               SELECT id AS id, content_hash AS h FROM chunks WHERE sensitivity = ?1 \
-             ), counts AS (SELECT COUNT(*) AS total FROM selected) \
-             SELECT counts.total AS total, selected.id AS id, selected.h AS h \
-             FROM counts LEFT JOIN selected ON 1=1 ORDER BY selected.id",
-            vec![Value::text(sensitivity.name())],
-        )])?
+        .pipeline(&[Stmt::new(sql, vec![Value::text(sensitivity.name())])])?
         .into_iter();
     let rows = results
         .next()
@@ -166,7 +186,11 @@ pub fn read_source(
         .ok_or_else(|| Error::backend("remediation: source count result missing or invalid"))?
         as u64;
     if count == 0 {
-        if rows.len() == 1 && is_null_column(first, "id") && is_null_column(first, "h") {
+        if rows.len() == 1
+            && is_null_column(first, "id")
+            && is_null_column(first, "h")
+            && is_null_column(first, "vec")
+        {
             return Ok(Vec::new());
         }
         return Err(Error::backend("remediation: malformed empty source result"));
@@ -196,13 +220,17 @@ pub fn read_source(
                 "remediation: source chunk {id} has an invalid SHA-256 content_hash"
             )));
         }
-        out.push(SourceChunk { id, content_hash });
+        out.push(SourceChunk {
+            id,
+            content_hash,
+            vector_fingerprint: fingerprint_vector(r, id, "source")?,
+        });
     }
     Ok(out)
 }
 
-/// Read every destination chunk with vector presence. Validate the vector
-/// table as a plain SQL identifier before interpolating it into the SELECT.
+/// Read every destination chunk with vector bytes hashed in memory.
+/// Validate the vector table as a plain SQL identifier before interpolation.
 pub fn read_destination(
     transport: &dyn ShardTransport,
     vec_table: &str,
@@ -214,10 +242,10 @@ pub fn read_destination(
     }
     let sql = format!(
         "WITH selected AS ( \
-           SELECT c.id AS id, c.content_hash AS h, (v.chunk_id IS NOT NULL) AS has_vec \
+           SELECT c.id AS id, c.content_hash AS h, v.vec AS vec \
            FROM chunks c LEFT JOIN {vec_table} v ON v.chunk_id = c.id \
          ), counts AS (SELECT COUNT(*) AS total FROM selected) \
-         SELECT counts.total AS total, selected.id AS id, selected.h AS h, selected.has_vec AS has_vec \
+         SELECT counts.total AS total, selected.id AS id, selected.h AS h, selected.vec AS vec \
          FROM counts LEFT JOIN selected ON 1=1 ORDER BY selected.id"
     );
     let mut results = transport.pipeline(&[Stmt::new(sql, vec![])])?.into_iter();
@@ -241,7 +269,7 @@ pub fn read_destination(
         if rows.len() == 1
             && is_null_column(first, "id")
             && is_null_column(first, "h")
-            && is_null_column(first, "has_vec")
+            && is_null_column(first, "vec")
         {
             return Ok(Vec::new());
         }
@@ -276,11 +304,10 @@ pub fn read_destination(
                 "remediation: destination chunk {id} has an invalid SHA-256 content_hash"
             )));
         }
-        let has_vector = r.get_i64("has_vec").is_some_and(|n| n != 0);
         out.push(DestinationChunk {
             id,
             content_hash,
-            has_vector,
+            vector_fingerprint: fingerprint_vector(r, id, "destination")?,
         });
     }
     Ok(out)
@@ -346,30 +373,26 @@ pub fn build_report(
 
     for s in src {
         let (entry, status) = match by_hash.get(s.content_hash.as_str()) {
-            Some(d) if d.has_vector => {
-                consumed.insert(d.id);
-                (
-                    MappingEntry {
-                        source_chunk_id: s.id,
-                        source_content_hash: s.content_hash.clone(),
-                        destination_chunk_id: Some(d.id),
-                        destination_content_hash: Some(d.content_hash.clone()),
-                        status: MappingStatus::Verified,
-                    },
-                    MappingStatus::Verified,
-                )
-            }
             Some(d) => {
                 consumed.insert(d.id);
+                let status = match (&s.vector_fingerprint, &d.vector_fingerprint) {
+                    (Some(source), Some(destination)) if source == destination => {
+                        MappingStatus::Verified
+                    }
+                    (Some(_), Some(_)) => MappingStatus::VectorMismatch,
+                    _ => MappingStatus::MissingVector,
+                };
                 (
                     MappingEntry {
                         source_chunk_id: s.id,
                         source_content_hash: s.content_hash.clone(),
                         destination_chunk_id: Some(d.id),
                         destination_content_hash: Some(d.content_hash.clone()),
-                        status: MappingStatus::MissingVector,
+                        source_vector_fingerprint: s.vector_fingerprint.clone(),
+                        destination_vector_fingerprint: d.vector_fingerprint.clone(),
+                        status,
                     },
-                    MappingStatus::MissingVector,
+                    status,
                 )
             }
             None => match by_id.get(&s.id) {
@@ -381,6 +404,8 @@ pub fn build_report(
                             source_content_hash: s.content_hash.clone(),
                             destination_chunk_id: Some(d.id),
                             destination_content_hash: Some(d.content_hash.clone()),
+                            source_vector_fingerprint: s.vector_fingerprint.clone(),
+                            destination_vector_fingerprint: d.vector_fingerprint.clone(),
                             status: MappingStatus::HashMismatch,
                         },
                         MappingStatus::HashMismatch,
@@ -392,6 +417,8 @@ pub fn build_report(
                         source_content_hash: s.content_hash.clone(),
                         destination_chunk_id: None,
                         destination_content_hash: None,
+                        source_vector_fingerprint: s.vector_fingerprint.clone(),
+                        destination_vector_fingerprint: None,
                         status: MappingStatus::MissingDestination,
                     },
                     MappingStatus::MissingDestination,
@@ -410,6 +437,10 @@ pub fn build_report(
             }
             MappingStatus::MissingVector => {
                 counts.missing_vector += 1;
+                unverified_source_ids.push(s.id);
+            }
+            MappingStatus::VectorMismatch => {
+                counts.vector_mismatch += 1;
                 unverified_source_ids.push(s.id);
             }
         }
@@ -450,6 +481,24 @@ fn is_null_column(row: &Row, column: &str) -> bool {
     row.get(column).is_some_and(Value::is_null)
 }
 
+fn fingerprint_vector(row: &Row, id: i64, side: &str) -> Result<Option<String>> {
+    match row.get("vec") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Blob(bytes)) if bytes.len() == VECTOR_BYTES => {
+            let digest = Sha256::digest(bytes);
+            Ok(Some(
+                digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+            ))
+        }
+        Some(Value::Blob(_)) => Err(Error::backend(format!(
+            "remediation: {side} chunk {id} has an invalid vector shape"
+        ))),
+        Some(_) => Err(Error::backend(format!(
+            "remediation: {side} chunk {id} vector bytes are unreadable"
+        ))),
+    }
+}
+
 /// Stable identity over canonical endpoints and source ID/hash rows. The
 /// destination snapshot is fingerprinted separately so resumes can reject
 /// destination drift without changing the run identity.
@@ -475,6 +524,14 @@ fn run_identity(
         h.update(chunk.id.to_string().as_bytes());
         h.update(b":");
         h.update(chunk.content_hash.as_bytes());
+        h.update(b":");
+        h.update(
+            chunk
+                .vector_fingerprint
+                .as_deref()
+                .unwrap_or("missing")
+                .as_bytes(),
+        );
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -482,10 +539,10 @@ fn run_identity(
 fn destination_fingerprint(destination: &[DestinationChunk]) -> String {
     let mut destination = destination.iter().collect::<Vec<_>>();
     destination.sort_by(|left, right| {
-        (left.id, &left.content_hash, left.has_vector).cmp(&(
+        (left.id, &left.content_hash, &left.vector_fingerprint).cmp(&(
             right.id,
             &right.content_hash,
-            right.has_vector,
+            &right.vector_fingerprint,
         ))
     });
     let mut h = Sha256::new();
@@ -495,7 +552,14 @@ fn destination_fingerprint(destination: &[DestinationChunk]) -> String {
         h.update(chunk.id.to_string().as_bytes());
         h.update(b":");
         h.update(chunk.content_hash.as_bytes());
-        h.update(if chunk.has_vector { b":1" } else { b":0" });
+        h.update(b":");
+        h.update(
+            chunk
+                .vector_fingerprint
+                .as_deref()
+                .unwrap_or("missing")
+                .as_bytes(),
+        );
         h.update(b"\0");
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
@@ -538,6 +602,7 @@ impl MappingStatus {
             MappingStatus::MissingDestination => "missing_destination",
             MappingStatus::HashMismatch => "hash_mismatch",
             MappingStatus::MissingVector => "missing_vector",
+            MappingStatus::VectorMismatch => "vector_mismatch",
         }
     }
 }

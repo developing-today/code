@@ -32,6 +32,7 @@ fn s(id: i64, hash: &str) -> SourceChunk {
     SourceChunk {
         id,
         content_hash: content_hash(hash),
+        vector_fingerprint: Some(content_hash(&format!("vector:{hash}"))),
     }
 }
 
@@ -39,7 +40,7 @@ fn d(id: i64, hash: &str, has_vector: bool) -> DestinationChunk {
     DestinationChunk {
         id,
         content_hash: content_hash(hash),
-        has_vector,
+        vector_fingerprint: has_vector.then(|| content_hash(&format!("vector:{hash}"))),
     }
 }
 
@@ -169,7 +170,7 @@ fn create_db(path: &Path, rows: &[(i64, &str, Option<&str>, Option<&str>, bool)]
         let session_id = format!("s{id}");
         con.execute(
             "INSERT INTO chunks VALUES (?, ?, 0, ?, ?, ?)",
-            rusqlite::params![id, format!("m{id}"), "REDACTED", hash, sens],
+            rusqlite::params![id, format!("m{id}"), "REDACTED", content_hash(hash), sens],
         )
         .expect("chunk");
         con.execute(
@@ -227,6 +228,8 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
             ),
             (3, "h3", Some("personal"), Some("personal"), true),
             (4, "h4", None, Some("secret-bearing"), true),
+            (5, "h5", Some("unrecognized"), Some("personal"), true),
+            (6, "h6", None, None, true),
         ],
     )
     .expect("valid fixture hashes");
@@ -258,10 +261,10 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
     .expect("inventory");
 
     // The personal row is not part of the secret-bearing inventory.
-    assert_eq!(r.counts.source, 3);
+    assert_eq!(r.counts.source, 5);
     assert_eq!(r.counts.verified, 2);
-    assert_eq!(r.counts.missing_destination, 1);
-    assert_eq!(r.unverified_source_ids, vec![2]);
+    assert_eq!(r.counts.missing_destination, 3);
+    assert_eq!(r.unverified_source_ids, vec![2, 5, 6]);
     assert!(!r.destination_complete());
 }
 
@@ -298,6 +301,8 @@ fn destination_vector_must_match_source_vector_bytes() {
         !report.destination_complete(),
         "vector presence alone does not verify the destination embedding"
     );
+    assert_eq!(report.counts.vector_mismatch, 1);
+    assert_eq!(report.mappings[0].status, MappingStatus::VectorMismatch);
     let _ = std::fs::remove_file(source_path);
     let _ = std::fs::remove_file(destination_path);
 }
@@ -347,7 +352,7 @@ fn missing_or_malformed_statement_results_fail_closed() {
             ("total".into(), Value::Integer(0)),
             ("id".into(), Value::Null),
             ("h".into(), Value::Null),
-            ("has_vec".into(), Value::Null),
+            ("vec".into(), Value::Null),
         ])]],
     };
     assert!(
@@ -369,6 +374,7 @@ fn invalid_content_hashes_are_rejected_without_echoing_the_value() {
         ("total".into(), Value::Integer(1)),
         ("id".into(), Value::Integer(7)),
         ("h".into(), Value::Text(invalid_hash.to_string())),
+        ("vec".into(), Value::Null),
     ]);
     let source = StaticTransport {
         results: vec![vec![source_row]],
@@ -382,7 +388,7 @@ fn invalid_content_hashes_are_rejected_without_echoing_the_value() {
         ("total".into(), Value::Integer(1)),
         ("id".into(), Value::Integer(7)),
         ("h".into(), Value::Text(invalid_hash.to_string())),
-        ("has_vec".into(), Value::Integer(1)),
+        ("vec".into(), Value::Blob(vec![0u8; 768 * 4])),
     ]);
     let destination = StaticTransport {
         results: vec![vec![destination_row]],
@@ -399,6 +405,7 @@ fn invalid_content_hashes_are_rejected_without_echoing_the_value() {
         &[SourceChunk {
             id: 7,
             content_hash: invalid_hash.to_string(),
+            vector_fingerprint: None,
         }],
         &[d(7, "valid-destination-hash", true)],
     )
@@ -501,7 +508,7 @@ fn write_run_creates_private_report_files() {
 
 #[test]
 fn maps_by_content_hash_and_classifies_incomplete_secret_destinations() {
-    // Oracle: only equal content hashes with a destination vector are verified;
+    // Oracle: only equal content and vector fingerprints are verified;
     // missing hashes, id-only matches, and absent vectors stay unresolved.
     let source = [
         s(1, "hash-a"),

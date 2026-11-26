@@ -164,13 +164,14 @@ fn main() {
         }
         write_run(&args.out, &report).expect("write report failed");
         println!(
-            "source={} destination={} verified={} missing_destination={} hash_mismatch={} missing_vector={} destination_complete={} run_id={}",
+            "source={} destination={} verified={} missing_destination={} hash_mismatch={} missing_vector={} vector_mismatch={} destination_complete={} run_id={}",
             report.counts.source,
             report.counts.destination,
             report.counts.verified,
             report.counts.missing_destination,
             report.counts.hash_mismatch,
             report.counts.missing_vector,
+            report.counts.vector_mismatch,
             report.destination_complete(),
             report.run_id,
         );
@@ -204,13 +205,14 @@ fn main() {
     }
     write_run(&args.out, &report).expect("write report failed");
     println!(
-        "source={} destination={} verified={} missing_destination={} hash_mismatch={} missing_vector={} destination_complete={} run_id={}",
+        "source={} destination={} verified={} missing_destination={} hash_mismatch={} missing_vector={} vector_mismatch={} destination_complete={} run_id={}",
         report.counts.source,
         report.counts.destination,
         report.counts.verified,
         report.counts.missing_destination,
         report.counts.hash_mismatch,
         report.counts.missing_vector,
+        report.counts.vector_mismatch,
         report.destination_complete(),
         report.run_id,
     );
