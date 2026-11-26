@@ -64,6 +64,9 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         self.assertIn("gh auth setup-git", workflow)
         self.assertIn("hosted_seed_fleet.py --root", workflow)
         self.assertIn("plain_mirror_all.py --root", workflow)
+        self.assertIn("python3 infra/github-backup/bin/hosted_seed_fleet.py", workflow)
+        self.assertIn("python3 infra/github-backup/bin/plain_mirror_all.py", workflow)
+        self.assertNotIn("python3 -I infra/github-backup/bin/", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
 
 
