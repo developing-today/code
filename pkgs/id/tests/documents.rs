@@ -367,7 +367,7 @@ fn test_a_document_event_with_a_payload_body_is_refused() {
         matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
         "{outcome:?}"
     );
-    assert!(store.documents().unwrap().is_empty());
+    assert_eq!(store.documents().unwrap(), [] as [id::documents::DocumentRecord; 0]);
 }
 
 #[test]

@@ -3600,7 +3600,7 @@ mod tests {
         };
         assert_eq!(view.theme, Some(expected));
         assert!(view.objects.contains(&root_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
 
         // Board bodies written before theme_ref existed still decode.
         let legacy: Board =
@@ -3662,7 +3662,7 @@ mod tests {
             .compose_view(&root_hash, &ViewLayers::default())
             .unwrap();
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
         assert_eq!(view.moderation_log.len(), 2);
 
         // A second hide outnumbers the restore and hides it again.
@@ -3710,7 +3710,7 @@ mod tests {
             .insert(hex_encode(&alice.verifying_key().to_bytes()));
         layers.host_hidden.insert(bob_post.clone());
         let view = graph.compose_view(&root_hash, &layers).unwrap();
-        assert!(view.moderation_log.is_empty());
+        assert_eq!(view.moderation_log, [] as [ArtifactHash; 0]);
         assert_eq!(view.hidden.len(), 2);
         let by_object: BTreeMap<_, _> = view
             .hidden
@@ -3727,7 +3727,7 @@ mod tests {
             .unwrap();
         assert!(view.objects.contains(&alice_post));
         assert!(view.objects.contains(&bob_post));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
     }
 
     #[test]
@@ -3792,7 +3792,7 @@ mod tests {
             .unwrap();
         // The revoked moderator's hide no longer has an effect...
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
         // ...but it stays in the public moderation log.
         assert_eq!(view.moderation_log, vec![hide_hash]);
     }
@@ -3949,7 +3949,7 @@ mod tests {
             .compose_view(&root_hash, &ViewLayers::default())
             .unwrap();
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
         assert_eq!(view.moderation_log.len(), 1);
     }
 
@@ -4017,7 +4017,7 @@ mod tests {
             .compose_view(&root_hash, &ViewLayers::default())
             .unwrap();
         assert!(view.objects.contains(&post_hash));
-        assert!(view.hidden.is_empty());
+        assert_eq!(view.hidden, [] as [HiddenObject; 0]);
 
         // Nullify the revocation with a generic Supersede whose
         // replacement is an unrelated attestation: the original grant
@@ -4300,7 +4300,7 @@ mod tests {
 
         // A second pass is a no-op: the hosts have converged.
         let again = replica.replicate_board_from(&source, &root).unwrap();
-        assert!(again.transferred.is_empty());
+        assert_eq!(again.transferred, [] as [ArtifactHash; 0]);
         assert_eq!(again.status.state, ReplicaState::Complete);
     }
 
@@ -7276,10 +7276,9 @@ mod tests {
         let mut expected_backlinks = vec![post_hash.clone(), plain_hash.clone()];
         expected_backlinks.sort();
         assert_eq!(graph.note_backlinks(&note_object), expected_backlinks);
-        assert!(
-            graph
-                .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
-                .is_empty()
+        assert_eq!(
+            graph.note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap()),
+            [] as [ArtifactHash; 0]
         );
         assert_ne!(plain_hash, post_hash);
 
@@ -7391,11 +7390,10 @@ mod tests {
             graph.note_edges_from(&plain_reply_hash),
             vec![NoteEdge::Discusses(note_object.clone())]
         );
-        assert!(graph.note_edges_from(&elsewhere_hash).is_empty());
-        assert!(
-            graph
-                .note_edges_from(&ArtifactHash::new("d".repeat(64)).unwrap())
-                .is_empty()
+        assert_eq!(graph.note_edges_from(&elsewhere_hash), [] as [NoteEdge; 0]);
+        assert_eq!(
+            graph.note_edges_from(&ArtifactHash::new("d".repeat(64)).unwrap()),
+            [] as [NoteEdge; 0]
         );
     }
 
@@ -7494,10 +7492,10 @@ mod tests {
         )
         .unwrap();
         let tombstone_hash = graph.insert(tombstone).unwrap();
-        assert!(graph.note_backlinks(&note_object).is_empty());
-        assert!(graph.note_embeds().is_empty());
-        assert!(graph.note_discussions().is_empty());
-        assert!(graph.note_edges_from(&share_hash).is_empty());
+        assert_eq!(graph.note_backlinks(&note_object), [] as [ArtifactHash; 0]);
+        assert_eq!(graph.note_embeds(), [] as [(ArtifactHash, &NoteRef); 0]);
+        assert_eq!(graph.note_discussions(), [] as [(ArtifactHash, ArtifactHash); 0]);
+        assert_eq!(graph.note_edges_from(&share_hash), [] as [NoteEdge; 0]);
 
         // Superseding the tombstone restores the share: the tombstone
         // loses effect, so the embeds edge — and the backlink — come

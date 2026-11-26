@@ -256,7 +256,7 @@ mod subscription_tests {
         let board = hash('a');
         assert!(!store.is_subscribed(&viewer(), &board));
         assert!(store.get(&viewer(), &board).is_none());
-        assert!(store.subscriptions_for(&viewer()).is_empty());
+        assert_eq!(store.subscriptions_for(&viewer()), [] as [&BoardSubscription; 0]);
         assert!(!store.unfollow(&viewer(), &board));
         assert!(store.is_empty());
         assert!(store.set_muted(&viewer(), &board, true).is_err());
@@ -278,7 +278,7 @@ mod subscription_tests {
         assert!(store.unfollow(&viewer(), &board));
         assert!(!store.is_subscribed(&viewer(), &board));
         assert!(store.get(&viewer(), &board).is_none());
-        assert!(store.subscriptions_for(&viewer()).is_empty());
+        assert_eq!(store.subscriptions_for(&viewer()), [] as [&BoardSubscription; 0]);
         assert!(!store.unfollow(&viewer(), &board));
     }
 
@@ -330,7 +330,7 @@ mod subscription_tests {
         store.follow(&viewer(), &board, 1).unwrap();
         assert!(!store.is_subscribed(&other_viewer(), &board));
         assert!(store.get(&other_viewer(), &board).is_none());
-        assert!(store.subscriptions_for(&other_viewer()).is_empty());
+        assert_eq!(store.subscriptions_for(&other_viewer()), [] as [&BoardSubscription; 0]);
         assert_eq!(store.subscriptions_for(&viewer()).len(), 1);
     }
 
