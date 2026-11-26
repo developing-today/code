@@ -23,6 +23,7 @@
 
 pub mod frames;
 pub mod present;
+pub mod render;
 pub mod session;
 
 /// Shell-contract name this client speaks (F13.1).
