@@ -26,6 +26,7 @@ Transport contracts:
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -99,7 +100,16 @@ def http_json(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECONDS):
     for attempt in range(TRANSPORT_ATTEMPTS):
         try:
             return _http_json_once(method, url, token, payload, timeout)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            # A response truncated mid-body (IncompleteRead) is a
+            # transport failure, not an API answer: seen live on the
+            # CF-3 D1 export's paged reads through the egress proxy
+            # (2026-11-26, #14943) after ~30 minutes of clean pages.
+            http.client.HTTPException,
+        ) as exc:
             last_exc = exc
             if attempt + 1 < TRANSPORT_ATTEMPTS:
                 time.sleep(min(30, 2 ** (attempt + 1)))
