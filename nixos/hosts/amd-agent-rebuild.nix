@@ -193,29 +193,11 @@ in
     stopIfChanged = false;
   };
 
-  # CF-9 (#14949, #14107 M2): the laptop PM edition follows main on a
-  # schedule, not on a human remembering to rebuild. An hourly timer
-  # starts the same reviewed main-only switch above; the rebuild is
-  # serialized by the switch's own lock, logs to
-  # /var/log/agent-rebuild/, and a failed run simply retries next
-  # hour. Hourly sits well inside the aggregator's six-hour
-  # edition-drift alarm threshold (pm-stack/aggregator
-  # edition-drift.ts, EDITION_DRIFT_STALE_MS), so a stalled follow is
-  # alarmed by the sentinel long before it can silently become the
-  # stale tier (#14059). Schedule of record:
-  # doc/fleet-schedule-registry.md (pm-stack-follow-main.timer row).
-  systemd.timers.pm-stack-follow-main = {
-    description = "Follow main hourly via agent-rebuild-switch (CF-9, code#14949)";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "hourly";
-      RandomizedDelaySec = "10m";
-      # A laptop that slept through a fire catches up on wake, so a
-      # merge made while it was closed is still followed unattended.
-      Persistent = true;
-      Unit = "agent-rebuild-switch.service";
-    };
-  };
+  # CF-9 (#14949, #14107 M2): the laptop PM edition follows main hourly
+  # through this switch. The timer itself, pm-stack-follow-main, is
+  # defined once, in nixos/services/pm-stack (its schedule of record is
+  # the doc/fleet-schedule-registry.md row); defining it here too made
+  # the amd evaluation fail on conflicting values.
 
   security.polkit.extraConfig = ''
     polkit.addRule(function (action, subject) {
