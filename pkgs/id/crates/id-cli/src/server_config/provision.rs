@@ -441,7 +441,7 @@ mod tests {
         );
         let (state, result) = apply(&text);
         assert_eq!(result.unwrap().groups_created, 1);
-        assert!(!state.events().is_empty());
+        assert_ne!(state.events(), [] as [Event; 0]);
     }
 
     #[test]

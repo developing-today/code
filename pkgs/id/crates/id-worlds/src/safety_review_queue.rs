@@ -1,9 +1,14 @@
-//! The operator's safety review queue: a local, rebuildable,
-//! policy-ordered projection over report facts, where a report closes
-//! only by a moderator's decision and every closure is logged
-//! (#14465; creator public-world safety v3 outline,
+//! The operator's safety review queue (#14465).
+//!
+//! A local, rebuildable, policy-ordered projection over report facts,
+//! where a report closes only by a moderator's decision and every
+//! closure is logged. Design: creator public-world safety v3 outline,
 //! `doc/2026-11-24T16-12-00Z_design_id6310_creator_public_world_safety_v3_outline.md`,
-//! sections 1, 2, 4 and 6 item 2).
+//! sections 1, 2, 4 and 6 item 2.
+//!
+//! Appeals (#14467, [`crate::safety_appeal`]) enter the same queue as
+//! their own items and close through the same [`ClosureLog::close`]
+//! path; see [`ReviewQueue::rebuild_with_appeals`].
 //!
 //! The queue is never a second source of truth. It is rebuilt from two
 //! append-only logs the operator already holds:
@@ -39,6 +44,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::program_bundle::parse_hex;
+use crate::safety_appeal::{AppealItem, AppealLog};
 use crate::safety_report::{Report, ReportFact, ReportLog, ReportReason};
 use crate::world_session::encode_hex;
 
@@ -173,7 +179,7 @@ impl SignedClosure {
             .ok_or(QueueError::Signature)?;
         moderator
             .verify_strict(&closure_message(&self.closure), &signature)
-            .map_err(|_| QueueError::Signature)?;
+            .map_err(|_signature_error| QueueError::Signature)?;
         Ok(closure)
     }
 }
@@ -206,6 +212,31 @@ fn check_closure(closure: &Closure) -> Result<(), QueueError> {
         ));
     }
     Ok(())
+}
+
+/// The queue items a closure may name: reports and, with appeals,
+/// appeals too.
+pub trait QueueItems {
+    /// Whether an item with this id was accepted into the queue.
+    fn holds(&self, id: &str) -> bool;
+}
+
+impl QueueItems for ReportLog {
+    fn holds(&self, id: &str) -> bool {
+        self.get(id).is_some()
+    }
+}
+
+impl<A: QueueItems, B: QueueItems> QueueItems for (A, B) {
+    fn holds(&self, id: &str) -> bool {
+        self.0.holds(id) || self.1.holds(id)
+    }
+}
+
+impl<T: QueueItems + ?Sized> QueueItems for &T {
+    fn holds(&self, id: &str) -> bool {
+        (**self).holds(id)
+    }
 }
 
 /// Who may close reports here. The binding to the world role model is
@@ -331,9 +362,9 @@ impl ClosureLog {
         self.facts.is_empty()
     }
 
-    /// Close a report: check the moderator's signed decision against
-    /// `authority` and `reports`, then append it, writing the line under
-    /// `operator_dir` when given.
+    /// Close a queue item (a report, or an appeal): check the
+    /// moderator's signed decision against `authority` and `items`, then
+    /// append it, writing the line under `operator_dir` when given.
     ///
     /// # Errors
     ///
@@ -344,7 +375,7 @@ impl ClosureLog {
         &mut self,
         signed: SignedClosure,
         authority: &impl ModeratorAuthority,
-        reports: &ReportLog,
+        items: &impl QueueItems,
         now_ms: u64,
         operator_dir: Option<&Path>,
     ) -> Result<ClosureFact, QueueError> {
@@ -352,7 +383,7 @@ impl ClosureLog {
         if !authority.is_moderator(&closure.moderator) {
             return Err(QueueError::NotModerator(closure.moderator));
         }
-        if reports.get(&closure.report_id).is_none() {
+        if !items.holds(&closure.report_id) {
             return Err(QueueError::UnknownReport(closure.report_id));
         }
         if self.by_report.contains_key(&closure.report_id) {
@@ -431,6 +462,8 @@ pub struct QueueItem {
 pub struct ReviewQueue {
     open: Vec<QueueItem>,
     closed: Vec<QueueItem>,
+    open_appeals: Vec<AppealItem>,
+    closed_appeals: Vec<AppealItem>,
 }
 
 impl ReviewQueue {
@@ -481,7 +514,70 @@ impl ReviewQueue {
         Ok(Self {
             open,
             closed: closed.into_iter().map(|(_, item)| item).collect(),
+            open_appeals: Vec::new(),
+            closed_appeals: Vec::new(),
         })
+    }
+
+    /// Rebuild the queue with appeals as their own items: open appeals
+    /// oldest first, closed ones in the order they were decided. An
+    /// appeal never closes by itself and never reverses anything.
+    ///
+    /// # Errors
+    ///
+    /// A report, appeal or closure in the logs no longer verifies.
+    pub fn rebuild_with_appeals(
+        reports: &ReportLog,
+        appeals: &AppealLog,
+        closures: &ClosureLog,
+        policy: &QueuePolicy,
+    ) -> Result<Self, QueueError> {
+        let mut queue = Self::rebuild(reports, closures, policy)?;
+        let mut closed = Vec::new();
+        for fact in appeals.facts() {
+            let appeal = fact
+                .appeal()
+                .map_err(|e| QueueError::Report(e.to_string()))?;
+            match closures.closure_of(&fact.id) {
+                Some(closure) => {
+                    let decision = closure.signed.verify()?;
+                    closed.push((
+                        closure.sequence,
+                        AppealItem {
+                            fact: fact.clone(),
+                            appeal,
+                            closure: Some(decision),
+                        },
+                    ));
+                }
+                None => queue.open_appeals.push(AppealItem {
+                    fact: fact.clone(),
+                    appeal,
+                    closure: None,
+                }),
+            }
+        }
+        queue.open_appeals.sort_by(|a, b| {
+            a.appeal
+                .filed_at_ms
+                .cmp(&b.appeal.filed_at_ms)
+                .then(a.fact.sequence.cmp(&b.fact.sequence))
+        });
+        closed.sort_by_key(|(sequence, _)| *sequence);
+        queue.closed_appeals = closed.into_iter().map(|(_, item)| item).collect();
+        Ok(queue)
+    }
+
+    /// Open appeals, oldest first.
+    #[must_use]
+    pub fn open_appeals(&self) -> &[AppealItem] {
+        &self.open_appeals
+    }
+
+    /// Decided appeals, in the order they were decided.
+    #[must_use]
+    pub fn closed_appeals(&self) -> &[AppealItem] {
+        &self.closed_appeals
     }
 
     /// Open reports, most urgent first.
@@ -593,7 +689,7 @@ mod tests {
                 (ReportReason::Other, NOW - 50),
             ]
         );
-        assert!(queue.closed().is_empty());
+        assert_eq!(queue.closed(), []);
 
         // The operator's own policy reorders the same facts.
         let spam_first = QueuePolicy {

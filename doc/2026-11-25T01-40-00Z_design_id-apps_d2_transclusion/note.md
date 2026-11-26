@@ -7,10 +7,12 @@ and D1 slice 1, the `id://` URI scheme
 ([`2026-11-25T01-20-40Z_design_id-apps_d1_id-uri-scheme/`](../2026-11-25T01-20-40Z_design_id-apps_d1_id-uri-scheme/)).
 
 Status: slice 1 (embed object semantics) and slice 3 (cycles and bounds)
-are designed here and checked by a stdlib reference. Slice 2 (the full
-capability matrix and any delegated view) and slice 4 (the host rendering
-contract) are not; §7 records the capability default this slice relies on
-and the leak case it already covers.
+are designed here and checked by a stdlib reference. Slice 4, the host
+rendering contract, is in [`slice-4-host-contract.md`](slice-4-host-contract.md)
+with its own checklist. Slice 2, the capability matrix and the delegated
+view grant (off by default), is in
+[`slice-2-capability-matrix.md`](slice-2-capability-matrix.md); §7 here
+records the default it builds on.
 
 ## 1. Problem
 
@@ -161,7 +163,7 @@ a collection are left out and not counted in `more`, so a collection
 reveals neither what nor how many objects a viewer cannot see.
 
 Slice 4 turns these into host obligations (sizes, lazy loading,
-not-yet-synced); the state names above are what it builds on.
+not-yet-synced) in [`slice-4-host-contract.md`](slice-4-host-contract.md).
 
 ## 6. Cycles and bounds (slice 3, as it bears on embeds)
 
@@ -193,9 +195,10 @@ Together these make every render finite: depth bounds the height,
   sees the document (`private-target-owner`). The attack fails by
   design, not by a host's discretion.
 
-Whether ID should also offer a delegated, scoped, read-only view through
-an embed (so public embedding of restricted content can be a deliberate,
-recorded choice) is slice 2's question and is not decided here.
+Slice 2 ([`slice-2-capability-matrix.md`](slice-2-capability-matrix.md))
+gives the full matrix and specifies a delegated, scoped, read-only view
+grant, off by default, so public embedding of restricted content can only
+ever be a deliberate, recorded choice by the target's manager.
 
 ## 8. Fixtures and the reference
 
@@ -253,12 +256,12 @@ cannot read its target.
    rule). The alternative is a typed `quote`, which §9 argues against.
 2. **Render-bound snapshots later?** (decider: Drew, with D5 as the
    first host that would need them.) This record ships digest-bound only.
-3. **Should a collection snapshot also badge removed members?** The
-   reference badges only additions, because removal from a nest is
-   itself a readable event a host can show; slice 4 may want both.
-4. **Delegated scoped view** (slice 2): whether an embed may ever confer
-   a read-only, possibly expiring view of a target the viewer cannot
-   otherwise read.
+3. **Should a collection snapshot also badge removed members?** Answered
+   by slice 4 §3.5: no. Additions only; a host shows removals from the
+   nest's own history.
+4. **Delegated scoped view**: specified by slice 2 §4 as a manager-issued,
+   snapshot-only, expiring view grant and kept off by default. Whether to
+   turn it on is Drew's decision (slice 2 §7).
 
 ## 11. Compatibility
 

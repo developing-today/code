@@ -665,13 +665,38 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
-            "--model-provider",
-            "--model-id",
-            "--model-variant",
         ] {
             if let Some(v) = a.last(flag) {
                 claim.push(flag.to_string());
                 claim.push(v);
+            }
+        }
+        // #4919: the claim's model stamp. Explicit --model-* flags
+        // are the caller's own stamp and win as given; with none,
+        // the stamp recorded in the agent's profile at enrolment
+        // supplies the whole stamp (provider/model/variant travel
+        // together, as the queue's claim requires). Before this, a
+        // lane that did not repeat the flags on every run claimed
+        // unstamped — claim_variant stayed NULL on its rows and the
+        // completion-telemetry derive had no effort to propagate.
+        let explicit_stamp = ["--model-provider", "--model-id", "--model-variant"]
+            .iter()
+            .any(|f| a.last(f).is_some());
+        if explicit_stamp {
+            for flag in ["--model-provider", "--model-id", "--model-variant"] {
+                if let Some(v) = a.last(flag) {
+                    claim.push(flag.to_string());
+                    claim.push(v);
+                }
+            }
+        } else if let Some(stamp) = profile.as_ref().and_then(|p| p.model.as_ref()) {
+            claim.push("--model-provider".to_string());
+            claim.push(stamp.provider.clone());
+            claim.push("--model-id".to_string());
+            claim.push(stamp.model.clone());
+            if let Some(variant) = &stamp.variant {
+                claim.push("--model-variant".to_string());
+                claim.push(variant.clone());
             }
         }
         // A claim changes the queue: it is given time to finish.

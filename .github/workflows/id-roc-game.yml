@@ -1,0 +1,184 @@
+# Verification + artifact publishing for the Roc space-invaders game
+# (#14939, slice 5 of #14861).
+#
+# Builds the game to wasm with the pinned Roc toolchain (the pkgs/id
+# nix dev shell — the game is never compiled on a seat or the
+# laptop), runs the Roc module tests and the game's own expects
+# (including the scripted playthrough), drives the built module
+# through the plaza ABI with the same script (smoke/drive.mjs), and
+# publishes the app bundle — app.toml, program sources, the built
+# space-invaders.wasm, and the smoke driver — as a workflow artifact
+# other machines pull instead of rebuilding. #14862's three-machine
+# chess/checkers demonstration reuses this artifact pattern.
+#
+# The `board-games` job builds the checkers and chess worlds (#14862)
+# the same way and runs their expects, including the seat and turn
+# enforcement tests of the multiplayer slice (#15111). It publishes both
+# modules in one SHA-named artifact and a separate job verifies that a
+# consumer can download them without rebuilding (#15112, slice 4).
+#
+# Main tier only (CI policy: pushes to main + manual dispatch).
+
+name: id roc game
+
+# CI tier policy: see .github/ci-policy.md
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/id/apps/space-invaders/**"
+      - "pkgs/id/apps/checkers/**"
+      - "pkgs/id/apps/chess/**"
+      - "pkgs/id/examples/roc-world/**"
+      - "pkgs/id/examples/roc-cap-demo/**"
+      - "pkgs/id/scripts/roc-test.sh"
+      - "pkgs/id/scripts/key-parity-test.sh"
+      - "pkgs/id/scripts/term-parity-test.sh"
+      - ".github/workflows/id-roc-game.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Push-to-main runs are keyed by run_id so every merged tree gets its
+# own completed run; manual dispatches share a per-ref group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  game:
+    name: "build + test + smoke + artifact"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            # Same #774 fallback as id-bench: when the Magic Nix
+            # Cache proxy throttles, build from source instead of
+            # hard-failing on the narinfo fetch.
+            fallback = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build the game to wasm (pinned Roc toolchain)
+        run: nix develop ./pkgs/id --command bash pkgs/id/apps/space-invaders/program/build.sh
+
+      - name: Roc module tests
+        run: nix develop ./pkgs/id --command bash pkgs/id/scripts/roc-test.sh
+
+      - name: Game tests (incl. the playthrough smoke expects)
+        run: nix develop ./pkgs/id --command roc test pkgs/id/apps/space-invaders/program/main.roc
+
+      - name: Playability smoke — drive the built module
+        run: bash pkgs/id/apps/space-invaders/smoke/smoke.sh pkgs/id/apps/space-invaders/program/space-invaders.wasm
+
+      - name: Record the artifact in the job summary
+        run: |
+          wasm=pkgs/id/apps/space-invaders/program/space-invaders.wasm
+          {
+            echo "## space-invaders artifact"
+            echo ""
+            echo "- module: \`$wasm\` ($(stat -c%s "$wasm") bytes, sha256 \`$(sha256sum "$wasm" | cut -d' ' -f1)\`)"
+            echo "- bundle: \`pkgs/id/apps/space-invaders\` (app.toml, program sources, built wasm, smoke driver)"
+            echo "- artifact name: \`space-invaders-${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the game bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: space-invaders-${{ github.sha }}
+          path: pkgs/id/apps/space-invaders
+          if-no-files-found: error
+
+  board-games:
+    name: "checkers + chess build + test"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            fallback = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Checkers tests
+        run: nix develop ./pkgs/id --command roc test pkgs/id/apps/checkers/program/main.roc
+
+      - name: Chess tests
+        run: nix develop ./pkgs/id --command roc test pkgs/id/apps/chess/program/main.roc
+
+      - name: Build checkers to wasm (pinned Roc toolchain)
+        run: nix develop ./pkgs/id --command bash pkgs/id/apps/checkers/program/build.sh
+
+      - name: Build chess to wasm (pinned Roc toolchain)
+        run: nix develop ./pkgs/id --command bash pkgs/id/apps/chess/program/build.sh
+
+      - name: Record the modules in the job summary
+        run: |
+          {
+            echo "## board game modules"
+            for game in checkers chess; do
+              wasm=pkgs/id/apps/$game/program/$game.wasm
+              echo "- $game: \`$wasm\` ($(stat -c%s "$wasm") bytes, sha256 \`$(sha256sum "$wasm" | cut -d' ' -f1)\`)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the board-game bundle
+        id: board-games-bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: board-games-${{ github.sha }}
+          path: |
+            pkgs/id/apps/checkers
+            pkgs/id/apps/chess
+          if-no-files-found: error
+
+      - name: Record the shared artifact identity
+        env:
+          ARTIFACT_ID: ${{ steps.board-games-bundle.outputs.artifact-id }}
+        run: |
+          echo "- shared board-games artifact: \`board-games-${GITHUB_SHA}\` (id \`${ARTIFACT_ID}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  board-games-artifact-consumer:
+    name: "download and verify compiled board-game modules"
+    needs: board-games
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: board-games-${{ github.sha }}
+          path: ${{ runner.temp }}/board-games
+
+      - name: Verify the downloaded modules without rebuilding
+        env:
+          BOARD_GAMES_DIR: ${{ runner.temp }}/board-games
+        run: |
+          set -euo pipefail
+          {
+            echo "## downloaded board-game artifact"
+            for game in checkers chess; do
+              wasm="$BOARD_GAMES_DIR/$game/program/$game.wasm"
+              test -s "$wasm"
+              echo "- $game: $(stat -c%s "$wasm") bytes, sha256 $(sha256sum "$wasm" | cut -d' ' -f1)"
+            done
+            echo "- verification: downloaded from the board-games job; this job did not build either module"
+          } >> "$GITHUB_STEP_SUMMARY"

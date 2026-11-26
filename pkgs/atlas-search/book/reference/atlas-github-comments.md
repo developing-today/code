@@ -4,7 +4,7 @@ Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-github-comments.rs](h
 
 `atlas-github-comments` is a one-verb writer: it extracts GitHub comments — issue comments, pull-request review comments, and pull-request reviews — from the repositories the user controls, and appends them as `atlas-github-comment/v1` records to a JSONL file, so the comments become a corpus source (source class `github comments`, source id `github-comments`). There are no subcommands and no other mode; the single invocation below is the whole tool.
 
-The complete surface exists only in the source header. `--help` / `-h` prints the usage line to stdout, exit 0, and `--version` / `-V` prints `atlas-github-comments 0.1.0` — and, stated plainly, because it surprises everyone: **every failure in this binary exits 1, including pure argument errors**. There is no exit-2 path.
+The complete surface exists only in the source header. `--help` / `-h` prints the usage line to stdout, exit 0, and `--version` / `-V` prints `atlas-github-comments 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history) — and, stated plainly, because it surprises everyone: **every failure in this binary exits 1, including pure argument errors**. There is no exit-2 path.
 
 ## Invocation
 

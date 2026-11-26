@@ -65,6 +65,16 @@ across the client trip log, the daemon's trip log and job spool, and both
 brokers' journals. Requests without context log nothing new; unauthorized
 requests never log context.
 
+## Queue event store (#14191)
+
+While the queue broker serves a request that carried context, every
+`events` row the request writes gets the context id in its `detail` as
+`ctx_id` (`turso_queue::ctx_scope`). A detail that already names a
+`ctx_id`, or that is not a JSON object, is stored as written; rows from
+requests without context, and from the broker's own sweepers, are
+unchanged. So the same id joins the broker trip line above and the
+durable events `repo-queue events <task>` lists.
+
 ## Proof
 
 `crates/fleet/tests/ctx_propagation.rs` launches the three legs as separate

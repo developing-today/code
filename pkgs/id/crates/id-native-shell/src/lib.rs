@@ -29,9 +29,15 @@
 //! projection. The #12657 step-2c widget renderer ([`widget`])
 //! presents validated `widget/1` surfaces as placed control
 //! entities beside it; shells without it keep the widget document's
-//! text projection.
+//! text projection. The first end-user application surface
+//! (#15022, graphical-client design #5782 §3) is the world
+//! directory ([`directory`]): the host's public world list ordered
+//! pinned/recent/discovered, keyboard navigation into per-world
+//! sessions that coexist, and the accessible text table the
+//! graphical list renders line for line.
 
 pub mod audio;
+pub mod directory;
 pub mod events;
 pub mod form;
 pub mod providers;

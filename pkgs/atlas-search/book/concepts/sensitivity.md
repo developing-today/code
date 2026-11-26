@@ -58,6 +58,8 @@ The mapping between the ladders is fixed:
 | `local-only`                   | `private`      | `internal`             |
 | `secret-bearing`               | `sensitive`    | `secret`               |
 
+Every ceiling input (the CLI's `--max-sensitivity`, a service request's `ceiling`, a client's `ceiling_cap`) accepts either the code spelling or the canonical name. Stored labels and emitted values still use the code spelling; see [Design: renaming the sensitivity ladder in code](../design/sensitivity-ladder-rename.md).
+
 Note the deliberate pinch in the middle: two ceiling levels map to the
 internal tier. The ceiling ladder is finer-grained than physical placement,
 because query-time filtering works per chunk while placement works per

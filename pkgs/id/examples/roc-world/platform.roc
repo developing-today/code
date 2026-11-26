@@ -11,7 +11,7 @@ platform ""
             restore : Str -> model,
         }
     }
-    exposes [Screen, Key, RocJson, RocGrid, RocCap, RocText]
+    exposes [Screen, Key, RocJson, RocGrid, RocCap, RocText, Term]
     packages {}
     provides {
         "roc_init": init_for_host,
@@ -30,6 +30,7 @@ platform ""
     }
 
 import Screen
+import Term
 import Key
 import RocJson
 import RocGrid

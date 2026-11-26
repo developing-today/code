@@ -462,6 +462,25 @@ test("installed, the worker has the app's own files, and one it cannot fetch doe
   expect(await w.caches.keys()).toEqual(["pm-console-v1", "someone-elses"]);
 });
 
+test("a new worker drops what an older build kept that this one no longer knows, and keeps the rest", async () => {
+  const w = worker([], { net: served });
+  await w.fire("install", {});
+  // A file an older build kept that the list no longer names, put
+  // there the way that build would have put it.
+  const cache = await w.caches.open("pm-console-v1");
+  await cache.put("/console/dropped.js", new Response("old code", { status: 200 }));
+  // And one of the app's reads, kept as reads are kept.
+  const read = w.get("/console/api/queue");
+  expect((await read.given)?.status).toBe(200);
+  await read.settled();
+  await w.fire("activate", {});
+  const kept = w.caches.kept();
+  expect(kept).not.toContain("/console/dropped.js");
+  expect(kept).toContain("/console/api/queue");
+  expect(kept).toContain("/console/");
+  expect(kept).toContain("/console/app.js");
+});
+
 test("the app opens with no connection, from the page as it was last fetched", async () => {
   const w = worker([], { net: () => new Response("<html>the app, today</html>", { status: 200 }) });
   // Any address of the app that is navigated to is the one page.
@@ -478,9 +497,16 @@ test("the app opens with no connection, from the page as it was last fetched", a
   await w.get("/console/app.js").settled();
   w.state.net = down;
   expect(await (await w.get("/console/app.js").given)?.text()).toBe("code");
-  // With nothing kept, no connection is no answer: the browser says so.
+  // With nothing kept and no connection, the page is the worker's own
+  // offline page: it says what happened, and it is not kept as though
+  // it were the app. A read in the same state is still no answer: the
+  // app answers for those itself.
   const bare = worker([], { net: down });
-  await expect(bare.get("/console/", { mode: "navigate" }).given).rejects.toThrow("Failed to fetch");
+  const offline = await bare.get("/console/", { mode: "navigate" }).given;
+  expect(offline?.status).toBe(503);
+  expect(await offline?.text()).toContain("No connection");
+  expect(bare.caches.kept()).toEqual([]);
+  await expect(bare.get("/console/api/queue").given).rejects.toThrow("Failed to fetch");
   // A way to the sign-in page is passed on, not answered from the copy:
   // the owner has to be able to sign in.
   w.state.net = () => new Response(null, { status: 302, headers: { location: "https://login.example/" } });

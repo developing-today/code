@@ -3,8 +3,8 @@
 //! The contract of record is `atlas-proto`
 //! (pkgs/atlas-search/crates/atlas-proto): the job protocol the
 //! deployed atlas-search service speaks and its own CLI client is
-//! built against. That crate is *untouched* by this step and stays
-//! the server's side of the contract. The fleet workspace's nix
+//! built against. Wire-shape changes are mirrored here in the same
+//! change. The fleet workspace's nix
 //! source is this directory alone (pkgs/fleet/default.nix:
 //! `src = ./.`), so the fleet bin cannot path-depend on the atlas
 //! workspace; the types the client needs are mirrored here, field
@@ -20,6 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use std::collections::BTreeMap;
 
 /// The sensitivity ladder, least to most restricted. The ordering
 /// is the security ordering used by the server-side clamp.
@@ -129,6 +130,45 @@ pub struct FilterSpec {
     pub since: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, Vec<String>>,
+}
+
+pub const NAMED_DIMENSIONS: [&str; 4] = ["kind", "topic", "project", "client"];
+
+impl FilterSpec {
+    pub fn is_named_dimension(name: &str) -> bool {
+        NAMED_DIMENSIONS.contains(&name)
+    }
+
+    pub fn dimension_values(&self, name: &str) -> Option<&[String]> {
+        match name {
+            "kind" => (!self.kind.is_empty()).then_some(self.kind.as_slice()),
+            "topic" => (!self.topic.is_empty()).then_some(self.topic.as_slice()),
+            "project" => (!self.project.is_empty()).then_some(self.project.as_slice()),
+            "client" => (!self.client.is_empty()).then_some(self.client.as_slice()),
+            _ => self
+                .dimensions
+                .get(name)
+                .filter(|values| !values.is_empty())
+                .map(Vec::as_slice),
+        }
+    }
+
+    pub fn set_dimension(&mut self, name: &str, values: Vec<String>) {
+        match name {
+            "kind" => self.kind = values,
+            "topic" => self.topic = values,
+            "project" => self.project = values,
+            "client" => self.client = values,
+            _ if values.is_empty() => {
+                self.dimensions.remove(name);
+            }
+            _ => {
+                self.dimensions.insert(name.to_string(), values);
+            }
+        }
+    }
 }
 
 fn default_k() -> usize {
@@ -356,6 +396,24 @@ mod tests {
         assert_eq!(req.k, 10);
         assert_eq!(req.pool, 100);
         assert_eq!(req.vector_backend, VectorBackend::Scan);
+    }
+
+    #[test]
+    fn generic_filter_dimensions_match_atlas_proto() {
+        let mut filters = FilterSpec::default();
+        assert_eq!(filters.dimension_values("kind"), None);
+        filters.set_dimension("kind", vec!["message".to_string()]);
+        filters.set_dimension("source-app", vec!["mail".to_string()]);
+        assert_eq!(
+            filters.dimension_values("kind"),
+            Some(&["message".to_string()][..])
+        );
+        assert_eq!(
+            filters.dimension_values("source-app"),
+            Some(&["mail".to_string()][..])
+        );
+        filters.set_dimension("source-app", Vec::new());
+        assert_eq!(filters.dimension_values("source-app"), None);
     }
 
     #[test]
