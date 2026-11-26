@@ -110,6 +110,14 @@ serves no authoritative snapshot.
   ceiling. Design record:
   `doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation/`.
   Cross-language fixtures: `pkgs/id/tests/bridge_fixtures.rs`.
+- The `/v1/bridge/ws` socket hibernates (#15484): the DO accepts it
+  with `state.acceptWebSocket`, never `server.accept()`, so an idle
+  session does not keep the object resident. The socket's
+  attachment names its session, and the session's state is written
+  to `bridge_ws_sessions` after every frame, so a fresh instance
+  after an eviction continues the same session. A socket whose
+  state is gone gets a `session_lost` error and is closed; the
+  client reconnects and resumes with its token.
 - `src/export.ts` — §6 export production (slice 4b of #2852,
   #13157): enumerates the DO's applied events and the R2 blobs
   they cite into the object/blob sets `build_export`
