@@ -9,10 +9,13 @@
 //! lives in [`databases`].
 //! Slice 3 remainder (row notes, property claims, relations) lives in
 //! [`rows`].
+//! Slice 4 export reader (§2.5: Markdown+CSV archive, match ledger) lives
+//! in [`export`].
 
 pub mod comments;
 pub mod content;
 pub mod databases;
+pub mod export;
 pub mod rows;
 
 #[cfg(unix)]
@@ -620,10 +623,28 @@ pub struct Manifest {
     /// manifest is loaded.
     #[serde(default)]
     pub page_losses: BTreeMap<String, crate::content::LossLedger>,
+    /// Export path -> how that export file matched the API inventory
+    /// (design §2.5/§2.6). Every uncertain match is named here. Absent from
+    /// pre-export manifests, so it defaults empty.
+    #[serde(default)]
+    pub export_matches: BTreeMap<String, crate::export::ExportMatch>,
+    /// Which acquisition front ends fed this manifest (design §2.6).
+    /// Additive: absent from older manifests, so it defaults to all false.
+    #[serde(default)]
+    pub acquisition: Acquisition,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
     pub objects: BTreeMap<String, ObjectProgress>,
+}
+
+/// Acquisition header (design §2.6): which front ends supplied content and
+/// whether the run fell back to export-only degraded mode.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Acquisition {
+    pub api: bool,
+    pub export: bool,
+    pub degraded_mode: bool,
 }
 
 impl Manifest {
@@ -653,6 +674,11 @@ impl Manifest {
                 })
             })
             .collect();
+        let acquisition = Acquisition {
+            api: acquisition_paths.iter().any(|path| path == "api"),
+            export: acquisition_paths.iter().any(|path| path == "export"),
+            degraded_mode: false,
+        };
         Ok(Self {
             schema_version: 1,
             workspace_id,
@@ -683,6 +709,8 @@ impl Manifest {
             comments_coverage: BTreeMap::new(),
             row_records: BTreeMap::new(),
             page_losses: BTreeMap::new(),
+            export_matches: BTreeMap::new(),
+            acquisition,
         })
     }
 
