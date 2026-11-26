@@ -338,8 +338,8 @@ mod tests {
                 Rung::Glyph => RenderedArt::Glyph(Glyph::new("C").unwrap()),
             };
             let resolved = plan.resolve(start_at, &BTreeSet::new(), &[]).unwrap();
-            prop_assert_eq!(resolved.rung, expected);
-            prop_assert_eq!(resolved.art, expected_art);
+            proptest::prop_assert_eq!(resolved.rung, expected);
+            proptest::prop_assert_eq!(resolved.art, expected_art);
         }
     }
 }
