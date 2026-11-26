@@ -337,6 +337,7 @@ struct ProgramObservation {
     replayed_inputs: usize,
     program_error: Option<String>,
     snapshot: Vec<u8>,
+    view: Option<String>,
     modules: Vec<String>,
     over_ceiling: String,
     at_ceiling: bool,
@@ -351,6 +352,7 @@ async fn observe_program(
 ) -> ProgramObservation {
     let world = service.world();
     let snapshot = serde_json::to_vec(&world.snapshot(ann.clone()).await.unwrap()).unwrap();
+    let view = world.view(ann.clone()).await.unwrap();
     let mut modules: Vec<String> = std::fs::read_dir(dir.join("modules"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -372,6 +374,7 @@ async fn observe_program(
         replayed_inputs: report.replayed_inputs,
         program_error: report.program_error.clone(),
         snapshot,
+        view,
         modules,
         over_ceiling,
         at_ceiling,
@@ -429,8 +432,9 @@ async fn a_program_world_replays_identically_on_a_local_host_and_a_hosted_node()
     assert_eq!(local_seen.replayed_inputs, 3);
     assert_eq!(local_seen.program_error, None);
     assert!(local_seen.at_ceiling);
-    assert!(
-        String::from_utf8_lossy(&local_seen.snapshot).contains("hello"),
+    assert_eq!(
+        local_seen.view.as_deref(),
+        Some("hello"),
         "the replayed program presents its view"
     );
 
