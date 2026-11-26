@@ -497,6 +497,16 @@ pub fn match_export(
             })
             .map(|(id, _)| id.clone())
             .collect();
+        // A file whose folders spell an object's whole ancestor chain
+        // beats one whose folders only spell the nearest part of it (a
+        // partial export), so a root-level file never ties with a nested
+        // namesake.
+        let exact: Vec<String> = candidates
+            .iter()
+            .filter(|id| inventory_ancestor_titles(inventory, id).len() == entry.ancestors.len())
+            .cloned()
+            .collect();
+        let candidates = if exact.is_empty() { candidates } else { exact };
         let (confidence, inventory_id) = match candidates.as_slice() {
             [] => (MatchConfidence::Unmatched, None),
             [only] => (MatchConfidence::TitlePathUnique, Some(only.clone())),
@@ -1034,9 +1044,7 @@ impl Normalizer<'_> {
             json!({"type": "external", "external": {"url": target}, "caption": caption})
         } else {
             let path = self.resolve_rel(target);
-            if self.archive.file(&path).is_none() {
-                return None;
-            }
+            self.archive.file(&path)?;
             json!({"type": "file", "file": {"url": path}, "caption": caption})
         };
         Some(self.block("image", payload, Vec::new()))
