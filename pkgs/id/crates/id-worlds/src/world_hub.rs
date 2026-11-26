@@ -1460,6 +1460,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_idle_world_sleeps_after_its_window_and_not_before() {
+        // #10694: the last client left; the world stays open until the
+        // whole window has passed, then closes.
+        let opener = MemoryOpener::new(true);
+        let hub = new_hub(&opener, HubLimits::default());
+        drop(hub.lease(Some("quiet"), Some("admin")).await.unwrap());
+        assert_eq!(hub.evict_idle(Duration::from_secs(3600)).await, 0);
+        assert_eq!(hub.open_count(), 1);
+        assert!(opener.closed.lock().unwrap().is_empty());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(hub.evict_idle(Duration::from_millis(10)).await, 1);
+        assert_eq!(hub.open_count(), 0);
+        assert_eq!(*opener.closed.lock().unwrap(), vec!["quiet".to_owned()]);
+    }
+
+    #[tokio::test]
     async fn pinned_worlds_are_never_closed_for_idleness_or_to_make_room() {
         let opener = MemoryOpener::new(true);
         opener.pinned.lock().unwrap().push("kept".to_owned());

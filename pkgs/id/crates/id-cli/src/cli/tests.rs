@@ -324,7 +324,7 @@ fn test_cli_parse_serve() {
             assert_eq!(world_checkpoint_every, 1000);
             assert_eq!(world_max_open, 256);
             assert_eq!(world_max_sessions, 1024);
-            assert_eq!(world_idle_secs, 600);
+            assert_eq!(world_idle_secs, None);
             assert_eq!(world_boot_window_secs, 600);
             assert!(world_caps.is_empty());
             assert_eq!(world_cap_policy, "deny");

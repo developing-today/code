@@ -455,8 +455,9 @@ pub struct ServeOptions {
     pub world_max_open: usize,
     /// Most world sessions at once, across all worlds.
     pub world_max_sessions: usize,
-    /// Close durable worlds idle for this many seconds (`0` never).
-    pub world_idle_secs: u64,
+    /// Close durable worlds idle for this many seconds (`0` never); when
+    /// absent, as [`resolve_world_idle_secs`] decides.
+    pub world_idle_secs: Option<u64>,
     /// Serve the worlds directory as a host-mode data root (#10693).
     pub world_host: bool,
     /// Refuse signed world requests for this many seconds after startup (`0` none).
@@ -822,6 +823,33 @@ pub async fn build_access_policy(
 /// Root directory for durable worlds, relative to the data directory.
 #[cfg(feature = "world")]
 pub const WORLDS_DIR: &str = ".id-worlds";
+
+/// Idle window when `--world-idle-secs` is not given.
+pub const DEFAULT_WORLD_IDLE_SECS: u64 = 600;
+
+/// Idle window under `--world-host` when `--world-idle-secs` is not given:
+/// the hosted-worlds design's 15 minutes (#10694).
+pub const DEFAULT_HOST_IDLE_SECS: u64 = 900;
+
+/// The idle window `serve` uses, from `--world-idle-secs` and
+/// `--world-host`.
+///
+/// # Errors
+///
+/// Refuses `0` under `--world-host`: a hosted world always sleeps once its
+/// last client has been gone for the window, and `id host pin` is how an
+/// operator keeps one awake.
+pub fn resolve_world_idle_secs(given: Option<u64>, world_host: bool) -> Result<u64> {
+    match (given, world_host) {
+        (Some(0), true) => anyhow::bail!(
+            "--world-idle-secs 0 would keep every hosted world awake: \
+             pin the worlds that must stay live with `id host pin` instead"
+        ),
+        (Some(secs), _) => Ok(secs),
+        (None, true) => Ok(DEFAULT_HOST_IDLE_SECS),
+        (None, false) => Ok(DEFAULT_WORLD_IDLE_SECS),
+    }
+}
 
 #[cfg(feature = "world")]
 const OUTBOX_FLUSH_SECS: u64 = 30;
@@ -1708,6 +1736,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         use id_worlds::world_hub::{HubLimits, WorldHub};
         let runtime = id_caps::world_limits::RuntimeLimits::from_args(&world_runtime)?;
         let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
+        let world_idle_secs = resolve_world_idle_secs(world_idle_secs, world_host)?;
         let compiler = resolve_compiler(roc_bin, roc_platform)?;
         let trusted_module_keys = world_module_trust_keys
             .iter()
@@ -2641,6 +2670,18 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
+
+    #[test]
+    fn host_mode_idles_worlds_after_fifteen_minutes_and_never_never() {
+        // #10694: a hosted world always sleeps once its last client has
+        // been gone for the window; pins are how a world stays awake.
+        assert_eq!(resolve_world_idle_secs(None, false).unwrap(), 600);
+        assert_eq!(resolve_world_idle_secs(None, true).unwrap(), 900);
+        assert_eq!(resolve_world_idle_secs(Some(0), false).unwrap(), 0);
+        assert_eq!(resolve_world_idle_secs(Some(30), true).unwrap(), 30);
+        let refused = resolve_world_idle_secs(Some(0), true).unwrap_err();
+        assert!(format!("{refused}").contains("id host pin"), "{refused}");
+    }
 
     #[test]
     fn relay_and_gossip_cli_flags_override_build_defaults() {

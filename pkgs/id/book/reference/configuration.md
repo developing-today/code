@@ -293,20 +293,20 @@ Other on-disk configuration locations:
 
 These CLI defaults are configuration in effect; the flags themselves are specified in [serve and publications](cli-serve.md) and [World commands: administering and verifying](cli-worlds-admin.md).
 
-| Setting                                  | Literal default              |
-| ---------------------------------------- | ---------------------------- |
-| `--web`                                  | off                          |
-| `--port`                                 | `3000`                       |
-| `--bind`                                 | `127.0.0.1`                  |
-| `--web-token`                            | unset (no gate)              |
-| `--web-cookie-secure`                    | `false`                      |
-| `--world-name`                           | `lobby`                      |
-| `--world-checkpoint-every`               | `1000`; `0` means never trim |
-| `--world-max-open`                       | `256`                        |
-| `--world-max-sessions`                   | `1024`                       |
-| `--world-idle-secs`                      | `600`                        |
-| `--world-host`                           | `false`                      |
-| `--world-boot-window-secs`               | `600`                        |
-| `--world-cap-policy`                     | `deny`                       |
-| Gossip topic (hardcoded fallback)        | `id-peer-discovery-v1`       |
-| Gossip topic secret (hardcoded fallback) | `id-public-discovery-v1`     |
+| Setting                                  | Literal default                   |
+| ---------------------------------------- | --------------------------------- |
+| `--web`                                  | off                               |
+| `--port`                                 | `3000`                            |
+| `--bind`                                 | `127.0.0.1`                       |
+| `--web-token`                            | unset (no gate)                   |
+| `--web-cookie-secure`                    | `false`                           |
+| `--world-name`                           | `lobby`                           |
+| `--world-checkpoint-every`               | `1000`; `0` means never trim      |
+| `--world-max-open`                       | `256`                             |
+| `--world-max-sessions`                   | `1024`                            |
+| `--world-idle-secs`                      | `600` (`900` with `--world-host`) |
+| `--world-host`                           | `false`                           |
+| `--world-boot-window-secs`               | `600`                             |
+| `--world-cap-policy`                     | `deny`                            |
+| Gossip topic (hardcoded fallback)        | `id-peer-discovery-v1`            |
+| Gossip topic secret (hardcoded fallback) | `id-public-discovery-v1`          |
