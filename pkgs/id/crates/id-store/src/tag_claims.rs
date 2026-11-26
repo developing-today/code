@@ -675,7 +675,7 @@ mod tests {
         let parents: HashMap<Hash, Vec<Hash>> =
             HashMap::from([(hash(1), vec![hash(2)]), (hash(2), vec![hash(1)])]);
         for _ in 0..16 {
-            assert!(compacted_claims(&applied, &parents).is_empty());
+            assert_eq!(compacted_claims(&applied, &parents), [] as [Claim; 0]);
             assert_eq!(
                 compacted_claims(&applied, &parents),
                 live_claims(&applied, &parents)
@@ -694,14 +694,14 @@ mod tests {
             compacted_claims(&applied, &set_loop),
             live_claims(&applied, &set_loop)
         );
-        assert!(compacted_claims(&applied, &set_loop).is_empty());
+        assert_eq!(compacted_claims(&applied, &set_loop), [] as [Claim; 0]);
         let clear_loop: HashMap<Hash, Vec<Hash>> =
             HashMap::from([(hash(1), vec![]), (hash(2), vec![hash(2), hash(1)])]);
         assert_eq!(
             compacted_claims(&applied, &clear_loop),
             live_claims(&applied, &clear_loop)
         );
-        assert!(compacted_claims(&applied, &clear_loop).is_empty());
+        assert_eq!(compacted_claims(&applied, &clear_loop), [] as [Claim; 0]);
     }
 
     #[test]
@@ -770,7 +770,7 @@ mod tests {
         // clear-then-set leaves the claim live.
         let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(1), vec![])]);
         let set_then_clear = [set(1, 9, "city"), clear(1, &[])];
-        assert!(compacted_claims(&set_then_clear, &parents).is_empty());
+        assert_eq!(compacted_claims(&set_then_clear, &parents), [] as [Claim; 0]);
         assert_eq!(
             compacted_claims(&set_then_clear, &parents),
             live_claims(&set_then_clear, &parents)

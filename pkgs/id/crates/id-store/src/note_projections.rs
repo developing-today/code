@@ -754,7 +754,7 @@ mod tests {
         assert_eq!(rows[0].date.day, 20);
         assert_eq!(rows[1].date.day, 23);
         // No view exposes a note to a denied reader (#5839 invariant 6).
-        assert!(journal_view(&notes, &deny_all).is_empty());
+        assert_eq!(journal_view(&notes, &deny_all), [] as [JournalRow<'_>; 0]);
         let can_read_first = |h: &Hash| *h == hash(1);
         let rows = journal_view(&notes, &can_read_first);
         assert_eq!(rows.len(), 1);
@@ -852,7 +852,7 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[2].cells, vec![None]);
         // Unreadable notes are omitted entirely (#5839 invariant 6).
-        assert!(database_view(&def, &notes, &deny_all).is_empty());
+        assert_eq!(database_view(&def, &notes, &deny_all), [] as [DatabaseRow<'_>; 0]);
     }
 
     #[test]
