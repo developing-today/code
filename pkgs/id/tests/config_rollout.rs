@@ -285,9 +285,9 @@ fn effects_are_charged_to_the_revision_that_was_active() {
     // rev 1 effect belongs to the revision being restored, not the one
     // being superseded.
     let outcome = rollout.rollback().expect("rollback succeeds");
-    assert!(outcome.irreversible_effects.is_empty());
-    assert!(outcome.reversible_effects.is_empty());
-    assert!(outcome.compensations_required.is_empty());
+    assert_eq!(outcome.irreversible_effects, [] as [ExternalEffect; 0]);
+    assert_eq!(outcome.reversible_effects, [] as [ExternalEffect; 0]);
+    assert_eq!(outcome.compensations_required, [] as [String; 0]);
 }
 
 #[test]

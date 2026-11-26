@@ -230,15 +230,15 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 
 `fleet shell [OPTIONS] [-- COMMAND...]` plans or runs a command. `fleet shell targets` reports laptop and Codespace reachability and what automatic selection would choose.
 
-| Option             | Purpose                                                               |
+| Option | Purpose |
 | ------------------ | --------------------------------------------------------------------- | --------- | ------ | ----------------------------------------------------------- |
 | `--target auto     | laptop                                                                | codespace | local` | Select the execution target; default is automatic fallback. |
-| `--codespace NAME` | Select a named Codespace; otherwise the first available is used.      |
-| `--cwd DIR`        | Set the working directory on the selected target.                     |
-| `--build`          | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
-| `--timeout SECS`   | Set a laptop command timeout.                                         |
-| `--detach`         | Start a laptop command as a job and return its job ID.                |
-| `--print`          | Print the selected plan as JSON without running it.                   |
+| `--codespace NAME` | Select a named Codespace; otherwise the first available is used. |
+| `--cwd DIR` | Set the working directory on the selected target. |
+| `--build` | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
+| `--timeout SECS` | Set a laptop command timeout. |
+| `--detach` | Start a laptop command as a job and return its job ID. |
+| `--print` | Print the selected plan as JSON without running it. |
 
 Automatic selection honors `FLEET_SHELL_TARGET`, then prefers the current laptop seat, a reachable laptop, a Codespace, and finally the local environment. An explicit target does not fall back. `--detach` is for laptop jobs; use `fleet laptop-agent poll JOB --wait N` to follow one.
 
@@ -382,6 +382,24 @@ literal recipes in the laptop mechanics doc, not here.
 | `tiers`                                                           | Print the codified form table (T0–T7) and the composition doctrine.                                                                                                       |
 | `exec [--form T1\|T2\|T3] [--timeout SECS] [--cwd DIR] -- CMD...` | Walk T1 → T2 → T3 (or one pinned tier), advancing only when a tier fails to serve; reports the serving tier. `--timeout` is per attempt and always applies (default 120). |
 
+## `host` — registry-backed host selection
+
+`fleet host <name> [--class <agent-class>]` resolves a host through the
+compiled machine registry, builds candidates for each enrolled transport
+and invocation form, then selects through `fleet-pool`. The default class
+is `muse-seats`; supported classes are `muse-seats`, `opencode-lanes`, and
+`external-mcp-clients`. The name `laptop` resolves to the `amd` record.
+
+```sh
+fleet host amd
+fleet host laptop --class opencode-lanes
+```
+
+This command takes a host name directly; it has no `resolve` subcommand.
+It prints the available candidates, the selected transport/form, and the
+pool decision. Unknown hosts or classes with no enrolled offers exit 1;
+usage errors exit 2; a build without the laptop capability exits 69.
+
 ## `commander` — tier T1 (commander/fleet)
 
 | Verb                                          | Purpose                                                                                                                                                                                                                                                                |
@@ -413,6 +431,8 @@ daemon's general client.
 | Verb                                          | Purpose                                                                                                                                                                                                                           |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
+| `sessions`                                     | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                              |
+| `sweep --idle-for DURATION [--dry-run]`        | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
 | `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
 
@@ -429,9 +449,20 @@ rendering is the dot-sourced env: `FLEET_ID_NODE_ID` plus
 stamp JSON (`{"fleet_node_id": …}`, public key only — the secret
 never enters the stamp, a log, or a trip record); `--node-id`
 prints just the NodeId hex. The secret lives in process memory
-only and is zeroized at exit. The `proxy`, `postcard`, `stream`
-and `serve-ws` verbs land as slices 2–5 of the same design
-(#15434, #15435, #15436, #15399).
+only and is zeroized at exit. The `postcard`, `stream`
+and `serve-ws` verbs land as slices 3–5 of the same design
+(#15435, #15436, #15399).
+
+`fleet id proxy-mode [--raw] [--raw-endpoint] [--opaque] [--alpn <alpn>] [--mode <1|2|3|name>]`
+
+Slice 2 (#15434, design §4.2): prints the proxy mode the §4.2
+first-match rule selects — `--mode` override first, then
+`--raw`/raw endpoint → `1 raw`, then `--opaque` or an ALPN the
+initiator does not speak → `2 relay-aware`, else `3 initiator`.
+The initiator speaks `/iroh-meta/3` only; every other ALPN
+selects mode 2. Dial failures are distinct and never downgrade:
+`relay_unreachable` vs `identity_mismatch` (fail closed on a
+peer NodeId that is not the pinned one).
 
 ## `actions` — live exec sessions in Actions runners
 

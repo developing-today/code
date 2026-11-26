@@ -16,15 +16,15 @@ and the #14866 Cloudflare-first ruling
 
 Per data family of a hosted tenant:
 
-| Data family | Lives in | Why (one line) |
-| --- | --- | --- |
-| Signed events and heads | **Per-user Turso** (record); UserDO keeps ingress session state only | The tenant DB is the tenant's durable log a native peer syncs against (#9083 §2.2); the DO's SQLite ceiling and single-object throughput are the wrong growth path for an append-only log |
-| KV | **UserDO SQLite** (unchanged) | Edge-local working state served only by the DO route; single-object consistency, no network hop, exported with the tenant |
-| Blob references | **Per-user Turso** (record); bytes stay in **R2**; UserDO keeps a rebuildable serving index | #9083 §1/§2.2 place references in the tenant DB content layer; the DO index keeps the hot-path reference check local |
-| Usage / metering | **UserDO SQLite** (detail, unchanged); rollup in the **central tenancy DB** | Already decided: #9083 §3 rule 4 and §9 — #3811 metering is authoritative per tenant, the tenancy DB holds the content-free rollup |
-| Export state | **UserDO SQLite** (unchanged) | Export is produced from the DO (#13157); the bundle is the portable artifact (#5869), the bookkeeping is DO operational state |
-| World journals | **Per-user Turso** (the tenant's world primary) | #5681 §6.3: a world's primary is per-deployment and starts on Turso; hosted V1 does not evaluate worlds, it stores their synced signed envelopes in the same Turso event store |
-| Any per-tenant family in D1 | **None** | §4 below |
+| Data family                 | Lives in                                                                                    | Why (one line)                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Signed events and heads     | **Per-user Turso** (record); UserDO keeps ingress session state only                        | The tenant DB is the tenant's durable log a native peer syncs against (#9083 §2.2); the DO's SQLite ceiling and single-object throughput are the wrong growth path for an append-only log |
+| KV                          | **UserDO SQLite** (unchanged)                                                               | Edge-local working state served only by the DO route; single-object consistency, no network hop, exported with the tenant                                                                 |
+| Blob references             | **Per-user Turso** (record); bytes stay in **R2**; UserDO keeps a rebuildable serving index | #9083 §1/§2.2 place references in the tenant DB content layer; the DO index keeps the hot-path reference check local                                                                      |
+| Usage / metering            | **UserDO SQLite** (detail, unchanged); rollup in the **central tenancy DB**                 | Already decided: #9083 §3 rule 4 and §9 — #3811 metering is authoritative per tenant, the tenancy DB holds the content-free rollup                                                        |
+| Export state                | **UserDO SQLite** (unchanged)                                                               | Export is produced from the DO (#13157); the bundle is the portable artifact (#5869), the bookkeeping is DO operational state                                                             |
+| World journals              | **Per-user Turso** (the tenant's world primary)                                             | #5681 §6.3: a world's primary is per-deployment and starts on Turso; hosted V1 does not evaluate worlds, it stores their synced signed envelopes in the same Turso event store            |
+| Any per-tenant family in D1 | **None**                                                                                    | §4 below                                                                                                                                                                                  |
 
 Nothing in this split moves content into the central tenancy DB; #9083
 §2.3's never-central list is untouched.
@@ -61,7 +61,7 @@ assignment operational:
   syncing with its hosted tenant reads and appends against this store
   through the sync path (E3 #12798) — the hosted tenant is a peer with
   a full log, not a cache in front of one.
-- The UserDO keeps the bridge's *session* state: the waiting room,
+- The UserDO keeps the bridge's _session_ state: the waiting room,
   fork evidence, proof headers, and the watermark a hibernating
   session resumes from. All of it is rebuildable from the tenant DB
   plus the journal; none of it is the record. Fork evidence detected
@@ -84,7 +84,7 @@ own state, in exchange for no isolation or durability gain. It stays.
 
 ### 3.3 Blob references → per-user Turso (record); bytes stay in R2
 
-#9083 §1's plane table and §2.2 both place blob *references* in the
+#9083 §1's plane table and §2.2 both place blob _references_ in the
 tenant DB's content layer, and the access rule is program-wide: a user
 may access an object iff their database holds a reference to it or it
 is public-published. The reference record therefore belongs with the
@@ -122,7 +122,7 @@ Worlds stay native for hosted V1 (#9080 gap analysis, V1 surfaces):
 the hosted instance syncs their signed events and a native peer
 evaluates them. For the tenant's own world, #5681 §3/§6.3 decides the
 primary: per-deployment, starting on Turso. In tenancy terms the
-per-deployment store *is* the per-user Turso database, so a tenant's
+per-deployment store _is_ the per-user Turso database, so a tenant's
 world journal lives there, and the synced envelopes the hosted
 instance holds are rows of the same Turso event store as §3.1. Two
 escalations are inherited from #5681, not re-decided here: a world
@@ -138,7 +138,7 @@ one of which would suffice:
 
 1. **#14866 §2's ruling.** The SQL plane is per data family,
    following its owning design; D1 is the plane for the fleet queue,
-   decision events, and *new small state with no owning design*. ID
+   decision events, and _new small state with no owning design_. ID
    tenant data has owning designs — #9083 and #5681 — and neither
    chooses D1 for it. This record is the owning design #14866 defers
    to for this data, and it does not choose D1.
@@ -148,7 +148,7 @@ one of which would suffice:
    Per-tenant D1 would need a database and binding per tenant inside
    one account and would break that token model.
 3. **#5681's assignment.** D1's chosen role is first-class placement
-   for very large *shared-corpus* shards (atlas), placed per-shard —
+   for very large _shared-corpus_ shards (atlas), placed per-shard —
    a shared plane with Workers-only access, the opposite shape from
    per-tenant data that endpoints must reach with embedded replicas.
 
@@ -167,7 +167,7 @@ not discoveries:
 - **One write path, one materialisation of record.** The UserDO is
   the only ingress writer. After the flip, its appends land in the
   tenant DB through the store adapter. There is no dual-write: at
-  any moment a tenant's event log is DO-resident *or* Turso-resident,
+  any moment a tenant's event log is DO-resident _or_ Turso-resident,
   and the `tenant_db` registry row (backend + state, #9083 §2.1) is
   where that fact is read from.
 - **Movement is export/replay, once.** Rehoming a tenant runs the
@@ -208,12 +208,12 @@ not discoveries:
   enumerate.
 - **#9083.** Its §2.2 content layer is the Turso side of this split;
   its §9 phrase — the per-user Turso database as the tenant's data
-  store *alongside* the DO's SQLite — is the sentence this record
+  store _alongside_ the DO's SQLite — is the sentence this record
   resolves into per-family placements. Its metering rule (§3 rule
   4), credential model (§7) and never-central list (§2.3) are
   load-bearing here and unchanged.
 - **#14866.** Its §2 per-family ruling is the reason D1 is answered
-  the way §4 answers it: #14866 moves the *queue* to D1 and keeps
+  the way §4 answers it: #14866 moves the _queue_ to D1 and keeps
   the board family in tenant Turso under #9079; ID tenant data
   follows the same pattern under its own designs. No #14866 slice
   changes target because of this record.
@@ -241,23 +241,23 @@ rehome slice.
 
 ## 8. Rejected alternatives
 
-| Alternative | Why rejected |
-| --- | --- |
-| Everything into the per-user Turso DB, DO as pure router | KV, metering detail and export state would pay a network hop per call and lose the DO's single-object consistency; contradicts #9083 §3 rule 4 (metering stays in TenantDO) |
-| Everything stays in UserDO SQLite (status quo) | The event log grows into the DO's 10 GB ceiling and single-object throughput; no embedded-replica story for endpoints; contradicts #9083 §9's "alongside" and leaves §2.2's tenant DB empty |
-| Per-tenant D1 databases | §4: breaks the per-database token model, contradicts #14866 §2's owning-design rule and #5681's D1 assignment |
-| DO as record, Turso as its replica | Two availability paths racing on one shard — forbidden by #5681 §4.2; the signed stream, not store replication, is the replication of record |
+| Alternative                                              | Why rejected                                                                                                                                                                                |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Everything into the per-user Turso DB, DO as pure router | KV, metering detail and export state would pay a network hop per call and lose the DO's single-object consistency; contradicts #9083 §3 rule 4 (metering stays in TenantDO)                 |
+| Everything stays in UserDO SQLite (status quo)           | The event log grows into the DO's 10 GB ceiling and single-object throughput; no embedded-replica story for endpoints; contradicts #9083 §9's "alongside" and leaves §2.2's tenant DB empty |
+| Per-tenant D1 databases                                  | §4: breaks the per-database token model, contradicts #14866 §2's owning-design rule and #5681's D1 assignment                                                                               |
+| DO as record, Turso as its replica                       | Two availability paths racing on one shard — forbidden by #5681 §4.2; the signed stream, not store replication, is the replication of record                                                |
 
 ## 9. Acceptance mapping (issue #15482)
 
 - [x] Per data class, placement in UserDO SQLite, per-user Turso, or
-  D1, with the reason for each — §1 and §3 (D1: §4).
+      D1, with the reason for each — §1 and §3 (D1: §4).
 - [x] Migration/consistency implications of the split named, not
-  left implicit — §5.
+      left implicit — §5.
 - [x] Recorded in enough detail for the sibling implementation
-  slices to proceed without re-deciding placement — §7 names the
-  implementing issue per moving family, including E6 #12801 for the
-  Turso adapter, as the issue's done-when requires.
+      slices to proceed without re-deciding placement — §7 names the
+      implementing issue per moving family, including E6 #12801 for the
+      Turso adapter, as the issue's done-when requires.
 - [x] How the decision squares with #5681, #9083 and #14866 — §6.
 
 ---

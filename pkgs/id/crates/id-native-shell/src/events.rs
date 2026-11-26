@@ -104,14 +104,47 @@ pub fn resize_frame_for_window(
 }
 
 /// Modifier keys held during one key press, as far as the terminal
-/// byte mapping cares. Shift is already folded into the produced
-/// text by the platform; Super/Meta have no terminal encoding.
+/// byte mapping and the paste chord care. Shift is already folded
+/// into the produced text by the platform, so the byte mapping
+/// ignores it; it only tells the paste chord apart from a plain
+/// Ctrl+V or Insert. Super/Meta have no terminal encoding.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
     /// A Control key is held.
     pub ctrl: bool,
     /// An Alt key is held.
     pub alt: bool,
+    /// A Shift key is held.
+    pub shift: bool,
+}
+
+/// Whether a key press is the paste chord rather than a key to send.
+///
+/// The chords are the terminal emulators' own: Ctrl+Shift+V, since a
+/// plain Ctrl+V is the literal-next control byte a world may want,
+/// and Shift+Insert. Alt with either is not a paste, so the chords
+/// never shadow an Alt-prefixed key.
+#[must_use]
+pub fn is_paste_chord(key: &Key, modifiers: KeyModifiers) -> bool {
+    if modifiers.alt || !modifiers.shift {
+        return false;
+    }
+    match key {
+        Key::Character(character) => modifiers.ctrl && character.eq_ignore_ascii_case("v"),
+        Key::Insert => !modifiers.ctrl,
+        _ => false,
+    }
+}
+
+/// The native event for one clipboard read on the paste chord, or
+/// `None` for an empty clipboard (nothing to paste, so nothing is
+/// sent). Text over [`crate::MAX_PASTE_BYTES`] is still returned:
+/// [`native_event_frame`] refuses it, and the caller surfaces that
+/// refusal, because the contract delivers a paste as one bounded
+/// event and never as a split or truncated one.
+#[must_use]
+pub fn paste_event(clipboard_text: &str) -> Option<NativeEvent> {
+    (!clipboard_text.is_empty()).then(|| NativeEvent::Paste(clipboard_text.to_string()))
 }
 
 /// The control byte a terminal sends for Ctrl plus `c`, if any.
@@ -282,14 +315,17 @@ mod tests {
     const PLAIN: KeyModifiers = KeyModifiers {
         ctrl: false,
         alt: false,
+        shift: false,
     };
     const CTRL: KeyModifiers = KeyModifiers {
         ctrl: true,
         alt: false,
+        shift: false,
     };
     const ALT: KeyModifiers = KeyModifiers {
         ctrl: false,
         alt: true,
+        shift: false,
     };
 
     #[test]
@@ -388,7 +424,8 @@ mod tests {
                 None,
                 KeyModifiers {
                     ctrl: true,
-                    alt: true
+                    alt: true,
+                    shift: false,
                 }
             ),
             Some(vec![0x1b, 0x18])
@@ -416,6 +453,67 @@ mod tests {
                 PLAIN
             ),
             None
+        );
+    }
+
+    const CTRL_SHIFT: KeyModifiers = KeyModifiers {
+        ctrl: true,
+        alt: false,
+        shift: true,
+    };
+    const SHIFT: KeyModifiers = KeyModifiers {
+        ctrl: false,
+        alt: false,
+        shift: true,
+    };
+
+    #[test]
+    fn paste_chords_are_ctrl_shift_v_and_shift_insert() {
+        assert!(is_paste_chord(&character("V"), CTRL_SHIFT));
+        assert!(is_paste_chord(&character("v"), CTRL_SHIFT));
+        assert!(is_paste_chord(&Key::Insert, SHIFT));
+        // Ctrl+V alone stays the literal-next byte, Insert alone and
+        // Shift+V stay keys, and Alt never makes a paste.
+        assert!(!is_paste_chord(&character("v"), CTRL));
+        assert_eq!(
+            key_input_bytes(&character("v"), None, CTRL),
+            Some(vec![0x16])
+        );
+        assert!(!is_paste_chord(&Key::Insert, PLAIN));
+        assert!(!is_paste_chord(&character("V"), SHIFT));
+        assert!(!is_paste_chord(&Key::Insert, CTRL_SHIFT));
+        assert!(!is_paste_chord(
+            &character("v"),
+            KeyModifiers {
+                alt: true,
+                ..CTRL_SHIFT
+            }
+        ));
+        assert!(!is_paste_chord(&character("b"), CTRL_SHIFT));
+    }
+
+    #[test]
+    fn a_clipboard_read_becomes_one_contract_paste_frame() {
+        assert_eq!(paste_event(""), None);
+        let text = "line one\nline two\t\u{e9}";
+        assert_eq!(
+            native_event_frame(&paste_event(text).unwrap()).unwrap(),
+            json!({"type": "paste", "text": text})
+        );
+        assert_eq!(
+            native_event_frame(&paste_event(text).unwrap()).unwrap(),
+            paste_frame(text).unwrap()
+        );
+        // At the bound it is one frame; one byte over is refused whole,
+        // never split into several pastes or truncated.
+        let at_bound = "x".repeat(crate::MAX_PASTE_BYTES);
+        assert!(native_event_frame(&paste_event(&at_bound).unwrap()).is_ok());
+        let over = format!("{at_bound}y");
+        assert_eq!(
+            native_event_frame(&paste_event(&over).unwrap()),
+            Err(FrameError::PasteTooLarge {
+                bytes: crate::MAX_PASTE_BYTES + 1
+            })
         );
     }
 

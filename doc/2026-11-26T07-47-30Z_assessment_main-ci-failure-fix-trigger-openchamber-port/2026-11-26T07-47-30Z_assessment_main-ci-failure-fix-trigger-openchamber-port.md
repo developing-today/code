@@ -34,11 +34,11 @@ it keeps its own copy.
 
 ## Gating check (#2174 monitoring gaps) — verified 2026-11-26
 
-| Gap | State | Evidence |
-|---|---|---|
-| 1 — per-run history | **Closed** | PR #8437 merged 2026-11-14 (`feat(pm-stack): scheduled-history collector — per-run history for OpenChamber scheduled tasks (#2174 Gap 1)`); suite wired into CI by PR #11011 |
-| 2 — token accounting (OpenCode-side exporter, #2072 work) | **Still open** | #2072 is OPEN at check time; no merged exporter PR found. #2174's own pilot record states the position: per-run token capture still flows through OpenCode's own session store, and "the #2072 exporter remains the durable fix" |
-| 3 — failure alerting / watchdog | **Closed** | PR #11158 merged 2026-11-17 (`feat(scheduled-history): Gap 3 watchdog over OpenChamber run history (#2174)`) |
+| Gap                                                               | State                       | Evidence                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — per-run history                                               | **Closed**                  | PR #8437 merged 2026-11-14 (`feat(pm-stack): scheduled-history collector — per-run history for OpenChamber scheduled tasks (#2174 Gap 1)`); suite wired into CI by PR #11011                                                                                                                        |
+| 2 — token accounting (OpenCode-side exporter, #2072 work)         | **Still open**              | #2072 is OPEN at check time; no merged exporter PR found. #2174's own pilot record states the position: per-run token capture still flows through OpenCode's own session store, and "the #2072 exporter remains the durable fix"                                                                    |
+| 3 — failure alerting / watchdog                                   | **Closed**                  | PR #11158 merged 2026-11-17 (`feat(scheduled-history): Gap 3 watchdog over OpenChamber run history (#2174)`)                                                                                                                                                                                        |
 | 4 — server residency (OpenChamber server always-on on the laptop) | **No closing record found** | #2174 is OPEN and its acceptance (gaps 1–4 closed and demonstrated on a pilot) is unmet; a search of issues and PRs found no residency confirmation record. The 2026-10-29 pilot comment lists residency confirmation among the build tasks Drew's direction created, with no completion note since |
 
 #2174's gating, as restated on #15346, requires gaps 1–4 closed

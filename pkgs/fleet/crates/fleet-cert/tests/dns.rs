@@ -253,7 +253,12 @@ fn plan_matches_the_golden_change_set() {
         .replace("{{LEAF_ALG}}", &leaf_alg)
         .replace("{{LEAF_PART}}", &leaf_part)
         .replace("{{ISSUER_FP}}", &issuer_fp);
-    assert_eq!(actual.trim_end(), expected.trim_end());
+    // Compare parsed JSON, not text: the fixture is formatted by treefmt
+    // (which keeps short arrays on one line) while the renderer
+    // pretty-prints them, and layout is not part of the contract.
+    let actual: serde_json::Value = serde_json::from_str(&actual).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&expected).unwrap();
+    assert_eq!(actual, expected);
 
     // The same digests through the full-certificate selector and
     // SHA-512 matching, against the independent path.
@@ -357,7 +362,10 @@ fn current_snapshot_diffs_without_fabricating_changes() {
         action("0 issue \"old-ca.example\"", "pki.example.test.").as_deref(),
         Some("delete")
     );
-    assert_eq!(action("0 issue \"old-ca.example\"", "other.example.test."), None);
+    assert_eq!(
+        action("0 issue \"old-ca.example\"", "other.example.test."),
+        None
+    );
     assert_eq!(
         action("0 issue \"letsencrypt.org\"", "pki.example.test.").as_deref(),
         Some("no-op")
@@ -423,13 +431,20 @@ fn verify_proposes_the_plan_and_catches_tampering() {
     // A CAA record naming the Fleet CA is refused on verify too.
     invalid(
         &|c| {
-            let i = c.records.iter().position(|r| r.record_type == "CAA").unwrap();
+            let i = c
+                .records
+                .iter()
+                .position(|r| r.record_type == "CAA")
+                .unwrap();
             c.records[i].value = "0 issue \"fleet-ca\"".into();
         },
         &bundles,
     );
     // Out-of-zone owner and a zero TTL.
-    invalid(&|c| c.records[0].name = "svc.elsewhere.test.".into(), &bundles);
+    invalid(
+        &|c| c.records[0].name = "svc.elsewhere.test.".into(),
+        &bundles,
+    );
     invalid(&|c| c.records[0].ttl = 0, &bundles);
 }
 
@@ -482,14 +497,7 @@ fn cli_is_offline_and_writes_only_under_out() {
     let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     for flag in ["--provider", "--resolver", "--token"] {
         assert_eq!(
-            fleet_cert::run(&args(&[
-                "dns",
-                "plan",
-                "--zone",
-                "example.test",
-                flag,
-                "x"
-            ])),
+            fleet_cert::run(&args(&["dns", "plan", "--zone", "example.test", flag, "x"])),
             2,
             "{flag} must be an unknown option"
         );

@@ -151,7 +151,7 @@ import {
 } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
-import { createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
+import { createD1LedgerQuery, createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
 
 /** Where the settings the owner changed are kept: beside "cfg", never in it. */
 export const OWNER_SETTINGS_KEY = "ownerSettings";
@@ -552,11 +552,7 @@ export class Edge {
   private async routeFlip(req: Request): Promise<Response> {
     const body = (await req.json().catch(() => null)) as { surface?: unknown; tier?: unknown } | null;
     try {
-      const next = flipRoute(
-        await this.routes(),
-        body?.surface as string,
-        body?.tier as "hosted" | "tunnel",
-      );
+      const next = flipRoute(await this.routes(), body?.surface as string, body?.tier as "hosted" | "tunnel");
       await this.kv.put("routes", next);
       return json({ ok: true, routes: healthRoutes(next) });
     } catch (error) {
@@ -2223,9 +2219,7 @@ export class Edge {
         // with the owner's change is said by the revision it has taken
         // (#14957), not as a difference from main.
         machineSettingsDiffer:
-          told === null
-            ? null
-            : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
+          told === null ? null : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
         // Which source each of the platform's settings is in force from
         // (the owner's change, a machine's word, or the repository's),
         // and since when for an owner's change: by name and source,
@@ -2287,7 +2281,10 @@ export class Edge {
     // request goes on exactly as it did before.
     if (this.ledgerPages && LEDGER_PAGE_PATHS.has(path)) {
       const response = await ledgerPage(req, {
-        query: createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
+        query:
+          this.ledgerPages.store === "d1"
+            ? createD1LedgerQuery(this.ledgerPages.db)
+            : createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
         now: () => this.now(),
       });
       if (response) return response;
@@ -2447,6 +2444,20 @@ export class Edge {
       }
       if (method !== "POST") return json({ error: "method not allowed" }, 405);
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
+      if (seg.length === 1 && seg[0] === "route") {
+        // The owner's route flip (#14944, CF-4): the operator surface
+        // for the same flip the deploy pipeline makes on the internal
+        // channel (/internal/route). The owner is verified above and
+        // the write is same-site, as for every action; the flip itself
+        // — what counts as a surface and a tier, and what is refused —
+        // is routeFlip's, shared with the internal channel so the two
+        // can never disagree. A flip changes declared state only: it
+        // is what /console/health says, and undoing it is flipping
+        // back. It is never relayed to a machine: route state is this
+        // side's own, rebuildable front-door data.
+        if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
+        return this.routeFlip(req);
+      }
       if (!(seg.length === 1 && seg[0] === "act")) return next("relay", { mode: "live" });
       if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
       let body: { kind?: unknown; args?: unknown; id?: unknown; at?: unknown; sent?: unknown; sure?: unknown };

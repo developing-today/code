@@ -71,17 +71,13 @@ class TranslationTests(unittest.TestCase):
 
     def test_unknown_jsonb_function_is_refused(self):
         with self.assertRaises(tm.TranslationError):
-            tm.translate(
-                "CREATE TABLE x (a jsonb CHECK (jsonb_typeof(a) = 'array'));"
-            )
+            tm.translate("CREATE TABLE x (a jsonb CHECK (jsonb_typeof(a) = 'array'));")
 
 
 class ApplyTests(unittest.TestCase):
     def test_all_tables_created(self):
         client = applied_client(self)
-        rows = client.query(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
+        rows = client.query("SELECT name FROM sqlite_master WHERE type = 'table'")
         tables = {row["name"] for row in rows}
         self.assertTrue(
             {
@@ -107,9 +103,7 @@ class ApplyTests(unittest.TestCase):
 
     def test_ledger_rows_carry_a_timestamp(self):
         client = applied_client(self)
-        rows = client.query(
-            f"SELECT migration_id, applied_at FROM {tm.LEDGER_TABLE}"
-        )
+        rows = client.query(f"SELECT migration_id, applied_at FROM {tm.LEDGER_TABLE}")
         self.assertEqual({row["migration_id"] for row in rows}, set(MIGRATION_IDS))
         for row in rows:
             self.assertIn("T", row["applied_at"])
@@ -158,7 +152,11 @@ class ConstraintTests(unittest.TestCase):
 
     def test_action_round_trip(self):
         self.ok(*self.insert_action())
-        self.ok(*self.insert_action(id="da-2", state="applied", applied_at="2026-11-25T01:00:00Z"))
+        self.ok(
+            *self.insert_action(
+                id="da-2", state="applied", applied_at="2026-11-25T01:00:00Z"
+            )
+        )
 
     def test_action_kind_and_verb_contract(self):
         self.refused(*self.insert_action(kind="bogus"))
@@ -172,9 +170,7 @@ class ConstraintTests(unittest.TestCase):
     def test_action_author_contract(self):
         self.refused(*self.insert_action(author='{"kind":"drew","id":"drew"}'))
         self.refused(
-            *self.insert_action(
-                author='{"kind":"nobody","id":"x","label":"X"}'
-            )
+            *self.insert_action(author='{"kind":"nobody","id":"x","label":"X"}')
         )
 
     def test_action_client_token_unique_only_when_present(self):
@@ -362,16 +358,10 @@ class FailureTests(unittest.TestCase):
                 "CREATE TABLE broken_partial (id text);\n"
             )
             client = tm.LocalSqliteClient(str(Path(tmp) / "store.db"))
-            verdict = tm.apply_migrations(
-                client, tm.load_migrations(migrations_dir)
-            )
+            verdict = tm.apply_migrations(client, tm.load_migrations(migrations_dir))
             self.assertEqual(verdict["applied"], MIGRATION_IDS)
-            self.assertEqual(
-                verdict["failed"]["migration"], "99999999_0001_broken"
-            )
-            rows = client.query(
-                f"SELECT migration_id FROM {tm.LEDGER_TABLE}"
-            )
+            self.assertEqual(verdict["failed"]["migration"], "99999999_0001_broken")
+            rows = client.query(f"SELECT migration_id FROM {tm.LEDGER_TABLE}")
             self.assertNotIn(
                 "99999999_0001_broken", {row["migration_id"] for row in rows}
             )
@@ -386,14 +376,10 @@ class FailureTests(unittest.TestCase):
             self.assertNotIn("broken_partial", tables)
             # A re-run retries the broken migration and fails again,
             # with the good set reported as already applied.
-            verdict = tm.apply_migrations(
-                client, tm.load_migrations(migrations_dir)
-            )
+            verdict = tm.apply_migrations(client, tm.load_migrations(migrations_dir))
             self.assertEqual(verdict["applied"], [])
             self.assertEqual(verdict["already_applied"], MIGRATION_IDS)
-            self.assertEqual(
-                verdict["failed"]["migration"], "99999999_0001_broken"
-            )
+            self.assertEqual(verdict["failed"]["migration"], "99999999_0001_broken")
 
 
 # ---------------------------------------------------------------------
@@ -449,9 +435,7 @@ class FakeHrana:
                 try:
                     cursor = self.db.execute(sql)
                     columns = [d[0] for d in cursor.description or []]
-                    rows = [
-                        [hrana_value(v) for v in row] for row in cursor.fetchall()
-                    ]
+                    rows = [[hrana_value(v) for v in row] for row in cursor.fetchall()]
                     results.append(
                         {
                             "cols": [{"name": c} for c in columns],
@@ -564,9 +548,7 @@ class HttpClientTests(unittest.TestCase):
             )
         ]
         verdict = tm.apply_migrations(client, migrations)
-        self.assertEqual(
-            verdict["failed"]["migration"], "99999999_0001_broken"
-        )
+        self.assertEqual(verdict["failed"]["migration"], "99999999_0001_broken")
         tables = {
             row["name"]
             for row in client.query(
@@ -630,9 +612,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             stores = Path(tmp) / "stores.json"
             stores.write_text(json.dumps({"stores": []}))
-            code = cli.main(
-                ["--store", "nope", "--stores-file", str(stores)]
-            )
+            code = cli.main(["--store", "nope", "--stores-file", str(stores)])
             self.assertEqual(code, 1)
 
     def test_dry_run_reports_the_whole_set(self):

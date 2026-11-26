@@ -22,12 +22,12 @@ python3 -m unittest discover -s doc/2026-11-26T07-46-31Z_verification_15340-moni
 
 ## Verdict summary
 
-| Gate item | Verdict |
-|---|---|
-| Gap 2 — token accounting (OpenCode-side exporter, #2072 work) | **CLOSED** — exporter built, merged, on a timer, and its source is the one the Gap 1 collector already enriches live rows from |
-| Gap 4 — server residency (OpenChamber server always-on) | **DEPLOYMENT SHAPE CONFIRMED, LIVE CONFIRMATION OUTSTANDING** — the server is an enabled systemd user unit with no socket-activation or idle-stop mechanism in this repo, but no live `systemctl` confirmation is on record, and the laptop was unreachable from this seat on 2026-11-26 |
-| Pilot demonstration (#2174 acceptance: ONE queue lane as an OpenChamber scheduled task for 48h, reviewed against its Muse baseline) | **NOT CONFIRMED** — no 48h pilot record exists on #2174 or on the pilot's owner, #15341, as of this check |
-| **Gate consequence for #15340** | **Do not port any new-issue-creator lane yet.** The next slice is the live Gap 4 check plus the #15341 pilot, not a creator port |
+| Gate item                                                                                                                           | Verdict                                                                                                                                                                                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gap 2 — token accounting (OpenCode-side exporter, #2072 work)                                                                       | **CLOSED** — exporter built, merged, on a timer, and its source is the one the Gap 1 collector already enriches live rows from                                                                                                                                                           |
+| Gap 4 — server residency (OpenChamber server always-on)                                                                             | **DEPLOYMENT SHAPE CONFIRMED, LIVE CONFIRMATION OUTSTANDING** — the server is an enabled systemd user unit with no socket-activation or idle-stop mechanism in this repo, but no live `systemctl` confirmation is on record, and the laptop was unreachable from this seat on 2026-11-26 |
+| Pilot demonstration (#2174 acceptance: ONE queue lane as an OpenChamber scheduled task for 48h, reviewed against its Muse baseline) | **NOT CONFIRMED** — no 48h pilot record exists on #2174 or on the pilot's owner, #15341, as of this check                                                                                                                                                                                |
+| **Gate consequence for #15340**                                                                                                     | **Do not port any new-issue-creator lane yet.** The next slice is the live Gap 4 check plus the #15341 pilot, not a creator port                                                                                                                                                         |
 
 ## Gap 2 — token accounting: CLOSED
 
@@ -68,7 +68,7 @@ Repo-side evidence (all re-checked by the companion test):
 
 - The deployment enables the server as a standing service:
   `home/common/default.nix` sets `services.openchamber = { enable =
-  true; … }` in the service cascade (2026-11-03), whose module comes
+true; … }` in the service cascade (2026-11-03), whose module comes
   from the OpenChamber fork's `nix/modules`.
 - `doc/fleet/services.md` ("The long-running services: OpenChamber,
   OpenCode, mcpx") describes OpenChamber as one of the three services
@@ -108,7 +108,7 @@ go/no-go for the rest of wave 1. The pilot belongs to #15341
 (repo-queue worker shifts). As of 2026-11-26, neither #2174 nor
 #15341 carries a 48h pilot record or a baseline review. The additive
 OpenChamber queue lanes recorded in the registry (Surface 2a) prove
-scheduled lanes *run*; they are not the measured 48h pilot the gate
+scheduled lanes _run_; they are not the measured 48h pilot the gate
 names.
 
 ## What this means for the remaining #15340 criteria
