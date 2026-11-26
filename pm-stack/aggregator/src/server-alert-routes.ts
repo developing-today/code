@@ -2,6 +2,7 @@
 // bearer-gated incident intake, and the alerts/notifications pages.
 // Split out of server.ts (#13052).
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
+import { selectNeedsUserExtension } from "./alert-extension-compat.ts";
 import { raiseNeedsDrew, validateNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet, raiseDecisionSet, validateDecisionSet } from "./decisions.ts";
 import { setStackHealth, validateStackHealth } from "./stack-health.ts";
@@ -123,7 +124,8 @@ export async function handleAlertIntakeRoutes(req: Request, path: string): Promi
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const ext =
         rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
-      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const needsUserExtension = selectNeedsUserExtension(ext);
+      const hasNeedsDrew = needsUserExtension.kind === "selected";
       const hasStackHealth = ext.stackHealth !== undefined;
       const hasDecisionSet = ext.decisionSet !== undefined;
       const hasHealthHook = ext.healthHook !== undefined;
@@ -157,8 +159,8 @@ export async function handleAlertIntakeRoutes(req: Request, path: string): Promi
       if (hasHealthHook && (hasNeedsDrew || hasDecisionSet)) {
         return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);
       }
-      if (hasNeedsDrew) {
-        const v = validateNeedsDrew(ext.needsDrew);
+      if (needsUserExtension.kind === "selected") {
+        const v = validateNeedsDrew(needsUserExtension.value);
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
