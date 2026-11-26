@@ -216,6 +216,12 @@ export interface EdgeOptions {
   ledgerPages?:
     | { store: "turso"; url: string; token?: string }
     | { store: "d1"; db?: import("./ledger-pages.ts").LedgerD1Database };
+  /** Hosted /dns (#14968 slice 2): the #902 register snapshot the
+   * collector publishes into the same fleet-platform D1 database,
+   * present only when the Worker's DNS_PAGES flag reads `on`. With
+   * it, this side serves /dns and /api/dns.json itself from the
+   * snapshot row; without it, those pages stay the host's. */
+  dnsPages?: { db?: import("./ledger-pages.ts").LedgerD1Database };
   /** C6 quota page (#15018): opt-in. Envelope + existing question sets
    * are supplied by the host; dispatchReset is the existing pool-steward
    * machinery. Absent/off: /console/api/quota answers 503. */

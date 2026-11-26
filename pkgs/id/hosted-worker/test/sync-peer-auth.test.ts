@@ -73,7 +73,7 @@ function makeDO() {
     storage: { sql },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return { doA: new UserDO(state as never, { BLOBS: bucket } as never), bucket, sql };
+  return { doA: new UserDO(state as never, { BLOBS_US: bucket } as never), bucket, sql };
 }
 
 function routed(path: string, irohHex: string | null, init: RequestInit = {}): Request {
