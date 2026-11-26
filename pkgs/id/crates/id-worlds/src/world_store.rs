@@ -1671,7 +1671,13 @@ async fn populate_template_world(
             })?;
         installed.push(hash);
     }
-    drop(service);
+    // Stop the actor rather than only dropping the service, so its
+    // journal lock is released and the world can be opened again.
+    service
+        .world()
+        .shutdown()
+        .await
+        .context("close the world")?;
 
     if !import.gaps.is_empty() {
         let path = dir.join(TEMPLATE_GAPS_FILE);
@@ -1782,7 +1788,13 @@ pub async fn resume_template_world(
             })?;
         installed.push(hash);
     }
-    drop(service);
+    // Stop the actor rather than only dropping the service, so its
+    // journal lock is released and the world can be opened again.
+    service
+        .world()
+        .shutdown()
+        .await
+        .context("close the world")?;
 
     if import.gaps.is_empty() {
         std::fs::remove_file(&gaps_path)
