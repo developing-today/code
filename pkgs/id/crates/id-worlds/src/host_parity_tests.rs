@@ -458,3 +458,155 @@ async fn a_program_world_replays_identically_on_a_local_host_and_a_hosted_node()
         );
     }
 }
+
+/// What names resolve to on one side: the account and group names in
+/// the directory, resolved to their IDs for two different viewers, and
+/// what happens when a name that is already taken is claimed again.
+#[derive(Debug, PartialEq, Eq)]
+struct NameObservation {
+    owner_accounts: Vec<(String, String)>,
+    owner_groups: Vec<(String, u64)>,
+    anon_accounts: Vec<(String, String)>,
+    anon_groups: Vec<(String, u64)>,
+    duplicate_account_name: String,
+    duplicate_group_name: String,
+}
+
+fn name_pairs(
+    view: &crate::directory_view::DirectoryView,
+) -> (Vec<(String, String)>, Vec<(String, u64)>) {
+    let mut accounts: Vec<(String, String)> = view
+        .accounts
+        .iter()
+        .map(|account| (account.name.clone(), account.id.clone()))
+        .collect();
+    accounts.sort();
+    let mut groups: Vec<(String, u64)> = view
+        .groups
+        .iter()
+        .map(|group| (group.name.clone(), group.id))
+        .collect();
+    groups.sort();
+    (accounts, groups)
+}
+
+async fn observe_names(service: &WorldService, cast: &Cast) -> NameObservation {
+    let owner_view = service
+        .directory(keyed(&cast.owner), DirectoryAction::View)
+        .await
+        .unwrap()
+        .view;
+    let anon_view = service
+        .directory(Caller::default(), DirectoryAction::View)
+        .await
+        .unwrap()
+        .view;
+    let (owner_accounts, owner_groups) = name_pairs(&owner_view);
+    let (anon_accounts, anon_groups) = name_pairs(&anon_view);
+    // Name claims against names the fixture already took, run last on
+    // each side in the same order: the outcome — acceptance or the
+    // refusal text — is itself a name-resolution result.
+    let duplicate_account_name = match service
+        .directory(
+            keyed(&cast.stranger),
+            DirectoryAction::SignUpKey {
+                name: "Owner".into(),
+            },
+        )
+        .await
+    {
+        Ok(_) => "accepted".to_string(),
+        Err(error) => error.to_string(),
+    };
+    let duplicate_group_name = match service
+        .directory(
+            keyed(&cast.owner),
+            DirectoryAction::CreateGroup {
+                name: "keepers".into(),
+                description: "the people who keep this world".into(),
+                scopes: Vec::new(),
+            },
+        )
+        .await
+    {
+        Ok(_) => "accepted".to_string(),
+        Err(error) => error.to_string(),
+    };
+    NameObservation {
+        owner_accounts,
+        owner_groups,
+        anon_accounts,
+        anon_groups,
+        duplicate_account_name,
+        duplicate_group_name,
+    }
+}
+
+/// Third fixture (#10698): name resolution. The design's parity
+/// checklist (§7) names name-resolution outcomes alongside replay,
+/// ceilings, authority and content addressing; the first two slices
+/// covered the rest. Here the fixture's directory names must resolve
+/// to the same IDs on a local host and on a hosted node, an unknown
+/// world name must resolve nowhere on the host, and a host-only
+/// setting must change none of it.
+#[tokio::test]
+async fn names_resolve_identically_on_a_local_host_and_a_hosted_node() {
+    let fixture = TempDir::new().unwrap();
+    let source = fixture.path().join(WORLD);
+    let cast = write_fixture(&source).await;
+
+    let local_root = TempDir::new().unwrap();
+    let hosted_root = TempDir::new().unwrap();
+    let backend_root = TempDir::new().unwrap();
+    for root in [&local_root, &hosted_root, &backend_root] {
+        copy_tree(&source, &root.path().join(WORLD));
+    }
+
+    let local_dir = local_root.path().join(WORLD);
+    let (local, _) = open_local(&local_dir).await;
+    let local_seen = observe_names(&local, &cast).await;
+    // The oracle, independent of either side: the fixture's two keyed
+    // accounts resolve by name to their keys, for the owner and for an
+    // anonymous viewer alike; the owner's group resolves by name; an
+    // anonymous viewer resolves no group, because "keepers" is not
+    // public and anonymous belongs to nothing.
+    assert_eq!(
+        local_seen.owner_accounts,
+        vec![
+            ("Guest".to_string(), cast.guest.clone()),
+            ("Owner".to_string(), cast.owner.clone()),
+        ]
+    );
+    assert_eq!(local_seen.anon_accounts, local_seen.owner_accounts);
+    assert_eq!(local_seen.owner_groups.len(), 1);
+    assert_eq!(local_seen.owner_groups[0].0, "keepers");
+    assert!(local_seen.anon_groups.is_empty());
+
+    for (root, backend) in [(&hosted_root, false), (&backend_root, true)] {
+        let sup = hosted(root.path(), backend).await;
+        // The host resolves the world by the name it was started under,
+        // and an unknown name resolves nowhere: no state, no live
+        // report, and inspection refuses it by name.
+        assert!(sup.state(WORLD).is_some());
+        assert!(sup.live_report(WORLD).is_some());
+        assert_eq!(sup.state("no-such-world"), None);
+        assert!(sup.live_report("no-such-world").is_none());
+        let inspected = inspect_world(root.path(), &sup.file(), WORLD).unwrap();
+        assert_eq!(inspected.name, WORLD);
+        let unknown = inspect_world(root.path(), &sup.file(), "no-such-world")
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            unknown.contains("no world \"no-such-world\""),
+            "unknown world name refused by name: {unknown}"
+        );
+        let held = &sup.live[WORLD];
+        let seen = observe_names(&held.service, &cast).await;
+        assert_eq!(
+            seen, local_seen,
+            "hosted name resolution (backend settings: {backend}) diverged"
+        );
+        drop(sup);
+    }
+}
