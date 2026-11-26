@@ -1510,15 +1510,23 @@ pub enum Command {
     /// the object may post; a correction is a new post that supersedes the old one, which stays
     /// listed and is marked superseded.
     ///
+    /// The thread steps of a conversation group (#7849) are signed events in that group:
+    /// propose a change, resolve a thread, reject or withdraw a proposal, accept one by the
+    /// note revision that cites it, and read the group's threads back.
+    ///
     /// # Examples
     ///
     /// ```bash
     /// id talk post DOCUMENT "this section needs a source"
     /// id talk post DOCUMENT "fixed wording" --supersedes POST
     /// id talk list DOCUMENT --json
+    /// id talk propose GROUP NOTE/KEY --base REVISION --content BLOB/KEY --thread THREAD
+    /// id talk accept GROUP PROPOSAL edited.md --media-type text/markdown
+    /// id talk resolve GROUP THREAD --no-action
+    /// id talk threads GROUP
     /// ```
     Talk {
-        /// Print JSON instead of lines (one array for `list`).
+        /// Print JSON instead of lines (one array for `list` and `threads`).
         #[arg(long, global = true)]
         json: bool,
         /// The talk action to run.

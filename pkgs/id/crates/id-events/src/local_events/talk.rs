@@ -134,7 +134,7 @@ impl LocalEvents {
     /// Checks that this node can see `object`, and returns the object's group, if it has one.
     /// The object must be an applied event, and if it names a group, this node's key must be
     /// a member of that group.
-    fn visible_object(&self, object: Hash) -> Result<Option<Hash>> {
+    pub(super) fn visible_object(&self, object: Hash) -> Result<Option<Hash>> {
         let (event, applied) = self
             .read_store(|store| Ok((store.event_by_id(&object)?, store.event_applied(&object)?)))?;
         let Some(event) = event.filter(|_| applied) else {
