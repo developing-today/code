@@ -329,9 +329,16 @@ struct TmuxSession {
     attached: u32,
 }
 
-fn parse_session_activity(output: &str) -> Result<Vec<TmuxSession>, String> {
+fn parse_session_activity(output: &str) -> Result<(u64, Vec<TmuxSession>), String> {
+    let mut lines = output.lines();
+    let laptop_now = lines
+        .next()
+        .and_then(|line| line.strip_prefix("__FLEET_CLOCK__"))
+        .ok_or_else(|| "sweep: remote laptop clock is missing".to_string())?
+        .parse::<u64>()
+        .map_err(|_| "sweep: remote laptop clock is invalid".to_string())?;
     let mut sessions = Vec::new();
-    for (index, line) in output.lines().enumerate() {
+    for (index, line) in lines.enumerate() {
         if line.trim().is_empty() {
             continue;
         }
@@ -356,7 +363,7 @@ fn parse_session_activity(output: &str) -> Result<Vec<TmuxSession>, String> {
             attached,
         });
     }
-    Ok(sessions)
+    Ok((laptop_now, sessions))
 }
 
 fn sweep_candidate(session: &TmuxSession, now: u64, idle_for_s: u64) -> bool {
@@ -366,11 +373,11 @@ fn sweep_candidate(session: &TmuxSession, now: u64, idle_for_s: u64) -> bool {
 }
 
 fn list_session_activity(config: &Config) -> CaptureOutcome {
+    let script = "printf '__FLEET_CLOCK__%s\\n' \"$(date +%s)\"; tmux list-sessions -F '#{session_name}\t#{session_activity}\t#{session_attached}'";
     let cmd = [
-        "tmux".to_string(),
-        "list-sessions".to_string(),
-        "-F".to_string(),
-        "'#{session_name}\t#{session_activity}\t#{session_attached}'".to_string(),
+        "sh".to_string(),
+        "-c".to_string(),
+        crate::forms::shell_quote(script),
     ];
     capture(config, 30, &cmd)
 }
@@ -390,9 +397,9 @@ fn check_and_kill(config: &Config, name: &str) -> CaptureOutcome {
 
 fn sweep(config: &Config, args: &SweepArgs) -> i32 {
     announce(T3);
-    let sessions = match list_session_activity(config) {
+    let (laptop_now, sessions) = match list_session_activity(config) {
         CaptureOutcome::Complete { code: 0, stdout } => match parse_session_activity(&stdout) {
-            Ok(sessions) => sessions,
+            Ok(parsed) => parsed,
             Err(m) => {
                 eprintln!("{m}");
                 return 1;
@@ -411,16 +418,9 @@ fn sweep(config: &Config, args: &SweepArgs) -> i32 {
             return 1;
         }
     };
-    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(e) => {
-            eprintln!("ssh: sweep: system clock is before the Unix epoch: {e}");
-            return 1;
-        }
-    };
     for session in sessions
         .into_iter()
-        .filter(|session| sweep_candidate(session, now, args.idle_for_s))
+        .filter(|session| sweep_candidate(session, laptop_now, args.idle_for_s))
     {
         if args.dry_run {
             println!("would sweep {}", session.name);

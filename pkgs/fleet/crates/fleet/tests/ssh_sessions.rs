@@ -78,7 +78,13 @@ esac
 "##,
     )
     .expect("write fake tmux");
-    for executable in [&fake_ssh, &fake_tmux] {
+    let fake_date = fake_bin.join("date");
+    fs::write(
+        &fake_date,
+        "#!/bin/sh\nprintf '%s\\n' \"${FLEET_TEST_LAPTOP_NOW:-4100000000}\"\n",
+    )
+    .expect("write fake date");
+    for executable in [&fake_ssh, &fake_tmux, &fake_date] {
         let mut permissions = fs::metadata(executable)
             .expect("fake executable metadata")
             .permissions();
@@ -104,6 +110,7 @@ fn run_fleet(
         .env("HOME", &dir.0)
         .env("HTTPS_PROXY", "http://127.0.0.1:3130")
         .env("FLEET_TEST_KILLS", kill_log)
+        .env("FLEET_TEST_LAPTOP_NOW", "4100000000")
         .env(
             "FLEET_TEST_RECHECK_ATTACHED",
             if recheck_attached { "1" } else { "0" },
