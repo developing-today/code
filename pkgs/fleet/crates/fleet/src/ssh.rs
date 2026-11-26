@@ -38,6 +38,10 @@ proxy CONNECT, multiplexing on a fleet-owned socket).
 Commands:
   health   Run `hostname` over ssh; exit 0 iff the host answers amd
   sessions List Fleet-owned tmux sessions (`fleet-*`), read-only
+  sweep --idle-for DURATION [--dry-run]
+           Remove detached, idle `fleet-*` sessions only; DURATION
+           accepts seconds (s), minutes (m), hours (h), days (d),
+           or bare seconds. The default is a real sweep.
   exec [--cwd D] [--timeout S] -- cmd...
            Run a command line over ssh (the remote shell parses
            it); the remote exit code propagates. --timeout is in
@@ -255,6 +259,198 @@ fn sessions(config: &Config) -> i32 {
     }
 }
 
+struct SweepArgs {
+    idle_for_s: u64,
+    dry_run: bool,
+}
+
+fn parse_duration(value: &str) -> Result<u64, String> {
+    let (digits, scale) = if let Some(digits) = value.strip_suffix('s') {
+        (digits, 1_u64)
+    } else if let Some(digits) = value.strip_suffix('m') {
+        (digits, 60)
+    } else if let Some(digits) = value.strip_suffix('h') {
+        (digits, 60 * 60)
+    } else if let Some(digits) = value.strip_suffix('d') {
+        (digits, 24 * 60 * 60)
+    } else {
+        (value, 1)
+    };
+    let amount = digits
+        .parse::<u64>()
+        .map_err(|_| "sweep: --idle-for must be a positive duration".to_string())?;
+    let seconds = amount
+        .checked_mul(scale)
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(|| "sweep: --idle-for must be a positive duration".to_string())?;
+    Ok(seconds)
+}
+
+fn parse_sweep_args(args: &[String]) -> Result<SweepArgs, String> {
+    let mut idle_for_s = None;
+    let mut dry_run = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--idle-for" => {
+                i += 1;
+                let value = args.get(i).ok_or("sweep: --idle-for needs a value")?;
+                if idle_for_s.is_some() {
+                    return Err("sweep: --idle-for may be supplied once".into());
+                }
+                idle_for_s = Some(parse_duration(value)?);
+            }
+            value if value.starts_with("--idle-for=") => {
+                if idle_for_s.is_some() {
+                    return Err("sweep: --idle-for may be supplied once".into());
+                }
+                idle_for_s = Some(parse_duration(&value[11..])?);
+            }
+            "--dry-run" => {
+                if dry_run {
+                    return Err("sweep: --dry-run may be supplied once".into());
+                }
+                dry_run = true;
+            }
+            other => return Err(format!("sweep: unexpected argument {other}")),
+        }
+        i += 1;
+    }
+    let idle_for_s = idle_for_s.ok_or("sweep: --idle-for is required")?;
+    Ok(SweepArgs {
+        idle_for_s,
+        dry_run,
+    })
+}
+
+struct TmuxSession {
+    name: String,
+    activity: u64,
+    attached: u32,
+}
+
+fn parse_session_activity(output: &str) -> Result<Vec<TmuxSession>, String> {
+    let mut sessions = Vec::new();
+    for (index, line) in output.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let name = fields.next().unwrap_or_default();
+        let activity = fields
+            .next()
+            .ok_or_else(|| format!("sweep: malformed tmux session row {}", index + 1))?
+            .parse::<u64>()
+            .map_err(|_| format!("sweep: invalid activity timestamp on row {}", index + 1))?;
+        let attached = fields
+            .next()
+            .ok_or_else(|| format!("sweep: malformed tmux session row {}", index + 1))?
+            .parse::<u32>()
+            .map_err(|_| format!("sweep: invalid attached-client count on row {}", index + 1))?;
+        if fields.next().is_some() || name.is_empty() {
+            return Err(format!("sweep: malformed tmux session row {}", index + 1));
+        }
+        sessions.push(TmuxSession {
+            name: name.to_string(),
+            activity,
+            attached,
+        });
+    }
+    Ok(sessions)
+}
+
+fn sweep_candidate(session: &TmuxSession, now: u64, idle_for_s: u64) -> bool {
+    session.name.starts_with("fleet-")
+        && session.attached == 0
+        && now.saturating_sub(session.activity) >= idle_for_s
+}
+
+fn list_session_activity(config: &Config) -> CaptureOutcome {
+    let cmd = [
+        "tmux".to_string(),
+        "list-sessions".to_string(),
+        "-F".to_string(),
+        "'#{session_name}\\t#{session_activity}\\t#{session_attached}'".to_string(),
+    ];
+    capture(config, 30, &cmd)
+}
+
+fn check_and_kill(config: &Config, name: &str) -> CaptureOutcome {
+    let target = crate::forms::shell_quote(&format!("={name}"));
+    let script = format!(
+        "if [ \"$(tmux display-message -p -t {target} '#{{session_attached}}')\" = 0 ]; then tmux kill-session -t {target}; else exit 42; fi"
+    );
+    let cmd = [
+        "sh".to_string(),
+        "-c".to_string(),
+        crate::forms::shell_quote(&script),
+    ];
+    capture(config, 30, &cmd)
+}
+
+fn sweep(config: &Config, args: &SweepArgs) -> i32 {
+    announce(T3);
+    let sessions = match list_session_activity(config) {
+        CaptureOutcome::Complete { code: 0, stdout } => match parse_session_activity(&stdout) {
+            Ok(sessions) => sessions,
+            Err(m) => {
+                eprintln!("{m}");
+                return 1;
+            }
+        },
+        CaptureOutcome::Complete { code, .. } => {
+            eprintln!("ssh: sweep: tmux list-sessions exited {code}");
+            return code;
+        }
+        CaptureOutcome::TimedOut => {
+            eprintln!("ssh: sweep: tmux list-sessions timed out");
+            return EXIT_TIMEOUT;
+        }
+        CaptureOutcome::Failed(m) => {
+            eprintln!("ssh: sweep: {m}");
+            return 1;
+        }
+    };
+    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(e) => {
+            eprintln!("ssh: sweep: system clock is before the Unix epoch: {e}");
+            return 1;
+        }
+    };
+    for session in sessions
+        .into_iter()
+        .filter(|session| sweep_candidate(session, now, args.idle_for_s))
+    {
+        if args.dry_run {
+            println!("would sweep {}", session.name);
+            continue;
+        }
+        match check_and_kill(config, &session.name) {
+            CaptureOutcome::Complete { code: 0, .. } => println!("swept {}", session.name),
+            CaptureOutcome::Complete { code: 42, .. } => {
+                println!("skipped {} (attached)", session.name)
+            }
+            CaptureOutcome::Complete { code, .. } => {
+                eprintln!(
+                    "ssh: sweep: recheck/kill for {} exited {code}",
+                    session.name
+                );
+                return code;
+            }
+            CaptureOutcome::TimedOut => {
+                eprintln!("ssh: sweep: recheck/kill for {} timed out", session.name);
+                return EXIT_TIMEOUT;
+            }
+            CaptureOutcome::Failed(m) => {
+                eprintln!("ssh: sweep: {m}");
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 struct ExecArgs {
     cwd: Option<String>,
     timeout_s: u64,
@@ -311,6 +507,16 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         }
         Some("health") => health(config),
         Some("sessions") if args.len() == 1 => sessions(config),
+        Some("sweep") => {
+            let parsed = match parse_sweep_args(&args[1..]) {
+                Ok(parsed) => parsed,
+                Err(m) => {
+                    eprintln!("ssh: {m}\n{USAGE}");
+                    return EXIT_USAGE;
+                }
+            };
+            sweep(config, &parsed)
+        }
         Some("close") => close(),
         Some("exec") => {
             let parsed = match parse_exec_args(&args[1..]) {
@@ -344,6 +550,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
 mod tests {
     use super::remote_line;
     use fleet_config::ctx::Ctx;
+    use proptest::prelude::*;
 
     #[test]
     fn remote_line_without_context_is_unchanged_14188() {
@@ -373,5 +580,29 @@ mod tests {
             .output()
             .expect("sh runs");
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "task-22655");
+    }
+
+    proptest! {
+        /// A sweep candidate must always be Fleet-owned, detached, and
+        /// older than the cutoff measured by the caller's clock.
+        #[test]
+        fn sweep_never_selects_non_fleet_attached_or_fresh_sessions(
+            name in prop_oneof![
+                Just("fleet-owned".to_string()),
+                Just("fleet-other".to_string()),
+                Just("work-owned".to_string()),
+            ],
+            activity in any::<u64>(),
+            attached in any::<u32>(),
+            now in any::<u64>(),
+            idle_for_s in 1_u64..86401,
+        ) {
+            let session = super::TmuxSession { name, activity, attached };
+            if super::sweep_candidate(&session, now, idle_for_s) {
+                prop_assert!(session.name.starts_with("fleet-"));
+                prop_assert_eq!(session.attached, 0);
+                prop_assert!(now.saturating_sub(session.activity) >= idle_for_s);
+            }
+        }
     }
 }
