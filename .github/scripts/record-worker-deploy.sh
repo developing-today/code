@@ -59,17 +59,17 @@ if [ -z "$WORKER" ]; then
   usage
   exit 2
 fi
-if ! [[ "$DEPLOYED_COMMIT" =~ ^[0-9a-f]{7,64}$ ]]; then
+if ! [[ $DEPLOYED_COMMIT =~ ^[0-9a-f]{7,64}$ ]]; then
   echo "record-worker-deploy: DEPLOYED_COMMIT must be a hex commit SHA (got '${DEPLOYED_COMMIT}')" >&2
   usage
   exit 2
 fi
-if ! [[ "$MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$MAX_ATTEMPTS" -lt 1 ]; then
+if ! [[ $MAX_ATTEMPTS =~ ^[0-9]+$ ]] || [ "$MAX_ATTEMPTS" -lt 1 ]; then
   echo "record-worker-deploy: MAX_ATTEMPTS must be an integer >= 1 (got '${MAX_ATTEMPTS}')" >&2
   usage
   exit 2
 fi
-if ! [[ "$RETRY_BASE_SECONDS" =~ ^[0-9]+$ ]]; then
+if ! [[ $RETRY_BASE_SECONDS =~ ^[0-9]+$ ]]; then
   echo "record-worker-deploy: RETRY_BASE_SECONDS must be an integer >= 0 (got '${RETRY_BASE_SECONDS}')" >&2
   usage
   exit 2

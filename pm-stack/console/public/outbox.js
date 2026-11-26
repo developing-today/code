@@ -51,6 +51,9 @@
   const TIMELY = new Set(["pr.merge", "deploy.start", "task.cancel", "task.unblock", "unit.act"]);
   /** How long a timely action stays fresh: a tunnel, a lift, a bad patch. */
   const TIMELY_MS = 10 * 60_000;
+  /** Said of a timely action kept back for being too old, by this device
+   * or by the platform. */
+  const STALE_NOTE = "Not sent: it was a while ago, and this may have changed.";
   /** Finished entries are shown for a day, and no more than this many. */
   const DONE_FOR_MS = 24 * 60 * 60_000;
   const DONE_KEPT = 30;
@@ -125,6 +128,11 @@
   };
 
   /** One line saying what an action is, for the list of what is kept. */
+  /** A setting the owner may change, as it is called on the Machines screen. */
+  function settingName(name) {
+    return name === "promptLabel" ? "the prompt label" : name === "needsRepos" ? "the repositories looked in" : "a setting";
+  }
+
   function sayOf(kind, args = {}) {
     const a = args ?? {};
     const quoted = (text) => (short(text) ? `: “${short(text)}”` : "");
@@ -186,6 +194,10 @@
         return `${a.action} ${a.unit}`;
       // The platform's own second half of something it filed itself:
       // never kept here, and shown where what waits for a machine is.
+      case "settings.set":
+        return `Change ${settingName(a.name)}`;
+      case "settings.clear":
+        return a.name ? `Put ${settingName(a.name)} back to main's` : "Put the changed settings back to main's";
       case "prompt.enqueue":
         return `File the queue task for prompt #${a.issue}`;
       case "triage.enqueue":
@@ -249,6 +261,11 @@
     const why = typeof body.error === "string" && body.error !== "" ? body.error : `http ${status}`;
     // Being done right now under this name: ask again shortly.
     if (status === 409 && body.running === true) return { state: "waiting", note: "Being done now." };
+    // Too old for the platform to do unasked (#13501): the platform's
+    // own clock, or this device's, says more than ten minutes have
+    // passed. It waits for the owner to look again, as one this device
+    // kept back itself does.
+    if (status === 409 && body.stale === true) return { state: "stale", note: STALE_NOTE };
     // Nothing could take it just now (no machine in reach, too much
     // waiting). Under its name it is safe to offer again, and it is:
     // said in this device's own words, because the platform's are
@@ -317,7 +334,7 @@
         if (!entry || entry.state !== "waiting") continue;
         if (!due(entry, now())) {
           // Too old to send unasked: kept, and said to be.
-          const stale = { ...entry, state: "stale", note: "Not sent: it was a while ago, and this may have changed." };
+          const stale = { ...entry, state: "stale", note: STALE_NOTE };
           await store.put(stale);
           changed.push(stale);
           continue;
@@ -422,14 +439,28 @@
    * does it once. */
   const SEND_WAIT_MS = 60_000;
 
+  /** What is sent of an entry. The platform is told when the owner did
+   * it and what this device's clock reads as it is sent, so it can hold
+   * a timely one to the same ten minutes this device does (#13501),
+   * and whether the owner looked again and said to send it anyway. */
+  function sendBody(entry, now) {
+    return {
+      kind: entry.kind,
+      args: entry.args,
+      id: entry.id,
+      ...(typeof entry.at === "number" && Number.isFinite(entry.at) ? { at: entry.at, sent: now } : {}),
+      ...(entry.sure === true ? { sure: true } : {}),
+    };
+  }
+
   /** One try at sending an entry to the platform. */
-  async function httpSend(entry, fetchImpl = root.fetch.bind(root)) {
+  async function httpSend(entry, fetchImpl = root.fetch.bind(root), now = () => Date.now()) {
     let res;
     try {
       res = await fetchImpl("/console/api/act", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-PM-Console": "1" },
-        body: JSON.stringify({ kind: entry.kind, args: entry.args, id: entry.id }),
+        body: JSON.stringify(sendBody(entry, now())),
         // A sign-in that has run out answers with a way to another
         // site. It is not followed: it is how this is told from no
         // connection at all.
@@ -504,7 +535,9 @@
   }
 
   root.PMOutbox = {
+    TIMELY: [...TIMELY],
     TIMELY_MS,
+    STALE_NOTE,
     SEND_WAIT_MS,
     rule,
     subject,
@@ -517,6 +550,7 @@
     flush,
     sendInOrder,
     settle,
+    sendBody,
     httpSend,
     idbStore,
     memoryStore,

@@ -928,6 +928,14 @@ pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> Stri
         <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
       </div>
       <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Documents</h2>
+        <button data-world-documents-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <input data-world-documents-prefix class="input input-bordered input-xs font-mono" type="text" aria-label="Document name prefix" placeholder="Prefix">
+      <div data-world-documents class="space-y-1" aria-live="polite"></div>
+      <pre data-world-document class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite"></pre>
+      <p class="text-xs opacity-60">Public documents are read-only.</p>
       <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
         <code>id world mirror</code>.</p>
     </div>
@@ -1030,6 +1038,14 @@ pub fn render_program_page(
         <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
       </div>
       <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Documents</h2>
+        <button data-world-documents-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <input data-world-documents-prefix class="input input-bordered input-xs font-mono" type="text" aria-label="Document name prefix" placeholder="Prefix">
+      <div data-world-documents class="space-y-1" aria-live="polite"></div>
+      <pre data-world-document class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite"></pre>
+      <p class="text-xs opacity-60">Public documents are read-only.</p>
       <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
         <code>id world mirror</code>.</p>
     </div>

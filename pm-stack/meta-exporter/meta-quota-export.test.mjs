@@ -359,6 +359,37 @@ test("entry-point guard: symlinked invocation runs main, matching direct (#6343)
   await symlink(EXPORTER_PATH, linkPath);
   await assertCdpUnavailableRun(linkPath, "symlink");
 });
+test("a /json/list answer that is not an array is cdp-unavailable, not a crash (#7983 item 9)", async () => {
+  for (const answer of ["{}", "null", '"x"']) {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(answer);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const base = await mkdtemp(join(tmpdir(), "meta-exporter-list-shape-"));
+      const outDir = join(base, "out");
+      let r;
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          process.execPath,
+          [EXPORTER_PATH, "--cdp-port", String(server.address().port), "--out-dir", outDir],
+          { timeout: 30000 },
+        );
+        r = { code: 0, stdout, stderr };
+      } catch (err) {
+        r = { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+      }
+      assert.equal(r.code, 4, `answer ${answer} must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+      const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+      assert.equal(latest.status, "cdp-unavailable");
+      assert.match(latest.detail, /expected a JSON array of targets/);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
 // #2789: num() used to be a bare Number() coercion, so drifted
 // spellings became real measurements ("" -> 0% window, "0x10" -> 16,
 // "1e2" -> 100). Only plain decimal spellings are accepted now.

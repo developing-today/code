@@ -160,8 +160,16 @@ fn ensure_owner(t: &TursoBackend, owner: &str, cap: i64) -> Result<(), TErr> {
         ],
     )?;
     t.exec(
-        "UPDATE placement_owner_state SET cap = ?, updated_at = ? WHERE owner = ?",
-        &[Arg::Int(cap), Arg::Text(now), Arg::Text(owner.to_string())],
+        // Guarded: the sweep calls this every pass, and an unchanged
+        // cap must not cost a Turso row write.
+        "UPDATE placement_owner_state SET cap = ?, updated_at = ? \
+        WHERE owner = ? AND cap IS NOT ?",
+        &[
+            Arg::Int(cap),
+            Arg::Text(now),
+            Arg::Text(owner.to_string()),
+            Arg::Int(cap),
+        ],
     )?;
     Ok(())
 }
@@ -709,6 +717,10 @@ use std::collections::{HashMap, HashSet};
 /// How often the broker's coordinator thread runs the sweep.
 pub(crate) const COORD_SWEEP_INTERVAL_SECS: u64 = 20;
 
+/// How often an unchanged owner load reading is still written, so
+/// load_read_at keeps showing the sweep is alive.
+const LOAD_HEARTBEAT_SECS: i64 = 300;
+
 /// The sweep's GitHub surface: load counts and run states over the
 /// runner-host repos — the same reads `build_ctx` makes. The
 /// production implementation lives in queue_broker.rs (broker-owned
@@ -905,9 +917,18 @@ pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -
             continue;
         }
         live_by_owner.insert(owner.clone(), live);
+        // Written only when the counts moved, or as a heartbeat once
+        // LOAD_HEARTBEAT_SECS has passed since the last write (so
+        // load_read_at still shows the reading is live). Every 20 s
+        // pass used to rewrite each owner row unconditionally.
+        let heartbeat_before = coord_parse_iso(now)
+            .map(|base| coord_iso_from_epoch(base - LOAD_HEARTBEAT_SECS))
+            .unwrap_or_else(|| now.to_string());
         let upd = t.exec(
             "UPDATE placement_owner_state SET gh_running = ?, gh_queued = ?, \
-            load_read_at = ?, load_source = ?, updated_at = ? WHERE owner = ?",
+            load_read_at = ?, load_source = ?, updated_at = ? WHERE owner = ? \
+            AND (gh_running IS NOT ? OR gh_queued IS NOT ? \
+            OR load_read_at IS NULL OR load_read_at < ?)",
             &[
                 Arg::Int(running),
                 Arg::Int(queued),
@@ -918,6 +939,9 @@ pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -
                 ),
                 Arg::Text(now.to_string()),
                 Arg::Text(owner.clone()),
+                Arg::Int(running),
+                Arg::Int(queued),
+                Arg::Text(heartbeat_before),
             ],
         );
         match upd {
@@ -1113,11 +1137,13 @@ pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -
             }
         };
         if let Err(e) = t.exec(
-            "UPDATE placement_owner_state SET claims_active = ?, updated_at = ? WHERE owner = ?",
+            "UPDATE placement_owner_state SET claims_active = ?, updated_at = ? \
+            WHERE owner = ? AND claims_active IS NOT ?",
             &[
                 Arg::Int(active),
                 Arg::Text(now.to_string()),
                 Arg::Text(owner.clone()),
+                Arg::Int(active),
             ],
         ) {
             errors.push(json!(format!("recompute {owner}: {e}")));

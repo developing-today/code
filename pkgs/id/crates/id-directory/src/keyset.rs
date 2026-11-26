@@ -1026,7 +1026,24 @@ mod tests {
     use proptest::prelude::*;
 
     fn key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32])
+        // Derived once per seed per process. `SigningKey::from_bytes`
+        // pays a scalar multiplication to derive the verifying key, and
+        // the generated-history property test asks for the same handful
+        // of seeds hundreds of times per case; at the test profile's
+        // opt-level 0 that repeated derivation — not the fold under
+        // test — was most of the test's minute (#15142). The cached key
+        // is byte-identical to a fresh derivation, so every record the
+        // tests sign or verify is unchanged.
+        static CACHE: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<u8, SigningKey>>,
+        > = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        cache
+            .lock()
+            .unwrap()
+            .entry(seed)
+            .or_insert_with(|| SigningKey::from_bytes(&[seed; 32]))
+            .clone()
     }
 
     fn public(seed: u8) -> String {

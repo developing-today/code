@@ -557,10 +557,10 @@ mod tests {
             &QueuePolicy::default(),
         )
         .unwrap();
-        assert!(queue.open().is_empty());
+        assert_eq!(queue.open(), []);
         assert_eq!(queue.open_appeals().len(), 1);
         assert_eq!(queue.open_appeals()[0].fact.id, fact.id);
-        assert!(queue.closed_appeals().is_empty());
+        assert_eq!(queue.closed_appeals(), []);
 
         // Filing the same document again returns the logged fact.
         let again = appeals
@@ -700,7 +700,7 @@ mod tests {
             &QueuePolicy::default(),
         )
         .unwrap();
-        assert!(queue.open_appeals().is_empty());
+        assert_eq!(queue.open_appeals(), []);
         assert_eq!(
             queue.closed_appeals()[0].closure.as_ref().unwrap().decision,
             ClosureDecision::Actioned
@@ -721,7 +721,7 @@ mod tests {
                 at_ms: NOW + 5,
             }
         );
-        assert!(after.report_closures.entries.is_empty());
+        assert_eq!(after.report_closures.entries, [] as [TransparencyEntry; 0]);
         let json = serde_json::to_string(&after).unwrap();
         assert!(!json.contains("private moderator note"));
         assert!(!json.contains("please review"));

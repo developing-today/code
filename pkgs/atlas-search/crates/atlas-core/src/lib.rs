@@ -66,8 +66,8 @@ pub mod memory;
 pub mod notes;
 pub mod occurrences;
 pub mod owner_inventory;
-pub mod reports;
 pub mod repo_docs;
+pub mod reports;
 pub mod search;
 pub mod shards;
 pub mod shingles;
@@ -79,6 +79,7 @@ pub mod trace_ingest;
 pub mod trace_stats;
 pub mod turso;
 pub mod types;
+pub mod version;
 pub mod version_projection;
 
 /// Maximum neighbor chunks search expansion may attach to each result.

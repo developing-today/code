@@ -2,7 +2,20 @@
 // shell: the Needs-Drew answer page (#8568) and the decision-set
 // pages (#8766), plus the PWA manifest. Split out of server.ts (#13052).
 import { type NeedsDrewQuestion } from "./needs-drew.ts";
-import { decisionSetAging, decisionSetProgress, isDeferLean, decisionSetSummary, decisionSetsForView, listDecisionSets, effectiveQuestionMode, type DecisionItem, type DecisionSet, type DecisionSetView, type DecisionSubmission, decisionsDraftScript } from "./decisions.ts";
+import {
+  decisionSetAging,
+  decisionSetProgress,
+  isDeferLean,
+  decisionSetSummary,
+  decisionSetsForView,
+  listDecisionSets,
+  effectiveQuestionMode,
+  type DecisionItem,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+  decisionsDraftScript,
+} from "./decisions.ts";
 import { appendDecisionEvents, type DecisionEventInput } from "./decision-events.ts";
 import { questionOptions, type NeedsUserListItem } from "./needs-user.ts";
 import type { Comment } from "./model.ts";
@@ -769,4 +782,3 @@ export const PWA_MANIFEST = {
     { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
   ],
 };
-

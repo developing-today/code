@@ -3,16 +3,99 @@
 // decision-set pages' dispatch. Each handler returns null when its
 // routes do not match. Split out of server.ts (#13052).
 import { decodePathSegment } from "./path-segment.ts";
-import { getNeedsDrew, listOpenNeedsDrew, needsDrewIncidentKey, recordAnswer } from "./needs-drew.ts";
-import { decisionSetAging, decisionSetOpenState, deferWithSubmissions, getDecisionDrafts, getDecisionSet, dismissDecisionSets, isDeferLean, isDecisionSetView, listDecisionSets, raiseDecisionSet, refreshDecisionSet, recordResolutions, requestInfoOpenQuestions, sweepDecisionSets, upsertDecisionDrafts, validateDecisionDraftUpsert, validateDecisionSet, withGeneratedSetId, type DecisionSet, type DecisionSetView, type DecisionSubmission } from "./decisions.ts";
-import { buildNeedsUserList, onQuestionAnswered, parseBlockedByCount, parsePriority, questionOptions, setQuestionBlockedByCount, setQuestionPriority, stageRowsFor, type NeedsUserListItem } from "./needs-user.ts";
-import { appendDecisionEvents, readDecisionEvents, validateDecisionEventInput, type DecisionEventInput } from "./decision-events.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  needsDrewIncidentKey,
+  recordAnswer,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import { validateNeedsDrewChoice } from "./needs-drew-answer.ts";
+import {
+  decisionSetAging,
+  decisionSetOpenState,
+  deferWithSubmissions,
+  getDecisionDrafts,
+  getDecisionSet,
+  dismissDecisionSets,
+  isDeferLean,
+  isDecisionSetView,
+  listDecisionSets,
+  raiseDecisionSet,
+  refreshDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  sweepDecisionSets,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
+  validateDecisionSet,
+  withGeneratedSetId,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+} from "./decisions.ts";
+import {
+  buildNeedsUserList,
+  onQuestionAnswered,
+  parseBlockedByCount,
+  parsePriority,
+  setQuestionBlockedByCount,
+  setQuestionPriority,
+  stageRowsFor,
+  type NeedsUserListItem,
+} from "./needs-user.ts";
+import {
+  appendDecisionEvents,
+  readDecisionEvents,
+  validateDecisionEventInput,
+  type DecisionEventInput,
+} from "./decision-events.ts";
 import { getAlertsStore, requestAlertTick } from "./alerts.ts";
 import { readJsonBody } from "./request-body.ts";
 import { cfg, source } from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
-import { renderAnswerPage, renderAnswerForbidden, decisionsPageUrl, logDecisionEvents, questionRefFor, eventTypeForKind, submissionEventPayload, parseDecisionSubmissions, renderDecisionsPage, renderDecisionsIndex, renderNeedsUserPage, renderDecisionsForbidden } from "./server-pages.ts";
+import {
+  renderAnswerPage,
+  renderAnswerForbidden,
+  decisionsPageUrl,
+  logDecisionEvents,
+  questionRefFor,
+  eventTypeForKind,
+  submissionEventPayload,
+  parseDecisionSubmissions,
+  renderDecisionsPage,
+  renderDecisionsIndex,
+  renderNeedsUserPage,
+  renderDecisionsForbidden,
+} from "./server-pages.ts";
 import { alertsIntakeAuthorized } from "./server-alert-routes.ts";
+
+/** The side effects of a recorded needs-Drew answer, shared by the
+ * laptop route and the edge relay's drain (#13469). Best-effort: a
+ * failure is logged and never fails the recorded answer.
+ *
+ * #8605: the answer resolves the question, so close its alert
+ * incident — the raiser posted it under this question's source with
+ * key needs-drew:<ledgerId>. #14084 S1: "Send back" returns the item
+ * to review; any other answer resolves it, keyed on the recorded
+ * (first) answer. */
+export async function afterNeedsDrewAnswered(item: NeedsDrewQuestion, answered: NeedsDrewQuestion): Promise<void> {
+  try {
+    const store = await getAlertsStore();
+    if (store) {
+      await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(item.ledgerId));
+      requestAlertTick();
+    }
+  } catch (err) {
+    console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
+  }
+  try {
+    const store = await getAlertsStore();
+    if (store) await onQuestionAnswered(store.itemStages(), item.ledgerId, answered.answer?.optionId);
+  } catch (err) {
+    console.error(`needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
 
 export async function handleDecisionRoutes(req: Request, url: URL, path: string): Promise<Response | null> {
   // --- Needs-Drew answers (#8568) --------------------------------------
@@ -20,7 +103,7 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
   if (req.method === "POST" && needsDrewAnswerMatch) {
     const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
     if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
-    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    let body: { token?: unknown; optionId?: unknown; optionIds?: unknown; freeText?: unknown };
     try {
       body = (await readJsonBody(req)) as typeof body;
     } catch {
@@ -31,45 +114,11 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
     if (!item || typeof body.token !== "string" || body.token !== item.token) {
       return json({ error: "unknown question or bad token" }, 403);
     }
-    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
-    if (optionId !== undefined && !questionOptions(item).some((o) => o.id === optionId)) {
-      return json({ error: "optionId is not one of the question options" }, 400);
-    }
-    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
-    if (body.freeText !== undefined && freeText === undefined) {
-      return json({ error: "freeText must be a string" }, 400);
-    }
-    if (optionId === undefined && !freeText?.trim()) {
-      return json({ error: "optionId or freeText required" }, 400);
-    }
-    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
-      ...(optionId !== undefined ? { optionId } : {}),
-      ...(freeText !== undefined ? { freeText } : {}),
-      via: "api",
-    });
+    const choice = validateNeedsDrewChoice(item, body);
+    if (!choice.ok) return json({ error: choice.error }, 400);
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, { ...choice.value, via: "api" });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
-    // #8605: the answer resolves the question, so close its alert
-    // incident — the raiser posted it under this question's source with
-    // key needs-drew:<ledgerId>, and until now nothing ever closed it.
-    // Best-effort, like the stack-health close in the intake above: a
-    // store failure is logged and never fails the recorded answer.
-    try {
-      const store = await getAlertsStore();
-      if (store) {
-        await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(ledgerId));
-        requestAlertTick();
-      }
-    } catch (err) {
-      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
-    }
-    // #14084 S1: "Send back" returns the item to review; any other
-    // answer resolves it. Keyed on the recorded (first) answer.
-    try {
-      const store = await getAlertsStore();
-      if (store) await onQuestionAnswered(store.itemStages(), ledgerId, updated.answer.optionId);
-    } catch (err) {
-      console.error(`needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
-    }
+    await afterNeedsDrewAnswered(item, updated);
     return json({
       ledgerId,
       answered: true,
@@ -288,9 +337,9 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
 export async function handleDecisionsIndex(url: URL): Promise<Response> {
   const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
   const viewParam = url.searchParams.get("view");
-    // Default is the rolling last-7-days window (#14064): the landing
-    // view is the current workload, with all-time behind the toggle.
-    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
+  // Default is the rolling last-7-days window (#14064): the landing
+  // view is the current workload, with all-time behind the toggle.
+  const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
   return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
 }
 

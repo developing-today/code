@@ -77,6 +77,8 @@
 
 - [Running the brokers as services](operations/services.md)
 - [Health checks and the heal stack](operations/health-and-healing.md)
+- [Backing up `fleet kv`](operations/kv-backup.md)
+- [Running the `fleet kv` central plane](operations/kv-central.md)
 - [Troubleshooting](operations/troubleshooting.md)
 - [Deploying this book](operations/deploying-this-book.md)
 - [FAQ](operations/faq.md)
