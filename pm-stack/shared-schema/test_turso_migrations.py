@@ -418,7 +418,11 @@ def hrana_value(value):
 
 class FakeHrana:
     def __init__(self):
-        self.db = sqlite3.connect(":memory:", isolation_level=None)
+        # Handler threads execute the statements; the lock serializes
+        # them, so the connection may cross threads.
+        self.db = sqlite3.connect(
+            ":memory:", isolation_level=None, check_same_thread=False
+        )
         self.lock = threading.Lock()
 
     def step_ran_ok(self, results, errors, index):
