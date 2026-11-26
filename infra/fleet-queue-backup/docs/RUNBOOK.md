@@ -2,11 +2,21 @@
 
 ## What is backed up, and how fresh it must be
 
-The fleet-queue Turso database (`fleet-queue-dezren39`, the queue
-broker's coordination store) is exported in full to the D1 database
-`fleet-queue-backup` in the fleet's Cloudflare account, daily at
-02:15 (plus up to 30 min randomized delay) by
-`fleet-queue-backup-export.timer` on the laptop.
+Keep the live queue and its backup copy distinct:
+
+- **Live queue database:** `fleet-queue`. Current live source: Turso
+  `fleet-queue` (`fleet-queue-dezren39`, the broker's coordination
+  store). After CF-2: live source is D1 `fleet-queue`, once its
+  cutover is verified.
+- **Backup D1 database:** `fleet-queue-backup`. Backup target remains
+  D1 `fleet-queue-backup` after CF-2; this is a copy, not the live
+  queue plane.
+
+Today the laptop timer exports the Turso live `fleet-queue` source to
+the D1 backup `fleet-queue-backup`, daily at 02:15 (plus up to 30 min
+randomized delay). CF-3 retargets that export to read from the live D1
+`fleet-queue` after CF-2; until then, the current Turso source stays
+in place.
 
 Freshness target: the D1 copy's `_fleet_queue_backup_meta` row
 (key `export`) is never more than 24 hours old. The unified

@@ -2234,8 +2234,8 @@ mod replica_tests {
             .await
             .unwrap_err();
         assert!(matches!(error, AdapterError::Config(_)), "{error:?}");
-        assert!(transport.sql_sent_to(SOURCE_URL).is_empty());
-        assert!(transport.sql_sent_to(REPLICA_URL).is_empty());
+        assert_eq!(transport.sql_sent_to(SOURCE_URL), [] as [String; 0]);
+        assert_eq!(transport.sql_sent_to(REPLICA_URL), [] as [String; 0]);
     }
 
     /// Oracle: D4 + the seam's guard — the source store is never a
@@ -2252,7 +2252,7 @@ mod replica_tests {
             .await
             .unwrap_err();
         assert!(matches!(error, AdapterError::Config(_)), "{error:?}");
-        assert!(transport.sql_sent_to(SOURCE_URL).is_empty());
+        assert_eq!(transport.sql_sent_to(SOURCE_URL), [] as [String; 0]);
     }
 
     /// Oracle: invariant 8 — a collection the source does not have is
@@ -2270,7 +2270,7 @@ mod replica_tests {
             .await
             .unwrap_err();
         assert!(matches!(error, AdapterError::Config(_)), "{error:?}");
-        assert!(transport.sql_sent_to(REPLICA_URL).is_empty());
+        assert_eq!(transport.sql_sent_to(REPLICA_URL), [] as [String; 0]);
     }
 
     /// Oracle: the atomic-swap policy — a copy that fails mid-way
@@ -3892,7 +3892,7 @@ mod tests {
             }));
             let adapter = scripted_adapter(transport);
             let rows = adapter.query("main", &sample_query()).await.unwrap();
-            assert!(rows.is_empty());
+            assert_eq!(rows, [] as [Row; 0]);
         }
     }
 
@@ -3937,7 +3937,7 @@ mod tests {
         }));
         let adapter = scripted_adapter(transport);
         let rows = adapter.query("main", &sample_query()).await.unwrap();
-        assert!(rows.is_empty());
+        assert_eq!(rows, [] as [Row; 0]);
         assert_eq!(adapter.transport.attempts(), 3);
     }
 

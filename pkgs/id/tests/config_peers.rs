@@ -61,7 +61,7 @@ fn a_minimal_entry_takes_every_default() {
     let entry = &resolved.peers[0];
     assert_eq!(entry.peer_id, "p1");
     assert_eq!(entry.class, PeerClass::Unknown);
-    assert!(entry.operations.is_empty());
+    assert_eq!(entry.operations, [] as [PeerOperation; 0]);
     assert!(!entry.relay_granted);
     assert_eq!(entry.scope, None);
     assert_eq!(entry.policy_version, 3);
