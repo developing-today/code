@@ -156,7 +156,7 @@
       "workflow": "cf-worker-versions-release.yml",
       "address": "https://fleet-hosted.developing-today.workers.dev",
       "next": "Deployed by #14870 (2026-11-25) via Cloudflare versions with the queue door on the fleet-queue D1 database. The other doors' production wiring (RP issuer, tenancy DB, GitHub App material) is still owned elsewhere; until it lands they fail closed. Its queue door is how the edge will file, cancel and unblock tasks with no machine.",
-      "lastDeployedCommit": "dc6249c30b28ce501eb0a110b339646f6b0654a1"
+      "lastDeployedCommit": "5797620977eb8a44dbf5730c5adfc3cd1df62a48"
     },
     {
       "name": "atlas-search",
