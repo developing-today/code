@@ -63,6 +63,7 @@ impl WorldCommand {
             Self::DeliverPortal { .. } => "DeliverPortal",
             Self::CapsInfo { .. } => "CapsInfo",
             Self::SetIsolation { .. } => "SetIsolation",
+            Self::AuthorizeLifecycle { .. } => "AuthorizeLifecycle",
             Self::IsolationInfo { .. } => "IsolationInfo",
             Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
             Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
@@ -426,6 +427,13 @@ pub(crate) enum WorldCommand {
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Owner or operator: may this authority change the world's
+    /// lifecycle (wake, pause, archive; #10694)? Changes nothing.
+    AuthorizeLifecycle {
+        authority: Authority,
+        act: &'static str,
+        reply: oneshot::Sender<Result<()>>,
     },
     /// Admin or moderator: change the world's isolation.
     SetIsolation {
