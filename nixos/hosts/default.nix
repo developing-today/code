@@ -192,6 +192,15 @@ in
         };
       }
       {
+        # Queue coverage reconciliation (code#7016, #14929): report
+        # uncovered issues and ready PRs hourly; the first runs are
+        # observe-only until the import mode file is explicitly set.
+        home-manager.users.user = {
+          imports = [ ../home/queue-coverage-reconcile.nix ];
+          services.queue-coverage-reconcile.enable = true;
+        };
+      }
+      {
         # Laptop autocommit (code#1723): every-minute tracked-file
         # sweeps for openclaw, hatch and hatch-personal, plus the
         # daily untracked-file review.
