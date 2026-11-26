@@ -22,7 +22,7 @@ O-R013.
 ## 1. Verified state on main `d2656174`
 
 - `src/views.ts` (#1276) holds `ViewFilters` with keys `repo, area,
-  horizon, owner, state, epic, status, kind`, the pure
+horizon, owner, state, epic, status, kind`, the pure
   `itemMatchesView` / `applyView`, `viewQuery` / `viewUrl` /
   `filtersFromQuery`, and `ViewsStore` (one JSON file, atomic writes).
   Mutations go through the actions store (`save-view`, `rename-view`,
@@ -84,13 +84,18 @@ matchesSavedFilters(view: PmWorkView, filters: ViewFilters): boolean
 ```
 
 ```ts
-interface ViewContext { now: string; recent_window_ms: string; cold_after_ms: string; viewer: ViewerRef | null }
+interface ViewContext {
+  now: string;
+  recent_window_ms: string;
+  cold_after_ms: string;
+  viewer: ViewerRef | null;
+}
 interface MobileViewResult {
   id: MobileViewId;
-  refs: WorkKey[];                 // matched, in D5 order
+  refs: WorkKey[]; // matched, in D5 order
   undecided: { ref: WorkKey; deciding_fact: FactKey; state: "absent" | "invalid" | "error" | "stale" | "policy_undefined" }[];
-  unavailable: null | { reason: "fact_not_sourced"; fact: FactKey };   // the whole view cannot be computed
-  freshness: "live" | "fixtures" | "stale" | "error" | "absent";      // MOB-01 D7 over the matched + undecided items
+  unavailable: null | { reason: "fact_not_sourced"; fact: FactKey }; // the whole view cannot be computed
+  freshness: "live" | "fixtures" | "stale" | "error" | "absent"; // MOB-01 D7 over the matched + undecided items
 }
 ```
 
@@ -133,7 +138,7 @@ Notes:
   MOB-01 leaves `absent/not_sourced` until a broker read and MOB-07
   exist. While every input row has `claim` absent with reason
   `not_sourced`, the view returns `unavailable: {reason:
-  "fact_not_sourced", fact: "claim"}` and an empty `refs`. The page
+"fact_not_sourced", fact: "claim"}` and an empty `refs`. The page
   says "Claims aren't connected yet", never "Nothing assigned to you".
 - `needs_triage` reads the label verbatim. It does not reuse
   `metadata-ingestion.ts`'s internal `needs-triage` outcome, which is a

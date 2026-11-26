@@ -254,6 +254,24 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # CF-9 (#14949): keep the laptop PM packages tracking reviewed main
+    # without granting a timer a new rebuild path. The existing
+    # agent-rebuild-switch service fetches github:developing-today/code/main,
+    # serializes runs, logs them, and switches the amd system on success.
+    # Hourly retries stay inside edition-drift's six-hour stale window.
+    systemd.timers.pm-stack-follow-main = lib.mkIf (config.networking.hostName == "amd") {
+      description = "Follow main for the laptop PM stack";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "15min";
+        OnCalendar = "hourly";
+        AccuracySec = "5min";
+        RandomizedDelaySec = "5min";
+        Persistent = true;
+        Unit = "agent-rebuild-switch.service";
+      };
+    };
+
     home-manager.users.${cfg.user} = {
       systemd.user.services = {
         pm-projector = {

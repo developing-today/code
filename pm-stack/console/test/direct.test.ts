@@ -2214,7 +2214,11 @@ describe("the console's Cloudflare apply provenance (#13495)", () => {
   const runs = [
     run({ status: "in_progress", conclusion: null, updated_at: "2026-11-25T06:00:00Z", head_sha: sha("e") }),
     run({ conclusion: "failure", updated_at: "2026-11-25T05:00:00Z", head_sha: sha("d") }),
-    run({ updated_at: "2026-11-25T04:00:00Z", head_sha: sha("c"), html_url: "https://github.com/developing-today/code/actions/runs/3" }),
+    run({
+      updated_at: "2026-11-25T04:00:00Z",
+      head_sha: sha("c"),
+      html_url: "https://github.com/developing-today/code/actions/runs/3",
+    }),
     run({ event: "push", updated_at: "2026-11-25T04:30:00Z", head_sha: sha("b") }),
     run({ updated_at: "2026-11-25T02:00:00Z", head_sha: sha("a") }),
   ];
@@ -2261,6 +2265,8 @@ describe("the console's Cloudflare apply provenance (#13495)", () => {
     expect(latestApply(null)).toBeNull();
     expect(latestApply({ workflow_runs: "nope" })).toBeNull();
     // A malformed success is passed over, not trusted.
-    expect(latestApply({ workflow_runs: [run({ head_sha: "not-a-sha" }), run({ updated_at: "whenever" })] })).toBeNull();
+    expect(
+      latestApply({ workflow_runs: [run({ head_sha: "not-a-sha" }), run({ updated_at: "whenever" })] }),
+    ).toBeNull();
   });
 });

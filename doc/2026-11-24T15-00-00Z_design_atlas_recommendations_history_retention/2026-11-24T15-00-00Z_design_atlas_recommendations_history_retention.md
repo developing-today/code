@@ -18,7 +18,7 @@ parts, none of which has a shape yet:
   on read and discarded, so there is no object to compare, audit, or
   retire. The epic #9109 Part C already names a fan-out worker and a
   Durable Object that accumulates recommendations, but not what a
-  recommendation *is*.
+  recommendation _is_.
 - **Search history** exists only as transient query traffic. The retrieval
   stats feedback record already needs query-side inputs, but no record
   defines search history as an object with an identity.
@@ -62,23 +62,23 @@ short-lived hot data either persists forever or is dropped without a rule.
 ## 4. Alternatives considered
 
 A. **Do nothing.** Recommendations stay computed on read, search history
-   stays transient, and retention stays content-only. Cost: none now. Cost
-   later: the stats feedback and recommendation work each invent their own
-   history, and the admin before/after need is unmet.
+stays transient, and retention stays content-only. Cost: none now. Cost
+later: the stats feedback and recommendation work each invent their own
+history, and the admin before/after need is unmet.
 
 B. **Store recommendations as rows in the existing content tables.** Reuses
-   code, but mixes derived outputs with content versions, so the content
-   retention policy would retire recommendations and content by the same
-   rules. Rejected: it breaks NG1.
+code, but mixes derived outputs with content versions, so the content
+retention policy would retire recommendations and content by the same
+rules. Rejected: it breaks NG1.
 
 C. **Separate typed object families, one shared snapshot and retention
-   envelope.** Recommendations, search history, and hot-data snapshots are
-   each a typed family. All three share one envelope: `object_id`,
-   `class`, `captured_at`, `version`, `inputs_ref`, and a `payload`. Chosen.
+envelope.** Recommendations, search history, and hot-data snapshots are
+each a typed family. All three share one envelope: `object_id`,
+`class`, `captured_at`, `version`, `inputs_ref`, and a `payload`. Chosen.
 
 D. **One generic event log for everything.** Simple to write, but makes the
-   retention classes and admin comparison a query over an undifferentiated
-   log, and gives no typed contract for consumers. Rejected.
+retention classes and admin comparison a query over an undifferentiated
+log, and gives no typed contract for consumers. Rejected.
 
 Chosen: C.
 
@@ -88,15 +88,15 @@ Chosen: C.
 
 Every recommendation, search-history entry, and hot-data snapshot has:
 
-| field | meaning |
-| --- | --- |
-| `object_id` | stable id of the logical object (a recommendation set, a search session, a hot-data key) |
-| `family` | `recommendation`, `search_history`, or `hot_snapshot` |
-| `class` | a retention class from §5.3 |
-| `captured_at` | RFC 3339 time the snapshot was taken |
-| `version` | monotonically increasing per `object_id`; the same ordering the snapshot comparison uses |
-| `inputs_ref` | pointer to the inputs (query ids, retrieval-stats version id) that produced it, so the output is reproducible |
-| `payload` | typed body for the family |
+| field         | meaning                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------- |
+| `object_id`   | stable id of the logical object (a recommendation set, a search session, a hot-data key)                      |
+| `family`      | `recommendation`, `search_history`, or `hot_snapshot`                                                         |
+| `class`       | a retention class from §5.3                                                                                   |
+| `captured_at` | RFC 3339 time the snapshot was taken                                                                          |
+| `version`     | monotonically increasing per `object_id`; the same ordering the snapshot comparison uses                      |
+| `inputs_ref`  | pointer to the inputs (query ids, retrieval-stats version id) that produced it, so the output is reproducible |
+| `payload`     | typed body for the family                                                                                     |
 
 A new version is appended, never overwritten. "Current" is the highest
 `version` for an `object_id`.
@@ -118,12 +118,12 @@ A new version is appended, never overwritten. "Current" is the highest
 Retention is declared per class and reuses the rule engine's schema from
 #6041. Each class names its windows and the keep-newest-N floor.
 
-| class | holds | default window | default floor | notes |
-| --- | --- | --- | --- | --- |
-| `hot-short` | hot snapshots | 24 h | keep newest 2 | intermediate "what's hot" data |
-| `recommendation` | recommendation versions | 30 d | keep newest 10 | enough history for before/after |
-| `search-history` | search history | 90 d | keep newest 20 per session | query text only if the class says so |
-| `snapshot-audit` | any family, admin comparison set | 365 d | keep newest 50 | longest class; admin before/after |
+| class            | holds                            | default window | default floor              | notes                                |
+| ---------------- | -------------------------------- | -------------- | -------------------------- | ------------------------------------ |
+| `hot-short`      | hot snapshots                    | 24 h           | keep newest 2              | intermediate "what's hot" data       |
+| `recommendation` | recommendation versions          | 30 d           | keep newest 10             | enough history for before/after      |
+| `search-history` | search history                   | 90 d           | keep newest 20 per session | query text only if the class says so |
+| `snapshot-audit` | any family, admin comparison set | 365 d          | keep newest 50             | longest class; admin before/after    |
 
 Classes follow the rule engine's invariants: a version is retired only when
 its class rule permits and a trigger fires; a class may lengthen a window or

@@ -209,6 +209,12 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
   "ring",
   "tls12",
 ] }
+# WebSocket binary-message adapter for the serve-proxy fallback leg
+# (#14918 slice 1, src/serve_proxy_leg.rs). Was a dev-dependency for the
+# CLI integration tests; the leg makes it a runtime dependency.
+tokio-tungstenite = "0.30"
+# Message payloads for the WebSocket leg (tokio-tungstenite's Bytes).
+bytes = "1"
 webpki-roots = "1"
 # SHA-256 for the hosted binding ceremony's service attestation (slice 1,
 # #3808): required in every build variant, not only `world`/`web`.
@@ -243,7 +249,9 @@ id-sync = { path = "crates/id-sync", default-features = false, features = [
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.43", features = ["bundled"] }
 wat = "=1.263.0"
-tokio-tungstenite = "0.30"
+# Self-signed broker certificates for the serve-proxy leg TLS tests
+# (#14918 slice 1). Dev only; already in the lock via quinn/iroh.
+rcgen = "0.14"
 # vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
@@ -372,11 +380,6 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"
 
 # =============================================================================
 # Profile Configuration

@@ -33,7 +33,7 @@ an authorization to implement. It fixes the pure types in
   validate helpers, `ContractError` with stable `code()` strings
   (snake_case, except the two `OWNER_POLICY_*` codes),
   `ResultError {code, message}`, `Effect {field, requested,
-  observed, verified}` and `CommandResult` (`fleet.result/v1`).
+observed, verified}` and `CommandResult` (`fleet.result/v1`).
   `CommandResult` has no free payload field.
 - `work/operations.rs` has `ResourceRef {repo, number}` parsed from
   `owner/repo#N`. It has no provider id and no kind.
@@ -165,21 +165,17 @@ and the provider's answer for an external lookup.
   "revision": "3",
   "relation": "blocks",
   "role": null,
-  "source": { "kind": "external", "provider": "github",
-              "repository": "developing-today/code", "resource_kind": "issue",
-              "number": "761", "node_id": "I_kwDO..." },
+  "source": { "kind": "external", "provider": "github", "repository": "developing-today/code", "resource_kind": "issue", "number": "761", "node_id": "I_kwDO..." },
   "target": { "kind": "fleet_work", "work": { "authority_id": "local", "work_id": "842" } },
   "source_key": "issue:developing-today/code#761",
   "hardness": "hard",
   "status": "resolved",
   "reason_code": "explicit",
   "certainty": "verified",
-  "provenance": { "principal_ref": "...", "actor_ref": "...", "session_ref": "...",
-                  "operation_id": "...", "source_ref": null },
+  "provenance": { "principal_ref": "...", "actor_ref": "...", "session_ref": "...", "operation_id": "...", "source_ref": null },
   "created_at": "2026-11-26T03:00:00Z",
   "updated_at": "2026-11-26T04:00:00Z",
-  "resolution": { "reason": "blocker_satisfied", "evidence_ref": "...", "override": false,
-                  "expires_at": null, "successor_edge_id": null }
+  "resolution": { "reason": "blocker_satisfied", "evidence_ref": "...", "override": false, "expires_at": null, "successor_edge_id": null }
 }
 ```
 
@@ -242,11 +238,11 @@ Every change is one `EdgeRevision`:
 ```json
 {
   "schema": "fleet.dependency_edge_revision/v1",
-  "edge_id": "7", "revision": "3", "operation_id": "...",
-  "before": { "status": "active", "hardness": "hard", "certainty": "verified",
-              "role": null, "resolution": null },
-  "after":  { "status": "resolved", "hardness": "hard", "certainty": "verified",
-              "role": null, "resolution": { "reason": "blocker_satisfied", "...": "..." } }
+  "edge_id": "7",
+  "revision": "3",
+  "operation_id": "...",
+  "before": { "status": "active", "hardness": "hard", "certainty": "verified", "role": null, "resolution": null },
+  "after": { "status": "resolved", "hardness": "hard", "certainty": "verified", "role": null, "resolution": { "reason": "blocker_satisfied", "...": "..." } }
 }
 ```
 

@@ -4285,7 +4285,7 @@ mod tests {
             .await
             .unwrap();
         let capability = ok.invite("admin", "ann", None, None).await.unwrap();
-        assert!(!capability.is_empty());
+        assert_ne!(capability, "");
 
         let mut bad = WorldClient::connect(&client_ep, host.addr.clone())
             .await

@@ -66,17 +66,13 @@ class ConductorSilenceTests(unittest.TestCase):
         self.assertEqual(result["evaluation"]["status"], "silent")
 
     def test_fresh_cycle_stays_quiet(self):
-        result = run_fixture(
-            {"cycles": ["2026-11-25T12:45:00Z"], "tracking": None}
-        )
+        result = run_fixture({"cycles": ["2026-11-25T12:45:00Z"], "tracking": None})
         self.assertEqual(result["actions"], [{"action": "none", "issue": None}])
         self.assertEqual(result["evaluation"]["status"], "ok")
 
     def test_existing_tracking_issue_is_updated_not_duplicated(self):
         result = run_fixture({"cycles": [LAST_CYCLE], "tracking": 15123})
-        self.assertEqual(
-            result["actions"], [{"action": "update", "issue": 15123}]
-        )
+        self.assertEqual(result["actions"], [{"action": "update", "issue": 15123}])
 
     def test_no_cycles_at_all_fires(self):
         result = run_fixture({"cycles": [], "tracking": None})

@@ -2386,6 +2386,30 @@ impl WorldActor {
         }
     }
 
+    /// The world's owner (an account holding an admin seat in one of its
+    /// groups) or the operator (the process admin) may change its
+    /// lifecycle; everyone else gets the same forbidden refusal any other
+    /// owner-only act gives (#10694).
+    pub(super) fn require_ownership(&self, authority: &Authority, what: &str) -> Result<()> {
+        let directory = self.core.directory();
+        let allowed = match authority {
+            Authority::Admin => true,
+            Authority::Signed(key) => directory.account_for_key(key).is_some_and(|account| {
+                directory.groups().any(|group| {
+                    directory.level_in(&account, group.id) == Some(crate::directory::Level::Admin)
+                })
+            }),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(crate::directory::Refusal::Forbidden(format!(
+                "only the world's owner or the operator {what}"
+            ))
+            .into())
+        }
+    }
+
     pub(super) fn set_isolation(
         &mut self,
         authority: &Authority,

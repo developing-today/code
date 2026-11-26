@@ -1827,14 +1827,19 @@ test("a platform setting is said with its value, whose it is and since when, and
   });
   // Main's, and changeable: no main's beside it, since it is main's.
   expect(
-    settingSaid({ name: "needsRepos", source: "repository", since: null, value: ["a/b", "c/d"], repository: ["a/b", "c/d"] }, now),
+    settingSaid(
+      { name: "needsRepos", source: "repository", since: null, value: ["a/b", "c/d"], repository: ["a/b", "c/d"] },
+      now,
+    ),
   ).toMatchObject({ value: "a/b and c/d", whose: "Main's.", main: null, changeable: true, changed: false });
   // A machine's list, for now.
   expect(settingSaid({ name: "needsRepos", source: "machine", since: null, value: ["a/b"] }, now).whose).toBe(
     "The machine's: Cloudflare goes by the list it reports until it runs main's.",
   );
   // Main's alone decides it: nothing to press.
-  expect(settingSaid({ name: "queue", source: "repository", since: null, value: "repo-health-code-pilot" }, now)).toMatchObject({
+  expect(
+    settingSaid({ name: "queue", source: "repository", since: null, value: "repo-health-code-pilot" }, now),
+  ).toMatchObject({
     what: "The queue",
     changeable: false,
     changed: false,
@@ -1857,9 +1862,17 @@ test("a machine that has not taken the owner's latest change to the settings is 
   // It runs with the latest.
   expect(settingsTakenSaid(3, 3)).toBe("");
   // It is behind: it takes it with its next report.
-  expect(settingsTakenSaid(2, 3)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
-  expect(settingsTakenSaid(0, 1)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
+  expect(settingsTakenSaid(2, 3)).toBe(
+    "It has not taken your latest change to the settings yet: it will with its next report.",
+  );
+  expect(settingsTakenSaid(0, 1)).toBe(
+    "It has not taken your latest change to the settings yet: it will with its next report.",
+  );
   // Its console does not take them at all.
-  expect(settingsTakenSaid(null, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
-  expect(settingsTakenSaid(undefined, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
+  expect(settingsTakenSaid(null, 1)).toBe(
+    "Its console is older than changing the settings from here: it runs with its own.",
+  );
+  expect(settingsTakenSaid(undefined, 1)).toBe(
+    "Its console is older than changing the settings from here: it runs with its own.",
+  );
 });

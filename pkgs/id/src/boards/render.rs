@@ -1494,24 +1494,24 @@ mod render_tests {
         let (verified, adjustments) = resolve_assets(&[hash.clone()], &|_| Some(png.clone()));
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0].kind, AssetKind::Image);
-        assert!(adjustments.is_empty());
+        assert_eq!(adjustments, [] as [ThemeAdjustment; 0]);
 
         // Wrong bytes for the hash: omitted with a label.
         let (verified, adjustments) = resolve_assets(&[hash.clone()], &|_| Some(b"other".to_vec()));
-        assert!(verified.is_empty());
+        assert_eq!(verified, [] as [VerifiedAsset; 0]);
         assert_eq!(adjustments.len(), 1);
         assert_eq!(adjustments[0].label(), "asset unavailable");
 
         // Missing blob: omitted with a label.
         let (verified, adjustments) = resolve_assets(&[hash], &|_| None);
-        assert!(verified.is_empty());
+        assert_eq!(verified, [] as [VerifiedAsset; 0]);
         assert_eq!(adjustments.len(), 1);
 
         // Right hash, unsupported kind (plain text): omitted.
         let text = b"just text, no magic".to_vec();
         let text_hash = ArtifactHash::new(sha256_hex(&text)).unwrap();
         let (verified, adjustments) = resolve_assets(&[text_hash], &|_| Some(text.clone()));
-        assert!(verified.is_empty());
+        assert_eq!(verified, [] as [VerifiedAsset; 0]);
         assert_eq!(adjustments.len(), 1);
     }
 
@@ -1733,10 +1733,9 @@ mod report_tests {
         let mut with_assets = theme(&[]);
         with_assets.assets = vec![good.clone(), missing.clone()];
 
-        assert!(
-            theme_validation_report(&with_assets, None)
-                .unavailable_assets
-                .is_empty()
+        assert_eq!(
+            theme_validation_report(&with_assets, None).unavailable_assets,
+            [] as [String; 0]
         );
 
         let fetch = |hash: &ArtifactHash| (hash == &good).then(|| png.clone());

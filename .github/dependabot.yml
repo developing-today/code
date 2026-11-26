@@ -58,12 +58,19 @@ updates:
     # lockfile-only bump cannot build (tarball-pin skew, stale
     # npmDepsHash). These dirs stay excluded; bump them manually per
     # each default.nix header (version + hash, regenerate lock,
-    # refresh npmDepsHash). Must-exclude-if-manifest-vendored:
-    # pkgs/wrangler, pkgs/command-code, pkgs/desktop-commander (same
-    # tarball + vendored-lock shape). Keep the explicitly enumerated npm
-    # directories below limited to tracked manifests; do not add "/" here,
+    # refresh npmDepsHash). Keep these tarball-built paths out of the
+    # scheduled npm directories even when a security-update manifest
+    # mirror exists. command-code has a stripped package.json mirror so
+    # its lock-only security job can read the dependency file; it is not
+    # a scheduled version-update target because the Nix hash must move
+    # with its lock. Other lock-only directories still need a matching
+    # package.json before security updates can read them.
+    # Tarball-built paths: pkgs/wrangler, pkgs/command-code,
+    # pkgs/desktop-commander (same tarball + vendored-lock shape). Keep the
+    # explicitly enumerated npm directories below limited to tracked manifests;
+    # do not add "/" here.
     # because Dependabot's security-update discovery can still select a
-    # lock-only directory and then fail fetching its absent package.json.
+    # lock-only directory and then fail if its package.json is absent.
     exclude-paths:
       - "pkgs/cf/**"
       - "pkgs/grok-cli/**"

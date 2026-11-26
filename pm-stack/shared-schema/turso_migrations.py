@@ -210,8 +210,10 @@ def translate_statement(stmt: str) -> str | None:
     out = flat
     out = _translate_jsonb_typeof(out)
     out = _JSON_ARROW_BOOL.sub(
-        lambda m: f"json_extract({m.group(1)}, '$.{m.group(2)}')"
-        f" = {1 if m.group(3) == 'true' else 0}",
+        lambda m: (
+            f"json_extract({m.group(1)}, '$.{m.group(2)}')"
+            f" = {1 if m.group(3) == 'true' else 0}"
+        ),
         out,
     )
     out = _JSON_ARROW_TEXT.sub(
@@ -230,9 +232,7 @@ def translate_statement(stmt: str) -> str | None:
     out = re.sub(r"\bsmallint\b", "INTEGER", out, flags=re.I)
     out = re.sub(r"\bboolean\b", "INTEGER", out, flags=re.I)
     out = re.sub(r"\btext\[\]", "TEXT", out, flags=re.I)
-    out = re.sub(
-        r"\bDEFAULT\s+now\(\)", f"DEFAULT ({NOW_SQL})", out, flags=re.I
-    )
+    out = re.sub(r"\bDEFAULT\s+now\(\)", f"DEFAULT ({NOW_SQL})", out, flags=re.I)
     out = re.sub(r"\bnow\(\)", NOW_SQL, out, flags=re.I)
     out = re.sub(r"\bDEFAULT\s+false\b", "DEFAULT 0", out, flags=re.I)
     out = re.sub(r"\bDEFAULT\s+true\b", "DEFAULT 1", out, flags=re.I)
@@ -395,8 +395,7 @@ class HttpTursoClient:
                 result = json.load(response)["results"][0]
         except urllib.error.HTTPError as exc:
             raise StoreError(
-                f"Turso HTTP {exc.code}; outcome unverified, "
-                "read back before retrying"
+                f"Turso HTTP {exc.code}; outcome unverified, read back before retrying"
             ) from None
         except (OSError, ValueError, KeyError, IndexError, TypeError):
             raise StoreError(
