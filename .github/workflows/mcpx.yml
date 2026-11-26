@@ -66,7 +66,7 @@ on:
         required: false
         default: ""
       e2e_only:
-        description: "Skip nightly stress matrix for a focused basic-test measurement"
+        description: "Run only the Go test leg and skip lint, plugin tests, and stress suites"
         type: boolean
         required: false
         default: false
@@ -182,6 +182,7 @@ jobs:
       # guard lives here, not in pkgs/mcpx, because that package also
       # stands alone in dezren39/nix with no repo-root .opencode copy.
       - name: Check the dogfood plugin copy is in sync
+        if: inputs.e2e_only != true
         run: |
           diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
           diff -r pkgs/mcpx/plugin/core .opencode/plugin/core
@@ -355,6 +356,7 @@ jobs:
 
   lint:
     name: "basic: lint"
+    if: github.event_name != 'workflow_dispatch' || inputs.e2e_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -435,6 +437,7 @@ jobs:
 
   plugin:
     name: "basic: plugin tests"
+    if: github.event_name != 'workflow_dispatch' || inputs.e2e_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
