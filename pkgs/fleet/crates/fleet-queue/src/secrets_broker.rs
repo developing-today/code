@@ -1199,8 +1199,9 @@ mod tests {
         entry_revision_unix, fetch_through_with, handle_request, install_list_refresh,
         load_watermark, note_refresh_fetch, now_unix, parse_delta_entries, parse_list_entries,
         parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
-        url_decode,
+        secrets_list_prefix, url_decode,
     };
+    use serde_json::json;
     use std::time::Duration;
 
     #[test]
