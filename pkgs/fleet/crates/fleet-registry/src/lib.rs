@@ -516,6 +516,14 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &["tiers", "exec"],
     },
     Domain {
+        name: "host",
+        summary: "Resolve a host name through the machine registry and select a transport offer × invocation form with fleet-pool (#14716); `fleet host laptop` resolves the amd record.",
+        capabilities: &[Capability::Laptop],
+        primary: Capability::Laptop,
+        aliases: &[],
+        subcommands: &[],
+    },
+    Domain {
         name: "actions",
         summary: "Live short-lived exec sessions inside GitHub Actions runners (#13774), coordinator-handed-off: start a session in a runner, run commands in it, stream its IO, renew or extend its lease, close it.",
         capabilities: &[Capability::Actions],
