@@ -28,6 +28,7 @@ import { isValidRef } from "./model.ts";
 import { programRefs } from "./program.ts";
 import { renderBoard, deriveOverview, renderOverview, buildRoadmapDrill } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { RULING_CLASS_ID, type ConflictRuling } from "./conflict-rulings.ts";
 import { buildDigest, type Digest, type DigestKind } from "./digest.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
@@ -54,10 +55,16 @@ import {
   source,
   briefCommentsFor,
   assembleConflicts,
+  conflictRulingsStore,
   commentFormOpts,
   emptyQuotaView,
 } from "./server-wiring.ts";
 import { requireHome } from "./home.ts";
+
+export const projectRulingCache = new TodayCache<ConflictRuling | null>(TODAY_CACHE_TTL_MS);
+export async function projectTrustRuling(): Promise<ConflictRuling | null> {
+  return projectRulingCache.get(() => conflictRulingsStore.getForClass(RULING_CLASS_ID).catch(() => null));
+}
 
 export async function loadBoardContext() {
   const board = await source.board().catch(() => []);
@@ -440,7 +447,7 @@ export async function boardRender() {
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
   const orchestrationStatus = source.diagnostics?.().orchestration.state;
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus });
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
   const act = {
     actionsByObject,
     poolByRef,
@@ -468,7 +475,7 @@ export async function attentionRender() {
     ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state });
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state, ruling: await projectTrustRuling() });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -509,7 +516,7 @@ export async function loadTodayContext() {
     todaySignals(),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  const queue = buildQueueView({ board, pool, items, orchestration });
+  const queue = buildQueueView({ board, pool, items, orchestration, ruling: await projectTrustRuling() });
   return {
     today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
     view,
@@ -536,7 +543,7 @@ export async function queueContext() {
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.orchestration().catch(() => null),
   ]);
-  return buildQueueView({ board, pool, items, orchestration });
+  return buildQueueView({ board, pool, items, orchestration, ruling: await projectTrustRuling() });
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
@@ -552,7 +559,7 @@ export async function loadOverviewContext() {
     source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject, ruling: await projectTrustRuling() };
 }
 
 // #5082: same contract as the board assembly above — the overview
@@ -566,6 +573,12 @@ export async function loadOverviewContext() {
 export const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOverviewContext>>>(TODAY_CACHE_TTL_MS);
 export async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
   return overviewContextCache.get(loadOverviewContext);
+}
+
+export function invalidateConflictRulingViews(): void {
+  projectRulingCache.invalidate();
+  todayContextCache.invalidate();
+  overviewContextCache.invalidate();
 }
 
 // #3976 (Codex review on PR #9193): a freshness notice means canonical

@@ -57,7 +57,13 @@ function makeDO(jurisdiction: string) {
     acceptWebSocket: () => {},
     getWebSockets: () => [],
   };
-  return { d: new UserDO(state as never, { BLOBS: bucket } as never), bucket, jurisdiction };
+  const env =
+    jurisdiction === "us"
+      ? { BLOBS_US: bucket }
+      : jurisdiction === "eu"
+        ? { BLOBS_EU: bucket }
+        : { BLOBS_FEDRAMP: bucket };
+  return { d: new UserDO(state as never, env as never), bucket, jurisdiction };
 }
 
 type Obj = ReturnType<typeof makeDO>;
