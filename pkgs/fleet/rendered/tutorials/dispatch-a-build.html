@@ -1,0 +1,488 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tutorial: dispatch a build remotely - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="tutorial-dispatch-a-build-remotely"><a class="header" href="#tutorial-dispatch-a-build-remotely">Tutorial: dispatch a build remotely</a></h1>
+<p>This tutorial runs a build (or any command) in a target repository on a
+fleet runner instead of on your own machine: first as a dry run, so you
+read the placement decision before anything runs; then for real, so you
+get a session handle; then polling that handle to a terminal result. It
+also covers chaining a follow-up run onto the same host, pushing the Nix
+cache, and the raw <code>gh</code> fallback for when no fleet binary is available.</p>
+<p>It assumes the <code>fleet</code> binary is installed (see
+<a href="../getting-started/installation.html">Installation and bootstrap</a>). The
+placement model behind this tutorial — surfaces, tiers and the registry
+as data — is covered in <a href="../library/placement.html">Placement and surfaces as data</a>.</p>
+<p>The verb is <code>fleet queue dispatch</code>. Despite living under <code>queue</code>, it is
+not a broker verb: it is the placement engine absorbed into the queue
+client. It decides <strong>where</strong> a job runs across the fleet’s GitHub Actions
+copies and runner providers, and dispatches the <code>fleet-command.yml</code>
+workflow there. It is unrelated to the top-level <code>fleet dispatch</code> domain.</p>
+<h2 id="step-1-dry-run-first-and-read-the-placement-decision"><a class="header" href="#step-1-dry-run-first-and-read-the-placement-decision">Step 1: Dry-run first, and read the placement decision</a></h2>
+<p>Without <code>--dispatch</code>, the verb is a dry run: it loads the surface
+registry, computes live capacity, picks a surface, prints the decision —
+and writes nothing, dispatches nothing.</p>
+<pre><code class="language-bash">fleet queue dispatch --repo &lt;owner/name&gt; --command '&lt;cmd&gt;'
+</code></pre>
+<p>For example, a test run in this repository:</p>
+<pre><code class="language-bash">fleet queue dispatch --repo developing-today/code --command 'cargo test --workspace'
+</code></pre>
+<p><code>--repo</code> and <code>--command</code> are both required, and <code>--repo</code> must be a valid
+<code>owner/name</code> (exactly one <code>/</code>, characters <code>[A-Za-z0-9._-]</code>); anything
+else is a fatal usage error, exit <code>2</code>. Every error in this verb family
+prints <code>repo-queue: &lt;message&gt;</code> on stderr and exits <code>2</code>.</p>
+<p>What the output means (human form):</p>
+<pre><code class="language-text">decision: &lt;surface-id | queued&gt;
+  - &lt;reasoning line&gt;
+  - …
+dry-run (no session written; pass --dispatch to submit)
+</code></pre>
+<p>Read the reasoning lines — they are the decision, not decoration. The
+cascade that produced them, in order:</p>
+<ol start="0">
+<li>A hard pin (<code>--surface ID</code>), if you gave one: that surface or a fatal
+error, never a fall-through.</li>
+<li>Follow-up affinity, if you gave <code>--followup</code> (Step 5).</li>
+<li><strong>Tier 1 — free GitHub-hosted Actions</strong>: every <code>github-actions</code>
+surface that is eligible and has free slots, sorted least-loaded
+owner first, then least-recently-used owner, then the registry’s
+<code>selection_priority</code>, then per-surface recency, then surface id.</li>
+<li><strong>Tier 2 — Blacksmith</strong>, in registry order, within its minute budget.</li>
+<li><strong>Tier 3 — Codespaces</strong>, only when the laptop is marked busy or the
+surface was explicitly selected.</li>
+</ol>
+<p>If every tier is exhausted, the decision is <code>queued</code> with the reasoning
+“all tiers exhausted — job stays queued (recorded, never dropped;
+repo-queue remains its system of record)”.</p>
+<p>For machine-readable output, add <code>--json</code>. A dry run’s object carries
+<code>job</code>, <code>decision</code>, <code>reasoning</code> and <code>"mode": "dry-run (no session written; pass --dispatch to submit)"</code>, plus a <code>note</code> when a testing override was
+used, <code>load_read_errors</code> when any load read failed, and
+<code>owner_load_coverage</code> — per owner: whether its load was measured,
+partial, unknown, or simulated, the known subtotal, the cap, and which
+reads are missing. Load failures are soft, but an owner whose load could
+not be read is reported as unknown capacity, never as an idle zero.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li><code>pinned surface &lt;id&gt; is ineligible: &lt;why&gt;</code>, exit <code>2</code>: a <code>--surface</code> pin
+is a placement choice, not an override of eligibility. Read the
+<code>&lt;why&gt;</code> — a common one is pinning the <code>org-run</code> surface, whose registry
+status is <code>standby</code>, not <code>active</code>, so it can never be selected or
+pinned. Drop the pin or pick an eligible surface.</li>
+<li><code>--surface &lt;id&gt;: no such surface in the registry</code>: the id is not in
+the registry (including surfaces whose <code>kind</code> has no adapter). List
+the registry with <code>fleet queue surfaces</code> and copy an <code>id</code> exactly.</li>
+<li>A macOS job (<code>--platform macos</code>) is ineligible on surfaces without
+<code>platform_input: true</code>, and counts against the owner’s macOS sub-cap
+(5 for every shipped owner). If the decision surprises you, the
+reasoning lines name the surface that failed and why.</li>
+</ul>
+<h2 id="step-2-dispatch-for-real-and-read-the-fp_-handle"><a class="header" href="#step-2-dispatch-for-real-and-read-the-fp_-handle">Step 2: Dispatch for real, and read the <code>fp_</code> handle</a></h2>
+<p>Add <code>--dispatch</code> (and <code>--json</code>, so the handle is unambiguous):</p>
+<pre><code class="language-bash">fleet queue dispatch --repo developing-today/code --command 'cargo test --workspace' --dispatch --json
+</code></pre>
+<p>What the output means: the job object, the <code>decision</code>, the full
+<code>reasoning</code> array, and then the session fields — <code>handle</code>, <code>run_id</code>,
+<code>run_url</code>, and (when known) <code>runner_repo</code> and <code>portable_id</code>. The handle
+has the form <code>fp_</code> followed by 32 lowercase hex characters, for example:</p>
+<pre><code class="language-text">fp_d0a842c9bd33aa2999f5a12393397ab9
+</code></pre>
+<p>Keep the handle. Use it to poll (Step 3) and to submit a follow-up (Step 5).
+Dispatch records it in <code>~/.local/state/fleet-place/sessions.json</code> (override
+the directory with <code>FLEET_PLACE_STATE</code>) and mirrors it to the queue broker.
+On a second seat with access to that broker, inspect the same handle:</p>
+<pre><code class="language-bash">fleet queue session status &lt;handle&gt; --json
+</code></pre>
+<p>How dispatch actually happens, so the output makes sense: for the chosen
+surface’s host repo, the client snapshots existing workflow runs, POSTs
+the workflow dispatch (anything but HTTP <code>204</code> is fatal), then polls the
+run list for up to about 40 seconds to correlate the new run — exactly,
+when the surface declares a <code>dispatch_id</code> input, by matching a fresh
+<code>fp_…</code> dispatch id placed in the run title.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>The dispatch succeeds but no run correlates in time: the session is
+still written, with <code>run_id: null</code>, state <code>dispatched</code>, and the note
+“dispatch accepted (HTTP 204) but the run did not appear within ~40s;
+resolve it from the workflow’s run list”. This is not a failed
+dispatch — do not re-dispatch. Resolve the run from the host repo’s
+workflow run list, then refer to it by its portable reference
+<code>&lt;host-owner&gt;/&lt;host-repo&gt;#&lt;run-id&gt;</code> (Step 4).</li>
+<li>The all-tiers-exhausted case <strong>with</strong> <code>--dispatch</code>: a session record is
+still written — <code>surface</code>, <code>run_id</code> and <code>run_url</code> all null, state
+<code>queued</code> — and its handle is printed (the JSON gains <code>handle</code> and
+<code>state</code>, but no <code>run_id</code>/<code>run_url</code> keys). The job is recorded, never
+dropped; nothing is running yet.</li>
+</ul>
+<h2 id="step-3-poll-the-session-to-a-terminal-result"><a class="header" href="#step-3-poll-the-session-to-a-terminal-result">Step 3: Poll the session to a terminal result</a></h2>
+<pre><code class="language-bash">fleet queue session status &lt;handle&gt;
+</code></pre>
+<p>What the output means: the stored record is refreshed from GitHub first
+(if it has a run and a registered host surface), then printed in the
+form:</p>
+<pre><code class="language-text">&lt;handle&gt;: state=&lt;state&gt; surface=&lt;surface-id&gt; run=&lt;run-url&gt;
+</code></pre>
+<p>States are <code>queued</code>, <code>dispatched</code>, <code>running</code>, <code>succeeded</code>, <code>failed</code> and
+<code>cancelled</code>, mapped from the GitHub run’s status and conclusion. Add
+<code>--json</code> to print the whole refreshed record instead of the one line.</p>
+<p>When you need the verdict rather than the state:</p>
+<pre><code class="language-bash">fleet queue session result &lt;handle&gt;
+</code></pre>
+<p>That prints <code>&lt;handle&gt;: &lt;state&gt; (terminal=&lt;bool&gt;) run=&lt;run-url&gt;</code>, where
+<code>terminal</code> is true exactly when the state is <code>succeeded</code>, <code>failed</code> or
+<code>cancelled</code>. While it is not terminal, the record carries the note
+“not terminal yet — reconnect with the same handle”. Poll <code>result</code> on
+your own cadence; there is no streaming form, and the run’s own output
+is not streamed either — it lives on the run page (<code>gh run view --log</code>).</p>
+<p>Two neighbouring forms worth knowing:</p>
+<pre><code class="language-bash">fleet queue session list
+fleet queue session list --mine
+</code></pre>
+<p><code>list</code> merges the local store with up to 200 broker records and shows their
+stored state, newest first. <code>--mine</code> keeps only records whose
+<code>submitted_by</code> is the current user on this host.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li><code>repo-queue: no session with handle &lt;h&gt; in &lt;store path&gt;</code>, exit <code>2</code>:
+neither the local store nor the broker supplied the session. Check broker
+access on both seats. Once the run ID is known, use the portable reference
+(Step 4) to read the run directly from GitHub.</li>
+<li>Passing <code>--help</code> to <code>session status</code> or <code>session result</code> is safe:
+a help flag after the subcommand prints the session usage and exits 0
+— it is never taken as a handle.</li>
+</ul>
+<h2 id="step-4-refer-to-a-run-portably"><a class="header" href="#step-4-refer-to-a-run-portably">Step 4: Refer to a run portably</a></h2>
+<p>Anywhere a handle is accepted, a portable reference
+<code>OWNER/REPO#RUN_ID</code> is accepted too — where <code>OWNER/REPO</code> is the
+<strong>runner-host</strong> repo of a registered <code>github-actions</code> or <code>blacksmith</code>
+surface (for example <code>developing-today/fleet</code>), not the target repo:</p>
+<pre><code class="language-bash">fleet queue session result developing-today/fleet#45146933211
+</code></pre>
+<p>What the output means: the reference is resolved directly against the
+GitHub API with that surface’s token, producing a synthetic record with
+the same state mapping as Step 3. This is the form that survives moving
+between seats and workspaces, and the form a follow-up takes when you do
+not have the original handle.</p>
+<h2 id="step-5-chain-a-follow-up-that-sticks-to-the-host"><a class="header" href="#step-5-chain-a-follow-up-that-sticks-to-the-host">Step 5: Chain a follow-up that sticks to the host</a></h2>
+<p>A follow-up downloads the previous run’s <code>fleet-output</code> artifact and, by
+preference, stays on the same host surface — which also keeps it in the
+same Actions cache scope, since caches are per host repo.</p>
+<pre><code class="language-bash">fleet queue dispatch --repo developing-today/code --command '&lt;cmd&gt;' --followup &lt;handle-or-portable-ref&gt; --dispatch
+</code></pre>
+<p>Dry-run it first (drop <code>--dispatch</code>) and read the affinity line in the
+reasoning. The preferred surface is kept only while <strong>all</strong> of these
+hold: its adapter exists and is eligible; it has capacity; and the
+owner’s queued count is strictly below the surface’s
+<code>sticky_queue_threshold</code> — <code>2</code> on every shipped surface. With two or
+more runs already queued on that owner, stickiness is released, and the
+reasoning records exactly why: <code>followup affinity released from &lt;id&gt;: eligible=&lt;…&gt;, capacity=&lt;…&gt;, queued=&lt;n&gt; (threshold 2); …</code>. On a keep, the
+line reads <code>followup affinity keeps &lt;id&gt;: &lt;capacity summary&gt;</code>.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>With <code>--dispatch</code>, a previous run that is not yet terminal is fatal:
+“previous run is still &lt;state&gt;; wait for a terminal result before
+downloading its output”. Wait for Step 3’s <code>result</code> to report
+<code>terminal=true</code> first.</li>
+<li>A previous dispatch with no correlated run yet is likewise fatal:
+“previous dispatch has no correlated run yet; resolve its status
+before continuing”. Resolve it via Step 4, then chain from the
+portable reference.</li>
+<li>In dry-run mode neither guard fires, and a local previous record is
+read without refreshing — so a dry run can show an affinity a real
+dispatch would refuse. Treat the dry run as a placement preview, not a
+promise.</li>
+</ul>
+<h2 id="step-6-the---push-nix-cache-variant"><a class="header" href="#step-6-the---push-nix-cache-variant">Step 6: The <code>--push-nix-cache</code> variant</a></h2>
+<pre><code class="language-bash">fleet queue dispatch --repo &lt;owner/name&gt; --command 'nix build' --push-nix-cache --dispatch
+</code></pre>
+<p>What changes: placement sends the workflow input <code>push_nix_cache: true</code>.
+On success, the workflow’s action signs <code>./result</code> and copies it to the
+shared Fleet R2 cache — resolving <code>./result</code>, signing with the key from
+the host repo’s secret named <code>NIX_CACHE_SIGNING_KEY</code>, and uploading to
+the URL in the secret named <code>NIX_CACHE_UPLOAD_URL</code> (names only; the
+endpoint is secret-configured, not hardcoded).</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>“cache push requested but signing/upload secrets are not configured;
+skipping”: the run still succeeds; only the push is skipped. The host
+surface you landed on does not carry the <code>NIX_CACHE_*</code> secrets — the
+<code>fleet-personal</code> registry note names them for that surface. Pin or
+follow up onto a surface whose host repo has them, or accept the skip.</li>
+<li>No <code>./result</code> in the target checkout: also a notice-and-skip. Build
+something that leaves a <code>./result</code> link, or drop the flag.</li>
+<li>A related variant: <code>--actions-cache KEY:PATH</code> binds one extra Actions
+cache path under the key prefix <code>KEY</code> (default namespace prefix
+<code>fleet-deps-v1</code>), with <code>--actions-cache-restore-key PREFIX</code> (repeatable,
+and it requires <code>--actions-cache</code>) adding restore prefixes.</li>
+</ul>
+<h2 id="step-7-the-raw-gh-workflow-run-fallback"><a class="header" href="#step-7-the-raw-gh-workflow-run-fallback">Step 7: The raw <code>gh workflow run</code> fallback</a></h2>
+<p>When no fleet binary is available — a foreign host, a broken install —
+the same workflow can be dispatched directly. You give up placement (you
+choose the host repo yourself), session records, and correlation; you
+keep the identical workflow contract.</p>
+<pre><code class="language-bash">gh workflow run fleet-command.yml --repo developing-today/fleet --field repo=developing-today/code --field command='cargo test --workspace'
+</code></pre>
+<p>The workflow is <code>fleet-command.yml</code> in a fleet host repo
+(<code>dezren39/fleet</code>, <code>developing-today/fleet</code> or
+<code>developing-today-forks/fleet</code>). Its inputs include <code>repo</code> and <code>command</code>
+(both required), plus optional <code>ref</code>, <code>runner</code> (<code>github</code> or
+<code>blacksmith</code>), <code>platform</code> (<code>linux</code> or <code>macos</code>), <code>container_image</code>,
+<code>actions_cache_key</code> (default <code>fleet-deps-v1</code>), <code>actions_cache_path</code>,
+<code>actions_cache_restore_keys</code>, <code>previous_run_id</code>, <code>previous_run_repo</code>,
+<code>push_nix_cache</code> and <code>timeout_minutes</code> (5–120, default 60 — an input
+placement itself never sends, so placement dispatches always get the
+60-minute default). Follow the run with <code>gh run list --repo &lt;host-repo&gt; --workflow fleet-command.yml</code> and <code>gh run view --log</code>.</p>
+<p>What can go wrong, and the fix:</p>
+<ul>
+<li>Dispatching in the target repo instead of a host repo: there is no
+<code>fleet-command.yml</code> in <code>developing-today/code</code> — it lives only in the
+fleet host repos. Re-run against a host repo, with the target named in
+the <code>repo</code> field.</li>
+<li><code>runner=blacksmith</code> from any host repo other than
+<code>developing-today/fleet</code>, or with <code>platform=macos</code>: the workflow’s
+normalize job rejects both. Use the <code>developing-today/fleet</code> host for
+Blacksmith, on Linux.</li>
+</ul>
+<h2 id="you-are-done-when"><a class="header" href="#you-are-done-when">You are done when</a></h2>
+<ul>
+<li>A dry run printed a <code>decision</code> whose reasoning lines you can explain:
+which tier picked the surface, or why the pin/affinity held or was
+released.</li>
+<li>The real dispatch printed an <code>fp_…</code> handle (or a portable
+<code>OWNER/REPO#RUN_ID</code> reference you resolved from the run list).</li>
+<li><code>fleet queue session result &lt;handle&gt;</code> reports <code>terminal=true</code> with
+the state you expected — <code>succeeded</code> for a good build — and you know
+the run’s own log lives on its run page, not in the session record.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../tutorials/claim-and-complete.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../tutorials/resolve-a-secret.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../tutorials/claim-and-complete.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../tutorials/resolve-a-secret.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
