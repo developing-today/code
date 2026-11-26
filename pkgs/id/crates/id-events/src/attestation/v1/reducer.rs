@@ -71,7 +71,7 @@ impl<T> Signed<T> {
         Self {
             id: event.id,
             author: author_id(event),
-            seq: event.header.seq_num,
+            seq: u64::from(event.header.seq_num),
             after: event.header.extensions.after.clone(),
             body,
         }
