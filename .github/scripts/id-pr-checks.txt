@@ -37,6 +37,7 @@ prod-lines-check
 test-unit
 test-crate-integration
 test-native-shell
+test-android-remote
 test-bevy-bridge
 test-bevy-presenter
 test-tui-shell

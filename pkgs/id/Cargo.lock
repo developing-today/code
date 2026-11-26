@@ -4926,6 +4926,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-android-remote"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id-worlds",
+ "iroh",
+ "iroh-blobs",
+ "jni 0.21.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "id-bevy-bridge"
 version = "0.1.0"
 dependencies = [

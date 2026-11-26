@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell clippy-bevy-bridge clippy-bevy-presenter web-lint test-sandbox test-native-shell test-tui-shell test-hw-shell test-bevy-bridge test-bevy-presenter test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell clippy-bevy-bridge clippy-bevy-presenter web-lint test-sandbox test-native-shell test-android-remote test-tui-shell test-hw-shell test-bevy-bridge test-bevy-presenter test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -318,6 +318,11 @@ test-crate-integration:
 [group('test')]
 test-native-shell:
     cargo nextest run -p id-native-shell
+
+# Run the Android remote-drive session bridge's contract and loopback tests (#1831).
+[group('test')]
+test-android-remote:
+    cargo test -p id-android-remote
 
 # Run the id-tui-shell capability-statement tests (#12818): non-default workspace member, so the default-member test recipes never run it.
 [group('test')]

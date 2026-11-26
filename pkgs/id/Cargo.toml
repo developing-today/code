@@ -35,6 +35,7 @@ members = [
   "crates/id-cli",
   "crates/id-import-notion",
   "crates/id-client",
+  "crates/id-android-remote",
   "crates/id-pg",
   "crates/id-grants",
   "crates/id-bevy-bridge",
