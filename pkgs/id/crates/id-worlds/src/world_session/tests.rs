@@ -4665,7 +4665,9 @@ mod tests {
             );
             assert!(
                 bytes.len()
-                    < id_core::screen_codec::encode_view_patch(&frame).unwrap().len(),
+                    < id_core::screen_codec::encode_view_patch(&frame)
+                        .unwrap()
+                        .len(),
                 "the compressed frame is smaller than its version-1 form"
             );
             applied = frame

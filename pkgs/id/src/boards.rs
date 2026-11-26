@@ -7324,8 +7324,7 @@ mod tests {
             .unwrap();
         // Anchored reply: an anchors edge to the note, plus a
         // discusses edge through the thread — one backlink, not two.
-        let anchor =
-            sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
+        let anchor = sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
         let anchored_hash = graph
             .insert(reply_with_note(
                 &creator,
@@ -7528,10 +7527,7 @@ mod tests {
         )
         .unwrap();
         graph.insert(supersede).unwrap();
-        assert_eq!(
-            graph.note_backlinks(&note_object),
-            vec![share_hash.clone()]
-        );
+        assert_eq!(graph.note_backlinks(&note_object), vec![share_hash.clone()]);
         assert_eq!(
             graph.note_edges_from(&share_hash),
             vec![NoteEdge::Embeds(note_ref)]
