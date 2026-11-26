@@ -449,7 +449,7 @@ export const NEEDS_DREW_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
 /** Default question-store path (mirrors src/config.ts needsDrewFile). */
 export function defaultNeedsDrewFile(env: Record<string, string | undefined> = process.env): string {
-  return needsUserStatePath(env, () => join(requireHome("PM_AGG_NEEDS_USER_FILE", env), ".local", "state", "pm-aggregator"));
+  return needsUserStatePath(env, () => join(requireHome("PM_AGG_NEEDS_USER_FILE"), ".local", "state", "pm-aggregator"));
 }
 
 /** Validate the intake `needsDrew` extension object (#8568 wire contract). */
