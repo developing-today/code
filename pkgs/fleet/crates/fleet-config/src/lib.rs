@@ -564,6 +564,19 @@ pub struct SecretsConfig {
     /// empty value counts as unset. A namespace view, not access
     /// control.
     pub prefix: Option<String>,
+    /// Which secret store this instance reads from (#10358 D8, S3):
+    /// `bitwarden` or `1password`. Unset is `auto`: the historical
+    /// chain exactly. `FLEET_SECRETS_STORE` overrides it, and a
+    /// per-call `--store` flag overrides both; an empty value counts
+    /// as unset. Any other value is a load-time parse error.
+    pub store: Option<String>,
+    /// The vault inside the selected store (#10358 D8, S3): a
+    /// Bitwarden project id for `bitwarden`, a vault name for
+    /// `1password`. `FLEET_SECRETS_VAULT` overrides it, and a
+    /// per-call `--vault` flag overrides both; an empty value counts
+    /// as unset. Setting a vault with no store is a load-time parse
+    /// error.
+    pub vault: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -1097,6 +1110,41 @@ impl Config {
                     message: "[secrets] prefix must be a valid secret name (no '/', '?', '#', '%', whitespace or control characters, not '.' or '..') and may not end with '.'".to_string(),
                 });
             }
+        }
+        // [secrets] store / vault (#10358 D8, S3): empty values count
+        // as unset, like the prefix. A set store must name a known
+        // store, and a vault is meaningless without one — both are
+        // load-time parse errors, never silent defaults (design
+        // record §5).
+        let store_set = self
+            .secrets
+            .store
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if store_set {
+            let store = self.secrets.store.as_deref().unwrap_or_default().trim();
+            if store != "bitwarden" && store != "1password" {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[secrets] store must be \"bitwarden\" or \"1password\", not {store:?}"
+                    ),
+                });
+            }
+        }
+        let vault_set = self
+            .secrets
+            .vault
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if vault_set && !store_set {
+            return Err(ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: "[secrets] vault is set but [secrets] store is not: a vault only \
+                          means something inside a store; set store = \"bitwarden\" or \
+                          store = \"1password\" alongside it"
+                    .to_string(),
+            });
         }
         // [host] (#6770, design #5687 §1): the manifest's loud
         // rules run at load like every other section's, plus one
@@ -2819,6 +2867,36 @@ socket = "rel/s.sock"
                 ),
                 other => panic!("expected Parse error for prefix {bad:?}, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn secrets_store_and_vault_parse_and_bad_shapes_are_refused() {
+        // #10358 S3 (D8): store and vault parse as written.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nstore = \"bitwarden\"\nvault = \"proj-1\"\n");
+        assert_eq!(cfg.secrets.store.as_deref(), Some("bitwarden"));
+        assert_eq!(cfg.secrets.vault.as_deref(), Some("proj-1"));
+        let (_d, _p, cfg) = cfg_from("[secrets]\nstore = \"1password\"\n");
+        assert_eq!(cfg.secrets.store.as_deref(), Some("1password"));
+        assert_eq!(cfg.secrets.vault, None);
+        // Empty values count as unset (D9), not errors.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nstore = \"\"\nvault = \"\"\n");
+        assert_eq!(cfg.secrets.store.as_deref(), Some(""));
+        // A vault without a store is a parse error naming the vault.
+        let (_dir, path) = write_temp("[secrets]\nvault = \"proj-1\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("[secrets] vault"), "got: {message}")
+            }
+            other => panic!("expected Parse error for vault without store, got {other:?}"),
+        }
+        // An unknown store is a parse error naming the store.
+        let (_dir, path) = write_temp("[secrets]\nstore = \"vaultwarden\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("[secrets] store"), "got: {message}")
+            }
+            other => panic!("expected Parse error for unknown store, got {other:?}"),
         }
     }
 

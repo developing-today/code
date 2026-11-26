@@ -16,7 +16,10 @@
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secrets?prefix=P -> {names: [...]} holding only names that
 //!                          start with `P.` (#10358 D6); an empty
-//!                          `prefix=` is refused (400)
+//!                          `prefix=` is refused (400). `&project=<id>`
+//!                          (or alone) narrows further to names whose
+//!                          recorded Bitwarden project is that id
+//!                          (#10358 S3); an empty `project=` is a 400
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
 //!
@@ -130,6 +133,15 @@ struct State {
     /// for the same name wait on the gate instead of stampeding the
     /// vault with duplicate list+get pairs.
     inflight: Mutex<HashMap<String, Arc<FetchGate>>>,
+    /// The Bitwarden project each cached name belongs to, from the
+    /// `projectId` of the list entry that carried it (#10358 S3).
+    /// A name absent here has an unknown project (a read-through
+    /// install, or a listing without project ids): a `project=`
+    /// listing never returns it, so a project-scoped caller sees
+    /// only names proven to be in its project. Kept beside the
+    /// cache, not inside it, so refresh/watermark semantics are
+    /// untouched (#13948).
+    projects: RwLock<HashMap<String, String>>,
 }
 
 /// The outcome slot of one in-flight read-through fetch: the leader
@@ -593,6 +605,32 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     let fetched_at_unix = now_unix();
     let watermark_new = started_unix.saturating_sub(WATERMARK_SKEW_S);
     let outcome = apply_delta_refresh(state, &entries, watermark, fetched_at_unix, watermark_new);
+    // #10358 S3: record each listed name's project from the same
+    // validated list, then drop project records for names the cache
+    // no longer holds. A listed entry without a string `projectId`
+    // clears any stale record — its project is unknown, and a
+    // `project=` listing must not claim it.
+    if let Some(arr) = list.as_array() {
+        let mut projects = state.projects.write().unwrap();
+        for entry in arr {
+            let (Some(key), project) = (
+                entry.get("key").and_then(|v| v.as_str()),
+                entry.get("projectId").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            match project {
+                Some(p) if !p.is_empty() => {
+                    projects.insert(key.to_string(), p.to_string());
+                }
+                _ => {
+                    projects.remove(key);
+                }
+            }
+        }
+        let cached = state.secrets.read().unwrap();
+        projects.retain(|name, _| cached.contains_key(name));
+    }
     // Durability is best-effort after a successful apply: the
     // in-memory watermark has already advanced, and a persist failure
     // merely degrades the next process start to a full apply (safe).
@@ -882,17 +920,30 @@ fn handle_request(
         // #10358 D6: a scoped caller sends `?prefix=P` and is answered
         // only the cached names under `P.`, so unscoped names never
         // cross the socket to it. The cache itself is unchanged.
+        // #10358 S3 (D8): `?project=<id>` beside it answers only names
+        // whose recorded Bitwarden project is that id; a name with no
+        // recorded project is never claimed by a project filter.
         let lead = match secrets_list_prefix(url) {
             Ok(None) => None,
             Ok(Some(prefix)) => Some(format!("{prefix}.")),
             Err(message) => return (400, json!({"error": message})),
         };
+        let project = match secrets_list_project(url) {
+            Ok(project) => project,
+            Err(message) => return (400, json!({"error": message})),
+        };
+        let projects = state.projects.read().unwrap();
         let mut names: Vec<String> = state
             .secrets
             .read()
             .unwrap()
             .keys()
             .filter(|name| lead.as_deref().is_none_or(|l| name.starts_with(l)))
+            .filter(|name| {
+                project
+                    .as_deref()
+                    .is_none_or(|p| projects.get(name.as_str()).map(String::as_str) == Some(p))
+            })
             .cloned()
             .collect();
         names.sort();
@@ -1082,6 +1133,7 @@ pub fn run() -> i32 {
         refreshing: RwLock::new(false),
         refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
+        projects: RwLock::new(HashMap::new()),
     });
 
     // Background refresh loop: initial load + TTL refresh,
@@ -1218,17 +1270,33 @@ pub fn run() -> i32 {
 /// D6): `Ok(None)` when absent, `Err` when present but empty. Only
 /// `%XX` decodes, as in a path segment.
 fn secrets_list_prefix(url: &str) -> Result<Option<String>, &'static str> {
+    secrets_list_param(url, "prefix", "empty prefix")
+}
+
+/// The `project` query parameter of a `GET /secrets` target (#10358
+/// S3): `Ok(None)` when absent, `Err` when present but empty.
+fn secrets_list_project(url: &str) -> Result<Option<String>, &'static str> {
+    secrets_list_param(url, "project", "empty project")
+}
+
+/// One named query parameter of a request target: the first
+/// occurrence wins; `%XX` decodes, as in a path segment.
+fn secrets_list_param(
+    url: &str,
+    param: &str,
+    empty_error: &'static str,
+) -> Result<Option<String>, &'static str> {
     let Some((_, query)) = url.split_once('?') else {
         return Ok(None);
     };
     for pair in query.split('&') {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        if key == "prefix" {
-            let prefix = url_decode(value);
-            if prefix.is_empty() {
-                return Err("empty prefix");
+        if key == param {
+            let decoded = url_decode(value);
+            if decoded.is_empty() {
+                return Err(empty_error);
             }
-            return Ok(Some(prefix));
+            return Ok(Some(decoded));
         }
     }
     Ok(None)
@@ -1265,7 +1333,7 @@ mod tests {
         keyed_set_hash, load_watermark, note_refresh_fetch, now_unix, parse_delta_entries,
         parse_list_entries,
         parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
-        secrets_list_prefix, url_decode,
+        secrets_list_prefix, secrets_list_project, url_decode,
     };
     use serde_json::json;
     use std::time::Duration;
@@ -1310,6 +1378,7 @@ mod tests {
             refreshing: RwLock::new(false),
             refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
+            projects: RwLock::new(HashMap::new()),
         })
     }
 
@@ -1431,6 +1500,64 @@ mod tests {
     }
 
     #[test]
+    fn secrets_list_answers_a_project_with_only_its_names() {
+        // #10358 S3 (D8): a project filter answers only names whose
+        // recorded project is that id; a name with no recorded
+        // project is never claimed, and the filters compose.
+        let state = empty_state();
+        install_list_refresh(
+            &state,
+            &[
+                ("1".to_string(), "alpha".to_string(), "v".to_string()),
+                ("2".to_string(), "42.alpha".to_string(), "v".to_string()),
+                ("3".to_string(), "beta".to_string(), "v".to_string()),
+            ],
+            7,
+        );
+        {
+            let mut projects = state.projects.write().unwrap();
+            projects.insert("alpha".to_string(), "proj-1".to_string());
+            projects.insert("42.alpha".to_string(), "proj-1".to_string());
+            projects.insert("beta".to_string(), "proj-2".to_string());
+        }
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?project=proj-1", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.alpha", "alpha"]));
+        let (status, body) = handle_request(
+            &state,
+            "tok",
+            "GET",
+            "/secrets?prefix=42&project=proj-1",
+            Some("tok"),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.alpha"]));
+        let (status, body) = handle_request(
+            &state,
+            "tok",
+            "GET",
+            "/secrets?prefix=42&project=proj-2",
+            Some("tok"),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!([]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets?project=", Some("tok"));
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "empty project");
+        // A name whose project record is removed drops out of every
+        // project listing but stays in the unfiltered one.
+        state.projects.write().unwrap().remove("beta");
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?project=proj-2", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!([]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.alpha", "alpha", "beta"]));
+    }
+
+    #[test]
     fn secrets_list_prefix_parses_the_query() {
         assert_eq!(secrets_list_prefix("/secrets"), Ok(None));
         assert_eq!(secrets_list_prefix("/secrets?x=1"), Ok(None));
@@ -1444,6 +1571,16 @@ mod tests {
         );
         assert_eq!(secrets_list_prefix("/secrets?prefix="), Err("empty prefix"));
         assert_eq!(secrets_list_prefix("/secrets?prefix"), Err("empty prefix"));
+        // #10358 S3: project parses the same way, beside prefix.
+        assert_eq!(secrets_list_project("/secrets"), Ok(None));
+        assert_eq!(
+            secrets_list_project("/secrets?prefix=42&project=p%2D1"),
+            Ok(Some("p-1".to_string()))
+        );
+        assert_eq!(
+            secrets_list_project("/secrets?project="),
+            Err("empty project")
+        );
     }
 
     #[test]
