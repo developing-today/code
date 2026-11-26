@@ -103,6 +103,62 @@ pub fn resize_frame_for_window(
     resize_frame(width, height)
 }
 
+/// Convert a window's logical size to contract resize dimensions,
+/// given one cell's logical size (the Bevy window reports logical
+/// pixels, and the renderer's cell metrics are logical too).
+///
+/// Floor division, clamped into the contract bounds exactly like
+/// [`resize_dimensions`]. A non-finite or non-positive cell size, or a
+/// non-finite window size, maps to the minimum 1 rather than a
+/// garbage grid.
+#[must_use]
+pub fn resize_dimensions_logical(
+    window_width: f32,
+    window_height: f32,
+    cell_width: f32,
+    cell_height: f32,
+) -> (u16, u16) {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn cells(window: f32, cell: f32, max: u16) -> u16 {
+        if !(window.is_finite() && cell.is_finite() && cell > 0.0) {
+            return 1;
+        }
+        // Clamped into 1..=max first, so the cast is exact.
+        (window / cell).floor().clamp(1.0, f32::from(max)) as u16
+    }
+    (
+        cells(window_width, cell_width, MAX_RESIZE_WIDTH),
+        cells(window_height, cell_height, MAX_RESIZE_HEIGHT),
+    )
+}
+
+/// The grid size last sent to one session, so the session gets a
+/// `resize` frame when its window grid changes (and once when it
+/// opens) but never twice for the same size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResizeTracker {
+    sent: Option<(u16, u16)>,
+}
+
+impl ResizeTracker {
+    /// The resize event the session still needs for the current grid,
+    /// or `None` when it already has this size.
+    #[must_use]
+    pub fn pending(&self, grid: (u16, u16)) -> Option<NativeEvent> {
+        (self.sent != Some(grid)).then_some(NativeEvent::Resize {
+            width: grid.0,
+            height: grid.1,
+        })
+    }
+
+    /// Record that a resize to `grid` was queued for the session. A
+    /// resize that could not be queued is not recorded, so it is
+    /// offered again on the next frame.
+    pub const fn mark_sent(&mut self, grid: (u16, u16)) {
+        self.sent = Some(grid);
+    }
+}
+
 /// Modifier keys held during one key press, as far as the terminal
 /// byte mapping and the paste chord care. Shift is already folded
 /// into the produced text by the platform, so the byte mapping
@@ -288,6 +344,66 @@ mod tests {
                 height: 24
             })
         );
+    }
+
+    #[test]
+    fn logical_window_sizes_convert_and_clamp_to_contract_cells() {
+        // 960x480 logical at 12x24 cells is an 80x20 grid; a partial
+        // cell is not counted.
+        assert_eq!(
+            resize_dimensions_logical(960.0, 480.0, 12.0, 24.0),
+            (80, 20)
+        );
+        assert_eq!(
+            resize_dimensions_logical(971.9, 503.9, 12.0, 24.0),
+            (80, 20)
+        );
+        // Smaller than a cell, zero, negative or NaN: the 1x1 minimum.
+        assert_eq!(resize_dimensions_logical(5.0, 5.0, 12.0, 24.0), (1, 1));
+        assert_eq!(resize_dimensions_logical(0.0, -3.0, 12.0, 24.0), (1, 1));
+        assert_eq!(
+            resize_dimensions_logical(f32::NAN, f32::INFINITY, 12.0, 24.0),
+            (1, 1)
+        );
+        assert_eq!(resize_dimensions_logical(960.0, 480.0, 0.0, -1.0), (1, 1));
+        // A huge window clamps to the contract maximum, not beyond.
+        assert_eq!(
+            resize_dimensions_logical(1.0e9, 1.0e9, 12.0, 24.0),
+            (MAX_RESIZE_WIDTH, MAX_RESIZE_HEIGHT)
+        );
+        // Every output is a frame the contract builder accepts.
+        let (width, height) = resize_dimensions_logical(1.0e9, 0.0, 12.0, 24.0);
+        assert!(resize_frame(width, height).is_ok());
+    }
+
+    #[test]
+    fn a_session_gets_each_grid_size_once() {
+        let mut tracker = ResizeTracker::default();
+        // A fresh session has no size yet, so the current grid is due.
+        assert_eq!(
+            tracker.pending((80, 24)),
+            Some(NativeEvent::Resize {
+                width: 80,
+                height: 24
+            })
+        );
+        // Not queued (full channel): still due on the next frame.
+        assert!(tracker.pending((80, 24)).is_some());
+        tracker.mark_sent((80, 24));
+        // Same size again: nothing to send.
+        assert_eq!(tracker.pending((80, 24)), None);
+        // The window changed: the new size is due, and only it.
+        assert_eq!(
+            tracker.pending((100, 30)),
+            Some(NativeEvent::Resize {
+                width: 100,
+                height: 30
+            })
+        );
+        tracker.mark_sent((100, 30));
+        assert_eq!(tracker.pending((100, 30)), None);
+        // Back to an earlier size is a change too.
+        assert!(tracker.pending((80, 24)).is_some());
     }
 
     #[test]
