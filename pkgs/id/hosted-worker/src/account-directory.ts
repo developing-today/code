@@ -32,8 +32,9 @@ export interface HostedAccountRecord {
   bindingId: string;
   /** The active, validated jurisdiction. */
   jurisdiction: Jurisdiction;
-  /** The migration target while a migration is pending, frozen or
-   * verified; null otherwise. */
+  /** The other jurisdiction of a running migration: its target while
+   * pending, frozen or verified, and its source once switched (so a
+   * resumed coordinator can still seal the source). Null in `stable`. */
   jurisdictionPending: Jurisdiction | null;
   /** The running migration's id; null only in `stable`. */
   migrationId: string | null;
@@ -270,8 +271,8 @@ export function createHostedAccountRecord(input: NewHostedAccount): HostedAccoun
  * - stable: no pending target, no migration id, epoch >= 0;
  * - pending/frozen/verified: a pending target different from the
  *   active jurisdiction, a migration id, epoch >= 1;
- * - switched: no pending target (the target is now the active
- *   jurisdiction), a migration id, epoch >= 2.
+ * - switched: the target is now the active jurisdiction and the
+ *   pending field names the source, a migration id, epoch >= 2.
  * Returns an error description, or null when the shape holds.
  */
 export function migrationShapeError(record: HostedAccountRecord): string | null {
@@ -285,20 +286,16 @@ export function migrationShapeError(record: HostedAccountRecord): string | null 
     case "pending":
     case "frozen":
     case "verified":
+    case "switched":
       if (
         record.jurisdictionPending === null ||
         !(SUPPORTED_JURISDICTIONS as readonly string[]).includes(record.jurisdictionPending)
       ) {
-        return "migrating record lacks a supported pending jurisdiction";
+        return "migrating record lacks its other jurisdiction";
       }
       if (record.jurisdictionPending === record.jurisdiction) return "pending jurisdiction equals the active one";
       if (!isMigrationId(record.migrationId)) return "migrating record lacks a migration id";
-      if (record.routingEpoch < 1) return "migrating record has epoch 0";
-      return null;
-    case "switched":
-      if (record.jurisdictionPending !== null) return "switched record still carries a pending jurisdiction";
-      if (!isMigrationId(record.migrationId)) return "switched record lacks a migration id";
-      if (record.routingEpoch < 2) return "switched record has epoch below 2";
+      if (record.routingEpoch < (record.phase === "switched" ? 2 : 1)) return "migrating record's epoch is too low";
       return null;
   }
 }
@@ -368,13 +365,13 @@ export function planDirectoryTransition(
       return {
         ...record,
         jurisdiction: record.jurisdictionPending,
-        jurisdictionPending: null,
+        jurisdictionPending: record.jurisdiction,
         phase: "switched",
         routingEpoch: nextEpoch(record.routingEpoch),
       };
     case "complete":
       if (record.phase !== "switched") refuse(`cannot complete during ${record.phase}`);
-      return { ...record, migrationId: null, phase: "stable" };
+      return { ...record, jurisdictionPending: null, migrationId: null, phase: "stable" };
     case "abort":
       if (record.phase === "switched") refuse("cannot abort after the switch");
       return {

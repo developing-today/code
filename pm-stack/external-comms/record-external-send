@@ -68,6 +68,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -84,7 +85,13 @@ HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
 QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
 LOCK = os.path.join(STATE_DIR, "pusher.lock")
 TABLE = "agent_external_comms"
-DB_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+# FLEET_PLATFORM_URL may name another https origin (the Turso store) to
+# stage or roll back the move to D1.
+DB_URL = (
+    os.environ.get("FLEET_PLATFORM_URL", "").strip()
+    if re.fullmatch(r"https://[^/@\s]+(/[^@\s]*)?", os.environ.get("FLEET_PLATFORM_URL", "").strip())
+    else "https://d1-gateway.developing-today.workers.dev/db/fleet-platform"
+)
 TIMEOUT = 8  # seconds; a send-time caller must never hang on the ledger
 
 

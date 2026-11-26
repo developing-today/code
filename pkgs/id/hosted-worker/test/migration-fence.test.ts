@@ -151,7 +151,7 @@ test("planFreeze: fresh, retried, held, sealed and stale", () => {
   assert.equal(code(() => planFreeze(fence, 5, { migrationId: "m-1", routingEpoch: 6 }, 0, 0)), "stale_epoch");
   assert.equal(code(() => planFreeze({ ...fence, state: "sealed" }, 5, req, 0, 0)), "fence_sealed");
   assert.equal(code(() => planFreeze(null, 5, req, 0, 0)), "stale_epoch");
-  assert.equal(code(() => planUnfreeze(null, req)), "not_fenced");
+  assert.equal(planUnfreeze(null, req), 5, "an unfenced store still raises its epoch floor");
   assert.equal(code(() => planUnfreeze(fence, req)), "stale_epoch");
   assert.equal(planUnfreeze(fence, { migrationId: "m-1", routingEpoch: 6 }), 6);
   assert.equal(code(() => planUnfreeze({ ...fence, state: "sealed" }, { migrationId: "m-1", routingEpoch: 9 })), "fence_sealed");

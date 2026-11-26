@@ -38,7 +38,7 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
 
 async function createTestDirectory() {
   const db = new DatabaseSync(":memory:");
-  for (const migration of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql"]) {
+  for (const migration of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql", "0003_migration_leases.sql"]) {
     const schema = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
     db.exec(schema);
   }
@@ -464,8 +464,8 @@ test("persistent reads reject records outside the per-phase account contract", a
     ["pending to the same jurisdiction", "us", "us", "m-1", "pending", 1],
     ["pending at epoch 0", "us", "eu", "m-1", "pending", 0],
     ["malformed migration id", "us", "eu", "bad id!", "frozen", 1],
-    ["switched with pending jurisdiction", "eu", "us", "m-1", "switched", 2],
-    ["switched below epoch 2", "eu", null, "m-1", "switched", 1],
+    ["switched without its source", "eu", null, "m-1", "switched", 2],
+    ["switched below epoch 2", "eu", "us", "m-1", "switched", 1],
   ] as const;
 
   try {
@@ -502,7 +502,7 @@ test("directory migration transitions advance epochs by compare-and-set (#3404)"
     const switched = await directory.transition(verified, { type: "switch", migrationId: "m-1" });
     assert.deepEqual(
       [switched.phase, switched.jurisdiction, switched.jurisdictionPending, switched.routingEpoch],
-      ["switched", "eu", null, 2],
+      ["switched", "eu", "us", 2],
     );
     const done = await directory.transition(switched, { type: "complete", migrationId: "m-1" });
     assert.deepEqual(

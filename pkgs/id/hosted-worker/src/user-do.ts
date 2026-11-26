@@ -646,7 +646,9 @@ export class UserDO {
     }
     if (url.pathname === "/v1/migration/discard") {
       const staged = this.stagedTarget();
-      if (staged === null || staged.migration_id !== request.migrationId) {
+      // A newer migration may also clear an import a stale coordinator
+      // left behind for an older epoch.
+      if (staged === null || (staged.migration_id !== request.migrationId && staged.routing_epoch >= request.routingEpoch)) {
         throw new FailClosed(409, "not_staged", "this object is not staged for this migration");
       }
       clearMigratedTables(this.state.storage.sql);

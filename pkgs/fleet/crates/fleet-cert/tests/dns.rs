@@ -253,7 +253,12 @@ fn plan_matches_the_golden_change_set() {
         .replace("{{LEAF_ALG}}", &leaf_alg)
         .replace("{{LEAF_PART}}", &leaf_part)
         .replace("{{ISSUER_FP}}", &issuer_fp);
-    assert_eq!(actual.trim_end(), expected.trim_end());
+    // Compare parsed JSON, not text: the fixture is formatted by treefmt
+    // (which keeps short arrays on one line) while the renderer
+    // pretty-prints them, and layout is not part of the contract.
+    let actual: serde_json::Value = serde_json::from_str(&actual).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&expected).unwrap();
+    assert_eq!(actual, expected);
 
     // The same digests through the full-certificate selector and
     // SHA-512 matching, against the independent path.
