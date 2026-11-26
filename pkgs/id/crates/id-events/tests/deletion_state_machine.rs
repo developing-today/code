@@ -160,7 +160,7 @@ fn batches_are_atomic_and_idempotent_and_replicas_are_local() {
     assert_eq!(two.state(), &DeletionState::Available);
     assert_eq!(
         two.evidence(),
-        [] as [id_core::graph::deletion::DeletionEvidence; 0]
+        [] as [deletion::DeletionEvidence; 0]
     );
 
     let other = key(3);
