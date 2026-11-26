@@ -826,7 +826,7 @@ fn the_shipped_suite_manifest_parses_and_names_every_v1_shell() {
         .collect();
     assert_eq!(
         names,
-        BTreeSet::from(["browser", "hardware", "native", "terminal"])
+        BTreeSet::from(["browser", "hardware", "native", "terminal", "tui"])
     );
     // Every v1 shell must state its capabilities; the manifest is
     // the record, so a shell without a statement fails here first.
@@ -876,7 +876,7 @@ fn the_shipped_suite_passes_on_its_recorded_sessions() {
         .collect();
     assert_eq!(
         recorded,
-        BTreeSet::from(["browser", "hardware", "native", "terminal"])
+        BTreeSet::from(["browser", "hardware", "native", "terminal", "tui"])
     );
 }
 

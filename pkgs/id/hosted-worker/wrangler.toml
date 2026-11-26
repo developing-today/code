@@ -34,9 +34,19 @@ database_name = "id-hosted-tenancy"
 database_id = "00000000-0000-0000-0000-000000000001"
 migrations_dir = "tenancy/migrations"
 
-# Slice A of #3811 (#9954): content-addressed blob bytes. Local
-# emulation only — no production bucket is provisioned by this
-# config (account gates #2285 / #3403 stay untouched).
+# Slice A of #3811 (#9954) + #3401: local blob bytes use one immutable
+# bucket per supported jurisdiction. The routing module chooses the
+# binding from authoritative jurisdiction and fails closed if it is
+# missing. No production bucket is provisioned by this config (account
+# gates #2285 / #3403 stay untouched).
 [[r2_buckets]]
-binding = "BLOBS"
-bucket_name = "id-hosted-blobs"
+binding = "BLOBS_US"
+bucket_name = "id-hosted-blobs-us"
+
+[[r2_buckets]]
+binding = "BLOBS_EU"
+bucket_name = "id-hosted-blobs-eu"
+
+[[r2_buckets]]
+binding = "BLOBS_FEDRAMP"
+bucket_name = "id-hosted-blobs-fedramp"

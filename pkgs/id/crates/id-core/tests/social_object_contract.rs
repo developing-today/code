@@ -343,7 +343,7 @@ fn validated_envelopes_feed_paged_traversal() {
     let mut pages = 0;
     loop {
         let page = traverse_page(&objects, &root, &small, all, cursor).expect("page");
-        assert!(page.missing.is_empty());
+        assert_eq!(page.missing, [] as [ObjectRef; 0]);
         let count = page
             .entries
             .iter()

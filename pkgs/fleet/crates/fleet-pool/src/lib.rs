@@ -52,6 +52,8 @@
 //! route-form walker's acceptance cases bound as oracle tests
 //! (tests/walker.rs).
 
+pub mod model_route;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Logical seconds, supplied by the caller.

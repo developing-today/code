@@ -1,0 +1,257 @@
+{
+  "family": "selector",
+  "profile": {
+    "schema_version": "fleet.priority-profile/v1",
+    "profile_id": "fleet.queue",
+    "version": "1",
+    "default_name": "normal",
+    "entries": [
+      {
+        "value": 10,
+        "name": "critical",
+        "kind": "scale",
+        "evidence_refs": []
+      },
+      {
+        "value": 15,
+        "name": "expedite",
+        "kind": "ratified_band",
+        "evidence_refs": [
+          "https://github.com/developing-today/code/issues/7030#issuecomment-6715673367",
+          "https://github.com/developing-today/code/issues/7030#issuecomment-6786217364"
+        ]
+      },
+      {
+        "value": 20,
+        "name": "high",
+        "kind": "scale",
+        "evidence_refs": []
+      },
+      {
+        "value": 25,
+        "name": "next-up",
+        "kind": "ratified_band",
+        "evidence_refs": [
+          "https://github.com/developing-today/code/issues/7030#issuecomment-6715673367",
+          "https://github.com/developing-today/code/issues/7030#issuecomment-6786217364"
+        ]
+      },
+      {
+        "value": 30,
+        "name": "scale-30",
+        "kind": "scale",
+        "evidence_refs": []
+      },
+      {
+        "value": 40,
+        "name": "normal",
+        "kind": "scale",
+        "evidence_refs": []
+      },
+      {
+        "value": 50,
+        "name": "scale-50",
+        "kind": "scale",
+        "evidence_refs": []
+      },
+      {
+        "value": 70,
+        "name": "low",
+        "kind": "scale",
+        "evidence_refs": []
+      },
+      {
+        "value": 90,
+        "name": "scale-90",
+        "kind": "scale",
+        "evidence_refs": []
+      }
+    ]
+  },
+  "requests": [
+    {
+      "input": null,
+      "expected_value": 40
+    },
+    {
+      "input": "",
+      "expected_value": 40
+    },
+    {
+      "input": "15",
+      "expected_value": 15
+    },
+    {
+      "input": "+25",
+      "expected_value": 25
+    },
+    {
+      "input": "next-up",
+      "expected_value": 25
+    },
+    {
+      "input": "  HIGH ",
+      "expected_value": 20
+    },
+    {
+      "input": "35",
+      "expected_error": "off_profile_value"
+    },
+    {
+      "input": "urgent",
+      "expected_error": "unknown_priority_name"
+    },
+    {
+      "input": "99999999999999999999",
+      "expected_error": "invalid_profile"
+    }
+  ],
+  "invalid_profiles": [
+    {
+      "name": "unknown_major_version",
+      "patch": {
+        "schema_version": "fleet.priority-profile/v2"
+      },
+      "expected_error": "unsupported_version"
+    },
+    {
+      "name": "non_canonical_version",
+      "patch": {
+        "version": "01"
+      },
+      "expected_error": "invalid_profile"
+    },
+    {
+      "name": "not_ascending",
+      "patch": {
+        "entries": [
+          {
+            "value": 20,
+            "name": "high",
+            "kind": "scale",
+            "evidence_refs": []
+          },
+          {
+            "value": 10,
+            "name": "critical",
+            "kind": "scale",
+            "evidence_refs": []
+          }
+        ]
+      },
+      "expected_error": "invalid_profile"
+    },
+    {
+      "name": "band_without_evidence",
+      "patch": {
+        "entries": [
+          {
+            "value": 15,
+            "name": "expedite",
+            "kind": "ratified_band",
+            "evidence_refs": []
+          }
+        ],
+        "default_name": null
+      },
+      "expected_error": "invalid_profile"
+    },
+    {
+      "name": "default_not_a_member",
+      "patch": {
+        "default_name": "whenever"
+      },
+      "expected_error": "invalid_profile"
+    }
+  ],
+  "ordering": {
+    "candidates": [
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "9"
+        },
+        "priority": null,
+        "peer_rank": null,
+        "created_at": 100
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "7"
+        },
+        "priority": 40,
+        "peer_rank": 2,
+        "created_at": 100
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "12"
+        },
+        "priority": 25,
+        "peer_rank": null,
+        "created_at": 300
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "3"
+        },
+        "priority": 40,
+        "peer_rank": -1,
+        "created_at": 500
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "8"
+        },
+        "priority": 40,
+        "peer_rank": null,
+        "created_at": 100
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "10"
+        },
+        "priority": 40,
+        "peer_rank": null,
+        "created_at": 100
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "2"
+        },
+        "priority": 15,
+        "peer_rank": 5,
+        "created_at": 900
+      },
+      {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "11"
+        },
+        "priority": 25,
+        "peer_rank": null,
+        "created_at": 200
+      }
+    ],
+    "expected_order": [
+      "2",
+      "11",
+      "12",
+      "3",
+      "8",
+      "10",
+      "7",
+      "9"
+    ]
+  },
+  "mixed_profile": {
+    "other_profile_version": "2",
+    "expected_error": "profile_mismatch"
+  }
+}

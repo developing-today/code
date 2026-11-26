@@ -1,11 +1,16 @@
 // #15485 (#2046 §6): the per-binding request cap. Requests past the
 // cap in a window are refused with a retryable 429 and Retry-After;
-// the usage read stays available and reports the window; the window
-// resets; a malformed cap fails closed. Same harness as usage.test.ts.
+// the usage read and the export reads stay available and uncounted;
+// usage reports the window; the window resets; a malformed cap fails
+// closed. Same harness as usage.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { UserDO, HDR_BINDING, HDR_JURISDICTION, HDR_ROUTED } from "../src/user-do.ts";
+import { UserDO, HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED } from "../src/user-do.ts";
+import { authTranscript, bodyHashHex } from "../src/bridge-auth.ts";
+import { bytesToHex, importIdKey } from "../src/ed25519.ts";
+import { signEvent } from "../src/event.ts";
+import { encodeBatch } from "../src/bridge-session.ts";
 
 const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -151,9 +156,93 @@ test("a malformed cap fails every request closed", async () => {
   }
 });
 
-test("a zero cap refuses everything except the usage read", async () => {
+test("a zero cap refuses everything except the usage and export reads", async () => {
   const d = makeDO({ USER_REQUEST_CEILING: "0" });
   assert.equal((await d.fetch(routed("/v1/state"))).status, 429);
-  assert.equal((await d.fetch(routed("/v1/export"))).status, 429);
+  // Export stays reachable at any cap, zero included (#3811, #15591).
+  assert.equal((await d.fetch(routed("/v1/export"))).status, 200);
   assert.equal((await usage(d)).at_request_cap, true);
+});
+
+// #15591: the export paths stay reachable at the cap. The bridge
+// challenge is exempt too, because bridge export needs a fresh
+// single-use nonce that only the challenge mints.
+
+function emptyBucket() {
+  return {
+    async head() {
+      return null;
+    },
+    async get() {
+      return null;
+    },
+    async put() {},
+    async delete() {},
+  };
+}
+
+test("plain export stays available at the request cap and is not counted", async () => {
+  const clock = { now: 9_000_000 };
+  await withClock(clock, async () => {
+    const d = makeDO({ USER_REQUEST_CEILING: "2", USER_REQUEST_WINDOW_SECONDS: "60" });
+    assert.equal((await d.fetch(routed("/v1/kv/k1", { method: "PUT", body: "a" }))).status, 200);
+    assert.equal((await d.fetch(routed("/v1/kv/k2", { method: "PUT", body: "b" }))).status, 200);
+    assert.equal((await d.fetch(routed("/v1/state"))).status, 429);
+    const exp = await d.fetch(routed("/v1/export"));
+    assert.equal(exp.status, 200, "plain export stays available at the request cap");
+    const body = (await exp.json()) as { kv: Record<string, string> };
+    assert.deepEqual(body.kv, { k1: "a", k2: "b" });
+    assert.equal((await usage(d)).window_requests, 2);
+  });
+});
+
+test("bridge export stays available at the request cap from a fresh challenge", async () => {
+  const clock = { now: 12_000_000 };
+  await withClock(clock, async () => {
+    const d = makeDO({ USER_REQUEST_CEILING: "2", USER_REQUEST_WINDOW_SECONDS: "60", BLOBS_US: emptyBucket() });
+    const key = await importIdKey(new Uint8Array(32).fill(61));
+    const bridged = (path: string, init: RequestInit = {}): Request => {
+      const headers = new Headers(init.headers);
+      headers.set(HDR_IROH, key.publicHex);
+      return routed(path, { ...init, headers });
+    };
+    const proof = async (nonce: string, context: "push" | "export", body: Uint8Array) => {
+      const signature = await key.sign(authTranscript(A, nonce, context, bodyHashHex(body)));
+      return { "x-id-nonce": nonce, "x-id-proof": bytesToHex(signature) };
+    };
+    const freshNonce = async (): Promise<string> => {
+      const r = await d.fetch(bridged("/v1/bridge/challenge"));
+      assert.equal(r.status, 200, "the bridge challenge stays available at the request cap");
+      return ((await r.json()) as { nonce: string }).nonce;
+    };
+
+    // One pushed event (counted request 1) and one KV write
+    // (counted request 2) fill the window; the challenge is not
+    // counted.
+    const event = await signEvent(key, { seq: 0, backlink: null, kind: "message", extra: [] });
+    const batch = encodeBatch([event.bytes]);
+    const pushNonce = await freshNonce();
+    const push = await d.fetch(
+      bridged("/v1/bridge/push", {
+        method: "POST",
+        headers: await proof(pushNonce, "push", batch),
+        body: batch as BodyInit,
+      }),
+    );
+    assert.equal(push.status, 200);
+    assert.equal((await d.fetch(routed("/v1/kv/k1", { method: "PUT", body: "a" }))).status, 200);
+    assert.equal((await d.fetch(routed("/v1/kv/k1"))).status, 429, "ordinary requests are refused at the cap");
+
+    const nonce = await freshNonce();
+    const exportOnce = async () =>
+      d.fetch(bridged("/v1/bridge/export", { headers: await proof(nonce, "export", new Uint8Array(0)) }));
+    const exp = await exportOnce();
+    assert.equal(exp.status, 200, "bridge export with a proof minted at the cap succeeds");
+    assert.equal(((await exp.json()) as { object_count: number }).object_count, 1);
+
+    // The proof checks are unchanged: a reused nonce is still refused.
+    const replay = await exportOnce();
+    assert.notEqual(replay.status, 200);
+    assert.equal((await usage(d)).window_requests, 2);
+  });
 });

@@ -4,7 +4,8 @@
 import { DONE_BOARD_WINDOW_MS, isRetiredDoneTableTitle } from "./board-policy.ts";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refUrl, refsInText } from "./model.ts";
-import { projectDisagreement } from "./projects.ts";
+import { effectiveProjectDisagreement } from "./conflicts.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 import { FEED_STALE_MS } from "./feed.ts";
 import type { HealthView } from "./health.ts";
 
@@ -44,6 +45,9 @@ export interface QueueViewInput {
   items: Map<RefKey, GhItem>;
   orchestration: OrchestrationSection | null;
   now?: Date;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement on reconciled rows while it stands. */
+  ruling?: ConflictRuling | null;
 }
 
 /** Whether any source used by the queue projection is stale or unavailable.
@@ -117,6 +121,9 @@ export interface ReconciledInProgressInput {
   board: BoardItem[];
   items?: Map<RefKey, GhItem>;
   orchestration?: OrchestrationSection | null;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement while it stands (detection still reports to the inbox). */
+  ruling?: ConflictRuling | null;
 }
 
 export function reconciledInProgress(data: ReconciledInProgressInput): ReconciledInProgressItem[] {
@@ -181,16 +188,20 @@ export function reconciledInProgress(data: ReconciledInProgressInput): Reconcile
       const item = data.items?.get(link.ref);
       return item?.kind === "pr" && item.state === "open";
     });
-    for (const link of boardItem.links) {
-      const item = data.items?.get(link.ref);
-      const title = item?.title ?? boardItem.title;
-      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
-      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
-        signal(link.ref, "active-session", title, repo, item?.url);
-      }
-      // A board card ties its linked issue and PR to the same work item.
-      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
+    // A board card's linked issue and PR are one work item: every signal
+    // the card contributes lands on a single canonical row instead of one
+    // row per linked ref. Prefer the linked issue as the row identity so
+    // the row reads as the tracked issue carrying its open PR.
+    const canonical =
+      boardItem.links.find((link) => data.items?.get(link.ref)?.kind !== "pr") ?? boardItem.links[0];
+    if (!canonical) continue;
+    const canonicalItem = data.items?.get(canonical.ref);
+    const title = canonicalItem?.title ?? boardItem.title;
+    const repo = canonicalItem?.ref.slice(0, canonical.ref.lastIndexOf("#")) ?? boardItem.repo;
+    if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
+      signal(canonical.ref, "active-session", title, repo, canonicalItem?.url);
     }
+    if (openPr) signal(canonical.ref, "open-pr", title, repo, canonicalItem?.url);
   }
 
   const additionalInProgressRefs = new Set<RefKey>();
@@ -201,7 +212,9 @@ export function reconciledInProgress(data: ReconciledInProgressInput): Reconcile
   return [...rows.values()]
     .map((row) => {
       const project = poolByRef.get(row.ref);
-      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
+      const disagreement = project
+        ? effectiveProjectDisagreement(project, data.orchestration, additionalInProgressRefs, data.ruling ?? null)
+        : null;
       return {
         ref: row.ref,
         title: row.title,
@@ -354,6 +367,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
     board: input.board,
     items: input.items,
     orchestration: input.orchestration,
+    ruling: input.ruling ?? null,
   });
   const reconciledByRef = new Map(reconciled.map((item) => [item.ref, item]));
   const inProgressWithSignals = inProgress.map((existing) => {

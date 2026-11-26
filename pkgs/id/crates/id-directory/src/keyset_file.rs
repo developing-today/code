@@ -20,15 +20,16 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use ed25519_dalek::SigningKey;
 use id_core::hex::hex_encode;
 
 use std::collections::BTreeSet;
 
 use crate::keyset::{
-    KeysetEntry, KeysetRecord, KeysetState, Log, checkpoint_final_heads, fold_with_finality,
+    checkpoint_final_heads, fold_with_finality, KeysetEntry, KeysetRecord, KeysetState, Log,
 };
+use crate::keyset_pairing::{DeviceQr, EnrolAccept, EnrolOffer};
 
 /// The server identity's keyset log, beside [`id_core::KEY_FILE`].
 pub const KEYSET_FILE: &str = ".id-keyset.jsonl";
@@ -191,6 +192,97 @@ impl KeysetFile {
         }
         self.finalize()?;
         Ok(added)
+    }
+
+    /// The offer an admin shows to enrol a new device by scan
+    /// (#2380 packet 2): the current head, its position, and a label.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `key` is not an active admin key.
+    pub fn enrol_offer(&self, key: &SigningKey, label: &str) -> Result<EnrolOffer> {
+        let state = self.state()?;
+        let author = hex_encode(&key.verifying_key().to_bytes());
+        ensure!(
+            state.is_admin(&author),
+            "{author} is not an active admin key of this identity"
+        );
+        EnrolOffer::mint(
+            &state.identity_id,
+            &author,
+            &state.head_hash,
+            self.next_lamport()?,
+            label,
+        )
+    }
+
+    /// Files a scanned [`EnrolAccept`] as a `DeviceEnrolled` record,
+    /// countersigned by the new device. Anything stale is refused: the
+    /// accept must address this admin, this identity, and the current
+    /// head, and its countersignature must verify.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the accept is stale, addresses another admin or
+    /// identity, fails verification, the entry does not fold, or the
+    /// file cannot be written.
+    pub fn complete_enrol(
+        &mut self,
+        admin: &SigningKey,
+        accept: &EnrolAccept,
+    ) -> Result<KeysetRecord> {
+        let state = self.state()?;
+        ensure!(
+            accept.offer.identity_id == state.identity_id,
+            "this enrolment offer names another identity"
+        );
+        ensure!(
+            accept.offer.prev_hash == state.head_hash,
+            "this enrolment offer is stale: the keyset head moved on"
+        );
+        let author = hex_encode(&admin.verifying_key().to_bytes());
+        ensure!(
+            accept.offer.author == author,
+            "this enrolment accept is addressed to another admin key"
+        );
+        ensure!(
+            state.is_admin(&author),
+            "{author} is not an active admin key of this identity"
+        );
+        let record = accept.record(admin)?;
+        let mut next = self.log.clone();
+        next.insert(record.clone())?;
+        let after = fold_with_finality(&next, &self.genesis_hash, &self.final_heads)?;
+        ensure!(
+            after.head_hash == record.hash,
+            "the keyset refused this enrolment"
+        );
+        append_line(&self.path, &record)?;
+        self.log = next;
+        self.finalize()?;
+        Ok(record)
+    }
+
+    /// Revokes the device a scan named, with `reason`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `key` is not an active admin key, the scanned device is
+    /// unknown or already revoked, or the file cannot be written.
+    pub fn revoke_scanned(
+        &mut self,
+        key: &SigningKey,
+        device: &DeviceQr,
+        reason: &str,
+    ) -> Result<KeysetRecord> {
+        self.append(
+            key,
+            KeysetEntry::DeviceRevoked {
+                device_key: device.device_key.clone(),
+                reason: reason.to_owned(),
+            },
+            None,
+        )
     }
 
     fn next_lamport(&self) -> Result<u64> {
@@ -512,8 +604,8 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("not an active admin"));
         // Revoking a device the keyset never enrolled folds nowhere.
-        assert!(
-            file.append(
+        assert!(file
+            .append(
                 &key(1),
                 KeysetEntry::DeviceRevoked {
                     device_key: public(9),
@@ -521,8 +613,7 @@ mod tests {
                 },
                 None,
             )
-            .is_err()
-        );
+            .is_err());
         let (reopened, _) = KeysetFile::open_or_migrate(&path, &key(1)).unwrap();
         assert_eq!(reopened.records().count(), 1);
         assert_eq!(reopened.state().unwrap().records_folded, 1);
