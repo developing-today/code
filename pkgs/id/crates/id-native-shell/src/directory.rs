@@ -20,6 +20,7 @@
 //! can never disagree about what is shown.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use bevy::input::ButtonInput;
 use bevy::prelude::{
@@ -32,6 +33,13 @@ use serde_json::{Value, json};
 /// convenience ordering, not a history: older entries fall off the
 /// end and simply rejoin the discovered section.
 pub const MAX_RECENT_WORLDS: usize = 10;
+
+/// How often the binary re-reads the host's world directory while
+/// the app runs (design #5782 §3: the list is the discovery query
+/// rendered, so it follows the host rather than freezing at
+/// launch). The refresh key asks for a read at once; this interval
+/// is the floor for everything else.
+pub const DIRECTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Which section of the directory list a world sits in (design
 /// #5782 §3: pinned first, then recent, then discovered).
@@ -76,6 +84,11 @@ pub struct WorldEntry {
     pub is_default: bool,
     /// The section this entry renders in.
     pub section: WorldSection,
+    /// Whether the host's latest directory reply lists this world.
+    /// False only for a world kept on the list because it still
+    /// has a live session: a refresh never takes a live session's
+    /// row away, so the user can always return to it or close it.
+    pub listed: bool,
 }
 
 /// The user's own ordering state for the directory: which worlds
@@ -156,6 +169,9 @@ impl DirectoryMarks {
 pub struct WorldDirectory {
     default: String,
     listing: Vec<(String, bool, usize)>,
+    /// Worlds kept on the list though the latest reply no longer
+    /// lists them, because they have live sessions.
+    retained: Vec<String>,
     entries: Vec<WorldEntry>,
     selected: usize,
 }
@@ -176,6 +192,7 @@ impl WorldDirectory {
         let mut directory = Self {
             default: default.to_string(),
             listing: listing.to_vec(),
+            retained: Vec::new(),
             entries: Vec::new(),
             selected: 0,
         };
@@ -205,7 +222,8 @@ impl WorldDirectory {
                 }
             }
         }
-        for (name, _, _) in &self.listing {
+        let listed = self.listing.iter().map(|(name, _, _)| name);
+        for name in listed.chain(self.retained.iter()) {
             if placed.contains(name.as_str()) {
                 continue;
             }
@@ -218,15 +236,30 @@ impl WorldDirectory {
     }
 
     fn entry_for(&self, name: &str, section: WorldSection) -> Option<WorldEntry> {
-        self.listing
-            .iter()
-            .find(|(listed, _, _)| listed == name)
-            .map(|(_, loaded, presence)| WorldEntry {
+        if let Some((_, loaded, presence)) =
+            self.listing.iter().find(|(listed, _, _)| listed == name)
+        {
+            return Some(WorldEntry {
                 name: name.to_string(),
                 loaded: *loaded,
                 presence: *presence,
                 is_default: name == self.default,
                 section,
+                listed: true,
+            });
+        }
+        // A retained world: the host no longer lists it, so the
+        // directory claims nothing about it beyond the live session.
+        self.retained
+            .iter()
+            .any(|kept| kept == name)
+            .then(|| WorldEntry {
+                name: name.to_string(),
+                loaded: false,
+                presence: 0,
+                is_default: false,
+                section,
+                listed: false,
             })
     }
 
@@ -238,6 +271,42 @@ impl WorldDirectory {
         self.selected = current
             .and_then(|name| self.entries.iter().position(|entry| entry.name == name))
             .unwrap_or(0);
+    }
+
+    /// Fold a fresh host directory reply into the list (design
+    /// #5782 §3, live refresh). Worlds named in `keep` (the live
+    /// sessions) that the reply no longer lists stay on the list,
+    /// marked as no longer listed. The cursor stays on the same
+    /// world when it is still on the list; when it is gone the
+    /// cursor stays on the same row, clamped to the new length,
+    /// rather than jumping to the top.
+    pub fn update_listing(
+        &mut self,
+        default: &str,
+        listing: &[(String, bool, usize)],
+        marks: &DirectoryMarks,
+        keep: &BTreeSet<String>,
+    ) {
+        default.clone_into(&mut self.default);
+        self.listing = listing.to_vec();
+        self.retain_live(marks, keep);
+    }
+
+    /// Recompute which unlisted worlds stay on the list (those in
+    /// `keep`) and rebuild the order, with the cursor rule of
+    /// [`Self::update_listing`].
+    pub fn retain_live(&mut self, marks: &DirectoryMarks, keep: &BTreeSet<String>) {
+        let current = self.selected().map(|entry| entry.name.clone());
+        let row = self.selected;
+        self.retained = keep
+            .iter()
+            .filter(|name| !self.listing.iter().any(|(listed, _, _)| listed == *name))
+            .cloned()
+            .collect();
+        self.entries = self.build_entries(marks);
+        self.selected = current
+            .and_then(|name| self.entries.iter().position(|entry| entry.name == name))
+            .unwrap_or_else(|| row.min(self.entries.len().saturating_sub(1)));
     }
 
     /// The host's default world name from the directory reply.
@@ -370,6 +439,8 @@ pub enum DirectoryKey {
     TogglePin,
     /// Close the selected world's session (only that one).
     Close,
+    /// Re-read the host's world directory now.
+    Refresh,
 }
 
 /// A side effect the application shell must perform on the
@@ -383,6 +454,9 @@ pub enum DirectoryEffect {
     CloseWorld(String),
     /// The marks changed; persist them.
     MarksChanged,
+    /// Re-read the host's world directory. Queued at most once
+    /// until the binary takes the effects.
+    RefreshDirectory,
 }
 
 /// Whether the user's attention is on the directory or inside
@@ -421,9 +495,19 @@ impl DirectoryApp {
         }
     }
 
-    /// Record a fresh host directory reply.
+    /// Record a host directory reply. The first builds the list
+    /// with the cursor on the host's default world; every later
+    /// one is a refresh, folded in by
+    /// [`WorldDirectory::update_listing`] so the cursor stays put
+    /// and no live session's row is dropped.
     pub fn set_listing(&mut self, default: &str, listing: &[(String, bool, usize)]) {
-        self.directory = Some(WorldDirectory::from_listing(default, listing, &self.marks));
+        let live: BTreeSet<String> = self.registry.live().map(str::to_owned).collect();
+        match self.directory.as_mut() {
+            Some(directory) => directory.update_listing(default, listing, &self.marks, &live),
+            None => {
+                self.directory = Some(WorldDirectory::from_listing(default, listing, &self.marks));
+            }
+        }
     }
 
     /// The current directory, once a listing has arrived.
@@ -437,6 +521,16 @@ impl DirectoryApp {
     /// to the directory with every session still live); all other
     /// keys belong to the session's own presenters.
     pub fn handle_key(&mut self, key: DirectoryKey) {
+        // Refresh needs no listing yet: it is also how the user
+        // retries after the first read failed.
+        if key == DirectoryKey::Refresh {
+            if self.focus == DirectoryFocus::Directory
+                && !self.effects.contains(&DirectoryEffect::RefreshDirectory)
+            {
+                self.effects.push(DirectoryEffect::RefreshDirectory);
+            }
+            return;
+        }
         match self.focus {
             DirectoryFocus::Session => {
                 if key == DirectoryKey::Leave {
@@ -457,7 +551,7 @@ impl DirectoryApp {
             DirectoryKey::Down => directory.move_down(),
             DirectoryKey::Home => directory.move_home(),
             DirectoryKey::End => directory.move_end(),
-            DirectoryKey::Leave => {}
+            DirectoryKey::Leave | DirectoryKey::Refresh => {}
             DirectoryKey::TogglePin => {
                 if let Some(name) = directory.selected().map(|entry| entry.name.clone()) {
                     self.marks.toggle_pin(&name);
@@ -478,6 +572,11 @@ impl DirectoryApp {
             DirectoryKey::Close => {
                 if let Some(name) = directory.selected().map(|entry| entry.name.clone()) {
                     if self.registry.close(&name) {
+                        // A closed world the host no longer lists
+                        // leaves the list with its session.
+                        let live: BTreeSet<String> =
+                            self.registry.live().map(str::to_owned).collect();
+                        directory.retain_live(&self.marks, &live);
                         self.effects.push(DirectoryEffect::CloseWorld(name));
                     }
                 }
@@ -499,7 +598,7 @@ impl DirectoryApp {
     #[must_use]
     pub fn text_table(&self) -> String {
         let Some(directory) = self.directory.as_ref() else {
-            return "World directory\nWaiting for the host world list.".to_string();
+            return "World directory\nWaiting for the host world list. R retries now.".to_string();
         };
         let mut lines = vec![format!(
             "World directory - default: {}",
@@ -522,7 +621,11 @@ impl DirectoryApp {
                 " "
             };
             let star = if entry.is_default { "*" } else { " " };
-            let state = if entry.loaded { "loaded" } else { "stored" };
+            let state = match (entry.listed, entry.loaded) {
+                (false, _) => "no longer listed",
+                (true, true) => "loaded",
+                (true, false) => "stored",
+            };
             let session = if self.registry.is_live(&entry.name) {
                 " (in session)"
             } else {
@@ -537,7 +640,8 @@ impl DirectoryApp {
             ));
         }
         lines.push(
-            "Up/Down move, Enter open, P pin, X close session, Esc back to this list.".to_string(),
+            "Up/Down move, Enter open, P pin, X close session, R refresh, Esc back to this list."
+                .to_string(),
         );
         lines.join("\n")
     }
@@ -556,6 +660,7 @@ pub const fn key_code_to_directory_key(code: KeyCode) -> Option<DirectoryKey> {
         KeyCode::Escape => Some(DirectoryKey::Leave),
         KeyCode::KeyP => Some(DirectoryKey::TogglePin),
         KeyCode::KeyX => Some(DirectoryKey::Close),
+        KeyCode::KeyR | KeyCode::F5 => Some(DirectoryKey::Refresh),
         _ => None,
     }
 }
@@ -938,7 +1043,179 @@ mod tests {
             key_code_to_directory_key(KeyCode::Escape),
             Some(DirectoryKey::Leave)
         );
+        assert_eq!(
+            key_code_to_directory_key(KeyCode::KeyR),
+            Some(DirectoryKey::Refresh)
+        );
+        assert_eq!(
+            key_code_to_directory_key(KeyCode::F5),
+            Some(DirectoryKey::Refresh)
+        );
         assert_eq!(key_code_to_directory_key(KeyCode::KeyA), None);
+    }
+
+    fn without(name: &str) -> Vec<(String, bool, usize)> {
+        listing()
+            .into_iter()
+            .filter(|(listed, _, _)| listed != name)
+            .collect()
+    }
+
+    #[test]
+    fn refresh_keeps_the_cursor_on_the_same_world() {
+        let mut app = DirectoryApp::default();
+        app.set_listing("lobby", &listing());
+        app.handle_key(DirectoryKey::End);
+        assert_eq!(app.directory().unwrap().selected().unwrap().name, "vault");
+        // Oracle: #15022 — a refresh that reorders the rows (a new
+        // world ahead of the cursor) leaves the cursor on vault.
+        let mut grown = vec![("arena".to_string(), true, 3)];
+        grown.extend(listing());
+        app.set_listing("lobby", &grown);
+        let directory = app.directory().unwrap();
+        assert_eq!(directory.entries().len(), 5);
+        assert_eq!(directory.entries()[0].name, "arena");
+        assert_eq!(directory.selected().unwrap().name, "vault");
+        // Presence and loaded state come from the newest reply.
+        let mut busier = listing();
+        busier[1].2 = 9;
+        app.set_listing("lobby", &busier);
+        let lobby = app
+            .directory()
+            .unwrap()
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "lobby")
+            .unwrap()
+            .clone();
+        assert_eq!(lobby.presence, 9);
+        assert!(lobby.listed);
+    }
+
+    #[test]
+    fn refresh_clamps_the_cursor_when_its_world_disappears() {
+        let mut app = DirectoryApp::default();
+        app.set_listing("lobby", &listing());
+        app.handle_key(DirectoryKey::End);
+        // The last row (vault) goes away: the cursor stays on the
+        // last row rather than jumping to the top.
+        app.set_listing("lobby", &without("vault"));
+        let directory = app.directory().unwrap();
+        assert_eq!(directory.entries().len(), 3);
+        assert_eq!(directory.selected().unwrap().name, "workshop");
+        // A middle row going away keeps the same row index.
+        app.handle_key(DirectoryKey::Home);
+        app.handle_key(DirectoryKey::Down);
+        assert_eq!(app.directory().unwrap().selected().unwrap().name, "lobby");
+        app.set_listing("annex", &without("lobby"));
+        assert_eq!(
+            app.directory().unwrap().selected().unwrap().name,
+            "workshop"
+        );
+        // An empty reply leaves no selection and navigation safe.
+        app.set_listing("none", &[]);
+        assert!(app.directory().unwrap().selected().is_none());
+        app.handle_key(DirectoryKey::Down);
+        assert!(app.directory().unwrap().selected().is_none());
+    }
+
+    #[test]
+    fn refresh_keeps_a_live_world_the_host_stopped_listing() {
+        let mut app = DirectoryApp::default();
+        app.set_listing("lobby", &listing());
+        app.handle_key(DirectoryKey::Activate);
+        app.handle_key(DirectoryKey::Leave);
+        app.take_effects();
+        // Oracle: #15022 — a refresh never drops a world that has
+        // a live session; it stays, marked no longer listed, and
+        // the session is untouched.
+        app.set_listing("annex", &without("lobby"));
+        assert!(app.take_effects().is_empty());
+        assert!(app.registry.is_live("lobby"));
+        let directory = app.directory().unwrap();
+        assert_eq!(directory.entries().len(), 4);
+        let lobby = directory.selected().unwrap();
+        assert_eq!(lobby.name, "lobby");
+        assert!(!lobby.listed);
+        assert!(!lobby.is_default);
+        assert_eq!(lobby.presence, 0);
+        let row = app
+            .text_table()
+            .lines()
+            .find(|line| line.split_whitespace().any(|word| word == "lobby"))
+            .unwrap()
+            .to_string();
+        assert!(row.contains("no longer listed"), "row: {row}");
+        assert!(row.contains("(in session)"), "row: {row}");
+        // Closing its session takes the unlisted world off the list.
+        app.handle_key(DirectoryKey::Close);
+        assert_eq!(
+            app.take_effects(),
+            vec![DirectoryEffect::CloseWorld("lobby".to_string())]
+        );
+        let directory = app.directory().unwrap();
+        assert_eq!(directory.entries().len(), 3);
+        assert!(
+            directory
+                .entries()
+                .iter()
+                .all(|entry| entry.name != "lobby")
+        );
+        assert!(directory.selected().is_some());
+        // A world without a session that the host stops listing
+        // simply leaves the list; one it lists again comes back
+        // as listed.
+        app.set_listing("annex", &without("vault"));
+        let directory = app.directory().unwrap();
+        assert!(
+            directory
+                .entries()
+                .iter()
+                .all(|entry| entry.name != "vault")
+        );
+        assert!(
+            directory
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "lobby" && entry.listed)
+        );
+    }
+
+    #[test]
+    fn refresh_picks_up_a_new_default_world() {
+        let mut app = DirectoryApp::default();
+        app.set_listing("lobby", &listing());
+        app.set_listing("annex", &listing());
+        let directory = app.directory().unwrap();
+        assert_eq!(directory.default_world(), "annex");
+        let defaults: Vec<&str> = directory
+            .entries()
+            .iter()
+            .filter(|entry| entry.is_default)
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(defaults, vec!["annex"]);
+        // The cursor did not follow the default: a refresh never
+        // moves the user's place.
+        assert_eq!(directory.selected().unwrap().name, "lobby");
+    }
+
+    #[test]
+    fn refresh_key_queues_one_request_and_only_in_the_directory() {
+        let mut app = DirectoryApp::default();
+        // Before any listing: R is the retry for a failed first read.
+        app.handle_key(DirectoryKey::Refresh);
+        app.handle_key(DirectoryKey::Refresh);
+        assert_eq!(app.take_effects(), vec![DirectoryEffect::RefreshDirectory]);
+        app.set_listing("lobby", &listing());
+        app.handle_key(DirectoryKey::Refresh);
+        assert_eq!(app.take_effects(), vec![DirectoryEffect::RefreshDirectory]);
+        // In a session, R belongs to the world, not the directory.
+        app.handle_key(DirectoryKey::Activate);
+        app.take_effects();
+        app.handle_key(DirectoryKey::Refresh);
+        assert!(app.take_effects().is_empty());
+        assert_eq!(app.focus, DirectoryFocus::Session);
     }
 
     #[test]
