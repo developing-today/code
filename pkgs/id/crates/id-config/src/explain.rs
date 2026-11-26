@@ -397,6 +397,26 @@ fn peers(
         for (key, value) in fields {
             push(entries, &format!("{prefix}.{key}"), value, source(key));
         }
+        // Overrides that set nothing are dropped at resolution, so each
+        // one listed here was written.
+        for (operation, over) in &peer.overrides {
+            if let Some(adapter) = &over.adapter {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.adapter", operation.as_str()),
+                    adapter.clone(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+            if let Some(timeout) = over.timeout_ms {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.timeout_ms", operation.as_str()),
+                    timeout.to_string(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+        }
     }
     Ok(())
 }
