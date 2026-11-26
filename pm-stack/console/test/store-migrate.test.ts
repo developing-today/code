@@ -41,9 +41,10 @@ test("the console names exactly the workflow's choices, and every listed store i
 	expect(options).toEqual([...MIGRATE_TARGETS]);
 	const listed = STORES.stores.map((store) => store.name).sort();
 	expect([...MIGRATABLE_STORES].sort()).toEqual(listed);
-	expect(
-		MIGRATE_TARGETS.filter((target) => target !== "stand-in").sort(),
-	).toEqual(listed);
+	const real: string[] = MIGRATE_TARGETS.filter(
+		(target) => target !== "stand-in",
+	).sort();
+	expect(real).toEqual(listed);
 });
 
 test("each run is titled with its store, so the last run per store can be read", () => {
