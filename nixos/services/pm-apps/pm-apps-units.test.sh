@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Rendered-unit shape test for issue #8940 (PM app readiness checks).
+# Source-shape smoke test for #8940 readiness and #1822 socket wiring.
+# The #1822 oracle is opt-in frontend/proxy/backend wiring; evaluated
+# default/enabled Nix configurations remain the behavioral check.
 #
 # Oracle: issue #8940's acceptance criteria. In these NixOS modules
 # the systemd unit's fields are the literal strings in the module, so
