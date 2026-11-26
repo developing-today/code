@@ -65,7 +65,7 @@ export interface Act {
 /** Which sections each document is built from. */
 const DOCS: Record<DocName, string[]> = {
   core: ["board", "sessions", "census", "asks", "questionCount"],
-  questions: ["questions", "questionSets"],
+  questions: ["questions"],
   ops: ["prs", "priorities", "agents", "services", "more"],
   done: ["done"],
 };
