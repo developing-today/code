@@ -38,7 +38,7 @@ const DEFAULTS: [string, string | null, string, (env: Record<string, string | un
     `${STATE}/host-health.json`,
     (env) => defaultHostHealthFile(env),
   ],
-  ["PM_AGG_NEEDS_DREW_FILE", "PM_AGG_NEEDS_DREW_FILE", `${STATE}/needs-drew.json`, (env) => defaultNeedsDrewFile(env)],
+  ["PM_AGG_NEEDS_USER_FILE", "PM_AGG_NEEDS_USER_FILE", `${STATE}/needs-user.json`, (env) => defaultNeedsDrewFile(env)],
   [
     "PM_AGG_REPORT_RECORDS_FILE",
     "PM_AGG_REPORT_RECORDS_FILE",
