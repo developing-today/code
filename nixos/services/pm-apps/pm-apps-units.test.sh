@@ -59,6 +59,16 @@ expect_present "$module" 'pad=http://127.0.0.1:7777/' \
   "pad endpoint probed on loopback 7777"
 expect_present "$module" 'ready-for-agent=http://127.0.0.1:6056/' \
   "ready-for-agent endpoint probed on loopback 6056"
+expect_present "$module" 'readyForAgentSocketActivation = lib.mkEnableOption' \
+  "ready-for-agent socket proxy is opt-in"
+expect_present "$module" 'PORT=${toString cfg.readyForAgentBackendPort}' \
+  "opt-in service bind moves to the private backend port"
+expect_present "$module" 'Service = "ready-for-agent-proxy.service"' \
+  "loopback socket routes through the proxy"
+expect_present "$module" '127.0.0.1:${toString cfg.readyForAgentBackendPort}' \
+  "proxy forwards to the private backend"
+expect_present "$module" 'Install.WantedBy = lib.optionals cfg.readyForAgentSocketActivation' \
+  "socket is enabled only with the opt-in"
 expect_present "$module" 'healthGraceSeconds = 180' \
   "start-period/grace is 180 seconds"
 
