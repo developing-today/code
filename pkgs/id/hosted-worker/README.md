@@ -49,7 +49,17 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   open. A freeze closes live bridge sessions and acknowledges the
   mutation watermark. Unfreeze (abort) needs a newer epoch, a sealed
   source never unfreezes, and a replayed freeze at an old epoch is
-  refused. The directory CAS, lease and coordinator are later slices.
+  refused.
+- Directory migration epochs (#3404, `planDirectoryTransition` and
+  `PersistentHostedAccountDirectory.transition`): an account record
+  moves stable, pending, frozen, verified, switched and back to stable
+  by compare-and-set on the whole record it was read as. Begin and
+  switch advance the routing epoch, abort advances it again, a retried
+  step returns the applied row, and a stale or competing step gets 409
+  `directory_cas_conflict`. Migrating records still route to the
+  source; a switched record gets a retryable 503 `migration_switching`
+  at the front door until the migration completes. The lease and the
+  coordinator are later slices.
 
 ## Tenancy control plane (component E, #9083)
 

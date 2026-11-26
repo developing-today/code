@@ -5,7 +5,12 @@
 import {
   createHostedAccountRecord,
   inventoryLegacyHostedAccount,
+  migrationShapeError,
+  planDirectoryTransition,
+  sameDirectoryRecord,
+  type DirectoryMigrationEvent,
   type HostedAccountRecord,
+  type HostedMigrationPhase,
   type LegacyHostedAccount,
   type LegacyHostedAccountInput,
   type NewHostedAccount,
@@ -77,23 +82,27 @@ function fromRow(row: StoredAccountRow): HostedAccountRecord {
       typeof row.subject_key !== "string" ||
       row.subject_key.trim() === "" ||
       typeof row.binding_id !== "string" ||
-      row.jurisdiction_pending !== null ||
-      row.migration_id !== null ||
-      row.phase !== "stable" ||
-      row.routing_epoch !== 0
+      typeof row.phase !== "string" ||
+      typeof row.routing_epoch !== "number" ||
+      (row.migration_id !== null && typeof row.migration_id !== "string")
     ) {
-      throw new Error("stored directory metadata is outside the stable account contract");
+      throw new Error("stored directory metadata has the wrong column types");
     }
 
-    return {
+    const record: HostedAccountRecord = {
       subjectKey: row.subject_key,
       bindingId: parseBindingId(row.binding_id),
       jurisdiction: parseJurisdiction(row.jurisdiction),
-      jurisdictionPending: null,
-      migrationId: null,
-      phase: "stable",
-      routingEpoch: 0,
+      jurisdictionPending: row.jurisdiction_pending === null ? null : parseJurisdiction(row.jurisdiction_pending),
+      migrationId: row.migration_id,
+      phase: row.phase as HostedMigrationPhase,
+      routingEpoch: row.routing_epoch,
     };
+    // Each phase has one valid shape (#3404); anything else fails closed.
+    if (migrationShapeError(record) !== null) {
+      throw new Error("stored directory metadata is outside the account contract");
+    }
+    return record;
   } catch {
     throw new FailClosed(
       503,
@@ -219,6 +228,56 @@ export class PersistentHostedAccountDirectory {
       503,
       "directory_write_conflict",
       "directory write did not produce a row or an authoritative conflict; failing closed",
+    );
+  }
+
+  /**
+   * Apply one migration step by compare-and-set (#3404, design §7). The
+   * caller passes the record it read; the step is planned from it and
+   * written only if the stored row still equals it in every routed
+   * field, so two coordinators racing on one account cannot both win.
+   * A lost race rereads: if the stored row already equals the planned
+   * result (a retried step), that row is returned; otherwise the step
+   * fails with 409 `directory_cas_conflict`. A missing subject is 404.
+   */
+  async transition(
+    expected: HostedAccountRecord,
+    event: DirectoryMigrationEvent,
+  ): Promise<HostedAccountRecord> {
+    const next = planDirectoryTransition(expected, event);
+    const updated = await this.database
+      .prepare(
+        "UPDATE hosted_accounts SET jurisdiction = ?, jurisdiction_pending = ?, migration_id = ?, phase = ?, routing_epoch = ? " +
+          "WHERE subject_key = ? AND binding_id = ? AND jurisdiction = ? AND jurisdiction_pending IS ? " +
+          "AND migration_id IS ? AND phase = ? AND routing_epoch = ? " +
+          `RETURNING ${COLUMNS}`,
+      )
+      .bind(
+        next.jurisdiction,
+        next.jurisdictionPending,
+        next.migrationId,
+        next.phase,
+        next.routingEpoch,
+        expected.subjectKey,
+        expected.bindingId,
+        expected.jurisdiction,
+        expected.jurisdictionPending,
+        expected.migrationId,
+        expected.phase,
+        expected.routingEpoch,
+      )
+      .first<StoredAccountRow>();
+    if (updated) return fromRow(updated);
+
+    const current = await this.get(expected.subjectKey);
+    if (!current) {
+      throw new FailClosed(404, "directory_account_missing", "no hosted account record for this subject");
+    }
+    if (sameDirectoryRecord(current, next)) return current;
+    throw new FailClosed(
+      409,
+      "directory_cas_conflict",
+      "the account record changed since it was read; reread it and retry the step",
     );
   }
 

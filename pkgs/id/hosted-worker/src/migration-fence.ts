@@ -57,6 +57,11 @@ export interface FenceRequest {
 
 const MIGRATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
+/** Whether a value is a well-formed migration id (shared with the directory). */
+export function isMigrationId(value: unknown): value is string {
+  return typeof value === "string" && MIGRATION_ID.test(value);
+}
+
 /** Validate a control-route body: `{migration_id, routing_epoch}`. */
 export function parseFenceRequest(body: unknown): FenceRequest {
   const value = (typeof body === "object" && body !== null ? body : {}) as {
