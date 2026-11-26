@@ -25,7 +25,7 @@
  *     acceptance exercises: issue → exchange → act → revoke → the
  *     very next request denies.
  */
-import { resolveAgentFrontDoor, type AgentAudit, type AgentFrontDoorDeps } from "./agent-front-door.ts";
+import { resolveAgentFrontDoor, type AgentFrontDoorDeps } from "./agent-front-door.ts";
 import type { AgentCredentialStore } from "./agent-credential-store.ts";
 import {
   exchangeClientCredentials,
@@ -46,11 +46,14 @@ export interface SurfaceCDeps {
   now?: () => number;
   generateJti?: () => string;
   generateSecret?: () => string;
-  auditLifecycle?: AgentCredentialDeps["auditLifecycle"];
+  auditLifecycle: AgentCredentialDeps["auditLifecycle"];
 }
 
 const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
   const contentType = req.headers.get("content-type") ?? "";
@@ -93,7 +96,7 @@ export function createSurfaceCHandler(deps: SurfaceCDeps): (req: Request) => Pro
         },
         credentialDeps,
       );
-      if (!result.ok) return json({ error: result.reason }, 403);
+      if (!result.ok) return json({ error: result.reason }, result.reason === "issuance_failed" ? 503 : 403);
       // The secret appears in this response only — shown exactly once.
       return json({ credential: result.credential, secret: result.secret }, 201);
     }
@@ -104,6 +107,8 @@ export function createSurfaceCHandler(deps: SurfaceCDeps): (req: Request) => Pro
       if (session === null) return json({ error: "unauthenticated" }, 401);
       const jti = decodeURIComponent(revokeMatch[1] as string);
       const result = await revokeAgentCredential(session, jti, credentialDeps);
+      if (!result.ok && result.reason === "audit_unavailable")
+        return json({ error: result.reason }, 503);
       if (!result.ok) return json({ error: result.reason }, result.reason === "not_found" ? 404 : 403);
       return json({ revoked: true, jti });
     }
@@ -133,17 +138,14 @@ export function createSurfaceCHandler(deps: SurfaceCDeps): (req: Request) => Pro
       const token = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
       const tenantId = req.headers.get("x-tenant-id") ?? "";
       if (!token || !tenantId) return json({ error: "unauthenticated" }, 401);
-      const audits: AgentAudit[] = [];
       const result = await resolveAgentFrontDoor(token, tenantId, {
         ...deps.frontDoor,
         loadCredential: (jti) => deps.store.getByJti(jti),
-        audit: async (actor) => {
-          audits.push(actor);
-          await deps.frontDoor.audit(actor);
-        },
       });
       if (!result.ok) return json({ error: result.reason }, 401);
-      return json({ principal: result.principal, audit: audits[0] ?? null });
+      // Expose only the agent's own surface role and tenant scope.
+      // Owner/account attribution stays in the audit sink.
+      return json({ role: "agent", tenantId: result.principal.bindingId });
     }
 
     return json({ error: "not_found" }, 404);

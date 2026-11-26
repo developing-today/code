@@ -60,12 +60,14 @@ export interface AgentCredentialDeps {
   /** Secret generator; defaults to 32 random bytes, base64url. */
   generateSecret?: () => string;
   /** Audited account event for issuance/revocation (§4.8); awaited, fail-closed. */
-  auditLifecycle?: (event: {
+  auditLifecycle: (event: {
     kind: "issued" | "revoked";
     jti: string;
+    actorTokenId: string;
     accountId: string;
     bindingId: string;
     tenantId: string;
+    at: number;
   }) => Promise<void>;
 }
 
@@ -100,6 +102,7 @@ export async function issueAgentCredential(
   deps: AgentCredentialDeps,
 ): Promise<IssuedAgentCredential> {
   try {
+    if (typeof deps.auditLifecycle !== "function") return { ok: false, reason: "issuance_failed" };
     if (!session.roles.some((role) => MINTING_ROLES.has(role))) return { ok: false, reason: "not_minting_role" };
     // Single tenant, the session's own binding, never '*'.
     if (
@@ -130,9 +133,10 @@ export async function issueAgentCredential(
     const stored: StoredAgentCredential = { ...metadata, secretDigest: await digestSecret(secret) };
     await deps.store.put(stored);
     try {
-      await deps.auditLifecycle?.({
+      await deps.auditLifecycle({
         kind: "issued", jti, accountId: session.accountId,
         bindingId: session.bindingId, tenantId: input.tenantId,
+        actorTokenId: session.tokenId, at: now,
       });
     } catch {
       // Issuance without its audit event must not stand (§4.8).
@@ -149,8 +153,9 @@ export async function revokeAgentCredential(
   session: ResolvedPrincipal,
   jti: string,
   deps: AgentCredentialDeps,
-): Promise<{ ok: true } | { ok: false; reason: "not_minting_role" | "not_found" | "not_owner" }> {
+): Promise<{ ok: true } | { ok: false; reason: "not_minting_role" | "not_found" | "not_owner" | "audit_unavailable" }> {
   if (!session.roles.some((role) => MINTING_ROLES.has(role))) return { ok: false, reason: "not_minting_role" };
+  if (typeof deps.auditLifecycle !== "function") return { ok: false, reason: "audit_unavailable" };
   const record = await deps.store.getByJti(jti);
   if (record === null) return { ok: false, reason: "not_found" };
   if (record.accountId !== session.accountId || record.bindingId !== session.bindingId)
@@ -158,9 +163,10 @@ export async function revokeAgentCredential(
   const now = Math.floor((deps.now ?? (() => Date.now() / 1000))());
   const revoked = await deps.store.revoke(jti, now);
   if (revoked) {
-    await deps.auditLifecycle?.({
+    await deps.auditLifecycle({
       kind: "revoked", jti, accountId: record.accountId,
       bindingId: record.bindingId, tenantId: record.tenantId,
+      actorTokenId: session.tokenId, at: now,
     });
   }
   return { ok: true };

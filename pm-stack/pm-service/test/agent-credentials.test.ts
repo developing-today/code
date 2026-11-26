@@ -17,6 +17,7 @@ import {
   exchangeClientCredentials,
   issueAgentCredential,
   revokeAgentCredential,
+  type AgentCredentialDeps,
   type AccessTokenClaims,
 } from "../src/agent-credentials.ts";
 import { createSurfaceCHandler } from "../src/surface-c-api.ts";
@@ -43,6 +44,7 @@ function deps(store: InMemoryAgentCredentialStore, now: () => number = () => NOW
     now,
     generateJti: () => `credential-${++counter}`,
     generateSecret: () => `fixture-secret-${counter}-not-a-real-secret`,
+    auditLifecycle: async () => {},
   };
 }
 
@@ -52,7 +54,7 @@ describe("agent credential issuance (H4 §4.5)", () => {
     const result = await issueAgentCredential(
       ownerSession,
       { tenantId: BINDING, audience: AUDIENCE },
-      { store, now: () => NOW, generateJti: () => "unaudited", generateSecret: () => "fixture-secret" },
+      { store, now: () => NOW, generateJti: () => "unaudited", generateSecret: () => "fixture-secret" } as unknown as AgentCredentialDeps,
     );
     expect(result).toEqual({ ok: false, reason: "issuance_failed" });
     expect(await store.getByJti("unaudited")).toBeNull();
