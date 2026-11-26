@@ -1461,6 +1461,7 @@ describe("before the host's first report", () => {
       woke: w.now.t,
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
+      routes: {},
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1470,6 +1471,41 @@ describe("before the host's first report", () => {
     // And the host still refuses a stranger itself.
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
+  });
+
+  test("route state: a flip on the internal channel is what health says, and it is kept (#14944)", async () => {
+    const w = await setup();
+    const flip = (body: unknown) =>
+      w.edge.now.fetch(
+        new Request("https://pm.internal/internal/route", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).routes).toEqual({});
+    const flipped = await flip({ surface: "board", tier: "hosted" });
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as { routes: unknown }).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // It is remembered across the edge's own restarts: it is kept in
+    // this object's storage, not in memory.
+    w.edge.now = w.makeEdge();
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
+    // A flip that is not a surface and a tier is refused and changes nothing.
+    expect((await flip({ surface: "board", tier: "sideways" })).status).toBe(400);
+    expect((await flip({ tier: "tunnel" })).status).toBe(400);
+    expect((await health()).routes).toEqual({
+      board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
+    });
   });
 
   test("the edge says which commit the host is running, as the host last reported it", async () => {
