@@ -21,7 +21,7 @@ import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
 import { handleMcp } from "./mcp";
-import { clampK, executeSearch, DEFAULT_K } from "./search";
+import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
 import { CONTEXT } from "./space";
 
 export { QueryCache };
@@ -117,7 +117,9 @@ export default {
       const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/inspect");
-      const meta = (await resp.json()) as Record<string, unknown>;
+      const meta = await doJsonObject(resp);
+      if (meta === null) return Response.json(malformedDoPayload("inspect"), { status: 502 });
+      if (!resp.ok) return Response.json(meta, { status: resp.status });
       return Response.json({ key, query, ...meta });
     }
 
@@ -147,8 +149,12 @@ export default {
       const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/purge", { method: "POST" });
-      const result = (await resp.json()) as { purged: boolean };
-      return Response.json({ key, query, ...result });
+      const result = await doJsonObject(resp);
+      if (result !== null && !resp.ok) return Response.json(result, { status: resp.status });
+      if (result === null || typeof result.purged !== "boolean") {
+        return Response.json(malformedDoPayload("purge"), { status: 502 });
+      }
+      return Response.json({ key, query, purged: result.purged });
     }
 
     if (url.pathname === "/mcp") {
