@@ -278,9 +278,11 @@ fn stable_arguments(target: &str) -> Vec<String> {
 /// descriptor ([`FunctionInterface`]). The §1.3 activation verdict is the
 /// pure [`check_activation`]: a candidate whose interface differs from the
 /// binding's expectation is refused and the published version keeps
-/// running. Version assignment, publish/swap bookkeeping, the persistent
-/// compile cache, and per-function instances are placement concerns and
-/// arrive with the later slices.
+/// running. The persistent compile cache (§2.2 step 6) is
+/// [`compile_function_cached`], keyed by the provenance triple, target and
+/// interface hash. Version assignment, publish/swap bookkeeping, and
+/// per-function instances are placement concerns and arrive with the
+/// later slices.
 
 /// The world-declared function platform a user function compiles against
 /// (design #5964 §2.2 step 2): a platform tree in the same shape the world
@@ -635,9 +637,11 @@ pub fn check_activation(
 /// [`check_activation`], run where the binding is known). The shape
 /// identifiers and the import check run before the compiler ever spawns, so
 /// an ungranted capability is an install-time rejection with the running
-/// version untouched. S1 carries no shared cache (that is the S2 slice):
-/// the pipeline runs directly, so a function compile can neither warm nor
-/// poison world builds.
+/// version untouched. This path always runs the compiler and touches no
+/// cache; [`compile_function_cached`] is the same pipeline behind the
+/// persistent compile cache (§2.2 step 6), and it compiles through this
+/// function on a miss. Function cache keys are domain-separated from world
+/// keys, so a function compile can neither warm nor poison world builds.
 ///
 /// `granted` must be the effective list for this function (granted and
 /// within the server and world ceilings, with `*` expanded), not the raw
@@ -684,6 +688,193 @@ pub async fn compile_function(
         interface,
         interface_hash,
     })
+}
+
+/// The persistent-cache key of a per-function compile (design #5964 §2.2
+/// step 6): the provenance inputs a fresh compile records — the function
+/// platform's tree hash, the source closure hash, the (empty) DLL closure
+/// hash and the compiler digest — the `wasm32` target every function
+/// compiles for (§2.1), and the interface hash of the descriptor `spec`
+/// declares. The interface hash makes it a function key, domain-separated
+/// from every world key (see [`crate::world_cache::cache_key`]).
+///
+/// # Errors
+///
+/// The compiler cannot be resolved or read, or the platform tree or the
+/// sources cannot be digested.
+fn function_cache_key_input(
+    spec: &FunctionSpec,
+    platform: &FunctionPlatform,
+    roc_bin: &str,
+) -> Result<crate::world_cache::CacheKeyInput> {
+    let roc_bin = std::fs::canonicalize(resolve_program(roc_bin))
+        .context("resolve Roc compiler executable")?;
+    Ok(crate::world_cache::CacheKeyInput {
+        platform_tree_hash: digest_platform_tree(&platform.dir)?,
+        source_closure_hash: digest_sources(&spec.files)?,
+        dll_closure_hash: crate::world_cache::dll_closure_hash(&[]),
+        compiler_blake3: digest_file(&roc_bin)?,
+        target: "wasm32".to_owned(),
+        interface_hash: Some(spec.interface().interface_hash()),
+    })
+}
+
+/// Compile one function through the persistent, content-addressed compile
+/// cache (design #5964 §2.2 step 6): the cache entry is keyed by the
+/// provenance triple, the target and the interface descriptor: the
+/// function platform's tree hash, the source closure hash, the (empty) DLL
+/// closure hash, the compiler digest, `wasm32`, and the interface hash of
+/// the descriptor `spec` declares. A verified hit returns the artifact
+/// without spawning the compiler, with the same provenance a fresh compile
+/// records and the interface and interface hash recomputed from `spec`. A
+/// miss compiles through [`compile_function`] and stores the module at
+/// `scope` under `author`. A stored entry whose digest check fails is never
+/// served: [`crate::world_cache::WorldCache::lookup`] re-verifies the bytes
+/// against the entry's content hash, evicts a mismatch and reports a miss,
+/// so the function is recompiled. The seed is not part of the key, so a
+/// hit serves every seed.
+///
+/// Intake runs before the cache is consulted, exactly as before a compile:
+/// the binding name, the shape identifiers, the request bounds and the
+/// import check against the granted set. A cached module therefore never
+/// bypasses intake, and a hit's bytes pass the same output policy as a
+/// fresh module before they are returned. Metering is logged only, on the
+/// `world_compile_cache` tracing target (compiler cost 0 on a hit).
+///
+/// # Errors
+///
+/// The same failures as [`compile_function`], plus a compiler that cannot
+/// be resolved or read to key the lookup, or a cached artifact the output
+/// policy refuses. A cache that cannot store its entry never fails a
+/// compile that succeeded. Every error names the function.
+pub async fn compile_function_cached(
+    spec: &FunctionSpec,
+    platform: &FunctionPlatform,
+    roc_bin: &str,
+    timeout: Duration,
+    cache: &crate::world_cache::WorldCache,
+    author: &str,
+    scope: crate::world_cache::CacheScope,
+) -> Result<FunctionArtifact> {
+    validate_function_name(&spec.function)?;
+    validate_function_shape(&spec.function, &spec.shape)?;
+    let named = || format!("compile function {:?}", spec.function);
+    let inner = CompileSpec {
+        files: spec.files.clone(),
+        seed: spec.seed,
+        native: false,
+    };
+    validate_spec(&inner).with_context(named)?;
+    // The grant is part of the interface hash, hence of the key: a module
+    // cached under another grant (wider or narrower) sits under another key
+    // and is never looked up here. The import check still runs first, so
+    // these sources are admitted under this grant before any cached bytes
+    // can be returned.
+    check_imports(&inner, &platform.modules, &spec.granted).with_context(named)?;
+    let input = function_cache_key_input(spec, platform, roc_bin).with_context(named)?;
+    if let crate::world_cache::Lookup::Hit { artifact, entry } = cache.lookup(&input, author)? {
+        tracing::info!(
+            target: "world_compile_cache",
+            outcome = "hit",
+            key = %entry.key,
+            function = %spec.function,
+            author,
+            compiler_cost_ms = 0_u64,
+            "function compile cache hit; compiler not invoked"
+        );
+        validate_artifact(&artifact, false).with_context(named)?;
+        let target = input.target;
+        let provenance =
+            crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
+                schema_version: 1,
+                compiler_blake3: input.compiler_blake3,
+                compiler_version: entry.compiler_version,
+                platform_blake3: input.platform_tree_hash,
+                source_blake3: input.source_closure_hash,
+                arguments: stable_arguments(&target),
+                target,
+            });
+        let interface = spec.interface();
+        let interface_hash = interface.interface_hash();
+        return Ok(FunctionArtifact {
+            function: spec.function.clone(),
+            module_hash: crate::world_cache::artifact_hash(&artifact),
+            module: artifact,
+            diagnostics: format!("served from the shared compile cache (key {})", entry.key),
+            provenance,
+            interface,
+            interface_hash,
+        });
+    }
+    let started = std::time::Instant::now();
+    let artifact = compile_function(spec, platform, roc_bin, timeout).await?;
+    let compiler_cost_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    store_function_artifact(cache, &input, author, scope, &artifact, compiler_cost_ms);
+    Ok(artifact)
+}
+
+/// Store a freshly compiled function module after a cache miss, under the
+/// key it was looked up by. Mirrors the whole-world path: the entry is
+/// stored only when the provenance of record agrees with the key
+/// components (otherwise it could never be looked up), and a failed store
+/// is logged, never a compile failure.
+fn store_function_artifact(
+    cache: &crate::world_cache::WorldCache,
+    input: &crate::world_cache::CacheKeyInput,
+    author: &str,
+    scope: crate::world_cache::CacheScope,
+    artifact: &FunctionArtifact,
+    compiler_cost_ms: u64,
+) {
+    let crate::world::ModuleProvenance::SourceBuild(build) = &artifact.provenance else {
+        return;
+    };
+    let function = artifact.function.as_str();
+    if build.platform_blake3 != input.platform_tree_hash
+        || build.compiler_blake3 != input.compiler_blake3
+        || build.source_blake3 != input.source_closure_hash
+        || build.target != input.target
+        || input.interface_hash.as_deref() != Some(artifact.interface_hash.as_str())
+    {
+        tracing::warn!(
+            target: "world_compile_cache",
+            outcome = "miss",
+            function,
+            author,
+            compiler_cost_ms,
+            "function compile cache store skipped: key components diverged from provenance"
+        );
+        return;
+    }
+    match cache.store(
+        input,
+        author,
+        scope,
+        &artifact.module,
+        &build.compiler_version,
+    ) {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "world_compile_cache",
+                outcome = "miss",
+                store = ?outcome,
+                function,
+                author,
+                compiler_cost_ms,
+                "function compile cache miss; artifact stored"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "world_compile_cache",
+                outcome = "miss",
+                function,
+                author,
+                compiler_cost_ms,
+                "function compile cache store failed: {error:#}"
+            );
+        }
+    }
 }
 
 /// Compile `spec` and return the validated Wasm module plus compiler
@@ -739,6 +930,7 @@ pub async fn compile_with_cache(
         dll_closure_hash: crate::world_cache::dll_closure_hash(&[]),
         compiler_blake3: digest_file(&roc_bin)?,
         target: target.to_owned(),
+        interface_hash: None,
     };
     if let Lookup::Hit { artifact, entry } = cache.lookup(&input, author)? {
         tracing::info!(
@@ -2992,6 +3184,299 @@ restore = |text| match U64.from_str(text) {
             format!("{error:#}").contains("resolve Roc compiler executable"),
             "{error:#}"
         );
+    }
+
+    /// A function source that imports the staged platform's `Cap` module.
+    const CAP_FUNCTION: &str = "app [program] { pf: platform \"platform.roc\" }\nimport pf.Cap\n";
+
+    /// A stand-in compiler for the cache tests: a real file, so the key's
+    /// compiler digest can be taken, but not executable, so any attempt to
+    /// run it fails at spawn ("spawn the Roc compiler") — a hit must never
+    /// get that far, and a miss always does.
+    fn stub_compiler() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roc");
+        std::fs::write(&path, b"stub compiler: never run by a cache hit\n").unwrap();
+        let path = path.to_str().unwrap().to_owned();
+        (dir, path)
+    }
+
+    /// A module the sandbox's output policy admits, standing in for a
+    /// previously compiled function.
+    fn cached_module() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                 (memory (export "memory") 1 1)
+                 (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+                 (func (export "plaza_free") (param i32 i32))
+                 (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+                 (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+                   (i32.const 0))
+                 (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
+                 (func (export "plaza_out_len") (result i32) (i32.const 0)))"#,
+        )
+        .unwrap()
+    }
+
+    fn function_cache() -> (tempfile::TempDir, crate::world_cache::WorldCache) {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::world_cache::WorldCache::open(
+            dir.path().join("cache"),
+            crate::world_cache::DEFAULT_LRU_BYTES,
+        )
+        .unwrap();
+        (dir, cache)
+    }
+
+    #[tokio::test]
+    async fn function_cache_hit_returns_the_artifact_without_the_compiler() {
+        // Oracle: design #5964 §2.2 step 6 — a function entry keyed by
+        // (provenance triple, target, interface descriptor) is served on a
+        // hit without the compiler ever running (the stub here cannot run),
+        // with the provenance of record, the module hash of its bytes, and
+        // the interface and interface hash recomputed from the spec, so it
+        // activates on the binding that expects that interface.
+        let (_root, platform) = staged_function_platform();
+        let (_bin, roc) = stub_compiler();
+        let (_dir, cache) = function_cache();
+        let spec = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
+        let input = function_cache_key_input(&spec, &platform, &roc).unwrap();
+        assert_eq!(input.target, "wasm32");
+        assert_eq!(
+            input.interface_hash.as_deref(),
+            Some(spec.interface().interface_hash().as_str())
+        );
+        let module = cached_module();
+        cache
+            .store(
+                &input,
+                "alice",
+                crate::world_cache::CacheScope::Author,
+                &module,
+                "roc test-1",
+            )
+            .unwrap();
+
+        let artifact = compile_function_cached(
+            &spec,
+            &platform,
+            &roc,
+            COMPILE_TIMEOUT,
+            &cache,
+            "alice",
+            crate::world_cache::CacheScope::Author,
+        )
+        .await
+        .unwrap();
+        assert_eq!(artifact.function, "echo");
+        assert_eq!(artifact.module, module);
+        assert_eq!(
+            artifact.module_hash,
+            crate::world_cache::artifact_hash(&module)
+        );
+        assert!(
+            artifact
+                .diagnostics
+                .contains("served from the shared compile cache"),
+            "{}",
+            artifact.diagnostics
+        );
+        let crate::world::ModuleProvenance::SourceBuild(build) = &artifact.provenance else {
+            panic!("a cached function records source-build provenance");
+        };
+        assert_eq!(build.target, "wasm32");
+        assert_eq!(build.compiler_version, "roc test-1");
+        assert_eq!(build.compiler_blake3, input.compiler_blake3);
+        assert_eq!(build.platform_blake3, input.platform_tree_hash);
+        assert_eq!(build.source_blake3, input.source_closure_hash);
+        assert_eq!(build.arguments, stable_arguments("wasm32"));
+        assert_eq!(artifact.interface, spec.interface());
+        assert_eq!(artifact.interface_hash, spec.interface().interface_hash());
+        assert_eq!(
+            check_activation(&FunctionBinding::expecting(&spec.interface()), &artifact),
+            Ok(())
+        );
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 0);
+
+        // The seed is not a key component: another seed is the same hit.
+        let mut reseeded = spec;
+        reseeded.seed = 99;
+        let again = compile_function_cached(
+            &reseeded,
+            &platform,
+            &roc,
+            COMPILE_TIMEOUT,
+            &cache,
+            "alice",
+            crate::world_cache::CacheScope::Author,
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.module, module);
+        assert_eq!(cache.stats().hits, 2);
+    }
+
+    #[tokio::test]
+    async fn function_cache_never_serves_an_entry_whose_digest_check_fails() {
+        // Oracle: design #5964 §2.2 step 6 — "a cache entry whose digest
+        // check fails is recompiled, never trusted": tampered bytes under
+        // the stored content hash are evicted on lookup and the call falls
+        // through to the compiler (here a stub that cannot run, so the
+        // recompile fails at spawn) instead of returning the bad bytes.
+        let (_root, platform) = staged_function_platform();
+        let (_bin, roc) = stub_compiler();
+        let (dir, cache) = function_cache();
+        let spec = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
+        let input = function_cache_key_input(&spec, &platform, &roc).unwrap();
+        let module = cached_module();
+        cache
+            .store(
+                &input,
+                "alice",
+                crate::world_cache::CacheScope::Author,
+                &module,
+                "roc test-1",
+            )
+            .unwrap();
+        let stored = dir
+            .path()
+            .join("cache/artifacts")
+            .join(crate::world_cache::artifact_hash(&module));
+        let mut tampered = module;
+        tampered.push(0);
+        std::fs::write(&stored, &tampered).unwrap();
+
+        let error = compile_function_cached(
+            &spec,
+            &platform,
+            &roc,
+            COMPILE_TIMEOUT,
+            &cache,
+            "alice",
+            crate::world_cache::CacheScope::Author,
+        )
+        .await
+        .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("\"echo\""), "{text}");
+        assert!(text.contains("spawn the Roc compiler"), "{text}");
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.corrupt_evictions, 1);
+        assert_eq!(cache.entry_count(), 0, "the bad entry is evicted");
+    }
+
+    #[tokio::test]
+    async fn function_cache_misses_when_the_grant_or_shape_changes() {
+        // Oracle: design #5964 §2.2 step 6 — the interface descriptor is a
+        // key component: the same sources under a changed grant or a
+        // changed shape miss the entry stored for the original interface
+        // and go to the compiler (the stub fails at spawn), and the original
+        // entry stays put. Nor does a function entry answer the world key
+        // of the same provenance.
+        let (_root, platform) = staged_function_platform();
+        let (_bin, roc) = stub_compiler();
+        let (_dir, cache) = function_cache();
+        let spec = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
+        let input = function_cache_key_input(&spec, &platform, &roc).unwrap();
+        cache
+            .store(
+                &input,
+                "alice",
+                crate::world_cache::CacheScope::Author,
+                &cached_module(),
+                "roc test-1",
+            )
+            .unwrap();
+
+        let mut widened = spec.clone();
+        widened.granted.push("Clock".to_owned());
+        let mut reshaped = spec.clone();
+        reshaped.shape.output = "Json".to_owned();
+        let mut renamed = spec;
+        renamed.function = "echo2".to_owned();
+        for changed in [&widened, &reshaped, &renamed] {
+            let changed_input = function_cache_key_input(changed, &platform, &roc).unwrap();
+            assert_ne!(
+                crate::world_cache::cache_key(&changed_input),
+                crate::world_cache::cache_key(&input)
+            );
+            let error = compile_function_cached(
+                changed,
+                &platform,
+                &roc,
+                COMPILE_TIMEOUT,
+                &cache,
+                "alice",
+                crate::world_cache::CacheScope::Author,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("spawn the Roc compiler"),
+                "{error:#}"
+            );
+        }
+        assert_eq!(cache.stats().hits, 0);
+        assert_eq!(cache.stats().misses, 3);
+        assert_eq!(cache.entry_count(), 1, "the original entry is kept");
+
+        let world = crate::world_cache::CacheKeyInput {
+            interface_hash: None,
+            ..input
+        };
+        assert_eq!(
+            cache.lookup(&world, "alice").unwrap(),
+            crate::world_cache::Lookup::Miss
+        );
+    }
+
+    #[tokio::test]
+    async fn function_cache_hit_never_bypasses_intake() {
+        // Oracle: design #5964 §2.2 step 6 with §1.1 — intake (binding
+        // name, shape, import check against the grant) runs before any
+        // lookup: even with an entry stored under the very key the request
+        // would hash to, an ungranted import or a bad shape is refused by
+        // name and the cache is never consulted.
+        let (_root, platform) = staged_function_platform();
+        let (_bin, roc) = stub_compiler();
+        let (_dir, cache) = function_cache();
+        let ungranted = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec![]);
+        let mut bad_shape = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
+        bad_shape.shape.input = String::new();
+        for (spec, refusal) in [
+            (&ungranted, "main.roc imports Cap"),
+            (&bad_shape, "input shape"),
+        ] {
+            let input = function_cache_key_input(spec, &platform, &roc).unwrap();
+            cache
+                .store(
+                    &input,
+                    "alice",
+                    crate::world_cache::CacheScope::Author,
+                    &cached_module(),
+                    "roc test-1",
+                )
+                .unwrap();
+            let error = compile_function_cached(
+                spec,
+                &platform,
+                &roc,
+                COMPILE_TIMEOUT,
+                &cache,
+                "alice",
+                crate::world_cache::CacheScope::Author,
+            )
+            .await
+            .unwrap_err();
+            let text = format!("{error:#}");
+            assert!(text.contains("\"echo\""), "{text}");
+            assert!(text.contains(refusal), "{text}");
+        }
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 0, "a refused request never reaches a hit");
+        assert_eq!(stats.misses, 0, "nor any lookup at all");
     }
 
     #[tokio::test]
