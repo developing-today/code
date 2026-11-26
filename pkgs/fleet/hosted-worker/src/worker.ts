@@ -13,7 +13,7 @@
 // metadata DB behind the store interfaces and #12583's deploy.
 
 import type { AuthDeps } from "./auth.ts";
-import { FixtureBackfillRunStore } from "./backfill.ts";
+import { FixtureBackfillRunStore, type BackfillRunStore } from "./backfill.ts";
 import { BindingBridgeSurface } from "./bridge.ts";
 import { configFromEnv, type HostedConfig, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
@@ -21,6 +21,7 @@ import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
 import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
 import { openD1QueueStore } from "./d1-queue-store.ts";
+import { openD1BackfillRunStore, openD1MetadataStore } from "./d1-metadata-stores.ts";
 import { openD1SessionRegistry } from "./d1-session-registry.ts";
 import { r2KvBlobBucket } from "./kv-blobs.ts";
 import { HttpKvPrimary, type KvPrimary } from "./kv-door.ts";
@@ -28,7 +29,7 @@ import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
 import { FixtureSessionRegistry, type SessionRegistry } from "./sessions.ts";
-import { FixtureMetadataStore } from "./stamping.ts";
+import { FixtureMetadataStore, type MetadataStore } from "./stamping.ts";
 
 // Session registry seam (#12584), behind the SessionRegistry
 // interface in src/sessions.ts. With the QUEUE_D1 binding present,
@@ -39,15 +40,17 @@ import { FixtureMetadataStore } from "./stamping.ts";
 // lifetime, the local / dev semantics.
 const sessions = new FixtureSessionRegistry();
 
-// Metadata store seam (#12585): same fixture posture as the session
-// registry — the production home is #9074's metadata DB, behind the
-// MetadataStore interface in src/stamping.ts.
+// Metadata store seam (#12585), behind the MetadataStore interface
+// in src/stamping.ts. With the QUEUE_D1 binding present, buildDeps
+// resolves D1MetadataStore (src/d1-metadata-stores.ts, #15456); this
+// fixture is the unbound fallback.
 const metadataStore = new FixtureMetadataStore();
 
 // Backfill run store seam (#14312): the ingestion door's record of
 // backfill runs, behind the BackfillRunStore interface in
-// src/backfill.ts — same fixture posture as the other seams, with
-// #9074's metadata DB as its production home.
+// src/backfill.ts. With the QUEUE_D1 binding present, buildDeps
+// resolves D1BackfillRunStore (#15456); this fixture is the unbound
+// fallback.
 const backfillRuns = new FixtureBackfillRunStore();
 
 // Queue store seam (#12589): the queue door's backend, behind the
@@ -115,6 +118,10 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // database holds the fleet_sessions table; absent the binding,
   // the module fixture stands in.
   const resolvedSessions: SessionRegistry = env.QUEUE_D1 ? openD1SessionRegistry(env.QUEUE_D1) : sessions;
+  // The metadata and backfill run stores follow the same binding
+  // (#15456): fleet_metadata and fleet_backfill_runs in that database.
+  const resolvedMetadataStore: MetadataStore = env.QUEUE_D1 ? openD1MetadataStore(env.QUEUE_D1) : metadataStore;
+  const resolvedBackfillRuns: BackfillRunStore = env.QUEUE_D1 ? openD1BackfillRunStore(env.QUEUE_D1) : backfillRuns;
   const resolvedQueueRecords =
     resolvedQueueStore === queueStore && resolvedSessions === sessions
       ? queueRecords
@@ -141,7 +148,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   return {
     config,
     sessions: resolvedSessions,
-    metadataStore,
+    metadataStore: resolvedMetadataStore,
     githubWriter,
     githubItems: githubWriter,
     queueRecords: resolvedQueueRecords,
@@ -149,7 +156,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     githubComments: githubWriter,
     githubEditor: githubWriter,
     githubProjects: githubWriter,
-    backfillRunStore: backfillRuns,
+    backfillRunStore: resolvedBackfillRuns,
     ...(bridge ? { bridge } : {}),
     ...(kvPrimary ? { kvPrimary } : {}),
     ...(env.KV_BLOBS ? { kvBlobs: r2KvBlobBucket(env.KV_BLOBS) } : {}),
