@@ -176,6 +176,7 @@ import {
   todayContext,
   queueContext,
   overviewContext,
+  projectTrustRuling,
   programSources,
   resolveView,
   poolItemLike,
@@ -644,6 +645,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
       orchestration,
       orchestrationStatus,
+      ruling: await projectTrustRuling(),
     });
     const forecasts = (await allForecastContracts(pool)).byRef;
     // #4830: the same twin /api/flow-analytics.json serves, computed
@@ -1057,7 +1059,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       source.orchestration().catch(() => null),
     ]);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const outRefs = new Set(outPool.map((item) => item.ref));
@@ -1109,6 +1111,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
       orchestration,
       orchestrationStatus: source.diagnostics?.().orchestration.state,
+      ruling: await projectTrustRuling(),
     });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
@@ -1123,6 +1126,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         actionsByObject,
         identities: formOpts.identities,
         briefs,
+        ruling: await projectTrustRuling(),
         forecasts: (await allForecastContracts(viewPool)).byRef,
         // #4830: the Projects page (merged into /program, #1497)
         // renders the #4829 twin as charts, computed as the endpoint
@@ -1729,6 +1733,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         comments: briefComments,
         orchestration,
         orchestrationStatus: source.diagnostics?.().orchestration.state,
+        ruling: await projectTrustRuling(),
       });
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.

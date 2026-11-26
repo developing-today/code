@@ -558,7 +558,7 @@ mod tests {
         ];
         for step in cases {
             assert!(
-                check_steps(rich(), size, &[step.clone()]).is_err(),
+                check_steps(rich(), size, std::slice::from_ref(&step)).is_err(),
                 "accepted {step}"
             );
         }

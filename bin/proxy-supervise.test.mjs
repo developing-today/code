@@ -427,6 +427,49 @@ test('interrupted swap failure restarts the desired build on alternate', async (
   assert.equal(endpoint.pid, recovered.pid);
 });
 
+test('wedged recorded instance (live PID, 503 health) is reaped and the roll succeeds (#14423)', async (t) => {
+  const w = await makeWorld(t);
+  // A wedged process: holds the canonical port, answers 503 on /health.
+  const wedgedPath = path.join(w.root, 'wedged.mjs');
+  fs.writeFileSync(wedgedPath, `
+import http from 'node:http';
+const port = Number(process.env.FAKE_PROXY_PORT);
+http.createServer((req, res) => {
+  if (req.url === '/health') { res.writeHead(503, {'content-type':'application/json'}); res.end(JSON.stringify({status:'wedged'})); }
+  else { res.writeHead(404); res.end(); }
+}).listen(port, '127.0.0.1');
+`);
+  const wedged = spawn(process.execPath, [wedgedPath], {
+    env: { ...process.env, FAKE_PROXY_PORT: String(w.canonicalPort) },
+    detached: true,
+    stdio: 'ignore',
+  });
+  wedged.unref();
+  track(wedged.pid);
+  for (let i = 0; i < 50 && (await getHealth(w.canonicalPort)).status !== 503; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal((await getHealth(w.canonicalPort)).status, 503, 'wedged stub is serving 503 on the canonical port');
+  assert.ok(pidAlive(wedged.pid));
+  // Record it as the supervisor's current instance, with a stale hash.
+  fs.mkdirSync(w.stateDir, { recursive: true });
+  fs.writeFileSync(path.join(w.stateDir, 'fake-proxy.json'), JSON.stringify({
+    current: { port: w.canonicalPort, hash: 'wedged-stale-hash', pid: wedged.pid, startedAt: new Date().toISOString() },
+  }));
+
+  const r = await w.run();
+  // Oracle: the wedged pid is gone and state.current.pid is the new pid.
+  assert.equal(pidAlive(wedged.pid), false, 'oracle: wedged pid is gone after reconcile');
+  assert.ok(['started', 'rolled'].includes(r.action), `roll succeeds instead of roll-failed-old-kept, got ${r.action}`);
+  assert.notEqual(r.pid, wedged.pid);
+  const state = JSON.parse(fs.readFileSync(path.join(w.stateDir, 'fake-proxy.json'), 'utf8'));
+  assert.equal(state.current.pid, r.pid, 'oracle: state.current.pid is the new pid');
+  assert.equal(state.current.port, w.canonicalPort);
+  assert.ok(pidAlive(state.current.pid));
+  assert.equal((await getHealth(w.canonicalPort)).status, 200, 'replacement serves healthy on the canonical port');
+  assert.match((await getHealth(w.canonicalPort)).body, /v1/);
+});
+
 test('broken new build keeps the old instance serving', async (t) => {
   const w = await makeWorld(t);
   const r1 = await w.run();

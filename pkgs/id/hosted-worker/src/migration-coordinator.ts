@@ -25,9 +25,9 @@ import {
   blobsBindingFor,
   parseJurisdiction,
   userStub,
+  type BlobsEnv,
   type Jurisdiction,
   type ObjectNamespaceLike,
-  type R2BucketLike,
 } from "./routing.ts";
 import { HDR_BINDING, HDR_CSE, HDR_JURISDICTION, HDR_ROUTED, blobObjectKey } from "./user-do.ts";
 
@@ -224,7 +224,7 @@ export async function abortMigration(
  * bucket binding. */
 export function workerMigrationPorts(
   namespace: ObjectNamespaceLike,
-  env: { BLOBS?: R2BucketLike },
+  env: BlobsEnv,
   directory: PersistentHostedAccountDirectory,
 ): MigrationPorts {
   return {

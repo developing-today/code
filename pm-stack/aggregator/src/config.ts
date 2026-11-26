@@ -5,6 +5,7 @@
 import { join, dirname } from "node:path";
 import { requireHome } from "./home.ts";
 import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
+import { needsUserStatePath } from "./needs-user-state-path.ts";
 
 // A default may be a thunk, so a HOME-derived default is resolved only when its
 // setting is not given (#8220): an explicit override never needs HOME.
@@ -87,6 +88,8 @@ export interface Config {
   nixCheckout: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
+  /** Per-class trust rulings for the source-conflict inbox (#1282 slice 2). */
+  conflictRulingsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
@@ -275,6 +278,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, fromHome("PM_AGG_CODE_CHECKOUT", "git", "code")),
     nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, fromHome("PM_AGG_NIX_CHECKOUT", "code", "dezren39-nix")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
+    conflictRulingsFile: s(env.PM_AGG_CONFLICT_RULINGS_FILE, join(process.cwd(), "conflict-rulings.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
     identityRegistryFile: s(
@@ -319,7 +323,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_NOTIFICATIONS_FILE,
       fromHome("PM_AGG_NOTIFICATIONS_FILE", ...AGG_STATE, "notifications.jsonl"),
     ),
-    needsDrewFile: s(env.PM_AGG_NEEDS_DREW_FILE, fromHome("PM_AGG_NEEDS_DREW_FILE", ...AGG_STATE, "needs-drew.json")),
+    needsDrewFile: needsUserStatePath(env, fromHome("PM_AGG_NEEDS_USER_FILE", ...AGG_STATE)),
     decisionsFile: s(env.PM_AGG_DECISIONS_FILE, fromHome("PM_AGG_DECISIONS_FILE", ...AGG_STATE, "decisions.json")),
     decisionsEventsFile: s(
       env.PM_AGG_DECISION_EVENTS_FILE,

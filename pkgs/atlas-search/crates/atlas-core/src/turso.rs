@@ -675,6 +675,10 @@ impl<T: PipelineTransport> SearchBackend for TursoBackend<T> {
         "turso"
     }
 
+    fn manifest(&self) -> Manifest {
+        self.manifest.clone()
+    }
+
     fn vec_table(&self) -> &str {
         &self.vec_table
     }

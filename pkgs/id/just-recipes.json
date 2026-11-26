@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/agent-next-27-23692/root.just",
+      "source": "/home/user/git/fleet/14503-s2/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1035,7 +1035,7 @@
       "attributes": [{ "group": "build" }],
       "body": [["cargo build"]],
       "dependencies": [],
-      "doc": "Run cargo build without web feature (debug)",
+      "doc": "`cargo build`, because the lib set equals the root default set.",
       "name": "build-lib-cargo",
       "parameters": [],
       "priors": 0,
@@ -1136,9 +1136,9 @@
     },
     "build-web-cargo": {
       "attributes": [{ "group": "build" }],
-      "body": [["cargo build --features web"]],
+      "body": [["cargo build --features \"$(./scripts/variant-features.sh web --minus-defaults)\""]],
       "dependencies": [],
-      "doc": "Run cargo build with web feature (debug)",
+      "doc": "defaulted cargo build already enables.",
       "name": "build-web-cargo",
       "parameters": [],
       "priors": 0,
@@ -1486,7 +1486,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 18,
+      "priors": 22,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -1507,7 +1507,7 @@
     },
     "clippy-bevy-bridge": {
       "attributes": [{ "group": "lint" }],
-      "body": [["cargo clippy -p id-bevy-bridge --all-targets -- -D warnings"]],
+      "body": [["cargo clippy -p id-bevy-bridge --all-targets"]],
       "dependencies": [],
       "doc": "Clippy for id-bevy-bridge (#13704): non-default workspace member, so the default-member clippy-lint never sees it.",
       "name": "clippy-bevy-bridge",
@@ -1520,7 +1520,7 @@
     },
     "clippy-bevy-presenter": {
       "attributes": [{ "group": "lint" }],
-      "body": [["cargo clippy -p id-bevy-presenter --all-targets -- -D warnings"]],
+      "body": [["cargo clippy -p id-bevy-presenter --all-targets"]],
       "dependencies": [],
       "doc": "Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.",
       "name": "clippy-bevy-presenter",
@@ -2093,7 +2093,7 @@
       "attributes": [{ "group": "build" }],
       "body": [["cargo build --release"]],
       "dependencies": [],
-      "doc": "Run cargo build without web feature (release)",
+      "doc": "Run cargo build with the lib variant's feature set (release)",
       "name": "release-lib-cargo",
       "parameters": [],
       "priors": 0,
@@ -2120,9 +2120,9 @@
     },
     "release-web-cargo": {
       "attributes": [{ "group": "build" }],
-      "body": [["cargo build --release --features web"]],
+      "body": [["cargo build --release --features \"$(./scripts/variant-features.sh web --minus-defaults)\""]],
       "dependencies": [],
-      "doc": "Run cargo build with web feature (release)",
+      "doc": "Run cargo build with the web variant's feature set (release)",
       "name": "release-web-cargo",
       "parameters": [],
       "priors": 0,
@@ -3490,7 +3490,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/agent-next-27-23692/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/14503-s2/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

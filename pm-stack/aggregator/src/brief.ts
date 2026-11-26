@@ -10,6 +10,8 @@
 import type { Comment, GhState, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refUrl } from "./model.ts";
 import { derivedProjectState, projectDisagreement, type DerivedProjectState } from "./projects.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
+import { canonicalStatusFor } from "./status-taxonomy.ts";
 
 export interface BriefEvidence {
   text: string;
@@ -21,7 +23,7 @@ export interface ItemBrief {
   /** The brief is derived, never authored — surfaces label it as such. */
   derived: true;
   label: "Derived brief";
-  state: { value: DerivedProjectState | "Unknown"; text: string; evidence: BriefEvidence };
+  state: { value: string; text: string; evidence: BriefEvidence };
   blocker: {
     blocked: boolean;
     text: string;
@@ -49,6 +51,10 @@ export interface BriefInputs {
   orchestration?: OrchestrationSection | null;
   /** A missing/invalid/stale orchestration source cannot support Todo or In Progress claims. */
   orchestrationStatus?: "live" | "absent" | "invalid" | "stale";
+  /** Slice-2 trust ruling (#1282): when a project-vs-derived ruling
+   *  stands, the disagreement is suppressed — the render applies the
+   *  trusted value instead of showing both sides as a clash. */
+  ruling?: ConflictRuling | null;
 }
 
 function buildItemBriefWithIndexes(
@@ -58,18 +64,28 @@ function buildItemBriefWithIndexes(
   activity: Comment[],
 ): ItemBrief {
   const sourceUsable = inputs.orchestrationStatus === undefined || inputs.orchestrationStatus === "live";
-  const derived: DerivedProjectState | "Unknown" =
+  const detected: DerivedProjectState | "Unknown" =
     item.state === "closed" || item.state === "merged"
       ? "Done"
       : sourceUsable
         ? derivedProjectState(item, inputs.orchestration)
         : "Unknown";
-  const clash = derived === "Unknown" ? null : projectDisagreement(item, inputs.orchestration);
+  // #1282 slice 2: a standing project-vs-derived ruling suppresses the
+  // clash at the render layer and applies its chosen value — detection
+  // still reports it to the inbox.
+  const ruling = inputs.ruling?.classId === "project-vs-derived" ? inputs.ruling : null;
+  const projectValue = ruling?.trusted === "project" ? item.status : null;
+  const projectCanonical = projectValue ? canonicalStatusFor("project", projectValue) : null;
+  const derived: DerivedProjectState | "Unknown" = projectCanonical ?? detected;
+  const clash = detected === "Unknown" ? null : projectDisagreement(item, inputs.orchestration);
+  const ruled = ruling !== null;
+  const visibleClash = ruled ? null : clash;
   const itemEvidence: BriefEvidence = { text: `${item.repo}#${item.number}`, url: item.issueUrl };
 
   // --- State -------------------------------------------------------------
-  const stateText =
-    derived === "Unknown"
+  const stateText = projectValue
+    ? `Project Status “${projectValue}” — applied by a standing Project-vs-derived trust ruling.`
+    : derived === "Unknown"
       ? `Unknown — orchestration source is ${inputs.orchestrationStatus}; derived state is not asserted.`
       : derived === "Done"
         ? "Done — the linked issue/PR is closed or merged."
@@ -78,8 +94,9 @@ function buildItemBriefWithIndexes(
           : derived === "In Progress"
             ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
             : "Todo — open, with no orchestration reference placing it in flight.";
-  const stateEvidence: BriefEvidence =
-    derived === "In Progress" || derived === "Unknown"
+  const stateEvidence: BriefEvidence = projectValue
+    ? itemEvidence
+    : derived === "In Progress" || derived === "Unknown"
       ? {
           text: derived === "In Progress" ? "orchestration section" : "orchestration source diagnosis",
           url: derived === "In Progress" ? "/api/orchestration.json" : "/api/health",
@@ -145,11 +162,11 @@ function buildItemBriefWithIndexes(
 
   // --- Disagreement --------------------------------------------------------
   const disagreement: ItemBrief["disagreement"] =
-    clash && derived !== "Unknown"
+    visibleClash && derived !== "Unknown"
       ? {
-          project: clash.project,
-          derived: clash.derived,
-          text: `Sources disagree: the Project Status says “${clash.project}” while the rest of the dashboard derives “${clash.derived}”. Both are shown; neither is preferred.`,
+          project: visibleClash.project,
+          derived: visibleClash.derived,
+          text: `Sources disagree: the Project Status says “${visibleClash.project}” while the rest of the dashboard derives “${visibleClash.derived}”. Both are shown; neither is preferred.`,
           evidence: { text: `${item.repo}#${item.number} in the Project`, url: item.url },
         }
       : null;
@@ -200,7 +217,7 @@ function buildItemBriefWithIndexes(
     ref: item.ref,
     derived: true,
     label: "Derived brief",
-    state: { value: derived, text: stateText, evidence: stateEvidence },
+    state: { value: projectValue ?? derived, text: stateText, evidence: stateEvidence },
     blocker: { blocked, text: blockerText, blockers, evidence: blockerEvidence },
     lastActivity,
     nextAction,

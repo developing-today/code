@@ -46,6 +46,10 @@
       # Root runtime packages can skip duplicate tests; named flake checks
       # keep the same coverage. Standalone builds remain checked by default.
       checkRuntimePackages = args.checkRuntimePackages or true;
+      # Single profile source for build-variant feature sets (S2 of
+      # #14056): the id-web / id-lib package definitions below take
+      # their feature sets from composition/variants.toml, never inline.
+      variantsConfig = builtins.fromTOML (builtins.readFile ./composition/variants.toml);
       # The root flake injects its pinned Crane input for NixOS runtime
       # builds; standalone ID flakes keep their existing package builder.
       craneInput = args.crane or null;
@@ -701,7 +705,24 @@
                   "test-web-unit"
                   "test-web-typecheck"
                 ];
-                test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
+                # The keyboard parity test reads the kitty corpus from
+                # doc/, a symlink to the repo-root doc/ that dangles in
+                # the check sandbox; materialize that one file as
+                # roc-test does (#14665).
+                test-web-unit = mkCheckWith {
+                  name = "test-web-unit";
+                  justCmd = "test-web-unit";
+                  needsCargoSetup = false;
+                  needsRustToolchain = false;
+                  needsBuildInputs = false;
+                  buildWebAssets = false;
+                  compileRocWorldHost = false;
+                  beforeCheck = ''
+                    rm doc
+                    mkdir doc
+                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                  '';
+                };
                 test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
                 # Roc library expect() tests (#813): runs the roc-test just
                 # recipe with the pinned nightly from nix/roc.nix (already in
@@ -1193,7 +1214,7 @@
             if craneLib != null && !checkRuntimePackages then
               mkCraneRuntime {
                 pname = "id";
-                cargoExtraArgs = "--locked -p id --features web,sandbox,ssh,world";
+                cargoExtraArgs = "--locked -p id --features " + builtins.concatStringsSep "," variantsConfig.variant.web.features;
                 nativeBuildInputs = [
                   pkgs.pkg-config
                   pkgs.cmake
@@ -1229,13 +1250,8 @@
             version = "0.1.0";
             src = ./.;
 
-            # Enable the web feature (default features are empty in Cargo.toml)
-            buildFeatures = [
-              "web"
-              "sandbox"
-              "ssh"
-              "world"
-            ];
+            # Variant feature set from the single profile source (S2).
+            buildFeatures = variantsConfig.variant.web.features;
 
             cargoLock = {
               lockFile = ./Cargo.lock;
@@ -1308,7 +1324,7 @@
             if craneLib != null && !checkRuntimePackages then
               mkCraneRuntime {
                 pname = "id-lib";
-                cargoExtraArgs = "--locked -p id --no-default-features --features sandbox,world";
+                cargoExtraArgs = "--locked -p id --no-default-features --features " + builtins.concatStringsSep "," variantsConfig.variant.lib.features;
                 nativeBuildInputs = [
                   pkgs.pkg-config
                   pkgs.cmake
@@ -1338,10 +1354,7 @@
 
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
-            buildFeatures = [
-              "sandbox"
-              "world"
-            ];
+            buildFeatures = variantsConfig.variant.lib.features;
             dontUseCmakeConfigure = true;
 
             buildInputs = [ pkgs.openssl ];

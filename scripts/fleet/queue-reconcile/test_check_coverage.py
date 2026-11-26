@@ -9,6 +9,8 @@ exercised with a stub `fleet` binary on PATH.
 Covers:
 - observe mode imports nothing and reports the uncovered set;
 - import mode enqueues exactly the uncovered issues, one packet each;
+- a terminal completed dedupe hit retries once with the documented
+  `:dispatch:<hash>` suffix so the issue becomes live coverage;
 - a re-run after a successful import imports nothing (idempotence is
   the queue's dedupe key, but the script must not double-submit within
   a run or across runs given the same coverage answer);
@@ -23,6 +25,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -275,6 +278,95 @@ class CoverageReconcileTest(unittest.TestCase):
         self.assertNotEqual(paths[0], paths[1])
         self.assertFalse(Path(paths[0]).exists())
         self.assertFalse(Path(paths[1]).exists())
+
+    def test_terminal_dedupe_hit_retries_with_dispatch_suffix(self):
+        """A completed key is not live coverage; retry once with a valid suffix."""
+        import unittest.mock
+
+        packet = check_coverage.triage_packet(
+            REPO, {"number": 42, "title": "still open"}, "2026-11-26T11:00:00Z"
+        )
+        original_key = packet["dedupe_key"]
+        calls: list[dict] = []
+
+        def run(cmd, **_kwargs):
+            submitted = json.loads(Path(cmd[3]).read_text())
+            calls.append(submitted)
+            if len(calls) == 1:
+                stdout = (
+                    "not filed: dedupe key already belongs to completed task 7\n"
+                    + json.dumps(
+                        {"dedupe_match": {"rule": "dedupe_key_terminal"}}
+                    )
+                )
+            else:
+                stdout = (
+                    "enqueued new task 8 (queue repo-health-code-pilot, status queued)\n"
+                    + json.dumps({"id": 8, "status": "queued"})
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=run
+        ):
+            ok, detail = check_coverage.enqueue_packet(
+                packet, QUEUE, "fleet", "http://broker", "/token"
+            )
+
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["dedupe_key"], original_key)
+        retry_key = calls[1]["dedupe_key"]
+        self.assertTrue(retry_key.startswith(f"{original_key}:dispatch:"))
+        suffix = retry_key.rsplit(":dispatch:", 1)[1]
+        self.assertEqual(len(suffix), 8)
+        self.assertTrue(all(ch in "0123456789abcdef" for ch in suffix))
+        self.assertEqual(calls[1]["payload"], calls[0]["payload"])
+
+    def test_terminal_pr_dedupe_hit_retries_with_dispatch_suffix(self):
+        """Ready-PR coverage also suffixes a completed shepherd key."""
+        import unittest.mock
+
+        packet = check_coverage.shepherd_packet(
+            REPO,
+            {
+                "number": 900,
+                "title": "ready PR",
+                "created_at": "2026-11-20T00:00:00Z",
+            },
+            "2026-11-26T11:00:00Z",
+        )
+        original_key = packet["dedupe_key"]
+        calls: list[dict] = []
+
+        def run(cmd, **_kwargs):
+            submitted = json.loads(Path(cmd[3]).read_text())
+            calls.append(submitted)
+            if len(calls) == 1:
+                stdout = (
+                    "not filed: dedupe key already belongs to completed task 7\n"
+                    + json.dumps(
+                        {"dedupe_match": {"rule": "dedupe_key_terminal"}}
+                    )
+                )
+            else:
+                stdout = (
+                    "enqueued new task 8 (queue repo-health-code-pilot, status queued)\n"
+                    + json.dumps({"id": 8, "status": "queued"})
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=run
+        ):
+            ok, detail = check_coverage.enqueue_packet(
+                packet, QUEUE, "fleet", "http://broker", "/token"
+            )
+
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["dedupe_key"], original_key)
+        self.assertTrue(calls[1]["dedupe_key"].startswith(f"{original_key}:dispatch:"))
 
 
 class OpenPrCoverageTest(unittest.TestCase):
