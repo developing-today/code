@@ -42,6 +42,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   key      generate | inspect
   publish  plan | verify (apply | status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
+  batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status
   profile  list | show
   algorithms list | describe | benchmark | doctor
@@ -239,6 +240,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "key" => key_cmd(rest, json_out),
         "publish" => publish_cmd(rest, json_out),
         "dns" => dns_cmd(rest, json_out),
+        "batch" => batch_cmd(rest, json_out),
         "trust" => trust_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
@@ -1380,6 +1382,110 @@ fn dns_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- batch (§6.5)
+
+pub const BATCH_USAGE: &str = "\
+Usage: fleet cert batch <verb> --file <batch.json|-> --base <dir> [options]
+
+Verbs:
+  validate   Check the batch and the base directory; writes nothing.
+  plan       Show the resolved DAG and the batch digest; writes nothing.
+  apply      Run every step in a staging area under <base>/.fleet-batch/,
+             then move the finished bundles into place, all or nothing.
+             Needs --approve <sha256> from the reviewed plan.
+             --dry-run runs every step, then removes the staging area.
+  status     Compare the batch's receipt with the bundles on disk.
+
+A batch is fleet.batch/v1 JSON: operations with id, after, command
+(cert.issuer.create | cert.leaf.issue), out (relative to --base),
+with (typed arguments) and expect. Steps reference each other only as
+@<id>.bundle and @<id>.keys; signer key directories are always named
+explicitly (spec §24.3). There is no interpolation or shell expansion.
+Root creation stays `fleet cert root create`. A completed apply writes
+a receipt, so applying the same batch again reissues nothing.
+
+Options:
+  --file <path|->     The batch document (- reads stdin).
+  --base <dir>        Directory that out paths and relative inputs resolve against.
+  --approve <sha256>  apply: the digest printed by plan.
+  --dry-run           apply: rehearse in staging, then discard.
+  --json              Emit the typed report as JSON.
+";
+
+fn batch_input(p: &Parsed, verb: &str) -> Result<(crate::batch::Batch, PathBuf, String, String)> {
+    let file = p.require("file", &format!("batch {verb}"))?;
+    let base_label = p.require("base", &format!("batch {verb}"))?;
+    let base = PathBuf::from(&base_label);
+    if !base.is_dir() {
+        return Err(CertError::usage(format!(
+            "--base {} is not a directory",
+            base.display()
+        )));
+    }
+    let bytes = if file == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
+        buf
+    } else {
+        std::fs::read(&file)
+            .map_err(|e| CertError::usage(format!("cannot read --file {file}: {e}")))?
+    };
+    let batch = crate::batch::load(&bytes, &base)?;
+    Ok((batch, base, file, base_label))
+}
+
+fn batch_emit(json_out: bool, rep: &crate::batch::Report, file: &str, base: &str) -> Result<i32> {
+    let value = serde_json::to_value(rep)?;
+    Ok(emit(json_out, crate::batch::render_text(rep, file, base), value))
+}
+
+fn batch_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "" | "--help" | "-h" | "help" => {
+            print!("{BATCH_USAGE}");
+            Ok(if verb.is_empty() { 2 } else { 0 })
+        }
+        "validate" | "plan" | "status" => {
+            let p = parse_args(rest, &["file", "base"], &["json"])?;
+            let (batch, base, file, base_label) = batch_input(&p, verb)?;
+            let rep = match verb {
+                "validate" => crate::batch::validate(&batch, &base)?,
+                "plan" => crate::batch::plan(&batch),
+                _ => crate::batch::status(&batch, &base)?,
+            };
+            let code = batch_emit(json_out, &rep, &file, &base_label)?;
+            Ok(if verb == "status" && rep.status != "applied" && rep.status != "pending" {
+                1
+            } else {
+                code
+            })
+        }
+        "apply" => {
+            let p = parse_args(rest, &["file", "base", "approve"], &["json", "dry-run"])?;
+            let (batch, base, file, base_label) = batch_input(&p, verb)?;
+            let rep = crate::batch::apply(
+                &batch,
+                &base,
+                &crate::batch::ApplyOptions {
+                    dry_run: p.has("dry-run"),
+                    approve: p.get("approve").map(|s| s.to_string()),
+                },
+            )?;
+            batch_emit(json_out, &rep, &file, &base_label)
+        }
+        "resume" => Err(CertError::policy(
+            "batch apply is all-or-nothing: a failed apply leaves nothing to resume, and applying \
+             a completed batch again returns its receipt without reissuing. Run `fleet cert batch \
+             status` to see where a batch stands.",
+        )),
+        other => Err(CertError::usage(format!(
+            "unknown batch verb '{other}' (validate | plan | apply | status)"
+        ))),
+    }
+}
+
 fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     let p = parse_args(args, &["dir"], &["json"])?;
     let dir = p.get("dir").unwrap_or(".").to_string();
@@ -1865,7 +1971,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "profile validate/scaffold",
         "profile validation + scaffolding (spec §6.1)",
     ),
-    ("batch", "batch plan/validate/apply (spec §6.5)"),
     (
         "root/issuer renew/rotate/replace",
         "lifecycle verbs (spec §5.2)",
@@ -1981,7 +2086,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), profile (list/show), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), profile (list/show), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -1989,7 +2094,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "profile-list/show", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "profile-list/show", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
