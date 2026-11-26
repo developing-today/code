@@ -23,6 +23,8 @@ pub mod reducer;
 /// Registry handoff: report standings and the opt-in `audit-resolved`
 /// basis (#2039 phase 6).
 pub mod registry;
+/// Rebuildable match tracking view over synced evidence (#2039 phase 7).
+pub mod tracking;
 
 /// Evidence a named witness considered when issuing a decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

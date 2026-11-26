@@ -190,6 +190,10 @@ pub struct Reduction {
     pub state: V1MatchState,
     /// The basis of a non-disputed, non-void result.
     pub basis: Basis,
+    /// The result's outcome: the concurring claims' outcome for an agreed
+    /// match, the effective decision's for a witnessed or final one, and
+    /// `None` otherwise.
+    pub outcome: Option<String>,
     /// Whether the result is protocol-final; `true` exactly when
     /// [`Reduction::finality`] is [`Finality::Proven`].
     pub finality_proven: bool,
@@ -235,6 +239,7 @@ impl Reduction {
         Self {
             state,
             basis: Basis::None,
+            outcome: None,
             finality_proven: false,
             finality: Finality::NotApplicable,
             void: Vec::new(),
@@ -822,6 +827,7 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             } else {
                 result.state = V1MatchState::Agreed;
                 result.basis = Basis::Concession;
+                result.outcome = Some(a.outcome.clone());
             }
         }
         [Some(claim), None] | [None, Some(claim)] if contradicts(claim) => {
@@ -829,6 +835,7 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
         }
         _ if decided.is_some() => {
             result.state = V1MatchState::Witnessed;
+            result.outcome = decided.map(str::to_owned);
             result.basis = if decisions
                 .iter()
                 .any(|object| matches!(object.body.evidence, WitnessEvidence::Complete { .. }))
@@ -1940,6 +1947,25 @@ mod tests {
         assert!(!reduction.finality_proven);
         assert!(reduction.ignored.contains(&h("received decision")));
         assert!(reduction.ignored.contains(&h("closure")));
+    }
+
+    #[test]
+    fn the_reduction_names_the_outcome_only_for_a_result() {
+        let mut world = World::new();
+        assert_eq!(world.reduce().outcome, None);
+        concession(&mut world);
+        assert_eq!(world.reduce().outcome, Some(win(A)));
+
+        let mut witnessed = World::new();
+        witnessed.decision("decision", W, &win(B), false);
+        assert_eq!(witnessed.reduce().outcome, Some(win(B)));
+
+        let mut disputed = World::new();
+        disputed.claim("claim a", A, &win(A), "final");
+        disputed.claim("claim b", B, &win(B), "final");
+        let reduction = disputed.reduce();
+        assert_eq!(reduction.state, V1MatchState::Disputed);
+        assert_eq!(reduction.outcome, None);
     }
 
     #[test]
