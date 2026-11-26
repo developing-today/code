@@ -1451,7 +1451,7 @@ commands = ["play"]
 
         let discovery = discover_apps(&missing_root);
 
-        assert_eq!(discovery.apps, [] as [app_manifest::DiscoveredApp; 0]);
+        assert_eq!(discovery.apps, [] as [DiscoveredApp; 0]);
         assert_eq!(discovery.errors.len(), 1);
         assert!(discovery.errors[0].contains(&missing_root.display().to_string()));
     }

@@ -729,7 +729,7 @@ mod tests {
             .push("127.0.0.1:4002".parse().unwrap());
         let mut manager = fx.manager(Registry::default(), true);
         assert!(manager.publish(listener_pub("127.0.0.1:4002")).is_err());
-        assert_eq!(manager.registry().publications, [] as [publications::Publication; 0]);
+        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
         assert!(!fx.file.exists(), "nothing was persisted");
         fx.cleanup();
     }
@@ -756,7 +756,7 @@ mod tests {
             },
         );
         assert!(manager.publish(listener_pub("127.0.0.1:4001")).is_err());
-        assert_eq!(manager.registry().publications, [] as [publications::Publication; 0]);
+        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
         assert_eq!(
             fx.state.lock().unwrap().closed,
             vec!["127.0.0.1:4001".parse::<SocketAddr>().unwrap()],
@@ -786,7 +786,7 @@ mod tests {
         let fx2 = Fixture::new("publish-mount-no-explorer");
         let mut manager2 = fx2.manager(Registry::default(), false);
         assert!(manager2.publish(mount_pub("/arena", false)).is_err());
-        assert_eq!(manager2.registry().publications, [] as [publications::Publication; 0]);
+        assert_eq!(manager2.registry().publications, [] as [Publication; 0]);
         assert!(!fx2.file.exists());
         fx.cleanup();
         fx2.cleanup();
@@ -818,7 +818,7 @@ mod tests {
             fx.state.lock().unwrap().unmounted,
             vec!["/arena".to_string()]
         );
-        assert_eq!(manager.registry().publications, [] as [publications::Publication; 0]);
+        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
         assert_eq!(Registry::load(&fx.file).unwrap().publications.len(), 0);
         // A second unpublish of the same placement is an error.
         assert!(
@@ -856,7 +856,7 @@ mod tests {
             vec!["/arena".to_string()]
         );
         assert_eq!(fx.state.lock().unwrap().live_mounts, [] as [String; 0]);
-        assert_eq!(manager.registry().publications, [] as [publications::Publication; 0]);
+        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
         fx.cleanup();
     }
 
@@ -895,7 +895,7 @@ mod tests {
                 path: "/arena".to_string(),
             })
             .unwrap();
-        assert_eq!(manager.registry().publications, [] as [publications::Publication; 0]);
+        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
         assert_eq!(fx.state.lock().unwrap().live_mounts, [] as [String; 0]);
         fx.cleanup();
     }
