@@ -14,6 +14,7 @@ import { tenantStoreMigrations } from "../src/tenant-store/load.ts";
 import { applyMigrations, type SqlDb } from "../src/tenant-store/migrate.ts";
 import type { BoardDef } from "../src/tenant-store/schema.ts";
 import { openTenantDb } from "../src/tenant-store/sqlite.ts";
+import { programFromPool } from "../src/read-api/waves.ts";
 
 const T1 = "2026-11-25T08:00:00.000Z";
 const T2 = "2026-11-25T09:00:00.000Z";
@@ -91,6 +92,41 @@ async function seededDb(): Promise<SqlDb> {
 }
 
 describe("CF-5d program read wave", () => {
+  test("pool grouping is a deterministic, lossless partition against a filter oracle", () => {
+    const generated: ProjectPoolItem[] = [
+      poolItem(300, { kind: "Epic" }),
+      poolItem(301, { kind: "Epic" }),
+      ...Array.from({ length: 96 }, (_, index) => {
+        const number = 400 + index;
+        if (index % 5 === 0) return poolItem(number);
+        if (index % 5 === 1) return poolItem(number, { epicRef: ref(300) });
+        if (index % 5 === 2) return poolItem(number, { epicRef: ref(301) });
+        return poolItem(number, { epicRef: ref(9999) });
+      }),
+    ];
+    const isEpic = (item: ProjectPoolItem) => item.kind?.toLowerCase() === "epic";
+    const refs = new Set<string>();
+    for (const item of generated) {
+      if (isEpic(item)) refs.add(item.ref);
+      else if (item.epicRef) refs.add(item.epicRef);
+    }
+    const expectedEpics = [...refs].sort().map((epicRef) => ({
+      ref: epicRef,
+      epic: generated.find((item) => isEpic(item) && item.ref === epicRef) ?? null,
+      items: generated.filter((item) => !isEpic(item) && item.epicRef === epicRef),
+    }));
+    const expectedUnassigned = generated.filter((item) => !isEpic(item) && !item.epicRef);
+    const program = programFromPool(generated);
+    expect(program).toEqual({ epics: expectedEpics, unassigned: expectedUnassigned });
+
+    const returnedRefs = [
+      ...program.epics.flatMap((group) => [group.epic?.ref, ...group.items.map((item) => item.ref)]),
+      ...program.unassigned.map((item) => item.ref),
+    ].filter((item): item is string => item !== undefined);
+    expect(returnedRefs.length).toBe(generated.length);
+    expect(returnedRefs.slice().sort()).toEqual(generated.map((item) => item.ref).sort());
+  });
+
   test("GET /api/program.json partitions the Project pool and carries truthful freshness", async () => {
     const handler = createReadApiHandler({ db: await seededDb(), now: () => T2 });
     const response = await handler(new Request("https://pm.test/api/program.json"));
@@ -109,14 +145,14 @@ describe("CF-5d program read wave", () => {
     });
     expect(body.epics).toEqual([
       { ref: ref(200), epic: POOL[0], items: [POOL[1]] },
-      { ref: ref(999), epic: null, items: [POOL[3]] },
       { ref: ref(204), epic: POOL[4], items: [] },
+      { ref: ref(999), epic: null, items: [POOL[3]] },
     ]);
     expect(body.unassigned).toEqual([POOL[2]]);
     const returnedRefs = [
       ...body.epics.flatMap((group) => [group.epic?.ref, ...group.items.map((item) => item.ref)]),
       ...body.unassigned.map((item) => item.ref),
     ].filter((item): item is string => item !== undefined);
-    expect(returnedRefs.toSorted()).toEqual(POOL.map((item) => item.ref).toSorted());
+    expect(returnedRefs.slice().sort()).toEqual(POOL.map((item) => item.ref).sort());
   });
 });

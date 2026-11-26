@@ -55,6 +55,54 @@ export function freshnessFromSummaries(summaries: readonly BoardSummary[]): Fres
   return { latestSnapshotAt, snapshots };
 }
 
+export interface ProgramGroup {
+  /** The canonical Project ref for this Epic, whether or not it is in this pool. */
+  ref: string;
+  /** Null when the referenced Epic is outside the current pool. */
+  epic: ProjectPoolItem | null;
+  /** Non-Epic pool items whose nearest Epic ancestor is ref, in pool order. */
+  items: ProjectPoolItem[];
+}
+
+export interface ProgramView {
+  /** Epic groups sorted by ref; members preserve the source pool order. */
+  epics: ProgramGroup[];
+  /** Non-Epic items with no Epic ancestor, in source pool order. */
+  unassigned: ProjectPoolItem[];
+}
+
+/** Build the program view from the collector's existing Epic ancestry.
+ * Missing Epic headers remain explicit as null; the view never infers
+ * membership from titles or invents a source item. */
+export function programFromPool(pool: readonly ProjectPoolItem[]): ProgramView {
+  const groups = new Map<string, ProgramGroup>();
+  const unassigned: ProjectPoolItem[] = [];
+  const groupFor = (ref: string): ProgramGroup => {
+    let group = groups.get(ref);
+    if (!group) {
+      group = { ref, epic: null, items: [] };
+      groups.set(ref, group);
+    }
+    return group;
+  };
+
+  for (const item of pool) {
+    if (item.kind?.toLowerCase() === "epic") {
+      const group = groupFor(item.ref);
+      group.epic ??= item;
+    } else if (item.epicRef) {
+      groupFor(item.epicRef).items.push(item);
+    } else {
+      unassigned.push(item);
+    }
+  }
+
+  return {
+    epics: [...groups.values()].sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)),
+    unassigned,
+  };
+}
+
 const countBy = (pool: readonly ProjectPoolItem[], key: (item: ProjectPoolItem) => string | null) => {
   const counts = new Map<string, number>();
   for (const item of pool) {
