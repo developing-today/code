@@ -1028,6 +1028,7 @@ fn submitted_by() -> String {
 
 mod adapters;
 mod coordinator;
+pub(crate) use coordinator::{coordinator, placement_load_report};
 mod remote;
 use adapters::adapter_for;
 #[cfg(test)]
