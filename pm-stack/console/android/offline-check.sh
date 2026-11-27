@@ -325,10 +325,11 @@ wait_text_scrolling() {
   done
 }
 
-# Taps, scrolling the page down between misses: a control can sit
-# below the fold — after the answered list reloads, the segment row
-# is further down the Needs-me page than the stats. Eight looks with
-# a swipe between, so a control below the fold is still found.
+# Taps, scrolling between misses: a control can sit out of view — the
+# segment chips run in a sideways strip (the Questions chip sat off
+# its right end with bounds zero across eight vertical swipes), or
+# below the fold. Sideways swipes across the chip band come first,
+# then page-down swipes, eight looks altogether.
 tap_text_scrolling() {
   local tries=0 rc=1
   until tap_text "$1"; do
@@ -339,7 +340,11 @@ tap_text_scrolling() {
       dismiss_anr
       sleep 2
     fi
-    adb shell input swipe 540 1500 540 600 300 >/dev/null 2>&1 || true
+    if [ "$tries" -le 4 ]; then
+      adb shell input swipe 800 500 200 500 300 >/dev/null 2>&1 || true
+    else
+      adb shell input swipe 540 1500 540 600 300 >/dev/null 2>&1 || true
+    fi
     sleep 2
   done
 }
