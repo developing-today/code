@@ -12,18 +12,22 @@ sys.path.insert(0, str(HERE))
 from storage_bound import calculate_storage_bound  # noqa: E402
 
 MEASUREMENTS = REPO / "doc/2026-11-25T11-33-10Z_report_atlas_embed_storage_composition_9098/measurements.json"
+ASSUMPTIONS = HERE / "cost_inputs.json"
 
 
 class StorageBoundTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.measurements = json.loads(MEASUREMENTS.read_text())
+        cls.assumptions = json.loads(ASSUMPTIONS.read_text())
         cls.result = calculate_storage_bound(
             cls.measurements,
-            r2_standard_rate_usd_per_gb_month=Decimal("0.015"),
-            r2_billable_unit_gb=Decimal("1"),
-            r2_free_gb_month_available=Decimal("10"),
-            turso_overages_enabled=False,
+            r2_standard_rate_usd_per_gb_month=Decimal(cls.assumptions["r2_standard_rate_usd_per_gb_month"]),
+            r2_billable_unit_gb=Decimal(cls.assumptions["r2_billable_unit_gb"]),
+            r2_free_gb_month_available=Decimal(cls.assumptions["r2_free_gb_month_available_scenario"]),
+            turso_storage_used_gb_issue_snapshot=Decimal(cls.assumptions["turso_storage_used_gb_issue_snapshot"]),
+            turso_storage_included_gb=Decimal(cls.assumptions["turso_storage_included_gb"]),
+            turso_overages_enabled=cls.assumptions["turso_storage_overages_enabled"],
         )
 
     def test_sums_only_measured_raw_text_from_every_store_class(self):
@@ -41,9 +45,10 @@ class StorageBoundTest(unittest.TestCase):
         self.assertEqual(self.result["r2_gross_monthly_storage_usd_if_free_tier_exhausted"], Decimal("0.030"))
 
     def test_available_free_tier_and_turso_overage_state_are_explicit(self):
-        self.assertEqual(self.result["r2_incremental_storage_usd_if_free_tier_available"], Decimal("0"))
-        self.assertEqual(self.result["turso_invoice_savings_usd_under_current_overage_setting"], Decimal("0"))
-        self.assertFalse(self.result["turso_overages_enabled"])
+        self.assertEqual(self.result["r2_incremental_storage_usd_if_full_free_allowance_remains"], Decimal("0"))
+        self.assertFalse(self.result["turso_storage_overages_enabled"])
+        self.assertEqual(self.result["turso_invoice_savings_usd_under_issue_overage_setting"], Decimal("0"))
+        self.assertEqual(self.result["turso_storage_after_offload_gb_if_snapshot_held"], Decimal("9.722306972"))
 
 
 if __name__ == "__main__":
