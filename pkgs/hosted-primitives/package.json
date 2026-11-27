@@ -1,0 +1,12 @@
+{
+  "name": "hosted-primitives",
+  "private": true,
+  "type": "module",
+  "description": "Shared TypeScript primitives for the hosted Workers (G2 of #9085): BLAKE3 (one-shot and streaming), canonical CBOR, and encoding helpers. Single implementation both Workers import; no runtime dependencies.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./blake3": "./src/blake3.ts",
+    "./canonical-cbor": "./src/canonical-cbor.ts",
+    "./encoding": "./src/encoding.ts"
+  }
+}

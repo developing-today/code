@@ -89,10 +89,10 @@ pub use journal::{
     JOURNAL_VERSION_NOTIFY, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
     JOURNAL_VERSION_PRESENTATION_POLICY, JOURNAL_VERSION_PROGRAM_BUNDLE,
     JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
-    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
-    journal_version_required_by,
+    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_TEMPLATE_ROLES, JOURNAL_VERSION_WORLD_BUDGET,
+    JOURNAL_VERSION_WRITE_LEASE, JournalAckMode, JournalAdminHistory, JournalEntry,
+    JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis,
+    TrustDecision, WorldJournal, journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -1801,6 +1801,14 @@ pub(crate) fn program_records(program: &mut dyn WorldProgram) -> Result<Option<R
 /// screen naming the failing call, keeps the program's state, and retries on
 /// the next event (see F11.17).
 pub trait WorldProgram: Send + 'static {
+    /// Set the account used to charge the immediately following
+    /// participant-input update. The actor clears this context before it
+    /// handles another command. Programs without account-aware billing may
+    /// ignore it.
+    fn replace_caller_account(&mut self, _account: Option<&str>) -> Option<String> {
+        None
+    }
+
     /// Apply an opaque participant input. Chat is managed by the host and is
     /// not passed to the game program.
     fn update(&mut self, _event: &WorldEvent) -> Result<()> {

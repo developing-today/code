@@ -163,6 +163,7 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        caller_account: Option<String>,
         device_input: Option<serde_json::Value>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
