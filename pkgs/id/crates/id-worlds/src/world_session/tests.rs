@@ -263,6 +263,54 @@ mod tests {
         peer.close().await;
     }
 
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_view_charge() {
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut instance = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        instance.set_charge_key("lobby".to_owned());
+        instance.set_burn_budget(Arc::clone(&budget));
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(instance),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world, None)),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        assert_eq!(peer.next().await.unwrap()["type"], "view");
+
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("acct-ada")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("authenticated account receives the session view fuel charge");
+
+        let snapshot = budget.snapshot();
+        assert!(snapshot.accounts["acct-ada"].settled_fuel > 0);
+        assert!(snapshot.accounts.get("lobby").is_none_or(|account| account.admitted == 0));
+        peer.close().await;
+    }
+
     /// Publishes 1024 records of about 1 KiB, so one query needs several
     /// pages (the page budget is 768 KiB).
     struct Bulky;
