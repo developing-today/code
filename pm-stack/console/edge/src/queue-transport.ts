@@ -23,6 +23,7 @@
 // (pkgs/queue-transport-alert/worker/src/status.js) and its runPass
 // semantics, exercised in the console tests with stand-in fetchers
 // and clients.
+import { timed } from "../../src/timed.ts";
 
 /** The transport verdict the console keeps, as its probe stated it. */
 export interface QueueTransport {
@@ -397,7 +398,9 @@ export type BrokerProbe = { ok: boolean; detail: string } | { skipped: string };
 
 /** Ask the broker's /healthz through Cloudflare Access. A probe that
  * cannot authenticate itself is skipped, never an alert: that posture
- * is the retired Worker's, kept deliberately. */
+ * is the retired Worker's, kept deliberately. The deadline is
+ * timed()'s, not AbortSignal.timeout's: a timer left running keeps
+ * the object in memory (see src/timed.ts). */
 export async function probeBroker(
   fetchImpl: typeof fetch,
   config: TransportProbeConfig,
@@ -407,16 +410,18 @@ export async function probeBroker(
   }
   const url = `${String(config.brokerUrl).replace(/\/+$/, "")}/healthz`;
   try {
-    const res = await fetchImpl(url, {
-      headers: {
-        "CF-Access-Client-Id": config.accessId,
-        "CF-Access-Client-Secret": config.accessSecret,
-        "User-Agent": PROBE_UA,
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(config.timeoutMs ?? 10000),
+    return await timed(config.timeoutMs ?? 10000, async (signal) => {
+      const res = await fetchImpl(url, {
+        headers: {
+          "CF-Access-Client-Id": config.accessId,
+          "CF-Access-Client-Secret": config.accessSecret,
+          "User-Agent": PROBE_UA,
+        },
+        redirect: "manual",
+        signal,
+      });
+      return classifyHealthz(res.status, await res.text());
     });
-    return classifyHealthz(res.status, await res.text());
   } catch (err) {
     const name = (err as { name?: string } | null)?.name;
     if (name === "TimeoutError" || name === "AbortError") {
