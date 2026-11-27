@@ -529,6 +529,18 @@ fn mode2_endpoint_builder(
     }
 }
 
+fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> DialFailure {
+    match error {
+        iroh::endpoint::ConnectError::Connecting {
+            source:
+                iroh::endpoint::ConnectingError::HandshakeFailure {
+                    source: iroh::endpoint::AuthenticationError::RemoteId { .. },
+                },
+        } => DialFailure::IdentityMismatch,
+        _ => DialFailure::RelayUnreachable,
+    }
+}
+
 async fn dial_mode2(
     endpoint: &iroh::Endpoint,
     target: iroh::EndpointId,
@@ -543,7 +555,7 @@ async fn dial_mode2(
     let conn = endpoint
         .connect(addr, alpn)
         .await
-        .map_err(|_| DialFailure::RelayUnreachable)?;
+        .map_err(|error| classify_connect_error(&error))?;
     ensure_peer_identity(&pinned, conn.remote_id().as_bytes())?;
     Ok(conn)
 }
@@ -610,6 +622,7 @@ served by 'fleet id postcard'/'fleet id stream', not this verb).
   <target>        mode 1: TCP/Unix endpoint; mode 2: peer NodeId (64 hex)
   --alpn <alpn>   target protocol (required for mode 2; fleet knows /iroh-meta/3)
   --relay <url>   HTTPS relay URL for the mode-2 dial
+                  HTTP(S)_PROXY env vars configure the CONNECT proxy
   --expect-node-id <hex>
                   pin the peer NodeId for the mode-2 dial; a
                   mismatch fails closed (exit 72), never downgrades
@@ -1279,6 +1292,7 @@ mod tests {
             let mut send = send;
             send.write_all(&payload).await.expect("echo payload");
             send.finish().expect("finish echo");
+            connection.closed().await;
             payload
         });
 
@@ -1320,8 +1334,8 @@ mod tests {
                 relay_url.port_or_known_default().expect("relay port")
             )
         );
-        assert_eq!(peer.await.expect("peer task"), payload);
         client.close().await;
         server.close().await;
+        assert_eq!(peer.await.expect("peer task"), payload);
     }
 }

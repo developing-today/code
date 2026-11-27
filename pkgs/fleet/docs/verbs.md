@@ -466,20 +466,21 @@ peer NodeId that is not the pinned one).
 
 `fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>] [--relay <url>] [--expect-node-id <hex>] <target>`
 
-Slice 2, mode-1 half (#15434, design §4.2): byte-moves a
-caller-held ticket through the selected proxy mode. Mode 1 is
-implemented: the target (`tcp://host:port`, `unix:///path`,
-or the bare `host:port` / `/path` forms) is spliced to this
-process's stdin/stdout byte for byte; fleet parses nothing and
-holds no iroh key for the flow. `--relay` / `--expect-node-id`
-on a mode-1 selection are refused, not ignored. Mode 2's live
-dialer (CONNECT-capable relay dialer + resolver override for
-the relay name) is the next sub-slice of #15434: until it
-lands, a mode-2 selection exits 69 rather than silently
-downgrading, and mode 3 through this verb is a usage error
-(the initiator verbs own it). Exit codes: 0 ok · 2 usage ·
-69 mode unavailable · 71 relay unreachable · 72 identity
-mismatch · 73 target unreachable.
+Slice 2 (#15434, design §4.2): byte-moves a caller-held ticket
+through the selected proxy mode. Mode 1's target (`tcp://host:port`,
+`unix:///path`, or bare `host:port` / `/path`) is spliced to this
+process's stdin/stdout byte for byte; fleet parses nothing and holds
+no iroh key for the flow. Mode 2 takes a peer NodeId as `<target>`,
+plus `--alpn`, `--relay https://…`, and `--expect-node-id`; it dials
+that peer through the configured relay and uses `HTTPS_PROXY` or
+`HTTP_PROXY` (including lowercase spellings) as the CONNECT tunnel
+when set. The post-dial QUIC stream stays opaque. Peer identity and
+relay failures are distinct and fail closed; mode 2 never retries
+through a direct transport. `--relay` / `--expect-node-id` on a
+mode-1 selection are refused, not ignored. Mode 3 through this verb
+is a usage error (the initiator verbs own it). Exit codes: 0 ok ·
+2 usage · 71 relay unreachable · 72 identity mismatch ·
+73 target unreachable.
 
 ## `actions` — live exec sessions in Actions runners
 
