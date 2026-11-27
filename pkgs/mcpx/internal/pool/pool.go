@@ -1074,13 +1074,6 @@ func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string, scop
 	return p.dialMode(ctx, eff, root, dialSpawn, scopeKey)
 }
 
-// dialMode is dial with the supervised variation selected by kind:
-// dialAttachOnly never spawns a supervisor, dialRestart restarts the
-// child through its supervisor. Unsupervised paths ignore the kind.
-// scopeKey is the spawning instance's scope key: it keys the
-// supervisor socket per instance (#9963), so two scoped instances of
-// one server never share a supervisor. Callers with no instance being
-// spawned (HTTP session adoption) pass "" — the primary instance.
 // SupervisedLaneKey maps a pool lane to its supervisor socket instance:
 // the legacy follow lane runs its own supervisor and child beside the
 // modern one, so the two era sessions never share a process. Both lanes
@@ -1097,6 +1090,13 @@ func SupervisedLaneKey(key string, legacy bool) string {
 	return key + "\x00legacy-follow"
 }
 
+// dialMode is dial with the supervised variation selected by kind:
+// dialAttachOnly never spawns a supervisor, dialRestart restarts the
+// child through its supervisor. Unsupervised paths ignore the kind.
+// scopeKey is the spawning instance's scope key: it keys the
+// supervisor socket per instance (#9963), so two scoped instances of
+// one server never share a supervisor. Callers with no instance being
+// spawned (HTTP session adoption) pass "" — the primary instance.
 func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind, scopeKey string) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
