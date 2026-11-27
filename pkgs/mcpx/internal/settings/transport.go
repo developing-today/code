@@ -53,6 +53,20 @@ func transportSettings() []Setting {
 				"every mode as the legacy-transport-token key.",
 		},
 		{
+			Path: "auth.capabilityCeilings", Scope: ScopeDaemon, Kind: KindString,
+			Default:  `[{"name":"full","tools":["*"]},{"name":"discovery","tools":[]},{"name":"admin","tools":[]}]`,
+			Commands: []string{"daemon"}, Hot: true,
+			Name:  "Capability ceilings",
+			Short: "named daemon key ceilings and the upstream tools each permits",
+			Long: "A JSON array of {name, tools} objects. Each tool entry is an exact " +
+				"namespace:tool pair; '*' permits every upstream tool. The defaults keep " +
+				"the legacy full key compatible and give discovery/admin keys no upstream " +
+				"tool calls. Unknown ceiling names, duplicate names, malformed JSON, and " +
+				"malformed policies fail closed for authenticated calls. Example: " +
+				`[{"name":"docs","tools":["docs:search"]}]` +
+				". Configure with auth.capabilityCeilings or --auth-capability-ceilings.",
+		},
+		{
 			Path: "transport.allowedOrigins", Scope: ScopeDaemon, Kind: KindList,
 			Default: defaults.CSV(defaults.TransportAllowedOrigins), Repeatable: true,
 			Commands: []string{"daemon"},

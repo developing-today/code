@@ -42,6 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify manifest-driven projector selection
+        run: python3 -I .github/scripts/test_pmo_projector_selection.py -v
+
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal
 
@@ -64,7 +67,7 @@ jobs:
         working-directory: pm-stack/projector
         run: |
           set +e
-          bun install --frozen-lockfile && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts
+          python3 -I ../../.github/scripts/pmo-contract-conformance.py run-projector "$GITHUB_WORKSPACE/$MANIFEST"
           echo "rc=$?" >> "$GITHUB_OUTPUT"
 
       - name: Report each contract family

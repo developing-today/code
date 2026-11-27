@@ -8,15 +8,22 @@
 // hands it is what its health-facing read gives back, and a body
 // that is not a set is refused.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Edge, type KV } from "../edge/src/edge.ts";
 import {
   parseWorkerCheckSet,
   probeWorker,
   probeWorkers,
+  runCheckRound,
   selfCheck,
+  WORKER_BINDINGS,
   WORKER_CHECKS_KEY,
+  workerCheckTargets,
+  type WorkerBinding,
   type WorkerCheckSet,
 } from "../edge/src/worker-checks.ts";
+import { workersList } from "../src/platform.ts";
 
 const AT = 1_800_000_000_000;
 
@@ -25,7 +32,7 @@ function answering(body: unknown, status = 200): typeof fetch {
     new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 }
 
 function byPath(routes: Record<string, { body?: unknown; status?: number; text?: string }>): typeof fetch {
@@ -43,10 +50,7 @@ function byPath(routes: Record<string, { body?: unknown; status?: number; text?:
 
 describe("probeWorker", () => {
   test("a /version answer naming its commit is the check", async () => {
-    const check = await probeWorker(
-      { name: "pm-service", fetcher: answering({ commit: "abc123" }) },
-      AT,
-    );
+    const check = await probeWorker({ name: "pm-service", fetcher: answering({ commit: "abc123" }) }, AT);
     expect(check).toEqual({
       name: "pm-service",
       answering: true,
@@ -75,7 +79,7 @@ describe("probeWorker", () => {
   test("a binding that reaches nothing is not answering", async () => {
     const fetcher = (async () => {
       throw new Error("no such worker");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const check = await probeWorker({ name: "gone", fetcher }, AT);
     expect(check).toEqual({
       name: "gone",
@@ -118,6 +122,79 @@ describe("probeWorkers and selfCheck", () => {
   });
 });
 
+describe("the binding roster", () => {
+  // Oracles: the repository itself — the platform's list of Workers
+  // and the edge's own wrangler file. Every Worker the list says is
+  // in service is asked on the schedule: by binding, or (the edge
+  // itself) by selfCheck.
+  const listed = workersList(JSON.parse(readFileSync(join(import.meta.dir, "../../platform/workers.json"), "utf8")));
+  const wrangler = readFileSync(join(import.meta.dir, "../edge/wrangler.jsonc"), "utf8");
+
+  test("every in-service Worker is on the roster, and nothing else is", () => {
+    const inService = listed.workers
+      .filter((w) => w.state === "in service")
+      .map((w) => w.name)
+      .sort();
+    const roster = [...WORKER_BINDINGS.map((spec) => spec.name), "pm-console-edge"].sort();
+    expect(roster).toEqual(inService);
+    expect(new Set(WORKER_BINDINGS.map((spec) => spec.binding)).size).toBe(WORKER_BINDINGS.length);
+  });
+
+  test("wrangler.jsonc declares the binding for every roster entry", () => {
+    for (const spec of WORKER_BINDINGS) {
+      expect([spec.name, wrangler.includes(`"binding": "${spec.binding}", "service": "${spec.name}"`)]).toEqual([
+        spec.name,
+        true,
+      ]);
+    }
+  });
+
+  test("targets are the configured bindings, in roster order, asked through the binding", async () => {
+    const configured = new Set(["PKARR", "BRIDGE", "GITHUB_CI"]);
+    const resolve = (binding: string): WorkerBinding | undefined =>
+      configured.has(binding) ? { fetch: answering({ commit: `c-${binding}` }) } : undefined;
+    const targets = workerCheckTargets(resolve);
+    expect(targets.map((t) => t.name)).toEqual(["message-bridge", "github-ci", "pkarr"]);
+    const check = await probeWorker(targets[0], AT);
+    expect(check).toMatchObject({ name: "message-bridge", answering: true, commit: "c-BRIDGE" });
+  });
+
+  test("scheduled round records pm-service health and a failed binding with one timestamp", async () => {
+    const set = await runCheckRound(
+      (binding) => {
+        if (binding === "PM_SERVICE") {
+          return {
+            fetch: byPath({ "/health": { body: { ok: true, service: "pm-service", version: "full-commit-42" } } }),
+          };
+        }
+        if (binding === "DECISION_EVENTS") {
+          return {
+            fetch: async () => {
+              throw new Error("binding unavailable");
+            },
+          };
+        }
+        return undefined;
+      },
+      "pm-console-edge",
+      "edge-commit-9",
+      AT,
+    );
+
+    expect(set.askedAt).toBe(AT);
+    expect(set.checks).toEqual([
+      { name: "decision-events", answering: false, commit: null, askedAt: AT, via: null, status: null },
+      { name: "pm-console-edge", answering: true, commit: "edge-commit-9", askedAt: AT, via: "self", status: null },
+      { name: "pm-service", answering: true, commit: "full-commit-42", askedAt: AT, via: "/health", status: 200 },
+    ]);
+  });
+
+  test("with every binding configured the round covers the whole roster", () => {
+    const targets = workerCheckTargets(() => ({ fetch: answering({}) }));
+    expect(targets.map((t) => t.name)).toEqual(WORKER_BINDINGS.map((spec) => spec.name));
+  });
+});
+
 describe("parseWorkerCheckSet", () => {
   const set: WorkerCheckSet = {
     askedAt: AT,
@@ -156,9 +233,7 @@ describe("the Edge keeps a round", () => {
 
   const set: WorkerCheckSet = {
     askedAt: AT,
-    checks: [
-      { name: "pm-service", answering: true, commit: "abc123", askedAt: AT, via: "/health", status: 200 },
-    ],
+    checks: [{ name: "pm-service", answering: true, commit: "abc123", askedAt: AT, via: "/health", status: 200 }],
   };
 
   test("what the stateless part hands over is what is kept", async () => {

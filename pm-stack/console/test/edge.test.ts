@@ -100,6 +100,7 @@ const SECTION_NAMES = [
   "asks",
   "questionCount",
   "questions",
+  "questionSets",
   "prs",
   "priorities",
   "done",
@@ -1002,6 +1003,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     asks: [] as unknown[],
     questionCount: { total: 0, sets: 0 },
     questions: { open: [] },
+    questionSets: null,
     prs: [],
     priorities: { issues: [], truncated: false },
     done: {
@@ -1509,6 +1511,7 @@ describe("before the host's first report", () => {
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
       routes: {},
+      workerChecks: null,
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1554,8 +1557,6 @@ describe("before the host's first report", () => {
       board: { tier: "hosted", degraded: false, fellAt: null, serving: "hosted" },
     });
   });
-
-
 
   test("the edge says which commit the host is running, as the host last reported it", async () => {
     const w = await setup();

@@ -210,7 +210,7 @@ def recover_interrupted_swap(home):
 # ---------------------------------------------------------------- staging
 _CREATE_TABLE_HEAD = re.compile(
     r"^(\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)"
-    r"(\"[^\"]+\"|[A-Za-z_][\w$]*)",
+    r"(\"[^\"\n]+\"|`[^`\n]+`|[A-Za-z_][\w$]*)",
     re.IGNORECASE,
 )
 
@@ -267,12 +267,21 @@ def _insert_rows(home, stage, rows):
     through the pipeline, against ~29 rows/s end to end), so a batch
     rides one statement with one value tuple per row, never one
     statement per row.
+
+    The batch leads with PRAGMA foreign_keys=OFF: during staging the
+    parent tables exist only under their staging names, so an
+    enforced foreign key would fail every child insert with "no such
+    table". The pragma rides the same pipeline batch as the INSERT
+    (each client request is its own connection), so enforcement is
+    off only for these staging writes; the swapped-in live copy
+    keeps the source's full DDL, foreign keys included, and the
+    post-swap count verification still gates the record.
     """
     ncols = len(rows[0])
     one = "(" + ", ".join("?" for _ in range(ncols)) + ")"
     sql = f'INSERT INTO "{stage}" VALUES ' + ", ".join(one for _ in rows)
     args = tuple(value for row in rows for value in row)
-    home.execute(sql, args)
+    home.execute_many([("PRAGMA foreign_keys=OFF", ()), (sql, args)])
 
 
 def _load_staging(snap, home, schema):

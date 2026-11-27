@@ -18,6 +18,7 @@ pub mod content;
 pub mod databases;
 pub mod export;
 pub mod export_only;
+pub mod reimport;
 pub mod rows;
 
 #[cfg(unix)]
@@ -619,6 +620,13 @@ pub struct Manifest {
     /// manifests, so it defaults empty when an older manifest is loaded.
     #[serde(default)]
     pub row_records: BTreeMap<String, crate::rows::RowConversion>,
+    /// Versioned per-data-source schema claims. Superseded claims remain as
+    /// provenance when a source moves or changes schema (§6.1).
+    #[serde(default)]
+    pub schema_claim_history: Vec<crate::databases::SchemaClaimRecord>,
+    /// Data-source parent changes observed during re-import (§6.1).
+    #[serde(default)]
+    pub moved_data_sources: Vec<crate::reimport::MovedDataSource>,
     /// Page UUID -> its degradation ledger (slice 4 design record §2.4,
     /// §2.6), recorded by [`content::convert_page`]. Absent from
     /// pre-slice-4 manifests, so it defaults empty when an older
@@ -721,6 +729,8 @@ impl Manifest {
             comment_claims: BTreeMap::new(),
             comments_coverage: BTreeMap::new(),
             row_records: BTreeMap::new(),
+            schema_claim_history: Vec::new(),
+            moved_data_sources: Vec::new(),
             page_losses: BTreeMap::new(),
             export_matches: BTreeMap::new(),
             acquisition,

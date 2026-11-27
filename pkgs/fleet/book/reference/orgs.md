@@ -16,13 +16,13 @@ Reads the stored registry and prints one row per installation: organization,
 App, installation ID, repository selection and permissions. Output includes
 the last successful sync time. Options may be combined:
 
-| Option | Meaning |
-| --- | --- |
-| `--app SLUG` | Match the GitHub App slug. |
-| `--org LOGIN` | Match the account login. |
-| `--permission NAME` | Match installations granting that permission at any level. |
-| `--permission NAME=LEVEL` | Match a permission at the specified level. |
-| `--json` | Emit the same filtered rows as JSON. |
+| Option                    | Meaning                                                    |
+| ------------------------- | ---------------------------------------------------------- |
+| `--app SLUG`              | Match the GitHub App slug.                                 |
+| `--org LOGIN`             | Match the account login.                                   |
+| `--permission NAME`       | Match installations granting that permission at any level. |
+| `--permission NAME=LEVEL` | Match a permission at the specified level.                 |
+| `--json`                  | Emit the same filtered rows as JSON.                       |
 
 ## `sync`
 
@@ -36,11 +36,11 @@ options are usage errors (exit 2).
 
 ## Configuration
 
-| Name | Purpose |
-| --- | --- |
-| `FLEET_ORGS_TURSO_URL` | HTTP URL of the registry database. |
-| `turso.fleet-orgs-token` | Secret name resolved for the Turso auth token. |
-| App-specific secrets | Private keys (and IDs where not public) used to mint each App JWT. |
+| Name                     | Purpose                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| `FLEET_ORGS_TURSO_URL`   | HTTP URL of the registry database.                                 |
+| `turso.fleet-orgs-token` | Secret name resolved for the Turso auth token.                     |
+| App-specific secrets     | Private keys (and IDs where not public) used to mint each App JWT. |
 
 The command is implemented by `fleet-orgs`; see [The crates](../library/crates.md#fleet-orgs)
 for the storage model and sync details. The binary must include the `orgs`

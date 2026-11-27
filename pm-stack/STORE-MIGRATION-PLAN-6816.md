@@ -74,7 +74,12 @@ promotion; no configuration permits two active writers.**
 
 - **Kaneo:** fence = stop `pm-stack-kaneo-1` (the only writer; Postgres
   itself accepts writes only through Kaneo's role in practice, and the local
-  Postgres is never host-exposed). Promotion = point the Kaneo DSN at
+  Postgres is never host-exposed) **and** stop the managing user service
+  and its retry timer (`systemctl --user stop pm-kaneo.service
+pm-kaneo.timer`) — the manager runs `deploy.sh` (`compose up`) and
+  revives stopped containers on its next run or timer elapse, so
+  `fence-check.sh` (stores `all`, `kaneo`) requires both units inactive
+  before it reports FENCED. Promotion = point the Kaneo DSN at
   cluster PostgreSQL and start Kaneo. The local Postgres stays read-only evidence —
   start it only with Kaneo stopped, or with its port/volume mounted
   read-only for inspection. Two Kaneo instances never run at once: the

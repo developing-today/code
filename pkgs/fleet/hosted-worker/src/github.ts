@@ -451,6 +451,10 @@ interface CachedToken {
   expiresAtMs: number;
 }
 
+interface InstallationTokenRefusal {
+  refusalStatus: number;
+}
+
 /**
  * The hosted rotation point: creates issues/PRs with fleet App
  * installation tokens, failing over across the configured
@@ -505,7 +509,7 @@ export class AppRotationGitHubWriter
     return `${input}.${b64urlEncode(new Uint8Array(signature))}`;
   }
 
-  private async installationToken(installationId: number): Promise<string> {
+  private async installationToken(installationId: number): Promise<string | InstallationTokenRefusal> {
     const cached = this.tokens.get(installationId);
     if (cached && cached.expiresAtMs - this.now() > TOKEN_REFRESH_MARGIN_MS) {
       return cached.token;
@@ -520,24 +524,37 @@ export class AppRotationGitHubWriter
       },
     });
     if (res.status !== 201) {
+      const bodyText = await res.text().catch(() => "");
+      if (this.isFailoverRefusal(res.status, res.headers, bodyText)) {
+        return { refusalStatus: res.status };
+      }
       throw new FailClosed(
         502,
         "github_token_exchange_failed",
         `installation token exchange failed for installation ${installationId} (HTTP ${res.status})`,
       );
     }
-    const body = (await res.json()) as { token?: unknown; expires_at?: unknown };
-    if (typeof body.token !== "string" || typeof body.expires_at !== "string") {
+    let body: { token?: unknown; expires_at?: unknown };
+    try {
+      body = (await res.json()) as { token?: unknown; expires_at?: unknown };
+    } catch {
       throw new FailClosed(
         502,
         "github_token_exchange_failed",
         `installation token exchange returned a malformed body for installation ${installationId}`,
       );
     }
-    const expiresAtMs = Date.parse(body.expires_at);
+    const expiresAtMs = typeof body.expires_at === "string" ? Date.parse(body.expires_at) : Number.NaN;
+    if (typeof body.token !== "string" || body.token.trim() === "" || !Number.isFinite(expiresAtMs)) {
+      throw new FailClosed(
+        502,
+        "github_token_exchange_failed",
+        `installation token exchange returned a malformed body for installation ${installationId}`,
+      );
+    }
     this.tokens.set(installationId, {
       token: body.token,
-      expiresAtMs: Number.isNaN(expiresAtMs) ? 0 : expiresAtMs,
+      expiresAtMs,
     });
     return body.token;
   }
@@ -571,6 +588,10 @@ export class AppRotationGitHubWriter
     let lastStatus = 0;
     for (const installationId of this.config.installationIds) {
       const token = await this.installationToken(installationId);
+      if (typeof token !== "string") {
+        lastStatus = token.refusalStatus;
+        continue;
+      }
       const res = await this.fetchFn(`${GITHUB_API}${path}`, {
         method: "POST",
         headers: {
@@ -614,6 +635,10 @@ export class AppRotationGitHubWriter
     let lastStatus = 0;
     for (const installationId of this.config.installationIds) {
       const token = await this.installationToken(installationId);
+      if (typeof token !== "string") {
+        lastStatus = token.refusalStatus;
+        continue;
+      }
       const res = await this.fetchFn(url, {
         method: "GET",
         headers: {
@@ -735,6 +760,10 @@ export class AppRotationGitHubWriter
     let lastStatus = 0;
     for (const installationId of this.config.installationIds) {
       const token = await this.installationToken(installationId);
+      if (typeof token !== "string") {
+        lastStatus = token.refusalStatus;
+        continue;
+      }
       const res = await this.fetchFn(url, {
         method,
         headers: {
@@ -852,6 +881,10 @@ export class AppRotationGitHubWriter
     let lastStatus = 0;
     for (const installationId of this.config.installationIds) {
       const token = await this.installationToken(installationId);
+      if (typeof token !== "string") {
+        lastStatus = token.refusalStatus;
+        continue;
+      }
       const res = await this.fetchFn(`${GITHUB_API}/graphql`, {
         method: "POST",
         headers: {

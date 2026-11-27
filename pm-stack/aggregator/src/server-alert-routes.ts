@@ -156,7 +156,10 @@ export async function handleAlertIntakeRoutes(req: Request, path: string): Promi
       // extension validation failure is a 400; a store failure is logged
       // and never fails the incident post.
       if ([hasNeedsUserQuestion, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
-        return json({ error: "needsUser/needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+        return json(
+          { error: "needsUser/needsDrew, stackHealth and decisionSet extensions are mutually exclusive" },
+          400,
+        );
       }
       if (hasHealthHook && (hasNeedsUserQuestion || hasDecisionSet)) {
         return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);

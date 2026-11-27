@@ -46,6 +46,12 @@ type InstanceHandoff struct {
 	Stdio        *mcpclient.StdioHandoff `json:"stdio"`
 	HTTP         *mcpclient.HTTPHandoff  `json:"http,omitempty"`
 	Session      mcpclient.Session       `json:"session"`
+	// Supervised marks an instance whose child lives under a supervisor
+	// (#9963), not under the daemon: it travels as metadata only, with
+	// no pipes beside it. The successor attaches to the supervisor per
+	// key after commit (see AdoptSupervisedAfterTakeover), so every
+	// lane — not just the default — survives the takeover.
+	Supervised bool `json:"supervised,omitempty"`
 }
 
 // PoolHandoff is one pool's children in transit. PoolID names the process
@@ -117,6 +123,18 @@ func (p *Pool) Detach() (*PoolHandoff, error) {
 			}
 			meta.HTTP = &hs
 			meta.Session = in.Client.SessionState()
+		case *mcpclient.SupervisedTransport:
+			// The child belongs to its supervisor, not to this daemon,
+			// so there are no pipes to hand over: the metadata alone
+			// tells the successor which lanes to attach per key after
+			// commit. The meta is emitted but the instance is NOT
+			// added to handed, so Commit closes this daemon's
+			// supervisor connection promptly (EOF clears the
+			// attachment) instead of holding it until process exit.
+			meta.Supervised = true
+			meta.Session = in.Client.SessionState()
+			out = append(out, meta)
+			continue
 		default:
 			continue
 		}
@@ -229,6 +247,14 @@ func Adopt(hs []InstanceHandoff) ([]*Adopted, error) {
 	for _, h := range hs {
 		if h.Stdio == nil {
 			if h.HTTP != nil {
+				continue
+			}
+			if h.Supervised {
+				// A supervised child is not handed over: its
+				// supervisor outlives both daemons, and the
+				// successor attaches per key after commit (see
+				// AdoptSupervisedAfterTakeover). Nothing to adopt
+				// here.
 				continue
 			}
 			abortAll(out)
@@ -486,16 +512,34 @@ func (p *Pool) AdoptRunningSupervisedDetailed(ctx context.Context) (adopted bool
 	if p.cfg == nil || !p.cfg.Stdio() || !p.cfg.Mcpx.SupervisedEnabled() {
 		return false, false
 	}
-	rs := p.cfg.Scope.Resolve(config.CallContext{})
+	return p.adoptSupervisedDetailed(ctx, p.cfg.Scope.Resolve(config.CallContext{}), false)
+}
+
+// AdoptSupervisedLane attaches one handed supervised lane after a takeover
+// commits: the child the handoff names under rs.Key kept running under its
+// supervisor, and this pool serves it instead of spawning a duplicate. Only
+// the transient already-attached refusal is distinguished, for the same
+// bounded retry the default-lane scan gets; every other quiet no-op stays
+// quiet. Root and Cwd come from the handoff so ${mcpx.cwd} re-substitutes
+// for the caller that created the lane. Legacy follows its own supervisor
+// beside the modern one (see SupervisedLaneKey); the lane flag says which.
+func (p *Pool) AdoptSupervisedLane(ctx context.Context, rs config.ResolvedScope, legacy bool) (adopted bool, alreadyAttached bool) {
+	if p.cfg == nil || !p.cfg.Stdio() || !p.cfg.Mcpx.SupervisedEnabled() {
+		return false, false
+	}
+	return p.adoptSupervisedDetailed(ctx, rs, legacy)
+}
+
+func (p *Pool) adoptSupervisedDetailed(ctx context.Context, rs config.ResolvedScope, legacy bool) (adopted bool, alreadyAttached bool) {
 	p.mu.Lock()
-	if p.closed || p.starting > 0 || p.findLaneLocked(rs.Key, false) != nil {
+	if p.closed || p.starting > 0 || p.findLaneLocked(rs.Key, legacy) != nil {
 		p.mu.Unlock()
 		return false, false
 	}
 	p.starting++
 	p.mu.Unlock()
 
-	in, err := p.startLaneMode(ctx, false, rs, dialAttachOnly)
+	in, err := p.startLaneMode(ctx, legacy, rs, dialAttachOnly)
 
 	p.mu.Lock()
 	p.starting--
@@ -514,7 +558,7 @@ func (p *Pool) AdoptRunningSupervisedDetailed(ctx context.Context) (adopted bool
 		p.mu.Unlock()
 		return false, mcpclient.IsSupervisorRefusal(err) && strings.Contains(err.Error(), "already attached")
 	}
-	if p.closed || p.findLaneLocked(rs.Key, false) != nil {
+	if p.closed || p.findLaneLocked(rs.Key, legacy) != nil {
 		// The pool moved on while the attach was in flight; retire
 		// the duplicate the same way Acquire does.
 		p.cond.Broadcast()

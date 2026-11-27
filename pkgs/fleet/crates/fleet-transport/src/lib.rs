@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod allowlist;
 
+pub use allowlist::BuildError as AllowlistBuildError;
 pub use allowlist::{
     Allowlist, Alpn, BindingState, BuildError, Decision, Enrollment, NodeId, Refusal, RefusalReason,
 };
-pub use allowlist::BuildError as AllowlistBuildError;
 
 /// A declared adapter capability ceiling. This is deliberately not ordered:
 /// `read` is receive-only, while `write-capable` is an outbound authority.

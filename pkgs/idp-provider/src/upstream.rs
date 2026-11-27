@@ -257,6 +257,20 @@ pub fn verify_upstream_id_token(
 /// OIDC doors use the configured subject claim (`sub` by default;
 /// Microsoft records `oid`, falling back to `sub` when absent).
 /// GitHub uses the numeric user id from the user document.
+fn normalized_email(email: &str) -> Option<String> {
+    let email = email.trim().to_lowercase();
+    (email.contains('@') && !email.starts_with('@') && !email.ends_with('@')).then_some(email)
+}
+
+/// OIDC email is usable for a claim only when the signed ID token
+/// explicitly marks it verified.
+pub fn verified_oidc_email(claims: &serde_json::Value) -> Option<String> {
+    if claims["email_verified"].as_bool() != Some(true) {
+        return None;
+    }
+    normalized_email(claims["email"].as_str()?)
+}
+
 pub fn subject_from_claims(door: &DoorRuntime, claims: &serde_json::Value) -> Option<String> {
     if door.config.kind == "github" {
         return claims["id"]
@@ -300,4 +314,50 @@ pub async fn fetch_github_user(
         .await
         .map_err(|_| "upstream user fetch failed".to_string())?;
     Ok(doc)
+}
+
+/// Read GitHub's `/user/emails` endpoint and choose a verified address,
+/// preferring the primary address. Missing scope or endpoint failure
+/// means no match, not a failed sign-in.
+pub async fn fetch_github_verified_email(
+    http: &reqwest::Client,
+    door: &DoorRuntime,
+    access_token: &str,
+) -> Option<String> {
+    let user_url = door
+        .config
+        .userinfo_url
+        .as_deref()
+        .unwrap_or("https://api.github.com/user");
+    let url = format!("{}/emails", user_url.trim_end_matches('/'));
+    let doc: serde_json::Value = http
+        .get(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {access_token}"),
+        )
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(reqwest::header::USER_AGENT, "devtoday-idp-provider")
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let emails = doc.as_array()?;
+    let primary = emails
+        .iter()
+        .find(|entry| {
+            entry["verified"].as_bool() == Some(true) && entry["primary"].as_bool() == Some(true)
+        })
+        .and_then(|entry| entry["email"].as_str());
+    primary.and_then(normalized_email).or_else(|| {
+        emails
+            .iter()
+            .filter(|entry| entry["verified"].as_bool() == Some(true))
+            .filter_map(|entry| entry["email"].as_str())
+            .find_map(normalized_email)
+    })
 }

@@ -30,9 +30,7 @@ export interface BrowserSessionStore {
   delete(id: string): Promise<void>;
 }
 
-export type ResolveLivePrincipal = (
-  session: Readonly<BrowserSession>,
-) => Promise<ResolvedPrincipal | null>;
+export type ResolveLivePrincipal = (session: Readonly<BrowserSession>) => Promise<ResolvedPrincipal | null>;
 
 export type SessionDenyReason = "missing_session" | "expired_session" | "revoked_session";
 
@@ -101,7 +99,7 @@ export async function createBrowserSession(
 }
 
 export interface SessionAuditEvent {
-  event: "login" | "logout";
+  event: "login" | "logout" | "revoked";
   sessionId: string;
   accountId: string;
   bindingId: string;
@@ -124,10 +122,7 @@ export interface AuthenticateOptions {
  * thrown; an unknown server-side session means the session was logged out or
  * revoked upstream.
  */
-export async function authenticateBrowserSession(
-  req: Request,
-  opts: AuthenticateOptions,
-): Promise<AuthenticateResult> {
+export async function authenticateBrowserSession(req: Request, opts: AuthenticateOptions): Promise<AuthenticateResult> {
   const sessionId = readSessionId(req);
   if (sessionId === null) return { ok: false, reason: "missing_session" };
   const nowMs = (opts.now ?? Date.now)();
@@ -142,6 +137,13 @@ export async function authenticateBrowserSession(
   const live = await opts.resolveLivePrincipal({ ...session });
   if (live === null) {
     await opts.store.delete(session.id);
+    await opts.audit?.({
+      event: "revoked",
+      sessionId: session.id,
+      accountId: session.principal.accountId,
+      bindingId: session.principal.bindingId,
+      at: nowMs,
+    });
     return { ok: false, reason: "revoked_session" };
   }
   return {

@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #8010 | #7856 | `audit:complete` | Replaces two dangling §8 references with the explicit Phased implementation plan section; the source issue closes with the correction. |
-| #8011 | #6469 | `audit:complete` | Adds envelope-local validation at signing for all receiver-refused shapes listed in the issue, with eight negative shapes and a valid control. |
-| #8013 | #1790 | `audit:complete` | Implements the remaining UI and lifecycle slices after #7993's state-machine slice; the source acceptance is complete and #1790 closes. |
-| #8014 | #7071 | `audit:complete` | Adds strong/weak removal and causal-past scenarios reaching `Engine::void`, plus a planted inverted-gate mutation to prove the oracle catches the defect. |
-| #8015 | #7949 | `audit:complete` | Adds omitted pkarr and cold-store test paths and corrects the stale pkarr reason; the registry-correction issue closes, with venue wiring tracked separately by #6093. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                |
+| -------------: | -------------: | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #8010 |          #7856 | `audit:complete` | Replaces two dangling §8 references with the explicit Phased implementation plan section; the source issue closes with the correction.                                 |
+|          #8011 |          #6469 | `audit:complete` | Adds envelope-local validation at signing for all receiver-refused shapes listed in the issue, with eight negative shapes and a valid control.                         |
+|          #8013 |          #1790 | `audit:complete` | Implements the remaining UI and lifecycle slices after #7993's state-machine slice; the source acceptance is complete and #1790 closes.                                |
+|          #8014 |          #7071 | `audit:complete` | Adds strong/weak removal and causal-past scenarios reaching `Engine::void`, plus a planted inverted-gate mutation to prove the oracle catches the defect.              |
+|          #8015 |          #7949 | `audit:complete` | Adds omitted pkarr and cold-store test paths and corrects the stale pkarr reason; the registry-correction issue closes, with venue wiring tracked separately by #6093. |
 
 ## Slice state
 

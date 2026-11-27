@@ -702,7 +702,8 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 	}
 	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dialMode(sctx, eff, rs.Root, kind, rs.Key)
+	supKey := SupervisedLaneKey(rs.Key, legacy)
+	tr, err := p.dialMode(sctx, eff, rs.Root, kind, supKey)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -746,7 +747,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind, rs.Key); err != nil {
+		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind, supKey); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -791,7 +792,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dialMode(sctx, eff, rs.Root, kind, rs.Key); err != nil {
+		if tr, err = p.dialMode(sctx, eff, rs.Root, kind, supKey); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -1080,6 +1081,22 @@ func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string, scop
 // supervisor socket per instance (#9963), so two scoped instances of
 // one server never share a supervisor. Callers with no instance being
 // spawned (HTTP session adoption) pass "" — the primary instance.
+// SupervisedLaneKey maps a pool lane to its supervisor socket instance:
+// the legacy follow lane runs its own supervisor and child beside the
+// modern one, so the two era sessions never share a process. Both lanes
+// share the pool's scope key, so without this the legacy lane's attach
+// hits the modern lane's supervisor ("already attached"), fails, sets
+// noLegacy, and serves legacy callers from the modern session.
+func SupervisedLaneKey(key string, legacy bool) string {
+	if !legacy {
+		return key
+	}
+	if key == "" {
+		return "legacy-follow"
+	}
+	return key + "\x00legacy-follow"
+}
+
 func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind, scopeKey string) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
@@ -2003,6 +2020,43 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 			p.starting++
 			p.mu.Unlock()
 			in, err := p.startLaneMode(ctx, false, rs, dialRestart)
+			if err != nil && mcpclient.IsSupervisorRefusal(err) && strings.Contains(err.Error(), "already attached") {
+				// The retire above detaches (a supervised close is a
+				// detach), and the supervisor clears its attach slot
+				// asynchronously: the restart dial can race the
+				// detach. Retry within a bounded budget, mirroring
+				// the default-lane adopt retry and the phase3
+				// restart-through-supervisor test.
+				deadline := time.Now().Add(2 * time.Second)
+				for err != nil && mcpclient.IsSupervisorRefusal(err) && strings.Contains(err.Error(), "already attached") && time.Now().Before(deadline) {
+					select {
+					case <-ctx.Done():
+					case <-time.After(50 * time.Millisecond):
+					}
+					if ctx.Err() != nil {
+						break
+					}
+					in, err = p.startLaneMode(ctx, false, rs, dialRestart)
+				}
+			}
+			if err != nil && !mcpclient.IsSupervisorRefusal(err) {
+				// No live supervisor (a restart with nothing running,
+				// or a supervisor socket gone missing): a restart
+				// dial never spawns, so its dial error would hide
+				// the spawn failure the restart is meant to report
+				// (e.g. "refusing to start" with the child's
+				// stderr). Fall back to a spawn dial, which starts
+				// the supervisor and surfaces the real failure. A
+				// live supervisor's refusal stays a failure: spawning
+				// another supervisor would be wrong.
+				p.mu.Lock()
+				p.starting++
+				p.mu.Unlock()
+				in, err = p.startLaneMode(ctx, false, rs, dialSpawn)
+				p.mu.Lock()
+				p.starting--
+				p.mu.Unlock()
+			}
 			p.mu.Lock()
 			p.starting--
 			if err != nil {

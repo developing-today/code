@@ -67,7 +67,10 @@ def run_all(root):
             try:
                 head, refs = verify_repo(repo, root, staging)
             except (OSError, RuntimeError, ValueError) as exc:
-                print(f"github-backup: rehost clone {repo}: FAILED: {exc}", file=sys.stderr)
+                print(
+                    f"github-backup: rehost clone {repo}: FAILED: {exc}",
+                    file=sys.stderr,
+                )
                 failures.append(repo)
                 continue
             print(

@@ -5,12 +5,18 @@
 // idle timeout, and the fragment contract (ids + patch re-GET hooks)
 // is untouched.
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { renderSearch } from "../src/render.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
-const renderSource = readFileSync(join(SRC, "render.ts"), "utf8");
+// The render layer is split across render.ts + render-*.ts (#13051); scan
+// the whole module set — the same code the single render.ts used to hold.
+const renderSource = readdirSync(SRC)
+  .filter((f) => f.startsWith("render") && f.endsWith(".ts"))
+  .sort()
+  .map((f) => readFileSync(join(SRC, f), "utf8"))
+  .join("\n");
 const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
 const uiCss = readFileSync(join(SRC, "ui.css"), "utf8");
 

@@ -94,11 +94,7 @@ import {
 } from "./edge-shared.ts";
 import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
-import {
-  parseWorkerCheckSet,
-  WORKER_CHECKS_KEY,
-  type WorkerCheckSet,
-} from "./worker-checks.ts";
+import { parseWorkerCheckSet, WORKER_CHECKS_KEY, type WorkerCheckSet } from "./worker-checks.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -2081,9 +2077,7 @@ export class Edge {
     // Each machine's reports must move forward: the replay line is per
     // machine, so two machines reporting in turn never trip each other.
     const first = await this.isFirstKey(kid);
-    const kept = first
-      ? null
-      : ((await this.kv.get(`mhost:${kid}`)) as MachineHost | undefined) ?? null;
+    const kept = first ? null : (((await this.kv.get(`mhost:${kid}`)) as MachineHost | undefined) ?? null);
     const last = first ? (this.hostSeq ?? 0) : (kept?.seq ?? 0);
     if (msg.at <= last) return json({ error: "replay", last }, 409);
     const says = edgeConfig(msg.config);
@@ -2182,8 +2176,7 @@ export class Edge {
     // time its report carried (which the next must exceed), and how
     // current it says each section is. A second machine's time is kept
     // under its own key, so the two never trip each other's replay line.
-    const version =
-      typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
+    const version = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
     const said = machineReport(msg.machine);
     const settingsRev = settingsRevSaid(msg.settingsRev);
     if (first) {

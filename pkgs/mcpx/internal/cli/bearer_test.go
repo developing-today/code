@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -45,6 +46,17 @@ func TestClientAuthorize(t *testing.T) {
 	build("").authorize(req2)
 	if got := req2.Header.Get("Authorization"); got != "" {
 		t.Errorf("Authorization = %q with no token configured, want no header", got)
+	}
+
+	req3, err := http.NewRequest(http.MethodGet, "http://mcpx/v1/call", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegated := "mcpx_key_delegated"
+	req3 = req3.WithContext(daemon.WithKeyCredential(context.Background(), delegated))
+	build(fixture).authorize(req3)
+	if got := req3.Header.Get("Authorization"); got != "Bearer "+delegated {
+		t.Errorf("delegated Authorization = %q, want the validated request key", got)
 	}
 }
 

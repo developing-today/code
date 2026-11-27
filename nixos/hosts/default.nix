@@ -69,7 +69,12 @@ in
       {
         # PM dashboard stack (aggregator + projector, git-sync and
         # quota-gatherer timers) as NixOS-managed user services.
-        services.pm-stack.enable = true;
+        services.pm-stack = {
+          enable = true;
+          projectorSocketActivation = true;
+          aggregatorSocketActivation = true;
+          dispatchSocketActivation = true;
+        };
       }
       {
         # Lab cluster Cloudflare Tunnel (code#6455): connector +
@@ -87,7 +92,10 @@ in
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
         # Pad as oci-containers, ready-for-agent as a user service —
         # the last hand-run servers, now flake-declared.
-        services.pm-apps.enable = true;
+        services.pm-apps = {
+          enable = true;
+          readyForAgentSocketActivation = true;
+        };
         # Power guard (code#1687): confirm critical battery readings
         # before UPower can hybrid-sleep the machine.
         services.power-guard.enable = true;

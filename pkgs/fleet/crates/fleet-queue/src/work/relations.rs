@@ -21,7 +21,7 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use super::contracts::{
-    is_canonical_decimal, ContractError, Effect, Outcome, ResultError, WorkRef,
+    ContractError, Effect, Outcome, ResultError, WorkRef, is_canonical_decimal,
 };
 
 /// Schema id of the edge record (D4).
@@ -682,7 +682,7 @@ impl EdgeEnd {
             other => {
                 return Err(schema(format!(
                     "{field}.kind: {other:?} is not fleet_work or external"
-                )))
+                )));
             }
         };
         end.validate()?;
@@ -986,7 +986,7 @@ pub fn bind_ref(input: &RefInput, context: &BindContext) -> Result<EdgeEnd, Rela
                         "fleet:{work_id} needs exactly one authority, found {}; write fleet://<authority_id>/work/{work_id}",
                         others.len()
                     ),
-                })
+                });
             }
         },
         RefInput::LinkedRepository { number } => match context.linked_repositories.as_slice() {
@@ -997,7 +997,7 @@ pub fn bind_ref(input: &RefInput, context: &BindContext) -> Result<EdgeEnd, Rela
                         "#{number} needs exactly one linked repository, found {}; write owner/repo#{number}",
                         others.len()
                     ),
-                })
+                });
             }
         },
         RefInput::External {
@@ -1298,6 +1298,14 @@ impl Edge {
             return Err(RelationError::RelationNotGating {
                 relation: self.relation,
             });
+        }
+        if matches!(self.relation, Relation::RelatedTo | Relation::Duplicates) {
+            let (_, _, swapped) = pair_order(&self.source, &self.target)?;
+            if swapped {
+                // Refuse rather than silently swapping: on duplicates, role
+                // names an end and would change meaning if left untouched.
+                return Err(schema("source and target: non-canonical pair order"));
+            }
         }
         if self.role.is_some() && self.relation != Relation::Duplicates {
             return Err(schema(format!(
@@ -1764,7 +1772,7 @@ pub fn from_legacy_dep(dep: &Value) -> Result<EdgeEnd, RelationError> {
         other => {
             return Err(schema(format!(
                 "legacy dep: kind {other:?} is not task, issue, pr or ci"
-            )))
+            )));
         }
     };
     end.validate()?;
@@ -1906,6 +1914,60 @@ mod tests {
             expires_at: None,
             successor_edge_id: None,
         })
+    }
+
+    #[test]
+    fn pmo_dep_wire_rejects_noncanonical_pair_order() {
+        // Oracle: DEP-02 D1 pair order; numeric WorkRef ordering, not text ordering.
+        // Both JSON ingestion and direct validation must enforce the same invariant.
+        for relation in [Relation::RelatedTo, Relation::Duplicates] {
+            let reversed = edge(relation, work("10"), work("2"));
+            assert_eq!(reversed.validate().unwrap_err().code(), "invalid_schema");
+            assert_eq!(
+                Edge::from_json(&reversed.to_json()).unwrap_err().code(),
+                "invalid_schema"
+            );
+            let canonical = edge(relation, work("2"), work("10"));
+            assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+            // Authority sorts before numeric work id.
+            assert!(
+                edge(relation, remote_work("a", "10"), remote_work("z", "2"))
+                    .validate()
+                    .is_ok()
+            );
+            assert!(
+                edge(relation, remote_work("z", "2"), remote_work("a", "10"))
+                    .validate()
+                    .is_err()
+            );
+            // An external end belongs in source, regardless of lexical key.
+            assert!(
+                edge(relation, issue("z/repo", "2", Some("I_2")), work("10"))
+                    .validate()
+                    .is_ok()
+            );
+        }
+        // Directed relations must retain their meaning, not adopt pair ordering.
+        for relation in [Relation::Blocks, Relation::Hierarchy, Relation::Supersedes] {
+            assert!(edge(relation, work("10"), work("2")).validate().is_ok());
+        }
+    }
+
+    proptest! {
+        // Oracle: every distinct pair has exactly one valid orientation under
+        // WorkRef::Ord; reversing it must fail without silently swapping roles.
+        #[test]
+        fn pmo_dep_wire_pair_order_is_canonical(a in 1u64..u64::MAX, b in 1u64..u64::MAX) {
+            prop_assume!(a != b);
+            let (low, high) = (a.min(b).to_string(), a.max(b).to_string());
+            for relation in [Relation::RelatedTo, Relation::Duplicates] {
+                let canonical = edge(relation, work(&low), work(&high));
+                prop_assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+                let mut reversed = edge(relation, work(&high), work(&low));
+                reversed.role = (relation == Relation::Duplicates).then_some(DuplicateRole::SourceIsDuplicate);
+                prop_assert_eq!(Edge::from_json(&reversed.to_json()).unwrap_err().code(), "invalid_schema");
+            }
+        }
     }
 
     #[test]
@@ -2177,9 +2239,11 @@ mod tests {
             let none = BindContext::default();
             let error = bind_ref(&input, &none).unwrap_err();
             assert_eq!(error.code(), "ambiguous_ref");
-            assert!(error
-                .to_string()
-                .contains("fleet://<authority_id>/work/842"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("fleet://<authority_id>/work/842")
+            );
             let two = BindContext {
                 authorities: vec!["local".to_string(), "peer".to_string()],
                 ..BindContext::default()
@@ -2478,7 +2542,9 @@ mod tests {
             Box::new(|e: &mut Edge| e.role = Some(DuplicateRole::TargetIsDuplicate)),
             Box::new(|e: &mut Edge| e.role = None),
             Box::new(|e: &mut Edge| {
-                e.source = work("3");
+                // Keep pair order valid so this isolates identity mutation,
+                // rather than failing the independent schema invariant first.
+                e.source = remote_work("alpha", "3");
                 e.source_key = e.source.key();
             }),
             Box::new(|e: &mut Edge| e.target = work("4")),
@@ -2486,6 +2552,9 @@ mod tests {
         ];
         for change in &changes {
             let changed = next(&**change);
+            changed
+                .validate()
+                .expect("identity fixture must remain a valid edge");
             assert_eq!(
                 revise(&base, &changed, "op-2").unwrap_err().code(),
                 "invalid_transition",

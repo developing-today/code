@@ -1,0 +1,59 @@
+# #15112 prerequisite, independent of the board-game wasm producer/reuser.
+# Design: doc/2026-11-27T11-35-00Z_design_board_game_runtime/runtime.md
+name: id runtime artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaging-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test packaging protocol without a compiler
+        run: python3 .github/tests/test_id_runtime_artifact.py
+
+  runtime:
+    needs: packaging-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            fallback = true
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Build once, probe world CLI, export full runtime closure
+        run: >-
+          python3 .github/scripts/id-runtime-artifact.py
+          --source-sha "$GITHUB_SHA"
+          --output-dir "$RUNNER_TEMP/id-runtime"
+      - name: Publish runtime for Nix-equipped participants
+        id: runtime
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: id-runtime-x86_64-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/id-runtime
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record exact runtime identity
+        env:
+          ARTIFACT_ID: ${{ steps.runtime.outputs.artifact-id }}
+        run: |
+          {
+            echo '## id runtime closure (not a live-game result)'
+            echo "- source: $GITHUB_SHA"
+            echo "- run: $GITHUB_RUN_ID; artifact: $ARTIFACT_ID"
+            cat "$RUNNER_TEMP/id-runtime/manifest.json"
+            cat "$RUNNER_TEMP/id-runtime/SHA256SUMS"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -221,6 +221,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Typecheck = set.String("script.check")
 	lim.TypeCheckOnError = set.String("script.checkOnError")
 	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
+	lim.CheckJs = set.Bool("script.checkJs")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
 	lim.ImportsOnMissing = set.String("script.importsOnMissing")

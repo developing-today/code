@@ -1,1 +1,47 @@
-{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7155600008","html_url":"https://github.com/developing-today/code/pull/7660#issuecomment-7155600008","issue_url":"https://api.github.com/repos/developing-today/code/issues/7660","id":7155600008,"node_id":"IC_kwDOJWP4788AAAABqoHKiA","user":{"login":"dezren39","id":11225574,"node_id":"MDQ6VXNlcjExMjI1NTc0","avatar_url":"https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4","gravatar_id":"","url":"https://api.github.com/users/dezren39","html_url":"https://github.com/dezren39","followers_url":"https://api.github.com/users/dezren39/followers","following_url":"https://api.github.com/users/dezren39/following{/other_user}","gists_url":"https://api.github.com/users/dezren39/gists{/gist_id}","starred_url":"https://api.github.com/users/dezren39/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/dezren39/subscriptions","organizations_url":"https://api.github.com/users/dezren39/orgs","repos_url":"https://api.github.com/users/dezren39/repos","events_url":"https://api.github.com/users/dezren39/events{/privacy}","received_events_url":"https://api.github.com/users/dezren39/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2026-11-25T07:12:10Z","updated_at":"2026-11-25T07:12:10Z","author_association":"MEMBER","body":"AUDIT-7 Lane 4 completed-later note (2026-11-25): PR #7660 records live rejection of a non-loopback request with a synthetic invalid token. The authorized non-loopback health call and distinct per-consumer identity were verified later and recorded by merged PR #11164 (2026-11-17); issue #2300 closed on that evidence. PR #7660 is labelled `audit:completed-later`.\n","reactions":{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7155600008/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null,"minimized":null,"pin":null}
+{
+  "url": "https://api.github.com/repos/developing-today/code/issues/comments/7155600008",
+  "html_url": "https://github.com/developing-today/code/pull/7660#issuecomment-7155600008",
+  "issue_url": "https://api.github.com/repos/developing-today/code/issues/7660",
+  "id": 7155600008,
+  "node_id": "IC_kwDOJWP4788AAAABqoHKiA",
+  "user": {
+    "login": "dezren39",
+    "id": 11225574,
+    "node_id": "MDQ6VXNlcjExMjI1NTc0",
+    "avatar_url": "https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/dezren39",
+    "html_url": "https://github.com/dezren39",
+    "followers_url": "https://api.github.com/users/dezren39/followers",
+    "following_url": "https://api.github.com/users/dezren39/following{/other_user}",
+    "gists_url": "https://api.github.com/users/dezren39/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/dezren39/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/dezren39/subscriptions",
+    "organizations_url": "https://api.github.com/users/dezren39/orgs",
+    "repos_url": "https://api.github.com/users/dezren39/repos",
+    "events_url": "https://api.github.com/users/dezren39/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/dezren39/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "created_at": "2026-11-25T07:12:10Z",
+  "updated_at": "2026-11-25T07:12:10Z",
+  "author_association": "MEMBER",
+  "body": "AUDIT-7 Lane 4 completed-later note (2026-11-25): PR #7660 records live rejection of a non-loopback request with a synthetic invalid token. The authorized non-loopback health call and distinct per-consumer identity were verified later and recorded by merged PR #11164 (2026-11-17); issue #2300 closed on that evidence. PR #7660 is labelled `audit:completed-later`.\n",
+  "reactions": {
+    "url": "https://api.github.com/repos/developing-today/code/issues/comments/7155600008/reactions",
+    "total_count": 0,
+    "+1": 0,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "performed_via_github_app": null,
+  "minimized": null,
+  "pin": null
+}

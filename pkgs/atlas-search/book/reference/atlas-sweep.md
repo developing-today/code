@@ -56,7 +56,7 @@ Items that fail repeatedly (3 strikes) land in the dead-letter store, keyed by r
 
 ### Reports
 
-`report` with no `--run` prints the whole cycle report as one JSON array; an empty store prints `[]`, exit 0. `report --run &lt;RUN_ID&gt;` prints that run's row as one JSON object; an unknown id is `no report row for run &lt;id&gt;`, exit 2, and `--run` without a value is `report --run needs a RUN_ID`, exit 2.
+`report` with no `--run` prints the whole cycle report as one JSON array; an empty store prints `[]`, exit 0. `report --run &lt;RUN_ID&gt;` prints that run's row as one JSON object; an unknown id is `no report row for run &lt;id&gt;`, exit 1, and `--run` without a value is `report --run needs a RUN_ID`, exit 2.
 
 See [Ingest today: staging, classification, promotion](../concepts/ingest.md) for where sweeps sit in the ingest pipeline.
 
@@ -79,11 +79,12 @@ The empty `dead-letter list` output and the `[]` cycle report are both successes
 
 ## Failure shapes
 
-Every failure in this binary goes through one path: `atlas-sweep: &lt;message&gt;` on stderr, exit 2. That includes missing `--state-dir`, a missing action (`missing action (pause-class|resume-class|run-once|dead-letter|report)`), an unknown action, an unknown source class, missing `--class`/`--host`/`REF`/`RUN_ID` values, an unreadable or unparseable `REQUEST.json`, and I/O and core errors from inside a run. There is no exit-1 path.
+Every failure in this binary prints `atlas-sweep: &lt;message&gt;` on stderr, with the Atlas family exit codes (#15766): usage errors exit 2 and execution failures exit 1. Usage errors include missing `--state-dir`, a missing action (`missing action (pause-class|resume-class|run-once|dead-letter|report)`), an unknown action, an unknown source class, and missing `--class`/`--host`/`REF`/`RUN_ID` values. Execution failures include an unreadable or unparseable `REQUEST.json`, a missing report row, and I/O and core errors from inside a run.
 
 ## Exit codes
 
 | Code | Meaning                                                                                                                    |
 | ---- | -------------------------------------------------------------------------------------------------------------------------- |
 | 0    | Success — including an empty dead-letter list, an empty (`[]`) cycle report, and a `run-once` that printed `overlap-skip`. |
-| 2    | Everything else: every usage error and every runtime failure.                                                              |
+| 1    | Execution failure: unreadable/unparseable `REQUEST.json`, missing report row, I/O and core errors from inside a run.       |
+| 2    | Usage / invalid invocation: missing `--state-dir` or action, unknown action or source class, missing flag values.          |

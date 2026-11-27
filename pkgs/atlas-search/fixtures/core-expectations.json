@@ -1162,12 +1162,12 @@
         "name": "defaults",
         "stmts": [
           {
-            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
-            "params": ["\"back\" OR \"database\"", "shareable", "personal", 100]
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": ["\"back\" OR \"database\"", "shareable", "public", "personal", "internal", 100]
           },
           {
-            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
-            "params": ["[0.5, 0.25]", "shareable", "personal", 100]
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) ORDER BY dist ASC LIMIT ?",
+            "params": ["[0.5, 0.25]", "shareable", "public", "personal", "internal", 100]
           }
         ]
       },
@@ -1175,13 +1175,17 @@
         "name": "all_filters_secret",
         "stmts": [
           {
-            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) AND l.kind IN (?) AND s.client IN (?) AND l.topics LIKE ? AND s.created_at >= ? AND s.created_at < ? ORDER BY bm25(chunks_fts) LIMIT ?",
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?,?,?,?,?) AND l.kind IN (?) AND s.client IN (?) AND l.topics LIKE ? AND s.created_at >= ? AND s.created_at < ? ORDER BY bm25(chunks_fts) LIMIT ?",
             "params": [
               "\"back\" OR \"database\"",
               "shareable",
+              "public",
               "personal",
+              "internal",
               "local-only",
+              "private",
               "secret-bearing",
+              "sensitive",
               "code",
               "codex",
               "%\"rust\"%",
@@ -1191,13 +1195,17 @@
             ]
           },
           {
-            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) AND v.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?) AND s2.client IN (?) AND l2.topics LIKE ? AND s2.created_at >= ? AND s2.created_at < ?) ORDER BY dist ASC LIMIT ?",
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?,?,?,?,?) AND v.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?) AND s2.client IN (?) AND l2.topics LIKE ? AND s2.created_at >= ? AND s2.created_at < ?) ORDER BY dist ASC LIMIT ?",
             "params": [
               "[0.5, 0.25]",
               "shareable",
+              "public",
               "personal",
+              "internal",
               "local-only",
+              "private",
               "secret-bearing",
+              "sensitive",
               "code",
               "codex",
               "%\"rust\"%",
@@ -1212,8 +1220,8 @@
         "name": "fts_only",
         "stmts": [
           {
-            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
-            "params": ["\"back\" OR \"database\"", "shareable", "personal", 100]
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": ["\"back\" OR \"database\"", "shareable", "public", "personal", "internal", 100]
           }
         ]
       },
@@ -1221,8 +1229,8 @@
         "name": "vector_only",
         "stmts": [
           {
-            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
-            "params": ["[0.5, 0.25]", "shareable", "personal", 100]
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) ORDER BY dist ASC LIMIT ?",
+            "params": ["[0.5, 0.25]", "shareable", "public", "personal", "internal", 100]
           }
         ]
       }
@@ -1230,8 +1238,8 @@
     "allowed_ids_plain": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": ["shareable", "public", "personal", "internal"]
         }
       ],
       "result": [1, 2, 3, 4, 7, 8]
@@ -1239,8 +1247,8 @@
     "allowed_ids_kind": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": ["shareable", "public", "personal", "internal"]
         },
         {
           "sql": "SELECT c2.id AS cid FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?)",
@@ -1252,8 +1260,8 @@
     "index_fill": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": ["shareable", "public", "personal", "internal"]
         },
         {
           "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
@@ -1273,8 +1281,8 @@
     "index_fixed": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": ["shareable", "public", "personal", "internal"]
         },
         {
           "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",

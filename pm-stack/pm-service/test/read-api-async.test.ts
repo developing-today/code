@@ -223,10 +223,59 @@ describe("async read path parity with the synchronous handler", () => {
 });
 
 describe("worker entry", () => {
-  test("/health reports the VERSION var stamp", async () => {
-    const res = await handlePmServiceFetch(new Request("https://pm.test/health"), { VERSION: "abc123" });
+  test("uses the tenant D1 binding for hosted reads", async () => {
+    const queries: { sql: string; args: unknown[] }[] = [];
+    const d1 = {
+      prepare(sql: string) {
+        let args: unknown[] = [];
+        const statement = {
+          bind(...values: unknown[]) {
+            args = values;
+            return statement;
+          },
+          async all() {
+            queries.push({ sql, args });
+            return { success: true, results: [] };
+          },
+        };
+        return statement;
+      },
+    };
+    const env = { PM_TENANT_D1: d1 } as unknown as Parameters<typeof handlePmServiceFetch>[1];
+    const response = await handlePmServiceFetch(new Request("https://pm.test/api/projects.json"), env);
+
+    expect(response.status).toBe(200);
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.every(({ sql }) => /^\s*SELECT\b/i.test(sql))).toBe(true);
+  });
+
+  test("/health reports the commit and age of its deployment", async () => {
+    const deployedAt = new Date(Date.now() - 5_000).toISOString();
+    const res = await handlePmServiceFetch(new Request("https://pm.test/health"), {
+      VERSION: "abc123",
+      DEPLOYED_AT: deployedAt,
+    });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, service: "pm-service", version: "abc123" });
+    const health = (await res.json()) as {
+      ok: boolean;
+      service: string;
+      version: string;
+      deployedAt: string;
+      ageSeconds: number;
+    };
+    expect(health).toMatchObject({ ok: true, service: "pm-service", version: "abc123", deployedAt });
+    expect(Number.isInteger(health.ageSeconds)).toBe(true);
+    expect(health.ageSeconds).toBeGreaterThanOrEqual(5);
+  });
+
+  test("/health does not invent a deployment age when the stamp is missing or invalid", async () => {
+    for (const deployedAt of [undefined, "not-a-timestamp"]) {
+      const res = await handlePmServiceFetch(new Request("https://pm.test/health"), {
+        VERSION: "abc123",
+        DEPLOYED_AT: deployedAt,
+      });
+      expect(await res.json()).toMatchObject({ deployedAt: null, ageSeconds: null });
+    }
   });
 
   test("API routes answer an honest 503 until the tenant store is configured", async () => {

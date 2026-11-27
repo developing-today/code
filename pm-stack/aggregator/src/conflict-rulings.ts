@@ -40,7 +40,9 @@ export interface ConflictRulingsFile {
   rulings: ConflictRuling[];
 }
 
-export function validateRulingInput(body: unknown):
+export function validateRulingInput(
+  body: unknown,
+):
   | { ok: true; value: { classId: RulingClassId; trusted: TrustedSource; reason: string | null } }
   | { ok: false; error: string } {
   if (typeof body !== "object" || body === null) return { ok: false, error: "body must be an object" };

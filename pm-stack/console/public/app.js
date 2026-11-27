@@ -2671,11 +2671,14 @@ const REFUSED_SAID = {
   "ask.send": "sending a prompt",
   "ask.reply": "replying on a prompt",
   "ask.close": "closing a prompt",
+  "prompt.enqueue": "filing a prompt's task in the queue",
   "issue.comment": "commenting on an issue",
   "need.comment": "commenting on something that needs you",
   "hands.done": "marking something for your hands done",
   "issue.rank": "ranking an issue",
   "task.move": "moving a task",
+  "task.cancel": "cancelling a task",
+  "task.unblock": "unblocking a task",
   "pr.merge": "merging",
   "deploy.start": "starting a deploy",
   "store.migrate": "starting a store migration",
@@ -2688,6 +2691,7 @@ const REFUSED_SAID = {
   "read.done": "reading what was finished",
   "read.agents": "reading the agents list",
   "read.pipeline": "reading the unread instructions",
+  "read.questionSets": "reading the question sets",
 };
 
 /** What the edge says of doing the core itself, read from its public

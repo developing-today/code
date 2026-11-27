@@ -1,0 +1,13 @@
+[Unit]
+Description=laptop-db-backup: import t3code statev2.sqlite into its Turso home (mesh class E, #13459/#13474)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The import snapshots the whole source database before the staged
+# load begins; the bound matches the class-D home export service's
+# measured-cycle headroom (#13458).
+TimeoutStartSec=2h
+ExecStartPre=/usr/bin/env bash __LDB_DIR__/systemd/update-checkout.sh
+ExecStart=/usr/bin/env bash __LDB_DIR__/systemd/run-t3code-statev2-import.sh

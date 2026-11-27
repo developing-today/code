@@ -93,6 +93,31 @@ class RenderTests(unittest.TestCase):
             "# secrets resolved by name at activation time: svc.api-key", unit
         )
 
+    def test_unit_start_limit_fields_render_in_their_sections(self):
+        # Oracle: systemd.unit(5) / systemd.service(5) directive
+        # placement — StartLimitIntervalSec belongs to [Unit],
+        # RestartSec to [Service] — and issue #15533: the broker-class
+        # daemons must not be able to die permanently to systemd's
+        # default start limit (5 starts per 10s, 100ms restart delay)
+        # during a boot-window failure cascade.
+        unit = deploy.render_unit(
+            "svc",
+            dict(DEFN, restartDelaySec=5, startLimitIntervalSec=0),
+            base=BASE,
+        )
+        unit_section, _, service_section = unit.partition("[Service]")
+        self.assertIn("StartLimitIntervalSec=0", unit_section)
+        self.assertIn("RestartSec=5", service_section)
+
+    def test_unit_without_start_limit_fields_keeps_manager_defaults(self):
+        # Oracle: #15533 acceptance — no behavior change for a
+        # definition that does not opt in; the rendered unit carries
+        # neither directive, so systemd's defaults apply exactly as
+        # before this field existed.
+        unit = deploy.render_unit("svc", DEFN, base=BASE)
+        self.assertNotIn("StartLimitIntervalSec", unit)
+        self.assertNotIn("RestartSec", unit)
+
     def test_unit_render_is_generation_independent(self):
         # The flip-is-a-repoint invariant: the rendered unit cannot
         # depend on which generation is current.
@@ -110,6 +135,36 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<true/>", plist)  # KeepAlive for restart != "no"
         no_restart = deploy.render_plist("svc", dict(DEFN, restart="no"), base=BASE)
         self.assertIn("<false/>", no_restart)
+
+
+class StartLimitValidationTests(unittest.TestCase):
+    # Oracle: deploy.py's validation contract — the two #15533 fields
+    # are optional integers in range (0 is a real value for
+    # startLimitIntervalSec: systemd's "disable rate limiting"), and
+    # anything else is reported by field name.
+
+    def errors(self, **overrides):
+        return deploy.validate({"svc": dict(DEFN, **overrides)})
+
+    def test_valid_values_pass(self):
+        self.assertEqual(self.errors(restartDelaySec=5, startLimitIntervalSec=0), [])
+        self.assertEqual(self.errors(restartDelaySec=0), [])
+        self.assertEqual(self.errors(startLimitIntervalSec=86400), [])
+
+    def test_out_of_range_and_wrong_type_fail_by_field(self):
+        for field, bad in [
+            ("restartDelaySec", -1),
+            ("restartDelaySec", 3601),
+            ("restartDelaySec", "5"),
+            ("restartDelaySec", True),
+            ("startLimitIntervalSec", -1),
+            ("startLimitIntervalSec", 86401),
+            ("startLimitIntervalSec", "0"),
+            ("startLimitIntervalSec", False),
+        ]:
+            errors = self.errors(**{field: bad})
+            self.assertTrue(errors, f"{field}={bad!r} must be rejected")
+            self.assertIn(field, errors[0])
 
 
 class GenerationLogTests(unittest.TestCase):

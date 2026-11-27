@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7698 | #7694 | `audit:complete` | `cleanText` now preserves UTF-16 truncation semantics without emitting a lone surrogate, and regression tests cover the cap boundary, exact fit, and the smaller `optionId` cap. The issue's completion comment confirms the fix and merged test result. |
-| #7700 | #6014 | `audit:complete` | Adds the dated OCapN/CapTP watch entry, explicit T1–T3 spike trigger, and cadence folded into the worlds research pass as the issue requested. The spike remains conditional on its stated trigger. |
-| #7702 | #6474 | `audit:complete` | Rejects duplicate JSON fields in fixture headers and events before `Value` can collapse them, with changes and tests scoped to the requested parser fix. |
-| #7707 | #6057 | `audit:complete` | Delivers the staging-shard ingest-gate design record requested by the issue, including stage contracts, acceptance and failure handling, and open implementation boundaries. |
-| #7708 | #5973 | `audit:complete` | Delivers the world-governance design record covering moderation as a library, per-world configuration, pre-approval, and the board boundary. The follow-on clarification #7888 merged; the issue is closed as completed. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                  |
+| -------------: | -------------: | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7698 |          #7694 | `audit:complete` | `cleanText` now preserves UTF-16 truncation semantics without emitting a lone surrogate, and regression tests cover the cap boundary, exact fit, and the smaller `optionId` cap. The issue's completion comment confirms the fix and merged test result. |
+|          #7700 |          #6014 | `audit:complete` | Adds the dated OCapN/CapTP watch entry, explicit T1–T3 spike trigger, and cadence folded into the worlds research pass as the issue requested. The spike remains conditional on its stated trigger.                                                      |
+|          #7702 |          #6474 | `audit:complete` | Rejects duplicate JSON fields in fixture headers and events before `Value` can collapse them, with changes and tests scoped to the requested parser fix.                                                                                                 |
+|          #7707 |          #6057 | `audit:complete` | Delivers the staging-shard ingest-gate design record requested by the issue, including stage contracts, acceptance and failure handling, and open implementation boundaries.                                                                             |
+|          #7708 |          #5973 | `audit:complete` | Delivers the world-governance design record covering moderation as a library, per-world configuration, pre-approval, and the board boundary. The follow-on clarification #7888 merged; the issue is closed as completed.                                 |
 
 ## Slice state
 

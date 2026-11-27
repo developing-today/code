@@ -536,6 +536,13 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         self.inner.chunk_details(ids)
     }
 
+    fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.chunk_ids_by_hash(canonical_hash);
+        }
+        self.inner.chunk_ids_by_hash(canonical_hash)
+    }
+
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
         if let Some(content) = self.content_if_enabled() {
             return content.neighbors(message_id, chunk_idx, n);

@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { FixtureQueueStore } from "../../../pkgs/fleet/hosted-worker/src/queue-store.ts";
 import { executeQueueVerb, nativeQueueEnv } from "../../../pkgs/fleet/hosted-worker/src/queue.ts";
+import { type JsonObject } from "../../../pkgs/fleet/hosted-worker/src/queue-validate.ts";
 import { Edge, type KV } from "../edge/src/edge.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import { clearJwksCache } from "../src/auth.ts";
@@ -140,7 +141,9 @@ class QueueWire {
       return { ...result([]), affected_row_count: 1 };
     }
     if (sql.startsWith("UPDATE tasks SET ")) {
-      const names = list(/^UPDATE tasks SET (.*?) WHERE id = \?/s.exec(sql)![1]).map((set) => set.replace(/ = \?$/, ""));
+      const names = list(/^UPDATE tasks SET (.*?) WHERE id = \?/s.exec(sql)![1]).map((set) =>
+        set.replace(/ = \?$/, ""),
+      );
       const id = args[names.length];
       const guard = args.slice(names.length + 1);
       const row = this.tasks.find((candidate) => candidate.id === id);
@@ -365,7 +368,7 @@ async function oracleFor(
   w: Awaited<ReturnType<typeof setup>>,
   prepare: (store: FixtureQueueStore) => Promise<void>,
   verb: string,
-  request: Record<string, unknown>,
+  request: JsonObject,
 ) {
   const oracle = new FixtureQueueStore();
   const env = nativeQueueEnv(() => NOW / 1000);

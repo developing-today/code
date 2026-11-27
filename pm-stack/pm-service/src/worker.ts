@@ -20,6 +20,7 @@
  */
 import { createDashboardHandler } from "./dashboard/dashboard.ts";
 import { createAsyncReadApiHandler } from "./read-api/async-api.ts";
+import { d1AsyncDb, type D1DatabaseLike } from "./tenant-store/d1.ts";
 import { libsqlHttpDb } from "./tenant-store/libsql-http.ts";
 import { BoardDO } from "./board-do.ts";
 import { completeBrowserLogin, startBrowserLogin, type BrowserOAuthDeps } from "./oauth-pkce.ts";
@@ -29,6 +30,8 @@ export { BoardDO };
 
 export interface PmServiceEnv {
   VERSION?: string;
+  DEPLOYED_AT?: string;
+  PM_TENANT_D1?: D1DatabaseLike;
   PM_TENANT_DB_URL?: string;
   PM_TENANT_DB_TOKEN?: string;
   BOARD_DO?: DurableObjectNamespace;
@@ -42,7 +45,12 @@ const json = (body: unknown, status = 200): Response =>
 export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Promise<Response> {
   const path = new URL(req.url).pathname;
   if (req.method === "GET" && path === "/health") {
-    return json({ ok: true, service: "pm-service", version: env.VERSION ?? "unknown" });
+    const nowMs = Date.now();
+    const deployedAtMs = Date.parse(env.DEPLOYED_AT ?? "");
+    const hasDeploymentStamp = Number.isFinite(deployedAtMs) && deployedAtMs <= nowMs;
+    const deployedAt = hasDeploymentStamp ? new Date(deployedAtMs).toISOString() : null;
+    const ageSeconds = deployedAt === null ? null : Math.floor((nowMs - deployedAtMs) / 1_000);
+    return json({ ok: true, service: "pm-service", version: env.VERSION ?? "unknown", deployedAt, ageSeconds });
   }
   if (path === "/login" && req.method === "GET") {
     if (!env.BROWSER_OAUTH) return json({ error: "browser login is not configured" }, 503);
@@ -58,7 +66,10 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
       store: env.BROWSER_OAUTH.sessions,
       audit: env.BROWSER_OAUTH.audit,
     });
-    return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": cookie, "cache-control": "no-store" } });
+    return new Response(null, {
+      status: 303,
+      headers: { location: "/login", "set-cookie": cookie, "cache-control": "no-store" },
+    });
   }
   if (env.BROWSER_OAUTH && path !== "/login" && path !== "/oauth/callback") {
     const auth = await authenticateBrowserSession(req, {
@@ -75,16 +86,23 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
   if (boardMatch && req.method === "GET") {
     if (!env.BOARD_DO) return json({ error: "BoardDO is not configured" }, 503);
     let boardId: string;
-    try { boardId = decodeURIComponent(boardMatch[1] as string); }
-    catch { return json({ error: "malformed board id" }, 400); }
+    try {
+      boardId = decodeURIComponent(boardMatch[1] as string);
+    } catch {
+      return json({ error: "malformed board id" }, 400);
+    }
     return env.BOARD_DO.get(env.BOARD_DO.idFromName(boardId)).fetch(
       new Request(`https://board-do/subscribe${new URL(req.url).search}`, req),
     );
   }
-  if (!env.PM_TENANT_DB_URL) {
+  const db = env.PM_TENANT_D1
+    ? d1AsyncDb(env.PM_TENANT_D1)
+    : env.PM_TENANT_DB_URL
+      ? libsqlHttpDb({ url: env.PM_TENANT_DB_URL, token: env.PM_TENANT_DB_TOKEN })
+      : null;
+  if (!db) {
     return json({ error: "pm-service tenant store is not configured" }, 503);
   }
-  const db = libsqlHttpDb({ url: env.PM_TENANT_DB_URL, token: env.PM_TENANT_DB_TOKEN });
   const page = await createDashboardHandler({ db })(req);
   if (page) return page;
   return createAsyncReadApiHandler({ db })(req);

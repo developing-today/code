@@ -24,6 +24,9 @@ rcgen = { version = "0.14.10", default-features = false, features = [
 aws-lc-rs = { version = "1.18", default-features = false }
 # Certificate parsing for inspect/validate/chain work (DER + PEM).
 x509-parser = "0.18"
+# OpenSSL PKCS#12 parser/builder for encrypted identity archives; used only
+# at the explicit import/export boundary, not for signing fleet certificates.
+openssl = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

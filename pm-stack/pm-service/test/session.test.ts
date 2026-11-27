@@ -28,13 +28,19 @@ const PRINCIPAL: ResolvedPrincipal = {
 
 class MemorySessions implements BrowserSessionStore {
   readonly sessions = new Map<string, BrowserSession>();
-  async get(id: string) { return this.sessions.get(id) ?? null; }
-  async put(session: BrowserSession) { this.sessions.set(session.id, session); }
+  async get(id: string) {
+    return this.sessions.get(id) ?? null;
+  }
+  async put(session: BrowserSession) {
+    this.sessions.set(session.id, session);
+  }
   async touch(id: string, lastSeenAt: number) {
     const current = this.sessions.get(id);
     if (current) this.sessions.set(id, { ...current, lastSeenAt });
   }
-  async delete(id: string) { this.sessions.delete(id); }
+  async delete(id: string) {
+    this.sessions.delete(id);
+  }
 }
 
 function request(cookie?: string): Request {
@@ -86,26 +92,60 @@ describe("browser sessions (H3)", () => {
 
   test("rejects missing, idle-expired, and revoked sessions", async () => {
     const store = new MemorySessions();
-    expect(await authenticateBrowserSession(request(), {
-      store,
-      now: () => NOW,
-      resolveLivePrincipal: async () => PRINCIPAL,
-    })).toEqual({ ok: false, reason: "missing_session" });
+    expect(
+      await authenticateBrowserSession(request(), {
+        store,
+        now: () => NOW,
+        resolveLivePrincipal: async () => PRINCIPAL,
+      }),
+    ).toEqual({ ok: false, reason: "missing_session" });
 
     const setCookie = await createBrowserSession(PRINCIPAL, { store, now: () => NOW });
     const cookie = setCookie.split(";")[0]!;
-    expect(await authenticateBrowserSession(request(cookie), {
-      store,
-      now: () => NOW + 12 * 60 * 60 * 1000,
-      resolveLivePrincipal: async () => PRINCIPAL,
-    })).toEqual({ ok: false, reason: "expired_session" });
+    expect(
+      await authenticateBrowserSession(request(cookie), {
+        store,
+        now: () => NOW + 12 * 60 * 60 * 1000,
+        resolveLivePrincipal: async () => PRINCIPAL,
+      }),
+    ).toEqual({ ok: false, reason: "expired_session" });
 
     const freshCookie = await createBrowserSession(PRINCIPAL, { store, now: () => NOW });
-    expect(await authenticateBrowserSession(request(freshCookie.split(";")[0]!), {
+    expect(
+      await authenticateBrowserSession(request(freshCookie.split(";")[0]!), {
+        store,
+        now: () => NOW + 1_000,
+        resolveLivePrincipal: async () => null,
+      }),
+    ).toEqual({ ok: false, reason: "revoked_session" });
+  });
+
+  test("revocation rejects the very next request and records session audit", async () => {
+    const store = new MemorySessions();
+    const events: Array<{ event: string; accountId: string; bindingId: string; sessionId: string }> = [];
+    let revoked = false;
+    const setCookie = await createBrowserSession(PRINCIPAL, {
+      store,
+      now: () => NOW,
+      audit: (event) => events.push(event),
+    });
+    const cookie = setCookie.split(";")[0]!;
+    const options = {
       store,
       now: () => NOW + 1_000,
-      resolveLivePrincipal: async () => null,
-    })).toEqual({ ok: false, reason: "revoked_session" });
+      resolveLivePrincipal: async () => (revoked ? null : PRINCIPAL),
+      audit: (event: (typeof events)[number]) => events.push(event),
+    };
+
+    expect((await authenticateBrowserSession(request(cookie), options)).ok).toBe(true);
+    revoked = true;
+    expect(await authenticateBrowserSession(request(cookie), options)).toEqual({
+      ok: false,
+      reason: "revoked_session",
+    });
+    expect(store.sessions.size).toBe(0);
+    expect(events.map(({ event }) => event)).toEqual(["login", "revoked"]);
+    expect(events[1]).toMatchObject({ accountId: "acct-1", bindingId: "bind-1" });
   });
 
   test("logout deletes the server-side session and expires the cookie", async () => {

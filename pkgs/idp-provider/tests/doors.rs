@@ -34,7 +34,7 @@ use rand_core::OsRng;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
 use rsa::traits::PublicKeyParts;
-use rsa::{BigUint, RsaPrivateKey, RsaPublicKey};
+use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,8 +55,12 @@ struct MockState {
     client_id: String,
     subject: Mutex<String>,
     github_id: Mutex<i64>,
+    github_scope: Mutex<Option<String>>,
+    email: Mutex<Option<String>>,
+    email_verified: Mutex<bool>,
     last_nonce: Mutex<Option<String>>,
     last_challenge: Mutex<Option<String>>,
+    oidc_scope: Mutex<Option<String>>,
 }
 
 fn mock_app(state: Arc<MockState>) -> Router {
@@ -67,6 +71,7 @@ fn mock_app(state: Arc<MockState>) -> Router {
         .route("/gh/authorize", get(mock_gh_authorize))
         .route("/gh/token", post(mock_gh_token))
         .route("/gh/user", get(mock_gh_user))
+        .route("/gh/user/emails", get(mock_gh_emails))
         .with_state(state)
 }
 
@@ -76,6 +81,7 @@ async fn mock_oidc_authorize(
 ) -> Response {
     *m.last_nonce.lock().unwrap() = q.get("nonce").cloned();
     *m.last_challenge.lock().unwrap() = q.get("code_challenge").cloned();
+    *m.oidc_scope.lock().unwrap() = q.get("scope").cloned();
     let redirect = q.get("redirect_uri").cloned().unwrap_or_default();
     let state = q.get("state").cloned().unwrap_or_default();
     (
@@ -118,6 +124,10 @@ async fn mock_oidc_token(
         "iat": now,
         "exp": now + 600,
     });
+    if let Some(email) = m.email.lock().unwrap().clone() {
+        claims["email"] = serde_json::Value::String(email);
+        claims["email_verified"] = serde_json::Value::Bool(*m.email_verified.lock().unwrap());
+    }
     if let Some(nonce) = m.last_nonce.lock().unwrap().clone() {
         claims["nonce"] = serde_json::Value::String(nonce);
     }
@@ -147,7 +157,11 @@ async fn mock_oidc_jwks(State(m): State<Arc<MockState>>) -> Response {
     .into_response()
 }
 
-async fn mock_gh_authorize(Query(q): Query<HashMap<String, String>>) -> Response {
+async fn mock_gh_authorize(
+    State(m): State<Arc<MockState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    *m.github_scope.lock().unwrap() = q.get("scope").cloned();
     let redirect = q.get("redirect_uri").cloned().unwrap_or_default();
     let state = q.get("state").cloned().unwrap_or_default();
     (
@@ -170,7 +184,7 @@ async fn mock_gh_token(Form(f): Form<HashMap<String, String>>) -> Response {
     }
     Json(serde_json::json!({
         "access_token": "mock-gh-token",
-        "scope": "read:user",
+        "scope": "read:user user:email",
         "token_type": "bearer",
     }))
     .into_response()
@@ -193,6 +207,35 @@ async fn mock_gh_user(State(m): State<Arc<MockState>>, headers: HeaderMap) -> Re
         "login": "drew",
     }))
     .into_response()
+}
+
+async fn mock_gh_emails(State(m): State<Arc<MockState>>, headers: HeaderMap) -> Response {
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if auth != "Bearer mock-gh-token" {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "bad_token"})),
+        )
+            .into_response();
+    }
+    let emails = m
+        .email
+        .lock()
+        .unwrap()
+        .clone()
+        .map(|email| {
+            serde_json::json!([{
+                "email": email,
+                "primary": true,
+                "verified": *m.email_verified.lock().unwrap(),
+                "visibility": "private"
+            }])
+        })
+        .unwrap_or_else(|| serde_json::json!([]));
+    Json(emails).into_response()
 }
 
 // ---------------- harness ----------------
@@ -236,8 +279,12 @@ async fn harness_with_allowlist(allowlist: Vec<String>) -> Harness {
         client_id: "mock-google-client".to_string(),
         subject: Mutex::new(GOOGLE_SUB.to_string()),
         github_id: Mutex::new(GITHUB_ID),
+        github_scope: Mutex::new(None),
+        email: Mutex::new(None),
+        email_verified: Mutex::new(false),
         last_nonce: Mutex::new(None),
         last_challenge: Mutex::new(None),
+        oidc_scope: Mutex::new(None),
     });
     let mock2 = mock.clone();
     tokio::spawn(async move {
@@ -274,6 +321,7 @@ async fn harness_with_allowlist(allowlist: Vec<String>) -> Harness {
         account: Account {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
+            email: Some("owner@example.test".to_string()),
             roles: ROLES.iter().map(|s| s.to_string()).collect(),
             // The owner's declared identity set: these seed active
             // under the owner account. Any OTHER allowlisted
@@ -584,6 +632,125 @@ async fn google_door_full_loop_reaches_same_account() {
         .filter(|e| e.provider == "google")
         .count();
     assert_eq!(google_events, 1, "only the seed event is recorded");
+}
+
+#[tokio::test]
+async fn verified_email_match_registers_unallowlisted_identity_pending_without_code() {
+    const CLAIM_SUB: &str = "email-claim-sub";
+    let h = harness().await;
+    *h.mock.subject.lock().unwrap() = CLAIM_SUB.to_string();
+    *h.mock.email.lock().unwrap() = Some(" Owner@Example.test ".to_string());
+    *h.mock.email_verified.lock().unwrap() = true;
+
+    let resp = drive_door(&h, "google").await;
+    assert!(
+        h.mock
+            .oidc_scope
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("email"),
+        "OIDC authorization must request verified email claims"
+    );
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        location(&resp).is_empty(),
+        "pending claim must not receive a code"
+    );
+    assert_eq!(
+        h.identities.status("google", CLAIM_SUB).unwrap().as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        h.identities
+            .account_id_for("google", CLAIM_SUB)
+            .unwrap()
+            .as_deref(),
+        Some("drew")
+    );
+    assert!(h.identities.events().unwrap().iter().any(|event| {
+        event.event == "register"
+            && event.provider == "google"
+            && event.subject == CLAIM_SUB
+            && event.account_id == "drew"
+            && event.actor == "email-match"
+    }));
+    assert!(audit_has(
+        &h,
+        "door/google",
+        "denied",
+        "identity_pending",
+        &format!("google:{CLAIM_SUB}")
+    ));
+}
+
+#[tokio::test]
+async fn unverified_oidc_email_does_not_create_a_claim() {
+    const CLAIM_SUB: &str = "unverified-email-sub";
+    let h = harness().await;
+    *h.mock.subject.lock().unwrap() = CLAIM_SUB.to_string();
+    *h.mock.email.lock().unwrap() = Some("owner@example.test".to_string());
+    *h.mock.email_verified.lock().unwrap() = false;
+
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(audit_has(
+        &h,
+        "door/google",
+        "denied",
+        "not_allowlisted",
+        &format!("google:{CLAIM_SUB}")
+    ));
+    assert_eq!(h.identities.status("google", CLAIM_SUB).unwrap(), None);
+}
+
+#[tokio::test]
+async fn github_verified_primary_email_registers_pending_claim() {
+    let h = harness().await;
+    *h.mock.github_id.lock().unwrap() = GITHUB_ID + 1;
+    *h.mock.email.lock().unwrap() = Some("owner@example.test".to_string());
+    *h.mock.email_verified.lock().unwrap() = true;
+
+    let resp = drive_door(&h, "github").await;
+    assert!(
+        h.mock
+            .github_scope
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("user:email"),
+        "GitHub authorization must request the private verified-email endpoint scope"
+    );
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(location(&resp).is_empty());
+    assert_eq!(
+        h.identities
+            .status("github", &(GITHUB_ID + 1).to_string())
+            .unwrap()
+            .as_deref(),
+        Some("pending")
+    );
+    assert!(h.identities.events().unwrap().iter().any(|event| {
+        event.event == "register"
+            && event.provider == "github"
+            && event.subject == (GITHUB_ID + 1).to_string()
+            && event.account_id == "drew"
+            && event.actor == "email-match"
+    }));
+
+    *h.mock.github_id.lock().unwrap() = GITHUB_ID + 2;
+    *h.mock.email_verified.lock().unwrap() = false;
+    let resp = drive_door(&h, "github").await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        h.identities
+            .status("github", &(GITHUB_ID + 2).to_string())
+            .unwrap(),
+        None,
+        "an unverified GitHub address must not create a claim"
+    );
 }
 
 #[tokio::test]

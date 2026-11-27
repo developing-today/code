@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7881 | #3006 | `audit:complete` | Fixes the missed clinepass plain-decimal boundary, adds its probe-matrix test, writes the grammar to the aggregator README, and records every other grep hit as covered, non-measurement, or a named follow-up (#7880). This satisfies the closing inventory audit; the parent design later closes after #7880. |
-| #7882 | #7617 | `audit:complete` | Claims by explicit task ID and reads back by that same ID, preserving lane ownership under concurrency; names and unifies lease defaults with regression coverage. |
-| #7883 | #6054 | `audit:complete` | Records deletion detection, text/vector/index purge semantics, trace tombstones and per-zone policy, while consuming retention/license decisions without re-deciding them. |
-| #7886 | #5766 | `audit:complete` | Implements real systemd activation/rollback and health-check flip-back, with a laptop E2E that deploys, serves, rolls back, and rejects a broken generation. |
-| #7887 | #6435 | `audit:complete` | Delivers the evidence-backed knowledge-layer feature matrix, normalized inventory, adopt/adapt/reject findings, and explicit unresolved program questions under the read-authority rule. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                                                         |
+| -------------: | -------------: | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7881 |          #3006 | `audit:complete` | Fixes the missed clinepass plain-decimal boundary, adds its probe-matrix test, writes the grammar to the aggregator README, and records every other grep hit as covered, non-measurement, or a named follow-up (#7880). This satisfies the closing inventory audit; the parent design later closes after #7880. |
+|          #7882 |          #7617 | `audit:complete` | Claims by explicit task ID and reads back by that same ID, preserving lane ownership under concurrency; names and unifies lease defaults with regression coverage.                                                                                                                                              |
+|          #7883 |          #6054 | `audit:complete` | Records deletion detection, text/vector/index purge semantics, trace tombstones and per-zone policy, while consuming retention/license decisions without re-deciding them.                                                                                                                                      |
+|          #7886 |          #5766 | `audit:complete` | Implements real systemd activation/rollback and health-check flip-back, with a laptop E2E that deploys, serves, rolls back, and rejects a broken generation.                                                                                                                                                    |
+|          #7887 |          #6435 | `audit:complete` | Delivers the evidence-backed knowledge-layer feature matrix, normalized inventory, adopt/adapt/reject findings, and explicit unresolved program questions under the read-authority rule.                                                                                                                        |
 
 ## Slice state
 

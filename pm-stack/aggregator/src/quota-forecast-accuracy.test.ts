@@ -9,12 +9,15 @@ import {
   SERVICE_ID_RENAME_ALIASES,
   buildForecastAccuracyLedger,
   deriveRealizedDowntimeWindows,
+  deriveResetDurationOutcomes,
   errorDistribution,
   forecastAccuracySeriesKey,
   indexPercentRecords,
   pointsForWindow,
+  renderBacktestReport,
   scoreDowntimePair,
   scoreDowntimeWindows,
+  scoreResetDurationPredictions,
   segmentPeriods,
   summarizeDowntimeScoring,
   type ForecastAccuracyLedger,
@@ -365,5 +368,79 @@ describe("downtime_window scoring (oracle: C4 design §3 over fixture prediction
     ).toEqual([]);
     expect(deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], []])).toEqual([]);
     expect(deriveRealizedDowntimeWindows([])).toEqual([]);
+  });
+});
+
+describe("reset_duration scoring (oracle: C4 design §3 inclusive range coverage + width)", () => {
+  const prediction = (id: string, pool: string, earliest: number, latest: number, state = "predicted") => ({
+    id,
+    subject: { pool, window: "5-hour" },
+    issued_at: iso(T0),
+    basis: { name: "reset_cadence" },
+    methodology_version: "c4-meth:4",
+    state,
+    prediction: state === "predicted" ? { earliest: iso(earliest), latest: iso(latest) } : null,
+  });
+  test("inclusive hit, miss, width, per-pool grouping, and published ledger rows", () => {
+    const predictions = [
+      prediction("hit", "claude", T0 + H, T0 + 3 * H),
+      prediction("miss-low", "claude", T0 + 4 * H, T0 + 5 * H),
+      prediction("other-pool", "openai", T0 + H, T0 + 3 * H),
+    ];
+    const { ledger } = buildForecastAccuracyLedger([], {
+      asOfMs: T0 + 8 * H,
+      resetDurationPredictions: predictions,
+      resetDurationOutcomes: [
+        { pool: "claude", window: "5-hour", realizedAt: iso(T0 + H) },
+        { pool: "openai", window: "5-hour", realizedAt: iso(T0 + 2 * H) },
+      ],
+    });
+    expect(ledger.resetDuration?.facts.map((f) => [f.id, f.covered])).toEqual([
+      ["hit", true],
+      ["miss-low", false],
+      ["other-pool", true],
+    ]);
+    expect(ledger.resetDuration?.baselines).toHaveLength(2);
+    expect(ledger.resetDuration?.baselines[0]).toMatchObject({
+      pool: "claude",
+      predictionsScored: 2,
+      covered: 1,
+      coverage: 0.5,
+      meanWidthMs: H * 1.5,
+      targetBand: "~80%",
+    });
+    expect(renderBacktestReport(ledger)).toContain("Reset-duration range accuracy (C4.2)");
+    expect(renderBacktestReport(ledger)).toContain("50.0%");
+  });
+
+  test("honesty states and predictions without a realized reopening remain unscored", () => {
+    const { baselines, facts } = scoreResetDurationPredictions({
+      predictions: [prediction("no-basis", "claude", T0, T0 + H, "no_basis"), prediction("open", "claude", T0, T0 + H)],
+      outcomes: [],
+      asOfMs: T0 + 10 * H,
+    });
+    expect(facts).toHaveLength(0);
+    expect(baselines[0]).toMatchObject({
+      predictionsScored: 0,
+      predictionsUnscored: 2,
+      coverage: null,
+      meanWidthMs: null,
+    });
+  });
+
+  test("snapshot reset transitions estimate reopening at the bracket midpoint", () => {
+    const outcomes = deriveResetDurationOutcomes(
+      new Map([
+        [
+          "claude:5-hour",
+          [
+            { ts: iso(T0), resetsAt: iso(T0 + 5 * H) },
+            { ts: iso(T0 + 2 * H), resetsAt: iso(T0 + 5 * H) },
+            { ts: iso(T0 + 6 * H), resetsAt: iso(T0 + 10 * H) },
+          ],
+        ],
+      ]),
+    );
+    expect(outcomes).toEqual([{ pool: "claude", window: "5-hour", realizedAt: iso(T0 + 4 * H) }]);
   });
 });

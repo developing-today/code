@@ -178,15 +178,27 @@ pub(crate) async fn send_view<I: SessionIo>(
     viewport: Option<Viewport>,
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
+    caller_account: Option<&str>,
 ) -> bool {
     let world = service.world();
     let view = match viewport {
         Some(viewport) => {
             let width = u16::try_from(viewport.width).unwrap_or(u16::MAX);
             let height = u16::try_from(viewport.height).unwrap_or(u16::MAX);
-            world.view_at(token.clone(), width, height).await
+            world
+                .view_at_from_session(
+                    token.clone(),
+                    width,
+                    height,
+                    caller_account.map(str::to_owned),
+                )
+                .await
         }
-        None => world.view(token.clone()).await,
+        None => {
+            world
+                .view_from_session(token.clone(), caller_account.map(str::to_owned))
+                .await
+        }
     };
     match view {
         Ok(Some(data)) => {

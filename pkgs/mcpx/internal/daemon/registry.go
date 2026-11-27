@@ -2510,6 +2510,7 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var ceilingDenied toolCeilingDenied
 	var notConfirmed ErrNotConfirmed
 	var argDenied ErrArgumentRuleDenied
 	var unknownOutcome ErrUnknownOutcome
@@ -2520,6 +2521,8 @@ func failureStatus(err error) int {
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
 		// a bad request and not an upstream failure.
+		return http.StatusForbidden
+	case errors.As(err, &ceilingDenied):
 		return http.StatusForbidden
 	case errors.As(err, &notConfirmed):
 		// The confirmation gate refused the call (#6116): nobody
@@ -2675,6 +2678,9 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	} else if handled {
 		return r.Call(ctx, target, targetTool, cc, merged)
+	}
+	if err := r.authorizeToolCall(ctx, server, tool); err != nil {
+		return nil, err
 	}
 
 	p, ok := r.Pool(server)

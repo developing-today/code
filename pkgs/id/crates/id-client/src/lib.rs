@@ -17,6 +17,8 @@
 //! phone-provider surfaces, push service, or background-presence promise
 //! lives here — those are later slices.
 
+pub mod enrollment;
 pub mod session;
 
+pub use enrollment::{SecretBuffer, StoragePosture, WrappingKeyLevel};
 pub use session::{ClientIdentity, SessionError, TestWorld};
