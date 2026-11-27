@@ -34,9 +34,6 @@ interface RegistrySearchIndex {
   /** Postings are appended in record order, so candidate traversal keeps
    * the registry's existing search-result order. */
   postings: Map<string, Uint32Array>;
-  /** Refs for the item-title enrichment stage, extracted with the same
-   * snapshot build rather than flat-mapped on every search request. */
-  refs: RefKey[];
   overflowRecords: number[];
   postingEntries: number;
   indexedRecords: number;
@@ -66,6 +63,13 @@ function* sessionSearchFields(record: SessionRecord): Generator<unknown> {
   yield* record.taskRefs;
 }
 
+function sessionMatchesQuery(query: string, record: SessionRecord): boolean {
+  for (const field of sessionSearchFields(record)) {
+    if (typeof field === "string" && field.toLowerCase().includes(query)) return true;
+  }
+  return false;
+}
+
 function grams(value: string, size: number): Set<string> {
   const found = new Set<string>();
   for (let start = 0; start + size <= value.length; start++) found.add(value.slice(start, start + size));
@@ -85,14 +89,12 @@ function registrySearchIndex(records: SessionRecord[]): RegistrySearchIndex {
   if (cached) return cached;
 
   const mutablePostings = new Map<string, number[]>();
-  const refs = new Set<RefKey>();
   const overflowRecords: number[] = [];
   let postingEntries = 0;
   let indexedRecords = 0;
   for (let index = 0; index < records.length; index++) {
     const record = records[index];
     if (!record) continue;
-    for (const ref of record.taskRefs) if (isValidRef(ref)) refs.add(ref);
     const recordGrams = new Set<string>();
     let overflow = false;
     let fields = 0;
@@ -143,15 +145,23 @@ function registrySearchIndex(records: SessionRecord[]): RegistrySearchIndex {
     postings.set(gram, Uint32Array.from(posting));
     mutablePostings.delete(gram);
   }
-  const built = { postings, refs: [...refs], overflowRecords, postingEntries, indexedRecords };
+  const built = { postings, overflowRecords, postingEntries, indexedRecords };
   registrySearchIndexes.set(records, built);
   return built;
 }
 
-/** Distinct, validated session refs for item-title enrichment. Cached
- * with the search index so large registries are not flat-mapped per query. */
-export function registrySearchRefs(records: SessionRecord[]): RefKey[] {
-  return registrySearchIndex(records).refs;
+/** Refs from matching registry rows only; a query no longer flat-maps
+ * taskRefs across every session just to resolve item-title enrichment. */
+export function registrySearchRefs(records: SessionRecord[], rawQuery: string): RefKey[] {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return [];
+  const refs = new Set<RefKey>();
+  for (const index of registryCandidateIndices(query, records)) {
+    const record = records[index];
+    if (!record || !sessionMatchesQuery(query, record)) continue;
+    for (const ref of record.taskRefs) if (isValidRef(ref)) refs.add(ref);
+  }
+  return [...refs];
 }
 
 function containsSorted(posting: Uint32Array, value: number): boolean {
@@ -345,19 +355,7 @@ export function searchWork(
     const record = registry[recordIndex];
     if (!record) continue;
     const title = record.label || record.title || record.id;
-    if (
-      includesQuery(query, [
-        record.id,
-        record.label,
-        record.title,
-        record.agentId,
-        record.agentLabel,
-        record.status,
-        record.model,
-        record.directory,
-        ...record.taskRefs,
-      ])
-    ) {
+    if (sessionMatchesQuery(query, record)) {
       results.push({
         kind: "registry",
         id: record.id,

@@ -187,30 +187,30 @@ describe("search registry candidate bound (#15785)", () => {
       },
     );
     const queries = ["f", "fleet", "fle", "opencode:sub", "code#", "🛰", "in-progress", "abcdef", "aaaa", "missing"];
-    expect(registrySearchRefs(registry)).toEqual([...new Set(registry.flatMap((record) => record.taskRefs))]);
-    const reference = (query: string) =>
-      registry
-        .filter((record) =>
-          [
-            record.id,
-            record.label,
-            record.title,
-            record.agentId,
-            record.agentLabel,
-            record.status,
-            record.model,
-            record.directory,
-            ...record.taskRefs,
-          ].some((value) => typeof value === "string" && value.toLowerCase().includes(query)),
-        )
-        .map((record) => record.id);
+    const matches = (record: SessionRecord, query: string) =>
+      [
+        record.id,
+        record.label,
+        record.title,
+        record.agentId,
+        record.agentLabel,
+        record.status,
+        record.model,
+        record.directory,
+        ...record.taskRefs,
+      ].some((value) => typeof value === "string" && value.toLowerCase().includes(query));
 
     for (const rawQuery of queries) {
       const query = rawQuery.trim().toLowerCase();
+      const matched = registry.filter((record) => matches(record, query));
       const actual = searchWork([], [], new Map<RefKey, GhItem>(), rawQuery, { registry })
         .filter((result) => result.kind === "registry")
         .map((result) => result.id);
-      expect(actual).toEqual(reference(query));
+      expect(actual).toEqual(matched.map((record) => record.id));
+      expect(registrySearchRefs(registry, rawQuery)).toEqual([
+        ...new Set(matched.flatMap((record) => record.taskRefs)),
+      ]);
     }
+    expect(registrySearchRefs(registry, "   ")).toEqual([]);
   });
 });
