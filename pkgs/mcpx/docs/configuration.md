@@ -1060,6 +1060,8 @@ skipped launcher phases).
 
 ### script
 
+`script.imports=prepare` is the opt-in that installs resolved packages into mcpx's content-addressed cache. With the default `script.importsCrossProject=isolate`, packages declared by an imported file's foreign project manifest are prepared in a separate cache entry keyed by that manifest identity and its pinned packages. Node and Bun receive an mcpx-owned `node_modules` symlink at that foreign manifest directory so the imported file resolves against its own project set; the runner holds the normal directory lock and cache lease, does not replace a real `node_modules` directory or unrelated symlink, and removes a foreign-scope symlink it created/refreshed when the run ends (only if it still targets that prepared cache entry). Deno receives the corresponding manifest-scoped import-map entries and no project-directory link. `report` and `importsCrossProject=ignore` do not install subsets or create subset links. No registry install or project link is performed unless prepare is requested.
+
 | setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed | `TestScriptPhasesRunFromTheEnvironment` |

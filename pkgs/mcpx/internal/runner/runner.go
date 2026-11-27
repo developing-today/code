@@ -1399,9 +1399,17 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 		}
 		inner := release
 		release = func() { lease.Release(); inner() }
-		if lerr := linkPreparedNodeModules(subset.ManifestDir, subset.Dir, workDir); lerr != nil {
+		changed, lerr := linkPreparedNodeModulesOwned(subset.ManifestDir, subset.Dir, workDir)
+		if lerr != nil {
 			release()
 			return nil, nil, fmt.Errorf("imports: link the prepared environment for %s: %w", subset.ManifestPath, lerr)
+		}
+		if changed {
+			inner := release
+			release = func() {
+				removePreparedNodeModulesLink(subset.ManifestDir, subset.Dir)
+				inner()
+			}
 		}
 	}
 	return release, nil, nil
@@ -1442,49 +1450,87 @@ func preparedManifestScope(opts Options, scriptDir string) string {
 //   - a dangling link is replaced only when one of those mechanisms
 //     left it; any other symlink is left as the project put it.
 func linkPreparedNodeModules(scriptDir, preparedDir, workDir string) error {
+	_, err := linkPreparedNodeModulesOwned(scriptDir, preparedDir, workDir)
+	return err
+}
+
+// linkPreparedNodeModulesOwned has the same ownership rules as
+// linkPreparedNodeModules and reports whether this call created or refreshed
+// the symlink. Subset links are removed at run end only when this call owned
+// the change and the target still matches the prepared cache entry.
+func linkPreparedNodeModulesOwned(scriptDir, preparedDir, workDir string) (bool, error) {
 	modules := filepath.Join(preparedDir, "node_modules")
 	link := filepath.Join(scriptDir, "node_modules")
 	fi, err := os.Lstat(link)
 	if err != nil {
-		return os.Symlink(modules, link)
+		if err := os.Symlink(modules, link); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		return nil // a real directory or file: the project's own
+		return false, nil // a real directory or file: the project's own
 	}
 	target, rerr := os.Readlink(link)
 	if rerr != nil {
-		return nil
+		return false, nil
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(scriptDir, target)
 	}
 	target = filepath.Clean(target)
 	if target == filepath.Clean(modules) {
-		return nil // already points at this environment
+		return false, nil // already points at this environment
 	}
 	if _, serr := os.Stat(target); serr != nil {
-		// Dangling: replace it only when a prepare run or this
-		// runner left it -- a user-managed link that happens to
-		// dangle is the project's own and stays.
 		if !preflight.IsPreparedNodeModules(target) && !runnerOwnedLinkTarget(target, workDir) {
-			return nil
+			return false, nil
 		}
-		_ = os.Remove(link)
-		return os.Symlink(modules, link)
+		if err := os.Remove(link); err != nil {
+			return false, err
+		}
+		if err := os.Symlink(modules, link); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	// A live link elsewhere: refresh it only when a prepare run or
-	// this runner left it -- an earlier prepared environment
-	// (recognisable by its manifest), or a workdir set (recognisable
-	// by the generated client sitting beside its node_modules).
 	if preflight.IsPreparedNodeModules(target) {
-		_ = os.Remove(link)
-		return os.Symlink(modules, link)
+		if err := os.Remove(link); err != nil {
+			return false, err
+		}
+		if err := os.Symlink(modules, link); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if _, serr := os.Stat(filepath.Join(filepath.Dir(target), clientFileName)); serr == nil {
-		_ = os.Remove(link)
-		return os.Symlink(modules, link)
+		if err := os.Remove(link); err != nil {
+			return false, err
+		}
+		if err := os.Symlink(modules, link); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return nil
+	return false, nil
+}
+
+func removePreparedNodeModulesLink(scope, preparedDir string) {
+	link := filepath.Join(scope, "node_modules")
+	fi, err := os.Lstat(link)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		return
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(scope, target)
+	}
+	if filepath.Clean(target) == filepath.Clean(filepath.Join(preparedDir, "node_modules")) {
+		_ = os.Remove(link)
+	}
 }
 
 // removePreparedLink removes the node_modules link at a placement
