@@ -132,7 +132,7 @@ def probe(binary):
         if remaining <= 0 or proc.wait(timeout=remaining) != 0:
             return False
         return compatible(json.loads(output))
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, RecursionError, subprocess.TimeoutExpired):
         return False
     finally:
         if proc is not None:

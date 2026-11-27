@@ -125,6 +125,7 @@ class ProcessTests(unittest.TestCase):
         for body in ("print('not json')", "print('{}')", "print('[]')",
                      "print(" + repr(json.dumps(dict(DOCUMENT, compatibility_contracts=["old"]))) + ")",
                      "import time; time.sleep(5)", "print('x' * 70000)",
+                     "print('[' * 2000 + '0' + ']' * 2000)",
                      "import sys; print(" + repr(json.dumps(DOCUMENT)) + "); sys.exit(1)"):
             with self.subTest(body=body):
                 self.fleet(body)

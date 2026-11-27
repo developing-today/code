@@ -66,8 +66,8 @@ makes no live parity claim and performs no installation/deployment.
 ## Hermetic verification
 
 ```sh
-python3 -m unittest discover -s pkgs/fleet/tests -p 'test_python_client_selector.py' -v
-python3 -m unittest discover -s pkgs/fleet/tests -p 'test_tailnet_proxy_env.py' -v
+python3 -I -m unittest discover -s pkgs/fleet/tests -p 'test_python_client_selector.py' -v
+python3 -I -m unittest discover -s pkgs/fleet/tests -p 'test_tailnet_proxy_env.py' -v
 ```
 
 Tests name their oracle: the explicit gate/CLI contract, fake fleet's exact
