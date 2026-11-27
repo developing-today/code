@@ -559,8 +559,20 @@ printf 'export const value = "%s";\n' "$value" > node_modules/shared/index.mjs
 	if got, want := strings.TrimSpace(stdout.String()), "entry-1.0.0:foreign-2.0.0"; got != want {
 		t.Fatalf("each importing project must resolve its own pins: got %q, want %q", got, want)
 	}
-	if _, err := os.Lstat(filepath.Join(foreignDir, "node_modules")); !os.IsNotExist(err) {
-		t.Errorf("runner-owned subset link is cleaned after the run; stat error = %v", err)
+	link := filepath.Join(foreignDir, "node_modules")
+	st, err := os.Lstat(link)
+	if err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the foreign project resolves through an mcpx-owned cache link, not a copied install: mode=%v err=%v", st, err)
+	}
+	target, err := os.Readlink(link)
+	if err != nil || !strings.Contains(target, filepath.Join("imports", "")) {
+		t.Errorf("the foreign project link targets the prepared cache: target=%q err=%v", target, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "shared", "package.json")); err != nil {
+		t.Errorf("the foreign link exposes its materialized dependency: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(entryDir, "node_modules", "shared", "package.json")); err != nil {
+		t.Errorf("the entry project retains its separate prepared dependency: %v", err)
 	}
 }
 

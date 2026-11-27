@@ -886,6 +886,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
 				append(append([]string{}, rt.ConfigArgs...), depsFlags...), execDir, resolveOpts)
 		}
+		if rep.Prepared != nil {
+			defer rep.Prepared.ReleaseWarmLeases()
+		}
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
@@ -1322,19 +1325,21 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 			lease.Release()
 		}
 	}
-	if !alreadyLocked {
-		// The links are shared by every file run in their
-		// directories, and refreshing one mid-flight would swap the
-		// environment under a run still importing; hold the
-		// directories' locks from linking until this run returns,
-		// as the deps link does. When the deps block ran it already
-		// holds those locks for this run -- it locks the manifest's
-		// directory beside the script's -- and the single-capacity
-		// semaphores must not be taken twice.
-		lockDirs := []string{scriptDir}
-		if manifestDir != "" {
-			lockDirs = append(lockDirs, manifestDir)
+	lockDirs := make([]string, 0, 2+len(prepared.PreparedSubsets))
+	lockDirs = append(lockDirs, scriptDir)
+	if manifestDir != "" {
+		lockDirs = append(lockDirs, manifestDir)
+	}
+	for _, subset := range prepared.PreparedSubsets {
+		if subset.ManifestDir != "" {
+			lockDirs = append(lockDirs, subset.ManifestDir)
 		}
+	}
+	if !alreadyLocked {
+		// Acquire every placement in one sorted pass so overlapping
+		// project scopes cannot deadlock between concurrent runs. The
+		// deps block already owns the entry script/manifest locks when
+		// alreadyLocked is true.
 		unlock, lerr := lockScriptDirs(ctx, lockDirs...)
 		if lerr != nil {
 			release()
@@ -1342,6 +1347,24 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 		}
 		inner := release
 		release = func() { unlock(); inner() }
+	} else {
+		// The deps block owns only the script and entry-manifest scopes;
+		// acquire foreign scopes together, without re-taking those locks.
+		var foreignDirs []string
+		for _, subset := range prepared.PreparedSubsets {
+			if subset.ManifestDir != "" && filepath.Clean(subset.ManifestDir) != filepath.Clean(scriptDir) && filepath.Clean(subset.ManifestDir) != filepath.Clean(manifestDir) {
+				foreignDirs = append(foreignDirs, subset.ManifestDir)
+			}
+		}
+		if len(foreignDirs) > 0 {
+			unlock, lerr := lockScriptDirs(ctx, foreignDirs...)
+			if lerr != nil {
+				release()
+				return nil, nil, preflightErr(ctx, lerr)
+			}
+			inner := release
+			release = func() { unlock(); inner() }
+		}
 	}
 	if lerr := linkPreparedNodeModules(scriptDir, prepared.Dir, workDir); lerr != nil {
 		release()
@@ -1351,6 +1374,28 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 		if lerr := linkPreparedNodeModules(manifestDir, prepared.Dir, workDir); lerr != nil {
 			release()
 			return nil, nil, fmt.Errorf("imports: link the prepared environment at the manifest's directory: %w", lerr)
+		}
+	}
+	for _, subset := range prepared.PreparedSubsets {
+		if subset.ManifestDir == "" || subset.Dir == "" {
+			release()
+			return nil, nil, fmt.Errorf("imports: prepared cross-project subset has no manifest scope or cache directory")
+		}
+		subsetModules := filepath.Join(subset.Dir, "node_modules")
+		if st, serr := os.Stat(subsetModules); serr != nil || !st.IsDir() {
+			release()
+			return nil, nil, fmt.Errorf("imports: prepared cross-project environment at %s has no node_modules to run against", subset.Dir)
+		}
+		lease, lerr := cache.Acquire(subset.Dir)
+		if lerr != nil {
+			release()
+			return nil, nil, fmt.Errorf("imports: lease cross-project environment at %s: %w", subset.Dir, lerr)
+		}
+		inner := release
+		release = func() { lease.Release(); inner() }
+		if lerr := linkPreparedNodeModules(subset.ManifestDir, subset.Dir, workDir); lerr != nil {
+			release()
+			return nil, nil, fmt.Errorf("imports: link the prepared environment for %s: %w", subset.ManifestPath, lerr)
 		}
 	}
 	return release, nil, nil
