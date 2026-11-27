@@ -28,6 +28,16 @@ use serde::{Deserialize, Serialize};
 
 use super::contracts::{ContractError, DIGEST_DOMAIN_SELECTION_ORDER, digest};
 
+/// Wire schema identifier of the selection-order object
+/// (architecture.md: the order object carries `schema_version`).
+pub const SELECTION_ORDER_SCHEMA_VERSION: &str = "fleet.selection-order/v1";
+
+/// Comparator tuple this build implements: PRI-03 peer-order tuple
+/// version 1 (contract key PRI-CMP-01). The program index owns the
+/// tuple registry; this constant is the one ref this build knows —
+/// anything else is `unsupported_version` (DST-06 record §4.3).
+pub const ORDER_COMPARATOR_REF: &str = "PRI-CMP-01/tuple-1";
+
 /// One ordered candidate in comparator order (effective urgency
 /// ascending, then exact peer rank, creation time, normalized
 /// canonical identity, per the #9200 component). The hash is
@@ -83,6 +93,16 @@ pub struct SelectionOrderInput {
     /// candidate set (top page, truncated fetch) hashes to a typed
     /// error, never to an order claim.
     pub complete: bool,
+    /// Wire schema of the order object. Must be
+    /// [`SELECTION_ORDER_SCHEMA_VERSION`]: anything else is
+    /// `unsupported_version`, never silent coercion (DST-06
+    /// record §4.3).
+    pub schema_version: String,
+    /// Comparator tuple the order was computed under. Must be
+    /// [`ORDER_COMPARATOR_REF`]: a target on another tuple gets
+    /// `unsupported_version`, never a hash compared as if current
+    /// (DST-06 record §4.3).
+    pub comparator_ref: String,
 }
 
 /// Why a candidate set cannot claim full-order conformance: the
@@ -194,6 +214,8 @@ fn parse_decimal_id(value: &str) -> Option<u128> {
 pub fn selection_order_dto(input: &SelectionOrderInput) -> serde_json::Value {
     serde_json::json!({
         "purpose": DIGEST_DOMAIN_SELECTION_ORDER,
+        "schema_version": input.schema_version,
+        "comparator_ref": input.comparator_ref,
         "snapshot": {
             "profile_version": input.snapshot.profile_version,
             "taxonomy_version": input.snapshot.taxonomy_version,
@@ -223,6 +245,16 @@ pub fn selection_order_hash(input: &SelectionOrderInput) -> Result<String, Contr
     if !input.complete {
         return Err(ContractError::InvalidSchema {
             detail: "partial candidate set cannot claim full-order conformance".to_string(),
+        });
+    }
+    if input.schema_version != SELECTION_ORDER_SCHEMA_VERSION {
+        return Err(ContractError::UnsupportedVersion {
+            schema_version: input.schema_version.clone(),
+        });
+    }
+    if input.comparator_ref != ORDER_COMPARATOR_REF {
+        return Err(ContractError::UnsupportedVersion {
+            schema_version: format!("comparator:{}", input.comparator_ref),
         });
     }
     digest(DIGEST_DOMAIN_SELECTION_ORDER, &selection_order_dto(input))
@@ -276,11 +308,13 @@ pub enum OrderComparison {
         b: OrderedItem,
     },
     /// The pair cannot be compared: at least one side is a partial
-    /// candidate set, which claims no order. (Version-skew refusal
-    /// joins this variant when the types carry schema/comparator
-    /// versions — oracle test 7.)
+    /// candidate set, which claims no order (`partial_candidate_set`
+    /// reason), or the pair runs unknown or unequal versions, which
+    /// must never be compared as if current (`version_skew` reason,
+    /// DST-06 record §4.3).
     NotComparable {
-        /// Machine-readable reason (`partial_candidate_set`).
+        /// Machine-readable reason (`partial_candidate_set` or
+        /// `version_skew`).
         reason: &'static str,
     },
 }
@@ -329,17 +363,43 @@ fn sorted_identities(items: &[OrderedItem]) -> Vec<String> {
     ids
 }
 
+/// Whether one input runs versions this build knows: the wire
+/// schema and the one comparator tuple it implements. Anything
+/// else is `unsupported_version` at build time and `version_skew`
+/// at compare time — never silent coercion (DST-06 record §4.3).
+fn is_known_version(input: &SelectionOrderInput) -> bool {
+    input.schema_version == SELECTION_ORDER_SCHEMA_VERSION
+        && input.comparator_ref == ORDER_COMPARATOR_REF
+}
+
+/// Whether two known-version inputs run unequal versions. Version
+/// skew is checked before snapshot inputs: different versions may
+/// legitimately order differently, so the pair is refused, not
+/// diagnosed as an input difference (DST-06 record §4.1 vs §4.3).
+fn version_skewed(a: &SelectionOrderInput, b: &SelectionOrderInput) -> bool {
+    a.schema_version != b.schema_version || a.comparator_ref != b.comparator_ref
+}
+
 /// Compare two order observations and name their divergence class.
 ///
 /// Both sides must be complete: a partial candidate set claims no
 /// order, so a pair holding one is [`OrderComparison::NotComparable`],
-/// never a comparison. Otherwise the report stops at the first
-/// class that applies: inputs, then population, then item keys,
-/// then sequence (DST-06 record §4.1).
+/// never a comparison. Both sides must also run known, equal
+/// versions: an unknown schema or comparator on either side — or a
+/// skew between them — is [`OrderComparison::NotComparable`] with
+/// reason `version_skew`, never a comparison as if current (DST-06
+/// record §4.3). Otherwise the report stops at the first class that
+/// applies: inputs, then population, then item keys, then sequence
+/// (DST-06 record §4.1).
 pub fn compare(a: &SelectionOrderInput, b: &SelectionOrderInput) -> OrderComparison {
     if !a.complete || !b.complete {
         return OrderComparison::NotComparable {
             reason: "partial_candidate_set",
+        };
+    }
+    if !is_known_version(a) || !is_known_version(b) || version_skewed(a, b) {
+        return OrderComparison::NotComparable {
+            reason: "version_skew",
         };
     }
     let keys = snapshot_diff_keys(&a.snapshot, &b.snapshot);
@@ -445,6 +505,8 @@ mod tests {
             snapshot: fixture_snapshot(),
             items: fixture_items(),
             complete: true,
+            schema_version: SELECTION_ORDER_SCHEMA_VERSION.to_string(),
+            comparator_ref: ORDER_COMPARATOR_REF.to_string(),
         }
     }
 
@@ -709,5 +771,86 @@ mod tests {
                 reason: "partial_candidate_set",
             }
         );
+    }
+
+    /// DST-06 oracle test 7 (#9456): an unknown schema or comparator
+    /// is `unsupported_version` for build and compare (DST-06 record
+    /// §4.3). A target on another tuple version never gets a hash,
+    /// and a skewed pair is refused — never compared as if current.
+    #[test]
+    fn pmo_distribution_unknown_version_not_compared() {
+        // Build: unknown schema version is unsupported_version, not
+        // a hash and not silent coercion to the known schema.
+        let mut future_schema = fixture_input();
+        future_schema.schema_version = "fleet.selection-order/v2".to_string();
+        let err = selection_order_hash(&future_schema).unwrap_err();
+        assert_eq!(err.code(), "unsupported_version");
+        assert!(format!("{err:?}").contains("fleet.selection-order/v2"));
+
+        // Build: unknown comparator tuple is unsupported_version —
+        // an old target cannot silently hash under the old tuple.
+        let mut old_tuple = fixture_input();
+        old_tuple.comparator_ref = "PRI-CMP-01/tuple-0".to_string();
+        let err = selection_order_hash(&old_tuple).unwrap_err();
+        assert_eq!(err.code(), "unsupported_version");
+
+        // Build: a missing comparator ref is unknown, not a default:
+        // empty never means "the current tuple".
+        let mut unversioned = fixture_input();
+        unversioned.comparator_ref = String::new();
+        assert_eq!(
+            selection_order_hash(&unversioned).unwrap_err().code(),
+            "unsupported_version"
+        );
+
+        // Compare: the same unknown schema on both sides is still
+        // refused — an unknown version is never comparable, even
+        // with itself.
+        let also_future = future_schema.clone();
+        assert_eq!(
+            compare(&future_schema, &also_future),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+
+        // Compare: skew between known schema and unknown schema is
+        // refused, and it preempts input diagnosis — the report is
+        // version_skew, not InputsDiffer, even when the snapshots
+        // also differ.
+        let first = fixture_input();
+        let mut skewed_inputs = future_schema.clone();
+        skewed_inputs.snapshot.policy_version = "policy:v8".to_string();
+        assert_eq!(
+            compare(&first, &skewed_inputs),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+
+        // Compare: same known schema, different comparator tuples —
+        // one target moved tuples — is refused, never classified.
+        assert_eq!(
+            compare(&first, &old_tuple),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+        assert_eq!(
+            compare(&old_tuple, &first),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+
+        // Compare: equal known versions still compare normally —
+        // the refusal only fires on unknown or unequal versions.
+        let second = fixture_input();
+        assert_eq!(compare(&first, &second), OrderComparison::Identical);
+
+        // Known-version constants are the wire values: schema is the
+        // digest domain's version, comparator is PRI-03 tuple 1.
+        assert_eq!(SELECTION_ORDER_SCHEMA_VERSION, "fleet.selection-order/v1");
+        assert_eq!(ORDER_COMPARATOR_REF, "PRI-CMP-01/tuple-1");
     }
 }
