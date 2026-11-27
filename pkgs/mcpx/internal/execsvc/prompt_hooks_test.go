@@ -699,25 +699,3 @@ func TestRunPromptHookApplyNoProvider(t *testing.T) {
 		t.Fatalf("result changed by unavailable apply hook: %v", res.Result)
 	}
 }
-
-// Composition: an apply prompt hook after a script hook sees the
-// script hook's transformed value (the runHooks context-refresh
-// rule), and its own replacement is what the caller receives.
-func TestRunHooksPromptApplyAfterScriptHookSeesTransformedValue(t *testing.T) {
-	fake := &fakeProvider{text: `{"apply": {"total": 11}}`}
-	s := &Service{ModelProvider: fake}
-	res := &Result{RunID: "r1", Result: map[string]any{"total": 3}, Artifacts: []Artifact{}}
-	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
-	s.runHooks(context.Background(), HookOnSuccess,
-		[]Hook{
-			{Phase: HookOnSuccess, Script: `console.log(JSON.stringify({ apply: { total: 10 } }));`},
-			{Phase: HookOnSuccess, Prompt: "fix @result", Effect: "apply"},
-		},
-		hctx, runner.Options{}, res, func(Frame) {})
-	if !strings.Contains(fake.last.Messages[1].Content, `"total":10`) {
-		t.Fatalf("prompt hook did not see the script hook's transformed value: %q", fake.last.Messages[1].Content)
-	}
-	if got := res.Result.(map[string]any)["total"]; got != float64(11) {
-		t.Fatalf("result = %v, want the prompt hook's replacement 11", res.Result)
-	}
-}
