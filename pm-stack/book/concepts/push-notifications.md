@@ -75,7 +75,7 @@ One consequence is stated plainly: if the laptop dies, the heartbeat leg sends n
 1. A producer raises a question in the Muse-side decisions ledger. The aggregator's needs-Drew candidate carries it: ledger id, question, and options.
 2. The push payload includes the answer block. The service worker turns the first two options into notification actions and stores the ledger id, the answer token (parsed from the answer-page URL's `?t=` parameter), and the answer URL in the notification data.
 3. On `notificationclick` with an action, the service worker posts directly to `POST /api/needs-drew/\<ledgerId\>/answer` with the token and the tapped option id. No page opens. Errors in the service worker are silent; the answer page is the fallback and calls the same endpoint.
-4. The endpoint records the resolution against the ledger item's question, and the dropped-thread catcher applies resolutions to the Muse-side ledger per question. The store ambiguity for single-question answers is recorded as D9 and treated in [Question sets and the answer-back flow](questions-and-answers.md).
+4. The endpoint records the resolution against the ledger item's question, and the dropped-thread catcher applies resolutions to the Muse-side ledger per question. The single-question answer is written to the needs-Drew question store (`recordAnswer` in `needs-drew.ts`; D9), treated in [Question sets and the answer-back flow](questions-and-answers.md).
 
 ### A decision set: the page is the answer surface
 

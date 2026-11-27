@@ -9,10 +9,16 @@
 //! lives in [`databases`].
 //! Slice 3 remainder (row notes, property claims, relations) lives in
 //! [`rows`].
+//! Slice 4 export reader (§2.5: Markdown+CSV archive, match ledger) lives
+//! in [`export`]; export-only degraded mode (§2.5) lives in
+//! [`export_only`].
 
 pub mod comments;
 pub mod content;
 pub mod databases;
+pub mod export;
+pub mod export_only;
+pub mod reimport;
 pub mod rows;
 
 #[cfg(unix)]
@@ -614,10 +620,52 @@ pub struct Manifest {
     /// manifests, so it defaults empty when an older manifest is loaded.
     #[serde(default)]
     pub row_records: BTreeMap<String, crate::rows::RowConversion>,
+    /// Versioned per-data-source schema claims. Superseded claims remain as
+    /// provenance when a source moves or changes schema (§6.1).
+    #[serde(default)]
+    pub schema_claim_history: Vec<crate::databases::SchemaClaimRecord>,
+    /// Data-source parent changes observed during re-import (§6.1).
+    #[serde(default)]
+    pub moved_data_sources: Vec<crate::reimport::MovedDataSource>,
+    /// Page UUID -> its degradation ledger (slice 4 design record §2.4,
+    /// §2.6), recorded by [`content::convert_page`]. Absent from
+    /// pre-slice-4 manifests, so it defaults empty when an older
+    /// manifest is loaded.
+    #[serde(default)]
+    pub page_losses: BTreeMap<String, crate::content::LossLedger>,
+    /// Export path -> how that export file matched the API inventory
+    /// (design §2.5/§2.6). Every uncertain match is named here. Absent from
+    /// pre-export manifests, so it defaults empty.
+    #[serde(default)]
+    pub export_matches: BTreeMap<String, crate::export::ExportMatch>,
+    /// Which acquisition front ends fed this manifest (design §2.6).
+    /// Additive: absent from older manifests, so it defaults to all false.
+    #[serde(default)]
+    pub acquisition: Acquisition,
+    /// Degraded mode only (design §2.5): page UUID -> the weaker identity
+    /// its `page_id_to_note_id` key carries. Every key of
+    /// `page_id_to_note_id` that appears here is a degraded key. Absent
+    /// from older manifests, so it defaults empty.
+    #[serde(default)]
+    pub degraded_identities: BTreeMap<String, crate::export_only::DegradedIdentity>,
+    /// Page UUID -> why its comments were not imported, for pages whose
+    /// `comments_coverage` is unavailable for a known reason (an
+    /// export-only run records `export-path`). Defaults empty.
+    #[serde(default)]
+    pub comments_uncovered_reasons: BTreeMap<String, String>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
     pub objects: BTreeMap<String, ObjectProgress>,
+}
+
+/// Acquisition header (design §2.6): which front ends supplied content and
+/// whether the run fell back to export-only degraded mode.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Acquisition {
+    pub api: bool,
+    pub export: bool,
+    pub degraded_mode: bool,
 }
 
 impl Manifest {
@@ -647,6 +695,11 @@ impl Manifest {
                 })
             })
             .collect();
+        let acquisition = Acquisition {
+            api: acquisition_paths.iter().any(|path| path == "api"),
+            export: acquisition_paths.iter().any(|path| path == "export"),
+            degraded_mode: false,
+        };
         Ok(Self {
             schema_version: 1,
             workspace_id,
@@ -676,6 +729,13 @@ impl Manifest {
             comment_claims: BTreeMap::new(),
             comments_coverage: BTreeMap::new(),
             row_records: BTreeMap::new(),
+            schema_claim_history: Vec::new(),
+            moved_data_sources: Vec::new(),
+            page_losses: BTreeMap::new(),
+            export_matches: BTreeMap::new(),
+            acquisition,
+            degraded_identities: BTreeMap::new(),
+            comments_uncovered_reasons: BTreeMap::new(),
         })
     }
 

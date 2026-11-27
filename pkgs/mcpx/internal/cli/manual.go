@@ -327,6 +327,23 @@ func handCommands() []Command {
 				"with something else.",
 		},
 		{
+			Name: "auth", Group: "daemon",
+			Local:   "Manages keys in the local daemon state directory; no HTTP endpoint provisions, lists, or revokes credentials.",
+			Usage:   "key <create|list|revoke> [flags]",
+			Summary: "create, list, and revoke local daemon keys",
+			Detail: "`mcpx auth key create` requires --user and --label; --ceiling " +
+				"defaults to discovery. The raw `mcpx_key_...` bearer is printed only " +
+				"at creation. `list` shows public metadata only, never the bearer or " +
+				"its hash. A lost key cannot be recovered: create a replacement, update " +
+				"its caller, then revoke the old key by ID. Revocation is permanent and " +
+				"takes effect on the next request.",
+			Examples: []string{
+				"mcpx auth key create --user owner --label laptop-cli --ceiling full",
+				"mcpx auth key list",
+				"mcpx auth key revoke 0123456789ab",
+			},
+		},
+		{
 			Name: "config", Group: "configuration",
 			Local:   "Reads the configuration files on the caller's search path; `settings` is the running daemon's view.",
 			Usage:   "[--path|--sources|--defaults|--schema]",

@@ -504,12 +504,17 @@ test.describe("Editor Typing + Save", () => {
     await page.click("#save-btn");
     await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
 
-    // Verify persistence: extract the new hash from the URL (updated by save)
-    // and fetch the raw blob content via /blob/:hash API.
+    // Verify persistence: read the new hash from the editor container
+    // (saveFile stores it in data-hash after a save; the URL is name-first
+    // /edit/{name} and no longer carries the hash) and fetch the raw blob
+    // content via /blob/:hash API.
     // This avoids the WS/collab race that occurs when reloading or opening a
     // new page immediately after save.
-    const url = page.url();
-    const hash = url.split("/").pop()!;
+    const hash = await page.evaluate(() => {
+      const el = document.getElementById("editor-container");
+      return el?.dataset.hash ?? "";
+    });
+    expect(hash).toBeTruthy();
     const resp = await page.request.get(`${baseURL}/blob/${hash}`);
     expect(resp.ok()).toBeTruthy();
     const body = await resp.text();
@@ -533,9 +538,14 @@ test.describe("Editor Typing + Save", () => {
     // Wait for save to complete (must match "saved" specifically, not just "save")
     await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
 
-    // Verify persistence: extract hash from URL and fetch raw blob
-    const url = page.url();
-    const hash = url.split("/").pop()!;
+    // Verify persistence: read the post-save hash from the editor
+    // container's data-hash (the URL is name-first and carries no hash)
+    // and fetch the raw blob.
+    const hash = await page.evaluate(() => {
+      const el = document.getElementById("editor-container");
+      return el?.dataset.hash ?? "";
+    });
+    expect(hash).toBeTruthy();
     const resp = await page.request.get(`${baseURL}/blob/${hash}`);
     expect(resp.ok()).toBeTruthy();
     const body = await resp.text();
@@ -623,20 +633,21 @@ test.describe("Multi-User Collab", () => {
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
 
-    // User 1 creates file
-    await page1.goto("/");
+    // User 1 creates file. The file list (with the new-file form) lives on
+    // /files — "/" is the home/discovery page and has no #new-file-name.
+    await page1.goto("/files");
     await page1.fill("#new-file-name", fileName);
     await page1.click("#new-file-form button[type='submit']");
     await page1.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
     await expect(page1.locator("#editor-status")).toHaveText("connected", { timeout: 15_000 });
-    await expect(page1.locator("#editor .ProseMirror")).toBeVisible({ timeout: 5_000 });
+    await expect(page1.locator("#editor .ProseMirror")).toBeVisible({ timeout: 15_000 });
 
-    // User 2 opens same file
-    await page2.goto("/");
+    // User 2 opens same file (file entries are listed on /files)
+    await page2.goto("/files");
     await page2.click(`a[data-nav]:has-text("${fileName}")`);
     await expect(page2.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
     await expect(page2.locator("#editor-status")).toHaveText("connected", { timeout: 15_000 });
-    await expect(page2.locator("#editor .ProseMirror")).toBeVisible({ timeout: 5_000 });
+    await expect(page2.locator("#editor .ProseMirror")).toBeVisible({ timeout: 15_000 });
 
     return { context1, context2, page1, page2, fileName };
   }
@@ -719,6 +730,12 @@ test.describe("Multi-User Collab", () => {
       await page1.waitForTimeout(2_000);
       await expect(page2.locator("#editor .ProseMirror")).toContainText("Before save", { timeout: 20_000 });
 
+      // Wait for the per-file save rate limit to expire — the editor's
+      // autosave saves this file shortly after typing, and a second save
+      // inside the 5s cooldown is refused with 429 (same pattern as the
+      // Editor Typing + Save tests).
+      await page1.waitForTimeout(5_500);
+
       // User 1 saves (POST /api/save)
       const hash = await page1.evaluate(() => {
         const el = document.getElementById("editor-container");
@@ -765,7 +782,28 @@ test.describe("Name-First URL Scheme", () => {
       data: { name: fileName },
     });
     expect(createResp.ok()).toBeTruthy();
-    const { hash } = (await createResp.json()) as { hash: string; name: string };
+    const { hash: emptyHash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save unique content so the file's blob hash is unique: an empty file
+    // shares the empty-blob hash with every other empty file on the server,
+    // and /hash/{hash} can only redirect to one of the names bound to it.
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: emptyHash,
+        name: fileName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: `unique-${fileName}` }],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+    const { hash } = (await saveResp.json()) as { hash: string };
 
     // Navigate to /hash/{hash} — should redirect to /edit/{name}
     await page.goto(`/hash/${hash}`);

@@ -18,6 +18,7 @@ use fleet_proxy::tunnel::{
 };
 
 use crate::ladder::{Ladder, Leg, LegError, Reply, Request};
+use crate::tls::AgentTls;
 use crate::{CF_ACCESS_SECRET, TARGET_HOST, TARGET_PORT, broker_socket, read_token, token_file};
 
 /// The proxy port the Python tailnet CONNECT dials (`PROXY_PORT`).
@@ -200,9 +201,24 @@ pub fn cf_access_headers(json_text: &str) -> Option<Vec<(String, String)>> {
 }
 
 /// Tailscale: a CONNECT through the tailnet egress proxy to the
-/// laptop's daemon port.
+/// laptop's daemon port. With a trust store configured
+/// (`LAPTOP_AGENT_TLS_TRUST_STORE`, BT-4 #14402) the tunnel carries
+/// TLS validated against the fleet trust bundle; a posture that
+/// cannot be built (unreadable store, misspelt break-glass) makes
+/// this leg absent rather than plaintext, so the ladder moves on.
 pub struct TailscaleLeg {
     pub token: String,
+    pub tls: Result<AgentTls, String>,
+}
+
+impl TailscaleLeg {
+    /// The leg with its TLS posture resolved from the environment.
+    pub fn from_env(token: String) -> TailscaleLeg {
+        TailscaleLeg {
+            token,
+            tls: AgentTls::from_env(),
+        }
+    }
 }
 
 impl Leg for TailscaleLeg {
@@ -211,8 +227,10 @@ impl Leg for TailscaleLeg {
     }
 
     fn call(&self, req: &Request) -> Result<Reply, LegError> {
+        let tls = self.tls.as_ref().map_err(|e| LegError::Absent(e.clone()))?;
         let egress = egress_from_env(TAILNET_PROXY_PORT).map_err(LegError::Absent)?;
-        let conn = connect_tunnel(Some(&egress), TARGET_HOST, TARGET_PORT).and_then(HttpConn::new);
+        let conn = connect_tunnel(Some(&egress), TARGET_HOST, TARGET_PORT)
+            .and_then(|tcp| tls.connect(tcp, TARGET_HOST));
         let host = format!("{TARGET_HOST}:{TARGET_PORT}");
         exchange(conn, req, &self.token, &host, &[])
     }
@@ -430,9 +448,15 @@ impl SshLeg {
     fn poll_job(&self, job_id: &str, query: &str) -> Result<Reply, LegError> {
         let out_off = query_u64(query, "out_off");
         let err_off = query_u64(query, "err_off");
+        let wait_s = query_u64(query, "wait_s").min(30);
         let d = format!("$HOME/{SSHFB_REMOTE_DIR}/{job_id}");
         let remote = format!(
-            "d={d}; \
+            "d={d}; end=$(( $(date +%s) + {wait_s} )); \
+             while [ ! -f \"$d/exit\" ]; do \
+             os=$(stat -c%s \"$d/out\" 2>/dev/null || echo 0); \
+             es=$(stat -c%s \"$d/err\" 2>/dev/null || echo 0); \
+             if [ \"$os\" -gt {out_off} ] || [ \"$es\" -gt {err_off} ]; then break; fi; \
+             [ $(date +%s) -ge \"$end\" ] && break; sleep 0.2; done; \
              os=$(stat -c%s \"$d/out\" 2>/dev/null || echo 0); \
              es=$(stat -c%s \"$d/err\" 2>/dev/null || echo 0); \
              start=$(cat \"$d/start\" 2>/dev/null || date +%s); \
@@ -692,9 +716,7 @@ pub fn ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
             cf_host: config.cf_host().to_string(),
             cache: Mutex::new(CfCache::default()),
         }),
-        Box::new(TailscaleLeg {
-            token: token.clone(),
-        }),
+        Box::new(TailscaleLeg::from_env(token.clone())),
         Box::new(SshLeg::new()),
     ];
     Ok(Ladder::new(legs))
@@ -715,9 +737,7 @@ pub fn http_ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
             cf_host: config.cf_host().to_string(),
             cache: Mutex::new(CfCache::default()),
         }),
-        Box::new(TailscaleLeg {
-            token: token.clone(),
-        }),
+        Box::new(TailscaleLeg::from_env(token.clone())),
     ];
     Ok(Ladder::new(legs))
 }

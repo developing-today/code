@@ -57,10 +57,10 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
-/// Document store API (split from this module, #8594).
-mod documents;
 /// Session-layer admin audit (split from this module, #13057).
 mod audit;
+/// Document store API (split from this module, #8594).
+mod documents;
 
 /// Producer-side Android gesture translation (#1831 slice S3a). Inert
 /// until the S3 app shell wires it to a live session (slice S3b); its
@@ -91,8 +91,9 @@ pub(crate) use documents::{
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
-    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
-    PointerEvent, SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES,
+    PRESENTATION_POLICY_CURRENT, PRESENTATION_POLICY_SAVED, PointerButton, PointerEvent,
+    SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -159,6 +160,69 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
     run_session_with(hub, io, SessionConfig::default()).await;
 }
 
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A per-session outbound deadline. Once a frame stalls or the peer
+/// disappears, the wrapper treats the connection as closed so later
+/// handlers cannot keep the world lease alive by sending again.
+struct SendDeadlineIo<'a, I> {
+    inner: &'a mut I,
+    timeout: Duration,
+    closed: bool,
+}
+
+impl<I: SessionIo> SessionIo for SendDeadlineIo<'_, I> {
+    fn recv(&mut self) -> impl std::future::Future<Output = Inbound> + Send {
+        async move {
+            if self.closed {
+                Inbound::Closed
+            } else {
+                self.inner.recv().await
+            }
+        }
+    }
+
+    fn send(&mut self, frame: String) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            if self.closed {
+                return false;
+            }
+            let sent = tokio::time::timeout(self.timeout, self.inner.send(frame))
+                .await
+                .unwrap_or(false);
+            if !sent {
+                self.closed = true;
+            }
+            sent
+        }
+    }
+
+    fn supports_bytes(&self) -> bool {
+        self.inner.supports_bytes()
+    }
+
+    fn send_bytes(&mut self, frame: Vec<u8>) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            if self.closed {
+                return false;
+            }
+            let sent = tokio::time::timeout(self.timeout, self.inner.send_bytes(frame))
+                .await
+                .unwrap_or(false);
+            if !sent {
+                self.closed = true;
+            }
+            sent
+        }
+    }
+
+    fn mark_authorized(&mut self) {
+        if !self.closed {
+            self.inner.mark_authorized();
+        }
+    }
+}
+
 /// The admin secret a first frame carries, if it is an administrative one.
 /// Most admin frames can create the world they name; history reads cannot.
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
@@ -172,6 +236,7 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         ClientFrame::InstallBegin { admin_token, .. } => admin_token.as_deref(),
         ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
+        ClientFrame::SetPresentationPolicy { admin_token, .. } => Some(admin_token),
         _ => None,
     }
 }
@@ -181,6 +246,24 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
 /// The first frame names the world (`"world": "<name>"`, default world if
 /// absent), and the session holds a lease on it until it ends.
 pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    run_session_with_send_deadline(hub, io, config, DEFAULT_SEND_TIMEOUT).await;
+}
+
+async fn run_session_with_send_deadline<I: SessionIo>(
+    hub: &WorldHub,
+    io: &mut I,
+    config: SessionConfig,
+    send_timeout: Duration,
+) {
+    let mut io = SendDeadlineIo {
+        inner: io,
+        timeout: send_timeout,
+        closed: false,
+    };
+    run_session_inner(hub, &mut io, config).await;
+}
+
+async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
     // Frames sent before a world lease exists belong to no world, so
     // their bytes go to a throwaway meter rather than being attributed
     // to a world that did not send them.
@@ -2036,6 +2119,62 @@ async fn handle_client_frame<I: SessionIo>(
                                 applies_on_next_program_install_or_process_restart: false,
                             },
                             message: "current persisted execution profile",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::SetPresentationPolicy {
+            admin_token,
+            policy,
+        } => {
+            match service
+                .set_presentation_policy(Some(&admin_token), policy)
+                .await
+            {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_SAVED,
+                        },
+                    )
+                    .await;
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "accepted",
+                        serde_json::json!({}),
+                    );
+                }
+                Err(error) => {
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "refused",
+                        serde_json::json!({}),
+                    );
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::PresentationPolicyInfo {} => {
+            match service.presentation_policy().await {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_CURRENT,
                         },
                     )
                     .await;

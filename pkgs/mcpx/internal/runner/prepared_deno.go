@@ -55,19 +55,32 @@ const preparedImportMapName = "import-map-prepared.json"
 // its beside-script link.
 func pointDenoRunAtPreparedEnv(prepared *preflight.PreparedSet, workDir string) (func(), []string, error) {
 	mapPath := filepath.Join(workDir, preparedImportMapName)
-	if prepared == nil || prepared.Dir == "" {
+	if prepared == nil || (prepared.Dir == "" && len(prepared.PreparedSubsets) == 0) {
 		_ = os.Remove(mapPath)
 		return nil, nil, nil
 	}
-	modules := filepath.Join(prepared.Dir, "node_modules")
-	if st, serr := os.Stat(modules); serr != nil || !st.IsDir() {
-		return nil, nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
+	imports := map[string]string{}
+	if prepared.Dir != "" {
+		modules := filepath.Join(prepared.Dir, "node_modules")
+		if st, serr := os.Stat(modules); serr != nil || !st.IsDir() {
+			return nil, nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
+		}
+		var err error
+		imports, err = preparedImportMap(prepared)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	imports, err := preparedImportMap(prepared)
-	if err != nil {
-		return nil, nil, err
+	scopes := make(map[string]map[string]string, len(prepared.PreparedSubsets))
+	for _, subset := range prepared.PreparedSubsets {
+		subsetImports, err := preparedImportMap(&preflight.PreparedSet{Dir: subset.Dir, Packages: subset.Packages})
+		if err != nil {
+			return nil, nil, fmt.Errorf("imports: render the prepared subset for %s: %w", subset.ManifestPath, err)
+		}
+		scope := fileURL(subset.ManifestDir) + "/"
+		scopes[scope] = subsetImports
 	}
-	text, err := json.MarshalIndent(map[string]any{"imports": imports}, "", "  ")
+	text, err := json.MarshalIndent(map[string]any{"imports": imports, "scopes": scopes}, "", "  ")
 	if err != nil {
 		return nil, nil, fmt.Errorf("imports: render the prepared import map: %w", err)
 	}
@@ -77,16 +90,43 @@ func pointDenoRunAtPreparedEnv(prepared *preflight.PreparedSet, workDir string) 
 	// Lease the cache entry for the run's lifetime so pruning cannot
 	// delete it from under a live exec (#1908) -- the same lease the
 	// Node/Bun wiring takes.
-	var lease *cache.Lease
-	if l, lerr := cache.Acquire(prepared.Dir); lerr == nil {
-		lease = l
+	var leases []*cache.Lease
+	for _, dir := range append(preparedCacheDirs(prepared), preparedSubsetCacheDirs(prepared)...) {
+		lease, lerr := cache.Acquire(dir)
+		if lerr != nil {
+			for _, held := range leases {
+				held.Release()
+			}
+			return nil, nil, fmt.Errorf("imports: lease prepared environment at %s: %w", dir, lerr)
+		}
+		leases = append(leases, lease)
 	}
 	release := func() {
-		if lease != nil {
+		for _, lease := range leases {
 			lease.Release()
 		}
 	}
 	return release, []string{"--import-map", mapPath}, nil
+}
+
+func preparedCacheDirs(prepared *preflight.PreparedSet) []string {
+	if prepared == nil || prepared.Dir == "" {
+		return nil
+	}
+	return []string{prepared.Dir}
+}
+
+func preparedSubsetCacheDirs(prepared *preflight.PreparedSet) []string {
+	if prepared == nil {
+		return nil
+	}
+	dirs := make([]string, 0, len(prepared.PreparedSubsets))
+	for _, subset := range prepared.PreparedSubsets {
+		if subset.Dir != "" {
+			dirs = append(dirs, subset.Dir)
+		}
+	}
+	return dirs
 }
 
 // preparedImportMap renders the import map for a prepared

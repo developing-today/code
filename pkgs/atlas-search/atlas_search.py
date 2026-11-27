@@ -119,6 +119,21 @@ QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 VEC_TABLE = "vec_snowflake_m_v2_768_f32"
 RRF_K = 10
 SENS_ORDER = ["shareable", "personal", "local-only", "secret-bearing"]
+# Canonical ladder names (#13506), accepted as caller ceilings only.
+# Stored labels, SQL parameters and emitted JSON keep SENS_ORDER.
+SENS_CANONICAL = {
+    "public": "shareable",
+    "internal": "personal",
+    "private": "local-only",
+    "sensitive": "secret-bearing",
+}
+
+
+def ceiling_name(value):
+    """Map a canonical ceiling name to its legacy spelling; pass others through."""
+    return SENS_CANONICAL.get(value, value)
+
+
 DISCLOSURE_CONTEXT_CEILINGS = {
     "fleet-internal": "local-only",
     "hosted-per-user": "personal",
@@ -138,6 +153,7 @@ def effective_sensitivity_ceiling(context, caller_ceiling):
     atlas-core's outbound default.
     """
     context_ceiling = DISCLOSURE_CONTEXT_CEILINGS.get(context, "shareable")
+    caller_ceiling = ceiling_name(caller_ceiling)
     if caller_ceiling not in SENS_ORDER:
         return "shareable"
     return min((context_ceiling, caller_ceiling), key=SENS_ORDER.index)
@@ -665,7 +681,9 @@ class Filters:
         self.projects = split_csv(getattr(args, "project", None))
         self.clients = split_csv(getattr(args, "client", None))
         self.context = getattr(args, "context", "local-owner")
-        caller_ceiling = getattr(args, "max_sensitivity", "secret-bearing")
+        caller_ceiling = ceiling_name(
+            getattr(args, "max_sensitivity", "secret-bearing")
+        )
         if caller_ceiling not in SENS_ORDER:
             die(f"--max-sensitivity must be one of {SENS_ORDER}")
         self.max_sensitivity = caller_ceiling
@@ -1530,6 +1548,7 @@ def add_disclosure_args(p, max_sensitivity_default):
     )
     p.add_argument(
         "--max-sensitivity",
+        type=ceiling_name,
         choices=SENS_ORDER,
         default=max_sensitivity_default,
         help=f"caller clearance ceiling in {'<'.join(SENS_ORDER)} (default {max_sensitivity_default})",

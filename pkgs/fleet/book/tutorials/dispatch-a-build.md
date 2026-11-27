@@ -287,9 +287,8 @@ The workflow is `fleet-command.yml` in a fleet host repo
 `blacksmith`), `platform` (`linux` or `macos`), `container_image`,
 `actions_cache_key` (default `fleet-deps-v1`), `actions_cache_path`,
 `actions_cache_restore_keys`, `previous_run_id`, `previous_run_repo`,
-`push_nix_cache` and `timeout_minutes` (5–120, default 60 — an input
-placement itself never sends, so placement dispatches always get the
-60-minute default). Follow the run with `gh run list --repo <host-repo>
+`push_nix_cache` and `timeout_minutes` (5–120, default 60 — placement
+sends it only when you pass `--timeout-minutes N`). Follow the run with `gh run list --repo <host-repo>
 --workflow fleet-command.yml` and `gh run view --log`.
 
 What can go wrong, and the fix:

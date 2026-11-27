@@ -774,7 +774,7 @@ mod tests {
         let wire = frame.encode().unwrap();
         assert!(Frame::decode_prefix(&wire[..6]).unwrap().is_none());
         let mut decoder = FrameDecoder::new();
-        assert!(decoder.feed(&wire[..6]).unwrap().is_empty());
+        assert_eq!(decoder.feed(&wire[..6]).unwrap(), [] as [Frame; 0]);
         let completed = decoder.feed(&wire[6..]).unwrap();
         assert_eq!(completed, vec![frame]);
     }
@@ -806,7 +806,7 @@ mod tests {
         partial.extend_from_slice(&u32::try_from(MAX_FRAME_BODY).unwrap().to_be_bytes());
         partial.resize(MAX_FRAME_WIRE_BYTES - 1, 0);
         let mut decoder = FrameDecoder::new();
-        assert!(decoder.feed(&partial).unwrap().is_empty());
+        assert_eq!(decoder.feed(&partial).unwrap(), [] as [Frame; 0]);
         assert_eq!(decoder.pending_bytes(), MAX_FRAME_WIRE_BYTES - 1);
 
         // The decoder reads only the missing prefix byte before rejecting;
@@ -816,7 +816,7 @@ mod tests {
         oversized.extend_from_slice(&u32::try_from(MAX_FRAME_BODY + 1).unwrap().to_be_bytes()[1..]);
         oversized.resize(1 + MAX_FRAME_WIRE_BYTES, 0);
         let mut decoder = FrameDecoder::new();
-        assert!(decoder.feed(&oversized[..3]).unwrap().is_empty());
+        assert_eq!(decoder.feed(&oversized[..3]).unwrap(), [] as [Frame; 0]);
         assert!(decoder.feed(&oversized[3..]).is_err());
         assert_eq!(decoder.pending_bytes(), 4);
     }

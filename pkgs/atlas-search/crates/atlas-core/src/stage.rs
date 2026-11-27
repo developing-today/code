@@ -113,7 +113,8 @@ impl std::fmt::Display for UnitState {
 }
 
 /// One row of the registry: unit id → staging DB, owner, sensitivity
-/// level, state, schema version (design 4.1).
+/// level, state, schema version (design 4.1), plus the corpus's
+/// recorded embedding-model identity (#8623 slice 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagingUnit {
     pub unit_id: String,
@@ -128,6 +129,13 @@ pub struct StagingUnit {
     pub schema_version: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// The embedding model + pipeline identity this corpus's vectors
+    /// are recorded as produced with
+    /// ([`crate::shards::EMBEDDING_MODEL_ID`]). Recorded at provision
+    /// time; ingestion refuses a corpus whose recorded identity is not
+    /// the mandated one, and the re-embed job updates it when it
+    /// rebuilds the corpus under a new model.
+    pub embedding_model: String,
 }
 
 /// Immutable audit record written as part of a successful promotion.
@@ -748,7 +756,10 @@ impl Registry {
     }
 
     /// The one provisioning tool: create the unit's staging DB, apply
-    /// the v1 schema, and register the unit as `open`.
+    /// the v1 schema, and register the unit as `open`. The unit's
+    /// recorded embedding-model identity is the mandated model
+    /// (#8623 slice 2): every corpus starts unified, and a model
+    /// change afterwards is an explicit re-embed, never silent drift.
     pub fn provision(
         &self,
         staging_db: &Path,
@@ -773,6 +784,7 @@ impl Registry {
             schema_version: STAGE_SCHEMA_VERSION,
             created_at: now.to_string(),
             updated_at: now.to_string(),
+            embedding_model: EMBEDDING_MODEL_ID.to_string(),
         };
         // If registration fails, remove the just-provisioned database:
         // leaving it behind would strand an unregistered staging DB
@@ -789,16 +801,21 @@ impl Registry {
 
     /// Insert (or replace) a unit record. Re-registering a unit id
     /// overwrites it — the registry is a mapping, not an append log.
+    /// The record carries the unit's embedding-model identity (#8623
+    /// slice 2); callers that re-register an existing corpus must pass
+    /// the recorded identity back unchanged unless the corpus was
+    /// just rebuilt under a new model by the re-embed job.
     pub fn register(&self, unit: &StagingUnit) -> Result<()> {
         self.conn
             .execute(
                 "INSERT INTO staging_units \
-                 (unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 (unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at, embedding_model) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
                  ON CONFLICT(unit_id) DO UPDATE SET \
                    db_uri = excluded.db_uri, owner = excluded.owner, \
                    sensitivity = excluded.sensitivity, state = excluded.state, \
-                   schema_version = excluded.schema_version, updated_at = excluded.updated_at",
+                   schema_version = excluded.schema_version, updated_at = excluded.updated_at, \
+                   embedding_model = excluded.embedding_model",
                 params![
                     unit.unit_id,
                     unit.db_uri,
@@ -808,9 +825,53 @@ impl Registry {
                     unit.schema_version,
                     unit.created_at,
                     unit.updated_at,
+                    unit.embedding_model,
                 ],
             )
             .map_err(|e| Error::backend(format!("registry: registering {}: {e}", unit.unit_id)))?;
+        Ok(())
+    }
+
+    /// The ingestion-time embedding-identity check (#8623 slice 2):
+    /// refuse a corpus whose recorded model is not the mandated one.
+    /// Ingestion paths call this for an already-registered corpus
+    /// before staging into it, so a corpus recorded under a retired
+    /// model fails loudly instead of mixing incomparable vectors into
+    /// one corpus. A corpus recorded under the mandated model passes.
+    pub fn assert_corpus_model(&self, unit_id: &str) -> Result<()> {
+        let unit = self.lookup(unit_id)?.ok_or_else(|| {
+            Error::fatal(format!("registry: no staging unit {unit_id:?} to check"))
+        })?;
+        if unit.embedding_model == EMBEDDING_MODEL_ID {
+            return Ok(());
+        }
+        Err(Error::fatal(format!(
+            "registry: refusing ingestion into corpus {unit_id}: its recorded embedding_model `{}` is not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable — rebuild the corpus with the re-embed job first",
+            unit.embedding_model
+        )))
+    }
+
+    /// Record a corpus's embedding-model identity after an explicit
+    /// rebuild under a new model (#8623 slice 2): the re-embed job's
+    /// close-out. Refuses an unknown unit. This is the only path that
+    /// changes a live corpus's identity — ingestion never does.
+    pub fn record_embedding_model(&self, unit_id: &str, model: &str, now: &str) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE staging_units SET embedding_model = ?2, updated_at = ?3 WHERE unit_id = ?1",
+                params![unit_id, model, now],
+            )
+            .map_err(|e| {
+                Error::backend(format!(
+                    "registry: recording embedding model for {unit_id}: {e}"
+                ))
+            })?;
+        if changed == 0 {
+            return Err(Error::fatal(format!(
+                "registry: no staging unit {unit_id:?} to record an embedding model for"
+            )));
+        }
         Ok(())
     }
 
@@ -818,7 +879,7 @@ impl Registry {
     pub fn lookup(&self, unit_id: &str) -> Result<Option<StagingUnit>> {
         self.conn
             .query_row(
-                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at \
+                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at, embedding_model \
                  FROM staging_units WHERE unit_id = ?1",
                 params![unit_id],
                 row_to_unit,
@@ -832,7 +893,7 @@ impl Registry {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at \
+                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at, embedding_model \
                  FROM staging_units WHERE state = ?1 ORDER BY unit_id",
             )
             .map_err(|e| Error::backend(format!("registry: listing {}: {e}", state.name())))?;
@@ -895,8 +956,10 @@ impl Registry {
     /// provenance — the same refusal shard discovery applies
     /// (#7646), so a source whose embedding step ran a non-mandated
     /// model cannot be promoted silently (#6019 ingestion inherits
-    /// this gate by promoting through here). On refusal the unit's
-    /// state does not change.
+    /// this gate by promoting through here). The registry's own
+    /// per-corpus identity record is checked first (#8623 slice 2):
+    /// a stale registry record refuses even when the staging DB was
+    /// freshly stamped. On refusal the unit's state does not change.
     ///
     /// A promotion that is accepted performs the design's close-out
     /// (#5669 criterion 4, design 4.1):
@@ -921,6 +984,12 @@ impl Registry {
         if unit.state == UnitState::Merged {
             return Err(Error::fatal(format!(
                 "registry: unit {unit_id:?} is already merged"
+            )));
+        }
+        if unit.embedding_model != EMBEDDING_MODEL_ID {
+            return Err(Error::fatal(format!(
+                "registry: refusing to promote unit {unit_id}: its recorded embedding_model `{}`, not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable — rebuild the corpus with the re-embed job first",
+                unit.embedding_model
             )));
         }
         assert_unit_embedding_model(&unit)?;
@@ -1185,6 +1254,7 @@ fn row_to_unit(row: &rusqlite::Row<'_>) -> rusqlite::Result<StagingUnit> {
         schema_version: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        embedding_model: row.get(8)?,
     })
 }
 
@@ -1219,7 +1289,28 @@ fn remove_staging_db(path: &Path) {
 
 fn ensure_registry(conn: &Connection) -> Result<()> {
     conn.execute_batch(REGISTRY_V1_DDL)
-        .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
+        .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))?;
+    // Slice-2 migration (#8623): pre-slice-2 registry databases were
+    // created by a DDL without the per-corpus `embedding_model`
+    // column. Fresh databases already have it (see the v1 DDL); this
+    // migrates the old ones in place, defaulting every existing
+    // corpus to the mandated model — the one model the pre-slice-2
+    // gate ever allowed through promotion, so the default rewrites
+    // no history.
+    let has_column: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('staging_units') WHERE name = 'embedding_model')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::backend(format!("registry: reading staging_units columns: {e}")))?;
+    if !has_column {
+        conn.execute_batch(&format!(
+            "ALTER TABLE staging_units ADD COLUMN embedding_model TEXT NOT NULL DEFAULT '{EMBEDDING_MODEL_ID}'"
+        ))
+        .map_err(|e| Error::backend(format!("registry: adding embedding_model column: {e}")))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn open(path: &Path) -> Result<Connection> {
@@ -1544,6 +1635,7 @@ mod tests {
             schema_version: STAGE_SCHEMA_VERSION,
             created_at: "2026-11-10T00:00:00Z".to_string(),
             updated_at: "2026-11-17T01:00:00Z".to_string(),
+            embedding_model: EMBEDDING_MODEL_ID.to_string(),
         };
         let recomputed =
             build_merge_manifest(&archived, "2026-11-17T01:00:00Z").expect("recompute manifest");
@@ -1691,5 +1783,257 @@ mod tests {
             err.to_string().contains("staging:"),
             "unexpected error: {err}"
         );
+    }
+
+    // ---- #12403: boundary-safe classified staging fixtures ----
+    // Oracle: staging composes producer-declared segments through
+    // the boundary splitter, so chunks_raw never crosses a declared
+    // boundary and the per-chunk records carry exact offsets plus
+    // effective sensitivity. Unchanged embeds keep byte-identical
+    // chunks (same text, same content_hash, same record), so their
+    // vectors and decisions stay valid; a boundary revision changes
+    // only the chunks it overlaps.
+
+    fn classified_entry(text: &str) -> ArtifactEntry {
+        ArtifactEntry {
+            kind: "prose".to_string(),
+            repo: "developing-today/code".to_string(),
+            path: "fixtures/boundary.md".to_string(),
+            commit_sha: "abc1234".to_string(),
+            language: "markdown".to_string(),
+            sensitivity: Tier::Internal,
+            text: text.to_string(),
+        }
+    }
+
+    fn staged_chunks(conn: &Connection, item_id: i64) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare("SELECT text, content_hash FROM chunks_raw WHERE item_id = ?1 ORDER BY idx")
+            .expect("chunk query");
+        stmt.query_map(params![item_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("chunk rows")
+            .collect::<std::result::Result<_, _>>()
+            .expect("chunk values")
+    }
+
+    #[test]
+    fn classified_transcript_turns_never_cross_message_boundaries() {
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-stage-12403-transcript-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let trip = "Trip: book flights for the offsite next week.\n";
+        let deploy = "Deploy: roll out the new queue worker tonight.\n";
+        let text = format!("{trip}{deploy}");
+        let segments = [
+            ClassificationSegment::certain(0, trip.len(), Sensitivity::Personal),
+            ClassificationSegment::certain(trip.len(), text.len(), Sensitivity::Shareable),
+        ];
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(&text),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified transcript");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 2, "one chunk per turn: {chunks:?}");
+        assert_eq!(chunks[0].0, trip);
+        assert_eq!(chunks[1].0, deploy);
+        assert!(!chunks[0].0.contains("Deploy"));
+        assert!(!chunks[1].0.contains("Trip"));
+        let records = chunk_classifications(&conn, item_id)
+            .expect("read records")
+            .expect("classified item carries records");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].sensitivity, Sensitivity::Personal);
+        assert_eq!(records[1].sensitivity, Sensitivity::Shareable);
+        assert_eq!((records[0].start, records[0].end), (0, trip.len()));
+        assert_eq!((records[1].start, records[1].end), (trip.len(), text.len()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_embedded_secret_isolated_and_boundaries_hold() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let before = "fn deploy() {\n    let region = \"eu-west-1\";\n";
+        let secret = "    let token = \"AKIAIOSFODNN7EXAMPLE\";\n";
+        let after = "    start_server(region);\n}\n";
+        let text = format!("{before}{secret}{after}");
+        let secret_start = before.len();
+        let secret_end = secret_start + secret.len();
+        let segments = [
+            ClassificationSegment::certain(0, secret_start, Sensitivity::Shareable),
+            ClassificationSegment::certain(secret_start, secret_end, Sensitivity::SecretBearing),
+            ClassificationSegment::certain(secret_end, text.len(), Sensitivity::Shareable),
+        ];
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(&text),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified secret");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 3, "before/secret/after: {chunks:?}");
+        assert_eq!(chunks[1].0, secret);
+        assert!(!chunks[0].0.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(!chunks[2].0.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert_eq!(
+            chunks.iter().map(|(t, _)| t.as_str()).collect::<String>(),
+            text,
+            "chunks partition the source exactly"
+        );
+        let records = chunk_classifications(&conn, item_id)
+            .expect("read records")
+            .expect("classified item carries records");
+        assert_eq!(records[1].sensitivity, Sensitivity::SecretBearing);
+        assert!(!records[1].uncertain);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_code_and_log_units_align_to_declared_units() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let code = "fn alpha() {}\nfn beta() {}\n";
+        let segments = [
+            ClassificationSegment::certain(0, 14, Sensitivity::Shareable),
+            ClassificationSegment::certain(14, code.len(), Sensitivity::Personal),
+        ];
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(code),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified code");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].0, "fn alpha() {}\n");
+        assert_eq!(chunks[1].0, "fn beta() {}\n");
+
+        let logs = "2026-11-22T09:00:00Z INFO started\n2026-11-22T09:01:00Z ERROR boom\n";
+        let first_len = "2026-11-22T09:00:00Z INFO started\n".len();
+        let segments = [
+            ClassificationSegment::certain(0, first_len, Sensitivity::Shareable),
+            ClassificationSegment::certain(first_len, logs.len(), Sensitivity::LocalOnly),
+        ];
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(logs),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified logs");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].0, "2026-11-22T09:00:00Z INFO started\n");
+        assert_eq!(chunks[1].0, "2026-11-22T09:01:00Z ERROR boom\n");
+        let records = chunk_classifications(&conn, item_id)
+            .expect("read records")
+            .expect("classified item carries records");
+        assert_eq!(records[1].sensitivity, Sensitivity::LocalOnly);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_unchanged_embeds_retain_vectors_and_decisions() {
+        // Retention rule (#12403 acceptance): re-staging identical
+        // bytes with identical segments yields byte-identical chunks
+        // with identical content hashes and records, so existing
+        // vectors and decisions stay valid; revising one boundary
+        // changes only the chunks it overlaps.
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-retain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let text = "aaaaBBBBcccc";
+        let segments = [
+            ClassificationSegment::certain(0, 4, Sensitivity::Shareable),
+            ClassificationSegment::certain(4, 8, Sensitivity::Personal),
+            ClassificationSegment::certain(8, 12, Sensitivity::Shareable),
+        ];
+        let first = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(text),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage first");
+        let second = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(text),
+            &segments,
+            "2026-11-24T00:00:01Z",
+        )
+        .expect("stage second");
+        let first_chunks = staged_chunks(&conn, first);
+        let second_chunks = staged_chunks(&conn, second);
+        assert_eq!(
+            first_chunks, second_chunks,
+            "unchanged embeds retain chunks/hashes"
+        );
+        let first_records = chunk_classifications(&conn, first)
+            .expect("records")
+            .expect("records present");
+        let second_records = chunk_classifications(&conn, second)
+            .expect("records")
+            .expect("records present");
+        assert_eq!(
+            first_records
+                .iter()
+                .map(|r| (r.start, r.end, r.sensitivity, r.uncertain))
+                .collect::<Vec<_>>(),
+            second_records
+                .iter()
+                .map(|r| (r.start, r.end, r.sensitivity, r.uncertain))
+                .collect::<Vec<_>>(),
+            "unchanged embeds retain decisions"
+        );
+
+        // Revise the middle boundary: only the overlapped chunk
+        // changes; neighbours keep exact bytes and hashes.
+        let revised = [
+            ClassificationSegment::certain(0, 4, Sensitivity::Shareable),
+            ClassificationSegment::certain(4, 8, Sensitivity::LocalOnly),
+            ClassificationSegment::certain(8, 12, Sensitivity::Shareable),
+        ];
+        let third = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(text),
+            &revised,
+            "2026-11-24T00:00:02Z",
+        )
+        .expect("stage revised");
+        let third_chunks = staged_chunks(&conn, third);
+        assert_eq!(third_chunks.len(), first_chunks.len());
+        assert_eq!(third_chunks[0], first_chunks[0]);
+        assert_eq!(third_chunks[2], first_chunks[2]);
+        assert_eq!(third_chunks[0].0, "aaaa");
+        assert_eq!(third_chunks[2].0, "cccc");
+        let third_records = chunk_classifications(&conn, third)
+            .expect("records")
+            .expect("records present");
+        assert_eq!(third_records[1].sensitivity, Sensitivity::LocalOnly);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

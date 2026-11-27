@@ -87,6 +87,7 @@
     "daemonConnectTimeout": "20s",
     "daemonPollInterval": "50ms",
     "daemonRestartSettle": "100ms",
+    "supervisorReapRetry": "250ms",
     "httpIdleTimeout": "30s",
     "httpRequestTimeout": "10m",
     "followPollInterval": "500ms",

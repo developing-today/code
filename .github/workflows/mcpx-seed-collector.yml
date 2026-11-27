@@ -93,6 +93,13 @@ jobs:
 
             seed="$(jq -r '.seed // empty' "$seedfile")"
             [ -n "$seed" ] || { echo "run $id: seed.json names no seed; skipping"; continue; }
+            # The seedstore guard (TestEveryStoredSeedIsValid) accepts only
+            # canonical UUIDv7 ids; a run dispatched with a hand-written
+            # seed name must not land a record that breaks the mcpx build.
+            if ! [[ "$seed" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+              echo "run $id: seed $seed is not a canonical UUIDv7; skipping"
+              continue
+            fi
             date="$(jq -r '.date // empty' "$seedfile")"
             [ -n "$date" ] || date="$(jq -r .createdAt <<<"$run" | cut -c1-10)"
             path="$store/${date:0:4}/${date:5:2}/$seed.json"

@@ -15,10 +15,10 @@
 // them directly instead of calling loadConfig: it is a local operator
 // tool, not the server, so the server's Source gate (#1195) must not
 // stand between the owner and the recovery path during an outage.
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { BREAK_GLASS_MAX_TTL_MS, BreakGlassTokenStore, issueBreakGlassToken } from "../src/break-glass.ts";
 import { EventsStore } from "../src/events.ts";
+import { requireHome } from "../src/home.ts";
 
 interface Args {
   ttlMinutes?: number;
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   const tokensFile =
     args.tokensFile ??
     process.env.PM_AGG_BREAK_GLASS_FILE ??
-    join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json");
+    join(requireHome("PM_AGG_BREAK_GLASS_FILE"), ".local", "state", "pm-aggregator", "break-glass-tokens.json");
   const eventsFile = args.eventsFile ?? process.env.PM_AGG_EVENTS_FILE ?? join(process.cwd(), "events.json");
   const ttlMs = args.ttlMinutes === undefined ? BREAK_GLASS_MAX_TTL_MS : Math.round(args.ttlMinutes * 60 * 1000);
 

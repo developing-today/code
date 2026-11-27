@@ -314,6 +314,8 @@ impl WorldHandle {
             presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_results: std::collections::VecDeque::new(),
+            fuel_retry_not_before: None,
             pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
@@ -688,6 +690,46 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped execution profile response")?
+    }
+
+    /// Durably replace this world's presentation policy (#14731 slice
+    /// 2b) and return the stored policy.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a policy past its size bounds, on a read-only world, or on
+    /// world storage failure.
+    pub async fn set_presentation_policy(
+        &self,
+        policy: id_core::presentation_policy::PresentationPolicy,
+    ) -> Result<id_core::presentation_policy::PresentationPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetPresentationPolicy { policy, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped presentation policy response")?
+    }
+
+    /// Read this world's presentation policy. It is public pre-join
+    /// metadata (#5970 §5).
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the world actor is closed.
+    pub async fn presentation_policy(
+        &self,
+    ) -> Result<id_core::presentation_policy::PresentationPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PresentationPolicyInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped presentation policy")
     }
 
     /// Read this world's currently requested resource profile.
@@ -1081,6 +1123,30 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped schedule response")?
+    }
+
+    /// Whether `authority` may change this world's lifecycle: `act` names
+    /// the change ("wakes the world", "pauses the world", "archives the
+    /// world") for the refusal. Only the world's owner (an admin seat in
+    /// one of its groups) or the operator may (#10694); nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a forbidden refusal for any other authority, or if the
+    /// world actor is closed.
+    pub async fn authorize_lifecycle(&self, authority: Authority, act: &'static str) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AuthorizeLifecycle {
+                authority,
+                act,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lifecycle authorization response")?
     }
 
     /// Change the world's isolation.
@@ -1667,6 +1733,90 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped lease handoff response")?
+    }
+
+    /// Recover an expired native lease back to the DO (#13938 slice 1).
+    /// The actor journals `LeaseRevoked` for the expired holder and then
+    /// `LeaseGranted` for the DO before reopening DO mutations; between
+    /// the two journaled transitions the world has no holder and refuses
+    /// writes. Only an expired native term may recover this way.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the term has not expired, when no native holder stands,
+    /// or on world storage failure (including a failed grant append after
+    /// a durable revoke, which leaves the world holder-less and read-only).
+    pub async fn recover_expired_lease(&self) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::RecoverExpiredLease { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease recovery response")?
+    }
+
+    /// Run a spill v2 automatic failover (design #5787 §1, #7572).
+    /// The actor plans from its journaled lease and the supplied
+    /// grantor-side pool and journals the revoke/grant pair in plan
+    /// order; the returned execution names the successor, its epoch,
+    /// and the grant position it must replay through before writing.
+    /// The host adapter must authenticate the caller and supply pool
+    /// observations gathered from the roster's readers.
+    pub async fn failover_write_lease(
+        &self,
+        pool: spill_pool::SpillPool,
+        journal_tip: u64,
+        max_catch_up_lag: u64,
+        term_ms: u64,
+    ) -> Result<spill_pool::FailoverExecution> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::FailoverWriteLease {
+                pool,
+                journal_tip,
+                max_catch_up_lag,
+                term_ms,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease failover response")?
+    }
+
+    /// Release a journal copy for a spilled holder only after the holder's
+    /// verified replay cursor reaches the current grant boundary. The
+    /// serialized authority actor rechecks holder, epoch, term, and boundary
+    /// immediately before returning the bytes; callers must authenticate the
+    /// holder and cursor and pass the residency gate before invoking this
+    /// method, then send only returned bytes. A refused copy is never
+    /// released for dispatch. The sanctioned production caller is
+    /// [`super::spill_controller::SpillController`], which fixes that
+    /// authenticate → residency → dispatch order with no bypass.
+    pub async fn dispatch_spill_copy(
+        &self,
+        holder: impl Into<String>,
+        epoch: u64,
+        replayed_position: u64,
+        journal_copy: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DispatchSpillCopy {
+                holder: holder.into(),
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped spill dispatch response")?
     }
 
     /// Read a world snapshot.

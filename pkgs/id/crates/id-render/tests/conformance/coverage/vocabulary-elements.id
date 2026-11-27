@@ -1,0 +1,27 @@
+<document version="1">
+  <page title="Coverage">
+    <section title="Structure"></section>
+    <nav title="Navigation"></nav>
+    <heading level="1">Heading</heading>
+    <card title="Card"></card>
+    <list kind="unordered"><item>Item</item></list>
+    <table title="Table"><row><cell kind="header">Header</cell></row></table>
+    <image src="image.png" alt="Image"></image>
+    <text>Text <strong>strong</strong> <emphasis>emphasis</emphasis> <link to="home">link</link></text>
+    <master-detail><list kind="unordered"><item>Entry</item></list><detail>Detail</detail></master-detail>
+    <form action="save">
+      <field kind="text" label="Name" bind="name"></field>
+      <alert kind="info">Info</alert>
+      <button action="save">Save</button>
+    </form>
+    <dialog title="Confirm" show="dialog.open"></dialog>
+    <menu title="Actions"><menu-item action="save">Save</menu-item></menu>
+    <toolbar title="Actions"></toolbar>
+    <sidebar title="Sidebar"></sidebar>
+    <tabs title="Tabs"><tab title="One"></tab></tabs>
+    <settings title="Settings"><preference kind="toggle" label="Enabled" bind="enabled"></preference></settings>
+    <note>Note</note>
+    <conditional target="web"><text>Target-specific note</text></conditional>
+    <raw kind="html"><span>Raw region</span></raw>
+  </page>
+</document>

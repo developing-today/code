@@ -108,7 +108,7 @@ can deploy a harmless service without root.
 
 The validation below is the oracle for "well-formed definition": a
 definition is valid iff it carries exactly the §3 fields (plus
-the optional healthTimeoutSeconds),
+the optional fields named in OPTIONAL_FIELDS below),
 each of the right type and in range. Any violation is reported by field
 and makes  exit non-zero — a registry that cannot be validated
 must never be enumerated as if it were trustworthy.
@@ -159,10 +159,26 @@ FIELDS = {
 # slice, #13306) names the app's own test workflow when it sits outside
 # the main-gate watched set, per design §3 part 2 of the release
 # workflow record.
-OPTIONAL_FIELDS = {"healthTimeoutSeconds", "timer", "evidenceWorkflow"}
+OPTIONAL_FIELDS = {
+    "healthTimeoutSeconds",
+    "timer",
+    "evidenceWorkflow",
+    "restartDelaySec",
+    "startLimitIntervalSec",
+}
 TIMER_FIELDS = {"onCalendar", "persistent", "randomizedDelaySec"}
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 120
 MAX_HEALTH_TIMEOUT_SECONDS = 3600
+# restartDelaySec / startLimitIntervalSec (#15533): the systemd
+# RestartSec / StartLimitIntervalSec a rendered unit carries. Absent
+# means systemd's defaults (100ms restart delay; start limit of 5
+# starts per 10s) — the defaults that let the 2026-11-25 broker outage
+# end in start-limit-hit. startLimitIntervalSec = 0 is systemd's
+# spelling for "rate limiting disabled": the manager never gives up
+# on the unit, so a boot-window failure cascade cannot leave a
+# boot-critical daemon down until a manual reset-failed.
+MAX_RESTART_DELAY_SECONDS = 3600
+MAX_START_LIMIT_INTERVAL_SECONDS = 86400
 HEALTH_PROBE_INTERVAL_SECONDS = 0.5
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
@@ -287,6 +303,28 @@ def validate(registry):
             errors.append(
                 f"{where}: evidenceWorkflow must be a non-empty workflow name"
             )
+        if "restartDelaySec" in defn:
+            rd = defn["restartDelaySec"]
+            if not (
+                isinstance(rd, int)
+                and not isinstance(rd, bool)
+                and 0 <= rd <= MAX_RESTART_DELAY_SECONDS
+            ):
+                errors.append(
+                    f"{where}: restartDelaySec must be an integer in "
+                    f"0..{MAX_RESTART_DELAY_SECONDS}"
+                )
+        if "startLimitIntervalSec" in defn:
+            sl = defn["startLimitIntervalSec"]
+            if not (
+                isinstance(sl, int)
+                and not isinstance(sl, bool)
+                and 0 <= sl <= MAX_START_LIMIT_INTERVAL_SECONDS
+            ):
+                errors.append(
+                    f"{where}: startLimitIntervalSec must be an integer in "
+                    f"0..{MAX_START_LIMIT_INTERVAL_SECONDS}"
+                )
         if "timer" in defn:
             # Slice 4 (#5770): the timer is rendered verbatim into a
             # systemd .timer unit, so its shape is as strict as the
@@ -439,12 +477,21 @@ def render_unit(name, defn, base=None):
         "[Unit]",
         f"Description=deploy target {name} (issue #5766)",
         "After=network.target",
+    ]
+    if "startLimitIntervalSec" in defn:
+        # [Unit] section directive (#15533): 0 disables systemd's
+        # start rate limiting for this unit — see the field note at
+        # OPTIONAL_FIELDS. Absent keeps the manager default.
+        lines.append(f"StartLimitIntervalSec={defn['startLimitIntervalSec']}")
+    lines += [
         "",
         "[Service]",
         f"ExecStart={argv}",
         f"User={defn['user']}",
         f"Restart={defn['restart']}",
     ]
+    if "restartDelaySec" in defn:
+        lines.append(f"RestartSec={defn['restartDelaySec']}")
     for key in sorted(defn["environment"]):
         pair = f"{key}={defn['environment'][key]}"
         lines.append(f"Environment={_systemd_quote(pair)}")

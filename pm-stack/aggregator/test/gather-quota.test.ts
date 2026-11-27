@@ -1025,3 +1025,101 @@ test("the tick publishes the Stage-3 forecast product beside quota-current.json 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the tick posts C4 forecast-alert findings once, then suppresses repeats (#13261 slice 2)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-forecast-alerts-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const predictionsPath = join(dir, "quota-predictions.jsonl");
+    const alertStatePath = join(dir, "quota-forecast-alert-state.json");
+    const now = Date.now();
+    const HOUR = 3_600_000;
+
+    // A live predicted downtime window for pools outside this
+    // tick's own forecast (so the tick's derived honesty record
+    // never shares its subject): the hook must fire it once with
+    // the record id attached and the rendered text verbatim.
+    const seeded = {
+      record_version: 1,
+      id: "c4:downtime_window:opencode-go+meta:1764000000000",
+      kind: "downtime_window",
+      subject: { pools: ["opencode-go", "meta"] },
+      issued_at: new Date(now - HOUR).toISOString(),
+      basis: { name: "since_last_reset", detail: "seeded for the tick-hook test" },
+      prediction: {
+        earliest: new Date(now + 2 * HOUR).toISOString(),
+        latest: new Date(now + 6 * HOUR).toISOString(),
+        rendered: "likely runs out between tonight and tomorrow morning",
+      },
+      methodology_version: "c4-meth:4",
+      state: "predicted",
+      state_reason: null,
+      supersedes: null,
+    };
+    await writeFile(predictionsPath, `${JSON.stringify(seeded)}\n`, "utf8");
+
+    const providerResult = {
+      providerId: "cline-pass",
+      providerName: "ClinePass",
+      ok: true,
+      configured: true,
+      fetchedAt: now,
+      usage: { windows: { weekly: { usedPercent: 70, windowSeconds: 604_800, resetAt: now + 10 * HOUR } } },
+    };
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
+
+    const env = {
+      PATH: process.env.PATH ?? "",
+      HOME: dir,
+      QUOTA_CURRENT_PATH: currentPath,
+      QUOTA_HEARTBEAT_PATH: heartbeatPath,
+      QUOTA_GATHERER_STATE_PATH: statePath,
+      QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+      QUOTA_PREDICTIONS_PATH: predictionsPath,
+      QUOTA_FORECAST_ALERT_STATE_PATH: alertStatePath,
+      QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+      QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+      OPENDESIGN_RENEWAL_DISABLED: "1",
+      META_RENEWAL_DISABLED: "1",
+      TURSO_QUOTA_SINK: "0",
+    };
+
+    const first = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env,
+    });
+    if (first.error || first.status !== 0) {
+      throw new Error(`gatherer tick 1 failed: ${first.error?.message ?? first.stderr}\n${first.stdout}`);
+    }
+    // No alerts store in this env (Turso sink off): the finding is
+    // recorded and the skip is logged, never an error.
+    expect(first.stdout).toContain("forecast alerts: 1 new finding(s)");
+    expect(first.stdout).toContain("no alerts store — no ledger post");
+
+    const state = JSON.parse(await readFile(alertStatePath, "utf8"));
+    expect(state.version).toBe(1);
+    expect(state.fired.map((e: { recordId: string }) => e.recordId)).toContain(seeded.id);
+
+    const second = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env,
+    });
+    if (second.error || second.status !== 0) {
+      throw new Error(`gatherer tick 2 failed: ${second.error?.message ?? second.stderr}\n${second.stdout}`);
+    }
+    // The repeat tick re-reads the same log and posts nothing: the
+    // persisted fired state suppresses the already-alerted record.
+    expect(second.stdout).toContain("forecast alerts: 0 new finding(s)");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

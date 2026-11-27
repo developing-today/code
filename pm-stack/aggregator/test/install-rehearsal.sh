@@ -5,7 +5,9 @@
 set -euo pipefail
 
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d /tmp/opencode/pm-aggregator-install.XXXXXX)"
+TMP_ROOT="${TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}"
+if [[ ! -d $TMP_ROOT || ! -w $TMP_ROOT ]]; then TMP_ROOT=/tmp; fi
+TMP="$(mktemp -d "${TMP_ROOT%/}/pm-aggregator-install.XXXXXX")"
 # The legacy-store seed below writes through the INSTALL_SRC symlink
 # into the real package dir, so a pre-existing real store is copied
 # aside first and restored on every exit path (Codex P1 on PR #8765):
@@ -156,6 +158,12 @@ grep -Fx 'WorkingDirectory=%h/git/code/pm-stack/aggregator' \
   "$HOME_TEST/.config/systemd/user/quota-gatherer.service" >/dev/null
 grep -Fx 'Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json' \
   "$HOME_TEST/.config/systemd/user/quota-gatherer.service" >/dev/null
+test ! -e "$HOME_TEST/.config/systemd/user/quota-gatherer.timer"
+! grep -F 'systemctl --user enable --now quota-gatherer.timer' "$LOG" >/dev/null
+grep -F 'systemctl --user stop quota-gatherer.timer' "$LOG" >/dev/null
+RETIRE_LINE="$(grep -n -F 'systemctl --user stop quota-gatherer.timer' "$LOG" | head -n 1 | cut -d: -f1)"
+RESTART_LINE="$(grep -n -F 'systemctl --user restart pm-aggregator.service' "$LOG" | head -n 1 | cut -d: -f1)"
+test -n "$RETIRE_LINE" && test -n "$RESTART_LINE" && test "$RETIRE_LINE" -lt "$RESTART_LINE"
 
 # The old feed bridge survives; the package itself is no longer copied
 # into the state directory.

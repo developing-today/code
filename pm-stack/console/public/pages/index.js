@@ -23,7 +23,8 @@
 // To add a page: write its file, add it to PAGES here, and name the
 // file in ../files.json. The tests check all three agree, and the app
 // gives it its route, its tile and its copy for offline.
+import components from "./components.js";
 import reports from "./reports.js";
 import trends from "./trends.js";
 
-export const PAGES = [trends, reports];
+export const PAGES = [trends, reports, components];

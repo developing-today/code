@@ -1,0 +1,14 @@
+[
+  {
+    "sha": "b0a04b65c989f2595b3f6c199a7ed5714524e8e4",
+    "filename": "pkgs/id/crates/id-core/tests/probe_petname_load.rs",
+    "status": "added",
+    "additions": 28,
+    "deletions": 0,
+    "changes": 28,
+    "blob_url": "https://github.com/developing-today/code/blob/c9aeef0cec762b44eeff630de876020a6de039cf/pkgs%2Fid%2Fcrates%2Fid-core%2Ftests%2Fprobe_petname_load.rs",
+    "raw_url": "https://github.com/developing-today/code/raw/c9aeef0cec762b44eeff630de876020a6de039cf/pkgs%2Fid%2Fcrates%2Fid-core%2Ftests%2Fprobe_petname_load.rs",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fid%2Fcrates%2Fid-core%2Ftests%2Fprobe_petname_load.rs?ref=c9aeef0cec762b44eeff630de876020a6de039cf",
+    "patch": "@@ -0,0 +1,28 @@\n+// Probe: does Petnames::open replay records that Petnames::set refuses?\n+use id_core::petname::Petnames;\n+\n+#[test]\n+fn probe_open_replays_names_set_would_refuse() {\n+    let dir = std::env::temp_dir().join(format!(\"petname-probe-{}\", std::process::id()));\n+    std::fs::create_dir_all(&dir).unwrap();\n+    let path = dir.join(\"petnames.jsonl\");\n+    // Two contacts with fold-equal names (set() refuses the second as Conflict),\n+    // plus a name with a format char (U+200B) and an overlong name (>64 chars).\n+    let long = \"x\".repeat(80);\n+    let journal = format!(\n+        \"{{\\\"op\\\":\\\"set\\\",\\\"owner\\\":\\\"me\\\",\\\"account\\\":\\\"acct-a\\\",\\\"name\\\":\\\"PayPal\\\"}}\\n\\\n+         {{\\\"op\\\":\\\"set\\\",\\\"owner\\\":\\\"me\\\",\\\"account\\\":\\\"acct-b\\\",\\\"name\\\":\\\"paypal\\\"}}\\n\\\n+         {{\\\"op\\\":\\\"set\\\",\\\"owner\\\":\\\"me\\\",\\\"account\\\":\\\"acct-c\\\",\\\"name\\\":\\\"Evil\\u{200b}Name\\\"}}\\n\\\n+         {{\\\"op\\\":\\\"set\\\",\\\"owner\\\":\\\"me\\\",\\\"account\\\":\\\"acct-d\\\",\\\"name\\\":\\\"{long}\\\"}}\\n\"\n+    );\n+    std::fs::write(&path, journal).unwrap();\n+    let store = Petnames::open(&path).unwrap();\n+    let loaded: Vec<(String, String)> = store\n+        .of_owner(\"me\")\n+        .map(|(a, n)| (a.to_string(), n.to_string()))\n+        .collect();\n+    println!(\"LOADED: {loaded:?}\");\n+    assert_eq!(loaded.len(), 4, \"all four refused-at-write records loaded verbatim\");\n+    assert!(store.get(\"me\", \"acct-b\") == Some(\"paypal\"));\n+    assert!(store.get(\"me\", \"acct-c\").unwrap().contains('\\u{200b}'));\n+}"
+  }
+]

@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import {
   plainWords,
   ASK_KINDS,
+  NEEDS_SET_SOURCE,
+  NOW_COUNTS_SOURCE,
   ago,
   askArgs,
   askKind,
@@ -22,6 +24,7 @@ import {
   laneSaid,
   mergedBySaid,
   acceptAllSaid,
+  applySaid,
   awayState,
   blockedSaid,
   band,
@@ -31,11 +34,15 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  enrollCommand,
   everyRead,
+  unmetered,
   flushSaid,
   freshSaid,
   intakeArgs,
   intakeSaid,
+  KEEP_ALL_EVERY_MS,
+  keepAllDue,
   keptGroups,
   keptSaid,
   heldWaitsSaid,
@@ -48,6 +55,12 @@ import {
   needsLead,
   recommendedSets,
   machinesMark,
+  reposTyped,
+  settingSaid,
+  settingsTakenSaid,
+  matchReportSaid,
+  mergeMatchReport,
+  offerSaid,
   phaseHeading,
   platformCounts,
   prCheck,
@@ -130,6 +143,26 @@ test("a device with notifications on tells whether the sender still has it, and 
 
 test("the contact given to push services is the project's page, never a person's address", () => {
   expect(contact("developing-today/code")).toBe("https://github.com/developing-today/code");
+});
+
+test("the Cloudflare screen says where its configuration was last applied from (#13495)", () => {
+  const now = Date.parse("2026-11-25T07:00:00Z");
+  // Fixture provenance, as the cloudflare-apply read returns it: the
+  // sentence names the source, the short commit and when it finished.
+  expect(
+    applySaid(
+      {
+        source: "pm-console-cloudflare config, dispatched by dezren39",
+        commit: "c58cf1540b1488c9c642e8b424eeed3471e62740",
+        at: "2026-11-25T04:00:00Z",
+        url: "https://github.com/developing-today/code/actions/runs/3",
+      },
+      now,
+    ),
+  ).toBe("Last applied from pm-console-cloudflare config, dispatched by dezren39, at commit c58cf1540b14, 3 h ago.");
+  // No successful apply on record: the screen says provenance is
+  // unavailable, and never presents a failed or running one instead.
+  expect(applySaid(null, now)).toBe("Apply provenance is unavailable: no successful apply is on record.");
 });
 
 test("the Cloudflare screen reads the edge's own account of itself", () => {
@@ -724,6 +757,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "queue?status=parked&q=",
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -748,6 +782,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "queue?status=parked&q=",
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -871,6 +906,8 @@ test("a machine, as the Machines screen says it: what only it reports and does, 
     // Nothing said of the code Cloudflare runs, and it is on main's settings.
     otherCode: "",
     differs: [],
+    // The owner has changed no setting: nothing to take.
+    settings: "",
   });
   // Cloudflare's own commit, where it is known: said when the machine runs another, and only then.
   expect(machineSaid(machine, platform, now, "0123abcd4567").otherCode).toBe("");
@@ -954,6 +991,7 @@ test("the Machines screen is drawn again when what it shows has changed, and not
     ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
     ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
     ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
+    ["it took the owner's settings", answer({ machines: [{ ...machine, settingsRev: 2 }] })],
     ["there is none", answer({ machines: [] })],
     ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
     ["what waits now waits for someone else", answer({ held: [{ id: "h1", kind: "task.move", waits: "asked" }] })],
@@ -965,6 +1003,10 @@ test("the Machines screen is drawn again when what it shows has changed, and not
     [
       "the platform was turned away for something",
       answer({ platform: { primary: true, actions: [], sections: ["board"], refused: ["pr.merge"] } }),
+    ],
+    [
+      "the owner changed a setting",
+      answer({ platform: { primary: true, actions: ["ask.send"], sections: ["board"], refused: [], settingsRev: 3 } }),
     ],
     ["nothing is in front any more", answer({ platform: null })],
   ] as const) {
@@ -1222,6 +1264,43 @@ test("each kind of prompt has its own words, and the platform takes every kind t
   expect(askSent("task", { issue: 7, queued: false })).toBe("Filed as #7.");
 });
 
+// An enroll command shared to the phone is read back for the
+// provisioning form (#14377): the binding the mint put in it. The
+// oracle is the command the form itself shows at a mint (name, kind,
+// groups, the bootstrap token); the token is opaque, so a command is
+// known by its flags, and text without one is not a command.
+test("a shared enroll command gives its binding back, and other text does not", () => {
+  expect(
+    enrollCommand("fleet agent enroll --name scout-1 --kind muse --groups muse,fleet --bootstrap tok-abc123"),
+  ).toEqual({
+    token: "tok-abc123",
+    name: "scout-1",
+    kind: "muse",
+    groups: ["muse", "fleet"],
+    notesIdentity: undefined,
+  });
+  expect(enrollCommand("fleet agent enroll --name solo --bootstrap tok-xyz")).toEqual({
+    token: "tok-xyz",
+    name: "solo",
+    kind: undefined,
+    groups: [],
+    notesIdentity: undefined,
+  });
+  expect(enrollCommand("fleet agent enroll --name n --kind codex --notes-identity muse/n --bootstrap t")).toEqual({
+    token: "t",
+    name: "n",
+    kind: "codex",
+    groups: [],
+    notesIdentity: "muse/n",
+  });
+  // No bootstrap token, no enroll step, or not text at all: not a command.
+  expect(enrollCommand("fleet agent enroll --name scout-1 --kind muse")).toBeNull();
+  expect(enrollCommand("please enroll the new laptop when it arrives")).toBeNull();
+  expect(enrollCommand("run --bootstrap the servers")).toBeNull();
+  expect(enrollCommand(null)).toBeNull();
+  expect(enrollCommand(42)).toBeNull();
+});
+
 // A goal most of a list shares is said once, not on every card. Seen
 // live: sixty queued tasks, fifty-nine of them triage with the same
 // three lines of goal each. The oracle is counting: the goal that more
@@ -1248,6 +1327,38 @@ test("a goal most of the tasks share is found, to be said once; where there is n
   );
   expect(sharedGoalSaid({ goal: same, n: 3 }, 3)).toBe(
     "All 3 have the same goal, said here once: Record a verdict on the issue",
+  );
+});
+
+// The composer's match report, said as the bridge reported it
+// (#14375, acceptance 1-2): matched and delivered counts with the
+// recipients named, the remainder while any are left, and a broaden
+// folded in until none remain — the screen then shows no Broaden.
+test("a match report is said with its recipients, and a broaden folds into it", () => {
+  const sent = { batch: "b9", matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+  expect(matchReportSaid(sent)).toBe("Matched 2 · sent to 1 (felix-1) · 1 more matched and not yet reached");
+  const widened = mergeMatchReport(sent, {
+    batch: "b9",
+    matched: 2,
+    delivered: 1,
+    recipients: ["felix-2"],
+    remaining: 0,
+  });
+  expect(widened.delivered).toBe(2);
+  expect(widened.recipients).toEqual(["felix-1", "felix-2"]);
+  expect(widened.remaining).toBe(0);
+  expect(matchReportSaid(widened)).toBe("Matched 2 · sent to 2 (felix-1, felix-2)");
+  // An answer that is not a report (a send held for a machine) is
+  // not said as one.
+  expect(matchReportSaid({ held: true })).toBeNull();
+  expect(matchReportSaid(null)).toBeNull();
+  expect(mergeMatchReport(sent, { held: true })).toBe(sent);
+  // An offer is said by its state and its claimed slots.
+  expect(offerSaid({ state: "open", claimed: 1, slots: 2, claims: [{ agent: "felix-1" }] })).toBe(
+    "open · 1 of 2 claimed",
+  );
+  expect(offerSaid({ state: "filled", slots: 2, claims: [{ agent: "a" }, { agent: "b" }] })).toBe(
+    "filled · 2 of 2 claimed",
   );
 });
 
@@ -1638,6 +1749,24 @@ test("each list that could not be read is said on the screens that show it, with
   }
 });
 
+// #14063: the Now and Needs screens each name their own need-you/count
+// source, so the same words as the aggregator are not read as the same
+// counts. The oracle is the exported wording plus the cross-links in
+// the rendered page source.
+test("the Now and Needs screens name their own source and cross-link the aggregator (#14063)", () => {
+  expect(NOW_COUNTS_SOURCE).toContain("queue-broker");
+  expect(NOW_COUNTS_SOURCE).toContain(
+    "Same words as the aggregator's board-derived work-item counts, different source",
+  );
+  expect(NEEDS_SET_SOURCE).toContain("console's need-you set");
+  expect(NEEDS_SET_SOURCE).toContain("Different from the aggregator's NEEDS USER intake queue");
+  const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  expect(source).toContain('href: "/queue"');
+  expect(source).toContain('href: "/attention"');
+  expect(source).toContain("Aggregator /queue");
+  expect(source).toContain("Aggregator Needs you");
+});
+
 test("words written for a Markdown file are shown as plain words", () => {
   // A row of the PM stack's roadmap, as its file has it (seen raw on the Roadmap screen on 2026-11-24).
   expect(
@@ -1655,5 +1784,115 @@ test("words written for a Markdown file are shown as plain words", () => {
   expect(plainWords("a * b * c")).toBe("a * b * c");
   expect([plainWords(""), plainWords(null), plainWords(undefined)]).toEqual(["", "", ""]);
   // And a roadmap row's words are shown that way.
-  expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain('h("p", {}, plainWords(r.intent))');
+  expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain(
+    'h("p", {}, plainWords(r.intent))',
+  );
+});
+
+test("every screen is kept in the background only on a connection that is not metered, and only once in a while (#13501)", () => {
+  // Named by the browser as Wi-Fi or a cable.
+  expect(unmetered({ type: "wifi" })).toBe(true);
+  expect(unmetered({ type: "ethernet", effectiveType: "2g" })).toBe(true);
+  // Named as anything else: left alone, however fast.
+  expect(unmetered({ type: "cellular", effectiveType: "4g" })).toBe(false);
+  expect(unmetered({ type: "bluetooth" })).toBe(false);
+  expect(unmetered({ type: "none" })).toBe(false);
+  // Not named: a fast one only.
+  expect(unmetered({ effectiveType: "4g" })).toBe(true);
+  expect(unmetered({ type: "unknown", effectiveType: "4g" })).toBe(true);
+  expect(unmetered({ effectiveType: "3g" })).toBe(false);
+  // The owner asked to save data, or the browser says nothing at all.
+  expect(unmetered({ type: "wifi", saveData: true })).toBe(false);
+  expect(unmetered(undefined)).toBe(false);
+  expect(unmetered(null)).toBe(false);
+  // Never kept, or not for twelve hours: due. Since then: not.
+  const now = 1_800_000_000_000;
+  expect(KEEP_ALL_EVERY_MS).toBe(12 * 60 * 60_000);
+  expect(keepAllDue(null, now)).toBe(true);
+  expect(keepAllDue("", now)).toBe(true);
+  expect(keepAllDue(String(now - KEEP_ALL_EVERY_MS), now)).toBe(true);
+  expect(keepAllDue(String(now - KEEP_ALL_EVERY_MS + 1), now)).toBe(false);
+  expect(keepAllDue(String(now - 60_000), now)).toBe(false);
+  // A time that cannot be read, or one ahead of the clock, is taken as never.
+  expect(keepAllDue("soon", now)).toBe(true);
+  expect(keepAllDue(String(now + 60_000), now)).toBe(true);
+});
+
+// The oracle is the design's §5 (doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md):
+// each setting with its value, whose it is and since when, main's beside
+// an owner's change, and a way to change only the two the owner may.
+test("a platform setting is said with its value, whose it is and since when, and whether the owner may change it", () => {
+  const now = Date.parse("2026-11-25T12:00:00Z");
+  expect(
+    settingSaid(
+      {
+        name: "promptLabel",
+        source: "owner",
+        since: now - 20 * 60_000,
+        value: "owner/now",
+        repository: "owner/prompt",
+        by: "owner@example.com",
+        rev: 2,
+      },
+      now,
+    ),
+  ).toEqual({
+    name: "promptLabel",
+    what: "The label that marks an instruction",
+    value: "owner/now",
+    whose: "Yours: changed 20 min ago by owner@example.com.",
+    main: "Main says owner/prompt.",
+    changeable: true,
+    changed: true,
+  });
+  // Main's, and changeable: no main's beside it, since it is main's.
+  expect(
+    settingSaid(
+      { name: "needsRepos", source: "repository", since: null, value: ["a/b", "c/d"], repository: ["a/b", "c/d"] },
+      now,
+    ),
+  ).toMatchObject({ value: "a/b and c/d", whose: "Main's.", main: null, changeable: true, changed: false });
+  // A machine's list, for now.
+  expect(settingSaid({ name: "needsRepos", source: "machine", since: null, value: ["a/b"] }, now).whose).toBe(
+    "The machine's: Cloudflare goes by the list it reports until it runs main's.",
+  );
+  // Main's alone decides it: nothing to press.
+  expect(
+    settingSaid({ name: "queue", source: "repository", since: null, value: "repo-health-code-pilot" }, now),
+  ).toMatchObject({
+    what: "The queue",
+    changeable: false,
+    changed: false,
+  });
+  // What is not one is not a crash.
+  expect(settingSaid(null, now)).toMatchObject({ what: "A setting", value: "nothing", changeable: false });
+});
+
+test("a list of repositories is read as typed: commas, spaces or lines between them", () => {
+  expect(reposTyped("a/b, c/d\ne/f  g/h,,")).toEqual(["a/b", "c/d", "e/f", "g/h"]);
+  expect(reposTyped("")).toEqual([]);
+  expect(reposTyped(undefined)).toEqual([]);
+});
+
+test("a machine that has not taken the owner's latest change to the settings is said to, and one that has is not", () => {
+  // The owner has changed none: nothing to say, whatever the machine says.
+  expect(settingsTakenSaid(0, 0)).toBe("");
+  expect(settingsTakenSaid(null, 0)).toBe("");
+  expect(settingsTakenSaid(undefined, undefined)).toBe("");
+  // It runs with the latest.
+  expect(settingsTakenSaid(3, 3)).toBe("");
+  // It is behind: it takes it with its next report.
+  expect(settingsTakenSaid(2, 3)).toBe(
+    "It has not taken your latest change to the settings yet: it will with its next report.",
+  );
+  expect(settingsTakenSaid(0, 1)).toBe(
+    "It has not taken your latest change to the settings yet: it will with its next report.",
+  );
+  // Its console does not take them at all.
+  expect(settingsTakenSaid(null, 1)).toBe(
+    "Its console is older than changing the settings from here: it runs with its own.",
+  );
+  expect(settingsTakenSaid(undefined, 1)).toBe(
+    "Its console is older than changing the settings from here: it runs with its own.",
+  );
 });

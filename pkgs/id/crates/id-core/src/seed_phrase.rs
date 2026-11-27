@@ -12,10 +12,16 @@
 //! different key: unknown words, a word count that is not a BIP39
 //! length, and a checksum mismatch are all errors, and the checksum is
 //! verified before any entropy byte is trusted.
+//!
+//! Every buffer that holds key bits is wiped when it goes out of scope,
+//! whichever way decoding ends: the reconstructed entropy is
+//! `Zeroizing` from the moment it is allocated, the bit accumulator
+//! zeroes itself on drop, and so do the lowercased word copies. Errors
+//! name a word by its position only, never by its text (#15629).
 
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The official BIP39 English wordlist, one word per line, in order.
 const WORDLIST_TEXT: &str = include_str!("seed_wordlist.txt");
@@ -75,28 +81,27 @@ pub fn decode(phrase: &str) -> Result<Zeroizing<Vec<u8>>> {
     }
     let mut bits = BitWriter::default();
     for (position, token) in tokens.iter().enumerate() {
-        let lowered = token.to_lowercase();
+        let lowered = Zeroizing::new(token.to_lowercase());
         let index = words.binary_search(&lowered.as_str()).map_err(|_| {
-            anyhow::anyhow!(
-                "seed phrase word {} is not in the wordlist: {token:?}",
-                position + 1
-            )
+            anyhow::anyhow!("seed phrase word {} is not in the wordlist", position + 1)
         })?;
         bits.push(index as u32, 11);
     }
     let entropy_bits = total_bits * 32 / 33;
     let entropy_len = entropy_bits / 8;
-    let mut entropy = vec![0u8; entropy_len];
+    // Zeroizing before it is filled, so the checksum refusal below wipes
+    // the reconstructed key bytes too, not only the success path.
+    let mut entropy = Zeroizing::new(vec![0u8; entropy_len]);
     for (i, byte) in entropy.iter_mut().enumerate() {
         *byte = bits.byte(i);
     }
     let checksum_bits = total_bits - entropy_bits;
-    let expected = (Sha256::digest(&entropy)[0] >> (8 - checksum_bits)) as u32;
+    let expected = (Sha256::digest(&entropy[..])[0] >> (8 - checksum_bits)) as u32;
     let actual = bits.bits(entropy_bits, checksum_bits);
     if actual != expected {
         bail!("seed phrase checksum mismatch: a word is wrong or out of order");
     }
-    Ok(Zeroizing::new(entropy))
+    Ok(entropy)
 }
 
 /// Encode the identity key (32 bytes) as its 24-word seed phrase.
@@ -131,6 +136,12 @@ impl Default for BitWriter {
             bytes: [0; 33],
             len: 0,
         }
+    }
+}
+
+impl Drop for BitWriter {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
     }
 }
 
@@ -354,6 +365,32 @@ mod tests {
                 prop_assert!(decode_key(&phrase).is_err());
             }
         }
+    }
+
+    #[test]
+    fn errors_never_echo_the_phrase() {
+        // A wrong last word: the refusal reads the same whatever the key,
+        // so it carries nothing of the phrase.
+        let mismatch = |key: [u8; 32]| {
+            let phrase = encode_key(&key).unwrap();
+            let mut words: Vec<&str> = phrase.split_whitespace().collect();
+            words[23] = if words[23] == "abandon" {
+                "ability"
+            } else {
+                "abandon"
+            };
+            decode_key(&words.join(" ")).unwrap_err().to_string()
+        };
+        let first = mismatch([0x5a; 32]);
+        assert!(first.contains("checksum mismatch"), "{first}");
+        assert_eq!(first, mismatch([0xc3; 32]));
+
+        let phrase = encode_key(&[0x5a; 32]).unwrap();
+        let mut words: Vec<&str> = phrase.split_whitespace().collect();
+        words[5] = "zebrafish";
+        let unknown = decode_key(&words.join(" ")).unwrap_err().to_string();
+        assert!(unknown.contains("word 6"), "{unknown}");
+        assert!(!unknown.contains("zebrafish"), "{unknown}");
     }
 
     #[test]

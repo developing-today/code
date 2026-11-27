@@ -313,10 +313,14 @@ export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): 
   return out;
 }
 
-/** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
-export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
+/** Registry links for one subject (kaneo:/grist:/gh:), from GET /links.
+ * A failed read returns null (fail-soft, like projectorItems and
+ * projectorComments) so callers can tell "registry unreachable" apart
+ * from "reachable but no links for this subject" (#8570: the board
+ * provenance must say the links are unavailable, not claim them). */
+export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[] | null> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
-  if (!r.ok) return [];
+  if (!r.ok) return null;
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
   // Stored rows bypass the projector's POST /links gate (legacy/seeded
   // data), so the shared ref rule (#4952) is applied here at the read
@@ -333,4 +337,33 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
     }
     return [{ ref: row.ref, relation: asRelation(row.relation) }];
   });
+}
+
+/**
+ * Projector read seam (#8570 Phase 3: the projector becomes a module of
+ * pm-core, and the board reads projections in-process instead of over
+ * PM_PROJECTOR_URL HTTP).
+ *
+ * The four reads above are HTTP today; this interface names exactly the
+ * contract the live source depends on — same fail-soft shape (null = the
+ * read failed, never a partial result), same row mapping — so an
+ * in-process reader backed by the projector's store can plug in later
+ * without touching a call site. `createHttpProjectorReader` is the
+ * current behaviour, unchanged; liveSource resolves it as the default
+ * and accepts an injected reader for tests and the future module.
+ */
+export interface ProjectorReader {
+  items(refs: RefKey[]): Promise<Map<RefKey, GhItem> | null>;
+  comments(refs: RefKey[]): Promise<Comment[] | null>;
+  latestComments(refs: RefKey[]): Promise<Comment[] | null>;
+  links(subject: string): Promise<Link[] | null>;
+}
+
+export function createHttpProjectorReader(baseUrl: string): ProjectorReader {
+  return {
+    items: (refs) => projectorItems(baseUrl, refs),
+    comments: (refs) => projectorComments(baseUrl, refs),
+    latestComments: (refs) => projectorLatestComments(baseUrl, refs),
+    links: (subject) => projectorLinks(baseUrl, subject),
+  };
 }

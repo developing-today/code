@@ -1,0 +1,178 @@
+{
+  "family": "command",
+  "envelope": {
+    "schema_version": "fleet.command/v1",
+    "operation_id": "op_conformance_1",
+    "idempotency_key": "ghcmd:v1:octo-org/widgets#42:comment:9001:priority",
+    "request_digest": "sha256:99851e71fba247b36ef26adb5e3e53024ff1e0a8c960a7a7ebe19988374ad852",
+    "work": {
+      "authority_id": "fleet-local",
+      "work_id": "842"
+    },
+    "kind": "priority.set_band",
+    "arguments": {
+      "profile_id": "fleet.queue",
+      "profile_version": "1",
+      "band": "next-up",
+      "canonical_priority": "25"
+    },
+    "actor_ref": "github:user:octocat",
+    "source_ref": "github:octo-org/widgets",
+    "source_event_ref": "github:delivery:d-0001",
+    "delivery_id": "d-0001",
+    "source_revision": null,
+    "session_ref": null,
+    "expected_work_version": "41",
+    "lease_generation": null,
+    "observed_snapshot_ref": "queue:rev:118;graph:rev:57",
+    "owner_policy_ref": "owner-priority-policy:v3",
+    "reason": {
+      "code": "label_band_change",
+      "evidence_refs": ["github:event:555"],
+      "confidence": null
+    },
+    "dry_run": false
+  },
+  "intent_canonical_json": "{\"arguments\":{\"band\":\"next-up\",\"canonical_priority\":\"25\",\"profile_id\":\"fleet.queue\",\"profile_version\":\"1\"},\"command_schema_version\":\"fleet.command/v1\",\"expected_work_version\":\"41\",\"kind\":\"priority.set_band\",\"lease_generation\":null,\"observed_snapshot_ref\":\"queue:rev:118;graph:rev:57\",\"owner_policy_ref\":\"owner-priority-policy:v3\",\"reason\":{\"code\":\"label_band_change\",\"confidence\":null,\"evidence_refs\":[\"github:event:555\"]},\"schema_version\":\"fleet.command-intent/v1\",\"work\":{\"authority_id\":\"fleet-local\",\"work_id\":\"842\"}}",
+  "request_digest": "sha256:99851e71fba247b36ef26adb5e3e53024ff1e0a8c960a7a7ebe19988374ad852",
+  "digest_invariants": {
+    "same_intent": {
+      "note": "new operation id, delivery and dry-run: same digest",
+      "envelope": {
+        "schema_version": "fleet.command/v1",
+        "operation_id": "op_conformance_2",
+        "idempotency_key": "ghcmd:v1:octo-org/widgets#42:comment:9001:priority",
+        "request_digest": "sha256:99851e71fba247b36ef26adb5e3e53024ff1e0a8c960a7a7ebe19988374ad852",
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "842"
+        },
+        "kind": "priority.set_band",
+        "arguments": {
+          "profile_id": "fleet.queue",
+          "profile_version": "1",
+          "band": "next-up",
+          "canonical_priority": "25"
+        },
+        "actor_ref": "github:user:octocat",
+        "source_ref": "github:octo-org/widgets",
+        "source_event_ref": "github:delivery:d-0002",
+        "delivery_id": "d-0002",
+        "source_revision": null,
+        "session_ref": null,
+        "expected_work_version": "41",
+        "lease_generation": null,
+        "observed_snapshot_ref": "queue:rev:118;graph:rev:57",
+        "owner_policy_ref": "owner-priority-policy:v3",
+        "reason": {
+          "code": "label_band_change",
+          "evidence_refs": ["github:event:555"],
+          "confidence": null
+        },
+        "dry_run": true
+      },
+      "request_digest": "sha256:99851e71fba247b36ef26adb5e3e53024ff1e0a8c960a7a7ebe19988374ad852"
+    },
+    "altered_precondition": {
+      "note": "expected_work_version 41 -> 42: different digest",
+      "patch": {
+        "expected_work_version": "42"
+      },
+      "request_digest": "sha256:70bd12dccd48e975a2d59807d2c8fe70c78bc136cff29d3ebddab0ccc3eb2479"
+    }
+  },
+  "result": {
+    "schema_version": "fleet.result/v1",
+    "operation_id": "op_conformance_1",
+    "work": {
+      "authority_id": "fleet-local",
+      "work_id": "842"
+    },
+    "work_version": "18446744073709551616",
+    "outcome": "accepted",
+    "effects": [
+      {
+        "field": "priority",
+        "requested": "25",
+        "observed": "25",
+        "verified": null
+      }
+    ],
+    "warnings": [],
+    "error": null,
+    "next_action": null,
+    "observed_at": "2026-11-26T19:00:00Z"
+  },
+  "negatives": [
+    {
+      "name": "client_authorization_claim",
+      "patch": {
+        "authorized": true
+      },
+      "expected_error": "client_supplied_authorization"
+    },
+    {
+      "name": "unknown_major_version",
+      "patch": {
+        "schema_version": "fleet.command/v2"
+      },
+      "expected_error": "unsupported_version"
+    },
+    {
+      "name": "unknown_reason_code",
+      "patch": {
+        "reason": {
+          "code": "vibes",
+          "evidence_refs": [],
+          "confidence": null
+        }
+      },
+      "expected_error": "unsupported_reason_code"
+    },
+    {
+      "name": "non_canonical_work_id",
+      "patch": {
+        "work": {
+          "authority_id": "fleet-local",
+          "work_id": "0842"
+        }
+      },
+      "expected_error": "invalid_schema"
+    },
+    {
+      "name": "malformed_digest",
+      "patch": {
+        "request_digest": "sha256:ABC"
+      },
+      "expected_error": "invalid_schema"
+    },
+    {
+      "name": "missing_reason",
+      "remove": ["reason"],
+      "expected_error": "invalid_schema"
+    }
+  ],
+  "result_negatives": [
+    {
+      "name": "unknown_major_version",
+      "patch": {
+        "schema_version": "fleet.result/v2"
+      },
+      "expected_error": "unsupported_version"
+    },
+    {
+      "name": "unknown_outcome",
+      "patch": {
+        "outcome": "probably_fine"
+      },
+      "expected_error": "invalid_schema"
+    },
+    {
+      "name": "float_work_version",
+      "patch": {
+        "work_version": "1e3"
+      },
+      "expected_error": "invalid_schema"
+    }
+  ]
+}

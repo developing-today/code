@@ -37,6 +37,22 @@ mod tests {
         }
     }
 
+    struct StalledSendIo {
+        inbound: std::collections::VecDeque<Inbound>,
+        send_calls: usize,
+    }
+
+    impl SessionIo for StalledSendIo {
+        async fn recv(&mut self) -> Inbound {
+            self.inbound.pop_front().unwrap_or(Inbound::Closed)
+        }
+
+        async fn send(&mut self, _frame: String) -> bool {
+            self.send_calls += 1;
+            std::future::pending().await
+        }
+    }
+
     struct Peer {
         to_server: mpsc::Sender<Inbound>,
         from_server: mpsc::Receiver<String>,
@@ -1520,6 +1536,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_outbound_send_closes_the_session_after_its_deadline() {
+        let hub = WorldHub::single(service(None));
+        let mut io = StalledSendIo {
+            inbound: std::collections::VecDeque::from([Inbound::Text("not json".to_owned())]),
+            send_calls: 0,
+        };
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(1),
+            documents_store: None,
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_session_with_send_deadline(&hub, &mut io, config, Duration::from_millis(10)),
+        )
+        .await
+        .expect("a stalled transport must not keep a session alive");
+        assert_eq!(
+            io.send_calls, 1,
+            "the session attempts its refusal frame once"
+        );
+    }
+
+    #[tokio::test]
     async fn first_frame_must_be_join_or_invite() {
         let mut peer = Peer::connect(service(Some("a")), SessionConfig::default());
         peer.say(serde_json::json!({"type": "chat", "text": "hi"}))
@@ -2235,7 +2275,7 @@ mod tests {
             .map(|i| format!("doc-{i:04}-{}", "x".repeat(500)))
             .collect();
         let (page, next_after) = document_names_page(&names).unwrap();
-        assert!(!page.is_empty());
+        assert_ne!(page, [] as [String; 0]);
         assert!(page.len() < names.len());
         assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
         let used: usize = page.iter().map(|name| name.len() + 1).sum();
@@ -4665,7 +4705,9 @@ mod tests {
             );
             assert!(
                 bytes.len()
-                    < id_core::screen_codec::encode_view_patch(&frame).unwrap().len(),
+                    < id_core::screen_codec::encode_view_patch(&frame)
+                        .unwrap()
+                        .len(),
                 "the compressed frame is smaller than its version-1 form"
             );
             applied = frame

@@ -49,9 +49,7 @@ class FreshnessReadoutTests(unittest.TestCase):
         path = self._status_file(self._fresh_doc())
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(
-                freshness_readout.main(
-                    ["--status-json", path, "--now", NOW]
-                ),
+                freshness_readout.main(["--status-json", path, "--now", NOW]),
                 0,
             )
         self.assertIn("all five copies fresh", out.getvalue())
@@ -65,9 +63,7 @@ class FreshnessReadoutTests(unittest.TestCase):
             mock.patch("sys.stderr", new_callable=io.StringIO) as err,
         ):
             self.assertEqual(
-                freshness_readout.main(
-                    ["--status-json", path, "--now", NOW]
-                ),
+                freshness_readout.main(["--status-json", path, "--now", NOW]),
                 1,
             )
         self.assertIn("r2_bundles: STALE", out.getvalue())
@@ -79,9 +75,7 @@ class FreshnessReadoutTests(unittest.TestCase):
         path = self._status_file(doc)
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(
-                freshness_readout.main(
-                    ["--status-json", path, "--now", NOW]
-                ),
+                freshness_readout.main(["--status-json", path, "--now", NOW]),
                 1,
             )
         self.assertIn("cloudflare_rehost: STALE", out.getvalue())
@@ -92,9 +86,7 @@ class FreshnessReadoutTests(unittest.TestCase):
         path = self._status_file(doc)
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(
-                freshness_readout.main(
-                    ["--status-json", path, "--now", NOW]
-                ),
+                freshness_readout.main(["--status-json", path, "--now", NOW]),
                 1,
             )
         self.assertIn("d1_copy: STALE", out.getvalue())
@@ -105,9 +97,7 @@ class FreshnessReadoutTests(unittest.TestCase):
         path = self._status_file(doc)
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(
-                freshness_readout.main(
-                    ["--status-json", path, "--now", NOW]
-                ),
+                freshness_readout.main(["--status-json", path, "--now", NOW]),
                 1,
             )
         self.assertIn("plain_mirror: INVALID", out.getvalue())

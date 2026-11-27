@@ -1,0 +1,37 @@
+[package]
+name = "id-android-remote"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Iroh session bridge for the Android remote-drive proof of concept (#1831)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+id-worlds = { path = "../id-worlds", default-features = false }
+iroh = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+zeroize = "1"
+
+[dev-dependencies]
+id-worlds = { path = "../id-worlds", default-features = false, features = ["sandbox"] }
+iroh-blobs = "0.103"
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

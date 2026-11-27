@@ -35,31 +35,19 @@ test("model: only present safe counts contribute and zero is a known count", asy
     () => success({ affected_row_count: 0, rows_read: 7, rows_written: 0 }),
     () => success({ affected_row_count: 2, rows_written: 9 }),
     () => success({ affected_row_count: 4, rows_read: "5", rows_written: -1 }),
-    () =>
-      success({ affected_row_count: 1.5, rows_read: 1e20, rows_written: null }),
+    () => success({ affected_row_count: 1.5, rows_read: 1e20, rows_written: null }),
     () => success(),
   ];
   const fetchFn = (async (_url, init) => {
     requests.push(JSON.parse(init!.body as string));
     return responses.shift()!();
   }) as typeof fetch;
-  const client = createTursoStoreClient(
-    "https://example.test",
-    "fixture-token",
-    fetchFn,
-    metrics,
-  );
+  const client = createTursoStoreClient("https://example.test", "fixture-token", fetchFn, metrics);
   for (const _ of Array.from({ length: 5 })) {
-    expect(await client.query(input, context)).toEqual([
-      { value: "fixture-marker" },
-    ]);
+    expect(await client.query(input, context)).toEqual([{ value: "fixture-marker" }]);
   }
   expect(requests).toHaveLength(5);
-  expect(
-    requests.every(
-      (req) => JSON.stringify(req) === JSON.stringify(requests[0]),
-    ),
-  ).toBe(true);
+  expect(requests.every((req) => JSON.stringify(req) === JSON.stringify(requests[0]))).toBe(true);
   expect(metrics.snapshot().actions).toEqual({
     candidates: 15,
     affected: { knownBatches: 2, missingBatches: 3, rows: 2 },
@@ -82,17 +70,8 @@ test("transport oracle: instrumentation is inert for unlabelled, failed or disab
     requests.push(JSON.parse(init!.body as string));
     return response();
   }) as typeof fetch;
-  const a = createTursoStoreClient(
-    "https://example.test",
-    "fixture-token",
-    fetchFn,
-  );
-  const b = createTursoStoreClient(
-    "https://example.test",
-    "fixture-token",
-    fetchFn,
-    metrics,
-  );
+  const a = createTursoStoreClient("https://example.test", "fixture-token", fetchFn);
+  const b = createTursoStoreClient("https://example.test", "fixture-token", fetchFn, metrics);
   expect(await a.query(input, context)).toEqual(await b.query(input));
   expect(metrics.snapshot()).toEqual(baseline);
   response = () => new Response("", { status: 503 });
@@ -103,16 +82,10 @@ test("transport oracle: instrumentation is inert for unlabelled, failed or disab
     });
   await expect(b.query(input, context)).rejects.toThrow("malformed result");
   response = () => success({ rows: [[]] });
-  await expect(b.query(input, context)).rejects.toThrow(
-    "malformed Turso store row",
-  );
+  await expect(b.query(input, context)).rejects.toThrow("malformed Turso store row");
   expect(metrics.snapshot()).toEqual(baseline);
   expect(requests).toHaveLength(5);
-  expect(
-    requests.every(
-      (req) => JSON.stringify(req) === JSON.stringify(requests[0]),
-    ),
-  ).toBe(true);
+  expect(requests.every((req) => JSON.stringify(req) === JSON.stringify(requests[0]))).toBe(true);
 
   class FailedDiagnostic extends TursoWriteMetrics {
     observe(): void {
@@ -120,12 +93,7 @@ test("transport oracle: instrumentation is inert for unlabelled, failed or disab
     }
   }
   response = () => success({ affected_row_count: 2 });
-  const c = createTursoStoreClient(
-    "https://example.test",
-    "fixture-token",
-    fetchFn,
-    new FailedDiagnostic(),
-  );
+  const c = createTursoStoreClient("https://example.test", "fixture-token", fetchFn, new FailedDiagnostic());
   expect(await c.query(input, context)).toEqual([{ value: "fixture-marker" }]);
   expect(requests).toHaveLength(6);
 });
@@ -186,19 +154,8 @@ test("adapter oracle: only the four real UPSERTs label their exact chunk sizes",
   ]);
   expect(calls).toBe(5);
   const out = metrics.snapshot();
-  expect(Object.keys(out)).toEqual([
-    "activity.ingestion",
-    "activity.gaps",
-    "actions",
-    "comments",
-  ]);
-  expect(
-    Object.values(out).map((v) => [
-      v.candidates,
-      v.affected.knownBatches,
-      v.skipped,
-    ]),
-  ).toEqual([
+  expect(Object.keys(out)).toEqual(["activity.ingestion", "activity.gaps", "actions", "comments"]);
+  expect(Object.values(out).map((v) => [v.candidates, v.affected.knownBatches, v.skipped])).toEqual([
     [2, 1, 2],
     [1, 1, 1],
     [201, 2, 201],

@@ -29,12 +29,12 @@ The source request explicitly hypothesizes that numeric namespaces are array-add
 
 ## 3. Alternatives and tradeoffs
 
-| Option | Benefit | Cost / reason not selected |
-| --- | --- | --- |
-| Do nothing / leave numeric ordering to callers | No new contract or code | Callers can disagree on canonical forms, type identity, ordering, and bounds; does not meet the requested numeric registry. |
-| One fixed-width integer or IEEE-754 `f64` key | Compact and familiar; straightforward comparison | Loses arbitrary magnitude/precision; float conversion rounds integers/decimals and has NaN/infinity edge cases. Fails the stated domain. |
-| Separate numeric storage engine | Could optimize numeric range scans independently | Duplicates array core, persistence, namespace generation, authorization, and migration. Adds a third core contrary to Part A's two-core architecture. |
-| Untyped lexicographically ordered byte strings | Reuses byte storage and can be extensible | Requires every caller to independently preserve kind and canonicalize; lexical bytes alone do not define the required typed numeric order. |
+| Option                                                                                                                 | Benefit                                                                       | Cost / reason not selected                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Do nothing / leave numeric ordering to callers                                                                         | No new contract or code                                                       | Callers can disagree on canonical forms, type identity, ordering, and bounds; does not meet the requested numeric registry.                                   |
+| One fixed-width integer or IEEE-754 `f64` key                                                                          | Compact and familiar; straightforward comparison                              | Loses arbitrary magnitude/precision; float conversion rounds integers/decimals and has NaN/infinity edge cases. Fails the stated domain.                      |
+| Separate numeric storage engine                                                                                        | Could optimize numeric range scans independently                              | Duplicates array core, persistence, namespace generation, authorization, and migration. Adds a third core contrary to Part A's two-core architecture.         |
+| Untyped lexicographically ordered byte strings                                                                         | Reuses byte storage and can be extensible                                     | Requires every caller to independently preserve kind and canonicalize; lexical bytes alone do not define the required typed numeric order.                    |
 | **Selected: derived numeric namespace over array-address bytes with typed write admission and a reference comparator** | Reuses storage and auth boundaries; exact behavior is testable and extensible | Requires canonical type-tagged values and bounded-work comparison. Complexity is concentrated at codec/comparator boundaries and covered by the slices below. |
 
 ## 4. Chosen approach and contract
@@ -74,11 +74,11 @@ Numeric admission is not authorization. Authenticated caller context, tenant/nam
 
 The shared design's `implementation-slices.json` already tracks these slices (`A9122-numeric-encoding`, `A9122-numeric-order`, `A9122-numeric-registry`). These are the implementation order; this record does not file duplicate implementation tickets. The repository currently contains the encoding/order/registry seams, so a future implementation pass should verify or extend those slices rather than restart them.
 
-| Order | Slice (one lane/session) | Depends on | Acceptance criteria |
-| --- | --- | --- | --- |
-| 1 | Numeric value model and canonical extensible encoding (`A9122-numeric-encoding`) | Array-address typed value/serialization contract (#9118) | Golden vectors preserve kind tags, signed extremes, normalized equivalent decimals/binary values, and positive zero; no fixed-width truncation; round-trip and canonical re-encoding properties pass. |
-| 2 | Exact total comparator (`A9122-numeric-order`) | Slice 1 | Independent reference sort agrees for all golden/property-generated values; antisymmetry/transitivity hold; signed ordering and cross-kind type-first ordering are pinned; huge exponents terminate within budget or return `resource_limit` without exponent expansion. |
-| 3 | Namespace write admission (`A9122-numeric-registry`) | Slices 1–2 and namespace registry authorization/generation seam | Allowed-kind policy is enforced before mutation; rejected kinds and over-budget values return stable errors; admitted keys still require ordinary tenant/namespace authorization and versioned registry mutation. |
+| Order | Slice (one lane/session)                                                         | Depends on                                                      | Acceptance criteria                                                                                                                                                                                                                                                      |
+| ----- | -------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | Numeric value model and canonical extensible encoding (`A9122-numeric-encoding`) | Array-address typed value/serialization contract (#9118)        | Golden vectors preserve kind tags, signed extremes, normalized equivalent decimals/binary values, and positive zero; no fixed-width truncation; round-trip and canonical re-encoding properties pass.                                                                    |
+| 2     | Exact total comparator (`A9122-numeric-order`)                                   | Slice 1                                                         | Independent reference sort agrees for all golden/property-generated values; antisymmetry/transitivity hold; signed ordering and cross-kind type-first ordering are pinned; huge exponents terminate within budget or return `resource_limit` without exponent expansion. |
+| 3     | Namespace write admission (`A9122-numeric-registry`)                             | Slices 1–2 and namespace registry authorization/generation seam | Allowed-kind policy is enforced before mutation; rejected kinds and over-budget values return stable errors; admitted keys still require ordinary tenant/namespace authorization and versioned registry mutation.                                                        |
 
 ## 6. Rollout and rollback
 
@@ -97,12 +97,12 @@ For existing data, do not rewrite keys in place. If a prior representation exist
 
 ## 8. Open questions and defaults
 
-| Question | Default for this design | Decider / when to revisit |
-| --- | --- | --- |
-| Should comparison across different numeric kinds compare mathematical value or kind first? | Stable type-tag-first order, no implicit coercion; cross-kind equality is false. | ID core maintainers with the #9107 design owner; before any public interoperability promise. |
-| Should IEEE NaN/infinity be admitted at all? | Reject from the ordered registry; any future preservation is a separate non-ordered profile. | ID core maintainers; only if a concrete consumer requires it. |
-| What default resource budgets should deployments use? | Keep operational limits configurable and conservative; never describe them as semantic domain limits. | Each namespace operator, with ID core maintainers defining safe defaults after measurements. |
-| How should legacy numeric keys migrate if encountered? | Preserve old bytes, use explicit mapping/collision report, and do not rewrite automatically. | Owning namespace operator and ID migration maintainer before enabling writes. |
+| Question                                                                                   | Default for this design                                                                               | Decider / when to revisit                                                                    |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Should comparison across different numeric kinds compare mathematical value or kind first? | Stable type-tag-first order, no implicit coercion; cross-kind equality is false.                      | ID core maintainers with the #9107 design owner; before any public interoperability promise. |
+| Should IEEE NaN/infinity be admitted at all?                                               | Reject from the ordered registry; any future preservation is a separate non-ordered profile.          | ID core maintainers; only if a concrete consumer requires it.                                |
+| What default resource budgets should deployments use?                                      | Keep operational limits configurable and conservative; never describe them as semantic domain limits. | Each namespace operator, with ID core maintainers defining safe defaults after measurements. |
+| How should legacy numeric keys migrate if encountered?                                     | Preserve old bytes, use explicit mapping/collision report, and do not rewrite automatically.          | Owning namespace operator and ID migration maintainer before enabling writes.                |
 
 ## 9. Record and tracking
 

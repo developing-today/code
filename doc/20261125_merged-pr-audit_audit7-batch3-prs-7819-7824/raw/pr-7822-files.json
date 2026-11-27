@@ -1,0 +1,14 @@
+[
+  {
+    "sha": "a2259873d28e173d0e9acbed627e0f48a7f8fc64",
+    "filename": "pkgs/id/tests/event_store_properties.rs",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "blob_url": "https://github.com/developing-today/code/blob/a2d64d3a610c11fb7710a7e8bbff41a8d08213e2/pkgs%2Fid%2Ftests%2Fevent_store_properties.rs",
+    "raw_url": "https://github.com/developing-today/code/raw/a2d64d3a610c11fb7710a7e8bbff41a8d08213e2/pkgs%2Fid%2Ftests%2Fevent_store_properties.rs",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fid%2Ftests%2Fevent_store_properties.rs?ref=a2d64d3a610c11fb7710a7e8bbff41a8d08213e2",
+    "patch": "@@ -769,7 +769,7 @@ proptest! {\n                     link: None,\n                     checkpoint: None,\n                     rotation: None,\n-                    after: Vec::new(), tag: None, document: None, removes: None, chat: None,\n+                    chat: None,\n                 },\n             )\n             .encode();"
+  }
+]

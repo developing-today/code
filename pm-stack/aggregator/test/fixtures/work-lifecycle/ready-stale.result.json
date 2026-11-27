@@ -1,0 +1,7 @@
+{
+  "column": "Backlog",
+  "rule": "R8",
+  "reason_codes": ["eligibility_stale", "not_ready"],
+  "conflicts": [],
+  "stale_facets": ["broker"]
+}
