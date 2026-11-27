@@ -39,6 +39,7 @@ function startStubServe(script) {
   let onStatusRequest = null;
   let promptAsyncResponseDelay = 0;
   let hangSessionCreate = false;
+  let hangEventConnect = false;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -58,6 +59,9 @@ function startStubServe(script) {
     },
     hangSessionCreate: () => {
       hangSessionCreate = true;
+    },
+    hangEventConnect: () => {
+      hangEventConnect = true;
     },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
@@ -79,6 +83,9 @@ function startStubServe(script) {
         authorization: req.headers.authorization ?? null,
       });
       if (req.method === 'GET' && url.pathname === '/api/event') {
+        // #16009: a stalled serve accepts the connect and never
+        // sends response headers.
+        if (hangEventConnect) return;
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         res.flushHeaders();
         sseClients.add(res);
@@ -292,6 +299,42 @@ test('a hung serve call times out instead of wedging session/new (#15982)', asyn
     /serve POST \/api\/session -> timed out after 300ms/,
   );
   assert.ok(Date.now() - started < 5000, 'session/new rejected within the timeout budget, not never');
+});
+
+test('a silent /api/event stream is treated as stalled and reconnects (#16009)', async (t) => {
+  // Oracle: the stub serve accepts /api/event and then stays silent
+  // (it only writes when a script emits). With a 250ms idle budget
+  // the adapter must cancel the reader and reconnect through the
+  // existing path — a second GET /api/event — instead of leaving
+  // reader.read() pending forever; a prompt submitted after the
+  // reconnect still completes via the reconnected stream.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_STREAM_IDLE_TIMEOUT_MS: '250',
+  });
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 2, 'stalled stream to trigger a reconnect');
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'say hello' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+});
+
+test('an /api/event connect that never answers times out and retries (#16009)', async (t) => {
+  // Oracle: with the stub serve never sending response headers for
+  // /api/event, the 300ms connect budget must abort the attempt and
+  // the reconnect loop must try again — a second GET /api/event
+  // attempt — instead of the first fetch pending forever.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_STREAM_TIMEOUT_MS: '300',
+  });
+  stub.controls.hangEventConnect();
+  // Force the already-established stream down so the next connect
+  // attempts hit the hanging path.
+  stub.controls.dropEventStreams();
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 3, 'hung connect to time out and retry');
 });
 
 test('session/prompt streams serve SSE deltas as session/update and completes on execution.succeeded', async (t) => {
