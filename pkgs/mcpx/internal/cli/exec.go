@@ -483,7 +483,11 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 // stdout parse must not be printed twice.
 func (a *App) reportFinalResult(res *execsvc.Result) {
 	if res.Runtime != "" {
-		_, _ = fmt.Fprintf(os.Stderr, "mcpx: JavaScript runtime: %s\n", res.Runtime)
+		// A progress notice, not part of the answer: keep it out of
+		// the way of anything parsing the output, the same gate every
+		// other notice goes through (bare/json callers read the
+		// record stream, not stderr hints).
+		a.notice("JavaScript runtime: " + res.Runtime)
 	}
 	if !res.ResultPresent && res.Result == nil {
 		return
