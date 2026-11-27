@@ -388,6 +388,8 @@ fn peer_sync(state: &Arc<State>) -> Result<Option<usize>, String> {
         .ok_or("peer secrets payload missing list")?;
     let (adopted, adopted_projects) =
         parse_peer_secrets(&state.peer_token, rows, peer_count, peer_hash)?;
+    let count = adopted.len();
+    let verified_hash = peer_hash;
     // Match the lock order used by upstream refresh and project-scoped
     // listing: project metadata first, then the cache itself.
     let mut projects = state.projects.write().unwrap();
