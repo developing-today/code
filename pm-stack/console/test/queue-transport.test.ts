@@ -7,6 +7,14 @@
 // stateless part hands it is what its health-facing read gives back,
 // and a body that is not a verdict is refused.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+
+// Oracle: Cloudflare versions upload/deploy does not apply Cron Triggers;
+// the Actions deploy must explicitly apply the configured schedule afterwards.
+test("the Actions version release also applies the probe's Cron Trigger", () => {
+  const workflow = readFileSync(new URL("../../../.github/workflows/pm-console-edge-deploy.yml", import.meta.url), "utf8");
+  expect(workflow).toMatch(/node release\.mjs --sha "\$GITHUB_SHA"[\s\S]*npx wrangler triggers deploy/);
+});
 import { Edge } from "../edge/src/edge.ts";
 import type { KV } from "../edge/src/edge-shared.ts";
 import {

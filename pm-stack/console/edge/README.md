@@ -525,7 +525,9 @@ Follow that run to success, then check
 `https://pm-console-edge.developing-today.workers.dev/console/health` answers
 `ok: true`, `edge: true`, `version: "bc173425a00f"`. The rollout adds storage
 keys only, with no Durable Object migration or deletion; the previous version
-ignores those keys. The original alert Worker continues GitHub incident,
+ignores those keys. Cron Triggers are applied separately after version deployment;
+rolling back a version leaves the five-minute trigger in place. The older
+version already handles the scheduled Worker checks. The original alert Worker continues GitHub incident,
 Telegram and enqueue handling even after this rollback. Retirement requires a
 later slice preserving those semantics; it is not part of this deploy.
 
