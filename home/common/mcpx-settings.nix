@@ -159,6 +159,51 @@
       ];
       "command" = "go";
     };
+    "github" = {
+      "args" = [ "stdio" ];
+      "command" = "github-mcp-server";
+      "auth" = {
+        "type" = "env";
+        "env" = {
+          "GITHUB_PERSONAL_ACCESS_TOKEN" = "";
+        };
+        "failover" = {
+          "identities" = [
+            {
+              "name" = "developing-today-fleet";
+              "kind" = "app";
+              "secret" = "github-app.developing-today-fleet.private-key";
+              "appId" = 5612056;
+              "installationId" = 178567642;
+            }
+            {
+              "name" = "developing.today";
+              "kind" = "app";
+              "secret" = "kaneo.github-app-private-key";
+              "appId" = 5454422;
+              "installationId" = 174792676;
+            }
+            {
+              "name" = "developing-today-backup";
+              "kind" = "app";
+              "secret" = "github-app.backup-private-key";
+              "appId" = 5562183;
+              "installationId" = 177388707;
+            }
+            {
+              "name" = "dezren39-oauth";
+              "kind" = "token";
+              # Derived at activation from the dezren39 oauth_token in
+              # Fleet's github-cli.hosts-yml YAML secret. The mcpx runtime
+              # slot is a raw token, so it has its own in-memory name.
+              "secret" = "github-cli.dezren39-oauth-token";
+            }
+          ];
+          "statePath" = "/home/user/.local/state/mcpx/github-failover-state.json";
+          "cooldownSeconds" = 60;
+        };
+      };
+    };
     "mcp-server-neon" = {
       "args" = [
         "-y"
