@@ -25,7 +25,7 @@ function answering(body: unknown, status = 200): typeof fetch {
     new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 }
 
 function byPath(routes: Record<string, { body?: unknown; status?: number; text?: string }>): typeof fetch {
@@ -75,7 +75,7 @@ describe("probeWorker", () => {
   test("a binding that reaches nothing is not answering", async () => {
     const fetcher = (async () => {
       throw new Error("no such worker");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const check = await probeWorker({ name: "gone", fetcher }, AT);
     expect(check).toEqual({
       name: "gone",
