@@ -56,12 +56,13 @@ function syntheticFeed(count: number) {
     attention: [],
     registry: Array.from({ length: count }, (_, index) => ({
       id: `synthetic-session-${index}`,
-      source: "opencode-sandbox",
+      source: "opencode-laptop",
       label: `Synthetic session ${index}`,
       agentId: "opencode:synthetic",
       agentLabel: "Synthetic",
       parentId: null,
-      status: "complete",
+      status: "running",
+      lastSeenAt: "2099-01-01T00:00:00.000Z",
       taskRefs: [],
     })),
   };
@@ -124,6 +125,8 @@ async function profileRun(dir: string, runs: number): Promise<Record<string, num
     stages.sessionsFirstHitMs = performance.now() - started;
     stages.recordsReturned = records.length;
     stages.sessionsHtmlBytes = Buffer.byteLength(html);
+    stages.visibleCards = (html.match(/class="card session-record-line"/g) ?? []).length;
+    stages.actionControls = (html.match(/class="aform"/g) ?? []).length;
     out.push(stages);
   }
   return out;
@@ -150,6 +153,10 @@ try {
     "actionsLoadMs",
     "sessionsRenderMs",
     "sessionsFirstHitMs",
+    "recordsReturned",
+    "sessionsHtmlBytes",
+    "visibleCards",
+    "actionControls",
   ];
   const summarize = (samples: Record<string, number>[]) =>
     Object.fromEntries(
