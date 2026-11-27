@@ -425,7 +425,7 @@ states on the primary seat are unverified, and this registry does
 not carry guesses. Full reconciliation:
 `doc/2026-11-26T07-50-00Z_reconciliation_repo-queue-shift-roster/`.
 
-### 2b. Laptop systemd user timers (65 listed: 52 enabled; 5 Nix-configured pending deployment; 4 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
+### 2b. Laptop systemd user timers (66 listed: 53 enabled; 5 Nix-configured pending deployment; 4 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -468,6 +468,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `laptop-scratch-sweep.timer` | `OnCalendar=*-*-* 05:35:00` | `laptop-scratch-sweep.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-11 |
 | `laptop-untracked-review.timer` | `OnCalendar=*-*-* 07:37:00` | `laptop-untracked-review.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `meta-quota-export.timer` | `OnCalendar=*-*-* *:00/15:00` | `meta-quota-export.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-05 |
+| `model-deprecation-watch-weekly.timer` | `OnCalendar=Mon *-*-* 09:12:00` + `RandomizedDelaySec=10m` | `model-deprecation-watch-weekly.service` | laptop (user systemd; code#14236 / #7013; runs `scripts/model-deprecation-watch-sweep.sh`, snapshots to `~/.local/share/model-deprecation-watch/`) | not recorded | Disable if a scheduled run fails to fetch a majority of surfaces; repair the surface URL or script and rerun before re-enabling | 2026-11-24 | 2026-11-24 |
 | `openai-cred-watchdog.timer` | `OnCalendar=*-*-* *:00:00` | `openai-cred-watchdog.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `opencode-go-seating-guard.timer` (Nix-configured; not yet loaded) | `OnCalendar=hourly (not live-verified)` | `opencode-go-seating-guard.service` | laptop (user systemd; code#5611) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
 | `openclaw-backup.timer` | `OnCalendar=*-*-* 04:05:00` | `openclaw-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
