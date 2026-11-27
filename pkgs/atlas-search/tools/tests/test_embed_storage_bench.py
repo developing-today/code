@@ -3,6 +3,7 @@
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -40,6 +41,13 @@ class ReferenceHydrationTest(unittest.TestCase):
             BENCH.verify_reference(digest, lambda _: corrupt)
         self.assertEqual(str(raised.exception), "reference object hash mismatch")
         self.assertNotIn(corrupt.decode(), str(raised.exception))
+
+    def test_report_contains_no_raw_body_bytes(self):
+        bodies = BENCH.synthetic_sample(16)
+        result = BENCH.measure(bodies, runs=2, cache_mode="both")
+        serialized = json.dumps(result, sort_keys=True)
+        for body in bodies:
+            self.assertNotIn(body.decode("ascii"), serialized)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,99 @@
+{
+  "cache": "both",
+  "format": "atlas-embed-storage-bench/v1",
+  "limitations": [
+    "synthetic bytes are not a representative Atlas corpus sample",
+    "in-memory adapters do not measure Turso or Cloudflare R2 latency",
+    "request costs are arithmetic estimates from the checked-in R2 rates, not billed usage"
+  ],
+  "measurement_scope": "process-local operation latency; no network, database, or deployed R2 path",
+  "r2_cost_rates_usd_per_million": {
+    "class_a": 4.5,
+    "class_b": 0.36
+  },
+  "result": {
+    "dedup_ratio": 1.329759,
+    "hydration": {
+      "expand": {
+        "cold": {
+          "r2_class_b_gets": 150,
+          "reference_ms": {
+            "p50": 0.004559,
+            "p95": 0.007325
+          },
+          "turso_ms": {
+            "p50": 0.00022,
+            "p95": 0.000401
+          }
+        },
+        "hot": {
+          "r2_class_b_gets": 5,
+          "reference_ms": {
+            "p50": 0.004409,
+            "p95": 0.006984
+          },
+          "turso_ms": {
+            "p50": 0.000211,
+            "p95": 0.000371
+          }
+        }
+      },
+      "get-chunk": {
+        "cold": {
+          "r2_class_b_gets": 30,
+          "reference_ms": {
+            "p50": 0.000962,
+            "p95": 0.002686
+          },
+          "turso_ms": {
+            "p50": 0.00013,
+            "p95": 0.000952
+          }
+        },
+        "hot": {
+          "r2_class_b_gets": 1,
+          "reference_ms": {
+            "p50": 0.000942,
+            "p95": 0.002214
+          },
+          "turso_ms": {
+            "p50": 0.00013,
+            "p95": 0.000231
+          }
+        }
+      },
+      "with-message": {
+        "cold": {
+          "r2_class_b_gets": 150,
+          "reference_ms": {
+            "p50": 0.004549,
+            "p95": 0.007245
+          },
+          "turso_ms": {
+            "p50": 0.00021,
+            "p95": 0.000351
+          }
+        },
+        "hot": {
+          "r2_class_b_gets": 5,
+          "reference_ms": {
+            "p50": 0.004409,
+            "p95": 0.007095
+          },
+          "turso_ms": {
+            "p50": 0.00021,
+            "p95": 0.000361
+          }
+        }
+      }
+    },
+    "r2_class_a_puts": 96,
+    "r2_request_cost_usd": 0.00055476,
+    "reference_bytes": 71616,
+    "source_bytes": 95232,
+    "unique_objects": 96
+  },
+  "runs_per_operation_variant": 30,
+  "sample_size": 128,
+  "venue": "local in-memory synthetic harness"
+}

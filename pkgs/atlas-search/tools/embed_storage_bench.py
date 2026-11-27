@@ -7,6 +7,14 @@ Usage: python3 -I pkgs/atlas-search/tools/embed_storage_bench.py
 This deliberately uses an in-memory synthetic corpus and object store. It checks
 hash/reference behavior and exercises the report shape; it is not a live Turso
 or Cloudflare R2 measurement. No content is written to disk or printed.
+
+Live venue contract (not exercised here): a future live run must supply a
+designated read-only Turso credential and a disposable, non-production R2
+test bucket/prefix purely through the environment, keep the report shape
+identical (hashes, byte counts, operation counts, timings only), and clean
+the test prefix afterwards. This harness never reads credentials itself and
+never prints them; it must never be pointed at Atlas production or backup
+buckets.
 """
 
 import argparse
