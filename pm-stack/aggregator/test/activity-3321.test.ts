@@ -237,9 +237,9 @@ describe("ingestion store (#3321)", () => {
     const { events, store } = tmpStores();
     const deliveries = watchdogDeliveries([watchdogItem("watchdog:fleet-feed", 120_000)]);
     const first = await store.ingest(events, deliveries);
-    expect(first).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [] });
+    expect(first).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] });
     const second = await store.ingest(events, deliveries);
-    expect(second).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [] });
+    expect(second).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
     const stream = await events.list();
     expect(stream).toHaveLength(1);
     expect(stream[0]?.kind).toBe("watchdog-event");
@@ -300,7 +300,7 @@ describe("ingestion store (#3321)", () => {
     );
     // Oracle: Array.includes on the bounded FIFO still sees the second copy
     // after new-1, but neither copy after new-2.
-    expect(await store.ingest(events, batch)).toEqual({ ingested: 3, duplicates: 1, failed: 0, failedIds: [] });
+    expect(await store.ingest(events, batch)).toEqual({ ingested: 3, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
     expect(appended).toEqual(["activity:kaneo:new-1", "activity:kaneo:new-2", "activity:kaneo:repeat"]);
   });
 
@@ -329,6 +329,7 @@ describe("ingestion store (#3321)", () => {
       duplicates: 2,
       failed: 1,
       failedIds: ["same-id"],
+      rejectedLinkIds: [],
     });
     expect(attempts).toBe(3);
   });
@@ -351,7 +352,7 @@ describe("ingestion store (#3321)", () => {
     const store2 = new IngestionStore(activityFile);
     const events2 = new EventsStore(eventsFile);
     const replay = await store2.ingest(events2, deliveries);
-    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [] });
+    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
     expect(await events2.list()).toHaveLength(1);
     const cp = await store2.checkpoint("kaneo");
     expect(cp?.deliveries).toBe(1);
@@ -367,9 +368,75 @@ describe("ingestion store (#3321)", () => {
       },
     };
     const first = await store.ingest(failing, deliveries);
-    expect(first).toEqual({ ingested: 0, duplicates: 0, failed: 1, failedIds: [deliveries[0]!.sourceId] });
+    expect(first).toEqual({
+      ingested: 0,
+      duplicates: 0,
+      failed: 1,
+      failedIds: [deliveries[0]!.sourceId],
+      rejectedLinkIds: [],
+    });
     const retry = await store.ingest(events, deliveries);
-    expect(retry).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [] });
+    expect(retry).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] });
+  });
+
+  test("a 500-char source.link is ingested verbatim (#16069)", async () => {
+    const { events, store } = tmpStores();
+    const link = `https://example.invalid/${"x".repeat(500 - "https://example.invalid/".length)}`;
+    expect(link).toHaveLength(500);
+    const deliveries: ActivityDelivery[] = [
+      {
+        source: "kaneo",
+        sourceId: "card-boundary",
+        at: iso(0),
+        kind: "kaneo-change",
+        ref: "card",
+        summary: "changed",
+        link,
+      },
+    ];
+    // Oracle: the schema maximum itself is a valid link.
+    const report = await store.ingest(events, deliveries);
+    expect(report).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] });
+    const stream = await events.list();
+    expect(stream).toHaveLength(1);
+    expect(stream[0]?.source?.link).toBe(link);
+  });
+
+  test("an over-limit source.link is rejected while the event is preserved (#16069)", async () => {
+    const { eventsFile, events, store } = tmpStores();
+    const link = `https://example.invalid/${"x".repeat(501 - "https://example.invalid/".length)}`;
+    expect(link).toHaveLength(501);
+    const deliveries: ActivityDelivery[] = [
+      {
+        source: "kaneo",
+        sourceId: "card-overlong",
+        at: iso(0),
+        kind: "kaneo-change",
+        ref: "card",
+        summary: "changed",
+        link,
+      },
+    ];
+    // Oracle: the event ingests (no invalid journal record, no
+    // retryable failure), the link is rejected, and the rejection is
+    // visible in the report.
+    const report = await store.ingest(events, deliveries);
+    expect(report).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: ["card-overlong"] });
+    const stream = await events.list();
+    expect(stream).toHaveLength(1);
+    expect(stream[0]?.source?.identity).toBe("pm-stack/aggregator/activity/kaneo");
+    expect(stream[0]?.source?.link).toBeUndefined();
+    // The rest of the event is preserved: kind, ref, and the
+    // (separately capped) summary still describe the delivery.
+    expect(stream[0]?.kind).toBe("kaneo-change");
+    expect(stream[0]?.ref).toBe("card");
+    // The journal stays replayable: a fresh store over the same
+    // files lists the event, and re-ingesting the batch is a clean
+    // duplicate no-op instead of a failure retry loop.
+    const events2 = new EventsStore(eventsFile);
+    expect(await events2.list()).toHaveLength(1);
+    const replay = await store.ingest(events2, deliveries);
+    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
   });
 
   test("gap lifecycle end-to-end: outage opens a rendered hole, backfill flips it", async () => {
