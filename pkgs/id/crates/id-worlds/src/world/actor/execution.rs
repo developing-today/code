@@ -759,14 +759,20 @@ impl WorldActor {
         self.deliver_system(text, None).await
     }
 
-    /// Deliver a form response and durably spend the authenticated submitter's
-    /// use budget only after the system event was accepted and journaled.
+    /// Deliver a form response with the submitter's account scoped to guest
+    /// update/records calls, restoring the previous context on every outcome.
+    /// Durably spend their use budget only after acceptance and journaling.
     pub(super) async fn deliver_form_result(
         &mut self,
         text: String,
         participant_id: Option<u64>,
     ) -> DeliveryOutcome {
-        self.deliver_system(text, participant_id).await
+        let account = self.acting_account.clone();
+        let previous_account = self.program.replace_caller_account(account.as_deref());
+        let outcome = self.deliver_system(text, participant_id).await;
+        self.program
+            .replace_caller_account(previous_account.as_deref());
+        outcome
     }
 
     pub(super) async fn deliver_system(
@@ -1646,6 +1652,7 @@ impl WorldActor {
         &mut self,
         token: Option<JoinCapability>,
         session_id: Option<SessionId>,
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
         let participant_id = if let Some(token) = token {
@@ -1732,6 +1739,7 @@ impl WorldActor {
         );
         self.acting = participant_id;
         self.acting_session = participant_id.and(session_id);
+        self.acting_account = caller_account;
         ensure!(
             self.deliver_form_result(event, participant_id)
                 .await
