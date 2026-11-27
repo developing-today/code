@@ -15,8 +15,9 @@
 //!      or unix://<path> for the secrets broker's socket, #6218),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
-//!      read-only hosted-door probes at POST /door-health and
-//!      POST /door-list for the CF-2b shadow comparison).
+//!      read-only hosted-door probes at POST /door-health,
+//!      POST /door-list, and the POST /door-shadow dual-read
+//!      comparison for the CF-2b shadow comparison).
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -24,7 +25,7 @@
 //! the only backend: QUEUE_BROKER_BACKEND may be unset or `turso`;
 //! any other value is a startup config error (exit 3).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -63,7 +64,8 @@ struct TrustBundleClientReport {
 }
 
 /// Authenticated client for the hosted queue door. This slice
-/// exposes diagnostic read-only probes (`/door-health`, `/door-list`)
+/// exposes diagnostic read-only probes (`/door-health`,
+/// `/door-list`, and the `/door-shadow` dual-read comparison)
 /// for the CF-2b shadow comparison; it deliberately does not switch
 /// the broker's authoritative store or forward queue writes.
 struct HostedQueueDoor {
@@ -121,6 +123,93 @@ impl HostedQueueDoor {
             .body_mut()
             .read_json::<Value>()
             .map_err(|e| format!("hosted queue door {verb} response was invalid JSON: {e}"))
+    }
+}
+
+/// The ids of one `/list` row set that the other side does not
+/// carry, ascending, capped so a fully diverged plane cannot blow
+/// up the envelope.
+const SHADOW_DIFF_SAMPLE: usize = 25;
+
+/// Compare the two `/list` envelopes a shadow read returns —
+/// local Turso plane first, hosted door second — by task id
+/// (#14987 CF-2b shadow window). Reports the counts each plane
+/// answered, the ids present on exactly one side, and whether the
+/// planes diverge; `complete` is false when either window is
+/// truncated or a row carries no numeric id, so a partial read
+/// can never certify equality. Rows are compared by id only: a
+/// status/payload drift inside the same id set is migration
+/// follow-up, not a cutover blocker at this layer.
+fn shadow_diff(local: &Value, door: &Value) -> Result<Value, String> {
+    let local_rows =
+        crate::client::list_rows(local).map_err(|e| format!("local /list unreadable: {e}"))?;
+    let door_rows =
+        crate::client::list_rows(door).map_err(|e| format!("door /list unreadable: {e}"))?;
+    fn ids(rows: &[Value]) -> (BTreeSet<i64>, usize) {
+        let set: BTreeSet<i64> = rows
+            .iter()
+            .filter_map(|row| row.get("id")?.as_i64())
+            .collect();
+        let unkeyed = rows.len() - set.len();
+        (set, unkeyed)
+    }
+    let (local_ids, unkeyed_local) = ids(&local_rows);
+    let (door_ids, unkeyed_door) = ids(&door_rows);
+    let mut only_in_turso: Vec<i64> = local_ids.difference(&door_ids).copied().collect();
+    let mut only_in_door: Vec<i64> = door_ids.difference(&local_ids).copied().collect();
+    only_in_turso.truncate(SHADOW_DIFF_SAMPLE);
+    only_in_door.truncate(SHADOW_DIFF_SAMPLE);
+    let truncated = |resp: &Value| {
+        resp.get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    let complete = !truncated(local) && !truncated(door) && unkeyed_local == 0 && unkeyed_door == 0;
+    // Unkeyed rows cannot be matched across planes, so they count
+    // as divergence: the evidence is insufficient to cut over on.
+    let divergent = !only_in_turso.is_empty()
+        || !only_in_door.is_empty()
+        || unkeyed_local > 0
+        || unkeyed_door > 0;
+    Ok(json!({
+        "divergent": divergent,
+        "complete": complete,
+        "turso_rows": local_rows.len(),
+        "door_rows": door_rows.len(),
+        "turso_total": crate::client::list_total(local),
+        "door_total": crate::client::list_total(door),
+        "only_in_turso": only_in_turso,
+        "only_in_door": only_in_door,
+        "unkeyed_turso_rows": unkeyed_local,
+        "unkeyed_door_rows": unkeyed_door,
+    }))
+}
+
+/// Dual-read shadow comparison for the CF-2b shadow window
+/// (#14987): answer the same `/list` request from the local Turso
+/// plane (the path live traffic uses) and from the hosted door,
+/// and report the divergence the cutover decision needs. Read-only:
+/// neither plane is written, and live traffic keeps using Turso.
+fn door_shadow(st: &State, req: &Value) -> Value {
+    let Some(door) = st.hosted_door.as_ref() else {
+        return fail(3, "hosted queue door is not configured");
+    };
+    let Some(turso) = st.turso.get() else {
+        let why = st
+            .turso_pending
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        return fail(3, format!("queue backend not ready: {why}"));
+    };
+    let local = crate::turso_queue::dispatch(turso, "/list", req);
+    let remote = match door.forward("list", req) {
+        Ok(resp) => resp,
+        Err(e) => return fail(3, e),
+    };
+    match shadow_diff(&local, &remote) {
+        Ok(diff) => ok(diff),
+        Err(e) => fail(3, format!("shadow comparison: {e}")),
     }
 }
 
@@ -1277,6 +1366,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             Some(door) => door.forward("list", req).unwrap_or_else(|e| fail(3, e)),
             None => fail(3, "hosted queue door is not configured"),
         },
+        "/door-shadow" => door_shadow(st, req),
         _ => {
             let Some(turso) = st.turso.get() else {
                 let why = st
@@ -2112,6 +2202,113 @@ mod tests {
             "hosted request includes the requested queue: {request:?}"
         );
         assert_eq!(response, json!({"ok": true, "rows": []}));
+    }
+
+    #[test]
+    fn shadow_diff_reports_id_set_divergence() {
+        // Oracle (#14987 CF-2b shadow window): identical id sets
+        // certify no divergence; an id on exactly one side is
+        // reported on that side; a truncated window or an unkeyed
+        // row withholds the completeness certificate.
+        let local =
+            json!({"ok": true, "rows": [{"id": 1}, {"id": 2}], "total": 2, "truncated": false});
+        let door =
+            json!({"ok": true, "rows": [{"id": 2}, {"id": 3}], "total": 2, "truncated": false});
+        let diff = shadow_diff(&local, &door).unwrap();
+        assert_eq!(diff["divergent"], json!(true));
+        assert_eq!(diff["complete"], json!(true));
+        assert_eq!(diff["turso_rows"], json!(2));
+        assert_eq!(diff["door_rows"], json!(2));
+        assert_eq!(diff["only_in_turso"], json!([1]));
+        assert_eq!(diff["only_in_door"], json!([3]));
+
+        let same =
+            json!({"ok": true, "rows": [{"id": 1}, {"id": 2}], "total": 2, "truncated": false});
+        let diff = shadow_diff(&same, &same).unwrap();
+        assert_eq!(diff["divergent"], json!(false));
+        assert_eq!(diff["complete"], json!(true));
+
+        let truncated =
+            json!({"ok": true, "rows": [{"id": 1}], "total": 2, "truncated": true});
+        let diff = shadow_diff(&same, &truncated).unwrap();
+        assert_eq!(diff["divergent"], json!(true));
+        assert_eq!(diff["complete"], json!(false));
+
+        let unkeyed =
+            json!({"ok": true, "rows": [{"id": 1}, {"title": "no id"}], "total": 2, "truncated": false});
+        let diff = shadow_diff(&unkeyed, &unkeyed).unwrap();
+        assert_eq!(diff["divergent"], json!(true));
+        assert_eq!(diff["complete"], json!(false));
+        assert_eq!(diff["unkeyed_turso_rows"], json!(1));
+
+        assert!(shadow_diff(&json!({"ok": true}), &same).is_err());
+        assert!(shadow_diff(&same, &json!({"ok": true})).is_err());
+    }
+
+    #[test]
+    fn door_shadow_without_door_is_config_error() {
+        // Oracle: POST /door-shadow without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health and
+        // /door-list.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-shadow".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"queue":"q"}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn door_shadow_without_backend_is_not_ready() {
+        // Oracle: POST /door-shadow with the door configured but
+        // the Turso backend still resolving answers exit 3 without
+        // touching the network — the backend check runs before any
+        // door call.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let mut state = test_state();
+        state.hosted_door = Some(HostedQueueDoor {
+            base_url: "https://door.invalid".into(),
+            token: "service-token".into(),
+            agent,
+        });
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-shadow".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"queue":"q"}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("backend not ready")
+        );
     }
 
     #[test]

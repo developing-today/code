@@ -29,7 +29,6 @@ Phase 13 plan: [phase-13-client-shells.md](../../.opencode/plans/phase-13-client
 
 | Title                         | Status  | Intent                                                                               | Links      |
 | ----------------------------- | ------- | ------------------------------------------------------------------------------------ | ---------- |
-| Presentation capability tiers | planned | Terminal classes detected in-band; tiered rendering instead of one assumed terminal. | F13.4 #786 |
 | Native TUI client             | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.  | #1071      |
 | Native GUI client             | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.  | #1072      |
 

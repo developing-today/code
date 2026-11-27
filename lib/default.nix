@@ -1600,6 +1600,9 @@ let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       deployPkgs = pkgs.callPackage ../pkgs/deploy {
         sourceRev = inputs.self.rev or "dirty";
+        # nixpkgs attr name has a hyphen, so callPackage cannot
+        # auto-fill it into pkgs/deploy's irohRelayPkg argument.
+        irohRelayPkg = pkgs.iroh-relay;
       };
       badRegistry = pkgs.writeText "deploy-targets-malformed.json" (
         builtins.toJSON {
@@ -1730,6 +1733,7 @@ let
               grep -q "pm-aggregator" list.txt
               grep -q "pm-projector" list.txt
               grep -q "pm-tunnel" list.txt
+              grep -q "iroh-relay" list.txt
               ${
                 if deployPkgs.deployReadyForAgentSupported then
                   ''grep -q "ready-for-agent" list.txt''

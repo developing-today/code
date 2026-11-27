@@ -207,7 +207,8 @@ impl std::error::Error for AccountWorldRefusal {}
 /// worlds that predate the attribution (created before a restart,
 /// or through a path that carries no account) are not counted
 /// against any account. Persisting ownership across restarts is a
-/// later slice; storage-byte accounting stays out of this one.
+/// later slice; storage-byte accounting is the companion ledger
+/// below.
 #[derive(Debug, Clone, Default)]
 pub struct AccountWorldQuota {
     max_worlds: u32,
@@ -284,6 +285,121 @@ impl AccountWorldQuota {
             if worlds.is_empty() {
                 self.held.remove(account);
             }
+        }
+    }
+}
+
+/// A refused storage charge against an account's storage quota
+/// (#1067, F12.10).
+///
+/// Typed and recoverable, like [`AccountWorldRefusal`]: the account
+/// is unharmed, nothing was charged, and the same charge can
+/// succeed after the account frees storage or the quota is raised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountStorageRefusal {
+    /// The account that asked for more storage than it has.
+    pub account: String,
+    /// The account's storage limit in bytes.
+    pub limit_bytes: u64,
+    /// Storage bytes already charged when the charge was refused.
+    pub charged_bytes: u64,
+    /// Storage bytes the refused charge asked for.
+    pub requested_bytes: u64,
+}
+
+impl std::fmt::Display for AccountStorageRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "account {} charged {} bytes, at its {}-byte storage quota ({} requested)",
+            self.account, self.charged_bytes, self.limit_bytes, self.requested_bytes
+        )
+    }
+}
+
+impl std::error::Error for AccountStorageRefusal {}
+
+/// Per-account storage ledger (#1067, F12.10).
+///
+/// Deterministic accounting, no I/O: `try_charge` adds storage
+/// bytes under an account, refusing a charge past the limit whole
+/// — nothing is charged and `charged_by` does not move — so a
+/// refused write leaves the ledger exactly as it was. A
+/// `max_bytes` of `0` means no bound, mirroring
+/// [`AccountWorldQuota`]'s `0`, so an unconfigured hub runs exactly
+/// as before.
+///
+/// This is the contract half only: hub wiring that measures a
+/// world's bytes and charges them here is a later slice, which
+/// reads this ledger.
+#[derive(Debug, Clone, Default)]
+pub struct AccountStorageQuota {
+    max_bytes: u64,
+    charged: BTreeMap<String, u64>,
+}
+
+impl AccountStorageQuota {
+    /// A fresh ledger enforcing `max_bytes` storage bytes per
+    /// account (`0` = unbounded).
+    #[must_use]
+    pub const fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            charged: BTreeMap::new(),
+        }
+    }
+
+    /// The per-account storage limit this ledger enforces in bytes
+    /// (`0` = unbounded).
+    #[must_use]
+    pub const fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
+    /// Storage bytes currently charged to `account`.
+    #[must_use]
+    pub fn charged_by(&self, account: &str) -> u64 {
+        self.charged.get(account).copied().unwrap_or(0)
+    }
+
+    /// Charge `bytes` to `account`, or refuse the whole charge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountStorageRefusal`] — charging nothing — when
+    /// the charge would take the account's total past the limit (or
+    /// overflow). A charge larger than the limit itself is refused
+    /// even from zero.
+    pub fn try_charge(&mut self, account: &str, bytes: u64) -> Result<(), AccountStorageRefusal> {
+        let charged = self.charged_by(account);
+        match charged.checked_add(bytes) {
+            Some(total) if self.max_bytes == 0 || total <= self.max_bytes => {
+                if total == 0 {
+                    self.charged.remove(account);
+                } else {
+                    self.charged.insert(account.to_owned(), total);
+                }
+                Ok(())
+            }
+            _ => Err(AccountStorageRefusal {
+                account: account.to_owned(),
+                limit_bytes: self.max_bytes,
+                charged_bytes: charged,
+                requested_bytes: bytes,
+            }),
+        }
+    }
+
+    /// Release `bytes` from `account`, saturating at zero and
+    /// dropping empty accounts. Saturates: releasing more than
+    /// charged, or from an account with no charges, changes nothing
+    /// beyond zeroing.
+    pub fn release(&mut self, account: &str, bytes: u64) {
+        let remaining = self.charged_by(account).saturating_sub(bytes);
+        if remaining == 0 {
+            self.charged.remove(account);
+        } else {
+            self.charged.insert(account.to_owned(), remaining);
         }
     }
 }
@@ -468,5 +584,52 @@ mod tests {
         assert!(quota.try_acquire("acct-a", "w1").is_ok());
         assert!(quota.try_acquire("acct-b", "w2").is_ok());
         assert_eq!(quota.held_by("acct-a"), 1);
+    }
+
+    #[test]
+    fn an_account_at_its_storage_limit_refuses_a_further_charge_whole() {
+        // Oracle (#1067 F12.10 storage slice): a charge past the
+        // byte limit is refused whole — nothing is charged and
+        // `charged_by` does not move — while another account is
+        // unaffected.
+        let mut quota = AccountStorageQuota::new(100);
+        quota.try_charge("acct-a", 90).unwrap();
+        let refusal = quota.try_charge("acct-a", 11).unwrap_err();
+        assert_eq!(refusal.account, "acct-a");
+        assert_eq!(refusal.limit_bytes, 100);
+        assert_eq!(refusal.charged_bytes, 90);
+        assert_eq!(refusal.requested_bytes, 11);
+        assert_eq!(quota.charged_by("acct-a"), 90, "refusal must be atomic");
+        quota.try_charge("acct-b", 11).unwrap();
+        assert_eq!(quota.charged_by("acct-b"), 11);
+    }
+
+    #[test]
+    fn a_release_frees_storage_for_a_retry() {
+        let mut quota = AccountStorageQuota::new(100);
+        quota.try_charge("acct-a", 100).unwrap();
+        assert!(quota.try_charge("acct-a", 1).is_err());
+        quota.release("acct-a", 40);
+        assert_eq!(quota.charged_by("acct-a"), 60);
+        quota.try_charge("acct-a", 40).unwrap();
+        assert_eq!(quota.charged_by("acct-a"), 100);
+    }
+
+    #[test]
+    fn an_unbounded_storage_ledger_never_refuses() {
+        // `0` mirrors the world-count ledger's `0`: no bound, so an
+        // unconfigured hub runs exactly as before.
+        let mut quota = AccountStorageQuota::new(0);
+        assert_eq!(quota.max_bytes(), 0);
+        quota.try_charge("acct-a", u64::MAX).unwrap();
+        assert_eq!(quota.charged_by("acct-a"), u64::MAX);
+    }
+
+    #[test]
+    fn an_overflowing_storage_charge_is_refused_not_wrapped() {
+        let mut quota = AccountStorageQuota::new(u64::MAX);
+        quota.try_charge("acct-a", u64::MAX).unwrap();
+        assert!(quota.try_charge("acct-a", 1).is_err());
+        assert_eq!(quota.charged_by("acct-a"), u64::MAX);
     }
 }

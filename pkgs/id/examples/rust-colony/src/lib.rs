@@ -13,9 +13,9 @@
 //! (`ColonyWorld`) wrap it with input parsing, replay folding by event id,
 //! records, a versioned snapshot and a text view.
 
-use plaza_sdk::json::{self, quote, Value};
-use plaza_sdk::screen::{Screen, Style};
 use plaza_sdk::World;
+use plaza_sdk::json::{self, Value, quote};
+use plaza_sdk::screen::{Screen, Style};
 
 pub const WIDTH: i64 = 4;
 pub const HEIGHT: i64 = 2;

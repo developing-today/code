@@ -79,6 +79,13 @@
 //!   of the output root and publishes by rename, so an interrupted
 //!   run is recoverable on retry and the output root only ever holds
 //!   a complete generation (#13181).
+//! - `stress_selfcheck` — the `stress_gen` oracle checks without
+//!   materializing fixtures (#16042): the mix-table counts, the
+//!   restored program and replay assertions, and the state-hash
+//!   determinism/divergence checks. Unit-test bodies for these live
+//!   beside the generator, but a `harness = false` bench target
+//!   never builds with `--test`, so this dispatch is how they
+//!   execute; it prints one `selfcheck ... ok` line per oracle.
 //! - `frame_cost` — the scale program's frame-cost slice (#13085):
 //!   view (and layout) fuel and wall time for the Territory-class
 //!   guest at the stress tiers' hot-world event counts (10k / 100k /
@@ -2100,7 +2107,7 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
-    const BENCHMARKS: [&str; 11] = [
+    const BENCHMARKS: [&str; 12] = [
         "journal_append_fsync",
         "checkpoint_compaction",
         "guest_replay",
@@ -2109,6 +2116,7 @@ fn main() -> Result<()> {
         "fuel_spin_isolation",
         "fuel_spin_persistent",
         "stress_gen",
+        "stress_selfcheck",
         "stress_mem",
         "stress_join",
         "frame_cost",
@@ -2190,6 +2198,10 @@ fn main() -> Result<()> {
 
     if run("stress_gen") {
         stress::bench_stress_gen(quick)?;
+    }
+
+    if run("stress_selfcheck") {
+        stress::bench_stress_selfcheck()?;
     }
 
     if run("stress_mem") {
