@@ -325,26 +325,26 @@ wait_text_scrolling() {
   done
 }
 
-# Taps, scrolling between misses: a control can sit out of view — the
-# segment chips run in a sideways strip (the Questions chip sat off
-# its right end with bounds zero across eight vertical swipes), or
-# below the fold. Sideways swipes across the chip band come first,
-# then page-down swipes, eight looks altogether.
-tap_text_scrolling() {
-  local tries=0 rc=1
-  until tap_text "$1"; do
+# Taps a chip that sits off the right end of a sideways strip: the
+# strip only moves under a sideways gesture that starts on it, so
+# each miss swipes left from a visible neighbour chip's own row,
+# pulling the target in from the right. Six looks altogether.
+reveal_right_of() {
+  local anchor="$1" target="$2" tries=0 rc=1 axy ax ay
+  while ! tap_text "$target"; do
     rc=$?
     tries=$((tries + 1))
-    [ "$tries" -gt 8 ] && return 1
-    if screen_text | grep -qF "isn't responding"; then
-      dismiss_anr
+    [ "$tries" -gt 6 ] && return 1
+    # Occluded is the bottom tab bar over page content, not the
+    # strip: scroll the page so the target moves clear of it.
+    if [ "$rc" -eq 2 ]; then
+      adb shell input swipe 540 1500 540 700 300 >/dev/null 2>&1 || true
       sleep 2
+      continue
     fi
-    if [ "$tries" -le 4 ]; then
-      adb shell input swipe 800 500 200 500 300 >/dev/null 2>&1 || true
-    else
-      adb shell input swipe 540 1500 540 600 300 >/dev/null 2>&1 || true
-    fi
+    axy="$(tap_xy "$anchor")" || return 1
+    ax="${axy% *}"; ay="${axy#* }"
+    adb shell input swipe "$((ax + 250))" "$ay" "$((ax - 250))" "$ay" 300 >/dev/null 2>&1 || true
     sleep 2
   done
 }
@@ -543,7 +543,10 @@ done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
 launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
 tap_text_retry "Needs me" || fail "could not open the Needs me tab again"
-tap_text_scrolling "Questions" || fail "could not reopen the Questions segment"
+# The Needs page opens on whichever list leads, and after the answer
+# the hands list leads: the segment chips sit in a sideways strip
+# with Questions off its right end. Pull it in from the Reviews chip.
+reveal_right_of "Reviews" "Questions" || fail "could not reopen the Questions segment"
 wait_text_scrolling "$NEXT_QUESTION_TEXT" || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
   fail "the answered question is back in the list after being sent"
