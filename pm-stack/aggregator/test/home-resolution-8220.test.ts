@@ -22,6 +22,7 @@ const HOME_DEFAULTS: [string, string, string][] = [
   ["outcomeBindingsFile", "PM_AGG_OUTCOME_BINDINGS_FILE", ".local/state/pm-aggregator/outcome-bindings.jsonl"],
   ["notificationsFile", "PM_AGG_NOTIFICATIONS_FILE", ".local/state/pm-aggregator/notifications.jsonl"],
   ["needsDrewFile", "PM_AGG_NEEDS_USER_FILE", ".local/state/pm-aggregator/needs-user.json"],
+  ["actionsExecApplyFile", "PM_AGG_ACTIONS_EXEC_APPLY_FILE", ".local/state/pm-aggregator/actions-exec-apply.json"],
   ["decisionsFile", "PM_AGG_DECISIONS_FILE", ".local/state/pm-aggregator/decisions.json"],
   ["decisionsEventsFile", "PM_AGG_DECISION_EVENTS_FILE", ".local/state/pm-aggregator/decision-events.jsonl"],
   ["decisionsOutboxFile", "PM_AGG_DECISION_OUTBOX_FILE", ".local/state/pm-aggregator/decision-events-outbox.jsonl"],
