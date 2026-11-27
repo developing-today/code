@@ -83,6 +83,11 @@ pub struct AccountRow {
 /// and the `accounts` table together.
 pub const PROFILE_ATTRIBUTES: [&str; 3] = ["display_name", "picture", "summary"];
 
+fn normalize_email(email: &str) -> Option<String> {
+    let email = email.trim().to_lowercase();
+    (email.contains('@') && !email.starts_with('@') && !email.ends_with('@')).then_some(email)
+}
+
 /// One profile attribute of a live account as it reads now: the
 /// account it is sourced from and that account's own value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,7 +238,8 @@ impl IdentityStore {
             CREATE TABLE IF NOT EXISTS accounts (
                 account_id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
-                roles TEXT NOT NULL
+                roles TEXT NOT NULL,
+                email TEXT
             );
             CREATE TABLE IF NOT EXISTS account_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -267,6 +273,7 @@ impl IdentityStore {
             ("identities", "claimed_at", "INTEGER"),
             // #13975: the merged-into pointer; NULL on a live account.
             ("accounts", "merged_into", "TEXT"),
+            ("accounts", "email", "TEXT"),
             // #13975 slice 3: profile attributes beside display_name.
             ("accounts", "picture", "TEXT"),
             ("accounts", "summary", "TEXT"),
@@ -370,10 +377,12 @@ impl IdentityStore {
         let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
         let roles = serde_json::to_string(&account.roles)
             .map_err(|e| format!("account roles encode failed: {e}"))?;
+        let email = account.email.as_deref().and_then(normalize_email);
         conn.execute(
-            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![account.account_id, account.display_name, roles],
+            "INSERT INTO accounts (account_id, display_name, roles, email)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id) DO UPDATE SET email = excluded.email",
+            rusqlite::params![account.account_id, account.display_name, roles, email],
         )
         .map_err(|e| format!("account seed insert failed: {e}"))?;
         drop(conn);
@@ -667,6 +676,28 @@ impl IdentityStore {
         }
     }
 
+    /// Resolve a verified email to exactly one live account. Duplicate
+    /// mappings are ambiguous and deliberately return no match.
+    pub fn account_id_for_email(&self, email: &str) -> Result<Option<String>, String> {
+        let Some(email) = normalize_email(email) else {
+            return Ok(None);
+        };
+        let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT account_id FROM accounts
+                 WHERE email = ?1 COLLATE NOCASE AND merged_into IS NULL
+                 ORDER BY account_id LIMIT 2",
+            )
+            .map_err(|e| format!("account email query failed: {e}"))?;
+        let matches = stmt
+            .query_map([email], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("account email query failed: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("account email read failed: {e}"))?;
+        Ok((matches.len() == 1).then(|| matches[0].clone()))
+    }
+
     /// Enroll a never-seen allowlisted identity (#15249): create
     /// its own account holding only `read-only` (design #9086
     /// §4.4's default — read-only on no tenant) and link the
@@ -683,6 +714,16 @@ impl IdentityStore {
         subject: &str,
         actor: &str,
     ) -> Result<(String, &'static str), String> {
+        self.enroll_with_email(provider, subject, actor, None)
+    }
+
+    pub fn enroll_with_email(
+        &self,
+        provider: &str,
+        subject: &str,
+        actor: &str,
+        email: Option<&str>,
+    ) -> Result<(String, &'static str), String> {
         let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
         let tx = conn
             .transaction()
@@ -691,9 +732,14 @@ impl IdentityStore {
         let roles = serde_json::to_string(&ENROLLED_ACCOUNT_ROLES)
             .map_err(|e| format!("account roles encode failed: {e}"))?;
         tx.execute(
-            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![account_id, format!("{provider}:{subject}"), roles],
+            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles, email)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                account_id,
+                format!("{provider}:{subject}"),
+                roles,
+                email.and_then(normalize_email)
+            ],
         )
         .map_err(|e| format!("enrolled account insert failed: {e}"))?;
         let now = crate::registry::now_unix();
@@ -1345,6 +1391,54 @@ mod tests {
 
     fn strings(roles: &[&str]) -> Vec<String> {
         roles.iter().map(|r| r.to_string()).collect()
+    }
+
+    fn account(account_id: &str, email: Option<&str>) -> crate::registry::Account {
+        crate::registry::Account {
+            account_id: account_id.to_string(),
+            display_name: account_id.to_string(),
+            email: email.map(str::to_string),
+            roles: strings(&["read-only"]),
+            identities: vec![],
+            local_credential_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn verified_email_lookup_is_normalized_unique_and_excludes_merged_accounts() {
+        let store = IdentityStore::open(None).unwrap();
+        store
+            .seed_account(&account("owner", Some("Owner@Example.test")))
+            .unwrap();
+        assert_eq!(
+            store
+                .account_id_for_email(" owner@example.TEST ")
+                .unwrap()
+                .as_deref(),
+            Some("owner")
+        );
+        assert_eq!(store.account_id_for_email("not-an-email").unwrap(), None);
+
+        store
+            .seed_account(&account("duplicate", Some("owner@example.test")))
+            .unwrap();
+        assert_eq!(
+            store.account_id_for_email("owner@example.test").unwrap(),
+            None
+        );
+
+        store
+            .seed_account(&account("owner", Some("owner@example.test")))
+            .unwrap();
+        store.merge("owner", "duplicate", &[], &[], "test").unwrap();
+        // A merged shell is not a second live match.
+        assert_eq!(
+            store
+                .account_id_for_email("owner@example.test")
+                .unwrap()
+                .as_deref(),
+            Some("owner")
+        );
     }
 
     #[test]
