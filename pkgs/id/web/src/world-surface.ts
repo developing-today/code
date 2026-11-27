@@ -900,9 +900,7 @@ function isValidTaggedCell(cell: unknown): cell is TaggedScreenCell {
     Number.isInteger(candidate.columns) &&
     candidate.columns >= 0 &&
     candidate.columns <= 2 &&
-    (candidate.token === undefined ||
-      candidate.token === null ||
-      typeof candidate.token === "string") &&
+    (candidate.token === undefined || candidate.token === null || typeof candidate.token === "string") &&
     isValidTagSet(candidate.tags)
   );
 }
@@ -1053,9 +1051,7 @@ export function resolveTaggedCell(
       tags: [...cell.tags],
       rung,
       art:
-        candidate.kind === "asset"
-          ? { kind: "asset", ref: candidate.ref }
-          : { kind: "glyph", glyph: candidate.glyph },
+        candidate.kind === "asset" ? { kind: "asset", ref: candidate.ref } : { kind: "glyph", glyph: candidate.glyph },
       droppedTags: cell.tags.filter((tag) => !retainedTags.has(tag)),
       droppedFilters: droppedFilterOccurrences(sourceFilters, candidate.retainedFilters),
       fallbackGlyph: plan.glyph.glyph,
