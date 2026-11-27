@@ -2903,6 +2903,149 @@ mod key_ceremony_tests {
     }
 
     #[test]
+    fn format_convert_and_verify_round_trip_keys_for_every_algorithm() {
+        // Oracle: the generated PKCS#8 DER bytes are the input identity;
+        // converting DER -> PEM -> DER must reproduce those exact bytes.
+        let dir = scratch_dir("format-key-roundtrip");
+        for algorithm in [
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::Rsa2048,
+            AlgorithmId::Rsa4096,
+            AlgorithmId::MlDsa44,
+        ] {
+            let key = engine::generate_key(algorithm).expect("generate key");
+            let expected_der = key.serialize_der();
+            let input = dir.join(format!("{}.pk8", algorithm.name()));
+            let pem = dir.join(format!("{}.pem", algorithm.name()));
+            let round_trip = dir.join(format!("{}-roundtrip.pk8", algorithm.name()));
+            std::fs::write(&input, &expected_der).expect("write source key");
+
+            let input_text = input.to_string_lossy().into_owned();
+            let pem_text = pem.to_string_lossy().into_owned();
+            let round_trip_text = round_trip.to_string_lossy().into_owned();
+            let algorithm_name = algorithm.name();
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input_text,
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    algorithm_name,
+                    "--out",
+                    &pem_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} DER-to-PEM failed: {error}", algorithm.name()));
+
+            let pem_bytes = std::fs::read(&pem).expect("read PEM output");
+            assert!(pem_bytes.starts_with(b"-----BEGIN PRIVATE KEY-----"));
+            format_cmd(
+                &args(&["verify", "--in", &pem_text, "--algorithm", algorithm_name]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} PEM verify failed: {error}", algorithm.name()));
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &pem_text,
+                    "--to",
+                    "der",
+                    "--algorithm",
+                    algorithm_name,
+                    "--out",
+                    &round_trip_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} PEM-to-DER failed: {error}", algorithm.name()));
+            assert_eq!(
+                std::fs::read(&round_trip).expect("read DER output"),
+                expected_der,
+                "{}",
+                algorithm.name()
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_key_conversion_rejects_malformed_trailing_and_mismatched_material() {
+        let dir = scratch_dir("format-key-invalid");
+        let key = engine::generate_key(AlgorithmId::Ed25519).expect("generate key");
+        let der = key.serialize_der();
+        let cases = [
+            ("trailing.der", [der.clone(), vec![0]].concat(), "ed25519"),
+            ("mismatch.der", der.clone(), "p256"),
+            (
+                "multi.pem",
+                format!(
+                    "{}{}",
+                    crate::bundle::pem_encode("PRIVATE KEY", &der),
+                    crate::bundle::pem_encode("PRIVATE KEY", &der)
+                )
+                .into_bytes(),
+                "ed25519",
+            ),
+            (
+                "text.pem",
+                format!("{}trailing", crate::bundle::pem_encode("PRIVATE KEY", &der)).into_bytes(),
+                "ed25519",
+            ),
+        ];
+        for (name, bytes, algorithm) in cases {
+            let input = dir.join(name);
+            let output = dir.join(format!("{name}.out"));
+            std::fs::write(&input, bytes).expect("write invalid source");
+            let input_text = input.to_string_lossy().into_owned();
+            let output_text = output.to_string_lossy().into_owned();
+            assert!(
+                format_cmd(
+                    &args(&[
+                        "convert",
+                        "--in",
+                        &input_text,
+                        "--to",
+                        "pem",
+                        "--algorithm",
+                        algorithm,
+                        "--out",
+                        &output_text,
+                    ]),
+                    true,
+                )
+                .is_err(),
+                "accepted invalid key case {name}"
+            );
+            assert!(!output.exists(), "wrote output for invalid key case {name}");
+        }
+
+        let input = dir.join("valid.pk8");
+        std::fs::write(&input, &der).expect("write valid key");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "ed25519",
+                ]),
+                true,
+            )
+            .is_err(),
+            "private key conversion must require an explicit output path"
+        );
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
     fn rotate_writes_a_fresh_key_and_keeps_the_old_one() {
         let dir = scratch_dir("key-rotate");
         for (name, algorithm) in [
