@@ -67,7 +67,13 @@ def _public_https_url(endpoint):
         ip = ipaddress.ip_address(host)
     except ValueError:
         return url  # a public DNS name
-    return None if (ip.is_private or ip.is_loopback or ip.is_link_local) else url
+    # Only a globally routable address is a public door. Checking
+    # is_private/is_loopback/is_link_local is not enough: the shared
+    # CGNAT range 100.64.0.0/10 (the tailnet address range) is neither
+    # private nor global on Python >= 3.13, so it slipped through as
+    # "public" there. is_global excludes every non-public range —
+    # private, loopback, link-local, shared, reserved — on all versions.
+    return url if ip.is_global else None
 
 
 def publish_records(doc, zone=DEFAULT_ZONE):
