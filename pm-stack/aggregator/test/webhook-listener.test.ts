@@ -50,6 +50,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
@@ -80,6 +81,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => {
         lookedUpEpics = true;
         return new Map();
@@ -105,6 +107,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => new Map(),
       writeBack: async () => {},
       enqueueTriage: async (packet) => {
@@ -136,6 +139,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => {
         checked = true;
         return new Map();
@@ -161,6 +165,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });

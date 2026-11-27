@@ -6,6 +6,7 @@ import {
   storeOutcome,
   type EpicSlugMap,
   type IngestionItem,
+  type NativeParentLookup,
 } from "./metadata-ingestion.ts";
 
 const MAX_WEBHOOK_BODY_BYTES = 100_000;
@@ -102,6 +103,9 @@ function toIngestionItem(payload: JsonRecord, event: string): IngestionItem | nu
   const closedAt = stringValue(rawItem.closed_at) ?? mergedAt;
   const isMerged = event === "pull_request" && (rawItem.merged === true || mergedAt !== null);
   const state = isMerged ? "MERGED" : (stringValue(rawItem.state)?.toUpperCase() ?? "OPEN");
+  // The issue webhook schema carries no `parent` field, so this is null
+  // for issues in practice; the handler resolves native parentage
+  // authoritatively via resolveNativeParent before finalizing (#16011).
   const parent = record(rawItem.parent);
   const parentRepo = stringValue(record(parent?.repository)?.full_name) ?? stringValue(parent?.repository_full_name);
   const parentNumber = parent?.number;
@@ -132,6 +136,15 @@ export interface MetadataWebhookDependencies {
   secret: () => Promise<string | null>;
   db: Database;
   epicSlugs: (item: IngestionItem) => Promise<EpicSlugMap>;
+  /**
+   * Authoritative native-parent lookup for `issues` events (#16011).
+   * The issue webhook schema carries no `parent` field, so the payload
+   * alone proves nothing about sub-issue parentage: the listener
+   * resolves it here before the shared check finalizes an ascertained
+   * outcome. `undefined` is a retryable failure — the handler answers
+   * non-2xx with no store or body writes so GitHub redelivers.
+   */
+  resolveNativeParent: (item: { repo: string; number: number }) => Promise<NativeParentLookup>;
   writeBack: (item: IngestionItem, body: string) => Promise<void>;
   enqueueTriage: (packet: Record<string, unknown>) => Promise<void>;
   now?: () => string;
@@ -181,9 +194,28 @@ export function createMetadataWebhookHandler(
     if (!item) return Response.json({ error: "invalid issue or pull request payload" }, { status: 400 });
 
     const now = (dependencies.now ?? (() => new Date().toISOString()))();
+    // #16011: native parentage is authoritative and the issue payload
+    // carries no parent field, so resolve it before the shared check
+    // finalizes anything. PRs skip this — sub-issue parents are an issue
+    // concept, so their label path stands (same rule as the sweeper).
+    let checked = item;
+    if (item.kind === "issue" && !item.nativeParent) {
+      let parent: NativeParentLookup;
+      try {
+        parent = await dependencies.resolveNativeParent(item);
+      } catch {
+        parent = undefined;
+      }
+      if (parent === undefined) {
+        // Retryable: no store, enqueue, or body writes — GitHub redelivers
+        // non-2xx webhook deliveries.
+        return Response.json({ error: "native parent lookup failed" }, { status: 500 });
+      }
+      if (parent) checked = { ...item, nativeParent: parent };
+    }
     try {
-      const outcome = runMetadataCheck(item, {
-        epicSlugs: await dependencies.epicSlugs(item),
+      const outcome = runMetadataCheck(checked, {
+        epicSlugs: await dependencies.epicSlugs(checked),
         ingestedBy: WEBHOOK_INGESTOR,
         now,
       });
@@ -191,7 +223,7 @@ export function createMetadataWebhookHandler(
         await dependencies.enqueueTriage(buildTriagePacket(outcome.evidence, WEBHOOK_INGESTOR, now));
       } else {
         storeOutcome(dependencies.db, outcome);
-        if (outcome.kind === "generated") await dependencies.writeBack(item, outcome.body);
+        if (outcome.kind === "generated") await dependencies.writeBack(checked, outcome.body);
       }
       return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
     } catch {

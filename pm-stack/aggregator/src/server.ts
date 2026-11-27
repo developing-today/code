@@ -41,7 +41,7 @@ import { dismissDecisionSets, listOpenDecisionSets, sweepDecisionSets } from "./
 import { listStackHealthDown, readStackHealthStates } from "./stack-health.ts";
 import { buildHealth, pageRenderHealth, recordRender } from "./health.ts";
 import { resolveBwsSecret } from "./secrets.ts";
-import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
+import { buildEpicSlugMap, isConfirmedParentAbsent, openMetadataStore, parseNativeParentResponse, type EpicSlugMap, type IngestionItem, type NativeParentLookup } from "./metadata-ingestion.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
 import { requireHome } from "./home.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
@@ -245,6 +245,9 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
   db: metadataDb,
   epicSlugs: async (item: IngestionItem): Promise<EpicSlugMap> => {
+    // #16011: server-side kind/epic filtering, so the catalog covers all
+    // matching epics instead of filtering after an unfiltered 1000-item
+    // scan window.
     const output = await runMetadataFleet([
       "gh",
       "issue",
@@ -253,6 +256,8 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
       item.repo,
       "--state",
       "all",
+      "--label",
+      "kind/epic",
       "--limit",
       "1000",
       "--json",
@@ -260,17 +265,28 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
     ]);
     const rows: unknown = JSON.parse(output);
     if (!Array.isArray(rows)) throw new Error(`unexpected epic list shape for ${item.repo}`);
-    const slugs: EpicSlugMap = new Map();
-    for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
-      if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
-      const labels = (row.labels ?? []).map((label) => (typeof label === "string" ? label : String(label.name ?? "")));
-      if (!labels.includes("kind/epic")) continue;
-      for (const label of labels) {
-        const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
-        if (slug && !slugs.has(slug)) slugs.set(slug, { repo: item.repo, number: row.number as number });
-      }
+    return buildEpicSlugMap(
+      rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[],
+      item.repo,
+    );
+  },
+  resolveNativeParent: async (item: { repo: string; number: number }): Promise<NativeParentLookup> => {
+    // #16011: same authoritative contract as the sweeper — a confirmed
+    // 404 means no native parent (null); anything else is retryable
+    // (undefined) and the handler answers non-2xx without writes.
+    let stdout: string;
+    try {
+      stdout = await runMetadataFleet([
+        "gh",
+        "api",
+        `repos/${item.repo}/issues/${item.number}/parent`,
+        "--jq",
+        "{number: .number, repo_url: .repository_url}",
+      ]);
+    } catch (error) {
+      return isConfirmedParentAbsent(error) ? null : undefined;
     }
-    return slugs;
+    return parseNativeParentResponse(stdout);
   },
   writeBack: async (item, body) => {
     await withMetadataTempFile("pm-metadata-webhook-", body, async (path) => {
