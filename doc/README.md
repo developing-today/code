@@ -73,6 +73,8 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 ## Dated records
 
+- [Chaos and rotation drills for the PM stack](2026-11-24T06-10-00Z_design_1283_chaos_drills/2026-11-24T06-10-00Z_design_1283_chaos_drills.md) — historical 2026-11-24 design proposal for #1283; superseded by the implemented drills and weekly rotation now on main. It is not the current design of record; remaining signal-verification gaps are tracked on #1283.
+
 - [Fleet placement coordinator — design record](2026-11-26T21-29-26Z_design_fleet-placement-coordinator/2026-11-26T21-29-26Z_design_fleet-placement-coordinator.md) — preserves the #13765 coordinator decision, state/admission contract, sweep and fallback behavior, dependency order, proof bar, and the distinction between merged implementation and follow-up proof gaps tracked by #15594.
 - [AUDIT-7 merged-PR audit — batch 3 (PRs #7633–#7637)](20261125_merged-pr-audit_audit7-batch3-five/20261125_merged-pr-audit_audit7-batch3-five.md) — five merged PRs compared with their spawning issues and comments; all five marked `audit:complete`, with later-path checks and raw API captures preserved in the folder. This is a partial 5/250 ledger entry, not completion of the batch.
 - [Design register governance and weekly verification](2026-11-25_design_8986-design-register.md) — nine-point design for #8986: GitHub as canonical tracking, Project #4 as a read-only mirror, explicit cross-epic exceptions, and a dependency-ordered human-routed weekly reconciliation; no implementation or epic closure authorized.
