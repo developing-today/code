@@ -210,7 +210,7 @@ def recover_interrupted_swap(home):
 # ---------------------------------------------------------------- staging
 _CREATE_TABLE_HEAD = re.compile(
     r"^(\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)"
-    r"(\"[^\"]+\"|[A-Za-z_][\w$]*)",
+    r"(\"[^\"\n]+\"|`[^`\n]+`|[A-Za-z_][\w$]*)",
     re.IGNORECASE,
 )
 

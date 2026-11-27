@@ -115,6 +115,31 @@ def test_second_import_wholesale_replaces():
         assert live_rows(home, "snapshots") == []
 
 
+def test_backtick_quoted_ddl_stages():
+    # drizzle-style sources quote identifiers with backticks; the
+    # stager must accept them like double-quoted and bare names.
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "source.db")
+        if os.path.exists(src):
+            os.unlink(src)
+        db = sqlite3.connect(src)
+        db.execute(
+            "CREATE TABLE `completed_job` (\n"
+            "\t`id` text PRIMARY KEY,\n"
+            "\t`queue` text NOT NULL\n"
+            ")"
+        )
+        db.execute("CREATE INDEX `completed_job_queue` ON `completed_job` (`queue`)")
+        db.execute("INSERT INTO `completed_job` VALUES ('a', 'q'), ('b', 'q')")
+        db.commit()
+        db.close()
+        home = FakeHome()
+        receipt = imp.run_import(src, home, "laptop-backup-test")
+        assert receipt["counts"] == {"completed_job": 2}, receipt
+        rows = live_rows(home, "completed_job")
+        assert len(rows) == 2 and rows[0][0] == "a", rows
+
+
 def test_uncommitted_swap_rolls_back():
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "source.db")
