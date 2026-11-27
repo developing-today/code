@@ -225,6 +225,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   fallback <scan|status|claim|heartbeat|release|complete|unblock> ...\n\
   outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\
   dispatch|session|surfaces ...\n\
+  placement-load [--json]\n\
   stack <record|list|transition|restack|replay> ...";
 
 /// Per-verb usage for `repo-queue <verb> --help` (#10838). Unknown

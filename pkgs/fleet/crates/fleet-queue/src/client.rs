@@ -44,6 +44,63 @@ pub(crate) use self::support::*;
 pub(crate) use self::transport::*;
 pub(crate) use self::verify_disposition::*;
 
+const PLACEMENT_LOAD_USAGE: &str = "usage: repo-queue placement-load [--json]\n\nRead the broker's fleet-wide placement coordinator load. Read-only; requires the queue broker.";
+
+fn read_placement_load(
+    call: impl FnOnce(&str, &Value, Duration) -> Result<Value, String>,
+) -> Result<Value, String> {
+    call("/placement-load", &json!({}), Duration::from_secs(5))
+}
+
+fn cmd_placement_load(args: &[String]) -> i32 {
+    if args.iter().any(|arg| is_help_arg(arg)) {
+        println!("{PLACEMENT_LOAD_USAGE}");
+        return 0;
+    }
+    if args.iter().any(|arg| arg != "--json")
+        || args.iter().filter(|arg| *arg == "--json").count() > 1
+    {
+        eprint(&format!("{PLACEMENT_LOAD_USAGE}\n"));
+        return 2;
+    }
+    match read_placement_load(broker_roundtrip_bounded) {
+        Ok(response) if response.get("ok").and_then(Value::as_bool) == Some(true) => {
+            if args.iter().any(|arg| arg == "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response)
+                        .unwrap_or_else(|_| response.to_string())
+                );
+            } else if let Some(owners) = response.get("owners") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(owners).unwrap_or_else(|_| owners.to_string())
+                );
+            } else {
+                eprintln!("repo-queue: broker placement-load response omitted owners");
+                return 1;
+            }
+            0
+        }
+        Ok(response) => {
+            eprint(&format!(
+                "repo-queue: broker placement-load refused: {}\n",
+                response
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown broker error")
+            ));
+            1
+        }
+        Err(error) => {
+            eprint(&format!(
+                "repo-queue: broker unavailable for placement-load: {error}\n"
+            ));
+            3
+        }
+    }
+}
+
 pub fn run(args: &[String]) -> i32 {
     // Bare `repo-queue --help` prints the top-level usage (#10838).
     // `<verb> --help` is NOT handled here: it dispatches to the verb,
@@ -101,6 +158,7 @@ pub fn run(args: &[String]) -> i32 {
         "dispatch" => crate::placement::cmd_dispatch(rest),
         "session" => crate::placement::cmd_session(rest),
         "surfaces" => crate::placement::cmd_surfaces(rest),
+        "placement-load" => cmd_placement_load(rest),
         "outbox" => cmd_outbox(rest),
         "stack" => cmd_stack(rest),
         _ => {
@@ -2995,5 +3053,26 @@ esac
         assert_eq!(extra_positional(&[], 1), None);
         assert_eq!(extra_positional(&["a".into()], 1), None);
         assert_eq!(extra_positional(&["a".into(), "b".into()], 1), Some("b"));
+    }
+
+    #[test]
+    fn placement_load_reads_broker_view_through_read_only_verb() {
+        let response = read_placement_load(|path, body, budget| {
+            assert_eq!(path, "/placement-load");
+            assert_eq!(body, &json!({}));
+            assert_eq!(budget, Duration::from_secs(5));
+            Ok(json!({"ok": true, "owners": [{"owner": "developing-today", "cap": 20, "gh_running": 3, "claims_active": 1}]}))
+        }).unwrap();
+        assert_eq!(response["owners"][0]["gh_running"], 3);
+    }
+
+    #[test]
+    fn placement_load_propagates_broker_unavailable() {
+        let error = read_placement_load(|path, _, _| {
+            assert_eq!(path, "/placement-load");
+            Err("broker unavailable".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "broker unavailable");
     }
 }
