@@ -243,15 +243,17 @@ export function projectWorkView(
   const terminalSignal = ("value" in github && (github.value === "closed" || github.value === "merged")) || false;
 
   let column: BoardColumn;
-  if (verifiedDone) {
-    column = "Done";
-    reasons.add("verified_terminal_receipt");
-  } else if (parked) {
+  if (parked) {
     column = "Parked";
     reasons.add("parked_with_reason");
   } else if (blocked) {
     column = "Blocked";
     reasons.add(hardBlockers.length > 0 ? "hard_blockers_present" : "queue_blocked");
+  } else if (verifiedDone) {
+    // A verified receipt projects Done only when no held facet
+    // contradicts it (MOB-02 R1..R3): parked/blocked keep their column.
+    column = "Done";
+    reasons.add("verified_terminal_receipt");
   } else if (
     claimFresh &&
     input.claim?.session_binding === "verified" &&
