@@ -16,17 +16,18 @@ import (
 // for npm: it creates the node_modules marker a real install would, so
 // tests can tell a materialised entry from an empty directory.
 type fakeInstaller struct {
-	calls int
-	dirs  []string
-	pins  [][]preflight.ResolvedPackage
-	err   error
+	calls      int
+	dirs       []string
+	pins       [][]preflight.ResolvedPackage
+	err        error
+	failOnCall int
 }
 
 func (f *fakeInstaller) Install(_ context.Context, dir string, pkgs []preflight.ResolvedPackage) error {
 	f.calls++
 	f.dirs = append(f.dirs, dir)
 	f.pins = append(f.pins, append([]preflight.ResolvedPackage(nil), pkgs...))
-	if f.err != nil {
+	if f.err != nil && (f.failOnCall == 0 || f.calls == f.failOnCall) {
 		return f.err
 	}
 	for _, p := range pkgs {
@@ -52,6 +53,7 @@ func TestPrepareSetMaterialisesThenServesTheCacheHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(first.ReleaseWarmLeases)
 	if first.Hit {
 		t.Error("the first prepare of a set cannot be a cache hit")
 	}
@@ -88,6 +90,7 @@ func TestPrepareSetMaterialisesThenServesTheCacheHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(second.ReleaseWarmLeases)
 	if !second.Hit || second.Dir != first.Dir || second.Key != first.Key {
 		t.Errorf("the same set must key the same entry: first %+v, second %+v", first, second)
 	}
@@ -105,12 +108,14 @@ func TestPrepareSetKeyFollowsTheSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.ReleaseWarmLeases)
 	b, err := preflight.PrepareSet(context.Background(), root, preflight.ResolvedSet{
 		Packages: []preflight.ResolvedPackage{{Name: "alpha", Version: "1.2.4"}},
 	}, inst)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(b.ReleaseWarmLeases)
 	if a.Key == b.Key || a.Dir == b.Dir {
 		t.Errorf("a different version is a different environment: %s vs %s", a.Dir, b.Dir)
 	}
@@ -143,6 +148,7 @@ func TestPrepareSetInstallerFailureLeavesNoEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(prepared.ReleaseWarmLeases)
 	if prepared.Hit {
 		t.Error("nothing was ever stored, so the retry cannot be a hit")
 	}
@@ -213,8 +219,31 @@ func TestPrepareSetMaterialisesEachProjectSetSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(prepared.ReleaseWarmLeases)
 	if prepared.Subsets != 1 {
 		t.Errorf("the report retains one cross-project subset: %+v", prepared)
+	}
+	if len(prepared.PreparedSubsets) != 1 {
+		t.Fatalf("one foreign cache entry is prepared separately: %+v", prepared)
+	}
+	subset := prepared.PreparedSubsets[0]
+	if got, want := subset.ManifestDir, foreignDir; got != want {
+		t.Errorf("the prepared subset keeps its source project scope: got %q, want %q", got, want)
+	}
+	if subset.ManifestPath != filepath.Join(foreignDir, "package.json") {
+		t.Errorf("the prepared subset records the project manifest identity: %+v", subset)
+	}
+	if subset.Dir == prepared.Dir || subset.Key == prepared.Key {
+		t.Errorf("entry and foreign sets have separate cache identities: entry=%+v subset=%+v", prepared, subset)
+	}
+	if _, err := os.Stat(filepath.Join(subset.Dir, "node_modules", "foreign-only", "package.json")); err != nil {
+		t.Errorf("the foreign pin is present in its own cache entry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Dir, "node_modules", "foreign-only")); !os.IsNotExist(err) {
+		t.Errorf("the foreign pin does not leak into the entry cache: stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(subset.Dir, "node_modules", "alpha")); !os.IsNotExist(err) {
+		t.Errorf("the entry pin does not leak into the foreign cache: stat error = %v", err)
 	}
 	if len(inst.pins) != 2 {
 		t.Fatalf("entry and foreign project are installed separately; got %d installer calls with pins %+v", len(inst.pins), inst.pins)
@@ -232,6 +261,85 @@ func TestPrepareSetMaterialisesEachProjectSetSeparately(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(dir, "node_modules")); !os.IsNotExist(err) {
 			t.Errorf("prepare must not write into project directory %s; Lstat error = %v", dir, err)
 		}
+	}
+}
+
+func TestPrepareSetKeysIdenticalPinsByProjectIdentity(t *testing.T) {
+	root := t.TempDir()
+	cacheRoot := filepath.Join(root, "cache")
+	projectA := filepath.Join(root, "project-a")
+	projectB := filepath.Join(root, "project-b")
+	for _, dir := range []string{projectA, projectB} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inst := &fakeInstaller{}
+	set := preflight.ResolvedSet{Subsets: []preflight.DependencySubset{
+		{
+			Manifest: preflight.PackageManifest{Path: filepath.Join(projectA, "package.json"), Dir: projectA},
+			Packages: []preflight.ResolvedPackage{{Name: "shared", Version: "1.0.0"}},
+		},
+		{
+			Manifest: preflight.PackageManifest{Path: filepath.Join(projectB, "package.json"), Dir: projectB},
+			Packages: []preflight.ResolvedPackage{{Name: "shared", Version: "1.0.0"}},
+		},
+	}}
+	first, err := preflight.PrepareSet(context.Background(), cacheRoot, set, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(first.ReleaseWarmLeases)
+	if len(first.PreparedSubsets) != 2 {
+		t.Fatalf("each foreign project has a prepared subset: %+v", first)
+	}
+	if first.PreparedSubsets[0].Key == first.PreparedSubsets[1].Key || first.PreparedSubsets[0].Dir == first.PreparedSubsets[1].Dir {
+		t.Fatalf("identical pins from distinct projects must not collide: %+v", first.PreparedSubsets)
+	}
+	if inst.calls != 2 {
+		t.Fatalf("both project identities are installed once, got %d calls", inst.calls)
+	}
+
+	second, err := preflight.PrepareSet(context.Background(), cacheRoot, set, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(second.ReleaseWarmLeases)
+	if len(second.PreparedSubsets) != 2 || !second.PreparedSubsets[0].Hit || !second.PreparedSubsets[1].Hit {
+		t.Fatalf("same project identities and pins reuse both entries: %+v", second.PreparedSubsets)
+	}
+	if inst.calls != 2 {
+		t.Errorf("subset cache hits do not reinstall packages, got %d calls", inst.calls)
+	}
+}
+
+func TestPrepareSetSubsetInstallerFailureLeavesNoPartialSubsetEntry(t *testing.T) {
+	root := t.TempDir()
+	cacheRoot := filepath.Join(root, "cache")
+	foreignDir := filepath.Join(root, "foreign")
+	if err := os.MkdirAll(foreignDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &fakeInstaller{err: errors.New("foreign registry unavailable"), failOnCall: 2}
+	_, err := preflight.PrepareSet(context.Background(), cacheRoot, preflight.ResolvedSet{
+		Packages: []preflight.ResolvedPackage{{Name: "entry-only", Version: "1.0.0"}},
+		Subsets: []preflight.DependencySubset{{
+			Manifest: preflight.PackageManifest{Path: filepath.Join(foreignDir, "package.json"), Dir: foreignDir},
+			Packages: []preflight.ResolvedPackage{{Name: "foreign-only", Version: "2.0.0"}},
+		}},
+	}, inst)
+	if err == nil || !strings.Contains(err.Error(), "foreign registry unavailable") {
+		t.Fatalf("a subset installer failure must fail prepare: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(cacheRoot, "imports"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() || strings.HasPrefix(entries[0].Name(), ".tmp-") {
+		t.Fatalf("the completed entry set remains whole and the failed subset leaves no partial cache entry: %v", entries)
+	}
+	if _, err := os.Lstat(filepath.Join(foreignDir, "node_modules")); !os.IsNotExist(err) {
+		t.Errorf("a failed subset preparation never writes to the foreign project: %v", err)
 	}
 }
 
@@ -282,6 +390,7 @@ func TestCheckImportsPrepareModeMaterialisesTheResolvedSet(t *testing.T) {
 	if rep.Prepared == nil {
 		t.Fatalf("prepare mode records the prepared environment: %+v", rep.Problems)
 	}
+	t.Cleanup(rep.Prepared.ReleaseWarmLeases)
 	if rep.Prepared.Dir == "" || rep.Prepared.Hit {
 		t.Errorf("a cold cache materialises a fresh entry: %+v", rep.Prepared)
 	}
@@ -308,6 +417,7 @@ func TestIsPreparedNodeModules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(prepared.ReleaseWarmLeases)
 	if !preflight.IsPreparedNodeModules(filepath.Join(prepared.Dir, "node_modules")) {
 		t.Error("a materialised entry's node_modules is recognised as prepared")
 	}
