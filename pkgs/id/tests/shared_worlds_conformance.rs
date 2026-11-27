@@ -237,7 +237,7 @@ fn concurrent_document_edits_refuse_stale_decisions_and_preserve_history() {
             1,
             T0 + 3,
         ),
-        Err(SurfaceError::StaleDecision { .. })
+        Err(SurfaceError::StaleDecision(_))
     );
 
     let view = surfaces

@@ -268,9 +268,18 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
     let mut audit: Vec<Value> = registry
         .events()
         .iter()
-        .map(serde_json::to_value)
-        .collect::<Result<_, _>>()
-        .unwrap();
+        .map(|event| {
+            serde_json::json!({
+                "kind": event.kind,
+                "actor": event.actor,
+                "world": event.world,
+                "role": event.role,
+                "agent": event.agent,
+                "outcome": event.outcome,
+                "at": event.at,
+            })
+        })
+        .collect();
     audit.extend(
         profile
             .events()
