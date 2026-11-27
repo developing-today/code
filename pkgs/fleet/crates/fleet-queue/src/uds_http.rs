@@ -43,6 +43,23 @@ pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// past this, new connections are dropped until a slot frees.
 pub(crate) const MAX_CONNECTIONS: usize = 128;
 
+/// Server-observed request transport. TCP parsers default to plaintext;
+/// the TCP adapter replaces that value after it has inspected the accepted
+/// stream, so an HTTP header cannot claim TLS. UDS requests never carry a
+/// peer IP or TLS claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestTransportKind {
+    Uds,
+    TcpPlain,
+    TcpTls,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestTransport {
+    pub kind: RequestTransportKind,
+    pub peer_ip: Option<std::net::IpAddr>,
+}
+
 /// One slot of the in-flight connection cap. Acquired on the accept
 /// loop before a worker thread is spawned; released when it drops.
 pub(crate) struct InFlightSlot(Arc<AtomicUsize>);
@@ -76,6 +93,8 @@ pub struct HttpRequest {
     pub target: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Set by the server adapter, never accepted from a client header.
+    pub transport: RequestTransport,
 }
 
 impl HttpRequest {
@@ -324,6 +343,14 @@ fn read_head_inner(stream: &mut impl Read, tcp: bool) -> Option<(HttpRequest, us
             target,
             headers,
             body,
+            transport: RequestTransport {
+                kind: if tcp {
+                    RequestTransportKind::TcpPlain
+                } else {
+                    RequestTransportKind::Uds
+                },
+                peer_ip: None,
+            },
         },
         content_length,
     ))

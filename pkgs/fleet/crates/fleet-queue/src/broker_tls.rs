@@ -656,6 +656,38 @@ mod tests {
         addr
     }
 
+    /// The same synthetic TLS server with the server-observed request
+    /// transport captured by the handler (the parser's default alone is
+    /// not evidence that the TLS adapter propagated the handshake).
+    fn serve_estate_observing_transport(
+        estate: &Estate,
+        observed: std::sync::mpsc::Sender<crate::uds_http::RequestTransport>,
+    ) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = Arc::new(
+            BrokerTlsServer::from_pem(&estate.chain_pem, estate.key_pem.as_bytes()).unwrap(),
+        );
+        std::thread::spawn(move || {
+            tcp_http::serve_tls(
+                listener,
+                server,
+                |head| {
+                    if head.header("X-Agent-Token") == Some(TOKEN) {
+                        None
+                    } else {
+                        Some((401, b"{\"error\":\"bad token\"}".to_vec()))
+                    }
+                },
+                move |req| {
+                    let _ = observed.send(req.transport);
+                    (200, b"{\"ok\":true}".to_vec())
+                },
+            );
+        });
+        addr
+    }
+
     /// One client roundtrip in the shape of the direct TCP leg:
     /// connect, wrap per the posture, POST with the token,
     /// read the whole response.
@@ -706,6 +738,29 @@ mod tests {
         // token is refused by the precheck over the TLS leg.
         let refused = roundtrip(addr, &mode, "wrong-token").unwrap();
         assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+    }
+
+    #[test]
+    fn validated_tls_request_preserves_server_observed_transport_and_peer() {
+        // Oracle: after the real rustls handshake, the request handler sees
+        // TLS provenance and the loopback peer IP; an HTTP header cannot
+        // manufacture either value.
+        let tmp = TempDir::new("transport-metadata");
+        let estate = build_estate(&tmp, "a", "Test Org A LLC");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let addr = serve_estate_observing_transport(&estate, tx);
+        let mode = BrokerTlsClient::validate_from_store(&estate.store).unwrap();
+
+        let response = roundtrip(addr, &mode, TOKEN).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let transport = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("handler observes the accepted request");
+        assert_eq!(
+            transport.kind,
+            crate::uds_http::RequestTransportKind::TcpTls
+        );
+        assert_eq!(transport.peer_ip, Some("127.0.0.1".parse().unwrap()));
     }
 
     #[test]
