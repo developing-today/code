@@ -24,18 +24,12 @@ fn atlas_classify_exit_codes() {
     assert_eq!(code(&run(bin, &[])), 2);
     assert_eq!(code(&run(bin, &["--db", "x.db", "bogus"])), 2);
     assert_eq!(
-        code(&run(
-            bin,
-            &["--db", "x.db", "run", "--window-days", "abc"]
-        )),
+        code(&run(bin, &["--db", "x.db", "run", "--window-days", "abc"])),
         2
     );
     // Execution: the corpus cannot be opened.
     assert_eq!(
-        code(&run(
-            bin,
-            &["--db", "/nonexistent-dir-15766/x.db", "run"]
-        )),
+        code(&run(bin, &["--db", "/nonexistent-dir-15766/x.db", "run"])),
         1
     );
     // Usage wins over an unreadable input when a required flag is absent.
@@ -73,10 +67,7 @@ fn atlas_sweep_exit_codes() {
     let bin = env!("CARGO_BIN_EXE_atlas-sweep");
     // Usage: missing --state-dir, unknown action, bad source class.
     assert_eq!(code(&run(bin, &[])), 2);
-    assert_eq!(
-        code(&run(bin, &["--state-dir", "/tmp", "bogus-action"])),
-        2
-    );
+    assert_eq!(code(&run(bin, &["--state-dir", "/tmp", "bogus-action"])), 2);
     assert_eq!(
         code(&run(
             bin,

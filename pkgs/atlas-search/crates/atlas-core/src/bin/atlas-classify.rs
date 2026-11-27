@@ -132,7 +132,8 @@ impl Flags {
     }
 
     fn require(&self, name: &str) -> Result<&str, String> {
-        self.get(name).ok_or_else(|| format!("usage: missing {name}"))
+        self.get(name)
+            .ok_or_else(|| format!("usage: missing {name}"))
     }
 
     fn has(&self, name: &str) -> bool {
@@ -267,12 +268,10 @@ fn action_schema_apply(db: &Path, args: &[String]) -> Result<Json, String> {
     )?;
     let review_path = flags.require("--review")?;
     let dispositions_path = flags.require("--dispositions")?;
-    let review: classify::SchemaReview =
-        serde_json::from_value(read_json(review_path)?)
-            .map_err(|e| format!("parse review: {e}"))?;
+    let review: classify::SchemaReview = serde_json::from_value(read_json(review_path)?)
+        .map_err(|e| format!("parse review: {e}"))?;
     let dispositions: BTreeMap<String, Disposition> =
-        classify::parse_dispositions(&read_json(dispositions_path)?)
-            .map_err(|e| e.to_string())?;
+        classify::parse_dispositions(&read_json(dispositions_path)?).map_err(|e| e.to_string())?;
     let now = flags
         .get("--now")
         .map(str::to_owned)
