@@ -89,10 +89,10 @@ pub use journal::{
     JOURNAL_VERSION_NOTIFY, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
     JOURNAL_VERSION_PRESENTATION_POLICY, JOURNAL_VERSION_PROGRAM_BUNDLE,
     JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
-    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
-    journal_version_required_by,
+    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_TEMPLATE_ROLES, JOURNAL_VERSION_WORLD_BUDGET,
+    JOURNAL_VERSION_WRITE_LEASE, JournalAckMode, JournalAdminHistory, JournalEntry,
+    JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis,
+    TrustDecision, WorldJournal, journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,

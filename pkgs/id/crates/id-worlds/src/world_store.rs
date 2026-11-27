@@ -1625,6 +1625,11 @@ async fn populate_template_world(
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     {
         let (mut journal, _) = FileJournal::open(&dir.join("journal.jsonl"), &import.world_id)?;
+        if !import.roles.is_empty() {
+            journal.append(&JournalEntry::TemplateRolesSet {
+                roles: import.roles.clone(),
+            })?;
+        }
         for (key, value) in &import.state {
             journal.append(&JournalEntry::KvSet {
                 key: key.clone(),
@@ -1928,7 +1933,7 @@ mod tests {
         use super::*;
         use crate::program_bundle::{ProgramBundle, ProgramSpec, export};
         use crate::world_template::{
-            TemplateImport, TemplateSource, export_template, import_template,
+            RoleDefinition, TemplateImport, TemplateSource, export_template, import_template,
         };
         use ed25519_dalek::SigningKey;
         use std::collections::BTreeMap;
@@ -1975,8 +1980,12 @@ mod tests {
             // the bundle's identity and the state survived the install.
             let author = SigningKey::from_bytes(&[51; 32]);
             let bundle = counter(&author);
-            let import =
+            let mut import =
                 template_import(&bundle, &[("layout", "1")], std::slice::from_ref(&bundle));
+            import.roles.push(RoleDefinition {
+                name: "editor".to_owned(),
+                description: "Can edit shared notes".to_owned(),
+            });
             let dir = TempDir::new().unwrap();
             let world = create_world_from_template(
                 dir.path(),
@@ -1992,6 +2001,17 @@ mod tests {
 
             let again = template_source_from_dir(dir.path(), &["layout".to_owned()]).unwrap();
             assert_eq!(again.programs, vec![bundle.identity()]);
+            assert_eq!(
+                again
+                    .roles
+                    .iter()
+                    .map(|role| &role.definition)
+                    .collect::<Vec<_>>(),
+                vec![&RoleDefinition {
+                    name: "editor".to_owned(),
+                    description: "Can edit shared notes".to_owned(),
+                }]
+            );
             assert_eq!(
                 again.state,
                 BTreeMap::from([("layout".to_owned(), "1".to_owned())])
