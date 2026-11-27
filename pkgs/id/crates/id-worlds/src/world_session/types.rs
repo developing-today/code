@@ -97,10 +97,6 @@ pub trait SessionIo: Send {
 pub struct SessionConfig {
     /// How long a peer may take to send its first frame.
     pub join_timeout: Duration,
-    /// Maximum time one outbound frame may block this session before its
-    /// transport is treated as closed. This caps how long a slow peer can
-    /// hold its world lease and session permit.
-    pub send_timeout: Duration,
     /// The server blob store documents are served from, when the
     /// transport holds one the world service does not (the SSH shell
     /// receives the store directly; D1-040 decision 7). Falls back to
@@ -112,7 +108,6 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             join_timeout: Duration::from_secs(10),
-            send_timeout: Duration::from_secs(30),
             documents_store: None,
         }
     }

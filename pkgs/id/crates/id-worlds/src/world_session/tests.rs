@@ -1525,7 +1525,6 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
-                send_timeout: Duration::from_secs(1),
                 documents_store: None,
             },
         );
@@ -1545,13 +1544,12 @@ mod tests {
         };
         let config = SessionConfig {
             join_timeout: Duration::from_secs(1),
-            send_timeout: Duration::from_millis(10),
             documents_store: None,
         };
 
         tokio::time::timeout(
             Duration::from_secs(1),
-            run_session_with(&hub, &mut io, config),
+            run_session_with_send_deadline(&hub, &mut io, config, Duration::from_millis(10)),
         )
         .await
         .expect("a stalled transport must not keep a session alive");

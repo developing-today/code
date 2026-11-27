@@ -160,6 +160,8 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
     run_session_with(hub, io, SessionConfig::default()).await;
 }
 
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A per-session outbound deadline. Once a frame stalls or the peer
 /// disappears, the wrapper treats the connection as closed so later
 /// handlers cannot keep the world lease alive by sending again.
@@ -244,9 +246,18 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
 /// The first frame names the world (`"world": "<name>"`, default world if
 /// absent), and the session holds a lease on it until it ends.
 pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    run_session_with_send_deadline(hub, io, config, DEFAULT_SEND_TIMEOUT).await;
+}
+
+async fn run_session_with_send_deadline<I: SessionIo>(
+    hub: &WorldHub,
+    io: &mut I,
+    config: SessionConfig,
+    send_timeout: Duration,
+) {
     let mut io = SendDeadlineIo {
         inner: io,
-        timeout: config.send_timeout,
+        timeout: send_timeout,
         closed: false,
     };
     run_session_inner(hub, &mut io, config).await;
