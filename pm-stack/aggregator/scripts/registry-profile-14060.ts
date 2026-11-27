@@ -153,6 +153,10 @@ try {
     "actionsLoadMs",
     "sessionsRenderMs",
     "sessionsFirstHitMs",
+    "recordsReturned",
+    "sessionsHtmlBytes",
+    "visibleCards",
+    "actionControls",
   ];
   const summarize = (samples: Record<string, number>[]) =>
     Object.fromEntries(
