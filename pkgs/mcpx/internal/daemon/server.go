@@ -2131,6 +2131,20 @@ func (s *Server) reportCallFrame(ctx context.Context, server, tool, callerSessio
 		if callerSession != "" {
 			attrs["caller_session"] = callerSession
 		}
+		if identity, ok := KeyIdentityFrom(ctx); ok {
+			if identity.KeyID != "" {
+				attrs["key_id"] = identity.KeyID
+			}
+			if identity.User != "" {
+				attrs["user"] = identity.User
+			}
+			if identity.Label != "" {
+				attrs["key_label"] = identity.Label
+			}
+			if identity.CapabilityRef != "" {
+				attrs["capability_ref"] = identity.CapabilityRef
+			}
+		}
 		// Fleet attribution (build 4/5, #14190): the originating queue
 		// task id rides the ledger frame, resolved ctx-first with the
 		// process env as fallback (the stdio/no-header path). Absent

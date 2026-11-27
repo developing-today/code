@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -191,6 +192,63 @@ func TestReportCallFrameWritesPayloadFreeLedgerWithoutRun(t *testing.T) {
 	}
 	if strings.Contains(string(data), "secret") || strings.Contains(string(data), "private error") {
 		t.Fatalf("ledger leaked call payload: %s", data)
+	}
+}
+
+// The oracle is the audit invariant: keyed tool-call records carry only the
+// public identity metadata from the authenticated request context; anonymous
+// calls carry no fabricated key fields, and neither bearer secrets nor stored
+// key hashes appear in serialized records.
+func TestReportCallFrameStampsKeyIdentityWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := logging.NewFileSink(logging.FileOptions{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ledger.Close() }()
+	s := &Server{callLedger: ledger}
+	identity := KeyIdentity{
+		KeyID:         "key-123",
+		User:          "alice",
+		Label:         "laptop-cli",
+		CapabilityRef: "grant-456",
+	}
+	secret := "mcpx_key_test-bearer-secret"
+	hash := strings.Repeat("a", 64)
+
+	s.reportCallFrame(WithKeyIdentity(context.Background(), identity), "srv", "ok", "", map[string]any{"token": secret}, time.Now(), json.RawMessage(`{"ok":true}`), nil)
+	s.reportCallFrame(WithKeyIdentity(context.Background(), identity), "srv", "failed", "", map[string]any{}, time.Now(), nil, errors.New("failed"))
+	s.reportCallFrame(context.Background(), "srv", "anonymous", "", map[string]any{}, time.Now(), json.RawMessage(`{"ok":true}`), nil)
+
+	data, err := os.ReadFile(filepath.Join(dir, "mcpx-"+time.Now().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("ledger has %d records, want exactly 3: %s", len(lines), data)
+	}
+	var keyedSuccess, keyedFailure, anonymous map[string]any
+	for i, target := range []*map[string]any{&keyedSuccess, &keyedFailure, &anonymous} {
+		if err := json.Unmarshal([]byte(lines[i]), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, row := range map[string]map[string]any{"success": keyedSuccess, "failure": keyedFailure} {
+		if row["key_id"] != identity.KeyID || row["user"] != identity.User || row["key_label"] != identity.Label || row["capability_ref"] != identity.CapabilityRef {
+			t.Errorf("%s keyed ledger identity = %v", name, row)
+		}
+	}
+	if keyedSuccess["outcome"] != "success" || keyedFailure["outcome"] != "error" {
+		t.Errorf("keyed outcomes = %v and %v, want success and error", keyedSuccess["outcome"], keyedFailure["outcome"])
+	}
+	for _, field := range []string{"key_id", "user", "key_label", "capability_ref"} {
+		if _, ok := anonymous[field]; ok {
+			t.Errorf("anonymous ledger fabricated %s: %v", field, anonymous)
+		}
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), hash) {
+		t.Fatalf("ledger leaked a bearer secret or key hash: %s", data)
 	}
 }
 

@@ -661,6 +661,8 @@ export function liveSource(
      *  projector module will plug. Absent, the HTTP client built
      *  from cfg.projector.baseUrl is the reader (unchanged). */
     projector?: ProjectorReader;
+    /** #14060: optional, payload-free stage timings for the cold registry profile. */
+    onRegistryTiming?: (stage: string, elapsedMs: number) => void;
   },
 ): Source {
   // #14065: when each facet's string last turned unavailable. Recorded
@@ -914,24 +916,35 @@ export function liveSource(
   // identity/metadata before parsing so a stable feed does not sanitize its
   // full 28k-session registry again on every search request.
   let feedCache: { fingerprint: string; value: FleetFeed | null } | null = null;
+  let feedInFlight: Promise<FleetFeed | null> | null = null;
   async function getFeed(): Promise<FleetFeed | null> {
-    let fingerprint: string | null = null;
-    try {
-      const info = await stat(cfg.feedFile, { bigint: true });
-      fingerprint = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
-    } catch {
-      // Keep the existing fail-soft read path below for missing/unreadable
-      // feed files; no cache key means the next call retries the stat.
-    }
-    if (fingerprint !== null && feedCache?.fingerprint === fingerprint) {
-      if (feedCache.value) lastFeed = feedCache.value;
-      return feedCache.value;
-    }
-    const feed = await loadFeed(cfg.feedFile);
-    if (fingerprint !== null && feed) feedCache = { fingerprint, value: feed };
-    else feedCache = null;
-    if (feed) lastFeed = feed;
-    return feed;
+    if (feedInFlight) return feedInFlight;
+    const pending = (async () => {
+      let fingerprint: string | null = null;
+      const statStarted = performance.now();
+      try {
+        const info = await stat(cfg.feedFile, { bigint: true });
+        fingerprint = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+      } catch {
+        // Keep the existing fail-soft read path below for missing/unreadable
+        // feed files; no cache key means the next call retries the stat.
+      } finally {
+        opts?.onRegistryTiming?.("feedStatMs", performance.now() - statStarted);
+      }
+      if (fingerprint !== null && feedCache?.fingerprint === fingerprint) {
+        if (feedCache.value) lastFeed = feedCache.value;
+        return feedCache.value;
+      }
+      const feed = await loadFeed(cfg.feedFile, opts?.onRegistryTiming);
+      if (fingerprint !== null && feed) feedCache = { fingerprint, value: feed };
+      else feedCache = null;
+      if (feed) lastFeed = feed;
+      return feed;
+    })().finally(() => {
+      feedInFlight = null;
+    });
+    feedInFlight = pending;
+    return pending;
   }
 
   // The laptop's OpenChamber-managed OpenCode server: port + password
@@ -1154,7 +1167,9 @@ export function liveSource(
     if (!laptopInFlight) {
       if (Date.now() - laptopFailureAt < LAPTOP_FAILURE_CACHE_MS) return null;
       laptopInFlight = (async () => {
+        const started = performance.now();
         const mapped = await mapLaptopServers();
+        opts?.onRegistryTiming?.("laptopMapMs", performance.now() - started);
         if (mapped) {
           laptopCache = { value: mapped, at: Date.now() };
         } else {
@@ -1241,6 +1256,7 @@ export function liveSource(
   // generation and cached laptop map are unchanged; otherwise repeated
   // reads would redo the merge and invalidate that index on every query.
   let registrySnapshotInitialized = false;
+  let registryInFlight: Promise<SessionRecord[]> | null = null;
   let registrySnapshotFeed: FleetFeed | null = null;
   let registrySnapshotLaptop: MappedSessions | null = null;
   function rememberRegistrySnapshot(feed: FleetFeed | null, mapped: MappedSessions | null): void {
@@ -2233,64 +2249,77 @@ export function liveSource(
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
-      // Slice 3 (#906 §3): feed records (sandbox OpenCode +
-      // Muse launches) merged with the laptop server's live
-      // sessions, accumulated into the durable store.
-      let droppedSessionElements = 0;
-      const feed = await getFeed();
-      let mapped: MappedSessions | null = null;
-      try {
-        mapped = await laptopMapped();
-        if (mapped) droppedSessionElements = mapped.droppedElements;
-      } catch {
-        /* laptop part fails soft, like attention */
-      }
-      const droppedNote =
-        droppedSessionElements > 0
-          ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
-          : "";
-      const unchangedSnapshot =
-        registrySnapshotInitialized &&
-        !registryNeedsPersist &&
-        feed === registrySnapshotFeed &&
-        mapped === registrySnapshotLaptop;
-      if (unchangedSnapshot) {
-        const existing = await loadRegistryStore();
-        lastRegistryMergedCount = existing.length;
-        const incomingCount = (feed?.registry?.length ?? 0) + (mapped?.entries.length ?? 0);
-        provenance.registry =
-          incomingCount > 0
-            ? `live (${existing.length} session records · ${incomingCount} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`
-            : `store only (no live registry source reachable)${droppedNote}`;
-        return existing;
-      }
-
-      const incoming: SessionRecord[] = [];
-      if (feed?.registry) {
-        for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
-      }
-      if (mapped) {
-        for (const e of mapped.entries) {
-          incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
+      if (registryInFlight) return registryInFlight;
+      const firstHitStarted = performance.now();
+      const pending = (async () => {
+        // Slice 3 (#906 §3): feed records (sandbox OpenCode +
+        // Muse launches) merged with the laptop server's live
+        // sessions, accumulated into the durable store.
+        let droppedSessionElements = 0;
+        const feed = await getFeed();
+        let mapped: MappedSessions | null = null;
+        try {
+          mapped = await laptopMapped();
+          if (mapped) droppedSessionElements = mapped.droppedElements;
+        } catch {
+          /* laptop part fails soft, like attention */
         }
-      }
-      if (incoming.length > 0) {
-        const merged = await mergeIntoRegistry(incoming);
+        const droppedNote =
+          droppedSessionElements > 0
+            ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
+            : "";
+        const unchangedSnapshot =
+          registrySnapshotInitialized &&
+          !registryNeedsPersist &&
+          feed === registrySnapshotFeed &&
+          mapped === registrySnapshotLaptop;
+        if (unchangedSnapshot) {
+          const existing = await loadRegistryStore();
+          lastRegistryMergedCount = existing.length;
+          const incomingCount = (feed?.registry?.length ?? 0) + (mapped?.entries.length ?? 0);
+          provenance.registry =
+            incomingCount > 0
+              ? `live (${existing.length} session records · ${incomingCount} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`
+              : `store only (no live registry source reachable)${droppedNote}`;
+          return existing;
+        }
+
+        const incoming: SessionRecord[] = [];
+        if (feed?.registry) {
+          for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
+        }
+        if (mapped) {
+          for (const e of mapped.entries) {
+            incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
+          }
+        }
+        if (incoming.length > 0) {
+          const mergeStarted = performance.now();
+          const merged = await mergeIntoRegistry(incoming);
+          opts?.onRegistryTiming?.("registryMergeMs", performance.now() - mergeStarted);
+          rememberRegistrySnapshot(feed, mapped);
+          lastRegistryMergedCount = merged.length;
+          // #1138: the headline number is the MERGED total — the same
+          // count the /sessions header renders — with the latest feed's
+          // contribution labelled as what it is. (This string used to
+          // headline the incoming batch, so one page carried two counts
+          // for "records" with nothing explaining the difference.)
+          provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
+          return merged;
+        }
+        const mergeStarted = performance.now();
+        const store = await mergeIntoRegistry([]);
+        opts?.onRegistryTiming?.("registryMergeMs", performance.now() - mergeStarted);
         rememberRegistrySnapshot(feed, mapped);
-        lastRegistryMergedCount = merged.length;
-        // #1138: the headline number is the MERGED total — the same
-        // count the /sessions header renders — with the latest feed's
-        // contribution labelled as what it is. (This string used to
-        // headline the incoming batch, so one page carried two counts
-        // for "records" with nothing explaining the difference.)
-        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
-        return merged;
-      }
-      const store = await mergeIntoRegistry([]);
-      rememberRegistrySnapshot(feed, mapped);
-      lastRegistryMergedCount = store.length;
-      provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
-      return store;
+        lastRegistryMergedCount = store.length;
+        provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
+        return store;
+      })().finally(() => {
+        opts?.onRegistryTiming?.("registryReadMs", performance.now() - firstHitStarted);
+        registryInFlight = null;
+      });
+      registryInFlight = pending;
+      return pending;
     },
     async coverage(): Promise<SourceCoverage[]> {
       const feed = lastFeed ?? (await getFeed());

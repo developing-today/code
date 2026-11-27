@@ -105,6 +105,15 @@ pub trait SessionIo: Send {
 pub struct SessionConfig {
     /// How long a peer may take to send its first frame.
     pub join_timeout: Duration,
+    /// How long a joined session may go with no activity before the
+    /// server ends it. The main loop re-arms this deadline on every
+    /// iteration, so any inbound frame, world event, or view send
+    /// counts as activity; only a session silent for the whole window
+    /// is reaped — its presence clears and its hub permit is released.
+    /// The default matches the SSH transport's inactivity timeout
+    /// (`world_ssh::INACTIVITY_TIMEOUT`, 10 minutes), so both session
+    /// transports reap idle peers on the same posture.
+    pub idle_timeout: Duration,
     /// The server blob store documents are served from, when the
     /// transport holds one the world service does not (the SSH shell
     /// receives the store directly; D1-040 decision 7). Falls back to
@@ -116,6 +125,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             join_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_mins(10),
             documents_store: None,
         }
     }

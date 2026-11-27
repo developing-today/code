@@ -114,6 +114,10 @@ struct State {
     /// default: with it off, /peer/status is an unknown route and the
     /// broker behaves as it did before S3.
     peer_status_enabled: bool,
+    /// Trusted peer's HTTP base URL; sync remains dark unless the S3
+    /// peer-status flag is enabled and this URL is configured.
+    peer_url: Option<String>,
+    peer_token: String,
     /// The most recent vault-refresh failure, cleared by the next
     /// successful refresh. Served on the not-loaded 503 so a client
     /// can see WHY the broker has no secrets (#10743) instead of
@@ -249,6 +253,170 @@ fn bws_run(args: &[&str], token: &str) -> Result<String, String> {
         .map_err(|e| format!("bws {} failed: {e}", args.join(" ")))
 }
 
+/// Parse and verify a peer's full-set payload. Project metadata is kept
+/// beside the cache (S3), so a full S4 adoption must move it with the
+/// corresponding names and values when project-scoped listings are enabled.
+fn parse_peer_secrets(
+    token: &str,
+    rows: &[Value],
+    expected_count: u64,
+    expected_hash: &str,
+) -> Result<(HashMap<String, CachedSecret>, HashMap<String, String>), String> {
+    if rows.len() as u64 != expected_count {
+        return Err("peer payload count does not match status".into());
+    }
+    let mut adopted = HashMap::with_capacity(rows.len());
+    let mut projects = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let name = row["name"].as_str().ok_or("peer secret missing name")?;
+        let value = row["value"].as_str().ok_or("peer secret missing value")?;
+        let id = row["id"].as_str().unwrap_or("");
+        adopted.insert(
+            name.to_string(),
+            CachedSecret {
+                id: id.to_string(),
+                value: value.to_string(),
+                fetched_at_unix: now_unix(),
+            },
+        );
+        if let Some(project) = row["projectId"].as_str().filter(|p| !p.is_empty()) {
+            projects.insert(name.to_string(), project.to_string());
+        }
+    }
+    let (verified_hash, count) = keyed_set_hash(token, &adopted);
+    if count as u64 != expected_count {
+        return Err("peer payload contains duplicate secret names".into());
+    }
+    if verified_hash != expected_hash {
+        return Err("peer payload hash did not match advertised status".into());
+    }
+    Ok((adopted, projects))
+}
+
+/// Ask the trusted peer for its keyed status, then pull its complete set
+/// only when it is newer and differs. `Ok(None)` means use the upstream
+/// delta/full fallback; `Ok(Some(n))` means the peer served this cycle.
+fn peer_sync(state: &Arc<State>) -> Result<Option<usize>, String> {
+    let started = std::time::Instant::now();
+    if !state.peer_status_enabled {
+        return Ok(None);
+    }
+    let Some(base) = state.peer_url.as_deref() else {
+        return Ok(None);
+    };
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .build()
+        .into();
+    let request = |path: &str| {
+        agent
+            .get(&format!("{base}{path}"))
+            .header("X-Agent-Token", &state.peer_token)
+            .call()
+            .map_err(|e| format!("peer {path} request failed: {e}"))
+    };
+    let mut status = match request("/peer/status") {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log::info(
+                "secrets-broker",
+                &format!("peer unavailable; upstream fallback: {e}"),
+            );
+            return Ok(None);
+        }
+    };
+    let body: Value = status
+        .body_mut()
+        .read_json()
+        .map_err(|_| "peer status response invalid".to_string())?;
+    let peer_hash = body["set_hash"]
+        .as_str()
+        .ok_or("peer status missing set hash")?;
+    let peer_watermark = body["last_upstream_refresh_at"].as_u64();
+    let local_watermark = *state.last_refresh.read().unwrap();
+    let (local_hash, local_count) =
+        keyed_set_hash(&state.peer_token, &state.secrets.read().unwrap());
+    let peer_count = body["count"].as_u64().unwrap_or(0);
+    if peer_hash == local_hash {
+        // The set is already equal, so no payload is needed; advancing
+        // the watermark still prevents a later stale peer from appearing
+        // newer after this broker observes the peer's fresher state.
+        if let Some(peer) = peer_watermark
+            && local_watermark.is_none_or(|local| peer > local)
+        {
+            *state.last_refresh.write().unwrap() = Some(peer);
+            if let Err(e) = persist_watermark(peer) {
+                crate::log::info(
+                    "secrets-broker",
+                    &format!("synced peer watermark persist failed: {e}"),
+                );
+            }
+        }
+        crate::log::info(
+            "secrets-broker",
+            &format!(
+                "peer sync: synced count {local_count}, hash {}, elapsed_ms {}",
+                &local_hash[..12],
+                started.elapsed().as_millis()
+            ),
+        );
+        return Ok(Some(local_count));
+    }
+    if peer_watermark.is_none_or(|peer| local_watermark.is_some_and(|local| peer <= local)) {
+        crate::log::info(
+            "secrets-broker",
+            &format!("peer stale or watermark unavailable (count {peer_count}); upstream fallback"),
+        );
+        return Ok(None);
+    }
+    let mut response = match request("/peer/secrets") {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log::info(
+                "secrets-broker",
+                &format!("peer pull failed; upstream fallback: {e}"),
+            );
+            return Ok(None);
+        }
+    };
+    let payload: Value = response
+        .body_mut()
+        .read_json()
+        .map_err(|_| "peer secrets response invalid".to_string())?;
+    let rows = payload["secrets"]
+        .as_array()
+        .ok_or("peer secrets payload missing list")?;
+    let (adopted, adopted_projects) =
+        parse_peer_secrets(&state.peer_token, rows, peer_count, peer_hash)?;
+    let count = adopted.len();
+    let verified_hash = peer_hash;
+    // Match the lock order used by upstream refresh and project-scoped
+    // listing: project metadata first, then the cache itself.
+    let mut projects = state.projects.write().unwrap();
+    let mut secrets = state.secrets.write().unwrap();
+    *projects = adopted_projects;
+    *secrets = adopted;
+    drop(secrets);
+    drop(projects);
+    let watermark = peer_watermark.unwrap();
+    *state.last_refresh.write().unwrap() = Some(watermark);
+    if let Err(e) = persist_watermark(watermark) {
+        crate::log::info(
+            "secrets-broker",
+            &format!("peer adopted; watermark persist failed: {e}"),
+        );
+    }
+    crate::log::info(
+        "secrets-broker",
+        &format!(
+            "peer sync: adopted {count} secrets, hash {}, elapsed_ms {}",
+            &verified_hash[..12],
+            started.elapsed().as_millis()
+        ),
+    );
+    Ok(Some(count))
+}
+
 /// One full vault refresh: one `bws secret list` call carrying values,
 /// validated strictly, then installed atomically (#13948 S1).
 fn refresh(state: &Arc<State>) -> Result<usize, String> {
@@ -259,7 +427,11 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         }
         *r = true;
     }
-    let result = do_refresh(state);
+    let result = match peer_sync(state) {
+        Ok(Some(count)) => Ok(count),
+        Ok(None) => do_refresh(state),
+        Err(e) => Err(e),
+    };
     // The refresh-error bookkeeping lives here, in the one shared
     // operation, so every caller records it — the background loop
     // AND the manual POST /refresh path, whose caller discards the
@@ -582,6 +754,7 @@ fn resolve_list_id(list: &Value, name: &str) -> Result<Option<String>, String> {
 }
 
 fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
+    let started = std::time::Instant::now();
     // The watermark is the START of the last successful refresh minus
     // the skew overlap (#13948 §5.1): record the start before the one
     // `bws secret list` call lands, so a change timestamped during
@@ -637,11 +810,20 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     if let Err(e) = persist_watermark(watermark_new) {
         crate::log::info("secrets-broker", &format!("watermark persist failed: {e}"));
     } else {
+        let leg = if watermark.is_none() {
+            "upstream-full"
+        } else {
+            "upstream-delta"
+        };
         crate::log::info(
             "secrets-broker",
             &format!(
-                "delta refresh: applied {} of {}, deleted {}, total {}",
-                outcome.applied, total, outcome.deleted, outcome.total
+                "{leg}: applied {} of {}, deleted {}, total {}, elapsed_ms {}",
+                outcome.applied,
+                total,
+                outcome.deleted,
+                outcome.total,
+                started.elapsed().as_millis()
             ),
         );
     }
@@ -948,6 +1130,23 @@ fn handle_request(
             .collect();
         names.sort();
         (200, json!({"names": names}))
+    } else if method == "GET" && path == "/peer/secrets" && state.peer_status_enabled {
+        let projects = state.projects.read().unwrap();
+        let secrets = state.secrets.read().unwrap();
+        let mut entries: Vec<_> = secrets
+            .iter()
+            .map(|(name, cached)| {
+                json!({
+                    "name": name,
+                    "id": cached.id,
+                    "value": cached.value,
+                    "fetched_at_unix": cached.fetched_at_unix,
+                    "projectId": projects.get(name),
+                })
+            })
+            .collect();
+        entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        (200, json!({"secrets": entries}))
     } else if method == "GET" && path == "/peer/status" && state.peer_status_enabled {
         let (set_hash, count) = keyed_set_hash(token, &state.secrets.read().unwrap());
         (
@@ -1125,10 +1324,16 @@ pub fn run() -> i32 {
     let peer_status_enabled = std::env::var("SECRETS_BROKER_PEER_STATUS")
         .map(|v| matches!(v.as_str(), "1" | "true"))
         .unwrap_or(false);
+    let peer_url = std::env::var("SECRETS_BROKER_PEER_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim_end_matches('/').to_string());
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
         last_refresh: RwLock::new(loaded_watermark),
         peer_status_enabled,
+        peer_url,
+        peer_token: token.clone(),
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
         refresh_progress: RwLock::new(None),
@@ -1331,8 +1536,8 @@ mod tests {
         apply_delta_refresh, apply_list_refresh, begin_refresh_progress, end_refresh_progress,
         entry_revision_unix, fetch_through_with, handle_request, hmac_sha256, install_list_refresh,
         keyed_set_hash, load_watermark, note_refresh_fetch, now_unix, parse_delta_entries,
-        parse_list_entries, parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal,
-        resolve_list_id, secrets_list_prefix, secrets_list_project, url_decode,
+        parse_list_entries, parse_peer_secrets, parse_rfc3339_unix, parse_ttl_s, persist_watermark,
+        pre_body_refusal, resolve_list_id, secrets_list_prefix, secrets_list_project, url_decode,
     };
     use serde_json::json;
     use std::time::Duration;
@@ -1373,6 +1578,8 @@ mod tests {
             secrets: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(Some(1)),
             peer_status_enabled: enabled,
+            peer_url: None,
+            peer_token: "tok".into(),
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
             refresh_progress: RwLock::new(None),
@@ -2373,6 +2580,42 @@ mod tests {
         assert_eq!(body["set_hash"], keyed_set_hash("tok", &secrets).0);
         assert_eq!(body["count"], 2);
         assert_eq!(body["last_upstream_refresh_at"], 42);
+    }
+
+    #[test]
+    fn peer_full_set_is_authenticated_and_contains_the_complete_cache() {
+        let state = empty_state();
+        *state.secrets.write().unwrap() = set_of(&[("alpha", "one"), ("beta", "two")]);
+        state.projects.write().unwrap().extend([
+            ("alpha".into(), "project-a".into()),
+            ("beta".into(), "project-b".into()),
+        ]);
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        let rows = body["secrets"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "alpha");
+        assert_eq!(rows[1]["name"], "beta");
+        assert_eq!(rows[0]["id"], "id-alpha");
+        assert_eq!(rows[1]["id"], "id-beta");
+        assert_eq!(rows[0]["projectId"], "project-a");
+        assert_eq!(rows[1]["projectId"], "project-b");
+    }
+
+    #[test]
+    fn peer_full_set_adoption_preserves_project_metadata() {
+        let secrets = set_of(&[("alpha", "one"), ("beta", "two")]);
+        let (set_hash, count) = keyed_set_hash("tok", &secrets);
+        let rows = vec![
+            json!({"name":"alpha","id":"id-alpha","value":"one","projectId":"project-a"}),
+            json!({"name":"beta","id":"id-beta","value":"two","projectId":"project-b"}),
+        ];
+
+        let (adopted, projects) = parse_peer_secrets("tok", &rows, count as u64, &set_hash)
+            .expect("the advertised hash and count match the complete peer set");
+        assert_eq!(keyed_set_hash("tok", &adopted).0, set_hash);
+        assert_eq!(projects.get("alpha").map(String::as_str), Some("project-a"));
+        assert_eq!(projects.get("beta").map(String::as_str), Some("project-b"));
     }
 
     #[test]
