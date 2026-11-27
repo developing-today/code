@@ -3831,7 +3831,11 @@ mod manual_claim_override_audit_tests {
         )
         .unwrap();
         let before = get_task(&t, id).unwrap().expect("parked task");
-        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
+        assert_eq!(
+            claim_guard_reason(&before),
+            None,
+            "fixture must be claimable: {before}"
+        );
 
         let out = verb_claim(
             &t,
@@ -3879,6 +3883,111 @@ mod manual_claim_override_audit_tests {
     }
 
     #[test]
+    fn max_attempts_manual_override_preserves_history_and_is_idempotent_9178() {
+        // Oracle: a capped parked task refuses without explicit intent;
+        // override claims atomically without changing historical attempts,
+        // records its full prior state, retries for the same owner are
+        // idempotent, and another owner cannot disturb the live claim.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91783)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 5, max_attempts = 5, \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
+             wait_kind = 'dependency', result = ? WHERE id = ?",
+            &[
+                Arg::Text(json!({"park_reason": "retry budget exhausted"}).to_string()),
+                Arg::Int(id),
+            ],
+        )
+        .unwrap();
+        let before = get_task(&t, id).unwrap().expect("capped parked task");
+        assert_eq!(
+            claim_guard_reason(&before),
+            None,
+            "fixture must be claimable: {before}"
+        );
+
+        let refused = verb_claim(
+            &t,
+            &json!({"worker": "max-attempt-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(
+            refused["ok"], true,
+            "refusal is a clean no-claim result: {refused}"
+        );
+        assert!(refused.get("row").is_none_or(Value::is_null), "{refused}");
+        assert_eq!(get_task(&t, id).unwrap().unwrap(), before);
+
+        let request = json!({
+            "worker": "max-attempt-worker",
+            "queue": QUEUE,
+            "lane": "max-attempt-lane",
+            "task_id": id,
+            "session_id": "ses_max_attempt_override",
+            "manual_override": "  retry after independent review  "
+        });
+        let claimed = verb_claim(&t, &request);
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        assert_eq!(claimed["row"]["attempts"], 5, "{claimed}");
+        assert_eq!(claimed["row"]["max_attempts"], 5, "{claimed}");
+        let row = get_task(&t, id).unwrap().expect("claimed task");
+        let audit = &row["result"]["manual_override"];
+        assert_eq!(audit["previous_status"], "parked");
+        assert_eq!(audit["previous_attempts"], 5);
+        assert_eq!(audit["previous_max_attempts"], 5);
+        assert_eq!(audit["previous_park_reason"], "retry budget exhausted");
+        assert_eq!(audit["reason"], "retry after independent review");
+        assert_eq!(audit["worker_id"], "max-attempt-worker");
+        assert_eq!(audit["session_id"], "ses_max_attempt_override");
+        let events = events_for(&t, id, "claimed");
+        let detail: Value =
+            serde_json::from_str(events.last().unwrap()["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["manual_override"], *audit);
+
+        let retry = verb_claim(&t, &request);
+        assert_eq!(
+            retry["ok"], true,
+            "same-owner retry should succeed idempotently: {retry}"
+        );
+        assert_eq!(retry["row"], row);
+        let other_owner = verb_claim(
+            &t,
+            &json!({
+                "worker": "different-worker", "queue": QUEUE, "lane": "other-lane",
+                "task_id": id, "session_id": "ses_other",
+                "manual_override": "different reason"
+            }),
+        );
+        assert!(
+            other_owner.get("row").is_none_or(Value::is_null),
+            "{other_owner}"
+        );
+        let after = get_task(&t, id).unwrap().expect("live claim remains");
+        assert_eq!(after["worker_id"], "max-attempt-worker");
+        assert_eq!(after["attempts"], 5);
+    }
+
+    #[test]
+    fn ordinary_queued_by_id_claim_keeps_attempt_increment_9178() {
+        // Oracle: a normal queued by-ID claim still increments attempts
+        // and does not create a manual-override audit record.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91784)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            &t,
+            &json!({"worker": "ordinary-queued-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        assert_eq!(claimed["row"]["status"], "claimed");
+        assert_eq!(claimed["row"]["attempts"], 1);
+        assert!(claimed["row"]["result"].get("manual_override").is_none());
+    }
+
+    #[test]
     fn parked_by_id_claim_without_manual_override_still_refuses_9178() {
         let (t, _) = fake_backend();
         let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91782)}));
@@ -3895,7 +4004,11 @@ mod manual_claim_override_audit_tests {
         )
         .unwrap();
         let before = get_task(&t, id).unwrap().expect("parked task");
-        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
+        assert_eq!(
+            claim_guard_reason(&before),
+            None,
+            "fixture must be claimable: {before}"
+        );
 
         let out = verb_claim(
             &t,
@@ -3963,7 +4076,11 @@ mod manual_claim_override_tests {
         )
         .unwrap();
         let before = get_task(&t, id).unwrap().expect("parked task");
-        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
+        assert_eq!(
+            claim_guard_reason(&before),
+            None,
+            "fixture must be claimable: {before}"
+        );
 
         let out = verb_claim(
             &t,
