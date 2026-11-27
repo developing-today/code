@@ -950,6 +950,18 @@
       "status": "mapped"
     },
     {
+      "id": "nixos.pm-stack.aggregator-readiness",
+      "paths": ["nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh"],
+      "invocation": "bash nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "PM aggregator backend readiness gate",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "pm-stack.projector",
       "paths": ["pm-stack/projector/test/*.test.ts"],
       "invocation": "cd pm-stack/projector && bun test",

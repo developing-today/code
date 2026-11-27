@@ -12,6 +12,8 @@
 //            (PM_AGG_SOURCE=fixtures + PM_AGG_DEV=1) is the default: fully
 //            hermetic, stable fixture response, repeatable anywhere.
 //            --live switches the spawned server to the live source.
+//            --large-registry N injects a deterministic N-record fixture
+//            registry for representative scan-bound measurements.
 //   base-url profiles a running server (e.g. the laptop production
 //            aggregator). Cold there is the first request observed and is
 //            only an approximation — a truly cold read needs a restart,
@@ -57,6 +59,7 @@ export interface ProfileOptions {
   mode: "spawn" | "base-url";
   baseUrl: string;
   live: boolean;
+  largeRegistryRecords: number;
   coldRuns: number;
   warmRuns: number;
   port: number;
@@ -65,7 +68,7 @@ export interface ProfileOptions {
 
 export const USAGE =
   "usage: search-profile.ts --query <q> [--mode spawn|base-url] [--base-url <url>] [--live] " +
-  "[--cold-runs <n>] [--warm-runs <n>] [--port <n>] [--timeout-ms <ms>]";
+  "[--large-registry <n>] [--cold-runs <n>] [--warm-runs <n>] [--port <n>] [--timeout-ms <ms>]";
 
 export function usageError(message: string): never {
   console.error(`search-profile: ${message}`);
@@ -77,6 +80,7 @@ const VALUE_FLAGS = new Set([
   "--query",
   "--mode",
   "--base-url",
+  "--large-registry",
   "--cold-runs",
   "--warm-runs",
   "--port",
@@ -95,6 +99,7 @@ export function parseProfileArgs(argv: string[]): ProfileOptions {
   let mode: "spawn" | "base-url" = "spawn";
   let baseUrl = "";
   let live = false;
+  let largeRegistryRecords = 0;
   let coldRuns = 1;
   let warmRuns = 3;
   let port = 0;
@@ -119,6 +124,13 @@ export function parseProfileArgs(argv: string[]): ProfileOptions {
       case "--base-url":
         baseUrl = value.replace(/\/$/, "");
         break;
+      case "--large-registry":
+        if (!/^\d+$/.test(value)) usageError("--large-registry must be decimal digits");
+        largeRegistryRecords = Number.parseInt(value, 10);
+        if (largeRegistryRecords < 1 || largeRegistryRecords > 100_000) {
+          usageError("--large-registry must be between 1 and 100000");
+        }
+        break;
       case "--cold-runs":
         coldRuns = parsePositiveInt(value, arg);
         break;
@@ -135,8 +147,11 @@ export function parseProfileArgs(argv: string[]): ProfileOptions {
   }
   if (query === undefined || query.trim() === "") usageError("--query <q> is required");
   if (mode === "base-url" && baseUrl === "") usageError("--mode base-url needs --base-url <url>");
+  if (largeRegistryRecords > 0 && (mode !== "spawn" || live)) {
+    usageError("--large-registry requires spawned fixture mode");
+  }
   if (coldRuns === 0 && warmRuns === 0) usageError("at least one of --cold-runs/--warm-runs must be > 0");
-  return { query: query.trim(), mode, baseUrl, live, coldRuns, warmRuns, port, timeoutMs };
+  return { query: query.trim(), mode, baseUrl, live, largeRegistryRecords, coldRuns, warmRuns, port, timeoutMs };
 }
 
 export function median(values: number[]): number {
@@ -157,6 +172,8 @@ export interface RouteSummary {
 export interface ProfileSummary {
   query: string;
   server: ServerKind;
+  /** Synthetic registry size, only for explicit large-fixture runs. */
+  largeRegistryRecords: number | null;
   coldApproximate: boolean;
   routes: RouteSummary[];
   /** Warm-median HTML total minus warm-median JSON total: the /search
@@ -170,7 +187,12 @@ export const STAGE_GAP =
   "source/board,roadmap,registry,dns,usage,orchestration reads vs items resolution vs searchWork vs " +
   "serialization are not separable over HTTP; splitting the shared searchContext path needs in-process instrumentation.";
 
-export function summarize(query: string, server: ServerKind, records: MeasureRecord[]): ProfileSummary {
+export function summarize(
+  query: string,
+  server: ServerKind,
+  records: MeasureRecord[],
+  largeRegistryRecords = 0,
+): ProfileSummary {
   const coldApproximate = records.some((r) => r.coldApproximate);
   const routes = ROUTES.map((route) => {
     const forRoute = records.filter((r) => r.route === route);
@@ -191,13 +213,22 @@ export function summarize(query: string, server: ServerKind, records: MeasureRec
     json?.warmMedianElapsedMs != null && html?.warmMedianElapsedMs != null
       ? html.warmMedianElapsedMs - json.warmMedianElapsedMs
       : null;
-  return { query, server, coldApproximate, routes, renderDeltaMs, gaps: [STAGE_GAP] };
+  return {
+    query,
+    server,
+    largeRegistryRecords: largeRegistryRecords || null,
+    coldApproximate,
+    routes,
+    renderDeltaMs,
+    gaps: [STAGE_GAP],
+  };
 }
 
 async function grabFreePort(): Promise<number> {
   const stub = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
   const port = stub.port;
   stub.stop(true);
+  if (port === undefined) throw new Error("search-profile: Bun did not allocate a port");
   return port;
 }
 
@@ -206,7 +237,12 @@ interface Spawned {
   base: string;
 }
 
-async function spawnServer(port: number, live: boolean, timeoutMs: number): Promise<Spawned> {
+async function spawnServer(
+  port: number,
+  live: boolean,
+  timeoutMs: number,
+  largeRegistryRecords: number,
+): Promise<Spawned> {
   const base = `http://127.0.0.1:${port}`;
   const env: Record<string, string> = {
     ...process.env,
@@ -218,6 +254,7 @@ async function spawnServer(port: number, live: boolean, timeoutMs: number): Prom
   } else {
     env.PM_AGG_SOURCE = "fixtures";
     env.PM_AGG_DEV = "1";
+    if (largeRegistryRecords > 0) env.PM_AGG_LARGE_REGISTRY = String(largeRegistryRecords);
   }
   const proc = Bun.spawn(["bun", "run", "src/server.ts"], {
     cwd: new URL("..", import.meta.url).pathname,
@@ -293,7 +330,7 @@ function humanSummary(summary: ProfileSummary): string {
   const lines = [
     `search-profile: query=${JSON.stringify(summary.query)} server=${summary.server}${
       summary.coldApproximate ? " (cold is first-observed, approximate)" : ""
-    }`,
+    }${summary.largeRegistryRecords ? ` registry-records=${summary.largeRegistryRecords}` : ""}`,
   ];
   for (const r of summary.routes) {
     lines.push(
@@ -322,7 +359,7 @@ async function main(): Promise<void> {
     const server: ServerKind = opts.live ? "spawned-live" : "spawned-fixtures";
     for (let c = 0; c < opts.coldRuns; c++) {
       const port = opts.port || (await grabFreePort());
-      const { proc, base } = await spawnServer(port, opts.live, opts.timeoutMs);
+      const { proc, base } = await spawnServer(port, opts.live, opts.timeoutMs, opts.largeRegistryRecords);
       try {
         await measurePhase(base, opts, "cold", 1, server, false, records);
       } finally {
@@ -332,7 +369,7 @@ async function main(): Promise<void> {
     }
     if (opts.warmRuns > 0) {
       const port = opts.port || (await grabFreePort());
-      const { proc, base } = await spawnServer(port, opts.live, opts.timeoutMs);
+      const { proc, base } = await spawnServer(port, opts.live, opts.timeoutMs, opts.largeRegistryRecords);
       try {
         // Unrecorded warmup: steady state, not boot transient.
         await measurePhase(base, opts, "warm", 1, server, false, []);
@@ -347,6 +384,7 @@ async function main(): Promise<void> {
     opts.query,
     opts.mode === "base-url" ? "external" : opts.live ? "spawned-live" : "spawned-fixtures",
     records,
+    opts.largeRegistryRecords,
   );
   console.log(JSON.stringify({ records, summary }, null, 2));
   console.error(humanSummary(summary));

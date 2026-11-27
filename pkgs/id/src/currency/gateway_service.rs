@@ -119,7 +119,10 @@ use serde::{Deserialize, Serialize};
 use crate::chain::{ChainError, Event};
 mod convert;
 
-pub use convert::{ConversionPresentation, ConversionRecord, GatewayConversionControl};
+pub use convert::{
+    ConversionLegRef, ConversionLegRole, ConversionOutcome, ConversionPresentation,
+    ConversionReceipt, ConversionRecord, ConversionResponse, GatewayConversionControl,
+};
 
 use crate::currency::conversion::{ConversionVerifier, FailedPreSubmit};
 use crate::currency::gateway::{

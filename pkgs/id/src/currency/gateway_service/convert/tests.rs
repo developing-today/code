@@ -12,14 +12,16 @@ use super::super::{
     FileIntentStore, GatewayService, InMemoryIntentStore, IntentFinding, IntentState, IntentStore,
     ServiceError,
 };
-use super::{ConversionPresentation, leg_ids};
+use super::{
+    ConversionLegRole, ConversionOutcome, ConversionPresentation, ConversionResponse, leg_ids,
+};
 use crate::chain::Event;
 use crate::currency::conversion::{FailedPreSubmit, PresentedObject};
 use crate::currency::gateway::{
     Convert as GwConvert, CurrencyOp, CurrencyRequest, Issue as GwIssue,
     RegisterCurrency as GwRegister, sign_request,
 };
-use crate::currency::gateway_poc::{SignedReceipt, verify_receipt};
+use crate::currency::gateway_poc::verify_receipt;
 use crate::currency::graph::{
     CurrencyBinding, CurrencyDefinition, CurrencyId, SupplyCap, TokenIssue, sign_definition,
     sign_issue,
@@ -301,6 +303,7 @@ fn present(
         }],
         revokes: Vec::new(),
         quote_id,
+        reversal_of: None,
     }
 }
 
@@ -325,7 +328,7 @@ fn convert<B: LedgerBackend, I: IntentStore>(
     client_request_id: u128,
     amount: u128,
     presented: &ConversionPresentation,
-) -> Result<SignedReceipt, ServiceError> {
+) -> Result<ConversionResponse, ServiceError> {
     let request = convert_request(fx, client_request_id, amount);
     let device_key = fx.alice.device_key.clone();
     let (signed, body) = sign(fx, &device_key, &request);
@@ -382,10 +385,36 @@ fn convert_posts_one_linked_chain_and_replays_from_its_intent() {
     let auth = authorisation(&fx);
     let presented = present(&fx.euro_issuer, &auth, None);
 
-    let receipt = convert(&mut fx, 9, 1_000, &presented).expect("conversion posts");
-    assert!(verify_receipt(&fx.gateway_vk, &receipt));
-    assert_eq!(receipt.receipt.op, "convert");
-    assert_eq!(receipt.receipt.account, fx.alice.account);
+    let response = convert(&mut fx, 9, 1_000, &presented).expect("conversion posts");
+    assert!(verify_receipt(&fx.gateway_vk, &response.signed_receipt));
+    assert_eq!(response.signed_receipt.receipt.op, "convert");
+    assert_eq!(response.signed_receipt.receipt.account, fx.alice.account);
+    assert_eq!(
+        response.signed_receipt.receipt.idempotency,
+        hex_encode(&response.conversion_receipt.conversion_id.to_be_bytes())
+    );
+    assert_eq!(
+        response.conversion_receipt.outcome,
+        ConversionOutcome::Posted
+    );
+    assert_eq!(response.conversion_receipt.legs.len(), 3);
+    assert_eq!(
+        response.conversion_receipt.authorisation_id,
+        auth.authorisation_id
+    );
+    assert_eq!(
+        response.conversion_receipt.authorisation_version,
+        auth.version
+    );
+    assert_eq!(response.conversion_receipt.quote_id, None);
+    assert_eq!(
+        (
+            response.conversion_receipt.amount_in,
+            response.conversion_receipt.fee,
+            response.conversion_receipt.amount_out
+        ),
+        (1_000, 10, 900)
+    );
 
     // 1 000 DOLR at 0.9 is 900 EURO; the 1% fee is 10 DOLR on
     // its own leg to the DOLR issuer's fee account.
@@ -427,7 +456,11 @@ fn convert_posts_one_linked_chain_and_replays_from_its_intent() {
 
     // A retry is answered from the intent; nothing moves twice.
     let replay = convert(&mut fx, 9, 1_000, &presented).expect("retry answers");
-    assert_eq!(replay.receipt, receipt.receipt);
+    assert_eq!(
+        replay.signed_receipt.receipt,
+        response.signed_receipt.receipt
+    );
+    assert_eq!(replay.conversion_receipt, response.conversion_receipt);
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 900);
     assert_eq!(fx.svc.conversion_usage(&lp(&fx), 7), 1_000);
 
@@ -655,7 +688,11 @@ fn restart_rebuilds_usage_from_the_intent_log() {
         "{error:?}"
     );
     let replay = convert(&mut fx, 9, 1_000, &presented).expect("retry answers");
-    assert_eq!(replay.receipt, receipt.receipt);
+    assert_eq!(
+        replay.signed_receipt.receipt,
+        receipt.signed_receipt.receipt
+    );
+    assert_eq!(replay.conversion_receipt, receipt.conversion_receipt);
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 900);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -685,7 +722,11 @@ fn lost_answer_is_recovered_by_leg_id() {
         report.findings
     );
     let receipt = convert(&mut fx, 9, 1_000, &presented).expect("recovery finalizes");
-    assert!(verify_receipt(&fx.gateway_vk, &receipt));
+    assert!(verify_receipt(&fx.gateway_vk, &receipt.signed_receipt));
+    assert_eq!(
+        receipt.conversion_receipt.outcome,
+        ConversionOutcome::Posted
+    );
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 900);
     assert_eq!(balance(&fx, &fx.dollar, &fx.alice), 8_990);
 
@@ -700,6 +741,215 @@ fn lost_answer_is_recovered_by_leg_id() {
     assert_eq!(fx.svc.conversion_usage(&lp(&fx), 7), 1_500);
     let report = fx.svc.reconcile_intents(NOW).expect("reconcile runs");
     assert!(report.is_clean(), "findings: {:?}", report.findings);
+}
+
+/// Phase G oracle (#15830, design #2063 invariant 11): a posted
+/// conversion's `ConversionReceipt` carries everything the
+/// receipt holder needs to audit it to every ledger leg — the
+/// exact offer version, the quote it executed under, all three
+/// leg transfer ids with roles, ledgers and amounts, both
+/// currencies, the three amounts, and the outcome — while the
+/// shared signed `Receipt` it accompanies is unchanged.
+#[test]
+fn conversion_receipt_carries_the_offer_legs_and_outcome() {
+    let mut fx = fixture(InMemoryLedger::default(), InMemoryIntentStore::new());
+    let auth = authorisation(&fx);
+    let presented = present(&fx.euro_issuer, &auth, None);
+    let request = convert_request(&fx, 20, 1_000);
+    let device_key = fx.alice.device_key.clone();
+    let (signed, body) = sign(&mut fx, &device_key, &request);
+    fx.svc
+        .quote_convert(&signed, &body, NOW, &presented, 42)
+        .expect("quote issues");
+    let quoted = present(&fx.euro_issuer, &auth, Some(42));
+    let signed_receipt = convert(&mut fx, 22, 1_000, &quoted).expect("quoted conversion posts");
+    assert!(verify_receipt(&fx.gateway_vk, &signed_receipt.signed_receipt));
+
+    let intents = fx.svc.intents().all().expect("intents read");
+    let intent = intents
+        .iter()
+        .find(|intent| intent.op == "convert")
+        .expect("a convert intent");
+    let receipt = fx
+        .svc
+        .conversion_receipt(intent.idempotency)
+        .expect("receipt reads")
+        .expect("a conversion receipt");
+
+    assert_eq!(receipt.conversion_id, intent.idempotency);
+    assert_eq!(receipt.lp, hex_encode(&lp(&fx)));
+    assert_eq!(receipt.authorisation_id, 7);
+    assert_eq!(receipt.authorisation_version, 1);
+    assert_eq!(receipt.quote_id, Some(42));
+    assert_eq!(
+        receipt.legs.iter().map(|leg| leg.role).collect::<Vec<_>>(),
+        vec![
+            ConversionLegRole::Source,
+            ConversionLegRole::Fee,
+            ConversionLegRole::Destination
+        ]
+    );
+    assert_eq!(
+        receipt
+            .legs
+            .iter()
+            .map(|leg| leg.transfer_id)
+            .collect::<Vec<_>>(),
+        leg_ids(intent.idempotency, 3)
+    );
+    assert_eq!(
+        receipt
+            .legs
+            .iter()
+            .map(|leg| leg.ledger_id)
+            .collect::<Vec<_>>(),
+        vec![fx.dollar.ledger, fx.dollar.ledger, fx.euro.ledger]
+    );
+    assert_eq!(
+        receipt
+            .legs
+            .iter()
+            .map(|leg| leg.amount)
+            .collect::<Vec<_>>(),
+        vec![1_000, 10, 900]
+    );
+    assert_eq!(receipt.source_currency_id, intent.currency_id);
+    assert_eq!(
+        receipt.source_currency_key,
+        Some(hex_encode(&fx.dollar.key))
+    );
+    assert_eq!(receipt.source_ledger_id, Some(fx.dollar.ledger));
+    assert_eq!(receipt.dest_currency_key, hex_encode(&fx.euro.key));
+    assert_eq!(receipt.dest_ledger_id, fx.euro.ledger);
+    assert_eq!(
+        (receipt.amount_in, receipt.fee, receipt.amount_out),
+        (1_000, 10, 900)
+    );
+    assert_eq!(receipt.outcome, ConversionOutcome::Posted);
+    assert_eq!(receipt.reversal_of, None);
+
+    // No intent under an id is no conversion receipt.
+    assert_eq!(fx.svc.conversion_receipt(424_242).expect("reads"), None);
+}
+
+/// Phase G oracle (#15830, design #2063 invariant 10): a
+/// conversion executed as a reversal is a separate conversion
+/// whose receipt names the original conversion id; the
+/// original's receipt names nothing.
+#[test]
+fn reversal_receipt_names_the_original_conversion() {
+    let mut fx = fixture(InMemoryLedger::default(), InMemoryIntentStore::new());
+    let auth = authorisation(&fx);
+    let presented = present(&fx.euro_issuer, &auth, None);
+    convert(&mut fx, 9, 1_000, &presented).expect("original posts");
+    let original_id = fx
+        .svc
+        .intents()
+        .all()
+        .expect("read")
+        .into_iter()
+        .find(|intent| intent.op == "convert")
+        .expect("original intent")
+        .idempotency;
+
+    // The reversal: 500 of Alice's 900 EURO back to DOLR at par,
+    // no fee, under the LP's reverse-direction authorisation.
+    let mut reverse = auth.clone();
+    reverse.authorisation_id = 8;
+    reverse.source_ledger = auth.dest_ledger.clone();
+    reverse.dest_ledger = auth.source_ledger.clone();
+    reverse.rate_num = 1;
+    reverse.rate_den = 1;
+    reverse.fee_bps = None;
+    let mut reversal = present(&fx.euro_issuer, &reverse, None);
+    reversal.reversal_of = Some(original_id);
+    let request = CurrencyRequest {
+        client_request_id: 10,
+        op: CurrencyOp::Convert(GwConvert {
+            source: fx.euro.key,
+            dest: fx.dollar.key,
+            from: fx.alice.account.clone(),
+            amount: 500,
+        }),
+    };
+    let device_key = fx.alice.device_key.clone();
+    let (signed, body) = sign(&mut fx, &device_key, &request);
+    let response = fx
+        .svc
+        .handle_convert(&signed, &body, NOW, &reversal)
+        .expect("reversal posts");
+    assert_eq!(response.conversion_receipt.reversal_of, Some(original_id));
+    assert_eq!(
+        response.conversion_receipt.outcome,
+        ConversionOutcome::Posted
+    );
+    assert_eq!(balance(&fx, &fx.dollar, &fx.alice), 8_990 + 500);
+    assert_eq!(balance(&fx, &fx.euro, &fx.alice), 400);
+
+    let intents = fx.svc.intents().all().expect("read");
+    let reversal_intent = intents
+        .iter()
+        .find(|intent| {
+            intent
+                .conversion
+                .as_ref()
+                .is_some_and(|record| record.reversal_of == Some(original_id))
+        })
+        .expect("the reversal's intent carries the reference");
+    let receipt = fx
+        .svc
+        .conversion_receipt(reversal_intent.idempotency)
+        .expect("reads")
+        .expect("a conversion receipt");
+    assert_eq!(receipt.reversal_of, Some(original_id));
+    assert_eq!(receipt.authorisation_id, 8);
+    assert_eq!(
+        receipt.legs.iter().map(|leg| leg.role).collect::<Vec<_>>(),
+        vec![ConversionLegRole::Source, ConversionLegRole::Destination]
+    );
+    assert_eq!(
+        (receipt.amount_in, receipt.fee, receipt.amount_out),
+        (500, 0, 500)
+    );
+    assert_eq!(receipt.outcome, ConversionOutcome::Posted);
+
+    let original = fx
+        .svc
+        .conversion_receipt(original_id)
+        .expect("reads")
+        .expect("the original's receipt");
+    assert_eq!(original.reversal_of, None);
+}
+
+/// Phase G oracle (#15830): the receipt of a conversion the
+/// cluster refused reports the failed outcome with the recorded
+/// terms — the audit read does not hide refusals.
+#[test]
+fn failed_conversion_receipt_reports_the_failed_outcome() {
+    let mut fx = fixture(InMemoryLedger::default(), InMemoryIntentStore::new());
+    let mut auth = authorisation(&fx);
+    auth.max_amount = 50_000;
+    auth.total_cap = 100_000;
+    let presented = present(&fx.euro_issuer, &auth, None);
+    convert(&mut fx, 9, 6_000, &presented).expect_err("inventory is short");
+
+    let intents = fx.svc.intents().all().expect("read");
+    let intent = intents
+        .iter()
+        .find(|intent| intent.op == "convert")
+        .expect("a convert intent");
+    assert_eq!(intent.state, IntentState::Failed);
+    let receipt = fx
+        .svc
+        .conversion_receipt(intent.idempotency)
+        .expect("reads")
+        .expect("a conversion receipt");
+    assert_eq!(receipt.outcome, ConversionOutcome::Failed);
+    assert_eq!(
+        (receipt.amount_in, receipt.fee, receipt.amount_out),
+        (6_000, 60, 5_400)
+    );
+    assert_eq!(receipt.legs.len(), 3);
 }
 
 /// A recorded conversion whose leg id holds other contents on the

@@ -23,7 +23,7 @@ lancedb = ["atlas-core/lancedb"]
 atlas-core = { path = "../atlas-core" }
 atlas-proto = { path = "../atlas-proto" }
 atlas-embed = { path = "../atlas-embed" }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "string"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
