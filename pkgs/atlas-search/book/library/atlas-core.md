@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 48 public modules, grouped by job
+## The 49 public modules, grouped by job
 
-`lib.rs` declares 48 public modules. Grouped by the job they do:
+`lib.rs` declares 49 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -81,6 +81,7 @@ fixtures recorded from the production Python module.
 | `sweep`              | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                                                                           |
 | `github_comments`    | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                                                                                 |
 | `session_stage`     | Shared staging core for conversation-export adapters: retains user-facing messages, chunks text at paragraph boundaries, and stages each message with stable IDs and source metadata                                                                                                                                 |
+| `muse`               | Muse JSONL conversation-export adapter: reads sorted session exports, accepts flat and text-part messages, and stages them through the shared conversation core                                                                                                                                                 |
 | `trace_ingest`       | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                                                                        |
 
 ### Classification
