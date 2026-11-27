@@ -57,6 +57,7 @@ pub mod batch;
 pub mod bundle;
 pub mod chain;
 pub mod cli;
+mod cli_ocsp;
 pub mod crl;
 pub mod dns;
 pub mod engine;
