@@ -1972,6 +1972,8 @@ export class Edge {
     const verdict = parseQueueTransport(await req.json().catch(() => null));
     if (!verdict) return json({ error: "not a queue-transport verdict" }, 400);
     await this.kv.put(QUEUE_TRANSPORT_KEY, verdict);
+    await this.ready();
+    await this.schedule(await this.config());
     return json({ ok: true });
   }
 
@@ -2277,6 +2279,9 @@ export class Edge {
       // not be told, soon again.
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
+    // Scheduled transport reads are independent of host reports and the
+    // document clock. An untold transition also supplies its own retry.
+    if (await this.transportWanted()) wakes.push(now + ALARM_RETRY_MS);
     if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + this.ownClockMs));
     // The app is connected: this side reads by itself what has gone
     // stale, so there is something to say when it changes.
@@ -2337,6 +2342,16 @@ export class Edge {
     return this.trendsSeen > 0 && now - this.trendsSeen < TRENDS_WATCHED_MS;
   }
 
+  /** A transport transition remains pending until a device takes it.
+   * Unknown verdicts never clear the outage marker or trigger a recovery. */
+  private async transportWanted(): Promise<boolean> {
+    const transport = await this.lastQueueTransport();
+    const told = ((await this.kv.get(QUEUE_TRANSPORT_TOLD_KEY)) as string | undefined) ?? null;
+    if (transportNotifyDecision(transport, told) === "quiet") return false;
+    const status = await this.push.status();
+    return status.devices > 0 && status.classes.trouble;
+  }
+
   /** This side reads something the owner is told about, and a device
    * is there to be told: it has to wake by itself to read it. */
   private async clockWanted(cfg: EdgeConfig | null): Promise<boolean> {
@@ -2371,14 +2386,16 @@ export class Edge {
     // (#13503 slice 1): told once per outage, and its ending said too.
     // The Worker stays the probe; this side is what tells the owner.
     const transport = await this.lastQueueTransport();
-    if (transport) {
+    if (transport && (await this.transportWanted())) {
       const told = ((await this.kv.get(QUEUE_TRANSPORT_TOLD_KEY)) as string | undefined) ?? null;
       const decision = transportNotifyDecision(transport, told);
       if (decision === "notify") {
         try {
           const message = transportMessage(transport);
           const delivery = await this.push.send("trouble", { ...message, url: "/console/" });
-          if (delivery.failed === 0) await this.kv.put(QUEUE_TRANSPORT_TOLD_KEY, transportToldMarker(transport));
+          if (delivery.sent > 0 && delivery.failed === 0) {
+            await this.kv.put(QUEUE_TRANSPORT_TOLD_KEY, transportToldMarker(transport));
+          }
         } catch {
           // Leave the transition pending so a later alarm can retry it.
         }
@@ -2390,7 +2407,7 @@ export class Edge {
             url: "/console/",
             tag: "queue-transport",
           });
-          if (delivery.failed === 0) await this.kv.delete(QUEUE_TRANSPORT_TOLD_KEY);
+          if (delivery.sent > 0 && delivery.failed === 0) await this.kv.delete(QUEUE_TRANSPORT_TOLD_KEY);
         } catch {
           // Leave the transition pending so a later alarm can retry it.
         }

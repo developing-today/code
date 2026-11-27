@@ -13,6 +13,7 @@ import {
   fetchQueueTransport,
   parseQueueTransport,
   QUEUE_TRANSPORT_KEY,
+  QUEUE_TRANSPORT_TOLD_KEY,
   transportMessage,
   transportNeedsAttention,
   transportNotifyDecision,
@@ -158,6 +159,13 @@ describe("transportNotifyDecision", () => {
     expect(transportNotifyDecision(up, null)).toBe("quiet");
   });
 
+  test("missing and unknown verdicts cannot prove recovery", () => {
+    const told = transportToldMarker(down);
+    expect(transportNotifyDecision(null, told)).toBe("quiet");
+    expect(transportNotifyDecision({ ...down, status: "unknown" }, told)).toBe("quiet");
+    expect(transportNotifyDecision({ ...down, status: "unexpected" }, told)).toBe("quiet");
+  });
+
   test("the down message names the outage and the incident", () => {
     const message = transportMessage(down);
     expect(message.title).toBe("Queue broker is down");
@@ -179,7 +187,10 @@ describe("the Edge keeps a transport verdict", () => {
         store.delete(key);
       },
     } as KV;
-    return { edge: new Edge({ kv }), store };
+    const alarms: number[] = [];
+    const now = { at: AT };
+    const edge = new Edge({ kv, now: () => now.at, setAlarm: async (at) => { alarms.push(at); } });
+    return { edge, store, alarms, now };
   }
 
   const verdict: QueueTransport = {
@@ -192,6 +203,94 @@ describe("the Edge keeps a transport verdict", () => {
     incident: null,
     checkedAt: AT,
   };
+
+  const handOver = (edge: Edge, value: QueueTransport) => edge.fetch(
+    new Request("https://pm.internal/internal/queue-transport", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    }),
+  );
+
+  // Oracle: a scheduled verdict alone must drive the notification lifecycle;
+  // no host report, owned document clock, connected app or other alarm exists.
+  async function notificationEdge(devices = 1) {
+    const w = makeEdge();
+    const status = await w.edge.push.status();
+    w.edge.push.status = async () => ({ ...status, devices });
+    const messages: string[] = [];
+    let failed = false;
+    w.edge.push.send = async (_cls, message) => {
+      messages.push(message.title);
+      return { sent: failed ? 0 : devices, gone: 0, failed: failed ? devices : 0 };
+    };
+    return { ...w, messages, fail: (value: boolean) => { failed = value; } };
+  }
+
+  test("a scheduled verdict wakes notifications with devices and no unrelated alarms", async () => {
+    const w = await notificationEdge();
+    expect(w.alarms).toEqual([]);
+    await handOver(w.edge, verdict);
+    expect(w.alarms).toEqual([AT + 60_000]);
+    w.now.at = w.alarms.pop()!;
+    await w.edge.alarm();
+    expect(w.messages).toEqual(["Queue broker is down"]);
+    expect(w.store.get(QUEUE_TRANSPORT_TOLD_KEY)).toBe(transportToldMarker(verdict));
+    expect(w.alarms).toEqual([]);
+    await handOver(w.edge, verdict);
+    expect(w.alarms).toEqual([]);
+
+    await handOver(w.edge, { ...verdict, status: "unknown" });
+    expect(w.alarms).toEqual([]);
+    await w.edge.alarm();
+    expect(w.messages).toEqual(["Queue broker is down"]);
+    expect(w.store.get(QUEUE_TRANSPORT_TOLD_KEY)).toBe(transportToldMarker(verdict));
+
+    await handOver(w.edge, { ...verdict, status: "up", failingSince: null });
+    expect(w.alarms).toEqual([w.now.at + 60_000]);
+    w.alarms.length = 0;
+    await w.edge.alarm();
+    expect(w.messages).toEqual(["Queue broker is down", "Queue broker is back"]);
+    expect(w.store.has(QUEUE_TRANSPORT_TOLD_KEY)).toBe(false);
+    expect(w.alarms).toEqual([]);
+  });
+
+  test("a failed outage or recovery push schedules its own retry", async () => {
+    const w = await notificationEdge();
+    await handOver(w.edge, verdict);
+    w.alarms.length = 0;
+    w.fail(true);
+    await w.edge.alarm();
+    expect(w.store.has(QUEUE_TRANSPORT_TOLD_KEY)).toBe(false);
+    expect(w.alarms).toEqual([AT + 60_000]);
+    w.now.at = w.alarms.pop()!;
+    w.fail(false);
+    await w.edge.alarm();
+    expect(w.store.get(QUEUE_TRANSPORT_TOLD_KEY)).toBe(transportToldMarker(verdict));
+    expect(w.alarms).toEqual([]);
+
+    await handOver(w.edge, { ...verdict, status: "up", failingSince: null });
+    w.alarms.length = 0;
+    w.fail(true);
+    await w.edge.alarm();
+    expect(w.store.has(QUEUE_TRANSPORT_TOLD_KEY)).toBe(true);
+    expect(w.alarms).toEqual([w.now.at + 60_000]);
+    w.now.at = w.alarms.pop()!;
+    w.fail(false);
+    await w.edge.alarm();
+    expect(w.store.has(QUEUE_TRANSPORT_TOLD_KEY)).toBe(false);
+    expect(w.alarms).toEqual([]);
+  });
+
+  test("without devices a verdict neither wakes nor marks an outage as told", async () => {
+    const w = await notificationEdge(0);
+    await handOver(w.edge, verdict);
+    expect(w.alarms).toEqual([]);
+    await w.edge.alarm();
+    expect(w.messages).toEqual([]);
+    expect(w.store.has(QUEUE_TRANSPORT_TOLD_KEY)).toBe(false);
+    expect(w.alarms).toEqual([]);
+  });
 
   test("what the stateless part hands over is what is kept", async () => {
     const { edge, store } = makeEdge();

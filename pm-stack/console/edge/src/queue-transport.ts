@@ -117,7 +117,8 @@ export function transportNotifyDecision(
   told: string | null,
 ): "notify" | "recovered" | "quiet" {
   if (!transport || !transportNeedsAttention(transport)) {
-    return told ? "recovered" : "quiet";
+    // A missing or unknown verdict is not evidence the broker recovered.
+    return transport?.status === "up" && told ? "recovered" : "quiet";
   }
   const marker = transport.failingSince ?? transport.status;
   return told === marker ? "quiet" : "notify";
