@@ -226,7 +226,7 @@ fn concurrent_document_edits_refuse_stale_decisions_and_preserve_history() {
             T0 + 2,
         )
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         surfaces.edit_document(
             &registry,
             &actor(3, "participant"),
@@ -238,7 +238,7 @@ fn concurrent_document_edits_refuse_stale_decisions_and_preserve_history() {
             T0 + 3,
         ),
         Err(SurfaceError::StaleDecision(_))
-    );
+    ));
 
     let view = surfaces
         .document(&registry, &actor(1, "participant"), "notes", T0 + 4)
@@ -330,7 +330,7 @@ fn edit_with_retry_reconciles_after_a_concurrent_writer_wins() {
             rejections: 1
         }
     );
-    let surfaces = host.into_surfaces();
+    let mut surfaces = host.into_surfaces();
     let final_view = surfaces
         .document(&registry, &actor(1, "participant"), "retry-notes", T0 + 2)
         .unwrap();
