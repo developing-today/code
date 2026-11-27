@@ -254,13 +254,23 @@ let
         cargoBuildFlags = cargoFlags;
         inherit doCheck;
 
+        # Static (musl) builds need an OpenSSL the openssl-sys build
+        # script can link: fleet-cert's PKCS#12 boundary made
+        # `openssl` a mandatory workspace dependency, and the static
+        # variants' workspace-wide check phase compiles it for
+        # x86_64-unknown-linux-musl (code#16152). pkgsStatic carries
+        # static-only OpenSSL; OPENSSL_STATIC selects the archives
+        # explicitly and makes the headers available to openssl-sys.
+        nativeBuildInputs = lib.optionals static [ pkgsStatic.openssl ];
+        buildInputs = lib.optionals static [ pkgsStatic.openssl ];
+
         # Same check-phase HOME fix as the crane path above (#6400).
         preCheck = ''
           export HOME="$TMPDIR/fleet-check-home"
           mkdir -p "$HOME"
         '';
 
-        env = envAttrs;
+        env = envAttrs // lib.optionalAttrs static { OPENSSL_STATIC = "1"; OPENSSL_DIR = pkgsStatic.openssl.out; };
 
         inherit postInstall postFixup;
 
