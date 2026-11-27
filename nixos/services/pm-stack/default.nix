@@ -514,6 +514,11 @@ in
           };
           Service = {
             Type = "oneshot";
+            # #10305: the timer fires every 15 minutes. Leave a minute of
+            # slack so a stalled/backfill pass cannot hold this unit for hours;
+            # completed streams have already persisted their cursors, and the
+            # next tick resumes from the last completed stream.
+            TimeoutStartSec = 14 * 60;
             EnvironmentFile = "${projState}/.env";
             ExecStart = "${projectorReconcile}";
           };
