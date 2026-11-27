@@ -106,6 +106,18 @@ and `--scope system|user` (or $DEPLOY_SCOPE, default system) selecting
 the systemctl scope; user scope exists so the laptop E2E acceptance
 can deploy a harmless service without root.
 
+The Cloudflare slice (#5767) adds the `cloudflare` activation class:
+status reports the version/deployment Cloudflare says is serving
+(queried through the target's deploy app, never inferred from the
+local generation log), deploy publishes the flake-built package
+through that app and appends the provider's version/deployment ids
+to the generation log only after success, and rollback creates a
+deployment of the previous generation's recorded version — after
+verifying it carries the required secret bindings — with no rebuild
+or re-upload. All provider effects sit behind one injectable
+boundary, so tests drive the whole lifecycle with a fake provider
+and never deploy live.
+
 The validation below is the oracle for "well-formed definition": a
 definition is valid iff it carries exactly the §3 fields (plus
 the optional fields named in OPTIONAL_FIELDS below),
@@ -186,7 +198,7 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # this root (system scope); the rendered unit points at the profile's
 # `current` link.
 DEFAULT_PROFILE_BASE = "/nix/var/nix/profiles/per-service"
-ACTIVATION_CLASSES = {"systemd", "launchd", "sandbox"}
+ACTIVATION_CLASSES = {"systemd", "launchd", "sandbox", "cloudflare"}
 
 
 def validate(registry):
@@ -697,6 +709,7 @@ def record_generation(
     result="activated",
     at=None,
     explicit_state=None,
+    extra=None,
 ):
     entries = read_generations(name, explicit_state)
     if generation is None:
@@ -711,6 +724,8 @@ def record_generation(
         "result": result,
         "at": at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if extra:
+        entry.update(extra)
     path = generations_path(name, explicit_state)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
@@ -776,6 +791,39 @@ def plan_deploy(name, defn, entries, base=None):
     # target class has no activation renderer in this slice.
     if defn["class"] not in ACTIVATION_CLASSES:
         return None
+    if defn["class"] == "cloudflare":
+        # Cloudflare has no profile to install into: publishing the
+        # flake package through the target's deploy app is the whole
+        # activation, and the provider's ids join the generation log
+        # only after it succeeds (issue #5767).
+        current, _previous = current_previous(entries)
+        next_id = next_generation_id(entries)
+        steps = [
+            f"build the service package: {defn['package']}",
+            f"publish the flake-built package through the target's deploy "
+            f"app ({defn['entryPoint']}: wrangler deploy from the staged "
+            "package, credentials resolved by name by the app)",
+            "read the serving deployment back from Cloudflare and take "
+            "its version id and deployment id",
+            _health_step(defn),
+        ]
+        if current is not None and current.get("cf_version_id"):
+            steps.append(
+                "on any failure: create a deployment of the recorded "
+                f"version {current['cf_version_id']} at 100% — a provider "
+                "repoint, no rebuild, no re-upload"
+            )
+        else:
+            steps.append(
+                "on any failure: leave the serving deployment untouched "
+                "(no recorded Cloudflare version to flip back to)"
+            )
+        steps.append(
+            f"append generation {next_id} to the generation log for {name} "
+            "with the Cloudflare version id and deployment id (only after "
+            "a successful publish)"
+        )
+        return steps
     link = profile_link(name, base)
     current, _previous = current_previous(entries)
     next_id = next_generation_id(entries)
@@ -838,6 +886,35 @@ def plan_rollback(name, defn, entries, base=None):
             f"only one generation recorded for {name!r}; rollback needs a "
             "previous generation (two generations are always retained, §4.6)"
         )
+    if defn["class"] == "cloudflare":
+        # A Cloudflare rollback repoints the provider at the previous
+        # generation's recorded version: a new deployment of an
+        # existing version, never a rebuild or re-upload. The
+        # version's secret bindings are verified before any mutation
+        # (the check the pkarr/message-bridge deploy apps apply to
+        # --deploy-version, standardized here).
+        version_id = previous.get("cf_version_id")
+        if not version_id:
+            return None, (
+                f"generation {previous['generation']} for {name!r} records no "
+                "Cloudflare version id; rollback needs a recorded provider "
+                "version"
+            )
+        required = ", ".join(defn["secrets"]) if defn["secrets"] else "none required"
+        steps = [
+            f"verify version {version_id} carries the required secret "
+            f"bindings ({required}) — before any mutation",
+            f"create a deployment of version {version_id} at 100% through "
+            "the target's deploy app — no rebuild, no re-upload",
+            "read the serving deployment back from Cloudflare and confirm "
+            f"it serves version {version_id}",
+            _health_step(defn),
+            "on any failure: create a deployment of the current version "
+            f"{current.get('cf_version_id')} at 100%",
+            f"append a rollback event (to generation {previous['generation']}) "
+            f"to the generation log for {name}",
+        ]
+        return steps, None
     link = profile_link(name, base)
     steps = [
         f"repoint the profile {link} at generation {previous['generation']} "
@@ -904,6 +981,296 @@ def format_status(name, defn, entries, health=None):
         verdict = "ok" if ok else "FAILED"
         lines.append(f"health: {defn['healthCheck']} -> {verdict} ({detail})")
     return "\n".join(lines)
+
+
+# --- Cloudflare lifecycle (issue #5767) ----------------------------------
+#
+# Oracle: #5767's remaining acceptance — one full deploy + rollback
+# cycle on a low-risk Worker (cf-container-hello) through this CLI,
+# with the provider version/deployment ids recorded in the generation
+# log. A Worker has no profile to repoint: its serving state is its
+# latest deployment, so status asks the provider what is serving
+# (never the local log, which can be absent or stale), deploy
+# publishes through the target's own deploy app and records the ids
+# the provider reports back, and rollback creates a deployment of
+# the previously recorded version — a provider repoint, never a
+# rebuild or re-upload — after verifying that version still carries
+# the required secret bindings.
+#
+# Every provider effect goes through cloudflare_provider(), which
+# tests replace with a fake. The default provider shells out to the
+# target's deploy app (the entryPoint inside its flake package) with
+# the lifecycle verbs status / deploy / version-bindings / activate,
+# each answering one JSON object on its last stdout line. The app
+# owns credentials — resolved by name at run time, exactly as the
+# phase-2 deploy did — so this CLI never sees a token, and tests
+# perform no live deployment.
+
+
+class CloudflareError(Exception):
+    """A Cloudflare provider step failed; the caller records it."""
+
+
+def _parse_provider_json(out, what):
+    # The deploy app's answer is the last stdout line that is a JSON
+    # object; earlier lines are the app's human progress output.
+    for line in reversed(out.strip().splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise CloudflareError(f"{what}: deploy app returned no JSON object")
+
+
+def _provider_result(out, what):
+    parsed = _parse_provider_json(out, what)
+    if parsed.get("ok") is not True:
+        raise CloudflareError(
+            f"{what}: {parsed.get('error') or 'deploy app reported failure'}"
+        )
+    return parsed
+
+
+class DeployAppCloudflareProvider:
+    """The default Cloudflare provider: the target's own deploy app,
+    invoked with lifecycle verbs via run_cmd (so a missing app is a
+    failed step, never a crash)."""
+
+    def __init__(self, name, defn):
+        self.name = name
+        self.app = os.path.join(defn["package"], defn["entryPoint"])
+
+    def _call(self, verb, *args):
+        what = f"deploy app {verb} for {self.name}"
+        rc, out, err = run_cmd([self.app, verb, *args])
+        if rc != 0:
+            detail = err.strip() or out.strip()
+            raise CloudflareError(f"{what} failed (exit {rc}): {detail}")
+        return _provider_result(out, what)
+
+    @staticmethod
+    def _ids(result, what):
+        version_id = result.get("version_id")
+        deployment_id = result.get("deployment_id")
+        if not version_id or not deployment_id:
+            raise CloudflareError(
+                f"{what}: deploy app did not report a version id and "
+                "deployment id"
+            )
+        return {"version_id": version_id, "deployment_id": deployment_id}
+
+    def serving(self):
+        return self._ids(self._call("status"), f"status for {self.name}")
+
+    def publish(self):
+        return self._ids(self._call("deploy"), f"deploy for {self.name}")
+
+    def version_secret_bindings(self, version_id):
+        result = self._call("version-bindings", version_id)
+        bindings = result.get("secret_bindings")
+        if not isinstance(bindings, list) or not all(
+            isinstance(b, str) for b in bindings
+        ):
+            raise CloudflareError(
+                f"version-bindings for {self.name}: deploy app did not "
+                "report a secret_bindings list"
+            )
+        return bindings
+
+    def activate(self, version_id):
+        result = self._call("activate", version_id)
+        deployment_id = result.get("deployment_id")
+        if not deployment_id:
+            raise CloudflareError(
+                f"activate for {self.name}: deploy app did not report a "
+                "deployment id"
+            )
+        return {"deployment_id": deployment_id}
+
+
+def cloudflare_provider(name, defn):
+    """The provider boundary for one cloudflare target. Tests replace
+    this function with a fake provider; production uses the target's
+    deploy app."""
+    return DeployAppCloudflareProvider(name, defn)
+
+
+def format_cloudflare_status(name, defn, entries, provider):
+    """Status for a cloudflare target. The serving line is the
+    provider's answer — the record of authority — and the local
+    generation log is reported separately as what this CLI last
+    recorded, so a stale or empty log can never masquerade as the
+    serving version."""
+
+    def describe(entry):
+        if entry is None:
+            return "none recorded"
+        text = (
+            f"generation {entry['generation']} (source rev "
+            f"{entry.get('source_rev')}, activated {entry.get('at')} by "
+            f"{entry.get('actor')}, artifact {entry.get('artifact')}"
+        )
+        if entry.get("cf_version_id"):
+            text += (
+                f", cloudflare version {entry['cf_version_id']}, "
+                f"deployment {entry.get('cf_deployment_id')}"
+            )
+        return text + ")"
+
+    current, previous = current_previous(entries)
+    lines = [f"{name}: class={defn['class']} targets={','.join(defn['targets'])}"]
+    try:
+        serving = provider.serving()
+    except CloudflareError as exc:
+        lines.append(f"serving: unavailable ({exc})")
+    else:
+        lines.append(
+            f"serving: version {serving['version_id']} "
+            f"(deployment {serving['deployment_id']}) — reported by Cloudflare"
+        )
+    lines.append(f"recorded current: {describe(current)}")
+    lines.append(f"recorded previous: {describe(previous)}")
+    return "\n".join(lines)
+
+
+def execute_deploy_cloudflare(name, defn, entries, *, state=None, actor=None, provider=None):
+    """Real Cloudflare deploy, in plan_deploy's order. Returns
+    (exit_code, lines). The generation entry — carrying the
+    provider's version and deployment ids — is appended only after
+    the publish succeeds; a failed publish appends a non-folding
+    deploy_failed entry, so current_previous never mistakes it for
+    an activation."""
+    actor = actor or getpass.getuser()
+    provider = provider if provider is not None else cloudflare_provider(name, defn)
+    generation = next_generation_id(entries)
+    artifact = defn["package"]
+
+    def failed(reason):
+        record_generation(
+            name,
+            artifact=artifact,
+            source_rev=_source_rev(),
+            actor=actor,
+            action="deploy_failed",
+            generation=generation,
+            result=f"failed: {reason}",
+            explicit_state=state,
+        )
+        return 1, [f"deploy {name}: FAILED: {reason}"]
+
+    try:
+        published = provider.publish()
+    except CloudflareError as exc:
+        return failed(str(exc))
+    if defn["healthCheck"] is not None:
+        ok, detail = wait_health(defn["healthCheck"], health_timeout(defn))
+        if not ok:
+            return failed(f"health check failed: {detail}")
+    entry = record_generation(
+        name,
+        artifact=artifact,
+        source_rev=_source_rev(),
+        actor=actor,
+        action="deploy",
+        generation=generation,
+        result="activated",
+        explicit_state=state,
+        extra={
+            "cf_version_id": published["version_id"],
+            "cf_deployment_id": published["deployment_id"],
+        },
+    )
+    return 0, [
+        f"deploy {name}: generation {entry['generation']} activated "
+        f"(cloudflare version {published['version_id']}, "
+        f"deployment {published['deployment_id']})"
+    ]
+
+
+def execute_rollback_cloudflare(name, defn, entries, *, state=None, actor=None, provider=None):
+    """Real Cloudflare rollback: verify the previous generation's
+    recorded version carries the definition's required secret
+    bindings BEFORE any mutation, then create a deployment of that
+    version (no rebuild, no re-upload) and confirm the provider
+    serves it. A refusal changes nothing — no deployment is created
+    and no log entry is appended."""
+    actor = actor or getpass.getuser()
+    provider = provider if provider is not None else cloudflare_provider(name, defn)
+    current, previous = current_previous(entries)
+    if current is None or previous is None:
+        _steps, error = plan_rollback(name, defn, entries)
+        return 1, [f"deploy: {error}"]
+    version_id = previous.get("cf_version_id")
+    if not version_id:
+        return 1, [
+            f"deploy: generation {previous['generation']} for {name!r} records "
+            "no Cloudflare version id; nothing to roll back to"
+        ]
+    try:
+        present = provider.version_secret_bindings(version_id)
+    except CloudflareError as exc:
+        return 1, [
+            f"deploy {name} rollback: REFUSED: cannot verify the bindings "
+            f"of version {version_id}: {exc}"
+        ]
+    missing = [s for s in defn["secrets"] if s not in present]
+    if missing:
+        return 1, [
+            f"deploy {name} rollback: REFUSED: version {version_id} is "
+            f"missing required secret binding(s): {', '.join(missing)}"
+        ]
+
+    def failed(reason):
+        record_generation(
+            name,
+            artifact=previous["artifact"],
+            source_rev=_source_rev(),
+            actor=actor,
+            action="rollback_failed",
+            generation=previous["generation"],
+            result=f"failed: {reason}",
+            explicit_state=state,
+        )
+        return 1, [f"deploy {name} rollback: FAILED: {reason}"]
+
+    try:
+        activated = provider.activate(version_id)
+        serving = provider.serving()
+    except CloudflareError as exc:
+        return failed(str(exc))
+    if serving["version_id"] != version_id:
+        return failed(
+            f"Cloudflare serves version {serving['version_id']}, "
+            f"not the rolled-back version {version_id}"
+        )
+    if defn["healthCheck"] is not None:
+        ok, detail = wait_health(defn["healthCheck"], health_timeout(defn))
+        if not ok:
+            return failed(f"health check failed: {detail}")
+    record_generation(
+        name,
+        artifact=previous["artifact"],
+        source_rev=_source_rev(),
+        actor=actor,
+        action="rollback",
+        generation=previous["generation"],
+        result="rolled-back",
+        explicit_state=state,
+        extra={
+            "cf_version_id": version_id,
+            "cf_deployment_id": activated["deployment_id"],
+        },
+    )
+    return 0, [
+        f"deploy {name}: rolled back to generation {previous['generation']} "
+        f"(cloudflare version {version_id}, "
+        f"deployment {activated['deployment_id']})"
+    ]
 
 
 # --- Sandbox manifest + restore (slice 4, issue #5770) ------------------
@@ -2461,7 +2828,17 @@ def cmd_status_all(registry, state, repo):
         except ValueError as exc:
             print(f"deploy: {exc}", file=sys.stderr)
             return 1
-        print(format_status(name, registry[name], entries))
+        if registry[name]["class"] == "cloudflare":
+            print(
+                format_cloudflare_status(
+                    name,
+                    registry[name],
+                    entries,
+                    cloudflare_provider(name, registry[name]),
+                )
+            )
+        else:
+            print(format_status(name, registry[name], entries))
     try:
         entries = read_releases(state)
     except ValueError as exc:
@@ -2645,6 +3022,15 @@ def main(argv):
         print(f"deploy: {exc}", file=sys.stderr)
         return 1
     if action == "status":
+        if defn["class"] == "cloudflare":
+            # The serving version comes from Cloudflare, not the
+            # local generation log (issue #5767).
+            print(
+                format_cloudflare_status(
+                    name, defn, entries, cloudflare_provider(name, defn)
+                )
+            )
+            return 0
         health = None
         if defn["healthCheck"] is not None:
             health = probe_health(defn["healthCheck"])
@@ -2669,12 +3055,19 @@ def main(argv):
             print(
                 f"deploy: activation for class {defn['class']!r} is a different "
                 "slice of the deployment architecture (see issue #5767); this "
-                "slice covers the systemd/launchd/sandbox classes",
+                "slice covers the systemd/launchd/sandbox/cloudflare classes",
                 file=sys.stderr,
             )
             return 2
         if not dry_run:
-            if defn["class"] == "sandbox":
+            if defn["class"] == "cloudflare":
+                code, lines = execute_deploy_cloudflare(
+                    name,
+                    defn,
+                    entries,
+                    state=explicit_state,
+                )
+            elif defn["class"] == "sandbox":
                 code, lines = execute_deploy_sandbox(
                     name,
                     defn,
@@ -2709,7 +3102,14 @@ def main(argv):
         print(f"deploy: {error}", file=sys.stderr)
         return 1
     if not dry_run:
-        if defn["class"] == "sandbox":
+        if defn["class"] == "cloudflare":
+            code, lines = execute_rollback_cloudflare(
+                name,
+                defn,
+                entries,
+                state=explicit_state,
+            )
+        elif defn["class"] == "sandbox":
             code, lines = execute_rollback_sandbox(
                 name,
                 defn,

@@ -236,8 +236,10 @@ class PlanTests(unittest.TestCase):
             self.assertIn("nix-env --profile /profiles/svc --set", text)
 
     def test_deploy_plan_refuses_other_classes(self):
-        cf = dict(DEFN, **{"class": "cloudflare"})
-        self.assertIsNone(deploy.plan_deploy("svc", cf, [], base=BASE))
+        # cloudflare joined the activation classes with the #5767
+        # slice; container remains a class with no renderer here.
+        container = dict(DEFN, **{"class": "container"})
+        self.assertIsNone(deploy.plan_deploy("svc", container, [], base=BASE))
 
     def test_rollback_plan_selects_previous_without_rebuild(self):
         with tempfile.TemporaryDirectory() as state:
