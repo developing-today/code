@@ -1020,10 +1020,13 @@ impl WorldActor {
             WorldCommand::SubmitFormResult {
                 token,
                 session_id,
+                caller_account,
                 result,
                 reply,
             } => {
-                let outcome = self.submit_form_result(token, session_id, result).await;
+                let outcome = self
+                    .submit_form_result(token, session_id, caller_account, result)
+                    .await;
                 let _ = reply.send(outcome);
             }
             WorldCommand::Chat { token, text, reply } => {
@@ -3621,6 +3624,87 @@ mod form_tests {
     }
 
     #[tokio::test]
+    async fn test_form_result_caller_scope_restores_on_every_delivery_outcome() {
+        struct ScopedProgram {
+            account: Option<String>,
+            fail_at: u8,
+            observed: Arc<Mutex<Vec<Option<String>>>>,
+        }
+        impl WorldProgram for ScopedProgram {
+            fn replace_caller_account(&mut self, account: Option<&str>) -> Option<String> {
+                std::mem::replace(&mut self.account, account.map(str::to_owned))
+            }
+            fn update(&mut self, _event: &WorldEvent) -> Result<()> {
+                self.observed.lock().unwrap().push(self.account.clone());
+                match self.fail_at {
+                    1 => anyhow::bail!("update failed"),
+                    2 => Err(id_caps::account_quota::FuelRateRefusal {
+                        limit_per_second: 1,
+                        charged_in_window: 1,
+                        requested_fuel: 1,
+                    }
+                    .into()),
+                    _ => Ok(()),
+                }
+            }
+            fn records(&mut self) -> Result<Option<String>> {
+                self.observed.lock().unwrap().push(self.account.clone());
+                anyhow::ensure!(self.fail_at != 3, "records failed");
+                Ok(None)
+            }
+        }
+
+        // Oracle: the scope invariant holds for both empty and nested caller
+        // contexts, across success, rejection, fuel refusal, records failure,
+        // and the pre-update read-only early return.
+        for previous in [None, Some("outer-account")] {
+            for fail_at in 0..=4 {
+                let observed = Arc::new(Mutex::new(Vec::new()));
+                let (mut actor, _) = form_actor();
+                actor.program = Box::new(ScopedProgram {
+                    account: previous.map(str::to_owned),
+                    fail_at,
+                    observed: Arc::clone(&observed),
+                });
+                actor.acting_account = Some("acct-ada".to_owned());
+                actor.read_only = fail_at == 4;
+                let outcome = actor.deliver_form_result("{}".to_owned(), None).await;
+                assert_eq!(
+                    outcome,
+                    match fail_at {
+                        0 => execution::DeliveryOutcome::Delivered,
+                        2 => execution::DeliveryOutcome::FuelRefused,
+                        _ => execution::DeliveryOutcome::Failed,
+                    }
+                );
+                let calls = observed.lock().unwrap().clone();
+                assert_eq!(
+                    calls.len(),
+                    match fail_at {
+                        0 | 3 => 2,
+                        4 => 0,
+                        _ => 1,
+                    }
+                );
+                assert!(
+                    calls
+                        .iter()
+                        .all(|account| account.as_deref() == Some("acct-ada"))
+                );
+                assert_eq!(
+                    actor.program.replace_caller_account(previous),
+                    previous.map(str::to_owned)
+                );
+                // A subsequent host delivery must not inherit the form caller.
+                actor.read_only = false;
+                actor.program_healthy = true;
+                let _ = actor.deliver("{}".to_owned()).await;
+                assert_eq!(observed.lock().unwrap()[calls.len()].as_deref(), previous);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn form_result_correlates_validates_and_keeps_invalid_form_for_re_presentation() {
         let (mut actor, events) = form_actor();
         let form = form(vec![FormField::Choice {
@@ -3643,7 +3727,10 @@ mod form_tests {
         };
         let FormSubmissionStatus::Rejected {
             presentation_token: retry_token,
-        } = actor.submit_form_result(None, None, invalid).await.unwrap()
+        } = actor
+            .submit_form_result(None, None, None, invalid)
+            .await
+            .unwrap()
         else {
             panic!("invalid result must request a re-presentation")
         };
@@ -3674,7 +3761,10 @@ mod form_tests {
                 .clone(),
         };
         assert_eq!(
-            actor.submit_form_result(None, None, valid).await.unwrap(),
+            actor
+                .submit_form_result(None, None, None, valid)
+                .await
+                .unwrap(),
             FormSubmissionStatus::Accepted
         );
         assert!(!actor.pending_forms.contains_key("form-1"));
@@ -3721,7 +3811,12 @@ mod form_tests {
         };
         assert_eq!(
             actor
-                .submit_form_result(Some(capability), Some(crate::world::SessionId(42)), result)
+                .submit_form_result(
+                    Some(capability),
+                    Some(crate::world::SessionId(42)),
+                    None,
+                    result
+                )
                 .await
                 .unwrap(),
             FormSubmissionStatus::Accepted
@@ -3775,7 +3870,7 @@ mod form_tests {
         };
         assert_eq!(
             actor
-                .submit_form_result(Some(capability.clone()), None, result)
+                .submit_form_result(Some(capability.clone()), None, None, result)
                 .await
                 .unwrap(),
             FormSubmissionStatus::Accepted
@@ -3817,7 +3912,7 @@ mod form_tests {
                 .clone(),
         };
         let FormSubmissionStatus::Rejected { presentation_token } = actor
-            .submit_form_result(Some(capability.clone()), None, invalid)
+            .submit_form_result(Some(capability.clone()), None, None, invalid)
             .await
             .unwrap()
         else {
@@ -3834,7 +3929,7 @@ mod form_tests {
         };
         assert!(matches!(
             actor
-                .submit_form_result(Some(capability), None, retry)
+                .submit_form_result(Some(capability), None, None, retry)
                 .await
                 .unwrap(),
             FormSubmissionStatus::Unavailable {
@@ -3870,7 +3965,10 @@ mod form_tests {
                 .clone(),
         };
         assert_eq!(
-            actor.submit_form_result(None, None, valid).await.unwrap(),
+            actor
+                .submit_form_result(None, None, None, valid)
+                .await
+                .unwrap(),
             FormSubmissionStatus::Accepted
         );
         assert_eq!(events.lock().unwrap().len(), 1);
@@ -3941,7 +4039,12 @@ mod form_tests {
             .unwrap()
             .clone(),
         };
-        assert!(actor.submit_form_result(None, None, result).await.is_err());
+        assert!(
+            actor
+                .submit_form_result(None, None, None, result)
+                .await
+                .is_err()
+        );
         assert!(events.lock().unwrap().is_empty());
         assert!(actor.pending_forms.contains_key("form-1"));
     }
@@ -3983,7 +4086,7 @@ mod form_tests {
         };
         assert_eq!(
             actor
-                .submit_form_result(None, None, late_result)
+                .submit_form_result(None, None, None, late_result)
                 .await
                 .unwrap(),
             FormSubmissionStatus::Unavailable {
@@ -4032,7 +4135,10 @@ mod form_tests {
                     .clone(),
             };
             assert_eq!(
-                actor.submit_form_result(None, None, result).await.unwrap(),
+                actor
+                    .submit_form_result(None, None, None, result)
+                    .await
+                    .unwrap(),
                 FormSubmissionStatus::Unavailable {
                     error: "cap_denied",
                     reason: "capability_revoked",
