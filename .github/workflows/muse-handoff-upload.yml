@@ -1,0 +1,177 @@
+name: muse handoff trusted upload
+
+# Stage the exact source on an isolated Worker, verify its Durable Object
+# binding and public behavior, then upload the same source as a production
+# Worker Version. This workflow never deploys the production version.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: muse-handoff-worker-release
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    if: github.ref == 'refs/heads/main'
+    environment: muse-handoff-staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: scripts/muse/handoff/worker
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: scripts/muse/handoff/worker/package-lock.json
+
+      - name: Install pinned cf CLI
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Upload and deploy isolated staging version
+        id: stage
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_STAGING_CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.MUSE_HANDOFF_STAGING_ACCOUNT_ID }}
+          MUSE_HANDOFF_WORKER_NAME: muse-agent-handoff-staging
+          STAGE_WORKERS_DEV_HOST: ${{ vars.MUSE_HANDOFF_STAGING_WORKERS_DEV_HOST }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?Missing staging environment API token}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Missing staging environment account ID}"
+          : "${STAGE_WORKERS_DEV_HOST:?Missing staging environment workers.dev hostname variable}"
+          worker="$MUSE_HANDOFF_WORKER_NAME"
+          tag="stage-${SOURCE_SHA:0:12}"
+          proof_dir="$RUNNER_TEMP/muse-handoff-stage-proof"
+          mkdir -p "$proof_dir"
+          stage_secret_file="$RUNNER_TEMP/muse-handoff-stage-secrets.json"
+          trap 'rm -f "$stage_secret_file"' EXIT
+          node stage-smoke.mjs prepare --secrets-file "$stage_secret_file"
+
+          ./node_modules/.bin/cf -q workers versions create \
+            --worker "$worker" \
+            --tag "$tag" \
+            --message "staging source $SOURCE_SHA" \
+            --secrets-file "$stage_secret_file" \
+            > "$proof_dir/stage-version-response.json"
+          cp .cloudflare/output/v0/workers/default/worker.config.json "$proof_dir/stage-worker-config.json"
+          version_id="$(node release-contract.mjs version-id "$proof_dir/stage-version-response.json")"
+          versions="$(VERSION_ID="$version_id" node -e 'process.stdout.write(JSON.stringify([{version_id:process.env.VERSION_ID,percentage:100}]))')"
+          ./node_modules/.bin/cf -q workers deployments create \
+            --worker "$worker" \
+            --strategy percentage \
+            --versions "$versions" \
+            > "$proof_dir/stage-deployment-response.json"
+          node release-contract.mjs assert-created "$proof_dir/stage-deployment-response.json" "$version_id"
+          ./node_modules/.bin/cf -q workers deployments list --worker "$worker" \
+            > "$proof_dir/stage-active-deployments.json"
+          node release-contract.mjs assert-active "$proof_dir/stage-active-deployments.json" "$version_id"
+
+          stage_url="https://${STAGE_WORKERS_DEV_HOST}"
+          node stage-smoke.mjs verify \
+            --base-url "$stage_url" \
+            --secrets-file "$stage_secret_file" \
+            --source-sha "$SOURCE_SHA" \
+            --version-id "$version_id" \
+            --proof-file "$proof_dir/stage-smoke.json"
+          node release-contract.mjs stage-proof \
+            "$SOURCE_SHA" \
+            "$proof_dir/stage-version-response.json" \
+            "$proof_dir/stage-deployment-response.json" \
+            "$proof_dir/stage-active-deployments.json" \
+            "$proof_dir/stage-worker-config.json" \
+            "$proof_dir/stage-smoke.json" \
+            "$proof_dir/stage-proof.json"
+          printf 'Staging version ID: %s\nSource SHA: %s\nStaging create, claim, and replay smoke passed.\n' \
+            "$version_id" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: muse-handoff-stage-${{ github.run_id }}
+          path: ${{ runner.temp }}/muse-handoff-stage-proof/
+          if-no-files-found: error
+          retention-days: 30
+
+  upload-production-version:
+    needs: stage
+    if: github.ref == 'refs/heads/main'
+    environment: muse-handoff-production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: scripts/muse/handoff/worker
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: scripts/muse/handoff/worker/package-lock.json
+
+      - name: Install pinned cf CLI
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: muse-handoff-stage-${{ github.run_id }}
+          path: ${{ runner.temp }}/muse-handoff-stage-proof/
+
+      - name: Capture production baseline and upload exact version
+        id: upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_PRODUCTION_CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.MUSE_HANDOFF_PRODUCTION_ACCOUNT_ID }}
+          MUSE_HANDOFF_WORKER_NAME: muse-agent-handoff
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?Missing production environment API token}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Missing production environment account ID}"
+          release_dir="$RUNNER_TEMP/muse-handoff-release"
+          mkdir -p "$release_dir"
+          cp "$RUNNER_TEMP/muse-handoff-stage-proof/"* "$release_dir/"
+          cp wrangler.jsonc "$release_dir/wrangler.jsonc"
+
+          ./node_modules/.bin/cf -q workers deployments list --worker muse-agent-handoff \
+            > "$release_dir/production-baseline.json"
+          node release-contract.mjs snapshot "$release_dir/production-baseline.json" \
+            > "$release_dir/production-baseline-snapshot.json"
+
+          tag="git-${SOURCE_SHA:0:12}"
+          ./node_modules/.bin/cf -q workers versions create \
+            --worker muse-agent-handoff \
+            --tag "$tag" \
+            --message "production candidate from $SOURCE_SHA" \
+            > "$release_dir/production-version-response.json"
+          cp .cloudflare/output/v0/workers/default/worker.config.json "$release_dir/production-worker-config.json"
+          version_id="$(node release-contract.mjs version-id "$release_dir/production-version-response.json")"
+          git -C "$GITHUB_WORKSPACE" archive --format=tar.gz --output="$release_dir/worker-source.tar.gz" \
+            "$SOURCE_SHA" scripts/muse/handoff/worker
+          node release-contract.mjs write-manifest "$release_dir" "$GITHUB_RUN_ID" "$SOURCE_SHA"
+          echo "production_version_id=$version_id" >> "$GITHUB_OUTPUT"
+          printf 'Production candidate version ID: %s\nSource SHA: %s\nNo production deployment was created.\n' \
+            "$version_id" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: muse-handoff-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/muse-handoff-release/
+          if-no-files-found: error
+          retention-days: 30

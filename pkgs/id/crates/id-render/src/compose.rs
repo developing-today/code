@@ -5,15 +5,21 @@
 //! For one target, composition runs in two steps:
 //!
 //! 1. **Conditional blocks are resolved for the target** (#5854 §5:
-//!    include/exclude *before* the cascade). This step is not
-//!    implemented yet, for a stated reason: the #5849 v1 vocabulary
-//!    has no conditional element kind, so a conditional block has no
-//!    source representation to resolve. Coining a syntax here would
-//!    fork the vocabulary record; the stage is ready for it —
-//!    [`TargetSpec`] already carries exactly the target facts §5
-//!    allows predicates to name (target name, form-factor class,
-//!    declared capability flags) — and the exclusion bookkeeping
-//!    lands with the vocabulary addition, not before it.
+//!    include/exclude *before* the cascade). A block is the
+//!    `<conditional>` element (see [`crate::vocabulary::CONDITIONAL`]);
+//!    its predicate is evaluated against the [`TargetSpec`] — exactly
+//!    the target facts §5 allows (target name, form-factor class,
+//!    declared capability flags) — by [`conditional_includes`]. An
+//!    excluded block is dropped and recorded in the report's
+//!    [`CompositionReport::conditional_exclusions`] (the #5855 §2.1
+//!    stage-5 report lists exclusions; nothing is silent). An
+//!    included block's children are spliced into the parent's
+//!    children, so the resolved IR never holds a conditional node and
+//!    the lowering stages need no case for one. Spliced children keep
+//!    the block in their document path
+//!    (`…/page[0]/conditional[0]/text[0]`), so a path names the same
+//!    element on every target and the block's own index counts among
+//!    its siblings whether or not it renders.
 //! 2. **The #5854 cascade runs** (§2.1, low → high): platform
 //!    defaults (layer 1, the lowering stage's concern — compose
 //!    records nothing for it) → theme/token values (layer 2: values
@@ -22,14 +28,18 @@
 //!    style overrides, then presentation overrides per #5853) →
 //!    raw CSS (layer 5, web target only).
 //!
-//! Everything the cascade consumes beyond the validated IR is
-//! *data* supplied by the caller ([`ComposeData`]): the assertion
-//! sets (the `assert` slot's grammar is #5850's and is still
-//! carried opaquely by stages 1–2, per #5855 assumption A2), the
+//! Layer 3 has two inputs. The first is the source itself: each
+//! element's `assert` slot, validated against the #5850
+//! vocabulary by stage 2, enters as assertions at instance
+//! specificity — the slot binds to this element instance in the
+//! one source (#5854 §2.2). The second is *data* supplied by the
+//! caller ([`ComposeData`]): further assertion sets, the
 //! override map, and the theme tables. Elements are addressed by
 //! their document path (see [`element_path`]), a deterministic
 //! address derived from the IR itself — no source syntax is
-//! invented for bindings.
+//! invented for bindings. (#5855 assumption A2 carried the slot
+//! opaquely until #5850 settled; the record has settled and the
+//! deferral is discharged.)
 //!
 //! The output is the resolved IR for the one target
 //! ([`ComposedDocument`]): every element carries its final
@@ -51,6 +61,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::assertion_vocabulary;
 use crate::{BuildError, Document, Element, Node, RawRegion, Span};
 
 /// The facts about one target that composition may consult: the
@@ -271,6 +282,63 @@ pub struct CompositionReport {
     /// Elements whose appearance is governed by a presentation
     /// override: (element path, presentation name).
     pub presentation_overrides: Vec<(String, String)>,
+    /// Conditional blocks excluded for this target, in source order
+    /// (#5854 §5, #5855 §2.1 stage 5).
+    pub conditional_exclusions: Vec<ConditionalExclusion>,
+}
+
+/// One conditional block a target excluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalExclusion {
+    /// Document path of the `<conditional>` element.
+    pub element_path: String,
+    /// Where the block starts.
+    pub span: Span,
+    /// The block's predicate as written, e.g. `target="web"`.
+    pub predicate: String,
+}
+
+/// Whether the conditional block `el` is included on `target`
+/// (#5854 §5): every predicate attribute present must list a fact of
+/// the target — its name (`target`), its form-factor class
+/// (`form-factor`), or one of its declared capability flags
+/// (`capability`). Within one attribute any listed name matches.
+/// The predicate is total and deterministic: it reads target facts
+/// only. A block with no predicate attribute fails validation, and is
+/// treated as excluded here rather than as unconditional.
+#[must_use]
+pub fn conditional_includes(el: &Element, target: &TargetSpec) -> bool {
+    let mut any = false;
+    for attr in crate::vocabulary::PREDICATE_ATTRS {
+        if !el.has_attr(attr) {
+            continue;
+        }
+        any = true;
+        let mut terms = el.attr(attr).unwrap_or("").split_whitespace();
+        let hit = match *attr {
+            "target" => terms.any(|t| t == target.name),
+            "form-factor" => terms.any(|t| t == target.form_factor),
+            _ => terms.any(|t| target.capabilities.contains(t)),
+        };
+        if !hit {
+            return false;
+        }
+    }
+    any
+}
+
+/// A conditional block's predicate as written, for reports:
+/// `target="web" capability="pointer"`.
+#[must_use]
+pub fn predicate_text(el: &Element) -> String {
+    crate::vocabulary::PREDICATE_ATTRS
+        .iter()
+        .filter_map(|attr| {
+            el.has_attr(attr)
+                .then(|| format!("{attr}=\"{}\"", el.attr(attr).unwrap_or("")))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The output of stage 3 for one target: the resolved IR plus
@@ -414,8 +482,8 @@ where
 
 /// Stage 3 of the #5855 pipeline: compose a validated document
 /// for one target, executing the #5854 cascade over the supplied
-/// data. See the module documentation for the slice boundaries
-/// (conditional blocks await a #5849 vocabulary representation).
+/// data, after resolving conditional blocks for the target (#5854
+/// §5). See the module documentation.
 ///
 /// # Errors
 ///
@@ -487,12 +555,47 @@ impl ComposeCx<'_> {
         self.element_paths.insert(path.to_string());
         let mut by_property: BTreeMap<String, ResolvedProperty> = BTreeMap::new();
 
-        // Layer 3: assertions for this element.
+        // Layer 3: assertions for this element — the element's
+        // own `assert` slot at instance specificity, plus the
+        // caller-supplied data assertions bound to this path.
+        // The slot was validated by stage 2; a document that
+        // reaches compose unvalidated and carries a bad slot
+        // fails here with the same located errors rather than
+        // silently dropping the assertions.
+        let mut source_assertions: Vec<AssertionInput> = Vec::new();
+        if el.has_attr("assert") {
+            match el.attr("assert") {
+                Some(value) => match assertion_vocabulary::parse_assert_slot(value) {
+                    Ok(pairs) => {
+                        source_assertions.extend(pairs.into_iter().map(|pair| AssertionInput {
+                            element_path: path.to_string(),
+                            property: pair.dimension,
+                            token: pair.token,
+                            specificity: Specificity::Instance,
+                        }));
+                    }
+                    Err(problems) => {
+                        for problem in problems {
+                            self.errors
+                                .push(BuildError::new(problem, el.span.line, el.span.col));
+                        }
+                    }
+                },
+                None => {
+                    self.errors.push(BuildError::new(
+                        format!("attribute `assert` on <{}> requires a value", el.name),
+                        el.span.line,
+                        el.span.col,
+                    ));
+                }
+            }
+        }
         let assertions: Vec<&AssertionInput> = self
             .data
             .assertions
             .iter()
             .filter(|a| a.element_path == path)
+            .chain(source_assertions.iter())
             .collect();
         let mut properties: BTreeSet<String> = BTreeSet::new();
         for a in &assertions {
@@ -520,7 +623,8 @@ impl ComposeCx<'_> {
         // `kind="css"` region among this element's children is
         // layer-5 input for this element.
         let mut raw_css: Vec<CssDeclaration> = Vec::new();
-        for child in &el.children {
+        let included = self.included_children(el, path);
+        for (child, _) in &included {
             let Node::Element(raw_el) = child else {
                 continue;
             };
@@ -679,10 +783,10 @@ impl ComposeCx<'_> {
             }
         }
 
-        // Children, with per-kind sibling indices for paths.
+        // Children (conditional blocks already resolved for the
+        // target by `included_children`).
         let mut children = Vec::new();
-        let mut kind_counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for child in &el.children {
+        for (child, child_path) in included {
             match child {
                 Node::Element(child_el)
                     if child_el.name == "raw" && child_el.attr("kind") == Some("css") =>
@@ -691,13 +795,7 @@ impl ComposeCx<'_> {
                     // input; not part of the resolved IR.
                 }
                 Node::Element(child_el) => {
-                    let idx = {
-                        let n = kind_counts.entry(child_el.name.as_str()).or_insert(0);
-                        let i = *n;
-                        *n += 1;
-                        i
-                    };
-                    let child_path = element_path(path, &child_el.name, idx);
+                    let child_path = child_path.unwrap_or_default();
                     children.push(ComposedNode::Element(
                         self.compose_element(child_el, &child_path),
                     ));
@@ -719,6 +817,54 @@ impl ComposeCx<'_> {
             properties: by_property.into_values().collect(),
             children,
         }
+    }
+
+    /// The children of `el` that render on this target, each with
+    /// its document path (elements only): per-kind sibling indices,
+    /// conditional blocks counted among their siblings, an included
+    /// block's children spliced in under the block's path, and an
+    /// excluded block recorded in the report (#5854 §5).
+    fn included_children<'a>(
+        &mut self,
+        el: &'a Element,
+        path: &str,
+    ) -> Vec<(&'a Node, Option<String>)> {
+        let mut out = Vec::new();
+        let mut kind_counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for child in &el.children {
+            let Node::Element(child_el) = child else {
+                out.push((child, None));
+                continue;
+            };
+            let idx = {
+                let n = kind_counts.entry(child_el.name.as_str()).or_insert(0);
+                let i = *n;
+                *n += 1;
+                i
+            };
+            let child_path = element_path(path, &child_el.name, idx);
+            if child_el.name != crate::vocabulary::CONDITIONAL {
+                out.push((child, Some(child_path)));
+                continue;
+            }
+            if conditional_includes(child_el, self.target) {
+                out.extend(self.included_children(child_el, &child_path));
+            } else if !self
+                .report
+                .conditional_exclusions
+                .iter()
+                .any(|e| e.element_path == child_path)
+            {
+                self.report
+                    .conditional_exclusions
+                    .push(ConditionalExclusion {
+                        element_path: child_path,
+                        span: child_el.span,
+                        predicate: predicate_text(child_el),
+                    });
+            }
+        }
+        out
     }
 
     /// Builds the resolved property for a token winner, resolving

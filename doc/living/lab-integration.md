@@ -1,6 +1,6 @@
 # Lab integration (P9)
 
-> **DRAFT — drafted by the fleet 2026-11-12 from Drew's reprioritization order; awaiting Drew's ratification. Not Drew's own words.**
+> **DRAFT — fleet-authored baseline, first drafted 2026-11-12 and expanded 2026-11-24. Not Drew's own words or ratification.** Follow-on planning may use it provisionally; each implementation slice must resolve its own listed questions and meet its proof criteria. See the [dated design record](../2026-11-24T16-22-01Z_design_p9_lab-integration/2026-11-24T16-22-01Z_design_p9_lab-integration.md).
 
 - Living document · Status: DRAFT · Program: P9 Lab build-out + integration (band 40) · Register entry: X5 · Tracking epic: developing-today/code#8805 · Program epic: developing-today/code#1817 · Milestone: "Lab cluster" · Label: `epic/lab-cluster`
 
@@ -39,7 +39,7 @@ Integration proceeds in phases; each phase names what lands, where, and the proo
 
 ## Deliverables
 
-- [ ] This design ratified or amended by Drew.
+- [ ] This provisional design is amended when implementation evidence or requirements change it; authorship remains clearly distinguished from Drew's decisions.
 - [ ] Phase 0 exit: rebuild-from-config proof on one node, recorded.
 - [ ] Phase 1 exit: ID app live on the cluster via FluxCD, dual-exposed (tunnel + tailnet), with the access paths documented.
 - [ ] Phase 2: per-service landing list (Atlas serve, queue workers, PM surfaces, build overflow) each with owner, order, and the week-on-cluster proof.

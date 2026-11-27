@@ -1,4 +1,4 @@
-//! Stage 2, vocabulary half — validate (#5855 §2.1).
+//! Stage 2 — validate (#5855 §2.1).
 //!
 //! Checks a parsed document against the #5849 vocabulary, consumed as
 //! data from [`crate::vocabulary`]: required and allowed attributes,
@@ -8,11 +8,16 @@
 //! Every violation is a build error with a source location; all
 //! violations are collected before the build fails.
 //!
-//! Not checked here, by design: the content of the `assert` slot. Its
-//! grammar and role vocabulary are #5850's and unsettled; #5855
-//! assumption A2 has the pipeline carry assertions opaquely until the
-//! vocabulary lands as versioned data.
+//! The assertion half of the stage checks the `assert` slot against
+//! the #5850 assertion vocabulary, consumed as versioned data from
+//! [`crate::assertion_vocabulary`]: the slot's (dimension,
+//! role-value) grammar, the closed dimension set and token domains,
+//! the no-raw-values rule (#5850 invariant 1), and the
+//! one-pair-per-dimension rule (#5854 §2.2). #5855 assumption A2
+//! carried the slot opaquely until #5850 settled; it has settled,
+//! so the slot is checked here like every other vocabulary input.
 
+use crate::assertion_vocabulary;
 use crate::vocabulary::{self, ElementSpec, FIELD_CONSTRAINT_KINDS};
 use crate::{BuildError, Document, Element, Node};
 
@@ -32,7 +37,7 @@ pub(crate) fn validate(doc: &Document) -> Result<(), Vec<BuildError>> {
         )),
         None => {}
     }
-    validate_element(&doc.root, None, &[], &mut errors);
+    validate_element(&doc.root, None, &[], false, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -40,10 +45,17 @@ pub(crate) fn validate(doc: &Document) -> Result<(), Vec<BuildError>> {
     }
 }
 
+/// `parent` is the nearest enclosing *rendered* element: a
+/// conditional block is transparent to the #5849 §4.5 child rules,
+/// so its children are validated as children of the block's parent,
+/// and `siblings` is that parent's effective child list (see
+/// [`effective_children`]). `in_conditional` is set inside a block,
+/// where a second block is a nesting error (#5854 §5).
 fn validate_element(
     el: &Element,
     parent: Option<&str>,
-    siblings: &[Node],
+    siblings: &[&Node],
+    in_conditional: bool,
     errors: &mut Vec<BuildError>,
 ) {
     let Some(spec) = vocabulary::lookup(&el.name) else {
@@ -55,15 +67,106 @@ fn validate_element(
         return;
     };
 
+    if el.name == vocabulary::CONDITIONAL {
+        check_attributes(el, spec, parent, siblings, errors);
+        check_conditional(el, parent, in_conditional, errors);
+        for child in &el.children {
+            if let Node::Element(child_el) = child {
+                validate_element(child_el, parent, siblings, true, errors);
+            }
+        }
+        return;
+    }
+
     check_attributes(el, spec, parent, siblings, errors);
+    check_assert_slot(el, errors);
     check_enums(el, spec, errors);
     check_constraint_applicability(el, errors);
     check_child_rules(el, parent, errors);
 
+    let children = effective_children(el);
     for child in &el.children {
         if let Node::Element(child_el) = child {
-            validate_element(child_el, Some(&el.name), &el.children, errors);
+            validate_element(child_el, Some(&el.name), &children, in_conditional, errors);
         }
+    }
+}
+
+/// An element's children with every conditional block replaced by
+/// the block's own children: the child list the #5849 §4.5 rules
+/// see, since a block is transparent to them.
+pub(crate) fn effective_children(el: &Element) -> Vec<&Node> {
+    let mut out = Vec::new();
+    for child in &el.children {
+        match child {
+            Node::Element(child_el) if child_el.name == vocabulary::CONDITIONAL => {
+                out.extend(effective_children(child_el));
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The #5854 §5 rules on the block itself: a predicate of target
+/// facts only (at least one predicate attribute, each a non-empty
+/// list of names), no `assert` or `show` slot, no nesting, and never
+/// the document root.
+fn check_conditional(
+    el: &Element,
+    parent: Option<&str>,
+    in_conditional: bool,
+    errors: &mut Vec<BuildError>,
+) {
+    let at = |message: String| BuildError::new(message, el.span.line, el.span.col);
+    if parent.is_none() {
+        errors.push(at(
+            "<conditional> cannot be the document root; it sits inside the one shared source (#5854 §5)"
+                .to_string(),
+        ));
+    }
+    if in_conditional {
+        errors.push(at(
+            "conditional blocks do not nest in v1; merge the predicates into one block (#5854 §5)"
+                .to_string(),
+        ));
+    }
+    for slot in vocabulary::UNIVERSAL_ATTRS {
+        if el.has_attr(slot) {
+            errors.push(at(format!(
+                "the `{slot}` slot does not apply to <conditional>: a block is resolved per target before rendering, and its predicate names target facts only, never state (#5854 §5)"
+            )));
+        }
+    }
+    let mut any_predicate = false;
+    for attr in vocabulary::PREDICATE_ATTRS {
+        if !el.has_attr(attr) {
+            continue;
+        }
+        any_predicate = true;
+        let terms: Vec<&str> = el.attr(attr).unwrap_or("").split_whitespace().collect();
+        if terms.is_empty() {
+            errors.push(at(format!(
+                "predicate `{attr}` on <conditional> needs at least one name (#5854 §5)"
+            )));
+        }
+        for term in terms {
+            if !is_name_path(term) || term.contains('.') {
+                errors.push(at(format!(
+                    "predicate `{attr}` on <conditional> lists names, not expressions: \"{term}\" (#5854 §5: no arbitrary expressions)"
+                )));
+            }
+        }
+    }
+    if !any_predicate {
+        errors.push(at(format!(
+            "<conditional> needs a predicate: one or more of {} (#5854 §5)",
+            vocabulary::PREDICATE_ATTRS
+                .iter()
+                .map(|a| format!("`{a}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
 }
 
@@ -71,7 +174,7 @@ fn check_attributes(
     el: &Element,
     spec: &ElementSpec,
     _parent: Option<&str>,
-    siblings: &[Node],
+    siblings: &[&Node],
     errors: &mut Vec<BuildError>,
 ) {
     for (name, value) in &el.attrs {
@@ -157,7 +260,45 @@ fn check_attributes(
     }
 }
 
-fn is_sole_section(siblings: &[Node]) -> bool {
+/// The assertion half of stage 2: the `assert` slot checked
+/// against the #5850 vocabulary (consumed as data from
+/// [`crate::assertion_vocabulary`]). Unknown dimensions and tokens
+/// fail with suggestions, in the #5849 idiom; raw values fail
+/// under #5850 invariant 1; a dimension asserted twice in one
+/// slot fails under #5854 §2.2. The slot does not apply to a
+/// `<raw>` region: raw content is verbatim authored source, not
+/// a rendered registry element (#5849 §3.1), so an assertion
+/// there could never be honoured — it is an error, not a silent
+/// drop.
+fn check_assert_slot(el: &Element, errors: &mut Vec<BuildError>) {
+    if !el.has_attr("assert") {
+        return;
+    }
+    if el.name == "raw" {
+        errors.push(BuildError::new(
+            "the `assert` slot does not apply to a <raw> region: raw content is \
+             verbatim authored source, not a rendered element (#5849 §3.1)",
+            el.span.line,
+            el.span.col,
+        ));
+        return;
+    }
+    let Some(value) = el.attr("assert") else {
+        errors.push(BuildError::new(
+            format!("attribute `assert` on <{}> requires a value", el.name),
+            el.span.line,
+            el.span.col,
+        ));
+        return;
+    };
+    if let Err(problems) = assertion_vocabulary::parse_assert_slot(value) {
+        for problem in problems {
+            errors.push(BuildError::new(problem, el.span.line, el.span.col));
+        }
+    }
+}
+
+fn is_sole_section(siblings: &[&Node]) -> bool {
     siblings
         .iter()
         .filter(|n| matches!(n, Node::Element(e) if e.name == "section"))
@@ -275,8 +416,9 @@ fn check_child_rules(el: &Element, parent: Option<&str>, errors: &mut Vec<BuildE
         "master-detail" => Some(&["list", "detail"]),
         _ => None,
     };
+    let children = effective_children(el);
     if let Some(allowed) = allowed {
-        for child in &el.children {
+        for child in &children {
             if let Node::Element(child_el) = child {
                 if !allowed.contains(&child_el.name.as_str()) {
                     errors.push(BuildError::new(
@@ -296,13 +438,11 @@ fn check_child_rules(el: &Element, parent: Option<&str>, errors: &mut Vec<BuildE
 
     // master-detail contains exactly one list and exactly one detail.
     if el.name == "master-detail" {
-        let lists = el
-            .children
+        let lists = children
             .iter()
             .filter(|n| matches!(n, Node::Element(e) if e.name == "list"))
             .count();
-        let details = el
-            .children
+        let details = children
             .iter()
             .filter(|n| matches!(n, Node::Element(e) if e.name == "detail"))
             .count();

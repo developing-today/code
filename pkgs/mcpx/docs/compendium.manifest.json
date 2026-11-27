@@ -78,6 +78,12 @@
       "order": 11,
       "title": "Document history",
       "source": "docs/archive.md"
+    },
+    {
+      "id": "research-program",
+      "order": 12,
+      "title": "MCPX research and implementation plan",
+      "source": "docs/program/"
     }
   ],
   "entries": [
@@ -849,28 +855,28 @@
       "chapter": null,
       "role": "not-compendium",
       "lines": 109,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/install.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 68,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/quick-start.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 57,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/now-what.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 30,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/binary.md",
@@ -996,7 +1002,7 @@
       "chapter": "designs",
       "role": "chapter-source",
       "lines": 148,
-      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server \u2014 the level-2 guide (#4821)"
+      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server — the level-2 guide (#4821)"
     },
     {
       "path": "docs/opencode-plugin-v2.md",
@@ -1018,6 +1024,13 @@
       "role": "chapter-source",
       "lines": 155,
       "note": "scripts: the unit of work mcpx runs, their shape and lifecycle"
+    },
+    {
+      "path": "docs/script-generate.md",
+      "chapter": "proposed",
+      "role": "chapter-source",
+      "lines": 294,
+      "note": "contract for the script-side generate surface (#14183, split from #1925): call surface, languages, model selection, request/response, budgets, errors, readiness verdict"
     },
     {
       "path": "docs/decisions/0005-release-pipeline.md",
@@ -1076,11 +1089,151 @@
       "note": "docs-history change fragment for #1864 (ask-path cancel); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
+      "path": "docs/changes/public-client-generated-table.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #14072 (generated public-client table); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
       "path": "docs/index.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 197,
-      "note": "the docs site home page (id: mcpx-home): level-1 site content (#1878), rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "the docs site home page (id: mcpx-home): level-1 site content (#1878), rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/coverage.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 213,
+      "note": "the mechanical coverage proof: the binary's dumped surface set against the book, dimension by dimension (bookwright coverage run, 2026-11-23)"
+    },
+    {
+      "path": "docs/deploying.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 95,
+      "note": "how this book is deployed: the repository's single Pages site, the four books it carries, and the build gates (bookwright coverage run, 2026-11-23)"
+    },
+    {
+      "path": "docs/glossary.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 126,
+      "note": "the book's vocabulary in one place: reader reference apparatus, kept with the docs-maintenance chapter (bookwright coverage run, 2026-11-23)"
+    },
+    {
+      "path": "docs/program/overview.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 24,
+      "note": "MCPX research and implementation plan for program #13264"
+    },
+    {
+      "path": "docs/program/lifecycle.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 36,
+      "note": "Server onboarding and process ownership for program #13264"
+    },
+    {
+      "path": "docs/program/hosted.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 28,
+      "note": "Hosted servers, protocol revisions and release channels for program #13264"
+    },
+    {
+      "path": "docs/program/settings.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 84,
+      "note": "Effect probes and test venues for program #13264"
+    },
+    {
+      "path": "docs/program/policy.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 38,
+      "note": "Enforcing client ceilings and recording tool calls for program #13264"
+    },
+    {
+      "path": "docs/program/interop.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 28,
+      "note": "Connecting Fleet, Atlas, ID and agent harnesses for program #13264"
+    },
+    {
+      "path": "docs/program/libraries-models.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 44,
+      "note": "Public libraries and model operations for program #13264"
+    },
+    {
+      "path": "docs/program/publication.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 49,
+      "note": "Auditing the rendered book for program #13264"
+    },
+    {
+      "path": "docs/program/runtime.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 20,
+      "note": "Laptop runtime and verification venues for program #13264"
+    },
+    {
+      "path": "docs/program/issue-map.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 201,
+      "note": "MCPX issue map for program #13264"
+    },
+    {
+      "path": "docs/program/high-level-roadmap.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 27,
+      "note": "High-level roadmap for the Code Book programme #13905"
+    },
+    {
+      "path": "docs/worker.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 350,
+      "note": "the door Worker at mcpx.security.cab (#13657): the OAuth/bearer gate, the ns selector enforced at the JSON-RPC layer, the Access and tunnel chain to the laptop bridge, and the door's related work in order"
+    },
+    {
+      "path": "docs/daemon-auth.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 64,
+      "note": "daemon authentication design (#13659 slice 1): per-user keys, capability ceilings, the loopback migration and the door-selector mapping"
+    },
+    {
+      "path": "docs/adapters/claude-code.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 104,
+      "note": "Claude Code adapter feasibility research; findings and assumptions, not an adapter design"
+    },
+    {
+      "path": "docs/record-and-replay.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 73,
+      "note": "transport-boundary call trace capture and deterministic replay design"
+    },
+    {
+      "path": "worker/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 171,
+      "note": "operational readme for the Worker package in pkgs/mcpx/worker; its book chapter is docs/worker.md, which carries the same surface in book form"
     }
   ]
 }

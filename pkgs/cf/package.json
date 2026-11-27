@@ -1,0 +1,74 @@
+{
+  "name": "cf",
+  "version": "1.0.0-beta.20",
+  "description": "The Cloudflare CLI",
+  "keywords": [
+    "ai",
+    "api",
+    "cdn",
+    "cf",
+    "cli",
+    "cloudflare",
+    "d1",
+    "dns",
+    "images",
+    "kv",
+    "pages",
+    "queues",
+    "r2",
+    "stream",
+    "waf",
+    "workers",
+    "zero-trust"
+  ],
+  "homepage": "https://github.com/cloudflare/cf#readme",
+  "bugs": {
+    "url": "https://github.com/cloudflare/cf/issues"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Cloudflare, Inc.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloudflare/cf.git",
+    "directory": "packages/cli"
+  },
+  "bin": {
+    "cf": "./bin/cf",
+    "cloudflare": "./bin/cf"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "LICENSE-APACHE",
+    "LICENSE-MIT"
+  ],
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "imports": {
+    "#commands/*": "./src/commands/*",
+    "#lib/*": "./src/lib/*",
+    "#api": "./src/api/index.ts",
+    "#operations/*": "./src/commands/_generated/_operations/*"
+  },
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./config": {
+      "types": "./dist/config.d.mts",
+      "import": "./dist/config.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@cloudflare/build-output-utils": "0.9.14",
+    "@cloudflare/config": "0.32.1",
+    "@cloudflare/runtime-types": "0.1.14",
+    "blake3-wasm": "2.1.5",
+    "miniflare": "5.20261019.1-beta"
+  },
+  "overrides": {
+    "undici": "7.30.2"
+  },
+  "engines": {
+    "node": "^22.23.0 || ^24.22.0 || ^26.12.0"
+  }
+}

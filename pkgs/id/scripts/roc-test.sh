@@ -25,10 +25,14 @@ if ! command -v roc >/dev/null 2>&1; then
   exit 1
 fi
 echo "roc-test: $(roc version)"
-for module in RocJson Screen Key; do
+for module in RocJson Screen Key Term; do
   echo "=== roc test examples/roc-world/${module}.roc ==="
   roc test "examples/roc-world/${module}.roc"
 done
+echo "=== key-parity: kitty-disambiguate-v1 corpus vs the actual Roc decoder (#787 Slice D) ==="
+bash scripts/key-parity-test.sh
+echo "=== term-parity: paint-primary fixtures vs the actual Roc Term contract (#14861 slice 2) ==="
+bash scripts/term-parity-test.sh
 echo "=== roc-cap-demo: capability-dependent library + app, both negative tests (#5957) ==="
 bash examples/roc-cap-demo/roc-cap-demo-test.sh
 echo "=== roc-import-policy: #5994 section 4 fixture matrix for the import gate (#10027) ==="
@@ -37,4 +41,4 @@ if command -v cargo >/dev/null 2>&1; then
 else
   echo "roc-test: cargo not on PATH - the roc-import-policy fixtures run in the cargo test suite (cargo test -p id-caps --test roc_import_policy); not skipped silently."
 fi
-echo "✓ Roc library expectations passed (RocJson, Screen, Key; roc-cap-demo positive + negative tests)"
+echo "✓ Roc library expectations passed (RocJson, Screen, Key, Term; roc-cap-demo positive + negative tests)"

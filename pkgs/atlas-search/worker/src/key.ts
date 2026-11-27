@@ -9,14 +9,14 @@
  * or space (the same rule the search service applies to its job
  * dedupe).
  *
- * KEY_SCHEMA 2 (#12622): the material gains the resolved
- * disclosure context. Keys change, so entries cached under v1
+ * KEY_SCHEMA 3 (#8625 slice: ceilings): the material gains the
+ * per-agent ceiling. Keys change, so entries cached under v2
  * names are orphaned — never served again, retained per the
  * no-eviction policy (cache_do.ts).
  */
-import { CEILING, MODEL_REV, VEC_TABLE } from "./space";
+import { isCeiling, MODEL_REV, VEC_TABLE, type Ceiling, type DisclosureContext } from "./space";
 
-export const KEY_SCHEMA = 2;
+export const KEY_SCHEMA = 3;
 
 /** Trim, NFC, and collapse every whitespace run to one space. */
 export function normalizeQuery(q: string): string {
@@ -25,17 +25,21 @@ export function normalizeQuery(q: string): string {
 
 export interface KeyParts {
   q: string;
+  /** The ceiling this answer was computed under — part of the key so a
+   * result can never be served to a caller with a lower ceiling. */
+  ceiling: Ceiling;
   /** The resolved disclosure context the answer is bound for. */
-  context: string;
+  context: DisclosureContext;
   k: number;
 }
 
 /** The canonical key material (field order is part of the key). */
 export function keyMaterial(parts: KeyParts): string {
+  if (!isCeiling(parts.ceiling)) throw new Error(`unknown ceiling ${JSON.stringify(parts.ceiling)}`);
   return JSON.stringify({
     v: KEY_SCHEMA,
     q: parts.q,
-    ceiling: CEILING,
+    ceiling: parts.ceiling,
     context: parts.context,
     model_rev: MODEL_REV,
     vec_table: VEC_TABLE,

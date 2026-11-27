@@ -2,7 +2,7 @@
 # events on an authenticated webhook, stores them in D1, and fans
 # them out through a Durable Object per set (keyed by setId).
 #
-# Secrets (wrangler secret put; values never in this file):
+# Worker secrets are managed separately; values never belong in this file.
 #   WEBHOOK_SECRET  shared secret for POST /events and the GET
 #                   read-back endpoints; vaulted in Bitwarden by name
 #                   `cloudflare.decision-events.webhook-secret`.

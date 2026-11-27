@@ -7,7 +7,10 @@
 // VAPID). The key pair is made here on first use and kept in this
 // service's own store; nobody ever handles it.
 import type { Store } from "./store.ts";
+import { timed, unread } from "./timed.ts";
 
+/** How long a push service has to answer one message. */
+const PUSH_SEND_MS = 15_000;
 const enc = new TextEncoder();
 const b64u = (bytes: Uint8Array | ArrayBuffer) => Buffer.from(bytes as ArrayBuffer).toString("base64url");
 
@@ -37,9 +40,16 @@ const concat = (...parts: Uint8Array[]) => {
 };
 
 /** Push services a subscription may name. This server posts to the
- * endpoint a browser gives it, so the endpoint has to be one of these. */
+ * endpoint a browser gives it, so the endpoint has to be one of these.
+ *
+ * Chrome names one of two Google hosts: a released Chrome the first, and
+ * a Chrome that is not on the stable channel (Beta, Dev, Canary, a build
+ * of one's own) the second. Both are in Chromium's
+ * components/push_messaging/push_messaging_constants.cc. Leaving the
+ * second out refuses every such browser when it turns notifications on. */
 const PUSH_HOSTS = [
   /^fcm\.googleapis\.com$/,
+  /^jmt17\.google\.com$/,
   /^([a-z0-9-]+\.)*push\.services\.mozilla\.com$/,
   /^([a-z0-9-]+\.)*notify\.windows\.com$/,
   /^([a-z0-9-]+\.)*push\.apple\.com$/,
@@ -56,10 +66,26 @@ export interface Subscription {
 export const CLASSES = ["replies", "needs", "questions", "trouble"] as const;
 export type Class = (typeof CLASSES)[number];
 
+/** What came of the last notification that was sent: how many devices
+ * the push services took it for, and what a service that refused said.
+ * It is how the owner can tell that notifications arrive without
+ * waiting for one. */
+export interface Delivery {
+  at: string;
+  class: Class | "test";
+  sent: number;
+  gone: number;
+  failed: number;
+  /** The push service's host and its HTTP status (0: it did not answer),
+   * for each device it was not taken for. Never the device's address. */
+  refused: { host: string; status: number }[];
+}
+
 interface PushFile {
   vapid: { publicKey: string; privateJwk: JsonWebKey } | null;
   subscriptions: Subscription[];
   off: Class[];
+  last?: Delivery | null;
 }
 
 export function validSubscription(value: unknown): Subscription | null {
@@ -81,7 +107,12 @@ export function validSubscription(value: unknown): Subscription | null {
   return { endpoint: url.href, keys: { p256dh: v.keys.p256dh, auth: v.keys.auth } };
 }
 
-async function hkdf(salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, length: number): Promise<Uint8Array> {
+async function hkdf(
+  salt: Uint8Array<ArrayBuffer>,
+  ikm: Uint8Array<ArrayBuffer>,
+  info: Uint8Array<ArrayBuffer>,
+  length: number,
+): Promise<Uint8Array<ArrayBuffer>> {
   const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, length * 8));
 }
@@ -111,6 +142,38 @@ export async function encrypt(sub: Subscription, plaintext: Uint8Array): Promise
   header[20] = localPublic.length;
   header.set(localPublic, 21);
   return concat(header, sealed);
+}
+
+/** RFC 8030 section 7.2: a push service takes a message of 4096 bytes
+ * and may refuse a longer one. */
+export const PUSH_LIMIT = 4096;
+/** What sealing adds to the words (see `encrypt`): the salt, the record
+ * size, the length of the key and the key, then one delimiter and the tag. */
+const SEALED_AROUND = 16 + 4 + 1 + 65 + 1 + 16;
+
+/** The message as it is sent: whole when it fits in one push. When it
+ * does not, the body is cut to the longest start that fits, in whole
+ * characters and marked as cut, with the buttons kept; buttons that
+ * could not fit beside any words at all are left off. */
+function fitted(message: { body: string; actions?: unknown[] } & Record<string, unknown>): Uint8Array {
+  const room = PUSH_LIMIT - SEALED_AROUND;
+  // The short way round for nearly every message: what follows gives
+  // the same answer for one that fits.
+  const whole = enc.encode(JSON.stringify(message));
+  if (whole.length <= room) return whole;
+  const points = Array.from(message.body);
+  const cut = (m: Record<string, unknown>, n: number) =>
+    enc.encode(JSON.stringify({ ...m, body: n < points.length ? `${points.slice(0, n).join("")}…` : message.body }));
+  const { actions: _buttons, ...bare } = message;
+  const kept = cut(message, 0).length <= room ? message : bare;
+  let fits = 0;
+  let over = points.length;
+  while (fits < over) {
+    const mid = Math.ceil((fits + over) / 2);
+    if (cut(kept, mid).length <= room) fits = mid;
+    else over = mid - 1;
+  }
+  return cut(kept, fits);
 }
 
 type Poster = (
@@ -165,6 +228,7 @@ export class Push {
       devices: s.subscriptions.length,
       known: await Promise.all(s.subscriptions.map((x) => endpointMark(x.endpoint))),
       classes: Object.fromEntries(CLASSES.map((c) => [c, !s.off.includes(c)])),
+      last: s.last ?? null,
     };
   }
 
@@ -224,36 +288,55 @@ export class Push {
   /** Send one notification to every subscribed device, unless its class
    * is switched off. A subscription the push service says is gone is
    * forgotten. Returns how many devices took it. */
-  async send(cls: Class | "test", message: { title: string; body: string; url: string; tag?: string }) {
+  async send(
+    cls: Class | "test",
+    message: { title: string; body: string; url: string; tag?: string; actions?: unknown[] },
+  ) {
     const s = await this.load();
     if (cls !== "test" && s.off.includes(cls)) return { sent: 0, gone: 0, failed: 0 };
-    const payload = enc.encode(JSON.stringify({ ...message, class: cls }));
+    const payload = fitted({ ...message, class: cls });
     let sent = 0;
     let failed = 0;
     const gone: string[] = [];
+    const refused: Delivery["refused"] = [];
+    const attempted = s.subscriptions.length;
     for (const sub of s.subscriptions) {
+      const host = new URL(sub.endpoint).hostname;
       try {
-        const res = await this.post(sub.endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: await this.vapid(sub.endpoint),
-            "Content-Encoding": "aes128gcm",
-            "Content-Type": "application/octet-stream",
-            TTL: "86400",
-            Urgency: "high",
-          },
-          body: await encrypt(sub, payload),
-          signal: AbortSignal.timeout(15_000),
-        });
+        const headers = {
+          Authorization: await this.vapid(sub.endpoint),
+          "Content-Encoding": "aes128gcm",
+          "Content-Type": "application/octet-stream",
+          TTL: "86400",
+          Urgency: "high",
+        };
+        const body = await encrypt(sub, payload);
+        // Only the status is read, so the deadline is the answer's.
+        const res = await timed(PUSH_SEND_MS, (signal) =>
+          this.post(sub.endpoint, { method: "POST", headers, body, signal }),
+        );
+        unread(res);
         if (res.status === 404 || res.status === 410) gone.push(sub.endpoint);
         else if (res.status >= 200 && res.status < 300) sent++;
-        else failed++;
+        else {
+          failed++;
+          refused.push({ host, status: res.status });
+        }
       } catch {
         failed++;
+        refused.push({ host, status: 0 });
       }
     }
-    if (gone.length) {
-      s.subscriptions = s.subscriptions.filter((x) => !gone.includes(x.endpoint));
+    if (gone.length) s.subscriptions = s.subscriptions.filter((x) => !gone.includes(x.endpoint));
+    if (attempted > 0) {
+      s.last = {
+        at: new Date(this.now()).toISOString(),
+        class: cls,
+        sent,
+        gone: gone.length,
+        failed,
+        refused: refused.slice(0, 5),
+      };
       await this.save();
     }
     return { sent, gone: gone.length, failed };

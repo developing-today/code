@@ -7,6 +7,14 @@
 
 use super::*;
 
+fn blocked_deps_snapshot(row: &Value) -> Arg {
+    match row.get("blocked_deps") {
+        None | Some(Value::Null) => Arg::Null,
+        Some(Value::String(raw)) => Arg::Text(raw.clone()),
+        Some(value) => Arg::Text(value.to_string()),
+    }
+}
+
 pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -56,6 +64,17 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
         }
         None => (None, None, None, None, json!({})),
     };
+    let (cache_deps, dep_writes) = if let Some(ds) = deps.as_ref() {
+        super::links::prepare_task_deps(
+            task_id,
+            dep_until.as_deref().unwrap_or(""),
+            ds,
+            &iso(now_unix_v),
+            "block",
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let work = (|| -> Result<Value, TErr> {
         // #10714: a lane block supersedes any stale last_error. The
         // quarantine rechecker (#10648) selects blocked rows by a
@@ -65,12 +84,13 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
         // blocked it. Clearing the fossil here keeps the lane's block
         // authoritative; the rechecker's release branch also refuses
         // lane-blocked rows (defence in depth).
-        t.exec(
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.push((
             "UPDATE tasks SET status = 'blocked', worker_id = NULL, lease_until = NULL, \
                progress = ?, result = ?, blocked_deps = ?, dep_next_recheck_at = ?, \
                dep_blocked_until = ?, dep_recheck_seconds = ?, last_error = NULL, updated_at = ? \
-             WHERE id = ?",
-            &[
+             WHERE id = ? AND status = 'claimed' AND worker_id = ?",
+            vec![
                 Arg::Text(progress.to_string()),
                 Arg::Text(result.to_string()),
                 arg_str(dep_json.as_deref()),
@@ -79,9 +99,41 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
                 dep_rs.map(Arg::Int).unwrap_or(Arg::Null),
                 Arg::Text(now_iso()),
                 Arg::Int(task_id),
+                Arg::Text(worker.clone()),
             ],
-        )?;
-        t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
+        ));
+        if deps.is_some() {
+            statements.push((
+                "UPDATE tasks SET blocked_deps = ? WHERE id = ?",
+                vec![Arg::Text(json!(cache_deps).to_string()), Arg::Int(task_id)],
+            ));
+        }
+        let expected_cache = deps.as_ref().map(|_| json!(cache_deps).to_string());
+        statements.push(super::links::clear_task_deps_guarded_statement(
+            task_id,
+            None,
+            &worker,
+            "superseded_by_new_block",
+            &iso(now_unix_v),
+            "blocked",
+            dep_until.as_deref(),
+            expected_cache.as_deref(),
+        ));
+        statements.extend(super::links::guard_task_dep_writes(
+            dep_writes,
+            task_id,
+            dep_until.as_deref(),
+            &cache_deps,
+        ));
+        statements.push((
+            "DELETE FROM leases WHERE task_id = ?",
+            vec![Arg::Int(task_id)],
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        let results = t.exec_batch(&statements)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err("block_task: claim changed before the block committed".into());
+        }
         event(
             t,
             Some(&worker),
@@ -154,14 +206,33 @@ pub(crate) fn dep_recheck_one(
     }
     if let Some(until) = row.get("dep_blocked_until").and_then(|v| v.as_str()) {
         if until <= now.as_str() {
-            let cleared = t.exec(
+            let prior_cache = blocked_deps_snapshot(row);
+            let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+            statements.push((
                 "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                    dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                    dep_recheck_seconds = NULL, updated_at = ? \
-                 WHERE id = ? AND status = 'blocked'",
-                &[Arg::Text(now.clone()), Arg::Int(task_id)],
-            )?;
-            if cleared.affected > 0 {
+                 WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
+                vec![
+                    Arg::Text(now.clone()),
+                    Arg::Int(task_id),
+                    Arg::Text(until.to_owned()),
+                    prior_cache,
+                ],
+            ));
+            statements.push(super::links::clear_task_deps_guarded_statement(
+                task_id,
+                Some(until),
+                "dep-rechecker",
+                "ttl_expired",
+                &now,
+                "queued",
+                None,
+                None,
+            ));
+            statements.push(("COMMIT", Vec::new()));
+            let results = t.exec_batch(&statements)?;
+            if results.get(1).map(|r| r.affected).unwrap_or(0) > 0 {
                 event(
                     t,
                     Some("dep-rechecker"),
@@ -235,14 +306,37 @@ pub(crate) fn dep_recheck_one(
         }
     }
     if deps_all_resolved(&new_deps) {
-        let cleared = t.exec(
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let storage_block_id = super::links::task_dep_block_id(row, &deps);
+        let prior_cache = blocked_deps_snapshot(row);
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked'",
-            &[Arg::Text(now.clone()), Arg::Int(task_id)],
-        )?;
-        if cleared.affected == 0 {
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
+            vec![
+                Arg::Text(now.clone()),
+                Arg::Int(task_id),
+                block_until
+                    .map(|value| Arg::Text(value.to_owned()))
+                    .unwrap_or(Arg::Null),
+                prior_cache,
+            ],
+        ));
+        statements.push(super::links::clear_task_deps_guarded_statement(
+            task_id,
+            Some(&storage_block_id),
+            "dep-rechecker",
+            "resolved",
+            &now,
+            "queued",
+            None,
+            None,
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        let results = t.exec_batch(&statements)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
             // Lost a race with a manual unblock or a re-block;
             // that transition owns the audit trail.
             return Ok(("still_blocked", failures));
@@ -263,11 +357,17 @@ pub(crate) fn dep_recheck_one(
         )?;
         return Ok(("unblocked", failures));
     }
-    t.exec(
+    let block_id = super::links::task_dep_block_id(row, &deps);
+    let (cache_deps, dep_writes) =
+        super::links::prepare_task_deps(task_id, &block_id, &new_deps, &now, "dep_recheck");
+    let prior_cache = blocked_deps_snapshot(row);
+    let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+    let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+    statements.push((
         "UPDATE tasks SET blocked_deps = ?, dep_next_recheck_at = ?, updated_at = ? \
-         WHERE id = ? AND status = 'blocked'",
-        &[
-            Arg::Text(json!(new_deps).to_string()),
+         WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
+        vec![
+            Arg::Text(json!(cache_deps).to_string()),
             // The max TTL is a hard deadline: never schedule
             // the next recheck past dep_blocked_until, or expiry
             // would only be noticed one recheck too late. (ISO
@@ -281,8 +381,23 @@ pub(crate) fn dep_recheck_one(
             }),
             Arg::Text(now.clone()),
             Arg::Int(task_id),
+            block_until
+                .map(|value| Arg::Text(value.to_owned()))
+                .unwrap_or(Arg::Null),
+            prior_cache,
         ],
-    )?;
+    ));
+    statements.extend(super::links::guard_task_dep_writes(
+        dep_writes,
+        task_id,
+        block_until,
+        &cache_deps,
+    ));
+    statements.push(("COMMIT", Vec::new()));
+    let results = t.exec_batch(&statements)?;
+    if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+        return Ok(("still_blocked", failures));
+    }
     emit_dep_transitions(t, task_id, row, &transitions)?;
     Ok(("still_blocked", failures))
 }
@@ -613,6 +728,205 @@ pub(crate) fn verb_quarantine_recheck(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Parse a stored ready_condition `until` to unix seconds
+/// (#14212). Stored values arrive in both shapes the issue
+/// names — `2026-11-16T00:14:04Z` and
+/// `2026-11-03T16:03:00.171848+00:00` — so the parser accepts a
+/// trailing `Z` or a numeric `±HH:MM` offset and an optional
+/// fractional-seconds part. (iso_to_unix handles neither the
+/// offset form nor, with an offset present, the fraction: its
+/// seconds field is parsed as one f64.) Returns None for
+/// anything else; an unparseable `until` is never due, so a
+/// malformed condition surfaces instead of releasing early.
+pub(crate) fn time_until_unix(raw: &str) -> Option<i64> {
+    let (head, offset_secs) = if let Some(h) = raw.strip_suffix('Z') {
+        (h, 0i64)
+    } else if raw.len() > 6 {
+        let (h, off) = raw.split_at(raw.len() - 6);
+        let bytes = off.as_bytes();
+        if (bytes[0] == b'+' || bytes[0] == b'-') && bytes[3] == b':' {
+            let oh: i64 = off[1..3].parse().ok()?;
+            let om: i64 = off[4..6].parse().ok()?;
+            let sign = if bytes[0] == b'-' { -1 } else { 1 };
+            (h, sign * (oh * 3600 + om * 60))
+        } else {
+            (raw, 0)
+        }
+    } else {
+        (raw, 0)
+    };
+    let head = match head.split_once('.') {
+        Some((h, frac)) if frac.bytes().all(|b| b.is_ascii_digit()) && !frac.is_empty() => h,
+        Some(_) => return None,
+        None => head,
+    };
+    iso_to_unix(head).map(|u| u - offset_secs)
+}
+
+/// The #14212 time recheck verdict for one row — the pure
+/// decision the sweep driver and the /time-recheck verb share.
+/// A row is this pass's business only when it is blocked, its
+/// ready_condition is {"kind": "time", "until": …}, and that
+/// time has passed. Two owners outrank the timer, exactly as
+/// they outrank the quarantine rechecker: a dep record (the dep
+/// rechecker owns the row, #8276) and a lane block (verb_block's
+/// blocker/reason record, #10714) — a stale time condition left
+/// on such a row must never undo the block that owns it today.
+/// The six rows behind #14212 carry neither.
+#[derive(Debug, PartialEq)]
+pub(crate) enum TimeRecheck {
+    NotApplicable,
+    /// The recorded wait time has passed: requeue the row.
+    Release,
+    /// A time condition whose time has not come (or cannot be
+    /// parsed): the block stands.
+    NotDue,
+}
+
+pub(crate) fn time_recheck_verdict(row: &Value, now_unix_v: i64) -> TimeRecheck {
+    if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
+        return TimeRecheck::NotApplicable;
+    }
+    if dep_block_active(row) || lane_blocked(row) {
+        return TimeRecheck::NotApplicable;
+    }
+    let condition = row.get("ready_condition");
+    let kind = condition
+        .and_then(|c| c.get("kind"))
+        .and_then(|v| v.as_str());
+    if kind != Some("time") {
+        return TimeRecheck::NotApplicable;
+    }
+    let until = condition
+        .and_then(|c| c.get("until"))
+        .and_then(|v| v.as_str())
+        .and_then(time_until_unix);
+    match until {
+        Some(u) if u <= now_unix_v => TimeRecheck::Release,
+        _ => TimeRecheck::NotDue,
+    }
+}
+
+/// Apply one row's time recheck verdict. Release requeues the
+/// row and clears every wait field the condition owned
+/// (ready_condition, not_before, park_kind, wait_kind), with an
+/// `unblocked` event naming the lapsed condition — the same
+/// shape verb_unblock produces, audited as the rechecker's own
+/// decision. The conditional UPDATE keeps a row that changed
+/// state mid-pass blocked.
+pub(crate) fn time_recheck_one(
+    t: &TursoBackend,
+    row: &Value,
+    now_unix_v: i64,
+) -> Result<&'static str, TErr> {
+    let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    match time_recheck_verdict(row, now_unix_v) {
+        TimeRecheck::NotApplicable => Ok("not_applicable"),
+        TimeRecheck::NotDue => Ok("not_due"),
+        TimeRecheck::Release => {
+            let condition = row.get("ready_condition").cloned().unwrap_or(Value::Null);
+            let cleared = t.exec(
+                "UPDATE tasks SET status = 'queued', not_before = NULL, \
+                   park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   updated_at = ? \
+                 WHERE id = ? AND status = 'blocked'",
+                &[Arg::Text(now_iso()), Arg::Int(id)],
+            )?;
+            if cleared.affected == 0 {
+                return Ok("release_raced");
+            }
+            event(
+                t,
+                Some("time-rechecker"),
+                Some(id),
+                "unblocked",
+                &json!({
+                    "reason": "blocked until a time that has passed; the wait lapsed (#14212)",
+                    "via": "time_recheck",
+                    "discarded_condition": condition,
+                }),
+            )?;
+            Ok("released")
+        }
+    }
+}
+
+/// The #14212 time recheck pass: every blocked row carrying a
+/// time ready_condition is examined once; a row whose time has
+/// passed is requeued automatically. Before this pass nothing
+/// released such rows: the claim pick takes only queued /
+/// parked / handed_off rows, the dep rechecker watches
+/// dep-blocked rows only, the quarantine rechecker only
+/// claim-path quarantines, and revalidate_parked_tasks both
+/// selects parked rows only and scores kind=time "confirmed"
+/// forever — so the oldest of the six sat ready for three
+/// weeks. Rides the sweep beside the dep and quarantine
+/// recheckers (same minutely timer, same opt-out shape), and
+/// /time-recheck runs it directly. Candidate selection is by
+/// the stored condition's kind in SQL; the due test itself is
+/// time_recheck_verdict's, so both stored timestamp shapes are
+/// judged by parsed instant, never by text order.
+pub fn run_time_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE status = 'blocked' \
+             AND ready_condition IS NOT NULL \
+             AND json_extract(ready_condition, '$.kind') = 'time' \
+             ORDER BY updated_at ASC LIMIT {limit}"
+        ),
+        &[],
+        &TASK_JSON_COLS,
+    )?;
+    let now_unix_v = now_unix();
+    let (mut checked, mut released, mut not_due, mut raced) = (0i64, 0i64, 0i64, 0i64);
+    for row in &rows {
+        match time_recheck_one(t, row, now_unix_v)? {
+            "released" => {
+                checked += 1;
+                released += 1;
+            }
+            "not_due" => {
+                checked += 1;
+                not_due += 1;
+            }
+            "release_raced" => raced += 1,
+            _ => {}
+        }
+    }
+    Ok(json!({
+        "checked": checked, "released": released,
+        "not_due": not_due, "raced": raced,
+    }))
+}
+
+/// /time-recheck (#14212): run the recheck pass, or — with a
+/// task_id — force one blocked task's recheck right now. The
+/// manual trigger lanes and the monitor use to prove the
+/// machinery (and to release the six fossil rows on deploy);
+/// production cadence is the sweep's.
+pub(crate) fn verb_time_recheck(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        if let Some(task_id) = req_i64(req, "task_id") {
+            let Some(row) = get_task(t, task_id)? else {
+                return Ok(json!({"task_id": task_id, "outcome": "no_such_task"}));
+            };
+            if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
+                return Ok(json!({"task_id": task_id, "outcome": "not_blocked"}));
+            }
+            let outcome = time_recheck_one(t, &row, now_unix())?;
+            let after = get_task(t, task_id)?.unwrap_or(Value::Null);
+            return Ok(json!({
+                "task_id": task_id, "outcome": outcome, "row": after,
+            }));
+        }
+        run_time_rechecks(t, req_i64(req, "limit").unwrap_or(200))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
 /// /dep-recheck (#8276): run the due pass, or — with a task_id —
 /// force one dep-blocked task's recheck right now, schedule or
 /// no schedule. The manual trigger lanes and the monitor use to
@@ -649,10 +963,153 @@ pub(crate) fn verb_dep_recheck(t: &TursoBackend, req: &Value) -> Value {
 /// the event names who overrode and what was discarded. The
 /// rechecker's automatic paths never impersonate this: an
 /// override is a human/agent decision, audited as one.
+/// /unblock with drop specs (#12777): remove only the named
+/// dep entries from a blocked task's record — the correction
+/// path for a bogus entry (a self-loop, a mistyped ref) that
+/// leaves the real deps watched. The drop is all-or-nothing:
+/// a spec that matches nothing refuses the whole request and
+/// writes nothing. When the last entry goes, the task releases
+/// exactly like the full override; while entries remain it
+/// stays blocked on them, recheck schedule untouched, and the
+/// audit event names what was dropped and what remains.
+fn unblock_drop(
+    t: &TursoBackend,
+    task_id: i64,
+    worker: &str,
+    reason: &str,
+    row: &Value,
+    drops: &[Value],
+) -> Result<Value, String> {
+    let current = deps_of(row);
+    if current.is_empty() {
+        return Err(format!(
+            "unblock_task: task {task_id} carries no dep record; there is nothing to drop"
+        ));
+    }
+    let (remaining, dropped) = remove_deps(&current, drops).map_err(|unmatched| {
+        format!(
+            "unblock_task: task {task_id} has no dep matching {}",
+            dep_label(&unmatched[0])
+        )
+    })?;
+    if remaining.is_empty() {
+        let now = now_iso();
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let storage_block_id = super::links::task_dep_block_id(row, &current);
+        let current_cache = json!(current).to_string();
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.push((
+            "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
+               dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
+               dep_recheck_seconds = NULL, updated_at = ? \
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
+            vec![
+                Arg::Text(now.clone()),
+                Arg::Int(task_id),
+                block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
+                Arg::Text(current_cache),
+            ],
+        ));
+        statements.push(super::links::clear_task_deps_guarded_statement(
+            task_id,
+            Some(&storage_block_id),
+            worker,
+            "drop_all",
+            &now,
+            "queued",
+            None,
+            None,
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        let results = t.exec_batch(&statements)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err(format!(
+                "unblock_task: task {task_id} changed while dropping deps"
+            ));
+        }
+        event(
+            t,
+            Some(worker),
+            Some(task_id),
+            "dep_unblock_override",
+            &with_marks(
+                &json!({"reason": reason, "discarded_deps": dropped,
+                        "via": "unblock_task_turso", "via_drop": true}),
+                row,
+            ),
+        )?;
+    } else {
+        let now = now_iso();
+        let block_id = super::links::task_dep_block_id(row, &current);
+        let (cache_deps, dep_writes) =
+            super::links::prepare_task_deps(task_id, &block_id, &remaining, &now, "unblock_drop");
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let (missing_sql, missing_args) = super::links::clear_missing_task_deps_statement(
+            task_id,
+            &block_id,
+            &cache_deps,
+            worker,
+            "removed_from_block",
+            &now,
+            block_until,
+            &cache_deps,
+        );
+        let mut owned = vec![
+            ("BEGIN IMMEDIATE".to_owned(), Vec::new()),
+            (
+                "UPDATE tasks SET blocked_deps = ?, updated_at = ? WHERE id = ? AND status = 'blocked' \
+                 AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')".to_owned(),
+                vec![
+                    Arg::Text(json!(cache_deps).to_string()),
+                    Arg::Text(now),
+                    Arg::Int(task_id),
+                    block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
+                    Arg::Text(json!(current).to_string()),
+                ],
+            ),
+            (missing_sql, missing_args),
+        ];
+        owned.extend(
+            super::links::guard_task_dep_writes(dep_writes, task_id, block_until, &cache_deps)
+                .into_iter()
+                .map(|(sql, args)| (sql.to_owned(), args)),
+        );
+        owned.push(("COMMIT".to_owned(), Vec::new()));
+        let batch: Vec<(&str, Vec<Arg>)> = owned
+            .iter()
+            .map(|(sql, args)| (sql.as_str(), args.clone()))
+            .collect();
+        let results = t.exec_batch(&batch)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err(format!(
+                "unblock_task: task {task_id} changed while dropping deps"
+            ));
+        }
+        event(
+            t,
+            Some(worker),
+            Some(task_id),
+            "dep_entry_dropped",
+            &with_marks(
+                &json!({"reason": reason, "dropped_deps": dropped,
+                        "remaining_deps": remaining,
+                        "via": "unblock_task_turso"}),
+                row,
+            ),
+        )?;
+    }
+    get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+}
+
 pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    // #12777: the surgical form — drop named dep entries only.
+    let drops = match parse_drop_deps(req) {
+        Ok(d) => d,
+        Err(e) => return fail(2, e),
+    };
     let work = (|| -> Result<Value, String> {
         let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
             return Err(format!("unblock_task: task {task_id} does not exist"));
@@ -667,15 +1124,60 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
                 "unblock_task: task {task_id} is {status}, not blocked"
             ));
         }
+        if let Some(drops) = &drops {
+            return unblock_drop(t, task_id, &worker, &reason, &row, drops);
+        }
+        // #13191 audit: a claim-path-quarantined row whose packet
+        // still fails the claim guard cannot be unblocked — the
+        // override would report it queued and the next claim
+        // would re-quarantine it. Refuse, name the quarantine,
+        // and point at repair, which fixes the packet in place.
+        // (The drop-dep form above stays available: it edits the
+        // dep record and leaves the row blocked, so it never
+        // misreports the row's state.)
+        let recorded = row.get("last_error").and_then(|v| v.as_str()).unwrap_or("");
+        if recorded.starts_with("quarantined by claim path") {
+            if let Some(guard) = claim_guard_reason(&row) {
+                return Err(format!(
+                    "unblock_task: task {task_id} is quarantined ({guard}); \
+                     unblock cannot clear a packet defect — repair the \
+                     packet first with `fleet queue repair {task_id}`"
+                ));
+            }
+        }
         let prev_deps = deps_of(&row);
-        t.exec(
+        let now = now_iso();
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let storage_block_id = super::links::task_dep_block_id(&row, &prev_deps);
+        let prior_cache = blocked_deps_snapshot(&row);
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked'",
-            &[Arg::Text(now_iso()), Arg::Int(task_id)],
-        )
-        .map_err(|e| e)?;
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
+            vec![
+                Arg::Text(now.clone()),
+                Arg::Int(task_id),
+                block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
+                prior_cache,
+            ],
+        ));
+        statements.push(super::links::clear_task_deps_guarded_statement(
+            task_id,
+            Some(&storage_block_id),
+            &worker,
+            "manual_unblock",
+            &now,
+            "queued",
+            None,
+            None,
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        let results = t.exec_batch(&statements).map_err(|e| e)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err(format!("unblock_task: task {task_id} is no longer blocked"));
+        }
         let (kind, detail) = if prev_deps.is_empty() {
             (
                 "unblocked",
@@ -710,31 +1212,121 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// #14170 Q2: infer only terminal resolutions that the old record
+/// proves. The updates are idempotent and leave every ambiguous legacy
+/// row NULL; the returned census is the baseline to record on #14170.
+pub(crate) fn verb_resolution_backfill(t: &TursoBackend, _req: &Value) -> Value {
+    let count = |sql: &str| -> Result<i64, TErr> {
+        Ok(t.query_objs(sql, &[], &[])?
+            .first()
+            .and_then(|r| r.get("n"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0))
+    };
+    let work = (|| -> Result<Value, TErr> {
+        let census =
+            count("SELECT count(*) AS n FROM tasks WHERE status IN ('done','cancelled','failed')")?;
+        let verified = t.exec(
+            "UPDATE tasks SET resolution = 'done', resolution_category = 'success', \
+               resolution_substatus = 'verified', resolved_by = COALESCE(worker_id, 'resolution-backfill'), \
+               resolved_at = COALESCE(completed_at, updated_at, created_at) \
+             WHERE status = 'done' AND resolution IS NULL \
+               AND json_extract(result, '$.disposition.verdict') IN ('closed_verified','merged_verified')",
+            &[],
+        )?.affected as i64;
+        let already_solved = t.exec(
+            "UPDATE tasks SET resolution = 'already_solved', resolution_category = 'success', \
+               resolution_substatus = 'premise_already_met', resolved_by = COALESCE(worker_id, 'resolution-backfill'), \
+               resolved_at = COALESCE(completed_at, updated_at, created_at) \
+             WHERE status = 'done' AND resolution IS NULL \
+               AND json_extract(result, '$.triage_outcome') = 'already_solved'",
+            &[],
+        )?.affected as i64;
+        let duplicates = t.exec(
+            "UPDATE tasks SET resolution = 'duplicate', resolution_category = 'redirection', \
+               resolution_ref = 'task:' || (SELECT twin.id FROM tasks AS twin \
+                   WHERE twin.queue = tasks.queue AND twin.dedupe_key = tasks.dedupe_key \
+                     AND twin.id <> tasks.id AND twin.status IN ('queued','claimed','parked','blocked','done') \
+                   LIMIT 1), \
+               resolution_reason = 'Uniquely identified as a duplicate of the surviving task during Q2 backfill', \
+               resolved_by = COALESCE(worker_id, 'resolution-backfill'), \
+               resolved_at = COALESCE(completed_at, updated_at, created_at) \
+             WHERE status = 'cancelled' AND resolution IS NULL AND dedupe_key IS NOT NULL \
+               AND (lower(COALESCE(json_extract(result, '$.cancel_reason'), '')) LIKE '%dedupe%' \
+                    OR lower(COALESCE(json_extract(result, '$.cancel_reason'), '')) LIKE '%duplicate%') \
+               AND (SELECT count(*) FROM tasks AS twin \
+                   WHERE twin.queue = tasks.queue AND twin.dedupe_key = tasks.dedupe_key \
+                     AND twin.id <> tasks.id AND twin.status IN ('queued','claimed','parked','blocked','done')) = 1",
+            &[],
+        )?.affected as i64;
+        let proved = verified + already_solved + duplicates;
+        Ok(json!({
+            "census": census,
+            "proved": proved,
+            "verified": verified,
+            "already_solved": already_solved,
+            "duplicates": duplicates,
+            "unresolved": census - (count("SELECT count(*) AS n FROM tasks WHERE status IN ('done','cancelled','failed') AND resolution IS NOT NULL")?),
+        }))
+    })();
+    match work {
+        Ok(row) => ok(json!({"row": row})),
+        Err(e) => terr(e),
+    }
+}
+
 pub(crate) fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker")
         .unwrap_or("fleet-monitor")
         .to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let Some(row) = (match get_task(t, task_id) {
+        Ok(row) => row,
+        Err(e) => return terr(e),
+    }) else {
+        return fail(
+            5,
+            format!("cancel_repo_task: task {task_id} does not exist"),
+        );
+    };
+    if ["done", "cancelled", "failed"]
+        .contains(&row.get("status").and_then(|v| v.as_str()).unwrap_or(""))
+    {
+        return ok(json!({"row": row}));
+    }
+    let fields = match crate::validate::validate_resolution(
+        "cancelled",
+        req_str(req, "resolution"),
+        req_str(req, "substatus"),
+        req_str(req, "resolution_reason").or_else(|| req_str(req, "reason")),
+        req_str(req, "resolution_ref"),
+    ) {
+        Ok(Some(fields)) => fields,
+        Ok(None) => unreachable!("cancellation requires a resolution"),
+        Err(e) => return fail(2, format!("cancel_repo_task: {e}")),
+    };
+    let resolved_at = now_iso();
     let work = (|| -> Result<Value, TErr> {
-        let Some(row) = get_task(t, task_id)? else {
-            return Ok(Value::Null);
-        };
-        if ["done", "cancelled", "failed"]
-            .contains(&row.get("status").and_then(|v| v.as_str()).unwrap_or(""))
-        {
-            return Ok(row);
-        }
         let result = merge_obj(
             &row.get("result").cloned().unwrap_or(json!({})),
             &json!({"cancel_reason": reason}),
         );
         t.exec(
             "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_until = NULL, \
-               result = ?, updated_at = ? WHERE id = ?",
+               result = ?, resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+               resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
+               updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(result.to_string()),
-                Arg::Text(now_iso()),
+                Arg::Text(fields.resolution.clone()),
+                Arg::Text(fields.category.clone()),
+                arg_str(fields.substatus.as_deref()),
+                arg_str(fields.reason.as_deref()),
+                arg_str(fields.reference.as_deref()),
+                Arg::Text(worker.clone()),
+                Arg::Text(resolved_at.clone()),
+                Arg::Text(resolved_at.clone()),
                 Arg::Int(task_id),
             ],
         )?;
@@ -744,7 +1336,12 @@ pub(crate) fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "cancelled",
-            &json!({"reason": reason, "via": "cancel_repo_task_turso"}),
+            &json!({
+                "reason": reason, "via": "cancel_repo_task_turso",
+                "resolution": fields.resolution, "resolution_category": fields.category,
+                "resolution_substatus": fields.substatus, "resolution_reason": fields.reason,
+                "resolution_ref": fields.reference,
+            }),
         )?;
         // #9046: close the binding window on the timeline (the
         // binding stays on the row up to this transition; the
@@ -865,6 +1462,12 @@ pub(crate) enum CompletionClass {
     /// Work that produces an artifact: completion requires an
     /// evidence reference recorded on the task.
     Fix,
+    /// A feature slice delivers one criterion of a larger issue
+    /// (#12233 F2c): completion requires evidence of the delivered
+    /// slice, but the parent issue stays open by design, so no
+    /// verified-disposition readback — that would demand closure
+    /// or a follow-up for work that is meant to continue.
+    Slice,
     /// Triage annotates and validates; it never completes the
     /// issue. Completion re-enqueues the follow-on by default.
     Triage,
@@ -876,6 +1479,7 @@ pub(crate) enum CompletionClass {
 pub(crate) fn completion_class(payload: &Value) -> CompletionClass {
     match payload.get("kind").and_then(|k| k.as_str()) {
         Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => CompletionClass::Fix,
+        Some("feature_slice") => CompletionClass::Slice,
         Some("triage") => CompletionClass::Triage,
         _ => CompletionClass::Ungated,
     }
@@ -967,6 +1571,20 @@ pub(crate) fn gate_completion(
             verified(result, ctx)?;
             Ok(None)
         }
+        CompletionClass::Slice => {
+            // #12233 F2c: a slice completes on evidence of the
+            // delivered slice alone — no verified disposition, so
+            // the parent issue may stay open while slices land.
+            if evidence_ref(result).is_none() {
+                return Err(
+                    "complete_task: feature_slice completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                        .to_string(),
+                );
+            }
+            Ok(None)
+        }
         CompletionClass::Triage => {
             let outcome = result
                 .get("triage_outcome")
@@ -1037,6 +1655,55 @@ pub(crate) fn gate_completion(
     }
 }
 
+/// #14268 ask 2: the suspect-completion shape — a task reaching
+/// terminal `done` carrying no result, with no recorded worker
+/// activity between its claim and its completion. That is the
+/// visible signature of the false completions #14268 filed (zero
+/// history events, no result, the packet's work never ran). The
+/// completion is NOT refused: the intake risk note warns that
+/// tightening completion validation could strand lanes that
+/// complete through a legitimate low-event path. It is surfaced
+/// instead — a `suspect_completion` stamp on the stored result
+/// and a `suspect_completion` event beside the `completed` one,
+/// so audits can count and list such completions directly rather
+/// than trusting the terminal state.
+pub(crate) fn suspect_completion_stamp(result: &Value, activity_events: i64) -> Option<Value> {
+    let result_empty = match result {
+        Value::Null => true,
+        Value::Object(map) => map.is_empty(),
+        _ => false,
+    };
+    if result_empty && activity_events == 0 {
+        Some(json!({
+            "reason": "done_with_no_result_and_no_activity_history",
+            "activity_events": 0,
+            "via": "complete_task_turso",
+        }))
+    } else {
+        None
+    }
+}
+
+/// A task's recorded activity beyond the claim ceremony itself:
+/// the claim's own writes (`claimed`, the session binding, the
+/// model stamp) are not work, so they never clear the suspect
+/// shape on their own. Checkpoints, parks, releases and every
+/// other recorded transition count.
+pub(crate) fn activity_event_count(t: &TursoBackend, task_id: i64) -> Result<i64, TErr> {
+    let rows = t.query_objs(
+        "SELECT COUNT(*) AS n FROM events WHERE task_id = ? \
+         AND kind NOT IN ('claimed', 'session_bound', 'lane_session_bound', 'model_stamp')",
+        &[Arg::Int(task_id)],
+        &[],
+    )?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.get("n").cloned())
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
+}
+
 /// The issue a task is for: its packet's `issue.number`, else the
 /// issue its repo-health dedupe key names under the packet's repo.
 pub(crate) fn task_issue(payload: &Value, dedupe_key: &str) -> Option<i64> {
@@ -1100,33 +1767,134 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             }
         }))
     };
-    let mut ctx = GateContext {
-        task_id,
-        expected_issue,
-        fix_follow_on: follow_on_key(&dedupe_key).is_some(),
-        lookup: &mut lookup,
+    let triage_outcome = {
+        let mut ctx = GateContext {
+            task_id,
+            expected_issue,
+            fix_follow_on: follow_on_key(&dedupe_key).is_some(),
+            lookup: &mut lookup,
+        };
+        match gate_completion(&class, &mut ctx, &gate_result) {
+            Ok(o) => o,
+            Err(e) => return fail(2, e),
+        }
     };
-    let triage_outcome = match gate_completion(&class, &mut ctx, &gate_result) {
-        Ok(o) => o,
-        Err(e) => return fail(2, e),
+    // Any supplied disposition must pass the same offline readback gate
+    // before it can stamp a resolution, even for task kinds whose normal
+    // completion does not require one.
+    let disposition = if gate_result.get("disposition").is_some() {
+        match crate::disposition::require_verified(
+            &gate_result,
+            expected_issue,
+            now_unix(),
+            task_id,
+            &mut lookup,
+        ) {
+            Ok(record) => Some(record),
+            Err(e) => return fail(2, format!("complete_task: {e}")),
+        }
+    } else {
+        None
     };
+    let disposition_resolution = disposition
+        .as_ref()
+        .and_then(crate::disposition::resolution_for_disposition);
+    let mut resolution = req_str(req, "resolution").map(str::to_string);
+    let mut substatus = req_str(req, "substatus").map(str::to_string);
+    let mut resolution_reason = req_str(req, "resolution_reason").map(str::to_string);
+    let resolution_ref = req_str(req, "resolution_ref").map(str::to_string);
+    if let Some((mapped_resolution, mapped_substatus)) = disposition_resolution {
+        if resolution
+            .as_deref()
+            .is_some_and(|v| v != mapped_resolution)
+            || substatus.as_deref().is_some_and(|v| v != mapped_substatus)
+        {
+            return fail(
+                2,
+                "complete_task: explicit resolution conflicts with the verified disposition",
+            );
+        }
+        resolution = Some(mapped_resolution.to_string());
+        substatus = Some(mapped_substatus.to_string());
+    } else if triage_outcome == Some(TriageOutcome::ExitAlreadySolved) && resolution.is_none() {
+        resolution = Some("already_solved".into());
+        substatus = Some("premise_already_met".into());
+    }
+    if disposition_resolution.is_none()
+        && resolution.as_deref() == Some("done")
+        && substatus.as_deref() == Some("verified")
+    {
+        return fail(
+            2,
+            "complete_task: substatus verified requires a verified disposition readback",
+        );
+    }
+    let fields = match crate::validate::validate_resolution(
+        "done",
+        resolution.as_deref(),
+        substatus.as_deref(),
+        resolution_reason.as_deref(),
+        resolution_ref.as_deref(),
+    ) {
+        Ok(Some(fields)) => fields,
+        Ok(None) => unreachable!("done completion always has a resolution"),
+        Err(e) => return fail(2, format!("complete_task: {e}")),
+    };
+    let resolved_at = now_iso();
     // Terminal transitions keep the session binding (migration 0023
     // header): on a done row it is the execution record.
     let result = merge_obj(
         &row.get("result").cloned().unwrap_or(json!({})),
         &req.get("result").cloned().unwrap_or(json!({})),
     );
+    // #14268 ask 2: surface the suspect shape — no result on the
+    // completion and no recorded activity since the claim. The
+    // count read fails open: surfacing must never strand a
+    // completion, so a store error stamps nothing.
+    let suspect = match activity_event_count(t, task_id) {
+        Ok(n) => suspect_completion_stamp(&result, n),
+        Err(_) => None,
+    };
+    let result = match &suspect {
+        Some(stamp) => {
+            let stamped = json!({"suspect_completion": stamp});
+            if result.is_object() {
+                merge_obj(&result, &stamped)
+            } else {
+                stamped
+            }
+        }
+        None => result,
+    };
     let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
-               completed_at = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(result.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
+        // #9487: the completion carries the holder guard; a claim
+        // that changed after claimed_by read it completes nothing.
+        let mut args = vec![
+            Arg::Text(result.to_string()),
+            Arg::Text(fields.resolution.clone()),
+            Arg::Text(fields.category.clone()),
+            arg_str(fields.substatus.as_deref()),
+            arg_str(fields.reason.as_deref()),
+            arg_str(fields.reference.as_deref()),
+            Arg::Text(worker.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!(
+                "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
+                   resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+                   resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
+                   completed_at = ?, updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+            ),
+            &args,
         )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("complete_task", task_id));
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         touch_worker(t, &worker, None)?;
         event(
@@ -1134,8 +1902,32 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "completed",
-            &with_marks(&json!({"via": "complete_task_turso"}), &row),
+            &with_marks(
+                &json!({
+                    "via": "complete_task_turso",
+                    "resolution": fields.resolution,
+                    "resolution_category": fields.category,
+                    "resolution_substatus": fields.substatus,
+                    "resolution_reason": fields.reason,
+                    "resolution_ref": fields.reference,
+                    "suspect_completion": suspect.is_some(),
+                }),
+                &row,
+            ),
         )?;
+        // #14268 ask 2: the suspect shape gets its own event kind
+        // so audits can count and list such completions directly
+        // (events_seen / events_count), not only by reading the
+        // stamped result back.
+        if let Some(stamp) = &suspect {
+            event(
+                t,
+                Some(&worker),
+                Some(task_id),
+                "suspect_completion",
+                &with_marks(stamp, &row),
+            )?;
+        }
         // #9046: close the binding window on the timeline. The
         // binding itself stays on the row as the execution record
         // (migration 0023 header above); this event only ends the
@@ -1187,6 +1979,15 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 json!({"from_task": task_id, "at": now_iso()}),
                             );
                         }
+                        // #12744: carry the issue's labels onto the
+                        // follow-on from the GitHub mirror when the
+                        // triage payload carries none of its own, so
+                        // the band selection below sees them even
+                        // for triage rows enqueued before label
+                        // carriage landed. Best-effort by design:
+                        // the mirror never gates work, and the
+                        // inherited priority stands on any failure.
+                        let _ = enrich_payload_labels(t, &mut fpayload, Some(&triage_key));
                         let fprogress = match &terminal {
                             Some(pred) => json!({
                                 "triage_source_task": task_id,
@@ -1209,10 +2010,18 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 arg_str(row.get("body").and_then(|v| v.as_str())),
                                 Arg::Text(fpayload.to_string()),
                                 Arg::Text(fix_key.clone()),
-                                row.get("priority")
-                                    .and_then(|v| v.as_i64())
-                                    .map(Arg::Int)
-                                    .unwrap_or(Arg::Null),
+                                // #12744: Drew's label band when the
+                                // follow-on payload carries a band
+                                // label, the triage row's stored
+                                // priority otherwise — the same
+                                // label-wins rule task_from_packet
+                                // applies at enqueue.
+                                band_or_inherited(
+                                    &fpayload,
+                                    row.get("priority").and_then(|v| v.as_i64()),
+                                )
+                                .map(Arg::Int)
+                                .unwrap_or(Arg::Null),
                                 Arg::Int(
                                     fpayload
                                         .get("max_attempts")
@@ -1290,11 +2099,20 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         Err(e) => return fail(2, e),
     };
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
+    // #14317: the rich projection is the read-back behind `queue
+    // show` and `list --json`, whose field list includes the park
+    // wait fields (park_kind, wait_kind, ready_condition) and
+    // last_error. Omitting them here dropped a parked task's
+    // stored ready_condition from every rich read-back — the row
+    // read `ready_condition: null` even though verb_park had
+    // persisted the supplied condition — so the projection must
+    // carry every column the show field list reads from the row.
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-         claim_provider, claim_model, claim_variant, progress, payload, \
-         blocked_deps, dep_next_recheck_at, dep_blocked_until"
+         claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
+         park_kind, wait_kind, ready_condition, last_error, \
+         blocked_deps, dep_next_recheck_at, dep_blocked_until, labels, labels_synced_at"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
@@ -1308,9 +2126,19 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
+    // #13068: dep-blocked tasks are not a stored status — they are
+    // `blocked` rows carrying a `blocked_deps` record (#8276), which
+    // health counts separately as `dep_blocked`. `--status dep_blocked`
+    // selects exactly those rows, matching the health count;
+    // `--status blocked` keeps its meaning and lists every blocked row,
+    // dep-blocked ones included.
     if let Some(s) = req_str(req, "status") {
-        conds += " AND status = ?";
-        args.push(Arg::Text(s.to_string()));
+        if s == "dep_blocked" {
+            conds += " AND status = 'blocked' AND blocked_deps IS NOT NULL";
+        } else {
+            conds += " AND status = ?";
+            args.push(Arg::Text(s.to_string()));
+        }
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
@@ -1339,12 +2167,45 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND dedupe_key = ?";
         args.push(Arg::Text(d.to_string()));
     }
+    if let Some(filters) = req.get("meta").and_then(Value::as_object) {
+        for (key, value) in filters {
+            if crate::validate::validate_metadata_key(key).is_err() {
+                return fail(2, format!("list --meta: invalid metadata key {key:?}"));
+            }
+            let Ok(encoded) = serde_json::to_string(value) else {
+                return fail(
+                    2,
+                    format!("list --meta: cannot encode filter value for {key}"),
+                );
+            };
+            // Bind a quoted JSON path so allowed dots and hyphens remain
+            // literal key characters rather than path syntax.
+            conds += " AND json_extract(metadata, ?) = json_extract(?, '$')";
+            args.push(Arg::Text(format!("$.\"{key}\"")));
+            args.push(Arg::Text(encoded));
+        }
+    }
+    // #14170 Q5: --label narrows to tasks whose cached label set
+    // holds that label; a trailing `*` matches a prefix (`user/*`).
+    // The cache is refreshed at every transition and by the hourly
+    // sweep; `labels_synced_at` on the rich row shows its age.
+    if let Some(l) = req_str(req, "label").filter(|l| !l.is_empty()) {
+        let (cond, arg) = label_filter_cond(l);
+        conds += cond;
+        args.push(arg);
+    }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
     let sql = format!(
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps"]
+        &[
+            "progress",
+            "payload",
+            "blocked_deps",
+            "ready_condition",
+            "labels",
+        ]
     } else {
         &[]
     };
@@ -1374,6 +2235,7 @@ pub(crate) fn health_entry(queue: &str) -> Value {
         "parked": 0, "malformed_parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
+        "failed_events_24h": 0, "failed_events_7d": 0,
     })
 }
 
@@ -1405,6 +2267,42 @@ pub(crate) fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value
         let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
             obj.insert("dep_blocked".to_string(), json!(n));
+        }
+    }
+}
+
+/// Fold per-queue terminal-event counts (#1233) into health entries:
+/// the terminal-events query counts completed AND failed events
+/// together, so a queue could show thousands of terminal events in
+/// 7d with no way to tell whether any were failures — and the epic's
+/// "zero dead-in-queue over a rolling 7 days" criterion stayed
+/// unmeasured. The failed-only sums (f24/f7) name the dead-in-queue
+/// count for each window; queues with no failed events keep the zero
+/// default from health_entry. The failed sums count terminal
+/// failures only: a requeued or blocked 'failed' event is a live
+/// retry, not a death, and lease expiry at cap counts as a failure
+/// (see the terminal predicate in verb_health's query). Rows arrive
+/// as {queue, n24, n7, f24, f7}.
+pub(crate) fn apply_terminal_events(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    for r in rows {
+        let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
+            obj.insert(
+                "terminal_events_24h".to_string(),
+                r.get("n24").cloned().unwrap_or(json!(0)),
+            );
+            obj.insert(
+                "terminal_events_7d".to_string(),
+                r.get("n7").cloned().unwrap_or(json!(0)),
+            );
+            obj.insert(
+                "failed_events_24h".to_string(),
+                r.get("f24").cloned().unwrap_or(json!(0)),
+            );
+            obj.insert(
+                "failed_events_7d".to_string(),
+                r.get("f7").cloned().unwrap_or(json!(0)),
+            );
         }
     }
 }
@@ -1517,9 +2415,13 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         apply_dep_blocked(&mut by_queue, &drows);
         // Malformed parked rows (#9179 hygiene): fetched as raw
         // values because the failure test is the shared validator,
-        // not a SQL predicate; parked counts are small.
+        // not a SQL predicate; parked counts are small. NULL
+        // not_before rows are fetched too (#9179 class (c)2): such a
+        // park has no lapse term at all, so the claim predicate's
+        // parked branch can never release it — the same hand-wake
+        // bind as a malformed timestamp, and health must name it.
         let mut hsql = "SELECT queue, not_before FROM tasks \
-             WHERE status = 'parked' AND not_before IS NOT NULL"
+             WHERE status = 'parked'"
             .to_string();
         let mut hargs: Vec<Arg> = Vec::new();
         if let Some(q) = &queue_filter {
@@ -1531,13 +2433,37 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
-        // local query here — no cross-database problem.
-        let mut tsql = "SELECT t.queue AS queue, COUNT(*) AS n7, \
-               SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24 \
+        // local query here — no cross-database problem. The failed-
+        // only sums (f24/f7, #1233) split dead-in-queue out of the
+        // completed+failed totals, so the epic's "zero dead-in-
+        // queue over a rolling 7 days" criterion reads off health.
+        // A 'failed' event is terminal only when the task actually
+        // died: verb_fail stamps detail.requeued=true on a transient
+        // retry and detail.reason_class='blocked' on a block, and
+        // both still emit kind='failed' — counting every 'failed'
+        // event would count live retries as dead-in-queue (#12682
+        // Codex review). Lease expiry at cap is the other terminal
+        // failure, but it emits kind='lease_expired_at_cap', so it
+        // belongs in the filter set and in the failed sums. A
+        // 'failed' event with no disposition in its detail
+        // (externally appended) counts as terminal: an explicit
+        // failure with nothing recorded is a death, not a retry.
+        // Placeholder order: n24's 24h cutoff, f24's 24h cutoff,
+        // the 7d window floor, then the optional queue filter.
+        let failed_terminal = "(e.kind = 'lease_expired_at_cap' OR \
+             (e.kind = 'failed' \
+              AND COALESCE(json_extract(e.detail, '$.requeued'), 0) = 0 \
+              AND COALESCE(json_extract(e.detail, '$.reason_class'), '') <> 'blocked'))";
+        let mut tsql = format!(
+            "SELECT t.queue AS queue, COUNT(*) AS n7, \
+               SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24, \
+               SUM(CASE WHEN {failed_terminal} THEN 1 ELSE 0 END) AS f7, \
+               SUM(CASE WHEN {failed_terminal} AND e.created_at > ? THEN 1 ELSE 0 END) AS f24 \
              FROM events e JOIN tasks t ON t.id = e.task_id \
-             WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?"
-            .to_string();
+             WHERE e.kind IN ('completed', 'failed', 'lease_expired_at_cap') AND e.created_at > ?"
+        );
         let mut targs: Vec<Arg> = vec![
+            Arg::Text(iso(now_unix() - 86_400)),
             Arg::Text(iso(now_unix() - 86_400)),
             Arg::Text(iso(now_unix() - 7 * 86_400)),
         ];
@@ -1547,26 +2473,7 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         }
         tsql += " GROUP BY t.queue";
         let trows = t.query_objs(&tsql, &targs, &[])?;
-        for r in &trows {
-            let q = r
-                .get("queue")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let entry = by_queue
-                .entry(q.clone())
-                .or_insert_with(|| health_entry(&q));
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert(
-                    "terminal_events_24h".to_string(),
-                    r.get("n24").cloned().unwrap_or(json!(0)),
-                );
-                obj.insert(
-                    "terminal_events_7d".to_string(),
-                    r.get("n7").cloned().unwrap_or(json!(0)),
-                );
-            }
-        }
+        apply_terminal_events(&mut by_queue, &trows);
         Ok(Value::Array(by_queue.into_iter().map(|(_, v)| v).collect()))
     })();
     match work {

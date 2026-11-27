@@ -16,9 +16,6 @@
 //! person, and this module offers no way to merge accounts, identities or
 //! authority from it: a status is the only output. Authorization stays
 //! with delegation grants (`graph/delegation.rs`), which never consult it.
-//!
-//! Module wiring into `graph/mod.rs` belongs to slice 9110-09; until then
-//! the integration test includes this file by path.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

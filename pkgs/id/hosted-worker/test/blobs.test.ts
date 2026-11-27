@@ -56,19 +56,25 @@ function fakeBucket() {
   };
 }
 
-function makeDO(name: string, bucket: ReturnType<typeof fakeBucket>) {
+function makeDO(name: string, bucket: ReturnType<typeof fakeBucket>, jurisdiction = "us") {
   const state = {
     id: { name },
     storage: { sql: fakeSql() },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return new UserDO(state as never, { BLOBS: bucket } as never);
+  const env =
+    jurisdiction === "eu"
+      ? { BLOBS_EU: bucket }
+      : jurisdiction === "fedramp"
+        ? { BLOBS_FEDRAMP: bucket }
+        : { BLOBS_US: bucket };
+  return new UserDO(state as never, env as never);
 }
 
-function routed(path: string, binding: string, init: RequestInit = {}): Request {
+function routed(path: string, binding: string, init: RequestInit = {}, jurisdiction = "us"): Request {
   const headers = new Headers(init.headers);
   headers.set(HDR_BINDING, binding);
-  headers.set(HDR_JURISDICTION, "us");
+  headers.set(HDR_JURISDICTION, jurisdiction);
   headers.set(HDR_ROUTED, "restricted");
   return new Request("https://do" + path, { ...init, headers });
 }
@@ -134,14 +140,40 @@ test("delete removes only the caller's reference; shared bytes survive", async (
   assert.equal((await doA.fetch(routed("/v1/blobs/" + hash, A, { method: "DELETE" }))).status, 404);
 });
 
-test("blob routes stay behind the identity guard; schema is v2", async () => {
+test("blob routes stay behind the identity guard; schema is v3", async () => {
   const bucket = fakeBucket();
   const doA = makeDO(A, bucket);
   const unrouted = new Request("https://do/v1/blobs", { method: "PUT", body: "x" });
   assert.equal((await doA.fetch(unrouted)).status, 403);
   const state = await doA.fetch(routed("/v1/state", A));
   const body = (await state.json()) as { schema_version: number };
-  assert.equal(body.schema_version, 2);
+  assert.equal(body.schema_version, 3);
   const badHash = await doA.fetch(routed("/v1/blobs/not-a-hash", A));
   assert.equal(badHash.status, 404);
+});
+
+test("blobs are jurisdiction-local: same bytes in us and eu land in different buckets", async () => {
+  const usBucket = fakeBucket();
+  const euBucket = fakeBucket();
+  const doUS = makeDO(A, usBucket, "us");
+  const doEU = makeDO(B, euBucket, "eu");
+  const bytes = new TextEncoder().encode("same bytes both jurisdictions");
+  const putUS = await doUS.fetch(routed("/v1/blobs", A, { method: "PUT", body: bytes }, "us"));
+  assert.equal(putUS.status, 200);
+  const putEU = await doEU.fetch(routed("/v1/blobs", B, { method: "PUT", body: bytes }, "eu"));
+  assert.equal(putEU.status, 200);
+  const { hash } = (await putUS.json()) as { hash: string };
+  assert.equal((await putEU.json() as { hash: string }).hash, hash, "content hash is stable across jurisdictions");
+  assert.equal(usBucket.objects.size, 1);
+  assert.equal(euBucket.objects.size, 1, "eu bytes land in the eu bucket, not the us bucket");
+});
+
+test("missing jurisdiction bucket binding fails closed", async () => {
+  const bucket = fakeBucket();
+  // Env wires only the us bucket; an eu request must fail closed, not fall back.
+  const doEU = makeDO(B, bucket, "us");
+  const bytes = new TextEncoder().encode("eu without eu bucket");
+  const put = await doEU.fetch(routed("/v1/blobs", B, { method: "PUT", body: bytes }, "eu"));
+  assert.equal(put.status, 503);
+  assert.equal(((await put.json()) as { error: string }).error, "blobs_unavailable");
 });

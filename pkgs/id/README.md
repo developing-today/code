@@ -1,6 +1,17 @@
 # id
 
-A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store, retrieve, and share files across a decentralized network with optional collaborative web editing.
+A peer-to-peer collaboration platform built with [Iroh](https://iroh.computer). Its file core stores, retrieves and shares files across a decentralized network; the same binary also ships the layers above it — signed event logs addressed as `id://` records, multiplayer worlds, the directory, groups and group encryption, the currency registry, and an optional collaborative web UI. The `id` Rust facade re-exports the workspace API at historical `id::` paths; the command layer lives in `id-cli`.
+
+## The book
+
+[`book/`](book/) (mdBook sources, [`book.toml`](book.toml) at this
+package's root) is the complete, self-contained reference for the
+platform — every command, flag, default, schema, protocol and
+operational procedure, plus the programme's design archive mapped
+chapter by chapter. It is published at
+https://developing-today.github.io/code/id/ and builds with
+`nix build .#id-docs`. Start there; this README is only the
+package's front door.
 
 ## Features
 
@@ -10,7 +21,7 @@ A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store,
 - **Remote Operations**: Run commands against remote peers by node ID
 - **Collaborative Editor**: Real-time multi-user text editing via WebSocket (web UI)
 - **Interactive REPL**: Shell-like interface with pipes, subshells, and heredocs
-- **Peer Discovery**: Automatic local network peer discovery
+- **Peer Discovery**: Gossip-based wide-area discovery and mDNS local discovery (both on by default), with opt-in mainline DHT address lookup and publishing
 - **Content Modes**: Smart rendering for text, markdown, images, video, audio, and PDF
 - **Themes**: Terminal-inspired UI themes (sneak, arch, mech)
 
@@ -21,11 +32,11 @@ A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store,
 ```bash
 nix develop   # Enter dev shell with all tools
 
-# Library-only build (no web dependencies)
+# Lib variant (no web dependencies)
 just build-lib
 just serve-lib
 
-# Full build with web UI (requires Bun)
+# Web variant (requires Bun)
 just build
 just serve
 ```
@@ -33,15 +44,56 @@ just serve
 ### With Cargo
 
 ```bash
-# Library-only (no web UI)
-cargo build --no-default-features
-cargo run --no-default-features -- serve
+# Lib variant (no web UI): the default features (sandbox and world included)
+# (--no-default-features is not the variant switch: it would also remove sandbox and world)
+cargo build
+cargo run -- serve
 
-# With web UI (build assets first)
+# Web variant (build assets first)
 cd web && bun install && bun run build && cd ..
 cargo build --features web
 cargo run --features web -- serve --web
 ```
+
+The lib/web split is the `web` feature. `--no-default-features` is not that
+switch: it turns off the default `sandbox` and `world` features and leaves
+the web feature off, so it builds neither variant.
+
+## Five-minute path
+
+Phase 12 exit criterion 1 (#12595): from an empty directory to a
+running world a friend can join in under 5 minutes, one command per
+step. `pkgs/id/scripts/five-minute-path.sh` runs the path and prints
+the elapsed time; run it from anywhere — it creates its own run
+directory, clones the repo, builds `id`, serves a world, mints an
+invite, and has a second node join it:
+
+```bash
+pkgs/id/scripts/five-minute-path.sh
+# ... per-step output ...
+# RESULT verdict=PASS elapsed_s=123 budget_s=300 world=five-minute steps=clone=12 build=80 serve=3 invite=1 join=2 records=1 run_dir=/tmp/tmp.XXXXXX
+```
+
+The steps, one command each (the script runs exactly these):
+
+```bash
+git clone --depth 1 https://github.com/developing-today/code.git five-minute-path
+cargo build --release --no-default-features -p id   # in five-minute-path/pkgs/id
+id serve --world --world-name five-minute --data-dir host --iroh-port 17001 --no-relay --no-gossip --no-mdns
+id --data-dir host id                                # the host's node id
+id world invite <node> --name friend --world five-minute --addr 127.0.0.1:17001 --no-relay
+id world join <node> --capability <cap> --world five-minute --addr 127.0.0.1:17001 --no-relay --command-mode --json
+id world records <node> --capability <cap> --world five-minute --addr 127.0.0.1:17001 --no-relay
+```
+
+The admin token is a fresh random value passed only through
+`ID_WORLD_ADMIN_TOKEN`; the guest capability travels via
+`ID_WORLD_CAPABILITY`. All traffic is direct loopback, so no relay,
+DHT, gossip, or mDNS is involved. `--dry-run` prints the steps without
+running them; `--id-bin PATH` skips the clone and build steps (reported
+as skipped in the `RESULT` line). The script exits 0 only when the
+path completes under the 300-second budget. The timed result is
+recorded on #12595, where the Phase 12 exit audit (#12231) can cite it.
 
 ## Usage
 
@@ -55,8 +107,8 @@ id get myfile.txt
 # List all files
 id list
 
-# Find files by pattern
-id find "*.rs"
+# Find files by query (case-insensitive substring; no glob matching)
+id find ".rs"
 
 # Search files
 id search "hello"
@@ -245,21 +297,28 @@ it is — a valid world capability, minted by the host's admin with
 | `peek`         |                                | Preview with configurable head/tail lines               |
 | `find`         |                                | Find files by query, optionally output content          |
 | `search`       |                                | Search files and list all matches                       |
-| `list`         | `ls`                           | List all stored files                                   |
+| `list`         |                                | List all stored files                                   |
 | `tag`          | `label`, `link`                | Manage metadata tags on files                           |
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files               |
 | `id`           |                                | Print local node public ID                              |
 | `key`          |                                | Export or import a passphrase-wrapped identity key      |
-| `keyset`       |                                | Show or change the identity's admin and device keys    |
+| `keyset`       |                                | Show or change the identity's admin and device keys     |
 | `peers`        |                                | Discover and list known peers                           |
 | `world`        |                                | Mint invites for, and join, multiplayer worlds          |
 | `gallery`      |                                | Administer a program gallery directory                  |
+| `petname`      |                                | List the petnames one owner gave, read-only             |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
+| `walk`         |                                | The #9106 walking skeleton, driven by hand              |
+| `host`         |                                | Host mode: run a data root of worlds and operate it     |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |
 | `delegate`     |                                | Grant a delegate a scope in a group                     |
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
 | `doc`          |                                | Publish documents; list events/frontier/history         |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
+| `compact`      |                                | Reclaim live-class event bytes (one retention pass)     |
+| `nav`          |                                | Navigate the typed object graph (links, threads, paths) |
+| `talk`         |                                | Talk pages: post on and list an object's discussion     |
+| `hosted`       |                                | Push to and pull from a hosted instance over the bridge |
 | `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
 
 ### Tag Subcommands
@@ -301,7 +360,8 @@ id repl
 > tag search author:Jane          # Structured search syntax
 > tag find readme                 # find = search alias
 > migrate-tags                    # Add name/file tags to all files
-> cat myfile.txt | head -5        # Pipe output to shell
+> !head -5 myfile.txt             # Shell escape: run any shell command
+> printf 'bread\n' |> put - bakery.txt  # Pipe shell output into a stored file
 > $(id id)                        # Subshell expansion
 > help                            # Show all commands
 ```
@@ -329,15 +389,18 @@ This provides: Rust 1.99.1, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-
 
 ```bash
 just test              # All fast tests (Rust + TypeScript unit + typecheck)
-just test-rust         # Rust tests only (~408 unit + ~93 integration)
-just test-unit         # Unit tests only (fast, ~408 tests)
-just test-integration  # Integration tests only (~93 tests)
-just test-web-unit     # TypeScript unit tests (~304 assertions)
-just test-e2e          # Playwright E2E (chromium + firefox, 208 tests)
-just test-nix          # nix flake check (27 checks — runs everything)
+just test-rust         # Rust tests only (unit + integration)
+just test-unit         # Unit tests only (fast)
+just test-integration  # Integration tests only
+just test-web-unit     # TypeScript unit tests
+just test-e2e          # Playwright E2E (chromium + firefox)
+just test-nix          # nix flake check (all checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
 ```
+
+Test totals are not stated here: a count is a measurement of one run on one
+date, and the book's building chapter records counts that way or not at all.
 
 See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference: 6 test layers, browser coverage matrix, environment comparison, and when to add tests where.
 
@@ -346,7 +409,7 @@ See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testin
 ```bash
 just build-nix                  # Build web variant (nix build)
 just build-nix-lib              # Build lib variant (nix build .#id-lib)
-just test-nix                   # All 27 CI checks in sandbox (nix flake check)
+just test-nix                   # All CI checks in sandbox (nix flake check)
 just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 ```
 
@@ -355,53 +418,56 @@ just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture.
 
 ```
-src/
+src/                     # The `id` facade crate: entry point and node bootstrap,
+                         # plus the surfaces that compose the crates below
+                         # (file ops, currency gateway, hosted binding/export/ingest,
+                         # serve proxy, boards, grants)
 ├── main.rs              # Entry point
-├── lib.rs               # Library exports, node bootstrap
-├── cli.rs               # Clap argument definitions
-├── protocol.rs          # P2P request/response protocol
-├── store.rs             # Iroh blob store operations
-├── tags.rs              # Metadata tag system (alpha/omega dual-index)
-├── tuple.rs             # Sort-preserving binary key encoding
-├── helpers.rs           # Parsing and formatting utilities
-├── discovery.rs         # Peer discovery
-├── commands/            # Command implementations
-│   ├── put.rs, get.rs, find.rs, list.rs, peers.rs, id.rs, tag.rs
-│   ├── serve.rs         # Server with optional web UI
-│   ├── repl.rs          # REPL entry point
-│   └── client.rs        # Remote peer client
-├── repl/                # REPL internals
-│   ├── runner.rs        # Command dispatch and help
-│   └── input.rs         # Shell preprocessing (pipes, subshells, heredocs)
-└── web/                 # Web UI (feature-gated)
-    ├── routes.rs        # Axum HTTP handlers
-    ├── templates.rs     # HTML template rendering
-    ├── collab.rs        # WebSocket collaboration server
-    ├── tags_ws.rs       # WebSocket tag updates
-    ├── assets.rs        # rust-embed static asset serving
-    ├── content_mode.rs  # Content type detection
-    └── markdown.rs      # Markdown rendering
+└── lib.rs               # Library exports, node bootstrap
+
+crates/                  # The workspace crates the facade composes
+├── id-cli/              # Clap argument definitions, command implementations,
+│                        # REPL, server config
+├── id-core/             # Core types and abuse/budget policy
+├── id-store/            # Blob/content store, metadata tags (alpha/omega dual-index)
+├── id-events/           # Signed event store: ingest, chains, forks, range sync
+├── id-sync/             # Peer sync
+├── id-web/              # Web UI server (routes, collab, tags WS, world bridge,
+│                        # security layer)
+├── id-worlds/           # Worlds: sessions, journal, runtime
+├── id-caps/             # Capability surface and the MCP bridge
+├── id-groups/           # Groups
+├── id-directory/        # Directory
+├── id-config/           # Configuration
+├── id-currency-registry/ # Currency registry
+├── id-render/           # Rendering
+├── id-native-shell/     # Native shell
+├── id-hw-shell/         # Hardware shell
+└── id-import-notion/    # Notion importer
 
 web/                     # TypeScript frontend
-├── src/                 # ProseMirror editor, collab, themes, editor features
+├── src/                 # ProseMirror editor, collab, themes, editor features,
+│                        # world surface
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests (104 tests × 2 browsers = 208)
-├── tests/basic.spec.ts           # 19 UI fundamental tests
-├── tests/editor-features.spec.ts # 31 editor feature tests
-├── tests/file-operations.spec.ts # 18 file/tag operation tests
-├── tests/navigation.spec.ts      # 17 navigation + SPA tests
-├── tests/websocket.spec.ts       # 19 WS + collaboration tests
+e2e/                     # Playwright E2E tests
+├── tests/autosave.spec.ts        # autosave
+├── tests/basic.spec.ts           # UI fundamentals
+├── tests/editor-features.spec.ts # editor features
+├── tests/file-operations.spec.ts # file/tag operations
+├── tests/navigation.spec.ts      # navigation + SPA
+├── tests/websocket.spec.ts       # WebSocket + collaboration
+├── tests/world-surface.spec.ts   # world surface
 └── playwright.config.ts          # 3-mode config: local / nix sandbox / VM test
 
 nix/tests/                   # NixOS VM integration tests
-├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
-├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
+├── serve-test.nix           # HTTP API test (curl)
+├── e2e-test.nix             # Chromium --dump-dom DOM test
 ├── integration-test.nix     # Full cli_integration suite including serve_tests
-└── playwright-e2e-test.nix  # 4-VM full Playwright (208 interactive tests)
+└── playwright-e2e-test.nix  # 4-VM full Playwright
 
 tests/
-└── cli_integration.rs   # ~93 integration tests
+└── cli_integration.rs   # Integration tests
 ```
 
 ## Documentation
@@ -409,8 +475,43 @@ tests/
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture and design decisions
 - [WEB.md](WEB.md) — Web interface documentation
 - [web/README.md](web/README.md) — Wire protocol and frontend details
-- [docs/](docs/) — Feature documentation (chronological)
+- [docs/](docs/) — Design-record archive (symlink to the repo-root `doc/` archive)
 - [AGENTS.md](AGENTS.md) — AI agent development guidelines
+
+### ID program
+
+A full investigation, design-completion and build-out program for the ID platform is tracked in [#13240](https://github.com/developing-today/code/issues/13240). Its charter is the [program prompt](docs/2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md); the program epics are [#2056](https://github.com/developing-today/code/issues/2056) and [#9106](https://github.com/developing-today/code/issues/9106). Deliverables include an ID book published under `/code/id/` and a prioritized map of all ID issues with blockers marked.
+
+## Operator and contributor contract (DOC-01)
+
+The contract with the humans and agents who operate and change
+ID, in the shape of the fleet package's DOC-01 (#10728):
+
+- **The surface is the code.** The CLI's parsers, the web router,
+  the MCP bridge's tool table, the shell contract
+  (`contract/shell-contract.v1.json`) and the versioned schemas
+  are the authority on what ID can do. Documentation — this
+  README, `ARCHITECTURE.md`, `WEB.md`, and the book — must not
+  present a designed spelling as shipped. Where a doc and the
+  code disagree, the code wins and the disagreement is filed as
+  an issue in the same pass it is found.
+- **The book is part of the same change.** Any change to a
+  command, a flag, a default, a config key, an MCP tool, a web
+  route, a schema, a wire format, or an operational procedure
+  updates the matching chapter of [`book/`](book/) in the same
+  change. The rule is stated for readers in the book's own
+  "Keeping this book current" chapter. `create-missing = false`
+  in `book.toml` makes a missing chapter a build failure, never
+  a stub, and the `id-docs.yml` workflow builds `.#id-docs` on
+  `main` so a broken chapter fails by name.
+- **Capabilities are a boundary, not a convention.** Capability
+  ceilings and quotas are enforced in the host policy point and
+  the serving node, never in client goodwill. No change may move
+  enforcement into a guest, a client, or a doc.
+- **Wire formats are versioned, never edited in place.** A new
+  event, frame or schema version is a new `vN` artifact beside
+  the old one; the book's schema chapter follows the same rule
+  and describes the new version beside the old.
 
 ## License
 

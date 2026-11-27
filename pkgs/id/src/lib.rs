@@ -1,8 +1,10 @@
-//! # ID - Peer-to-Peer File Sharing with Iroh
+//! # ID — peer-to-peer platform and Rust facade
 //!
-//! `id` is a peer-to-peer file sharing tool and library built on the [Iroh](https://iroh.computer)
-//! networking stack. It provides content-addressed blob storage with human-readable naming via tags,
-//! enabling secure, decentralized file sharing between peers.
+//! `id` is a peer-to-peer platform and Rust facade built on the
+//! [Iroh](https://iroh.computer) networking stack. Its workspace includes
+//! content-addressed file sharing, a sandboxed world runtime, directory,
+//! group, sync, currency, and optional web layers. The command application
+//! is implemented by `id-cli`; this facade preserves the public `id::` paths.
 //!
 //! ## Overview
 //!
@@ -22,10 +24,10 @@
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
 //! │                         CLI / REPL                              │
-//! │  (main.rs - command dispatch, repl/runner.rs - interactive)    │
+//! │          id-cli command layer (facade re-exports)                │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │                      Command Handlers                           │
-//! │  put.rs │ get.rs │ find.rs │ list.rs │ serve.rs │ id.rs │ tag.rs│
+//! │   commands, protocol, store, tags, worlds, directory, sync       │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │              Protocol Layer (protocol.rs)                       │
 //! │  MetaRequest/Response │ FindMatch │ MetaProtocol               │
@@ -41,15 +43,12 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Modules
+//! ## Facade modules
 //!
-//! - [`cli`] - Command-line argument parsing with clap
-//! - [`commands`] - Command implementations (put, get, find, list, serve, tag, etc.)
-//! - [`protocol`] - Network protocol types for metadata exchange
-//! - [`store`] - Blob storage and keypair management
-//! - [`tags`] - Metadata tag storage using iroh-docs CRDT documents
-//! - [`repl`] - Interactive REPL with shell-like features
-//! - [`helpers`] - Utility functions for parsing and formatting
+//! The root crate contains platform services and re-exports modules from
+//! workspace members, including `id-cli`, `id-core`, `id-caps`, `id-sync`,
+//! `id-worlds`, `id-directory`, and `id-web` (feature-gated). The facade's
+//! `cli`, `commands`, and `repl` paths are provided by `id-cli`.
 //!
 //! ## Signing contract — sign only what receipt would accept
 //!
@@ -205,14 +204,17 @@
 
 pub use id_core::abuse;
 pub use id_core::access;
+pub use id_core::admission_gate;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub use id_events::attestation;
 pub mod backup;
+pub mod bench_ack_mode;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
 pub use id_core::connectivity;
+pub use id_store::admission;
 pub use id_store::chain;
 pub use id_store::chat;
 pub use id_store::chat_anchor;
@@ -252,17 +254,29 @@ pub mod grants;
 pub mod groups;
 pub mod hosted_binding;
 pub mod hosted_export;
-pub use id_events::idset;
-pub mod input_framing;
+pub mod hosted_freeze;
+pub mod hosted_ingest;
+pub mod hosted_migration;
+pub mod hosted_transfer;
+pub mod hosted_world_partition;
 pub use id_directory::invite;
 pub use id_directory::invites;
+pub use id_events::idset;
 pub use id_events::local_claims;
 pub use id_events::local_events;
 pub use id_store::issuer_rotation;
+pub use id_sync::admission as sync_admission;
 pub use id_sync::chained_message;
 pub use id_sync::log_sync;
+pub use id_worlds::input_framing;
 pub mod serve_proxy;
+pub mod serve_proxy_keepalive;
+pub mod serve_proxy_leg;
+pub mod serve_proxy_mux;
+pub mod serve_proxy_route;
+pub mod serve_proxy_scheduler;
 pub use id_core::membership;
+pub use id_core::migration_control;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub use id_store::note_links;
@@ -277,6 +291,7 @@ pub use id_store::search;
 #[cfg(feature = "world")]
 pub use id_store::session_checkpoint;
 pub use id_store::store;
+pub use id_store::turso;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::guest_burn;
 #[cfg(feature = "sandbox")]

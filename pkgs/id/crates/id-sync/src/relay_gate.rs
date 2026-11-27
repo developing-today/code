@@ -37,21 +37,23 @@
 //! post-hoc ingest checks would propagate unsigned or unauthorized
 //! traffic before validation (#2035). The multi-node bridge test is
 //! in this module's tests (two gates chained origin -> bridge ->
-//! leaf, plus the unauthorized-at-bridge stop). The remaining
-//! follow-on slice is the live call-site wiring: feeding gossip/
-//! ingest arrivals through this gate and backing
-//! [`MembershipFrontier`] with the signed-graph membership state.
+//! leaf, plus the unauthorized-at-bridge stop). The live call-site
+//! wiring has since landed in [`crate::relay_ingest`]: arrivals on
+//! the chained-relay ALPN run through this gate before delivery or
+//! forwarding. The graph backing for [`MembershipFrontier`] has since
+//! landed in [`crate::graph_frontier`].
 //!
 //! # Membership frontier
 //!
 //! Group authorization is a trait ([`MembershipFrontier`]): the gate
 //! asks whether the origin may write the envelope's group, and refuses
 //! non-members before any forward. A gossip topic ID is never
-//! consulted — it is not a group credential (§4.2). The authoritative
-//! membership state (the point in the signed graph against which write
-//! access is evaluated) is still open design; [`AllowlistFrontier`] is
-//! the local stand-in the graph-backed frontier will replace without
-//! changing the gate.
+//! consulted — it is not a group credential (§4.2). The graph-backed
+//! frontier is [`GraphFrontier`](crate::graph_frontier::GraphFrontier):
+//! it evaluates write access against the signed graph's resolved
+//! membership state (the store's roster fold), the membership point
+//! recorded in its module doc. [`AllowlistFrontier`] remains the local
+//! stand-in for store-less relays and tests.
 
 use std::collections::{HashMap, HashSet};
 
@@ -66,7 +68,7 @@ use crate::hex::hex_encode;
 /// permitted to write `group`? This is the seam the signed-graph
 /// membership state plugs into; the gate itself only asks, never
 /// interprets.
-pub trait MembershipFrontier {
+pub trait MembershipFrontier: Send + Sync {
     /// Whether `origin` (account ID hex) may write `group`.
     fn is_authorized(&self, origin: &str, group: &str) -> bool;
 }

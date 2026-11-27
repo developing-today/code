@@ -32,7 +32,6 @@
 
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import {
   coerceHealth,
   decide,
@@ -53,6 +52,7 @@ import {
   planEscalation,
   planRecovery,
   recordEscalation,
+  recordReEscalation,
   surfacingLine,
   type EscalationContext,
   type EscalationEffectors,
@@ -73,7 +73,8 @@ export interface WatchdogEffects {
   /** Live CDP liveness: does the browser's /json/version answer? */
   probeCdp(port: number): Promise<{ ok: boolean; detail: string }>;
   /** Rung 2: re-validate the CDP session (browser alive, an allowlist
-   *  origin open, adapter cookies present BY NAME). */
+   *  page open AND its renderer answering — the wedge probe — and the
+   *  adapter cookies present BY NAME). */
   rung2(adapter: WatchdogAdapter): Promise<RungOutcome>;
   /** Rung 3: re-login driver via the provider's own SSO flow. Stops
    *  dead at a human-only challenge. */
@@ -160,6 +161,89 @@ async function cdpCookieNames(port: number, origins: string[], timeoutMs = 5000)
   });
 }
 
+/** One /json/list target, reduced to the fields the watchdog uses. */
+interface CdpTarget {
+  type?: string;
+  url?: string;
+  webSocketDebuggerUrl?: string;
+}
+
+/** The allowlist page target rung 2 should talk to: a page (not a
+ *  background page, service worker, or other non-page target) on one
+ *  of the adapter's origins, with a debugger websocket. Pure — the
+ *  wedge probe's target choice is testable without a browser. */
+export function pickAllowlistTarget(targets: CdpTarget[], origins: string[]): CdpTarget | null {
+  return (
+    targets.find(
+      (t) =>
+        (t.type === undefined || t.type === "page") &&
+        typeof t.webSocketDebuggerUrl === "string" &&
+        t.webSocketDebuggerUrl.length > 0 &&
+        origins.some((o) => (t.url ?? "").startsWith(o)),
+    ) ?? null
+  );
+}
+
+/** Wedge probe (#10630): does the page's renderer answer a trivial
+ *  Runtime.evaluate over its own debugger websocket? A hung renderer
+ *  leaves every browser-level endpoint (/json/version, /json/list,
+ *  Storage.getCookies) answering while the page itself never replies
+ *  — the silent shape of the 2026-11-13→16 outage. The reply's value
+ *  is discarded; answering at all is the signal. */
+export async function cdpPageResponsive(
+  webSocketDebuggerUrl: string,
+  timeoutMs = 5000,
+): Promise<{ ok: boolean; detail: string }> {
+  return await new Promise((resolve) => {
+    let settled = false;
+    const done = (r: { ok: boolean; detail: string }) => {
+      if (!settled) {
+        settled = true;
+        resolve(r);
+      }
+    };
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(webSocketDebuggerUrl);
+    } catch (e) {
+      done({ ok: false, detail: `page websocket unusable: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+      done({ ok: false, detail: `page unresponsive: Runtime.evaluate not answered within ${timeoutMs} ms` });
+    }, timeoutMs);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1", returnByValue: true } }));
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data)) as { id?: number; error?: { message?: string } };
+        if (msg.id !== 1) return;
+        clearTimeout(timer);
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
+        if (msg.error)
+          done({ ok: false, detail: `page evaluate errored: ${msg.error.message ?? "unknown CDP error"}` });
+        else done({ ok: true, detail: "page renderer answered Runtime.evaluate" });
+      } catch {
+        /* not our reply frame — keep waiting for the reply or the timeout */
+      }
+    };
+    ws.onerror = () => {
+      clearTimeout(timer);
+      done({ ok: false, detail: "page websocket errored before answering" });
+    };
+  });
+}
+
 async function systemctlUser(args: string[], timeoutMs = 30000): Promise<{ ok: boolean; detail: string }> {
   try {
     const proc = Bun.spawn(["systemctl", "--user", ...args], { stdout: "pipe", stderr: "pipe" });
@@ -212,28 +296,76 @@ export function productionEffects(env: Record<string, string | undefined> = proc
         }
         return { outcome: "failed", detail: probe.detail };
       }
-      // Browser answers: an allowlist origin must be open, and the
-      // adapter's cookies must be present by name.
-      let targets: { url?: string }[] = [];
-      try {
-        targets = (await fetchJson(`http://127.0.0.1:${adapter.cdpPort}/json/list`, 3000)) as typeof targets;
-      } catch (e) {
-        return { outcome: "failed", detail: `CDP /json/list failed: ${e instanceof Error ? e.message : String(e)}` };
-      }
-      const open = targets.some((t) => adapter.origins.some((o) => (t.url ?? "").startsWith(o)));
-      if (adapter.origins.length > 0 && !open) {
-        return { outcome: "failed", detail: "no tab on an adapter allowlist origin" };
-      }
-      if (adapter.cookieNames.length > 0) {
-        const names = await cdpCookieNames(adapter.cdpPort, adapter.origins);
-        if (names === null) return { outcome: "failed", detail: "cookie presence check could not run (CDP websocket)" };
-        const missing = adapter.cookieNames.filter((n) => !names.includes(n));
-        if (missing.length > 0) return { outcome: "failed", detail: `cookies missing by name: ${missing.join(", ")}` };
-      }
-      return {
-        outcome: "succeeded",
-        detail: "CDP session re-validated: browser live, allowlist origin open, cookies present by name",
+      // Browser answers at the endpoint. Validate the session in
+      // layers: an allowlist page is open, its renderer answers an
+      // evaluate (the wedge probe — browser-level endpoints answer
+      // even when the page is hung), and the adapter's cookies are
+      // present by name.
+      const validate = async (): Promise<{ ok: boolean; wedged: boolean; detail: string }> => {
+        let targets: CdpTarget[] = [];
+        try {
+          targets = (await fetchJson(`http://127.0.0.1:${adapter.cdpPort}/json/list`, 3000)) as CdpTarget[];
+        } catch (e) {
+          return {
+            ok: false,
+            wedged: false,
+            detail: `CDP /json/list failed: ${e instanceof Error ? e.message : String(e)}`,
+          };
+        }
+        if (adapter.origins.length > 0) {
+          const target = pickAllowlistTarget(targets, adapter.origins);
+          if (!target) {
+            const anyOpen = targets.some((t) => adapter.origins.some((o) => (t.url ?? "").startsWith(o)));
+            return {
+              ok: false,
+              wedged: false,
+              detail: anyOpen
+                ? "allowlist page is open but exposes no debugger websocket — cannot probe it"
+                : "no tab on an adapter allowlist origin",
+            };
+          }
+          const page = await cdpPageResponsive(target.webSocketDebuggerUrl!);
+          if (!page.ok) return { ok: false, wedged: true, detail: `browser wedged: ${page.detail}` };
+        }
+        if (adapter.cookieNames.length > 0) {
+          const names = await cdpCookieNames(adapter.cdpPort, adapter.origins);
+          if (names === null)
+            return { ok: false, wedged: false, detail: "cookie presence check could not run (CDP websocket)" };
+          const missing = adapter.cookieNames.filter((n) => !names.includes(n));
+          if (missing.length > 0)
+            return { ok: false, wedged: false, detail: `cookies missing by name: ${missing.join(", ")}` };
+        }
+        return {
+          ok: true,
+          wedged: false,
+          detail: "CDP session re-validated: browser live, allowlist page responsive, cookies present by name",
+        };
       };
+      let v = await validate();
+      if (!v.ok && v.wedged && adapter.browserUnit) {
+        // Wedged browser: one bounded supervised restart, then the
+        // FULL validation again — a restart that leaves the page
+        // hung is a failure, not a repair. (Recovery is only real
+        // when a later tick observes a fresh producer read; that is
+        // the recovery path's job, not this rung's claim.)
+        const rs = await systemctlUser(["restart", adapter.browserUnit]);
+        if (!rs.ok)
+          return { outcome: "failed", detail: `${v.detail}; restart of ${adapter.browserUnit} failed: ${rs.detail}` };
+        await sleep(3000);
+        const again = await probeCdp(adapter.cdpPort);
+        if (!again.ok)
+          return { outcome: "failed", detail: `browser unit restarted but CDP still unreachable: ${again.detail}` };
+        v = await validate();
+        if (v.ok)
+          return {
+            outcome: "succeeded",
+            detail: `browser wedged; unit ${adapter.browserUnit} restarted; ${v.detail}`,
+          };
+        return { outcome: "failed", detail: `browser still wedged after unit restart: ${v.detail}` };
+      }
+      return v.ok
+        ? { outcome: "succeeded" as const, detail: v.detail }
+        : { outcome: "failed" as const, detail: v.detail };
     },
     async rung3(adapter) {
       if (!adapter.cdpPort || !adapter.loginUrl)
@@ -612,12 +744,13 @@ export async function runTick(
         adapterRef: `adapters/${adapter.name}.json`,
         historyRef: opts.historyFile,
       };
-      const plan = planEscalation(health, ctx);
+      const plan = planEscalation(health, ctx, now.getTime());
       if (plan.actions.length > 0) {
         if (opts.liveEscalation) {
           try {
             const refs = await applyEscalationActions(plan.actions, opts.effects.escalation);
             health = recordEscalation(health, ctx, refs, at);
+            if (plan.reEscalated) health = recordReEscalation(health, at);
           } catch (e) {
             if (e instanceof EscalationPartialError) {
               health = recordEscalation(health, ctx, e.refs, at);
@@ -669,19 +802,39 @@ function argValue(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+/** HOME for a default path, per the #5762 home-resolution contract (#8220):
+ * an unset or empty HOME is an error naming what needed it, never
+ * os.homedir's silent passwd fallback; a set HOME is returned unchanged. */
+function requireHome(remedy: string, env: Record<string, string | undefined>): string {
+  const home = env.HOME;
+  if (home === undefined || home.trim() === "") {
+    throw new Error(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so a default watchdog path cannot be derived; ` +
+        `set HOME or ${remedy} (home-resolution contract #5762: no passwd fallback)`,
+    );
+  }
+  return home;
+}
+
 export async function main(
   args: string[] = process.argv.slice(2),
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
-  const home = homedir();
-  const stateDir = join(home, ".local", "state", "pm-aggregator");
+  // Defaults under HOME resolve lazily (#8220): flags and overrides never need it.
+  const stateDir = () =>
+    join(
+      requireHome("pass --state-file, --history-file and --heartbeat-file", env),
+      ".local",
+      "state",
+      "pm-aggregator",
+    );
   const adaptersDir =
     argValue(args, "--adapters-dir") ??
     env.QUOTA_WATCHDOG_ADAPTERS_DIR ??
-    join(home, ".config", "quota-watchdog", "adapters");
-  const stateFile = argValue(args, "--state-file") ?? join(stateDir, "quota-watchdog-state.json");
-  const historyFile = argValue(args, "--history-file") ?? join(stateDir, "quota-watchdog-history.jsonl");
-  const heartbeatFile = argValue(args, "--heartbeat-file") ?? join(stateDir, "quota-gatherer-heartbeat.json");
+    join(requireHome("set QUOTA_WATCHDOG_ADAPTERS_DIR", env), ".config", "quota-watchdog", "adapters");
+  const stateFile = argValue(args, "--state-file") ?? join(stateDir(), "quota-watchdog-state.json");
+  const historyFile = argValue(args, "--history-file") ?? join(stateDir(), "quota-watchdog-history.jsonl");
+  const heartbeatFile = argValue(args, "--heartbeat-file") ?? join(stateDir(), "quota-gatherer-heartbeat.json");
   const effects = productionEffects(env);
   const { errors } = await runTick({
     adaptersDir,

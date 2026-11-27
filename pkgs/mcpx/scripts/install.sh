@@ -111,7 +111,12 @@ if [ -z "$version" ]; then
   # tag_name precedes prerelease, so the awk below can carry the candidate
   # from one line to the other.
   releases_url=${MCPX_RELEASES_URL:-"https://api.github.com/repos/${repo}/releases?per_page=100"}
-  version=$(curl -fsSL "$releases_url" | awk '
+  # Fetch separately from the parse: without pipefail a pipeline's status
+  # is awk's, so a failed curl would otherwise fall through to the
+  # misleading "no mcpx release found" diagnostic below.
+  releases_json=$(curl -fsSL "$releases_url") ||
+    die "could not ask GitHub for the latest mcpx release"
+  version=$(printf '%s\n' "$releases_json" | awk '
     /"tag_name":/ {
       pending = ""
       if (match($0, /"tag_name": *"mcpx\/v[^"]*"/)) {
@@ -123,7 +128,7 @@ if [ -z "$version" ]; then
     }
     /"prerelease": *true/ { pending = "" }
     /"prerelease": *false/ && pending != "" { print pending; exit }
-  ') || die "could not ask GitHub for the latest mcpx release"
+  ')
   [ -n "$version" ] ||
     die "no mcpx release found; set MCPX_VERSION to a version that exists (see https://github.com/${repo}/releases)"
 fi

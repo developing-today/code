@@ -165,6 +165,19 @@ Drew's rule: plenty belongs in the NixOS flake, and _everything else is in
 that flake somewhere too_. The registry is that "somewhere": one output a
 `deploy` invocation can enumerate (`deploy list`).
 
+_Amendment (2026-11-22, #5770):_ the shape gains one optional field,
+`timer` — `{ onCalendar, persistent, randomizedDelaySec }` — for
+timer-driven targets: a systemd-class target that sets it renders a
+`Type=oneshot` service plus a `.timer` unit, and activation enables the
+timer rather than the service. The field is optional and strictly
+validated; definitions without it are unchanged. The same slice adds
+`sandbox` as a systemd host class (§4.4): profile base and state under
+the sandbox user's home (the only storage that survives a recycle),
+rendered units stored inside the generation, and a manifest-driven
+generic restorer (`deploy restore`, plus a standalone copy the sandbox
+bootstrap installs) that re-links activated units after a recycle —
+no per-daemon special cases in the bootstrap.
+
 ## 4. The `deploy` tool
 
 A single flake-built binary in the code flake (package `deploy`), the

@@ -17,7 +17,7 @@
 // orchestrator's own alerting and are out of scope here.
 //
 // Thresholds (documented here, at the derivation site, per #1148):
-// - fleet feed: age >= 5 min is stale (FEED_STALE_MS, the same bound
+// - fleet feed: age >= 10 min (two collector cadences) is stale (FEED_STALE_MS, the same bound
 //   health.ts and live.ts apply to feed-backed facets).
 // - orchestration section: stale past 90 min (ORCHESTRATION_STALE_MS
 //   in feed.ts, applied by diagnoseOrchestrationSection), and the
@@ -36,10 +36,12 @@
 //   snapshot (host-health.ts) — claimant mode file missing /
 //   unreadable / invalid, a PM unit's failed last run, an inactive
 //   unit timer, pm-projector-reconcile stuck in `activating` past
-//   10 min, or pm-dashboard-backup without a success in 36 h (its
-//   cadence is daily) breach immediately; an absent snapshot or one
-//   stale past 15 min (3 missed 5-minute collections) breaches as
-//   its own item, so the surfacer cannot itself fail silently.
+//   10 min, pm-dashboard-backup without a success in 36 h (its
+//   cadence is daily), or a backup generation the run record marks
+//   failed (#3989: the failing step is named, never read as success);
+//   an absent snapshot or one stale past 15 min (3 missed 5-minute
+//   collections) breaches as its own item, so the surfacer cannot
+//   itself fail silently.
 import {
   ageMsText,
   FEED_STALE_MS,
@@ -204,9 +206,9 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
       put(
         item(
           "orchestration",
-          `Watchdog: orchestration section is stale — last run ${orch.ageMs !== undefined ? ageMsText(orch.ageMs) : "over 90m"} old`,
+          `Watchdog: orchestration section is stale — last run ${orch.ageMs !== undefined ? ageMsText(orch.ageMs) : "over 90m"}`,
           "watchdog: orchestration stale",
-          `The orchestration section is ${orch.ageMs !== undefined ? ageMsText(orch.ageMs) : "past 90m"} old — past the 90m stale threshold (#1148 watchdog), so the published tiers are aging in place.`,
+          `The orchestration section is ${orch.ageMs !== undefined ? ageMsText(orch.ageMs) : "past 90m"} — past the 90m stale threshold (#1148 watchdog), so the published tiers are aging in place.`,
           (Number.isNaN(generatedMs) ? now : generatedMs) + WATCHDOG_ORCHESTRATION_STALE_MS,
           now,
           "Check the hourly orchestration-pass job; the card clears itself when a fresh section publishes.",
@@ -290,7 +292,7 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "projects",
         `Watchdog: Project #4 audit is stale — last snapshot ${ageMsText(ageMs)} ago`,
         "watchdog: projects stale",
-        `The Project #4 audit is ${ageMsText(ageMs)} old, past its 24h freshness bound; repository readers may be looking at an outdated board schema or distribution.`,
+        `The Project #4 audit is ${ageMsText(ageMs)}, past its 24h freshness bound; repository readers may be looking at an outdated board schema or distribution.`,
         Date.parse(audit.generatedAt) + WATCHDOG_PROJECT_AUDIT_STALE_MS,
         now,
         "Check the fleet-feed collector's timer and the Project read; the card clears itself when a fresh audit snapshot publishes.",
@@ -316,9 +318,9 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
     put(
       item(
         "registry",
-        `Watchdog: registry facet is stale — session records ${ageMsText(inputs.registryAgeMs)} old`,
+        `Watchdog: registry facet is stale — session records ${ageMsText(inputs.registryAgeMs)}`,
         "watchdog: registry stale",
-        `The identity registry's merged session records are ${ageMsText(inputs.registryAgeMs)} old — past the 1h registry threshold (#1148 watchdog) — so session identity/coverage data is decaying behind the feed's own 5m alarm.`,
+        `The identity registry's merged session records are ${ageMsText(inputs.registryAgeMs)} — past the 1h registry threshold (#1148 watchdog) — so session identity/coverage data is decaying behind the feed's own 5m alarm.`,
         (Number.isNaN(generatedMs) ? now - inputs.registryAgeMs : generatedMs) + WATCHDOG_REGISTRY_STALE_MS,
         now,
         "Check the registry inputs (session launch records in the fleet feed); the card clears itself when fresh records merge.",
@@ -390,10 +392,51 @@ function deriveHostHealthItems(snapshot: HostHealthSnapshot | null, now: number,
         "host-health",
         `Watchdog: host-health snapshot is stale — last collected ${ageMsText(now - generatedMs)} ago`,
         "watchdog: host health stale",
-        `The host-health collector (#10141) runs every 5 min; its snapshot is ${ageMsText(now - generatedMs)} old, past the 15 min bound (3 missed cycles), so every host-health verdict below may itself be out of date.`,
+        `The host-health collector (#10141) runs every 5 min; its snapshot is ${ageMsText(now - generatedMs)}, past the 15 min bound (3 missed cycles), so every host-health verdict below may itself be out of date.`,
         generatedMs + HOST_HEALTH_STALE_MS,
         now,
         "Check the pm-host-health user timer on the laptop; the card clears itself when the collector runs again.",
+        HOST_HEALTH_REF,
+      ),
+    );
+  }
+
+  // Backup restore point (#3989 criterion 6): a failed generation
+  // breaches immediately and names its failing step — a failed or
+  // empty generation must never read as a successful backup. The
+  // 36 h staleness item below still covers a chain that stopped
+  // without a failed unit to show for it; recovery is the next
+  // complete generation.
+  const backup = snapshot.backup;
+  if (!backup) {
+    const host = snapshot.host ? ` on host ${snapshot.host}` : "";
+    put(
+      item(
+        "backup-restore-point",
+        `Watchdog: verified backup restore point is unavailable${host}`,
+        "watchdog: backup restore point unavailable",
+        `The host-health snapshot has no readable pm-dashboard-backup run record${host}; no generation date, finish time, or verified archive hash is available, so backup age and the restore point cannot be established. An empty or unverified generation is not a successful backup (#3989).`,
+        Number.isNaN(generatedMs) ? now : generatedMs,
+        now,
+        "Check ~/backups/dashboard/.last-run.json and pm-dashboard-backup.service on the laptop; the card clears itself when the collector reads a complete run record.",
+        HOST_HEALTH_REF,
+      ),
+    );
+  } else if (backup.result === "failed") {
+    const host = snapshot.host ? ` on host ${snapshot.host}` : "";
+    const legs = Object.entries(backup.destinations)
+      .map(([leg, outcome]) => `${leg}: ${outcome}`)
+      .join(", ");
+    const finishedMs = Date.parse(backup.finishedAt);
+    put(
+      item(
+        "backup-generation",
+        `Watchdog: backup generation ${backup.date} failed at ${backup.failingStep ?? "an unnamed step"}${host}`,
+        "watchdog: backup generation failed",
+        `pm-dashboard-backup generation ${backup.date} (finished ${backup.finishedAt}) recorded result failed at step ${backup.failingStep ?? "(unnamed)"}${host}, so the newest verified restore point is an older generation — do not mistake this generation for a successful backup. Legs: ${legs || "unreported"}. Diagnosed from the backup run record via the host-health snapshot (#3989).`,
+        Number.isNaN(finishedMs) ? now : finishedMs,
+        now,
+        `Check pm-dashboard-backup.service on the laptop (journalctl --user -u pm-dashboard-backup) for the failing step; the card clears itself when a generation records complete.`,
         HOST_HEALTH_REF,
       ),
     );

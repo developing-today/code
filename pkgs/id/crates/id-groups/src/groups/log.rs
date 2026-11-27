@@ -34,6 +34,52 @@ pub struct Recorded {
     pub outcome: Outcome,
 }
 
+/// How much of a [`GroupLog::record_pair`] was appended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PairAppend {
+    /// Both events were appended.
+    Both,
+    /// Only the first event was appended: it was refused, and a refused event is kept as the
+    /// author's record, as a single `record` keeps it. The second was dropped unrecorded.
+    FirstOnly,
+    /// Neither event was appended: the second was refused, so the pair was rolled back and the
+    /// first leaves no trace.
+    Neither,
+}
+
+/// Forms an event by `author` after `events`: it names the events' heads in its `after`, and its
+/// ID is the hash of the event with a placeholder ID. Each event names every event before it, so
+/// two events never serialize alike, and the ID is unique.
+fn form_event(events: &[Event], author: Key, group: Option<Hash>, body: Body) -> Result<Event> {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .ok();
+    let mut event = Event {
+        id: Hash::from_bytes([0; 32]),
+        author,
+        after: heads_of(events),
+        group,
+        at,
+        body,
+    };
+    event.id = Hash::digest(serde_json::to_vec(&event)?);
+    Ok(event)
+}
+
+/// The IDs in `events` that no event in `events` names in its `after`.
+fn heads_of(events: &[Event]) -> Vec<Hash> {
+    let named: BTreeSet<Hash> = events
+        .iter()
+        .flat_map(|event| event.after.iter().copied())
+        .collect();
+    events
+        .iter()
+        .map(|event| event.id)
+        .filter(|id| !named.contains(id))
+        .collect()
+}
+
 /// The events one node has recorded, read from and appended to a file.
 #[derive(Debug)]
 pub struct GroupLog {
@@ -124,16 +170,7 @@ impl GroupLog {
     /// Fails if the events cannot be folded, or the file cannot be written. Nothing is written when
     /// the fold fails.
     pub fn record(&mut self, author: Key, group: Option<Hash>, body: Body) -> Result<Recorded> {
-        let mut event = Event {
-            id: Hash::from_bytes([0; 32]),
-            author,
-            after: self.heads(),
-            group,
-            body,
-        };
-        // The ID is the hash of the event with a placeholder ID. Each event names every event before
-        // it, so two events never serialize alike, and the ID is unique.
-        event.id = Hash::digest(serde_json::to_vec(&event)?);
+        let event = form_event(&self.events, author, group, body)?;
         let id = event.id;
         let mut next = self.events.clone();
         next.push(event);
@@ -146,6 +183,72 @@ impl GroupLog {
         }
         self.events = next;
         Ok(Recorded { event: id, outcome })
+    }
+
+    /// Records two events as a pair gated on the second, for an action that is only worth
+    /// recording whole (a delegation's mode change and its grant, #14877). Both events are formed
+    /// in order — the second names the first in its `after` — and judged by one fold of the log
+    /// extended with both, which is exactly the judgment two sequential `record` calls would
+    /// reach, because the fold is a pure function of the event list.
+    ///
+    /// The appends follow the outcomes: both events are appended when both take effect; when the
+    /// second is refused, neither is appended, so the first leaves no trace; when the first is
+    /// refused, it alone is appended, as a single `record` keeps a refused event as the author's
+    /// record, and the second is dropped unrecorded. The returned outcomes are the trial fold's,
+    /// so the caller can report a refusal that was never recorded.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded, or the file cannot be written. Nothing is written
+    /// when the fold fails.
+    pub(crate) fn record_pair(
+        &mut self,
+        author: Key,
+        group: Hash,
+        first: Body,
+        second: Body,
+    ) -> Result<(Recorded, Recorded, PairAppend)> {
+        let first = form_event(&self.events, author, Some(group), first)?;
+        let mut trial = self.events.clone();
+        trial.push(first.clone());
+        let second = form_event(&trial, author, Some(group), second)?;
+        trial.push(second.clone());
+        let projection = fold(&trial)?;
+        let first_outcome = projection
+            .outcome(&first.id)
+            .cloned()
+            .context("the fold did not decide the first event")?;
+        let second_outcome = projection
+            .outcome(&second.id)
+            .cloned()
+            .context("the fold did not decide the second event")?;
+        let first_id = first.id;
+        let second_id = second.id;
+        let appended = match (&first_outcome, &second_outcome) {
+            (Outcome::Applied, Outcome::Applied) => {
+                self.append(&first)?;
+                self.append(&second)?;
+                self.events = trial;
+                PairAppend::Both
+            }
+            (Outcome::Refused(_), _) => {
+                self.append(&first)?;
+                self.events.push(first);
+                PairAppend::FirstOnly
+            }
+            (Outcome::Applied, Outcome::Refused(_)) => PairAppend::Neither,
+        };
+        Ok((
+            Recorded {
+                event: first_id,
+                outcome: first_outcome,
+            },
+            Recorded {
+                event: second_id,
+                outcome: second_outcome,
+            },
+            appended,
+        ))
     }
 
     /// Records an event that was already formed elsewhere, keeping its
@@ -174,20 +277,6 @@ impl GroupLog {
             event: event.id,
             outcome,
         }))
-    }
-
-    /// The IDs no event names in its `after`. A new event names these, so it comes after all of them.
-    fn heads(&self) -> Vec<Hash> {
-        let named: BTreeSet<Hash> = self
-            .events
-            .iter()
-            .flat_map(|event| event.after.iter().copied())
-            .collect();
-        self.events
-            .iter()
-            .map(|event| event.id)
-            .filter(|id| !named.contains(id))
-            .collect()
     }
 
     /// Appends one event as a line, and syncs it to disk.
@@ -229,8 +318,10 @@ pub fn hash_from_hex(text: &str) -> Result<Hash> {
 mod tests {
     use super::*;
     use crate::groups::actions::NewGroup;
-    use crate::groups::policy::{Policy, RemoveMode, RemoveModeKind, RemovePolicy, Template};
-    use crate::groups::{Create, MemberOp, Outcome, Refusal, Role};
+    use crate::groups::policy::{
+        Delegation, Policy, RemoveMode, RemoveModeKind, RemovePolicy, Template,
+    };
+    use crate::groups::{Create, Delegate, MemberOp, Outcome, Refusal, Role};
     use tempfile::TempDir;
 
     const OWNER: Key = [1; 32];
@@ -287,6 +378,73 @@ mod tests {
         assert_eq!(reopened.events(), log.events());
         let projection = reopened.projection().unwrap();
         assert!(projection.group(&created.event).is_some());
+    }
+
+    #[test]
+    fn test_a_refused_grant_rolls_back_its_mode_change() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let group = log
+            .create(
+                OWNER,
+                NewGroup::Normal {
+                    max: None,
+                    admins_on_create: false,
+                },
+            )
+            .unwrap()
+            .group;
+        log.add(OWNER, group, ANN, Role::Read).unwrap();
+        let before = log.events().len();
+
+        // A grant to oneself is refused by the fold (BadGrantee). With a mode change attached,
+        // the pair is atomic (#14877): neither event is recorded, and the mode is unchanged.
+        let refused = log
+            .delegate(
+                OWNER,
+                group,
+                Delegate {
+                    grantee: OWNER,
+                    scope: Role::Read,
+                    can_redelegate: false,
+                    expires_at: None,
+                },
+                Some(Delegation::KeepPrior),
+            )
+            .unwrap();
+        assert!(refused.mode_change.is_none());
+        assert_eq!(
+            refused.grant.unwrap().outcome,
+            Outcome::Refused(Refusal::BadGrantee)
+        );
+        assert_eq!(log.events().len(), before);
+        assert_eq!(
+            log.view(group).unwrap().policy.delegation_mode(),
+            Delegation::Cascade
+        );
+
+        // The same mode change with a grant that applies records both events.
+        let applied = log
+            .delegate(
+                OWNER,
+                group,
+                Delegate {
+                    grantee: ANN,
+                    scope: Role::Read,
+                    can_redelegate: false,
+                    expires_at: None,
+                },
+                Some(Delegation::KeepPrior),
+            )
+            .unwrap();
+        assert_eq!(applied.mode_change.unwrap().outcome, Outcome::Applied);
+        assert_eq!(applied.grant.unwrap().outcome, Outcome::Applied);
+        assert_eq!(log.events().len(), before + 2);
+        assert_eq!(
+            log.view(group).unwrap().policy.delegation_mode(),
+            Delegation::KeepPrior
+        );
     }
 
     #[test]
@@ -435,7 +593,7 @@ mod tests {
         // mid-append, before the event was ever acknowledged.
         std::fs::write(&path, "{\"id\":\"abc").unwrap();
         let log = GroupLog::open(&path).unwrap();
-        assert!(log.events().is_empty());
+        assert_eq!(log.events(), []);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     }
 

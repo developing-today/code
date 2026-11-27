@@ -261,6 +261,12 @@ pub trait WorldLimitArgs {
     fn world_guest_burn_concurrency(&self) -> usize {
         0
     }
+    /// Concurrent synchronous guest burns admitted per charged
+    /// account (#1067 per-account quotas); `0` = no per-account
+    /// bound. Defaulted so existing implementors keep compiling.
+    fn world_guest_burn_per_account_concurrency(&self) -> usize {
+        0
+    }
 }
 
 const KIB: u64 = 1024;
@@ -285,6 +291,13 @@ pub struct RuntimeLimits {
     /// cannot raise or lower it, so `resolve` carries it through
     /// unchanged.
     pub guest_burn_concurrency: usize,
+    /// Concurrent synchronous guest burns admitted per charged
+    /// account (#1067, F12.10 per-account quotas). `0` = no
+    /// per-account bound: accounts share the hub-wide pool under
+    /// the fairness rule alone. A server bound like
+    /// `guest_burn_concurrency`, carried through `resolve`
+    /// unchanged.
+    pub guest_burn_per_account_concurrency: usize,
 }
 
 /// Per-world resource limits requested beneath the server's hard ceilings.
@@ -442,6 +455,7 @@ impl WorldExecutionProfile {
             // A server bound, not a per-world request: carried
             // through unchanged (see the field's documentation).
             guest_burn_concurrency: hard.guest_burn_concurrency,
+            guest_burn_per_account_concurrency: hard.guest_burn_per_account_concurrency,
         })
     }
 }
@@ -457,6 +471,7 @@ impl Default for RuntimeLimits {
             native: NativeLimits::default(),
             total_memory_bytes: DEFAULT_WORLD_TOTAL_MEMORY_BYTES,
             guest_burn_concurrency: 0,
+            guest_burn_per_account_concurrency: 0,
         }
     }
 }
@@ -504,6 +519,7 @@ impl RuntimeLimits {
             },
             total_memory_bytes: args.world_total_memory_mib() * MIB,
             guest_burn_concurrency: args.world_guest_burn_concurrency(),
+            guest_burn_per_account_concurrency: args.world_guest_burn_per_account_concurrency(),
         })
     }
 }

@@ -57,9 +57,16 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
+/// Session-layer admin audit (split from this module, #13057).
+mod audit;
 /// Document store API (split from this module, #8594).
 mod documents;
 
+/// Producer-side Android gesture translation (#1831 slice S3a). Inert
+/// until the S3 app shell wires it to a live session (slice S3b); its
+/// translation contract is proven by its own tests.
+#[allow(dead_code)]
+mod gesture;
 /// Bounded hex encoding (split from this module, #12671).
 mod hex;
 /// Session core loop (split from this module, #8594).
@@ -68,6 +75,7 @@ mod session_core;
 mod view;
 pub use hex::{decode_hex, encode_hex};
 
+use audit::{admin_frame_name, audit_admin_frame};
 pub(crate) use session_core::run_world_session;
 pub(crate) use view::{
     PresenceGuard, ScreenSubscriptionState, ViewRevisionState, Viewport, normalize_paste, send_view,
@@ -83,8 +91,9 @@ pub(crate) use documents::{
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
-    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
-    PointerEvent, SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES,
+    PRESENTATION_POLICY_CURRENT, PRESENTATION_POLICY_SAVED, PointerButton, PointerEvent,
+    SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -151,6 +160,87 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
     run_session_with(hub, io, SessionConfig::default()).await;
 }
 
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-session deadlines. Once an outbound frame stalls or the peer
+/// disappears, the wrapper treats the connection as closed so later
+/// handlers cannot keep the world lease alive by sending again. A
+/// joined session that stays silent for the whole idle window is
+/// treated as closed too: transports with keepalives (iroh sends QUIC
+/// PINGs by design) never surface an idle peer as a transport close,
+/// so without this a silent peer would hold its hub permit and
+/// presence forever. The idle deadline is re-armed on every `recv`
+/// call, and the session loop calls `recv` again after any activity
+/// (an inbound frame, a world event, a view send), so only a fully
+/// silent window ends the session.
+struct SendDeadlineIo<'a, I> {
+    inner: &'a mut I,
+    timeout: Duration,
+    idle_timeout: Duration,
+    closed: bool,
+}
+
+impl<I: SessionIo> SessionIo for SendDeadlineIo<'_, I> {
+    fn recv(&mut self) -> impl std::future::Future<Output = Inbound> + Send {
+        async move {
+            if self.closed {
+                return Inbound::Closed;
+            }
+            match tokio::time::timeout(self.idle_timeout, self.inner.recv()).await {
+                Ok(inbound) => inbound,
+                Err(_) => {
+                    self.closed = true;
+                    Inbound::Closed
+                }
+            }
+        }
+    }
+
+    fn send(&mut self, frame: String) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            if self.closed {
+                return false;
+            }
+            let sent = tokio::time::timeout(self.timeout, self.inner.send(frame))
+                .await
+                .unwrap_or(false);
+            if !sent {
+                self.closed = true;
+            }
+            sent
+        }
+    }
+
+    fn supports_bytes(&self) -> bool {
+        self.inner.supports_bytes()
+    }
+
+    fn send_bytes(&mut self, frame: Vec<u8>) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            if self.closed {
+                return false;
+            }
+            let sent = tokio::time::timeout(self.timeout, self.inner.send_bytes(frame))
+                .await
+                .unwrap_or(false);
+            if !sent {
+                self.closed = true;
+            }
+            sent
+        }
+    }
+
+    fn mark_authorized(&mut self) {
+        if !self.closed {
+            self.inner.mark_authorized();
+        }
+    }
+
+    fn authenticated_caller_account(&self) -> Option<&str> {
+        self.inner.authenticated_caller_account()
+    }
+}
+
 /// The admin secret a first frame carries, if it is an administrative one.
 /// Most admin frames can create the world they name; history reads cannot.
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
@@ -164,54 +254,9 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         ClientFrame::InstallBegin { admin_token, .. } => admin_token.as_deref(),
         ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
+        ClientFrame::SetPresentationPolicy { admin_token, .. } => Some(admin_token),
         _ => None,
     }
-}
-
-/// Wall-clock milliseconds for session-layer audit records (the actor
-/// stamps records with its world clock; hub and session frames are
-/// processed before any world clock is involved).
-fn audit_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// The bare audit action name of an admin frame, for dispatch sites
-/// that refuse several admin frame kinds at one point.
-fn admin_frame_name(frame: &ClientFrame) -> &'static str {
-    match frame {
-        ClientFrame::Invite { .. } => "Invite",
-        ClientFrame::Compile { .. } => "Compile",
-        ClientFrame::CreateWorld { .. } => "CreateWorld",
-        ClientFrame::ListWorlds { .. } => "ListWorlds",
-        ClientFrame::InstallBegin { .. } => "InstallBegin",
-        ClientFrame::EventHistoryAdmin { .. } => "EventHistoryAdmin",
-        ClientFrame::SetExecutionProfile { .. } => "SetExecutionProfile",
-        _ => "Unknown",
-    }
-}
-
-/// Emit the one audit line an admin frame produces (#1063): the
-/// session-layer half of the audit stream, in the actor's record shape
-/// on the same reserved target (`id::audit`). The actor is the literal
-/// `admin` — the token itself is a secret and is never recorded. Every
-/// dispatch path through this module calls this exactly once per admin
-/// frame (the [`frame_admin_token`] set), so every admin frame
-/// produces exactly one line, denials included.
-fn audit_admin_frame(world_id: &str, action: &str, outcome: &str, parameters: serde_json::Value) {
-    emit_audit_record(&AuditRecord {
-        schema_version: 2,
-        timestamp_ms: audit_now_ms(),
-        world_id: world_id.to_owned(),
-        actor: "admin".to_owned(),
-        action: format!("frame:{action}"),
-        parameters,
-        outcome: outcome.to_owned(),
-        target: world_id.to_owned(),
-        correlation_id: next_audit_correlation_id(),
-    });
 }
 
 /// Run one session to completion.
@@ -219,6 +264,26 @@ fn audit_admin_frame(world_id: &str, action: &str, outcome: &str, parameters: se
 /// The first frame names the world (`"world": "<name>"`, default world if
 /// absent), and the session holds a lease on it until it ends.
 pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    run_session_with_send_deadline(hub, io, config, DEFAULT_SEND_TIMEOUT).await;
+}
+
+async fn run_session_with_send_deadline<I: SessionIo>(
+    hub: &WorldHub,
+    io: &mut I,
+    config: SessionConfig,
+    send_timeout: Duration,
+) {
+    let mut io = SendDeadlineIo {
+        inner: io,
+        timeout: send_timeout,
+        idle_timeout: config.idle_timeout,
+        closed: false,
+    };
+    run_session_inner(hub, &mut io, config).await;
+}
+
+async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    let caller_account = io.authenticated_caller_account().map(str::to_owned);
     // Frames sent before a world lease exists belong to no world, so
     // their bytes go to a throwaway meter rather than being attributed
     // to a world that did not send them.
@@ -439,6 +504,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         frame,
         lease.name(),
         config.documents_store.clone(),
+        caller_account,
     )
     .await;
 }
@@ -1126,10 +1192,12 @@ async fn joined<I: SessionIo>(
     after: Option<u64>,
     screen_patches: bool,
     screen_msgpack: bool,
+    screen_compress: bool,
     resume_token: Option<String>,
     agent_profile: bool,
     device_input: Option<serde_json::Value>,
     documents_store: Option<Store>,
+    caller_account: Option<String>,
 ) {
     let world = service.world();
     let session_id = service.next_session_id();
@@ -1185,6 +1253,11 @@ async fn joined<I: SessionIo>(
     // no offer, or a text-only transport — keeps the JSON patch path,
     // and a client that never opted in is unaffected either way.
     view_state.msgpack_patches = screen_patches && screen_msgpack && io.supports_bytes();
+    // Compressed patches (F12.11 phase 4, contract revision 16) ride
+    // the same negotiation: only a session that also offered
+    // `screen_compress` receives version-2 compressed frames, and only
+    // when compression makes the complete frame smaller.
+    view_state.compress_patches = view_state.msgpack_patches && screen_compress;
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
@@ -1216,6 +1289,7 @@ async fn joined<I: SessionIo>(
                         viewport,
                         &mut view_state,
                         screen_patches,
+                        caller_account.as_deref(),
                     )
                     .await
                     {
@@ -1247,6 +1321,7 @@ async fn joined<I: SessionIo>(
         viewport,
         &mut view_state,
         screen_patches,
+        caller_account.as_deref(),
     )
     .await
     {
@@ -1283,6 +1358,7 @@ async fn joined<I: SessionIo>(
                     viewport,
                     &mut view_state,
                     screen_patches,
+                    caller_account.as_deref(),
                 )
                 .await
                 {
@@ -1305,6 +1381,7 @@ async fn joined<I: SessionIo>(
                         &mut pending_view_deadline,
                         world_name,
                         documents_store.as_ref(),
+                        caller_account.as_deref(),
                     ).await {
                         break;
                     }
@@ -1343,6 +1420,7 @@ async fn joined<I: SessionIo>(
                                 viewport,
                                 &mut view_state,
                                 screen_patches,
+                                caller_account.as_deref(),
                             )
                             .await
                             {
@@ -1406,6 +1484,7 @@ async fn joined<I: SessionIo>(
                         viewport,
                         &mut view_state,
                         screen_patches,
+                        caller_account.as_deref(),
                     )
                     .await
                     {
@@ -1538,6 +1617,7 @@ async fn handle_client_frame<I: SessionIo>(
     pending_view_deadline: &mut Option<tokio::time::Instant>,
     world_name: &str,
     documents_store: Option<&Store>,
+    caller_account: Option<&str>,
 ) -> bool {
     let world = service.world();
     let Ok(value) = parse_json_without_duplicate_keys(text) else {
@@ -1602,6 +1682,7 @@ async fn handle_client_frame<I: SessionIo>(
                 *viewport,
                 view_state,
                 screen_patches,
+                caller_account,
             )
             .await;
         }
@@ -1839,6 +1920,7 @@ async fn handle_client_frame<I: SessionIo>(
                 *viewport,
                 view_state,
                 screen_patches,
+                caller_account,
             )
             .await;
         }
@@ -1852,13 +1934,25 @@ async fn handle_client_frame<I: SessionIo>(
                 .await;
             };
             world
-                .input_from_session(token.clone(), bytes, session_id, device_input.cloned())
+                .input_from_session(
+                    token.clone(),
+                    bytes,
+                    session_id,
+                    device_input.cloned(),
+                    caller_account.map(str::to_owned),
+                )
                 .await
         }
         ClientFrame::Input { data_hex, .. } => match decode_hex(&data_hex) {
             Some(data) => {
                 world
-                    .input_from_session(token.clone(), data, session_id, device_input.cloned())
+                    .input_from_session(
+                        token.clone(),
+                        data,
+                        session_id,
+                        device_input.cloned(),
+                        caller_account.map(str::to_owned),
+                    )
                     .await
             }
             None => {
@@ -1929,7 +2023,13 @@ async fn handle_client_frame<I: SessionIo>(
             match serde_json::to_vec(&encoded) {
                 Ok(bytes) => {
                     world
-                        .input_from_session(token.clone(), bytes, session_id, device_input.cloned())
+                        .input_from_session(
+                            token.clone(),
+                            bytes,
+                            session_id,
+                            device_input.cloned(),
+                            caller_account.map(str::to_owned),
+                        )
                         .await
                 }
                 Err(_) => {
@@ -2068,6 +2168,62 @@ async fn handle_client_frame<I: SessionIo>(
                                 applies_on_next_program_install_or_process_restart: false,
                             },
                             message: "current persisted execution profile",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::SetPresentationPolicy {
+            admin_token,
+            policy,
+        } => {
+            match service
+                .set_presentation_policy(Some(&admin_token), policy)
+                .await
+            {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_SAVED,
+                        },
+                    )
+                    .await;
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "accepted",
+                        serde_json::json!({}),
+                    );
+                }
+                Err(error) => {
+                    audit_admin_frame(
+                        world_name,
+                        "SetPresentationPolicy",
+                        "refused",
+                        serde_json::json!({}),
+                    );
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::PresentationPolicyInfo {} => {
+            match service.presentation_policy().await {
+                Ok(policy) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::PresentationPolicy {
+                            policy,
+                            message: PRESENTATION_POLICY_CURRENT,
                         },
                     )
                     .await;

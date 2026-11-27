@@ -19,6 +19,27 @@ describe("loadConfig mcpx call ledger", () => {
   });
 });
 
+describe("loadConfig outage queue file (#9608)", () => {
+  test("uses the state-directory default and accepts an explicit file", () => {
+    const home = process.env.HOME ?? "/home/test";
+    expect(loadConfig({ PM_AGG_DEV: "1" }).outageQueueFile).toBe(
+      `${home}/.local/state/pm-aggregator/outage-queue.json`,
+    );
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_OUTAGE_QUEUE_FILE: "/tmp/oq.json" }).outageQueueFile).toBe(
+      "/tmp/oq.json",
+    );
+  });
+});
+
+describe("loadConfig stack-token secret", () => {
+  test("is optional and trimmed", () => {
+    expect(loadConfig({ PM_AGG_DEV: "1" }).stackTokenSecret).toBeNull();
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_STACK_TOKEN_SECRET: "  secret-value  " }).stackTokenSecret).toBe(
+      "secret-value",
+    );
+  });
+});
+
 describe("loadConfig PM_AGG_PORT", () => {
   test("keeps the existing default for unset and empty values", () => {
     expect(loadConfig({ PM_AGG_DEV: "1" }).port).toBe(4870);

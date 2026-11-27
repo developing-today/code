@@ -7,6 +7,7 @@
   ...
 }:
 let
+  opencodeServerPort = 13420;
   # Local proxy ports, each defined ONCE. Each value flows to the systemd
   # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
   # and — for the proxies opencode talks to — into opencode.jsonc's
@@ -34,9 +35,10 @@ let
   # proxies had no consumers left; their lets, units, session
   # variables, bin programs and guard rows were removed in one
   # change. Both ports are free.
-  # opencodeRouteProxyPort (18750) retired 2026-11-04
-  # (opencode#1153): OpenClaw repointed to the server facade
-  # (127.0.0.1:13420/v1); the port is free.
+  # Route proxy (#1822): the deployed OpenCode config still routes
+  # opencode-route/* through this door. Keep the audited loopback port
+  # outside the process so systemd holds it across service restarts.
+  opencodeRouteProxyPort = 18750;
   # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
   # the in-fork native provider replaced the door; the port is free.
   # Atlas search service port (code#5350 step 5, #5355): the fleet
@@ -50,9 +52,10 @@ let
   # guard (.github/scripts/check-proxy-port-fallbacks.sh), and
   # the live listener table on 2026-11-04.
   atlasSearchPort = 18760;
+  routeProxy = pkgs.callPackage ../../pkgs/deploy/route-proxy.nix { };
   # The atlas-search package (pkgs/atlas-search), built with the
   # toolchain pinned by its own rust-toolchain.toml (channel
-  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # 1.99.1) through the fleet's rust-overlay lock — the pkgs/id
   # pattern (cf. rustToolchain in nixos/environment/default.nix).
   # Used as the atlas-search unit's ExecStart below and, since
   # the step-6 cutover (#5356), as a home package below so the
@@ -133,8 +136,12 @@ let
   t3code = pkgs.callPackage ../../pkgs/t3code-desktop { };
   # Desktop Commander MCP: the local half of OpenAI's "Remote Desktop
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
-  # desktop-commander-remote unit below keeps the device agent online.
+  # bridge unit below runs it for the self-hosted endpoint.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
+  # supergateway: the stdio <-> streamable-HTTP bridge that fronts the
+  # packaged Desktop Commander for the self-hosted endpoint (#13404).
+  # See pkgs/supergateway; the desktop-commander-bridge unit below runs it.
+  supergateway = pkgs.callPackage ../../pkgs/supergateway { };
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
@@ -296,6 +303,8 @@ let
         claude-code
         latestCli.codex
         pkgs.antigravity-cli
+        # GitHub MCP stdio server for the mcpx failover pool (#8017).
+        pkgs.github-mcp-server
         pkgs.git
         pkgs.openssh
       ]
@@ -833,16 +842,34 @@ in
   # variable, bin/muse-proxy.mjs, its start script and its test
   # were removed in the same change. The port is free.
 
-  # Route proxy retired 2026-11-04 (opencode#1153): the door's
-  # only live consumer, OpenClaw's opencode-route provider, was
-  # repointed to the OpenCode server facade (127.0.0.1:13420/v1)
-  # and verified live (four-part proof on opencode#1146: all five
-  # route ids answered through the direct path, a workhorse turn
-  # completed with this unit stopped and :18750 refusing
-  # connections). Demotion lives in the fork (routes.settings
-  # .demotion + ledger counts, opencode#1151), so nothing of the
-  # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
-  # start script and test were removed in the same change.
+  # Restore the route-proxy runtime required by the current deployed
+  # OpenCode config (#5610, #1822). The socket owns :18750; Node adopts
+  # its fd 3 via LISTEN_FDS/LISTEN_PID and keeps the same listener when
+  # systemd restarts the service. The executable is the packaged source
+  # used by the deploy registry, not a mutable checkout path.
+  systemd.user.services.opencode-route-proxy = {
+    Unit = {
+      Description = "OpenCode route proxy (socket-activated)";
+      Wants = [ "network-online.target" ];
+      After = [ "network-online.target" "opencode-route-proxy.socket" ];
+      Requires = [ "opencode-route-proxy.socket" ];
+    };
+    Service = {
+      ExecStart = "${routeProxy}/bin/opencode-route-proxy";
+      Restart = "on-failure";
+      RestartSec = 3;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.sockets.opencode-route-proxy = {
+    Unit.Description = "OpenCode route proxy listener (#1822)";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString opencodeRouteProxyPort}";
+      Service = "opencode-route-proxy.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
 
   # Atlas search service (code#5350 step 5, #5355): the Atlas
   # service — one resident Snowflake
@@ -891,29 +918,14 @@ in
     };
   };
 
-  # Fleet broker roles (epic #5412 step 2, #5430): the secrets
-  # broker as a `fleet serve <role>` unit, as it has run since
-  # code#5362. This is the home-module pattern ported from
-  # dezren39/nix PR #1459 (closed as superseded by ruling D1) into
-  # this tree, now consuming this flake's own pkgs/fleet instead of
-  # a vendored copy. The queue-broker unit that used to sit beside
-  # it moved to the deploy registry on 2026-11-17 (#5769 M2:
-  # pkgs/deploy/services.nix owns queue-broker; the deploy tool
-  # activates it on the laptop). The secrets-broker definition
-  # stays here until its deploy activation can pass the deploy
-  # health probe (code#11170), then it follows queue-broker.
-  systemd.user.services.secrets-broker = {
-    Unit = {
-      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
-      After = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
-      Restart = "on-failure";
-      RestartSec = 5;
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Fleet broker roles (epic #5412 step 2, #5430) moved to the
+  # deploy registry (#5769 M2): pkgs/deploy/services.nix owns the
+  # secrets-broker and queue-broker definitions, and the deploy
+  # tool activates them on the laptop. The home-manager units that
+  # ran the brokers since code#5362 are removed — queue-broker in
+  # #11172 (2026-11-17), secrets-broker here, after its deploy
+  # activation passed the 120s health probe (code#11170) on
+  # 2026-11-22.
 
   systemd.user.services.sync-models = {
     Unit = {
@@ -1003,19 +1015,23 @@ in
     };
     Service = {
       Type = "oneshot";
-      # The revalidator lands in observe-only mode (C3,
-      # doc/fleet/agent-events-turso.md): it logs would-releases
-      # without mutating tasks. Flip it live by writing "enabled" to
-      # ~/.config/queue-broker/revalidator-mode once the first daily
-      # observe cycle has been reviewed on #6803.
+      # The revalidator landed in observe-only mode (C3,
+      # doc/fleet/agent-events-turso.md): it logged would-releases
+      # without mutating tasks. #16006 activates it by default:
+      # the scheduled sweep now releases satisfied broker-condition
+      # parks (task_terminal, task_status, event_seen) to queued,
+      # while person_answer parks still wait for the person's
+      # /wake. To run a non-mutating observe cycle instead, write
+      # "observe" to ~/.config/queue-broker/revalidator-mode;
+      # "enabled" (or no file at all) keeps the live default.
       ExecStart = toString (
         pkgs.writeShellScript "fleet-queue-sweeper" ''
           token="$(cat "$HOME/.config/queue-broker/token")"
-          mode="observe"
+          obs=false
           if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
             mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
+            if [ "$mode" = "observe" ]; then obs=true; fi
           fi
-          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
           ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
             -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
             -d '{"prune":true,"keep_days":30}'
@@ -1039,46 +1055,32 @@ in
     Install.WantedBy = [ "timers.target" ];
   };
 
-  # Desktop Commander's Remote Device: the local half of OpenAI's "Remote
-  # Desktop Commander" plugin. The hosted Remote MCP at
-  # mcp.desktopcommander.app forwards tool calls to this process, which drives
-  # the local Desktop Commander MCP server under the user's own permissions.
-  # Installing the plugin itself is a ChatGPT/Codex action and cannot be done
-  # by a NixOS unit; what this unit buys is that the device is online whenever
-  # the user session is, rather than living in a stray terminal.
+  # Self-hosted Desktop Commander endpoint (#13404): the local half of
+  # commander.security.cab. supergateway wraps the packaged Desktop
+  # Commander (stdio) as a streamable-HTTP MCP server on
+  # 127.0.0.1:8931/mcp; the sandbox-link Cloudflare Tunnel carries it to
+  # the bridge door (commander-link.security.cab, Access service-token
+  # only), where the desktop-commander Worker picks it up. This is the only
+  # Desktop Commander unit: the vendor device agent (desktop-commander-remote)
+  # was stood down once the self-hosted endpoint soaked.
   #
-  # FIRST RUN IS INTERACTIVE. `remote` starts an OAuth device flow and prints a
-  # verification URL and code, so the unit only pairs unattended once a session
-  # has been stored. Watch it with:
-  #   journalctl --user -u desktop-commander-remote -f
-  # and approve at mcp.desktopcommander.app. The session is saved to
-  # ~/.desktop-commander-device/device.json (0600) and reused on restart.
-  #
-  # PATH matters for the same reason it does in t3code below: a systemd user
-  # unit does not inherit the login shell's PATH, and Desktop Commander exists
-  # to run arbitrary user commands, so it needs the real one. Sourcing the
-  # profiles is deliberately broader than a makeBinPath list -- a curated set
-  # would silently hide most of what the remote shell is meant to reach. The
-  # agent's own ripgrep is already on its wrapped PATH from the derivation.
-  systemd.user.services.desktop-commander-remote = {
+  # PATH matters because the wrapped server exists to run arbitrary user
+  # commands, so it needs the real user PATH.
+  systemd.user.services.desktop-commander-bridge = {
     Unit = {
-      Description = "Desktop Commander Remote MCP device agent";
-      Documentation = "https://mcp.desktopcommander.app";
+      Description = "Desktop Commander local MCP bridge (stdio to streamable HTTP, 127.0.0.1:8931)";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
     };
     Service = {
       ExecStart = toString (
-        pkgs.writeShellScript "desktop-commander-remote-start" ''
+        pkgs.writeShellScript "desktop-commander-bridge-start" ''
           export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
-          exec ${desktop-commander}/bin/desktop-commander remote
+          exec ${supergateway}/bin/supergateway --stdio ${desktop-commander}/bin/desktop-commander --outputTransport streamableHttp --streamableHttpPath /mcp --port 8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz --logFormat json
         ''
       );
-      # The device reconnects after a network blip on its own, so only a crash
-      # or a revoked authorization should take the unit down: on-failure, with
-      # a slow restart so a failing OAuth flow cannot spin.
       Restart = "on-failure";
-      RestartSec = 15;
+      RestartSec = 5;
     };
     Install.WantedBy = [ "default.target" ];
   };
@@ -1107,6 +1109,16 @@ in
   # for single-file merges (home/root).
   imports = [ inputs.openchamber.homeManagerModules.openchamber ];
 
+  # Stable deploy entrypoint (code#14187): for the laptop user, the
+  # generated unit's ExecStart is force-overridden to
+  # %h/.local/state/openchamber/start by
+  # nixos/home/stable-entrypoints.nix (wired in
+  # nixos/hosts/default.nix), and Home Manager activation keeps that
+  # link pointing at this module's start wrapper, so the launch
+  # semantics below are unchanged. A deploy app may repoint the link
+  # and restart the service; it must not write the unit file. The
+  # contract: nixos/home/stable-entrypoints.nix and
+  # doc/fleet/services.md; the consumer is dezren39/darwin-nix#1393.
   services.openchamber = {
     enable = true;
     # uiPasswordFile (the browser-UI password the old serve script
@@ -1188,6 +1200,23 @@ in
   # Home Manager still reloads the unit; the activation below owns build
   # changes explicitly, using only the serving package's store path as key.
   systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  # The package launcher forwards TERM from the systemd main process to the
+  # serving child. With the default control-group kill mode, systemd also
+  # signals that child directly, so one stop becomes two TERM deliveries and
+  # the fork's second-TERM drain escape ends the grace window early (#10639).
+  # Signal only the launcher; it forwards exactly one TERM to the child.
+  systemd.user.services.opencode.Service.KillMode = "process";
+  # Keep the listening port outside the server process so it survives a
+  # service handover. The OpenCode fork adopts systemd's fd 3 via
+  # LISTEN_FDS/LISTEN_PID; the socket is enabled through sockets.target.
+  systemd.user.sockets.opencode = {
+    Unit.Description = "OpenCode server listener (handover-safe)";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString opencodeServerPort}";
+      Service = "opencode.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
   home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
       '${opencodeCascade}' \
@@ -1216,18 +1245,15 @@ in
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # package: deliberately unset. There is one mcpx — the
-    # cascade's (the fork's build, via the module wrapper's
-    # mkDefault) — and this config takes that one (Drew's ruling,
-    # 2026-11-03; code#5027). The former pin to this repo's own
-    # pkgs/mcpx build made two mcpx builds coexist and collided
-    # with the fork package's bin/mcpx in the home profile.
-    #
-    # addPackageToProfile: off. The profile's bin/mcpx comes from
-    # exactly one provider — the opencode package's bundled
-    # symlink. The module also adding cfg.package to home.packages
-    # would put a second mcpx entry in the profile (Drew's ruling,
-    # 2026-11-03; code#5027).
+    # Use the same source and test-disabled derivation already in the
+    # system package set. The mcpx Go/e2e suite runs in CI; running its
+    # 30-minute process tests during every NixOS switch has repeatedly
+    # blocked activation. This changes build checks only, not runtime
+    # code or the profile's binary provider.
+    package = mcpx;
+    # Keep the single profile provider selected in code#5027:
+    # OpenCode's bundled symlink supplies bin/mcpx; this service's
+    # package is executed directly and is not added to home.packages.
     addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
@@ -1238,16 +1264,31 @@ in
     # ~/.config/mcpx/config.json to the rendered file, and points
     # MCPX_CONFIG at it for other clients.
     settings = mcpxSettings;
+    # Runtime env for mcpx servers (mode 600, never copied into
+    # the store): carries ATLAS_SEARCH_GATE_TOKEN for the atlas
+    # remote server in mcpx-settings.nix, whose auth token is a
+    # ${ATLAS_SEARCH_GATE_TOKEN} expansion the daemon resolves
+    # from its own environment.
+    environmentFile = "/home/user/.config/mcpx/env";
   };
 
   # Consumer refinements on the module's mcpx unit: the parts of the
   # hand-rolled unit the module does not express. (Description,
-  # ExecStart, Restart = always and the 20 s stop window are the
-  # module's own.)
+  # Restart = always and the 20 s stop window are the module's own.
+  # ExecStart and ExecReload are the stable entrypoint's, code#14187:
+  # for the laptop user, nixos/home/stable-entrypoints.nix
+  # force-overrides both to %h/.local/state/mcpx/bin/mcpx — ExecStart
+  # with this daemon's rendered --config, ExecReload with `reload` —
+  # and activation keeps that link pointing at the daemon's package.
+  # The ExecReload definition below is the fallback for configs
+  # without the entrypoint module. Contract:
+  # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
+  # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
-      After = [ "network-online.target" ];
+      After = [ "network-online.target" "mcpx.socket" ];
       Wants = [ "network-online.target" ];
+      Requires = [ "mcpx.socket" ];
       # A switch must not restart the daemon: that would end every
       # pooled MCP child. mcpxDeploy below hands a changed daemon
       # over instead.
@@ -1261,6 +1302,18 @@ in
     };
   };
 
+  # Keep mcpx's loopback TCP listener in systemd across service restarts.
+  # The Unix socket remains daemon-owned; LISTEN_FDS supplies only the
+  # configured TCP endpoint (127.0.0.1:34005) to the Go listener.
+  systemd.user.sockets.mcpx = {
+    Unit.Description = "mcpx daemon TCP listener (socket-activated)";
+    Socket = {
+      ListenStream = "127.0.0.1:34005";
+      Service = "mcpx.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
+
   # A switch that changes mcpx, its start command or its environment hands the
   # running daemon over, with the MCP children and the listener passed along.
   # The successor is started through the unit's start command, so it runs with
@@ -1272,7 +1325,15 @@ in
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
       if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
         if ${pkgs.systemd}/bin/systemctl --user is-active --quiet mcpx.service; then
-          run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          if ${pkgs.systemd}/bin/systemctl --user is-enabled --quiet mcpx.socket; then
+            # An in-app upgrade inherits the old listener but not
+            # systemd's LISTEN_FDS marker. Start the socket first and
+            # restart through systemd so the successor receives fd 3.
+            run ${pkgs.systemd}/bin/systemctl --user start mcpx.socket
+            run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          else
+            run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          fi
         else
           run ${pkgs.systemd}/bin/systemctl --user start mcpx.service || true
         fi
@@ -1801,6 +1862,8 @@ in
         # carries the newest agy on PATH ahead of the system profile
         # copy; both resolve to the same overlaid package.
         antigravity-cli
+        # GitHub MCP server used by the mcpx failover pool (#8017).
+        github-mcp-server
         libnotify
         # On-screen keyboard (wvkbd-mobintl) for touch use over the
         # Sunshine/Moonlight stream: launched only while a stream is

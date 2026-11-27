@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { buildPacket, canonicalDedupeKey, dispatchDedupeKey, validatePayload } from "../src/packet.ts";
+import {
+  buildPacket,
+  canonicalDedupeKey,
+  dispatchDedupeKey,
+  issueDispatchDedupeKey,
+  validatePayload,
+} from "../src/packet.ts";
 
 const caller = { type: "bearer" } as const;
 
@@ -22,6 +28,28 @@ describe("dedupe keys", () => {
     const b = dispatchDedupeKey("developing-today/code");
     expect(a).toMatch(/^repo-health:v1:triage:developing-today\/code:dispatch:[0-9a-f]{8}$/);
     expect(a).not.toBe(b);
+  });
+});
+
+describe("issue dispatch idempotency (#12527)", () => {
+  const repo = "developing-today/code";
+  const request = "main-broken-run-45018365692-dispatch-create";
+  test("created issue always gets the canonical broker key", () => {
+    expect(issueDispatchDedupeKey("small_fix", repo, 12527, request, false)).toBe(
+      "repo-health:v1:fix:developing-today/code:issue:12527",
+    );
+  });
+  test("attached run retries dedupe, while distinct runs and issues do not", () => {
+    const key = issueDispatchDedupeKey("small_fix", repo, 12527, request, true);
+    expect(key).toBe(issueDispatchDedupeKey("small_fix", repo, 12527, request, true));
+    expect(key).not.toBe(issueDispatchDedupeKey("small_fix", repo, 12527, request + "again", true));
+    expect(key).not.toBe(issueDispatchDedupeKey("small_fix", repo, 12528, request, true));
+    expect(key).toMatch(/^repo-health:v1:fix:developing-today\/code:issue:12527:dispatch:[0-9a-f]{16}$/);
+  });
+  test("attach without explicit idempotency key uses canonical key", () => {
+    expect(issueDispatchDedupeKey("small_fix", repo, 12527, undefined, true)).toBe(
+      canonicalDedupeKey("small_fix", repo, 12527),
+    );
   });
 });
 

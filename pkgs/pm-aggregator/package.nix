@@ -3,8 +3,9 @@
 # (code#8171: every pm-stack app is a Nix derivation; the units no
 # longer `bun run` out of the checkout).
 #
-# One package, four entry points: the server plus the script entry
-# points the timer units run (quota gatherer, digest generator). The
+# One package, several entry points: the server plus the script entry
+# points the timer units run (quota gatherer, digest generator, and
+# the watchdog heartbeat checker, #14388). The
 # fleet-feed collector script is deliberately NOT wrapped here: it
 # derives repo-root paths from its own file location (the checkout's
 # .opencode/opencode.jsonc and a checkout-drift self-inspection), so
@@ -29,9 +30,11 @@
   stdenvNoCC,
   bun,
   makeWrapper,
+  pkgs,
 }:
 let
   manifest = lib.importJSON ../../pm-stack/aggregator/package.json;
+  pmProjector = pkgs.callPackage ../pm-projector/package.nix { };
 
   src = lib.fileset.toSource {
     root = ../../pm-stack/aggregator;
@@ -99,6 +102,10 @@ stdenvNoCC.mkDerivation {
     mkdir -p $out/libexec/pm-aggregator $out/bin
     cp -R . $out/libexec/pm-aggregator/
     cp -R ${nodeModules}/node_modules $out/libexec/pm-aggregator/node_modules
+    # The in-process projector reader imports the projector's store module
+    # through the same relative path as the source checkout. Reuse the
+    # projector derivation so its runtime dependency closure stays intact.
+    ln -s ${pmProjector}/libexec/pm-projector $out/libexec/projector
     cp ${../../pm-stack/kaneo-projects.json} $out/libexec/pm-aggregator/kaneo-projects.json
     # src/sources/fixtures.ts imports ../../../grist/seed/roadmap.json
     # relative to its own file; keep that relative shape inside the
@@ -113,6 +120,10 @@ stdenvNoCC.mkDerivation {
       --add-flags "run $out/libexec/pm-aggregator/scripts/generate-digest.ts"
     makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-export-turso-stores \
       --add-flags "run $out/libexec/pm-aggregator/scripts/export-turso-stores.ts"
+    makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-quota-weekly-review \
+      --add-flags "run $out/libexec/pm-aggregator/scripts/quota-weekly-review.ts"
+    makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-check-watchdog-heartbeat \
+      --add-flags "run $out/libexec/pm-aggregator/scripts/check-watchdog-heartbeat.ts"
     runHook postInstall
   '';
 

@@ -59,6 +59,20 @@
 # Cloudflare: kaneo.security.cab -> http://localhost:5173 and
 # dispatch.security.cab -> http://localhost:4879.)
 #
+# CF-8 (code#14948, 2026-11-25): the beside-products joined the tunnel
+# tier at their canonical names — pad.security.cab ->
+# http://localhost:7777, grist.security.cab -> http://localhost:8484,
+# ready-for-agent.security.cab -> http://localhost:6056 (the pm-apps
+# module's ports; their stores did not move — #6816/#3142 own those).
+# All four beside-product names sit behind one Cloudflare Access
+# application, "PM beside-products" (the beside-products name class,
+# per the #14107 design's D4 ruling: one application per name class),
+# with the same identity providers and owner allow policy as the
+# "PM stack" application; each app's own login stays as the second
+# door. Tunnel configuration version 6 carries the three new ingress
+# rules; the proxied CNAMEs point at the amd-6-pm-stack tunnel like
+# the names above.
+#
 # The projector is ENABLED: the aggregator's environment pins
 # PM_PROJECTOR_URL to the local projector service (the env file said
 # "off" from the install.sh era, when no projector had ever been
@@ -113,11 +127,11 @@ let
   pmGitSync = pkgs.callPackage ../../../pkgs/pm-git-sync/package.nix { };
   sigtermWitness = pkgs.callPackage ../../../pkgs/sigterm-witness/package.nix { };
 
-  projectorReconcile = pkgs.writeShellScript "pm-projector-reconcile" ''
+  projectorReconcile = mode: pkgs.writeShellScript "pm-projector-reconcile-${mode}" ''
     # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
     exec ${pkgs.curl}/bin/curl -fsS -X POST \
       -H "Authorization: Bearer $PM_PROJECTOR_API_TOKEN" \
-      http://127.0.0.1:${toString cfg.projectorPort}/reconcile
+      "http://127.0.0.1:${toString cfg.projectorPort}/reconcile?mode=${mode}"
   '';
 
   # The port cloudflared serves its metrics + /ready endpoint on
@@ -198,17 +212,47 @@ in
       description = "Port the pm-projector listens on (loopback only).";
     };
 
+    projectorBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 17801;
+      description = "Private loopback port for pm-projector behind its socket-activated proxy.";
+    };
+
+    projectorSocketActivation = lib.mkEnableOption "the pm-projector socket-proxy listener";
+
     aggregatorPort = lib.mkOption {
       type = lib.types.port;
       default = 4870;
       description = "Port the pm-aggregator listens on (its PM_AGG_PORT default; the deployed state .env may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
     };
 
+    aggregatorBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 14870;
+      description = "Private loopback port for pm-aggregator behind its socket-activated proxy.";
+    };
+
+    aggregatorFreshnessBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 14871;
+      description = "Private loopback port for the pm-aggregator freshness publisher listener behind its socket-activated proxy.";
+    };
+
+    aggregatorSocketActivation = lib.mkEnableOption "the pm-aggregator socket-proxy listeners";
+
     dispatchPort = lib.mkOption {
       type = lib.types.port;
       default = 4879;
       description = "Port pm-dispatch listens on (its DISPATCH_PORT default; the deployed env files may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
     };
+
+    dispatchBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 14879;
+      description = "Private loopback port for pm-dispatch behind its socket-activated proxy.";
+    };
+
+    dispatchSocketActivation = lib.mkEnableOption "the pm-dispatch socket-proxy listeners";
 
     tailnetAddress = lib.mkOption {
       type = lib.types.str;
@@ -218,6 +262,24 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # CF-9 (#14949): keep the laptop PM packages tracking reviewed main
+    # without granting a timer a new rebuild path. The existing
+    # agent-rebuild-switch service fetches github:developing-today/code/main,
+    # serializes runs, logs them, and switches the amd system on success.
+    # Hourly retries stay inside edition-drift's six-hour stale window.
+    systemd.timers.pm-stack-follow-main = lib.mkIf (config.networking.hostName == "amd") {
+      description = "Follow main for the laptop PM stack";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "15min";
+        OnCalendar = "hourly";
+        AccuracySec = "5min";
+        RandomizedDelaySec = "5min";
+        Persistent = true;
+        Unit = "agent-rebuild-switch.service";
+      };
+    };
+
     home-manager.users.${cfg.user} = {
       systemd.user.services = {
         pm-projector = {
@@ -231,7 +293,12 @@ in
             # state dir as cwd also keeps the code's cwd-relative
             # fallback (file:data/projector.db) out of any checkout.
             WorkingDirectory = projState;
-            ExecStart = "${pmProjector}/bin/pm-projector";
+            # Bun 1.4.4 cannot adopt a systemd-passed listener. Preserve
+            # the direct public bind until the socket is explicitly
+            # enabled; the socket and backend port switch together (#1822).
+            ExecStart = "${pkgs.coreutils}/bin/env PORT=${
+              toString (if cfg.projectorSocketActivation then cfg.projectorBackendPort else cfg.projectorPort)
+            } ${pmProjector}/bin/pm-projector";
             EnvironmentFile = "${projState}/.env";
             Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
             Restart = "on-failure";
@@ -261,8 +328,35 @@ in
             # signal delivered to this service is attributed in
             # ${aggState}/sigterm-witness.log before it is
             # forwarded to the app.
-            ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log ${pmAggregator}/bin/pm-aggregator";
-            EnvironmentFile = "${aggState}/.env";
+            # Refresh the collector's local OpenCode password when possible;
+            # a missing/failing helper must not take the board offline.
+            ExecStartPre = "-${home}/.local/bin/fleet-feed-oc-password.sh";
+            # Bun 1.4.4 cannot adopt a systemd-passed listener.
+            # Preserve the direct public binds until the socket is
+            # explicitly enabled; with aggregatorSocketActivation the
+            # env wrapper pins the app to the private loopback backend
+            # ports and the sockets + socket-proxyd own the public
+            # addresses (#1822, same pattern as the projector). The
+            # wrapper is needed because PM_AGG_HOSTS/PM_AGG_PORT also
+            # live in the state .env (EnvironmentFile), which must not
+            # win over the backend pin.
+            ExecStart =
+              "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log "
+              + (lib.optionalString cfg.aggregatorSocketActivation "${pkgs.coreutils}/bin/env PM_AGG_HOSTS=127.0.0.1 PM_AGG_PORT=${toString cfg.aggregatorBackendPort} PM_AGG_FRESHNESS_PORT=${toString cfg.aggregatorFreshnessBackendPort} ")
+              + "${pmAggregator}/bin/pm-aggregator";
+            # Type=simple becomes active before pm-aggregator binds its
+            # private listener. The public socket stays open across a
+            # restart, so keep the proxy's After dependency pending until
+            # the backend accepts; otherwise its first cold connection is
+            # reset by socket-proxyd (observed on #10383).
+            ExecStartPost = lib.optional cfg.aggregatorSocketActivation
+              "${pkgs.bash}/bin/bash ${./pm-aggregator-backend-ready.sh} ${toString cfg.aggregatorBackendPort} 30";
+            # The in-process quota job also needs the optional Antigravity
+            # credential file previously loaded by quota-gatherer.service.
+            EnvironmentFile = [
+              "${aggState}/.env"
+              "-%h/.local/state/opencode/mistral-api-key.env"
+            ];
             # The projector is a deployed service of this stack — never
             # render it off (see the header note). The coverage snapshot
             # is runtime state: keep it in the state dir, not the
@@ -272,6 +366,9 @@ in
             # PM_AGG_COVERAGE_SNAPSHOT_FILE for exactly this).
             Environment = [
               "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
+              # #8570: read the same local projection database in-process;
+              # leave PM_PROJECTOR_URL as the fallback for standalone runs.
+              "PM_CORE_PROJECTOR_DATABASE_URL=file:${projState}/projector.db"
               # The Kaneo projects registry used to be reached through
               # the checkout working directory (../kaneo-projects.json
               # from pm-stack/aggregator); the package bundles the
@@ -310,6 +407,30 @@ in
               # switching this back to "file" is the rollback.
               "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=pm-aggregator.service"
+              # #8570: preserve the old quota-gatherer service's state paths
+              # when its main() runs inside pm-aggregator.
+              "QUOTA_CURRENT_PATH=${aggState}/quota-current.json"
+              "QUOTA_HEARTBEAT_PATH=${aggState}/quota-gatherer-heartbeat.json"
+              "QUOTA_GATHERER_STATE_PATH=${aggState}/quota-gatherer-state.json"
+              "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots"
+              "POOL_STATE_PATH=${home}/.local/state/opencode-claimant/pool-state.json"
+              # #8570: preserve the collector's source paths and runtime
+              # credentials when it runs inside pm-aggregator rather than its
+              # former oneshot unit.
+              "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
+              "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
+              "ORCHESTRATION_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
+              "DNS_REGISTER_PATH=${home}/hatch-personal/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md"
+              "AA_OPENCODE_CONFIG_PATH=${home}/git/code/.opencode/opencode.jsonc"
+              "CHARGE_CANDIDATES_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json"
+              "CHARGES_SURFACED_STATE_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced-state.json"
+              "CLAUDE_LAUNCH_RECORDS_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/claude-launch-records.jsonl"
+              "USAGE_SNAPSHOT_OUTBOX_PATH=${aggState}/usage-snapshot-outbox.jsonl"
+              "SANDBOX_OPENCODE_URL=http://127.0.0.1:13420"
+              "OPENCODE_SERVER_URL=http://127.0.0.1:13420"
+              "OPENCODE_SESSION_SOURCE=opencode-laptop"
+              "OPENCODE_SERVER_PASSWORD_FILE=${aggState}/opencode-server-password"
+              "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               # The digest archive (#1278) is runtime state too: one
@@ -353,7 +474,19 @@ in
             # (the witness log's home); the app keeps no state
             # there itself.
             StateDirectory = "pm-dispatch";
-            ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log ${pmDispatch}/bin/pm-dispatch";
+            # Bun 1.4.4 cannot adopt a systemd-passed listener.
+            # Preserve the direct public binds until the socket is
+            # explicitly enabled; with dispatchSocketActivation the
+            # env wrapper pins the app to the private loopback backend
+            # port and the socket + socket-proxyd own the public
+            # addresses (#1822, same pattern as the aggregator). The
+            # wrapper is needed because DISPATCH_HOSTS/DISPATCH_PORT
+            # also live in the env files (EnvironmentFile), which must
+            # not win over the backend pin.
+            ExecStart =
+              "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log "
+              + (lib.optionalString cfg.dispatchSocketActivation "${pkgs.coreutils}/bin/env DISPATCH_HOSTS=127.0.0.1 DISPATCH_PORT=${toString cfg.dispatchBackendPort} ")
+              + "${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
             # (GitHub App + queue broker URL), and the operator file is
@@ -391,8 +524,28 @@ in
           };
           Service = {
             Type = "oneshot";
+            # #10305: the timer fires every 15 minutes. Leave a minute of
+            # slack so a stalled/backfill poll cannot hold this unit for hours.
+            # The projector's single-flight pass may still finish server-side;
+            # completed streams have persisted cursors for its next pass.
+            TimeoutStartSec = 14 * 60;
             EnvironmentFile = "${projState}/.env";
-            ExecStart = "${projectorReconcile}";
+            ExecStart = "${projectorReconcile "steady_state"}";
+          };
+        };
+
+        # Explicit, manually triggerable full-history pass. It shares the
+        # projector's single-flight gate and has no timer by design.
+        pm-projector-backfill = {
+          Unit = {
+            Description = "PM projector full-history backfill — poll GitHub without stored cursors";
+            After = [ "pm-projector.service" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 6 * 60 * 60;
+            EnvironmentFile = "${projState}/.env";
+            ExecStart = "${projectorReconcile "backfill"}";
           };
         };
 
@@ -413,6 +566,10 @@ in
               "QUOTA_HEARTBEAT_PATH=${aggState}/quota-gatherer-heartbeat.json"
               "QUOTA_GATHERER_STATE_PATH=${aggState}/quota-gatherer-state.json"
               "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots"
+              # #1338: the claimant babysitter's pool-state.json — pinned
+              # explicitly (the gather-quota.ts default is the same path)
+              # so the writer/reader contract survives a HOME change.
+              "POOL_STATE_PATH=${home}/.local/state/opencode-claimant/pool-state.json"
             ];
             ExecStart = "${pmAggregator}/bin/pm-aggregator-gather-quota";
           };
@@ -460,6 +617,35 @@ in
           };
         };
 
+        quota-weekly-review = {
+          Unit = {
+            Description = "Quota weekly review — Stage-3 S7 forecast-accuracy report to epic #12694 (NixOS; packaged pm-aggregator, #12701)";
+            After = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 900;
+            WorkingDirectory = aggState;
+            # The job reads the snapshot store + S1/S3 products from
+            # the aggregator state dir, and — like the fleet-feed
+            # collector — the route config and git operations from
+            # the checkout: S6 proposal PRs are opened from the
+            # checkout and NEAR_PCT is read from its derive.ts.
+            ExecStart = builtins.concatStringsSep " " [
+              "${pmAggregator}/bin/pm-aggregator-quota-weekly-review"
+              "--store-dir ${aggState}/snapshots"
+              "--route-config ${home}/git/code/.opencode/opencode.jsonc"
+              "--forecast ${aggState}/quota-forecast.json"
+              "--shadow ${aggState}/quota-shadow-placement.json"
+              "--out-dir ${aggState}/weekly-review"
+              "--repo-root ${home}/git/code"
+              "--gh /etc/profiles/per-user/user/bin/gh"
+              "--open-prs"
+              "--post"
+            ];
+          };
+        };
+
         # fleet-feed-collector is the one unit still running from
         # the checkout, deliberately (code#8171 follow-up): its script
         # derives repo-root paths from its own file location — it
@@ -488,6 +674,7 @@ in
               "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=fleet-feed-collector"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
+              "PM_CORE_FEED_CREDENTIAL_REFRESH=${home}/.local/bin/fleet-feed-oc-password.sh"
               "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
               "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
@@ -559,6 +746,32 @@ in
           };
         };
 
+        # The independent watchdog heartbeat checker (#14388, #14005
+        # item 1): a separate oneshot process on its own timer, never
+        # part of the aggregator process, so it still runs — and still
+        # pages — while the aggregator is down. It reads only the SLO
+        # journal. Its stdout IS the delivered report: systemd appends
+        # it to the report file under the aggregator state dir (the
+        # PAGE_DREW / NEEDS_ORCHESTRATOR lines the main-chat report
+        # surfaces), instead of losing it in the journal.
+        pm-watchdog-heartbeat-check = {
+          Unit = {
+            Description = "PM-stack watchdog heartbeat checker — independent five-minute check of the SLO journal (#14388)";
+            After = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 120;
+            WorkingDirectory = aggState;
+            Environment = [
+              "PM_AGG_SLO_JOURNAL_FILE=${aggState}/slo-journal.jsonl"
+            ];
+            ExecStart = "${pmAggregator}/bin/pm-aggregator-check-watchdog-heartbeat";
+            StandardOutput = "append:${aggState}/watchdog-heartbeat-report.log";
+            StandardError = "append:${aggState}/watchdog-heartbeat-report.log";
+          };
+        };
+
         # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
         # the env, pulls the images, and (re)creates the containers,
         # which then run under docker's own restart policy. A user unit
@@ -615,17 +828,6 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
 
-        quota-gatherer = {
-          Unit.Description = "Run the quota gatherer every 15 minutes (pm-stack, #1151)";
-          Timer = {
-            OnCalendar = "*:0/15";
-            RandomizedDelaySec = 20;
-            Persistent = true;
-            Unit = "quota-gatherer.service";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
-
         pm-digest-daily = {
           Unit.Description = "Run the PM daily digest every morning at 07:00 local (pm-stack, #1278)";
           Timer = {
@@ -648,12 +850,13 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
 
-        fleet-feed-collector = {
-          Unit.Description = "Collect the fleet feed for the laptop aggregator every ~5 minutes";
+        quota-weekly-review = {
+          Unit.Description = "Run the Stage-3 weekly forecast-accuracy review on Mondays at 07:20 local (pm-stack, #12701)";
           Timer = {
-            OnBootSec = "2min";
-            OnUnitActiveSec = "5min";
-            Unit = "fleet-feed-collector.service";
+            OnCalendar = "Mon *-*-* 07:20:00";
+            RandomizedDelaySec = 60;
+            Persistent = true;
+            Unit = "quota-weekly-review.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };
@@ -677,16 +880,29 @@ in
           };
           Install.WantedBy = [ "timers.target" ];
         };
+
+        pm-watchdog-heartbeat-check = {
+          Unit.Description = "Run the independent watchdog heartbeat checker every 5 minutes (#14388)";
+          Timer = {
+            OnBootSec = "2min";
+            OnUnitActiveSec = "5min";
+            Unit = "pm-watchdog-heartbeat-check.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
       };
 
-      # Socket activation for the PM HTTP services (#1822, slice 1 of
-      # task 15848): the socket units are DEFINED here but deliberately
-      # NOT enabled (no Install.WantedBy) — today each service still
-      # binds its own ports, and enabling a socket for a port the
-      # service also binds would race it. Slice 2 teaches each service
-      # to accept the systemd-passed fd (LISTEN_FDS); slice 3 enables
-      # these sockets (Install.WantedBy = [ "sockets.target" ]) and
-      # drops each service's own bind in the same switch. Listen
+      # Socket activation for the PM HTTP services (#1822, task 15848):
+      # the socket units are DEFINED here but deliberately NOT enabled by
+      # default. pm-projector's socket is enabled only by
+      # projectorSocketActivation, which also switches its app to the
+      # private backend port; this socket targets socket-proxyd because
+      # Bun 1.4.4 cannot consume LISTEN_FDS. pm-aggregator follows the
+      # same arrangement behind aggregatorSocketActivation (its freshness
+      # publisher listener gets a separate socket + proxy because it
+      # forwards to a different backend port). pm-dispatch follows
+      # the same arrangement behind dispatchSocketActivation.
+      # Listen
       # addresses mirror the services' live binds, verified on the
       # laptop 2026-11-14: projector 127.0.0.1:7801; aggregator
       # 127.0.0.1:4870 + tailnet:4870 + 127.0.0.1:4871 (the freshness
@@ -697,33 +913,91 @@ in
           Unit.Description = "PM projector listener (#1822; inactive until slice 3)";
           Socket = {
             ListenStream = "127.0.0.1:${toString cfg.projectorPort}";
-            Service = "pm-projector.service";
+            Service = "pm-projector-proxy.service";
           };
+          Install.WantedBy = lib.optionals cfg.projectorSocketActivation [ "sockets.target" ];
         };
 
         pm-aggregator = {
-          Unit.Description = "PM aggregator listeners (#1822; inactive until slice 3)";
+          Unit.Description = "PM aggregator listeners (#1822; inactive unless aggregatorSocketActivation)";
           Socket = {
             ListenStream = [
               "127.0.0.1:${toString cfg.aggregatorPort}"
               "${cfg.tailnetAddress}:${toString cfg.aggregatorPort}"
-              # The freshness publisher listener (loopback only);
-              # mirrors PM_AGG_FRESHNESS_PORT in the service env above.
-              "127.0.0.1:4871"
             ];
-            Service = "pm-aggregator.service";
+            Service = "pm-aggregator-proxy.service";
           };
+          Install.WantedBy = lib.optionals cfg.aggregatorSocketActivation [ "sockets.target" ];
+        };
+
+        # The freshness publisher listener (loopback only; mirrors
+        # PM_AGG_FRESHNESS_PORT in the service env above) gets its own
+        # socket + proxy: it forwards to a different backend port than
+        # the main listeners, and one socket-proxyd instance serves one
+        # backend address.
+        pm-aggregator-freshness = {
+          Unit.Description = "PM aggregator freshness publisher listener (#1822; inactive unless aggregatorSocketActivation)";
+          Socket = {
+            ListenStream = "127.0.0.1:4871";
+            Service = "pm-aggregator-freshness-proxy.service";
+          };
+          Install.WantedBy = lib.optionals cfg.aggregatorSocketActivation [ "sockets.target" ];
         };
 
         pm-dispatch = {
-          Unit.Description = "pm-dispatch listeners (#1822; inactive until slice 3)";
+          Unit.Description = "pm-dispatch listeners (#1822; inactive unless dispatchSocketActivation)";
           Socket = {
             ListenStream = [
               "127.0.0.1:${toString cfg.dispatchPort}"
               "${cfg.tailnetAddress}:${toString cfg.dispatchPort}"
             ];
-            Service = "pm-dispatch.service";
+            Service = "pm-dispatch-proxy.service";
           };
+          Install.WantedBy = lib.optionals cfg.dispatchSocketActivation [ "sockets.target" ];
+        };
+      };
+
+      systemd.user.services.pm-projector-proxy = {
+        Unit = {
+          Description = "PM projector socket proxy (#1822)";
+          Requires = [ "pm-projector.service" ];
+          After = [ "pm-projector.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.projectorBackendPort}";
+        };
+      };
+
+      systemd.user.services.pm-aggregator-proxy = {
+        Unit = {
+          Description = "PM aggregator socket proxy (#1822)";
+          Requires = [ "pm-aggregator.service" ];
+          After = [ "pm-aggregator.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.aggregatorBackendPort}";
+        };
+      };
+
+      systemd.user.services.pm-aggregator-freshness-proxy = {
+        Unit = {
+          Description = "PM aggregator freshness publisher socket proxy (#1822)";
+          Requires = [ "pm-aggregator.service" ];
+          After = [ "pm-aggregator.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.aggregatorFreshnessBackendPort}";
+        };
+      };
+
+      systemd.user.services.pm-dispatch-proxy = {
+        Unit = {
+          Description = "PM dispatch socket proxy (#1822)";
+          Requires = [ "pm-dispatch.service" ];
+          After = [ "pm-dispatch.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.dispatchBackendPort}";
         };
       };
     };

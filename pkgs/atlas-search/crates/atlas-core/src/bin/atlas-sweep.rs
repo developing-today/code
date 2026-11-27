@@ -1,6 +1,8 @@
 //! atlas-sweep — the Atlas ingestion sweep runner CLI (#7969).
 //!
 //! Usage: `atlas-sweep --state-dir DIR <action> ...`
+//! (`--help` prints the usage text, `--version` the version;
+//! both exit 0.)
 //!
 //! Actions (design §6, the complete operator set this core exposes):
 //!   pause-class --class CLASS --host HOST
@@ -23,10 +25,21 @@ use atlas_core::sweep::{
     pause_class, resume_class, run_once,
 };
 
+/// Execution failure (family contract, #15766): exit 1.
 fn fail(msg: &str) -> ExitCode {
+    eprintln!("atlas-sweep: {msg}");
+    ExitCode::FAILURE
+}
+
+/// Usage / invalid-invocation error (family contract, #15766): exit 2.
+fn usage_fail(msg: &str) -> ExitCode {
     eprintln!("atlas-sweep: {msg}");
     ExitCode::from(2)
 }
+
+const USAGE: &str = "usage: atlas-sweep --state-dir DIR <action> ...\n  \
+    actions: pause-class --class CLASS --host HOST | resume-class --class CLASS --host HOST | \
+    run-once REQUEST.json | dead-letter list|retry REF|drop REF | report [--run RUN_ID]";
 
 fn class_and_host(args: &[String]) -> Result<(SourceClass, String), String> {
     let mut class = None;
@@ -54,6 +67,17 @@ fn class_and_host(args: &[String]) -> Result<(SourceClass, String), String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-sweep {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let mut state_dir: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::new();
     let mut i = 0;
@@ -67,13 +91,15 @@ fn main() -> ExitCode {
         }
     }
     let Some(state_dir) = state_dir else {
-        return fail("missing --state-dir DIR");
+        return usage_fail("missing --state-dir DIR");
     };
     let Some((action, action_args)) = rest.split_first() else {
-        return fail("missing action (pause-class|resume-class|run-once|dead-letter|report)");
+        return usage_fail("missing action (pause-class|resume-class|run-once|dead-letter|report)");
     };
     let result = match action.as_str() {
-        "pause-class" | "resume-class" => class_and_host(action_args).and_then(|(class, host)| {
+        "pause-class" | "resume-class" => class_and_host(action_args)
+            .map_err(|e| format!("usage: {e}"))
+            .and_then(|(class, host)| {
             let f = if action == "pause-class" {
                 pause_class
             } else {
@@ -91,7 +117,7 @@ fn main() -> ExitCode {
         }),
         "run-once" => {
             let Some(path) = action_args.first() else {
-                return fail("run-once needs a REQUEST.json path");
+                return usage_fail("run-once needs a REQUEST.json path");
             };
             let text = match std::fs::read_to_string(path) {
                 Ok(text) => text,
@@ -126,15 +152,15 @@ fn main() -> ExitCode {
                 .map_err(|e| e.to_string()),
             Some("retry") => action_args
                 .get(1)
-                .ok_or_else(|| "dead-letter retry needs a REF".to_string())
+                .ok_or_else(|| "usage: dead-letter retry needs a REF".to_string())
                 .and_then(|r| dead_letter_retry(&state_dir, r).map_err(|e| e.to_string()))
                 .map(|()| String::new()),
             Some("drop") => action_args
                 .get(1)
-                .ok_or_else(|| "dead-letter drop needs a REF".to_string())
+                .ok_or_else(|| "usage: dead-letter drop needs a REF".to_string())
                 .and_then(|r| dead_letter_drop(&state_dir, r).map_err(|e| e.to_string()))
                 .map(|()| String::new()),
-            _ => Err("dead-letter needs list|retry REF|drop REF".to_string()),
+            _ => Err("usage: dead-letter needs list|retry REF|drop REF".to_string()),
         },
         "report" => {
             let rows = match cycle_report(&state_dir) {
@@ -143,7 +169,7 @@ fn main() -> ExitCode {
             };
             if let Some(pos) = action_args.iter().position(|a| a == "--run") {
                 let Some(run_id) = action_args.get(pos + 1) else {
-                    return fail("report --run needs a RUN_ID");
+                    return usage_fail("report --run needs a RUN_ID");
                 };
                 match rows.iter().find(|row| &row.run_id == run_id) {
                     Some(row) => println!("{}", serde_json::json!(row)),
@@ -154,7 +180,7 @@ fn main() -> ExitCode {
             }
             Ok(String::new())
         }
-        other => Err(format!("unknown action {other:?}")),
+        other => Err(format!("usage: unknown action {other:?}")),
     };
     match result {
         Ok(text) => {
@@ -163,6 +189,9 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(msg) => fail(&msg),
+        Err(msg) => match msg.strip_prefix("usage: ") {
+            Some(msg) => usage_fail(msg),
+            None => fail(&msg),
+        },
     }
 }

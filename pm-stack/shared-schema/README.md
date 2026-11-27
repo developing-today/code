@@ -92,8 +92,22 @@ this change.
 
 ## Migration, fallback, and rollback
 
-There is no shared Postgres migration runner yet; migrations are applied by
-hand in version order. `migrations/20261105_0001_action_event_store.up.sql`
+There is no shared Postgres migration runner yet; migrations are applied to
+PostgreSQL by hand in version order. The Turso stores have a runner
+(#14256): `turso_migrations.py` translates each migration from the
+PostgreSQL dialect to SQLite — following the aggregator's own translation
+conventions in `aggregator/src/turso-stores.ts`, and refusing any construct
+it has no rule for rather than guessing — and
+`apply-store-migrations.py` applies the pending set in version order, one
+transaction per migration, recording each in the store's
+`pm_schema_migrations` ledger so a re-run is a reported no-op. The
+translation is pinned by reviewed golden files under `golden/`, and
+`test_turso_migrations.py` proves the translated schema accepts and
+rejects the same rows the PostgreSQL suites assert. The
+`pm-store-migrate` workflow dispatches the runner: against a stand-in
+store as the CI proof, or against a named store from
+`pm-stack/platform/stores.json` once its token secret is configured.
+`migrations/20261105_0001_action_event_store.up.sql`
 creates `agg_actions` and `shared_events` with their constraints, indexes, and
 grants. `migrations/20261116_0001_aggregator_remote_stores.up.sql` (#6815)
 adds, in dependency order after it:
@@ -108,9 +122,9 @@ adds, in dependency order after it:
 `migrations/20261122_0001_shared_comments.up.sql` (#1744, Move 1 step 2)
 adds, after those:
 
-| Table                    | Holds                                                                                          |
-| ------------------------ | ---------------------------------------------------------------------------------------------- |
-| `public.shared_comments` | dashboard comments (the DashComment record), the shared cross-service comment table of #1744  |
+| Table                    | Holds                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `public.shared_comments` | dashboard comments (the DashComment record), the shared cross-service comment table of #1744 |
 
 Each paired `.down.sql` refuses to drop a non-empty table; the #6815 down
 migration drops its tables in reverse dependency order. The refusal is

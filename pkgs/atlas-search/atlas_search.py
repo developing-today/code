@@ -21,6 +21,16 @@ cut the scan. The bge-small set remains in the publish as a dormant
 fallback (--model BAAI/bge-small-en-v1.5 --vec-table
 vec_bge_small_384_f32 --embedder fastembed).
 
+Recorded-row note (#13283): the #5733 gate's verdict record
+(eval/gate-5733-results.md) records a different golden-311 row —
+recall@10 183/311, MRR 0.3640 — under the same "production hybrid"
+label. That row belongs to the Python eval lineage's configuration
+(branch depth 30, RRF k=60, vectors truncated to 384 dimensions),
+not to this production shape (k=10, pool 100 per branch, full 768
+dimensions). The two rows are different configurations, not a
+measurement error; a golden-311 number cited without its
+configuration is incomplete.
+
 Privacy model (docs/atlas-provenance-and-scale-design-2026-10-31.md):
 sensitivity is a caller ceiling, not a display hint. The default ceiling
 is `personal` — local-only and secret-bearing chunks are excluded
@@ -87,12 +97,14 @@ A/B modes; scan remains the default.
 
 import argparse
 import base64
+import concurrent.futures
 import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -107,6 +119,21 @@ QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 VEC_TABLE = "vec_snowflake_m_v2_768_f32"
 RRF_K = 10
 SENS_ORDER = ["shareable", "personal", "local-only", "secret-bearing"]
+# Canonical ladder names (#13506), accepted as caller ceilings only.
+# Stored labels, SQL parameters and emitted JSON keep SENS_ORDER.
+SENS_CANONICAL = {
+    "public": "shareable",
+    "internal": "personal",
+    "private": "local-only",
+    "sensitive": "secret-bearing",
+}
+
+
+def ceiling_name(value):
+    """Map a canonical ceiling name to its legacy spelling; pass others through."""
+    return SENS_CANONICAL.get(value, value)
+
+
 DISCLOSURE_CONTEXT_CEILINGS = {
     "fleet-internal": "local-only",
     "hosted-per-user": "personal",
@@ -126,6 +153,7 @@ def effective_sensitivity_ceiling(context, caller_ceiling):
     atlas-core's outbound default.
     """
     context_ceiling = DISCLOSURE_CONTEXT_CEILINGS.get(context, "shareable")
+    caller_ceiling = ceiling_name(caller_ceiling)
     if caller_ceiling not in SENS_ORDER:
         return "shareable"
     return min((context_ceiling, caller_ceiling), key=SENS_ORDER.index)
@@ -367,12 +395,39 @@ class LocalBackend:
         self.db_path = db_path
         self.vec_table = vec_table
         self.trunc = trunc
-        self.con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        self.con.row_factory = sqlite3.Row
         self.notes = []
+        # One sqlite connection per thread (the con property below):
+        # the TEMP views of _setup_views and the ATTACHes of
+        # load_matrix are per-connection state, and hybrid search runs
+        # its branches on worker threads (#12900 thread 1), which must
+        # never share a connection.
+        self._tls = threading.local()
+        self._home_thread = threading.current_thread()
+        _ = self.con  # the home thread's connection, built eagerly
         self._setup_views()
         self._vec_sources = self._find_vec_sources(vecdb_arg)
         self._matrix = None  # (ids list, numpy matrix, id->row index)
+
+    @property
+    def con(self):
+        """The calling thread's sqlite connection. First touch on a
+        new thread opens a fresh connection and replays _setup_views
+        on it (TEMP views/tables and the aux ATTACH do not cross
+        connections). Setup notes can therefore append once per
+        connection; run_search folds backend notes with dedup, so the
+        repeats never surface."""
+        con = getattr(self._tls, "con", None)
+        if con is None:
+            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            con.row_factory = sqlite3.Row
+            self._tls.con = con
+            if threading.current_thread() is not self._home_thread:
+                self._setup_views()
+        return con
+
+    @con.setter
+    def con(self, value):
+        self._tls.con = value
 
     # -- schema normalization: temp views give the queries one shape
     #    whether the file is a publish copy (labels+sensitivity+vecs) or
@@ -626,7 +681,9 @@ class Filters:
         self.projects = split_csv(getattr(args, "project", None))
         self.clients = split_csv(getattr(args, "client", None))
         self.context = getattr(args, "context", "local-owner")
-        caller_ceiling = getattr(args, "max_sensitivity", "secret-bearing")
+        caller_ceiling = ceiling_name(
+            getattr(args, "max_sensitivity", "secret-bearing")
+        )
         if caller_ceiling not in SENS_ORDER:
             die(f"--max-sensitivity must be one of {SENS_ORDER}")
         self.max_sensitivity = caller_ceiling
@@ -921,6 +978,51 @@ def turso_index_branch(be, filters, qvec_json, pool, vbackend):
     return [(cid, dist.get(cid)) for cid in survivors]
 
 
+class _BranchExit(Exception):
+    """A branch's die() (SystemExit), ferried to the calling thread."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def run_branches(named):
+    """Run a search's branch callables; return {name: ranked list}.
+
+    A hybrid query's branches are independent and join only at RRF
+    fusion (#12900 thread 1), so with two or more branches they run
+    concurrently on a thread pool and are collected by name — fusion
+    order, and therefore the output envelope, is unchanged. A single
+    branch runs inline, keeping the fts-only / vector-only shapes
+    exactly as before. die() in a branch raises SystemExit in the
+    worker thread; it is ferried back and re-raised here, on the
+    calling thread, so a branch failure exits the same way the serial
+    shape's did."""
+
+    def guarded(fn):
+        def call():
+            try:
+                return fn()
+            except SystemExit as e:
+                raise _BranchExit(e.code) from None
+
+        return call
+
+    if len(named) < 2:
+        return {name: guarded(fn)() for name, fn in named.items()}
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(named))
+    try:
+        futures = {ex.submit(guarded(fn)): name for name, fn in named.items()}
+        out = {}
+        for fut in concurrent.futures.as_completed(futures):
+            out[futures[fut]] = fut.result()
+        return out
+    except _BranchExit as e:
+        raise SystemExit(e.code) from None
+    finally:
+        ex.shutdown(wait=False)
+
+
 def run_search(be, args):
     vbackend = getattr(args, "vector_backend", "scan")
     if (
@@ -958,23 +1060,53 @@ def run_search(be, args):
         )
     if isinstance(be, TursoBackend):
         if vbackend == "scan" or qvec_json is None:
-            stmts = branch_queries(be, filters, match_expr, qvec_json, args.pool)
-            results = be.pipeline(stmts)
-            i = 0
+            # One pipeline per branch, run concurrently: a single
+            # pipeline executes its statements sequentially
+            # server-side, so the batched shape serialized the two
+            # branches against each other (#12900 thread 1).
+
+            def turso_scan_fts():
+                stmts = branch_queries(be, filters, match_expr, None, args.pool)
+                if not stmts:
+                    return []
+                return [(r["cid"], None) for r in be.pipeline(stmts)[0]]
+
+            def turso_scan_vec():
+                stmts = branch_queries(be, filters, None, qvec_json, args.pool)
+                if not stmts:
+                    return []
+                return [(r["cid"], r["dist"]) for r in be.pipeline(stmts)[0]]
+
+            branches = {}
             if match_expr is not None:
-                fts_ranked = [(r["cid"], None) for r in results[i]]
-                i += 1
+                branches["fts"] = turso_scan_fts
             if qvec_json is not None:
-                vec_ranked = [(r["cid"], r["dist"]) for r in results[i]]
+                branches["vec"] = turso_scan_vec
+            got = run_branches(branches)
+            fts_ranked = got.get("fts", [])
+            vec_ranked = got.get("vec", [])
         else:
-            fts_stmts = branch_queries(be, filters, match_expr, None, args.pool)
-            if fts_stmts:
-                fts_ranked = [(r["cid"], None) for r in be.pipeline(fts_stmts)[0]]
-            vec_ranked = turso_index_branch(be, filters, qvec_json, args.pool, vbackend)
+
+            def turso_index_fts():
+                fts_stmts = branch_queries(be, filters, match_expr, None, args.pool)
+                if not fts_stmts:
+                    return []
+                return [(r["cid"], None) for r in be.pipeline(fts_stmts)[0]]
+
+            branches = {}
+            if match_expr is not None:
+                branches["fts"] = turso_index_fts
+            branches["vec"] = lambda: turso_index_branch(
+                be, filters, qvec_json, args.pool, vbackend
+            )
+            got = run_branches(branches)
+            fts_ranked = got.get("fts", [])
+            vec_ranked = got.get("vec", [])
     else:
         where, params = filters.where(be)
         joins = filters.joins(be)
-        if match_expr is not None:
+
+        def local_fts():
             rows = be.execute(
                 "SELECT c.id AS cid FROM chunks c "
                 "JOIN chunks_fts f ON f.rowid = c.id "
@@ -983,18 +1115,28 @@ def run_search(be, args):
                 "ORDER BY bm25(chunks_fts) LIMIT ?",
                 [match_expr, *params, args.pool],
             )
-            fts_ranked = [(r["cid"], None) for r in rows]
-        if qvec is not None:
+            return [(r["cid"], None) for r in rows]
+
+        def local_vec():
             allowed = {
                 r["cid"]
                 for r in be.execute(
                     f"SELECT c.id AS cid FROM chunks c {joins} WHERE {where}", params
                 )
             }
-            vec_ranked = [
+            return [
                 (cid, 1.0 - sim)
                 for cid, sim in be.vector_search(qvec, allowed, args.pool)
             ]
+
+        branches = {}
+        if match_expr is not None:
+            branches["fts"] = local_fts
+        if qvec is not None:
+            branches["vec"] = local_vec
+        got = run_branches(branches)
+        fts_ranked = got.get("fts", [])
+        vec_ranked = got.get("vec", [])
 
     # Reciprocal rank fusion, k=10 (production shape, decided 2026-10-31).
     fused = {}
@@ -1406,6 +1548,7 @@ def add_disclosure_args(p, max_sensitivity_default):
     )
     p.add_argument(
         "--max-sensitivity",
+        type=ceiling_name,
         choices=SENS_ORDER,
         default=max_sensitivity_default,
         help=f"caller clearance ceiling in {'<'.join(SENS_ORDER)} (default {max_sensitivity_default})",

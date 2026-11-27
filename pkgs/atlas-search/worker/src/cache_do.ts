@@ -18,7 +18,12 @@
  * forever.
  */
 import { embedQuery, searchService, type ServiceEnv } from "./service";
-import { EMBED_DIMS, EMBED_MODEL } from "./space";
+import { CEILING, CONTEXT, EMBED_DIMS, EMBED_MODEL, isCeiling, type Ceiling, type DisclosureContext } from "./space";
+import { MAX_K } from "./search";
+
+function badQueryBody(message: string): Response {
+  return Response.json({ error: { code: "bad_request", message } }, { status: 400 });
+}
 
 interface EntryRow {
   [key: string]: SqlStorageValue;
@@ -79,8 +84,54 @@ export class QueryCache {
     const url = new URL(req.url);
     try {
       if (req.method === "POST" && url.pathname === "/query") {
-        const body = (await req.json()) as { query: string; k: number };
-        return Response.json(await this.query(body.query, body.k));
+        // #7983 item 5: the Worker is the only caller, but this body is
+        // what the entry row is created from, so it is checked before
+        // anything is stored: a malformed one is refused, not persisted.
+        let body: unknown;
+        try {
+          body = await req.json();
+        } catch {
+          return badQueryBody("body must be JSON");
+        }
+        if (typeof body !== "object" || body === null || Array.isArray(body)) {
+          return badQueryBody("body must be a JSON object");
+        }
+        const { query, k, ceiling, context } = body as {
+          query?: unknown;
+          k?: unknown;
+          ceiling?: unknown;
+          context?: unknown;
+        };
+        if (typeof query !== "string" || query.length === 0) {
+          return badQueryBody("query must be a non-empty string");
+        }
+        if (typeof k !== "number" || !Number.isInteger(k) || k < 1 || k > MAX_K) {
+          return badQueryBody(`k must be an integer from 1 to ${MAX_K}`);
+        }
+        // The ceiling and context ride with the request (#8625
+        // slice: ceilings) so the fan-out below enforces exactly
+        // what the cache key names. Absent means the surface pins
+        // (backward compatibility with older callers in the same
+        // deployment); present-but-unknown fails closed before any
+        // scheduling or storage, never resolved to a default.
+        let resolvedCeiling: Ceiling = CEILING;
+        if (ceiling !== undefined) {
+          if (!isCeiling(ceiling)) return badQueryBody("ceiling must be a known sensitivity tier");
+          resolvedCeiling = ceiling;
+        }
+        let resolvedContext: DisclosureContext = CONTEXT;
+        if (context !== undefined) {
+          if (
+            context !== "fleet-internal" &&
+            context !== "hosted-per-user" &&
+            context !== "public-surface" &&
+            context !== "local-owner"
+          ) {
+            return badQueryBody("context must be a known disclosure context");
+          }
+          resolvedContext = context;
+        }
+        return Response.json(await this.query(query, k, resolvedCeiling, resolvedContext));
       }
       if (req.method === "GET" && url.pathname === "/inspect") {
         return Response.json(this.inspect());
@@ -97,7 +148,7 @@ export class QueryCache {
     }
   }
 
-  private async query(query: string, k: number): Promise<QueryOutcome> {
+  private async query(query: string, k: number, ceiling: Ceiling, context: DisclosureContext): Promise<QueryOutcome> {
     let row = this.row();
     if (row?.result_json) {
       const stored = row.result_json;
@@ -129,7 +180,7 @@ export class QueryCache {
       row = this.row()!;
     }
 
-    const { result, ms } = await searchService(this.env, query, k);
+    const { result, ms } = await searchService(this.env, query, k, ceiling, context);
     const searchedAt = new Date().toISOString();
     this.state.storage.sql.exec(
       "UPDATE entry SET result_json = ?, searched_at = ?, search_ms = ? WHERE id = 1",

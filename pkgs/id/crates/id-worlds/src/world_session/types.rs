@@ -36,6 +36,12 @@ pub const MAX_ADMIN_TOKEN_BYTES: usize = 256;
 /// Sent with a capability ceiling change: unlike a profile, it takes effect now.
 pub(crate) const CAPS_CEILING_NOTICE: &str =
     "ceiling saved; it applies immediately to new uses and active subscriptions";
+/// Sent with a presentation policy change: it applies at once, to the
+/// next render.
+pub(crate) const PRESENTATION_POLICY_SAVED: &str =
+    "presentation policy saved; it applies to the next render";
+/// Sent with a presentation policy read.
+pub(crate) const PRESENTATION_POLICY_CURRENT: &str = "current presentation policy";
 
 /// Simultaneous bounded module uploads accepted by a world service.
 pub(crate) const MAX_CONCURRENT_MODULE_UPLOADS: usize = 2;
@@ -84,6 +90,14 @@ pub trait SessionIo: Send {
     /// Mark this session authorized after its application-level
     /// capability or admin credential has been validated.
     fn mark_authorized(&mut self) {}
+
+    /// An authenticated account supplied by the server-side transport.
+    /// This is billing context only; it never grants world authority and
+    /// must not be derived from a client frame. Capability-only transports
+    /// leave it unset.
+    fn authenticated_caller_account(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Tunables for [`run_session_with`].
@@ -91,6 +105,15 @@ pub trait SessionIo: Send {
 pub struct SessionConfig {
     /// How long a peer may take to send its first frame.
     pub join_timeout: Duration,
+    /// How long a joined session may go with no activity before the
+    /// server ends it. The main loop re-arms this deadline on every
+    /// iteration, so any inbound frame, world event, or view send
+    /// counts as activity; only a session silent for the whole window
+    /// is reaped — its presence clears and its hub permit is released.
+    /// The default matches the SSH transport's inactivity timeout
+    /// (`world_ssh::INACTIVITY_TIMEOUT`, 10 minutes), so both session
+    /// transports reap idle peers on the same posture.
+    pub idle_timeout: Duration,
     /// The server blob store documents are served from, when the
     /// transport holds one the world service does not (the SSH shell
     /// receives the store directly; D1-040 decision 7). Falls back to
@@ -102,6 +125,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             join_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_mins(10),
             documents_store: None,
         }
     }
@@ -220,6 +244,14 @@ pub(crate) enum ClientFrame {
         /// clients that predate the revision.
         #[serde(default)]
         screen_msgpack: bool,
+        /// Opt in to compressed binary screen patches (F12.11 phase 4,
+        /// contract revision 16): when `screen_msgpack` is also set,
+        /// patch frames arrive as compressed version-2 MessagePack
+        /// frames whenever compression makes the complete frame
+        /// smaller, and as version-1 frames otherwise. Omitted by
+        /// clients that predate the revision.
+        #[serde(default)]
+        screen_compress: bool,
         /// Resume token from this client's last applied view. A cursor, not a
         /// credential: the join capability above still authorizes the session,
         /// and an unknown, stale or foreign token simply gets a full view.
@@ -398,6 +430,16 @@ pub(crate) enum ClientFrame {
         admin_token: Option<String>,
         capability: Option<String>,
     },
+    /// Admin: replace the world's presentation policy (design #5970 slice
+    /// 2b). The policy is validated, journaled and applies at once.
+    SetPresentationPolicy {
+        admin_token: String,
+        policy: id_core::presentation_policy::PresentationPolicy,
+    },
+    /// Read the world's presentation policy. It needs no token: the
+    /// policy is public pre-join metadata (#5970 §5), so a client can
+    /// see what a world allows before it joins.
+    PresentationPolicyInfo {},
     /// Show this world's capability grants, wants and usage.
     Caps {
         capability: String,
@@ -758,6 +800,11 @@ pub(crate) enum ServerFrame<'a> {
     /// The requested profile and an explicit deferred-application notice.
     ExecutionProfile {
         update: crate::world::ExecutionProfileUpdate,
+        message: &'static str,
+    },
+    /// The world's presentation policy, after a change or on request.
+    PresentationPolicy {
+        policy: id_core::presentation_policy::PresentationPolicy,
         message: &'static str,
     },
     /// The capability report after a ceiling change, and a notice that the

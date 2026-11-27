@@ -7,6 +7,9 @@
 
 use crate::error::Result;
 use crate::filters::Filters;
+use crate::filters::Sensitivity;
+use crate::occurrences::ChunkOccurrence;
+use crate::shards::TierCeiling;
 use crate::types::{BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow};
 
 /// The window (in chunk_idx units) the default
@@ -34,6 +37,18 @@ pub trait SearchBackend {
     /// snapshot.
     fn snapshot_id(&self) -> Option<String> {
         None
+    }
+
+    /// The effective filter-surface manifest this backend serves
+    /// under (#6228 Phase 3/4): the manifest loaded from the corpus
+    /// by [`crate::manifest::load_manifest`], or the built-in
+    /// surface. Serve mode binds its cache keys to this manifest's
+    /// `(version, content_hash)`, so a surface change can never be
+    /// answered from entries computed under another surface. The
+    /// default is the built-in surface, matching the loader's
+    /// fallback for backends that carry no manifest.
+    fn manifest(&self) -> crate::manifest::Manifest {
+        crate::manifest::builtin_manifest()
     }
 
     /// Notes the backend has accumulated (setup notes, load-time
@@ -64,6 +79,12 @@ pub trait SearchBackend {
     /// result.
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>>;
 
+    /// Chunk ids whose stored canonical content hash matches exactly.
+    /// Backends without a hash index expose no candidates.
+    fn chunk_ids_by_hash(&self, _canonical_hash: &str) -> Result<Vec<i64>> {
+        Ok(Vec::new())
+    }
+
     /// Same-message neighbor rows around (`message_id`, any
     /// `chunk_idx` in the window), ordered by chunk_idx.
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>>;
@@ -81,6 +102,23 @@ pub trait SearchBackend {
         self.neighbors(message_id, 0, MESSAGE_CHUNKS_WINDOW)
     }
 
+    /// Every recorded occurrence of the chunk content whose
+    /// canonical hash is `canonical_hash` (#3125): the shard
+    /// fan-out answers from its `chunk_occurrences` registries
+    /// under `ceiling`; every other backend answers empty.
+    /// `ceiling` admits a shard only under the SAME tier ladder
+    /// the vector fan-out enforces, so a restricted caller never
+    /// learns higher-tier source locators from a hash it holds.
+    fn occurrences(
+        &self,
+        canonical_hash: &str,
+        tier_ceiling: TierCeiling,
+        caller_ceiling: Sensitivity,
+    ) -> Result<Vec<ChunkOccurrence>> {
+        let _ = (canonical_hash, tier_ceiling, caller_ceiling);
+        Ok(Vec::new())
+    }
+
     /// One message row by id (for `--with-message` payloads).
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>>;
 }
@@ -96,6 +134,9 @@ impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
     fn snapshot_id(&self) -> Option<String> {
         (**self).snapshot_id()
     }
+    fn manifest(&self) -> crate::manifest::Manifest {
+        (**self).manifest()
+    }
     fn notes(&self) -> Vec<String> {
         (**self).notes()
     }
@@ -108,11 +149,22 @@ impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
         (**self).chunk_details(ids)
     }
+    fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        (**self).chunk_ids_by_hash(canonical_hash)
+    }
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
         (**self).neighbors(message_id, chunk_idx, n)
     }
     fn message_chunks(&self, message_id: &str) -> Result<Vec<NeighborRow>> {
         (**self).message_chunks(message_id)
+    }
+    fn occurrences(
+        &self,
+        canonical_hash: &str,
+        tier_ceiling: TierCeiling,
+        caller_ceiling: Sensitivity,
+    ) -> Result<Vec<ChunkOccurrence>> {
+        (**self).occurrences(canonical_hash, tier_ceiling, caller_ceiling)
     }
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
         (**self).message(message_id)

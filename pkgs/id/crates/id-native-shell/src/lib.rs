@@ -20,17 +20,35 @@
 //! and the live `WorldClient` session loop ([`run_session`]) that
 //! feeds the renderer through `render::PresentedView`;
 //! `tests/live_session.rs` proves the durable-outcome half of the
-//! parity criterion against a live host.
+//! parity criterion against a live host. The #12657 step-2a scene
+//! renderer ([`scene`]) presents validated `scene/1` surfaces as 3D
+//! entities beside the text grid; shells without it keep the scene's
+//! text projection. The #12657 step-2b audio renderer
+//! ([`audio`]) presents validated `audio/1` surfaces as scheduled
+//! cue entities beside it; shells without it keep the audio's text
+//! projection. The #12657 step-2c widget renderer ([`widget`])
+//! presents validated `widget/1` surfaces as placed control
+//! entities beside it; shells without it keep the widget document's
+//! text projection. The first end-user application surface
+//! (#15022, graphical-client design #5782 §3) is the world
+//! directory ([`directory`]): the host's public world list ordered
+//! pinned/recent/discovered, keyboard navigation into per-world
+//! sessions that coexist, and the accessible text table the
+//! graphical list renders line for line.
 
+pub mod audio;
+pub mod directory;
 pub mod events;
 pub mod form;
 pub mod providers;
 pub mod render;
+pub mod scene;
 mod session;
+pub mod widget;
 
 pub use providers::{
-    CLIENT_FILE_READ_PROVIDER, ClientProviderExecutor, FileReadExecutor, LocalAuditEntry,
-    LocalBounds, ProviderAdapter,
+    CLIENT_FILE_READ_PROVIDER, CLIENT_NOTIFY_PROVIDER, ClientProviderExecutor, FileReadExecutor,
+    LocalAuditEntry, LocalBounds, NotifyExecutor, ProviderAdapter, notify_needs_resync,
 };
 pub use session::{
     ServerUpdate, SessionState, SessionView, join_frame, run_session, run_session_with_providers,

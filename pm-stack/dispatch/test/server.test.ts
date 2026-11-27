@@ -2,8 +2,9 @@
 // Drives the exported handler with a stubbed-JWKS OIDC token: no network,
 // no queue, no GitHub — any non-JWKS fetch throws, so a test that tried
 // to create an issue/task/session would fail loudly instead of 400ing.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSign, generateKeyPairSync } from "node:crypto";
+import { OpenCodeClient } from "../src/opencode.ts";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = publicKey.export({ format: "jwk" }) as unknown as Record<string, unknown>;
@@ -73,7 +74,8 @@ function signOidc(repository: string): string {
 // (#5120), so the suite pins a fixture project (no service-role key: the
 // queue stays disabled, as these tests intend).
 process.env.QUEUE_BROKER_TOKEN_FILE ??= "/nonexistent-dispatch-test/broker-token";
-const { handler, taskStatusView, sessionStatusView } = await import("../src/server.ts");
+process.env.DISPATCH_API_TOKEN = "dispatch-wake-test-token";
+const { handler, taskStatusView, sessionStatusView, LaunchLog } = await import("../src/server.ts");
 
 function sessionsRequest(token: string, body: Record<string, unknown>): Request {
   return new Request("http://x/v1/sessions", {
@@ -118,6 +120,68 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
     const token = signOidc("developing-today/code");
     const res = await handler(sessionsRequest(token, { ...base, directory: "/home/user/git/code" }));
     expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /v1/agent-wake", () => {
+  test("starts an OpenCode session that runs fleet agent next for the addressed agent", async () => {
+    const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({ id: "ses_wake_1" });
+    const sendPrompt = spyOn(OpenCodeClient.prototype, "sendPrompt").mockResolvedValue(undefined);
+    try {
+      const response = await handler(
+        new Request("http://x/v1/agent-wake", {
+          method: "POST",
+          headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
+          body: JSON.stringify({
+            event: "message.created",
+            address: "agent:agent-next-20-local",
+            message_ids: [42],
+            kind: "instruction",
+            from: ["drew"],
+            text: "bridge summary that must not become a task prompt",
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        agent: "agent-next-20-local",
+        session_id: "ses_wake_1",
+        status: "started",
+      });
+      expect(createSession).toHaveBeenCalledWith({
+        directory: "/home/user/git/code",
+        title: "Fleet wake: agent-next-20-local",
+        model: null,
+      });
+      expect(sendPrompt).toHaveBeenCalledWith(
+        "ses_wake_1",
+        expect.stringContaining("fleet agent next --agent agent-next-20-local"),
+      );
+      expect(sendPrompt.mock.calls[0]?.[1]).not.toContain("bridge summary that must not become a task prompt");
+    } finally {
+      createSession.mockRestore();
+      sendPrompt.mockRestore();
+    }
+  });
+
+  test("rejects channel and malformed addresses without starting a session", async () => {
+    const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({
+      id: "ses_wake_invalid",
+    });
+    try {
+      const response = await handler(
+        new Request("http://x/v1/agent-wake", {
+          method: "POST",
+          headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
+          body: JSON.stringify({ event: "message.created", address: "channel:chatgpt", message_ids: [42] }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(createSession).not.toHaveBeenCalled();
+    } finally {
+      createSession.mockRestore();
+    }
   });
 });
 
@@ -310,5 +374,73 @@ describe("GET /v1/tasks/:id and /v1/sessions/:id read routes (#5555)", () => {
     expect(res.status).toBe(502);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("queue unavailable");
+  });
+});
+
+describe("launch-path request logging (#6992)", () => {
+  function tasksRequest(token: string, body: Record<string, unknown>): Request {
+    return new Request("http://x/v1/tasks", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test("LaunchLog completion line carries method, path, status, total, legs and ids", () => {
+    const spy = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const log = new LaunchLog();
+      log.leg("issue");
+      log.leg("enqueue");
+      log.done("POST", "/v1/sessions", 201, 42, "ses_abc");
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = String(spy.mock.calls[0]?.[0] ?? "");
+      expect(line).toContain("[dispatch-request] POST /v1/sessions status=201");
+      expect(line).toMatch(/total=\d+ms/);
+      expect(line).toContain("issue=");
+      expect(line).toContain("enqueue=");
+      expect(line).toContain("task=42");
+      expect(line).toContain("session=ses_abc");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("POST /v1/sessions logs its completion line with the enqueue leg (502 while the queue is unconfigured)", async () => {
+    const spy = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const res = await handler(sessionsRequest(signOidc("developing-today/code"), base));
+      expect(res.status).toBe(502);
+      const line = spy.mock.calls
+        .map((c) => String(c[0] ?? ""))
+        .find((l) => l.includes("[dispatch-request] POST /v1/sessions"));
+      expect(line).toBeDefined();
+      expect(line).toContain("status=502");
+      expect(line).toContain("enqueue=");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("POST /v1/tasks logs its completion line with the enqueue leg (502 while the queue is unconfigured)", async () => {
+    const spy = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const res = await handler(
+        tasksRequest(signOidc("developing-today/code"), {
+          repo: "developing-today/code",
+          title: "logging probe",
+          prompt: "exercise the tasks handler for the logging test",
+        }),
+      );
+      expect(res.status).toBe(502);
+      const line = spy.mock.calls
+        .map((c) => String(c[0] ?? ""))
+        .find((l) => l.includes("[dispatch-request] POST /v1/tasks"));
+      expect(line).toBeDefined();
+      expect(line).toContain("status=502");
+      expect(line).toContain("enqueue=");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -4,6 +4,7 @@
 // BEFORE rewriting syntax, so user text/JSON can never be rewritten as SQL.
 import { resolveBwsSecret } from "./secrets.ts";
 import type { SqlClient } from "./sql-client.ts";
+import type { TursoWriteContext, TursoWriteMetrics } from "./turso-write-metrics.ts";
 import { DECISION_EVENTS_TURSO_URL, DECISION_EVENTS_TURSO_TOKEN_NAME } from "./decision-events-sync.ts";
 
 export type StoreArg = { type: "text"; value: string };
@@ -40,7 +41,15 @@ export function storeStatement(input: string): { sql: string; args: StoreArg[] }
     .replace(/\bpublic\.(agg_[a-z_]+|shared_[a-z_]+|orch_runs)\b/g, "$1")
     .replace(/\balerts\.(incidents|incident_events|push_subscriptions|notification_sends)\b/g, "alerts_$1")
     .replace(/\bpush_subscriptions\.classes\b/g, "alerts_push_subscriptions.classes")
-    .replace(/array\[([^\]]*)\]::text\[\]/gi, "json_array($1)")
+    // A text[] of literals becomes one JSON text argument rather than a
+    // json_array() call: D1 caps a function at 127 arguments, and seen-id
+    // lists run to thousands (#15671 follow-up).
+    .replace(/array\[([^\]]*)\]::text\[\]/gi, (m, inner: string) => {
+      const items = inner.split(",").map((s) => s.trim());
+      if (!items.every((s) => /^\?\d+$/.test(s))) return `json_array(${inner})`;
+      args.push({ type: "text", value: JSON.stringify(items.map((s) => args[Number(s.slice(1)) - 1].value)) });
+      return `json(?${args.length})`;
+    })
     .replace(/(\?\d+)::text\[\]/g, (_m, p) => {
       const n = Number(p.slice(1)) - 1;
       if (args[n].value !== "{}") throw new Error("unsupported PostgreSQL array literal");
@@ -96,13 +105,18 @@ export function decodeStoreRow(row: Record<string, unknown>): Record<string, unk
   );
 }
 
-export function createTursoStoreClient(url: string, token: string, fetchFn: typeof fetch = fetch): SqlClient {
+export function createTursoStoreClient(
+  url: string,
+  token: string,
+  fetchFn: typeof fetch = fetch,
+  writeMetrics?: TursoWriteMetrics,
+): SqlClient {
   const endpoint = new URL(url.replace(/^libsql:/, "https:"));
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password)
     throw new Error("invalid Turso store URL");
   return {
     ref: "turso:fleet-platform",
-    async query<T = Record<string, unknown>>(input: string): Promise<T[]> {
+    async query<T = Record<string, unknown>>(input: string, writeContext?: TursoWriteContext): Promise<T[]> {
       const stmt = storeStatement(input);
       const res = await fetchFn(`${endpoint.href.replace(/\/$/, "")}/v2/pipeline`, {
         method: "POST",
@@ -120,7 +134,7 @@ export function createTursoStoreClient(url: string, token: string, fetchFn: type
         // Do not echo server SQL/errors: they can contain subscription keys.
         throw new Error("Turso store query failed or returned a malformed result");
       }
-      return result.rows.map((cells: any[]) => {
+      const rows = result.rows.map((cells: any[]) => {
         if (cells.length !== result.cols.length) throw new Error("malformed Turso store row");
         const row = Object.fromEntries(
           cells.map((cell, i) => {
@@ -137,17 +151,30 @@ export function createTursoStoreClient(url: string, token: string, fetchFn: type
         );
         return decodeStoreRow(row) as T;
       });
+      if (writeMetrics && writeContext && first.response.type === "execute") {
+        // Never expose SQL, bindings, rows or the rest of the response to the
+        // meter. Observing a decoded success cannot change the query's result.
+        try {
+          writeMetrics.observe(writeContext, result.affected_row_count, result.rows_read, result.rows_written);
+        } catch {
+          // A diagnostic failure is not a failed write and must not induce retries.
+        }
+      }
+      return rows;
     },
   };
 }
 
-export function createTursoStoreGetter(resolveSecret = resolveBwsSecret): () => Promise<SqlClient | null> {
+export function createTursoStoreGetter(
+  resolveSecret = resolveBwsSecret,
+  writeMetrics?: TursoWriteMetrics,
+): () => Promise<SqlClient | null> {
   let cached: Promise<SqlClient | null> | null = null;
   return () => {
     if (!cached) {
       const pending = (async () => {
         const token = await resolveSecret(DECISION_EVENTS_TURSO_TOKEN_NAME);
-        return token ? createTursoStoreClient(DECISION_EVENTS_TURSO_URL, token) : null;
+        return token ? createTursoStoreClient(DECISION_EVENTS_TURSO_URL, token, fetch, writeMetrics) : null;
       })();
       cached = pending;
       void pending.then(

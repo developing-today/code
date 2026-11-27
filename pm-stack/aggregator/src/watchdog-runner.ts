@@ -41,9 +41,11 @@ export async function finishWatchdogGapSync<T>(options: {
   recordHeartbeat: () => Promise<void>;
   onError: (error: unknown) => void;
 }): Promise<T> {
-  const completed = options.sync.then(() => options.recordHeartbeat()).catch((error: unknown) => {
-    options.onError(error);
-  });
+  const completed = options.sync
+    .then(() => options.recordHeartbeat())
+    .catch((error: unknown) => {
+      options.onError(error);
+    });
   if (options.mode === "scheduled") await completed;
   else void completed;
   return options.items;

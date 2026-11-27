@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Edge } from "../edge/src/edge.ts";
 import { type Io, route } from "../edge/src/entry.ts";
+import type { Named } from "../src/named.ts";
 import { heldRunner, handle, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
@@ -26,6 +27,12 @@ if (extra.length > 1 || (extra[0] !== undefined && !/^[1-9][0-9]{1,4}$/.test(ext
 }
 const port = Number(extra[0] ?? 4897);
 const HOSTNAME = "127.0.0.1";
+// The name the edge routes for. It binds the loopback either way, but
+// it only answers requests that arrive under this name. On this
+// machine the name is the loopback itself; the Android offline check
+// calls the same edge 10.0.2.2 — the emulator's name for the machine
+// it runs on — so the check starts the demo with this set to that.
+const PUBLIC_HOST = process.env.PM_EDGE_DEMO_PUBLIC_HOST ?? HOSTNAME;
 const OWNER = "you@example.com";
 const ISSUER = {
   name: "demo-sign-in",
@@ -72,7 +79,10 @@ const io: Io = {
   asset: async (path) => {
     try {
       const name = path.startsWith("/console/") ? path.slice("/console/".length) : "";
-      return name ? new Response(readFileSync(join(publicDir, name))) : new Response("", { status: 404 });
+      if (!name) return new Response("", { status: 404 });
+      // The platform's file store tags each file by its content; so does this.
+      const bytes = readFileSync(join(publicDir, name));
+      return new Response(bytes, { headers: { ETag: `"${Bun.hash(bytes).toString(16)}"` } });
     } catch {
       return new Response("", { status: 404 });
     }
@@ -80,16 +90,22 @@ const io: Io = {
   // The made-up host trusts every caller, as demo.ts does; here it is
   // only ever reached through the edge.
   host: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : null),
-  publicHost: HOSTNAME,
+  // Away, the made-up host is away as a laptop asleep is: never reached.
+  act: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : "unreached"),
+  publicHost: PUBLIC_HOST,
   version: "demo",
   later: (work) => void work.catch(() => {}),
   now: Date.now,
 };
 
 const link = new EdgeLink({
-  url: `http://${HOSTNAME}:${port}`,
+  url: `http://${PUBLIC_HOST}:${port}`,
   keys: memoryStore(),
   done: memoryStore(),
+  // One record with the host's own handler, as on the real host.
+  named: demoDeps.named as Named,
+  machine: () => ({ name: "framework", actions: Object.keys(demoDeps.actions ?? {}).sort() }),
+  version: "0123abcd4567",
   docs: demoDocs,
   phones: demoDeps.phones!.devices,
   config: async () => ({

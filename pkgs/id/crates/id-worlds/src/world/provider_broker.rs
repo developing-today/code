@@ -761,6 +761,7 @@ mod tests {
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
         side: ProviderSide::Client,
+        class: id_caps::cap_class::CLASS_UNKNOWN,
     };
 
     const SESSION_A: SessionId = SessionId::new(41);
@@ -919,7 +920,7 @@ mod tests {
         assert_eq!(first.parameters["provider_version"], 3);
         assert!(first.parameters["args_digest"].is_string());
         assert!(!first.parameters.to_string().contains("notes/readme.txt"));
-        assert!(!first.correlation_id.is_empty());
+        assert_ne!(first.correlation_id, "");
     }
 
     #[test]

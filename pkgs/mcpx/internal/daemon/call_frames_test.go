@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,8 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // collectFrames registers a sink for run on s and returns the frames it
@@ -25,6 +29,128 @@ func collectFrames(s *Server, run string) *[]execsvc.Frame {
 		*frames = append(*frames, f)
 	})
 	return frames
+}
+
+type ceilingCallUpstream struct {
+	*httptest.Server
+	calls int
+}
+
+func newCeilingCallUpstream(t *testing.T) *ceilingCallUpstream {
+	t.Helper()
+	u := &ceilingCallUpstream{}
+	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reply := func(result any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+		}
+		switch req.Method {
+		case "server/discover":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": -32601, "message": "method not found"}})
+		case "initialize":
+			reply(map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}},
+				"serverInfo": map[string]any{"name": "ceiling-test", "version": "1"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			reply(map[string]any{"tools": []mcpclient.Tool{{Name: "allowed"}, {Name: "denied"}}})
+		case "tools/call":
+			u.calls++
+			reply(map[string]any{"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("called %s", req.Params.Name)}}})
+		default:
+			reply(map[string]any{})
+		}
+	}))
+	t.Cleanup(u.Close)
+	return u
+}
+
+func TestRegistryCallEnforcesConfiguredKeyToolCeilingBeforeInvocation(t *testing.T) {
+	upstream := newCeilingCallUpstream(t)
+	dir := t.TempDir()
+	r, err := NewRegistry(&config.Config{MCPServers: map[string]*config.Server{
+		"docs": {Name: "docs", URL: upstream.URL},
+	}}, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	schema, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.set = settings.NewSet(schema)
+	if err := r.set.SetRuntime("auth.capabilityCeilings", `[{"name":"restricted","tools":["docs:allowed"]}]`); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := WithKeyIdentity(context.Background(), KeyIdentity{KeyID: "key-1", Ceiling: "restricted"})
+	if _, err := r.Call(ctx, "docs", "allowed", config.CallContext{}, map[string]any{}); err != nil {
+		t.Fatalf("allowed keyed tool call: %v", err)
+	}
+	if upstream.calls != 1 {
+		t.Fatalf("allowed tool handler calls = %d, want 1", upstream.calls)
+	}
+	if _, err := r.Call(ctx, "docs", "denied", config.CallContext{}, map[string]any{}); err == nil {
+		t.Fatal("denied keyed tool call unexpectedly succeeded")
+	}
+	if upstream.calls != 1 {
+		t.Fatalf("denied tool reached upstream handler: calls = %d, want 1", upstream.calls)
+	}
+	if _, err := r.Call(context.Background(), "docs", "denied", config.CallContext{}, map[string]any{}); err != nil {
+		t.Fatalf("anonymous tool call changed behavior: %v", err)
+	}
+	if upstream.calls != 2 {
+		t.Fatalf("anonymous tool handler calls = %d, want 2", upstream.calls)
+	}
+}
+
+func TestRegistryCallFailsClosedForUnknownOrMalformedKeyCeilings(t *testing.T) {
+	upstream := newCeilingCallUpstream(t)
+	dir := t.TempDir()
+	r, err := NewRegistry(&config.Config{MCPServers: map[string]*config.Server{
+		"docs": {Name: "docs", URL: upstream.URL},
+	}}, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	schema, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.set = settings.NewSet(schema)
+
+	for _, tc := range []struct {
+		name, raw, ceiling string
+	}{
+		{name: "unknown ceiling", raw: `[{"name":"restricted","tools":["docs:allowed"]}]`, ceiling: "missing"},
+		{name: "malformed policy", raw: "not-json", ceiling: "restricted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := r.set.SetRuntime("auth.capabilityCeilings", tc.raw); err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithKeyIdentity(context.Background(), KeyIdentity{KeyID: "key-1", Ceiling: tc.ceiling})
+			if _, err := r.Call(ctx, "docs", "allowed", config.CallContext{}, map[string]any{}); err == nil {
+				t.Fatal("invalid or unknown ceiling unexpectedly authorized a call")
+			}
+		})
+	}
+	if upstream.calls != 0 {
+		t.Fatalf("fail-closed tool calls reached upstream handler: calls = %d", upstream.calls)
+	}
 }
 
 func TestReportCallFrameWritesPayloadFreeLedgerWithoutRun(t *testing.T) {
@@ -66,6 +192,63 @@ func TestReportCallFrameWritesPayloadFreeLedgerWithoutRun(t *testing.T) {
 	}
 	if strings.Contains(string(data), "secret") || strings.Contains(string(data), "private error") {
 		t.Fatalf("ledger leaked call payload: %s", data)
+	}
+}
+
+// The oracle is the audit invariant: keyed tool-call records carry only the
+// public identity metadata from the authenticated request context; anonymous
+// calls carry no fabricated key fields, and neither bearer secrets nor stored
+// key hashes appear in serialized records.
+func TestReportCallFrameStampsKeyIdentityWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := logging.NewFileSink(logging.FileOptions{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ledger.Close() }()
+	s := &Server{callLedger: ledger}
+	identity := KeyIdentity{
+		KeyID:         "key-123",
+		User:          "alice",
+		Label:         "laptop-cli",
+		CapabilityRef: "grant-456",
+	}
+	secret := "mcpx_key_test-bearer-secret"
+	hash := strings.Repeat("a", 64)
+
+	s.reportCallFrame(WithKeyIdentity(context.Background(), identity), "srv", "ok", "", map[string]any{"token": secret}, time.Now(), json.RawMessage(`{"ok":true}`), nil)
+	s.reportCallFrame(WithKeyIdentity(context.Background(), identity), "srv", "failed", "", map[string]any{}, time.Now(), nil, errors.New("failed"))
+	s.reportCallFrame(context.Background(), "srv", "anonymous", "", map[string]any{}, time.Now(), json.RawMessage(`{"ok":true}`), nil)
+
+	data, err := os.ReadFile(filepath.Join(dir, "mcpx-"+time.Now().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("ledger has %d records, want exactly 3: %s", len(lines), data)
+	}
+	var keyedSuccess, keyedFailure, anonymous map[string]any
+	for i, target := range []*map[string]any{&keyedSuccess, &keyedFailure, &anonymous} {
+		if err := json.Unmarshal([]byte(lines[i]), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, row := range map[string]map[string]any{"success": keyedSuccess, "failure": keyedFailure} {
+		if row["key_id"] != identity.KeyID || row["user"] != identity.User || row["key_label"] != identity.Label || row["capability_ref"] != identity.CapabilityRef {
+			t.Errorf("%s keyed ledger identity = %v", name, row)
+		}
+	}
+	if keyedSuccess["outcome"] != "success" || keyedFailure["outcome"] != "error" {
+		t.Errorf("keyed outcomes = %v and %v, want success and error", keyedSuccess["outcome"], keyedFailure["outcome"])
+	}
+	for _, field := range []string{"key_id", "user", "key_label", "capability_ref"} {
+		if _, ok := anonymous[field]; ok {
+			t.Errorf("anonymous ledger fabricated %s: %v", field, anonymous)
+		}
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), hash) {
+		t.Fatalf("ledger leaked a bearer secret or key hash: %s", data)
 	}
 }
 

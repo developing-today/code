@@ -383,11 +383,7 @@ impl LocalBackend {
         let mut prepared = con
             .prepare(&stmt.sql)
             .map_err(|e| Error::backend(e.to_string()))?;
-        let col_names: Vec<String> = prepared
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let col_names: Vec<String> = prepared.column_names().map(str::to_string).collect();
         let params: Vec<RValue> = stmt.args.iter().map(to_rvalue).collect();
         let mut rows = prepared
             .query(rusqlite::params_from_iter(params.iter()))
@@ -613,6 +609,10 @@ impl SearchBackend for LocalBackend {
         "local"
     }
 
+    fn manifest(&self) -> crate::manifest::Manifest {
+        self.manifest.clone()
+    }
+
     fn vec_table(&self) -> &str {
         &self.vec_table
     }
@@ -662,6 +662,14 @@ impl SearchBackend for LocalBackend {
         let args: Vec<Value> = ids.iter().map(|i| Value::Integer(*i)).collect();
         let rows = self.execute(&Stmt::new(sql, args))?;
         Ok(rows.iter().filter_map(detail_from_row).collect())
+    }
+
+    fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        let rows = self.execute(&Stmt::new(
+            "SELECT id FROM chunks WHERE content_hash = ?1 ORDER BY id",
+            vec![Value::text(canonical_hash)],
+        ))?;
+        Ok(rows.iter().filter_map(|row| row.get_i64("id")).collect())
     }
 
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {

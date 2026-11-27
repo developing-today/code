@@ -45,7 +45,7 @@
     { "required": ["set"] },
     { "required": ["source"] }
   ],
-  "description": "Structured payload stored in agent.tasks.payload for repo-health queue tasks. The task-row envelope fields (title, body, dedupe_key, priority, not_before, max_attempts) live outside this payload and are validated by repo-queue.py together with the cross-field dedupe rules.",
+  "description": "Structured payload stored in agent.tasks.payload for repo-health queue tasks. The task-row envelope fields (title, body, dedupe_key, priority, not_before, max_attempts) live outside this payload and are validated by the fleet queue validator (pkgs/fleet/crates/fleet-queue validate.rs, ceiling MAX_ATTEMPTS_CEILING) together with the cross-field dedupe rules.",
   "properties": {
     "acceptance": { "items": { "minLength": 1, "type": "string" }, "minItems": 1, "type": "array" },
     "context_refs": { "items": { "type": "string" }, "type": "array" },
@@ -70,8 +70,11 @@
       "required": ["number"],
       "type": "object"
     },
-    "kind": { "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation"], "type": "string" },
-    "max_attempts": { "maximum": 10, "minimum": 1, "type": "integer" },
+    "kind": {
+      "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"],
+      "type": "string"
+    },
+    "max_attempts": { "maximum": 1000, "minimum": 1, "type": "integer" },
     "priority_reason": { "minLength": 1, "type": "string" },
     "problem": { "minLength": 1, "type": "string" },
     "prs": {
@@ -99,6 +102,7 @@
         "developing-today/openchamber",
         "developing-today-forks/opencode",
         "developing-today-forks/openchamber",
+        "dezren39/nix",
         "dezren39/darwin-nix",
         "developing-today/zettel",
         "dezren39/dezren39"
@@ -144,6 +148,16 @@
       "type": "integer",
       "minimum": 1,
       "description": "Optional minimum uninterrupted budget in minutes to reach the next safe checkpoint (#3418). Absent means no requirement (legacy claim behavior)."
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "reason"],
+      "description": "Optional structured route declaration (#15070, follow-up to #14993): the packet declares, in machine-readable form, that it may run only on one platform family. `platform` names the family (never a specific lane); `reason` records why the route is required, mirroring the platform-limitation rule that a limitation exists only with a good reason recorded beside it (#8210). At enqueue, verb_enqueue translates a valid declaration into the new task's lane-ledger platform limitation (platform_limit / platform_limit_reason), so the claim pick and by-id/transfer claims refuse every other family from the moment the task lands — the first wrong draw that prompt-text routing (e.g. 'work in the laptop checkout') could not prevent never happens. A packet without `route` behaves exactly as before (no ledger row is created at enqueue, no limitation applies). Producers that may set it: fleet dispatch (when it enqueues a packet for a surface-bound job), monitor intake (when a filed task is bound to one family's checkout or tooling), and manual enqueue via repo-queue enqueue (an operator filing a packet by hand). Producers must set it from the job's actual binding, never by scraping route text out of the prompt.",
+      "properties": {
+        "platform": { "type": "string", "enum": ["openchamber", "muse"] },
+        "reason": { "type": "string", "minLength": 1 }
+      }
     }
   },
   "required": [

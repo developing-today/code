@@ -1,0 +1,133 @@
+name: muse handoff approved promotion
+
+# Promotion is a distinct, protected action. The upload run ID selects a
+# trusted immutable artifact; no free-form version ID or parity Boolean is accepted.
+on:
+  workflow_dispatch:
+    inputs:
+      upload_run_id:
+        description: "Successful main-only upload workflow run containing the staged proof and exact cf version response"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: muse-handoff-worker-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    environment: muse-handoff-production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: scripts/muse/handoff/worker
+    steps:
+      - name: Validate upload workflow provenance
+        id: upload-run
+        uses: actions/github-script@v9
+        env:
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+        with:
+          script: |
+            const runId = process.env.UPLOAD_RUN_ID;
+            if (!/^[1-9][0-9]*$/.test(runId)) throw new Error("upload_run_id must be a positive integer");
+            const run = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: Number(runId),
+            });
+            const actual = run.data;
+            if (actual.path !== ".github/workflows/muse-handoff-upload.yml" ||
+                actual.event !== "workflow_dispatch" || actual.head_branch !== "main" ||
+                actual.status !== "completed" || actual.conclusion !== "success") {
+              throw new Error("upload run is not a successful trusted main upload workflow run");
+            }
+            core.setOutput("source_sha", actual.head_sha);
+            core.setOutput("run_id", String(actual.id));
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: muse-handoff-release-${{ steps.upload-run.outputs.run_id }}
+          run-id: ${{ steps.upload-run.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/muse-handoff-release/
+
+      - name: Verify source archive, stage evidence, and exact upload response
+        id: verify-release
+        env:
+          UPLOAD_RUN_ID: ${{ steps.upload-run.outputs.run_id }}
+          SOURCE_SHA: ${{ steps.upload-run.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/muse-handoff-release"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          version_id="$(node release-contract.mjs verify-release \
+            "$release_dir" "$UPLOAD_RUN_ID" "$SOURCE_SHA")"
+          git -C "$GITHUB_WORKSPACE" archive --format=tar.gz --output="$RUNNER_TEMP/verified-worker-source.tar.gz" \
+            "$SOURCE_SHA" scripts/muse/handoff/worker
+          cmp --silent "$RUNNER_TEMP/verified-worker-source.tar.gz" "$release_dir/worker-source.tar.gz"
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.upload-run.outputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: scripts/muse/handoff/worker/package-lock.json
+
+      - name: Install pinned cf CLI from the uploaded source commit
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Confirm production still serves the captured baseline
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_PRODUCTION_CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.MUSE_HANDOFF_PRODUCTION_ACCOUNT_ID }}
+          MUSE_HANDOFF_WORKER_NAME: muse-agent-handoff
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?Missing production environment API token}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Missing production environment account ID}"
+          ./node_modules/.bin/cf -q workers deployments list --worker muse-agent-handoff \
+            > "$RUNNER_TEMP/muse-handoff-current-production.json"
+          node release-contract.mjs assert-same-active \
+            "$RUNNER_TEMP/muse-handoff-release/production-baseline.json" \
+            "$RUNNER_TEMP/muse-handoff-current-production.json"
+
+      - name: Promote exact uploaded version to 100% and verify serving traffic
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_PRODUCTION_CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.MUSE_HANDOFF_PRODUCTION_ACCOUNT_ID }}
+          VERSION_ID: ${{ steps.verify-release.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          versions="$(VERSION_ID="$VERSION_ID" node -e 'process.stdout.write(JSON.stringify([{version_id:process.env.VERSION_ID,percentage:100}]))')"
+          ./node_modules/.bin/cf -q workers deployments create \
+            --worker muse-agent-handoff \
+            --strategy percentage \
+            --versions "$versions" \
+            > "$RUNNER_TEMP/muse-handoff-promotion-response.json"
+          node release-contract.mjs assert-created \
+            "$RUNNER_TEMP/muse-handoff-promotion-response.json" "$VERSION_ID"
+          ./node_modules/.bin/cf -q workers deployments list --worker muse-agent-handoff \
+            > "$RUNNER_TEMP/muse-handoff-after-promotion.json"
+          node release-contract.mjs assert-active \
+            "$RUNNER_TEMP/muse-handoff-after-promotion.json" "$VERSION_ID"
+          printf 'Promoted version ID: %s\nVerified current production traffic serves that version at 100%%.\n' \
+            "$VERSION_ID" >> "$GITHUB_STEP_SUMMARY"

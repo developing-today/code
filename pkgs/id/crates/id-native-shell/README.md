@@ -43,8 +43,47 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
     test that comes with it (`tests/live_session.rs`: one game
     played through both the native loop and a terminal-style raw
     client, with the host journal as the oracle).
-- Steps 3–4 (rich 3D/audio/widget surfaces) are conditional on the
-  design's Q1 decision for Drew and are **not** in this crate.
+- The later [rich-surface work (#12657)](https://github.com/developing-today/code/issues/12657)
+  added three presentation plugins to the binary. A validated scene becomes
+  3D entities ([scene.rs](src/scene.rs)). An audio surface produces
+  scheduled cue entities and playback state ([audio.rs](src/audio.rs));
+  audio device output remains a separate step. A widget surface produces
+  placed controls and an initial focus marker ([widget.rs](src/widget.rs));
+  keyboard and pointer activation of those controls remains future work.
+- The first end-user application surface (issue #15022) is the
+  world directory (`src/directory.rs`): launched at a host without
+  `--world`, the app lists the host's public world directory
+  ordered pinned/recent/discovered (design #5782 §3), with
+  keyboard navigation, per-world sessions that coexist (leaving
+  one never tears down another), and an accessible text table the
+  graphical list renders line for line. Richer directory
+  surfaces (presence detail, counted/uncounted writer sides)
+  remain later #5782 slices.
+
+## Recorded shells v1 capability statements
+
+Per the shells v1 record (`doc/2026-11-10T20-40-00Z_design_more_shells_v1`,
+§2 and "The one gate"), this shell's capability statement is recorded
+for Linux in [`capability-statement.json`](capability-statement.json)
+and for macOS in [`capability-statement.macos.json`](capability-statement.macos.json).
+The target test selects its matching statement and checks that both target
+records make the same contract and capability claims: the client
+frames it sends (`join`, `input`, `paste`, `resize`, `chat`,
+`screen_subscribe`, `form_result`, `provider_offer`, `provider_reply`),
+the server frames it presents (the `SessionState` fold, with `error`
+surfaced as a session refusal), the one capability provider it
+declares (`client.file.read`, F13.7), and what it excludes by name
+(rich surfaces, offline reading, mobile-native). These exclusions describe
+the v1 profile recorded for #10928. The subsequent rich presenters are
+described above. The conformance run
+is wired into the check — the `test-native-shell` flake check runs
+this crate's whole test suite — and
+`tests/capability_statement.rs` pins the statement to the contract
+and to the code's actual builders, session fold, and provider
+adapter for the recorded v1 profile.
+Recording the statement completes issue #10928's Done alongside the
+already-landed conformance wiring and the behavioral checks
+(`tests/parity.rs`, `tests/live_session.rs`).
 
 ## Build prerequisites
 
@@ -65,10 +104,37 @@ the equivalent `-dev` packages for your distribution first.
 cargo run -p id-native-shell -- --node <node-id> --capability <cap> [--world <name>] [--addr <ip:port>] [--no-relay]
 ```
 
-opens the Bevy window with the renderer live and joins the world:
-host views feed the presented view as they arrive. Without
-`--node`/`--capability` the window opens without a session and the
-startup line on stdout says so.
+With `--world` the shell joins that world directly: host views
+feed the presented view as they arrive. Without `--world` it opens
+the **world directory** (issue #15022, design #5782 §3): the host's
+public directory (`WorldClient::directory`) listed pinned first,
+then recent, then discovered. Up/Down move, Enter opens the
+selected world into its own session, Esc leaves back to the list
+(the session keeps running), P pins/unpins, and X closes the
+selected world's session — only that one. Sessions to several
+worlds coexist; switching never tears another down. Pins and
+recents persist in `directory-marks.json` beside the client key
+file. The graphical list renders exactly the lines of the
+directory's accessible text table (`DirectoryApp::text_table`).
+Without `--node`/`--capability` the window opens without a
+session and the startup line on stdout says so.
+
+Inside a session, key presses go to the world as the terminal's own
+`input` bytes. Ctrl+Shift+V and Shift+Insert paste the system
+clipboard instead, as one contract `paste` frame, the chords
+terminal emulators use (a plain Ctrl+V stays the literal-next byte).
+An empty clipboard sends nothing, and text over the contract's
+4096-byte bound is refused with a notice on stderr rather than
+split or truncated.
+
+Each session is also kept at the window's size. Rows are drawn in
+Bevy's built-in monospace face at a pinned 20 px with a 24 px line
+height, so one cell is 12×24 logical pixels; the window's logical
+size divided by that cell is the grid. Every live session gets a
+contract `resize` frame for that grid when it opens and again
+whenever the grid changes (clamped to the contract's 1..=500 ×
+1..=200 bounds), so a background world already has the right size
+when it comes back to the foreground.
 
 ## Recording / checking a session
 

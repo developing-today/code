@@ -3,9 +3,11 @@
 //! A limited sandbox is the wrong place to compile. This verb picks a
 //! better one and gets out of the way: the fleet laptop (through the
 //! laptop-agent transport ladder: its broker, the Cloudflare tunnel,
-//! the tailnet, then ssh), a codespace, or this machine when this
-//! machine is already the right place. It adds no transport; it builds
-//! the argv for the verb that already knows how to get there.
+//! the tailnet, then ssh), a codespace, a GitHub Actions runner
+//! (through placement: `fleet queue dispatch`, then the session is
+//! polled to its result), or this machine when this machine is
+//! already the right place. It adds no transport; it builds the argv
+//! for the verb that already knows how to get there.
 //!
 //! `auto` (the default) resolves in this order: `FLEET_SHELL_TARGET`;
 //! here, when this seat is the laptop; the laptop, when it answers; a
@@ -17,7 +19,7 @@
 use fleet_config::Config;
 use serde_json::{Value, json};
 
-use crate::{AgentError, R, World, argv, parse, usage};
+use crate::{AgentError, R, World, argv, check_repo, parse, usage};
 
 pub const USAGE: &str = "\
 usage: fleet shell [options] [-- COMMAND...]
@@ -25,18 +27,30 @@ usage: fleet shell [options] [-- COMMAND...]
 
 Run COMMAND where builds belong, or open a shell there with no COMMAND.
 
-  --target auto|laptop|codespace|local   where (default: auto)
+  --target auto|laptop|codespace|actions|local   where (default: auto)
   --codespace NAME                       which codespace (default: the first available)
+  --repo OWNER/NAME                      the repository an actions run executes
+                                         (default: this checkout's origin)
   --cwd DIR                              directory to run in (Cargo workspace for shared lane)
   --build                                a heavy build: take a fleet-build-lock slot;
                                           Cargo workspaces use a shared target lane
-  --timeout SECS                         how long a laptop command may run
+  --timeout SECS                         how long a laptop command may run; on the
+                                         actions target, how long to wait for the run
   --detach                               start it as a laptop job and return its id
-                                         (follow with: fleet laptop-agent poll JOB --wait N)
+                                         (follow with: fleet laptop-agent poll JOB --wait N);
+                                         on the actions target, dispatch and return the
+                                         session handle instead of waiting
   --print                                print the plan as JSON instead of running it
 
 auto resolves: FLEET_SHELL_TARGET, then here if this seat is the laptop, then the
-laptop if it answers, then a codespace, then here.";
+laptop if it answers, then a codespace, then here. auto never picks actions.
+
+The actions target dispatches COMMAND through placement (fleet queue dispatch)
+to a registered GitHub Actions surface and waits for the session result: the
+exit code is 0 when the run succeeded and 1 when it failed or was cancelled,
+and the printed record carries the run URL — the run's own output lives on
+that page (gh run view --log). Reconnect to a run you stopped waiting on with:
+fleet queue session result HANDLE";
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub const BUILD_TIMEOUT_SECS: u64 = 3600;
@@ -47,6 +61,8 @@ pub enum Target {
     Local,
     Laptop,
     Codespace(String),
+    /// A GitHub Actions run of the repository, through placement.
+    Actions(String),
 }
 
 impl Target {
@@ -55,6 +71,7 @@ impl Target {
             Target::Local => "local",
             Target::Laptop => "laptop",
             Target::Codespace(_) => "codespace",
+            Target::Actions(_) => "actions",
         }
     }
 }
@@ -74,6 +91,7 @@ impl Plan {
         json!({
             "target": self.target.id(),
             "codespace": match &self.target { Target::Codespace(n) => Some(n.clone()), _ => None },
+            "repo": match &self.target { Target::Actions(r) => Some(r.clone()), _ => None },
             "program": self.program,
             "args": self.args,
             "because": self.because,
@@ -83,6 +101,9 @@ impl Plan {
 
 pub enum Done {
     Printed(Value),
+    /// Print this record, then exit with this code: the actions
+    /// target's verdict, where the code is the run's pass/fail.
+    PrintedCode(Value, i32),
     Ran(i32),
 }
 
@@ -152,10 +173,41 @@ fn parse_target(word: &str) -> R<&'static str> {
         "local" => Ok("local"),
         "laptop" => Ok("laptop"),
         "codespace" => Ok("codespace"),
+        "actions" => Ok("actions"),
         other => Err(usage(format!(
-            "unknown target '{other}': auto, laptop, codespace or local"
+            "unknown target '{other}': auto, laptop, codespace, actions or local"
         ))),
     }
+}
+
+/// The `owner/name` a git remote URL points at, for the shapes git
+/// and GitHub actually use; None for anything else.
+fn repo_from_remote(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = url
+        .rsplit_once("github.com/")
+        .map(|(_, rest)| rest)
+        .or_else(|| url.rsplit_once("github.com:").map(|(_, rest)| rest))?;
+    check_repo(path).ok()
+}
+
+/// The repository an actions run executes: the caller's `--repo`,
+/// else this checkout's origin remote.
+fn actions_repo(world: &dyn World, asked: Option<String>) -> R<String> {
+    if let Some(repo) = asked {
+        return check_repo(&repo);
+    }
+    let out = world.program("git", &argv(&["remote", "get-url", "origin"]));
+    if out.ok() {
+        if let Some(repo) = repo_from_remote(out.stdout.trim()) {
+            return Ok(repo);
+        }
+    }
+    Err(AgentError::Down(
+        "the actions target needs a repository: pass --repo OWNER/NAME \
+         (or run inside a checkout whose origin is on GitHub)"
+            .to_string(),
+    ))
 }
 
 /// Decide where. An explicit target is used as given; only `auto` falls back.
@@ -164,6 +216,7 @@ pub fn resolve(
     world: &dyn World,
     asked: &str,
     codespace: Option<String>,
+    repo: Option<String>,
 ) -> R<(Target, String)> {
     let from_env = world.env("FLEET_SHELL_TARGET");
     let (want, source) = match (asked, &from_env) {
@@ -173,6 +226,10 @@ pub fn resolve(
     match want {
         "local" => Ok((Target::Local, format!("{source} says local"))),
         "laptop" => Ok((Target::Laptop, format!("{source} says laptop"))),
+        "actions" => {
+            let repo = actions_repo(world, repo)?;
+            Ok((Target::Actions(repo), format!("{source} says actions")))
+        }
         "codespace" => {
             let name = codespace.or_else(|| first_codespace(world)).ok_or_else(|| {
                 AgentError::Down(
@@ -363,6 +420,37 @@ for index, word in enumerate(words):
             tmp_root="$TMPDIR"
             if [ -z "$tmp_root" ]; then tmp_root=/tmp; fi
             group_file=$(mktemp "$tmp_root/fleet-cargo-group.XXXXXX" 2>/dev/null) || group_file=""
+            group_live() {
+              # kill -0 on a process group succeeds for zombie members too,
+              # and an init that never reaps orphans (the fleet-command
+              # executor's PID 1 does not) leaves a finished background job
+              # as a zombie in its group forever: the group would look alive
+              # until the outer command timeout kills the lane. Count only
+              # members that have not exited. Where /proc is unavailable,
+              # fall back to kill -0.
+              if [ -d /proc ]; then
+                python3 -c '
+import os, sys
+pgid = int(sys.argv[1])
+live = False
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    try:
+        with open("/proc/" + name + "/stat", "rb") as fh:
+            data = fh.read()
+        fields = data[data.rfind(b")") + 2:].split()
+        if int(fields[2]) == pgid and fields[0] != b"Z":
+            live = True
+            break
+    except (OSError, ValueError, IndexError):
+        continue
+sys.exit(0 if live else 1)
+' "$1"
+              else
+                kill -0 "-$1" 2>/dev/null
+              fi
+            }
             cleanup_lane() {
               status=$?
               trap - EXIT HUP INT TERM
@@ -382,11 +470,11 @@ for index, word in enumerate(words):
                       # laptop-agent escalates the outer process group
                       # after 2 seconds; kill this detached group first.
                       grace=0
-                      while kill -0 "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 10 ]; do
+                      while group_live "$worker_pgid" && [ "$grace" -lt 10 ]; do
                         sleep 0.1
                         grace=$((grace + 1))
                       done
-                      if kill -0 "-$worker_pgid" 2>/dev/null; then
+                      if group_live "$worker_pgid"; then
                         echo "fleet shell: terminating unresponsive build process group" >&2
                         kill -KILL "-$worker_pgid" 2>/dev/null || :
                         if [ -n "$worker_pid" ]; then kill -KILL "$worker_pid" 2>/dev/null || :; fi
@@ -395,7 +483,7 @@ for index, word in enumerate(words):
                     if [ -n "$worker_pid" ]; then
                       wait "$worker_pid" >/dev/null 2>&1 || :
                     fi
-                    while kill -0 "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
+                    while group_live "$worker_pgid"; do sleep 0.1; done
                     ;;
                 esac
               elif [ -n "$worker_pid" ]; then
@@ -591,6 +679,39 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
                 ("fleet".to_string(), args)
             }
         }
+        Target::Actions(repo) => {
+            if interactive {
+                return Err(usage(
+                    "the actions target runs a COMMAND on a GitHub Actions runner; \
+                     it cannot open a shell",
+                ));
+            }
+            if opts.build {
+                return Err(usage(
+                    "--build takes a host build-lock slot; the actions target \
+                     dispatches through placement instead — drop --build",
+                ));
+            }
+            if opts.cwd.is_some() {
+                return Err(usage(
+                    "--cwd does not apply to the actions target: the command runs \
+                     in the runner's checkout of the repository",
+                ));
+            }
+            // The plan is the dispatch step; run() drives it through
+            // the session verbs instead of attaching to it.
+            let args = argv(&[
+                "queue",
+                "dispatch",
+                "--repo",
+                repo,
+                "--command",
+                &command,
+                "--dispatch",
+                "--json",
+            ]);
+            ("fleet".to_string(), args)
+        }
         Target::Codespace(name) => {
             if opts.detach {
                 return Err(usage(
@@ -621,6 +742,26 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
     })
 }
 
+/// Whether placement has a GitHub Actions surface to dispatch to,
+/// read from the surface registry the queue verbs print.
+fn actions_reachable(world: &dyn World) -> bool {
+    let out = world.fleet(&argv(&["queue", "surfaces"]));
+    let Some(registry) = out.json() else {
+        return false;
+    };
+    registry
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .is_some_and(|surfaces| {
+            surfaces.iter().any(|s| {
+                matches!(
+                    s.get("kind").and_then(Value::as_str),
+                    Some("github-actions") | Some("blacksmith")
+                )
+            })
+        })
+}
+
 fn targets(config: &Config, world: &dyn World) -> Value {
     let laptop_seat = is_laptop_seat(config, world);
     let laptop = laptop_seat || laptop_answers(world);
@@ -631,10 +772,107 @@ fn targets(config: &Config, world: &dyn World) -> Value {
              "how": if laptop_seat { "this seat is the laptop" } else { "fleet laptop-agent (broker, Cloudflare tunnel, tailnet, ssh)" }},
             {"target": "codespace", "reachable": codespace.is_some(), "codespace": codespace,
              "how": "gh codespace ssh"},
+            {"target": "actions", "reachable": actions_reachable(world),
+             "how": "fleet queue dispatch (placement over the registered Actions surfaces)"},
             {"target": "local", "reachable": true, "how": "this machine"},
         ],
-        "auto_would_pick": resolve(config, world, "auto", None).map(|(t, why)| json!({"target": t.id(), "because": why})).unwrap_or(Value::Null),
+        "auto_would_pick": resolve(config, world, "auto", None, None).map(|(t, why)| json!({"target": t.id(), "because": why})).unwrap_or(Value::Null),
     })
+}
+
+/// How long to wait between session polls on the actions target.
+pub const ACTIONS_POLL_SECS: u64 = 15;
+/// The wait budget when --timeout does not say: an Actions run is a
+/// build, so it gets the build budget, not the laptop command one.
+pub const ACTIONS_DEFAULT_TIMEOUT_SECS: u64 = BUILD_TIMEOUT_SECS;
+
+/// Drive one actions plan: dispatch through placement, then (unless
+/// detached) poll the session to its terminal result. The plan's
+/// program/args are the dispatch call itself.
+fn run_actions(world: &dyn World, plan: &Plan, opts: &Options) -> R<Done> {
+    let repo = match &plan.target {
+        Target::Actions(repo) => repo.clone(),
+        _ => return Ok(Done::Ran(world.attach(&plan.program, &plan.args))),
+    };
+    // Dispatch changes state on the far side (a session and a
+    // workflow run), so it gets the patient call: cutting it short
+    // would orphan the run.
+    let dispatched = world.fleet_patient(&plan.args);
+    if !dispatched.ok() {
+        return Err(AgentError::Down(format!(
+            "placement dispatch did not answer: {}",
+            dispatched.why()
+        )));
+    }
+    let record = dispatched
+        .json()
+        .ok_or_else(|| AgentError::Down("placement dispatch answered without JSON".to_string()))?;
+    let handle = record
+        .get("handle")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AgentError::Down("placement dispatch answered without a session handle".to_string())
+        })?
+        .to_string();
+    if opts.detach {
+        return Ok(Done::Printed(json!({
+            "target": "actions",
+            "repo": repo,
+            "handle": handle,
+            "state": record.get("state").cloned().unwrap_or(Value::Null),
+            "run_url": record.get("run_url").cloned().unwrap_or(Value::Null),
+            "because": plan.because,
+            "note": format!("dispatched, not waited on; reconnect with: fleet queue session result {handle}"),
+        })));
+    }
+    let budget = opts.timeout.unwrap_or(ACTIONS_DEFAULT_TIMEOUT_SECS);
+    let deadline = world.now() + budget;
+    loop {
+        let out = world.fleet(&argv(&["queue", "session", "result", &handle, "--json"]));
+        if !out.ok() {
+            return Err(AgentError::Down(format!(
+                "session result for {handle} did not answer: {}",
+                out.why()
+            )));
+        }
+        let result = out.json().ok_or_else(|| {
+            AgentError::Down(format!("session result for {handle} answered without JSON"))
+        })?;
+        let terminal = result
+            .get("terminal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if terminal {
+            let state = result
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let code = if state == "succeeded" { 0 } else { 1 };
+            return Ok(Done::PrintedCode(
+                json!({
+                    "target": "actions",
+                    "repo": repo,
+                    "handle": handle,
+                    "state": state,
+                    "run_url": result.get("run_url").cloned().unwrap_or(Value::Null),
+                    "because": plan.because,
+                }),
+                code,
+            ));
+        }
+        if world.now() >= deadline {
+            let state = result
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            return Err(AgentError::Down(format!(
+                "run {handle} still {state} after {budget}s; \
+                 reconnect with: fleet queue session result {handle}"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(ACTIONS_POLL_SECS));
+    }
 }
 
 /// `fleet shell ...`.
@@ -642,7 +880,7 @@ pub fn run(config: &Config, world: &dyn World, args: &[String]) -> R<Done> {
     let a = parse(
         args,
         &["--build", "--detach", "--print"],
-        &["--target", "--codespace", "--cwd", "--timeout"],
+        &["--target", "--codespace", "--repo", "--cwd", "--timeout"],
     )?;
     match a.positional.as_slice() {
         [] => {}
@@ -659,16 +897,26 @@ pub fn run(config: &Config, world: &dyn World, args: &[String]) -> R<Done> {
         }
     }
     let asked = a.last("--target").unwrap_or_else(|| "auto".to_string());
-    let (target, because) = resolve(config, world, &asked, a.last("--codespace"))?;
+    let (target, because) = resolve(
+        config,
+        world,
+        &asked,
+        a.last("--codespace"),
+        a.last("--repo"),
+    )?;
     let opts = Options {
         cwd: a.last("--cwd"),
         build: a.has("--build"),
         timeout: a.uint("--timeout")?,
         detach: a.has("--detach"),
     };
+    let actions = matches!(target, Target::Actions(_));
     let plan = plan(target, because, &a.tail, &opts)?;
     if a.has("--print") {
         return Ok(Done::Printed(plan.to_json()));
+    }
+    if actions {
+        return run_actions(world, &plan, &opts);
     }
     Ok(Done::Ran(world.attach(&plan.program, &plan.args)))
 }

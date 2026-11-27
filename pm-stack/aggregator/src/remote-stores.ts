@@ -33,6 +33,16 @@ type GetClient = () => Promise<SqlClient | null>;
 
 const WRITE_CHUNK = 200;
 
+// Use a single set of mutable columns for assignment and comparison. The
+// null-safe check runs against the actual conflicting row inside the UPSERT,
+// not against a cache that could be stale after another write or lost response.
+function updateChanged(table: string, columns: readonly string[], touchUpdatedAt = false): string {
+  const assignments = columns.map((column) => `${column} = excluded.${column}`);
+  if (touchUpdatedAt) assignments.push("updated_at = now()");
+  const changed = columns.map((column) => `${table}.${column} is not excluded.${column}`);
+  return `do update set ${assignments.join(", ")} where ${changed.join(" or ")}`;
+}
+
 function chunks<T>(rows: readonly T[], size = WRITE_CHUNK): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
@@ -139,14 +149,26 @@ export function actionFromRow(row: Record<string, unknown>): DashAction {
   return action;
 }
 
+// The actions store persists its FULL record set on every mutation
+// (saveAll is the store's only write path), and this remote used to
+// upsert every row every time — the whole agg_actions table shipped
+// per dashboard action, the same whole-table rewrite the activity
+// remote below was fixed for (#14865, after #14836). The remote now
+// remembers the row content it last wrote (or loaded) per id and
+// sends only rows whose content changed; the upsert's change guard
+// stays as a backstop.
 export function createTursoActionsRemote(getClient: GetClient = getTursoStoreClient): ActionsRemote {
+  const written = new Map<string, string>();
   return {
     async loadAll(): Promise<DashAction[]> {
       const db = await requireClient(getClient);
       const rows = await db.query<Record<string, unknown>>(
         `select ${ACTION_COLUMNS} from public.agg_actions order by created_at asc`,
       );
-      return rows.map(actionFromRow);
+      const actions = rows.map(actionFromRow);
+      written.clear();
+      for (const action of actions) written.set(action.id, actionRowValues(action));
+      return actions;
     },
 
     async saveAll(actions: readonly DashAction[]): Promise<void> {
@@ -154,16 +176,27 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
       const db = await requireClient(getClient);
       // Insertion order matters: supersedes/duplicate_of are self-FKs, so
       // parents must land before children. The store keeps insertion order;
-      // createdAt ascending preserves it.
+      // createdAt ascending preserves it — including among just the
+      // changed rows, since a child is never older than its parent.
       const ordered = [...actions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      for (const chunk of chunks(ordered)) {
-        const values = chunk.map(actionRowValues).join(",\n");
+      const changed = ordered
+        .map((action) => ({ id: action.id, row: actionRowValues(action) }))
+        .filter(({ id, row }) => written.get(id) !== row);
+      for (const chunk of chunks(changed)) {
+        const values = chunk.map(({ row }) => row).join(",\n");
         await db.query(
           `insert into public.agg_actions (${ACTION_COLUMNS}) values\n${values}\n` +
-            `on conflict (id) do update set state = excluded.state, applied_at = excluded.applied_at, ` +
-            `applied_by_run = excluded.applied_by_run, result_note = excluded.result_note, ` +
-            `supersedes_action_id = excluded.supersedes_action_id, duplicate_of_action_id = excluded.duplicate_of_action_id`,
+            `on conflict (id) ${updateChanged("agg_actions", [
+              "state",
+              "applied_at",
+              "applied_by_run",
+              "result_note",
+              "supersedes_action_id",
+              "duplicate_of_action_id",
+            ])}`,
+          { operation: "actions", candidates: chunk.length },
         );
+        for (const { id, row } of chunk) written.set(id, row);
       }
     },
   };
@@ -173,7 +206,43 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
 // activity-ingestion.json -> public.agg_activity_ingestion + gaps
 // ---------------------------------------------------------------------
 
+// The activity store persists the WHOLE ingestion file on every event, and
+// the file holds every gap ever recorded (thousands of rows). Sending all of
+// them each time made the aggregator the largest Turso writer (#turso-writes,
+// Nov 25: ~1.2M rows/hour, every gap row rewritten on every event). The
+// remote now remembers what it last wrote (or loaded) per row and sends only
+// rows whose content changed; the upsert's change guard stays as a backstop.
+function ingestionRowKey(data: IngestionFile, source: string): string {
+  const checkpoint = data.checkpoints[source];
+  const status = data.sourceStatus?.[source];
+  return (
+    `(${sqlStr(source)}, ${checkpoint ? sqlJson(checkpoint) : "null"}, ` +
+    `${textArray(data.seen[source] ?? [])}, ${status ? sqlJson(status) : "null"}`
+  );
+}
+
+function gapRowKey(gap: GapRecord): string {
+  return (
+    `(${sqlStr(gap.id)}, ${sqlStr(gap.source)}, ${sqlStr(gap.from)}::timestamptz, ` +
+    `${sqlStr(gap.to)}::timestamptz, ${sqlStr(gap.status)}, ${sqlStr(gap.detectedAt)}::timestamptz, ` +
+    `${optTs(gap.resolvedAt)}`
+  );
+}
+
+function ingestionSources(data: IngestionFile): string[] {
+  return [
+    ...new Set<string>([
+      ...Object.keys(data.checkpoints),
+      ...Object.keys(data.seen),
+      ...Object.keys(data.sourceStatus ?? {}),
+    ]),
+  ];
+}
+
 export function createTursoActivityRemote(getClient: GetClient = getTursoStoreClient): ActivityRemote {
+  // Last content known to be in Turso, keyed by source / gap id.
+  const writtenSources = new Map<string, string>();
+  const writtenGaps = new Map<string, string>();
   return {
     async load(): Promise<IngestionFile | null> {
       const db = await requireClient(getClient);
@@ -212,45 +281,42 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
         if (resolvedAt) gap.resolvedAt = resolvedAt;
         data.gaps.push(gap);
       }
+      writtenSources.clear();
+      writtenGaps.clear();
+      for (const source of ingestionSources(data)) writtenSources.set(source, ingestionRowKey(data, source));
+      for (const gap of data.gaps) writtenGaps.set(gap.id, gapRowKey(gap));
       return data;
     },
 
     async save(data: IngestionFile): Promise<void> {
       const db = await requireClient(getClient);
-      const sources = new Set<string>([
-        ...Object.keys(data.checkpoints),
-        ...Object.keys(data.seen),
-        ...Object.keys(data.sourceStatus ?? {}),
-      ]);
-      const sourceRows = [...sources].map((source) => {
-        const checkpoint = data.checkpoints[source];
-        const status = data.sourceStatus?.[source];
-        return (
-          `(${sqlStr(source)}, ${checkpoint ? sqlJson(checkpoint) : "null"}, ` +
-          `${textArray(data.seen[source] ?? [])}, ${status ? sqlJson(status) : "null"}, now())`
-        );
-      });
-      for (const chunk of chunks(sourceRows)) {
+      const changedSources = ingestionSources(data)
+        .map((source) => ({ key: source, row: ingestionRowKey(data, source) }))
+        .filter(({ key, row }) => writtenSources.get(key) !== row);
+      for (const chunk of chunks(changedSources)) {
         await db.query(
           `insert into public.agg_activity_ingestion (source, checkpoint, seen_ids, source_status, updated_at) values\n` +
-            `${chunk.join(",\n")}\n` +
-            `on conflict (source) do update set checkpoint = excluded.checkpoint, seen_ids = excluded.seen_ids, ` +
-            `source_status = excluded.source_status, updated_at = now()`,
+            `${chunk.map(({ row }) => `${row}, now())`).join(",\n")}\n` +
+            `on conflict (source) ${updateChanged(
+              "agg_activity_ingestion",
+              ["checkpoint", "seen_ids", "source_status"],
+              true,
+            )}`,
+          { operation: "activity.ingestion", candidates: chunk.length },
         );
+        for (const { key, row } of chunk) writtenSources.set(key, row);
       }
-      const gapRows = data.gaps.map(
-        (gap) =>
-          `(${sqlStr(gap.id)}, ${sqlStr(gap.source)}, ${sqlStr(gap.from)}::timestamptz, ` +
-          `${sqlStr(gap.to)}::timestamptz, ${sqlStr(gap.status)}, ${sqlStr(gap.detectedAt)}::timestamptz, ` +
-          `${optTs(gap.resolvedAt)}, now())`,
-      );
-      for (const chunk of chunks(gapRows)) {
+      const changedGaps = data.gaps
+        .map((gap) => ({ key: gap.id, row: gapRowKey(gap) }))
+        .filter(({ key, row }) => writtenGaps.get(key) !== row);
+      for (const chunk of chunks(changedGaps)) {
         await db.query(
           `insert into public.agg_activity_gaps (id, source, gap_from, gap_to, status, detected_at, resolved_at, updated_at) values\n` +
-            `${chunk.join(",\n")}\n` +
-            `on conflict (id) do update set status = excluded.status, gap_to = excluded.gap_to, ` +
-            `resolved_at = excluded.resolved_at, updated_at = now()`,
+            `${chunk.map(({ row }) => `${row}, now())`).join(",\n")}\n` +
+            `on conflict (id) ${updateChanged("agg_activity_gaps", ["status", "gap_to", "resolved_at"], true)}`,
+          { operation: "activity.gaps", candidates: chunk.length },
         );
+        for (const { key, row } of chunk) writtenGaps.set(key, row);
       }
     },
   };
@@ -423,31 +489,48 @@ export function commentFromRow(row: Record<string, unknown>): DashComment {
   return comment;
 }
 
+// Same whole-table rewrite as actions, fixed the same way (#14865):
+// the comments store persists its full record set on every mutation,
+// so one added or triaged comment used to upsert every row of
+// public.shared_comments. Only rows whose content changed are sent.
 export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreClient): CommentsRemote {
+  const written = new Map<string, string>();
   return {
     async loadAll(): Promise<DashComment[]> {
       const db = await requireClient(getClient);
       const rows = await db.query<Record<string, unknown>>(
         `select ${COMMENT_COLUMNS} from public.shared_comments order by created_at asc`,
       );
-      return rows.map(commentFromRow);
+      const comments = rows.map(commentFromRow);
+      written.clear();
+      for (const comment of comments) written.set(comment.id, commentRowValues(comment));
+      return comments;
     },
 
     async saveAll(comments: readonly DashComment[]): Promise<void> {
       if (comments.length === 0) return;
       const db = await requireClient(getClient);
       const ordered = [...comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      for (const chunk of chunks(ordered)) {
-        const values = chunk.map(commentRowValues).join(",\n");
+      const changed = ordered
+        .map((comment) => ({ id: comment.id, row: commentRowValues(comment) }))
+        .filter(({ id, row }) => written.get(id) !== row);
+      for (const chunk of chunks(changed)) {
+        const values = chunk.map(({ row }) => row).join(",\n");
         await db.query(
           `insert into public.shared_comments (${COMMENT_COLUMNS}) values\n${values}\n` +
             // Only the state fields the store mutates after creation
             // ride the update: triage transitions and github posting
             // results. Identity, author and body are write-once.
-            `on conflict (id) do update set triage_state = excluded.triage_state, ` +
-            `github_state = excluded.github_state, github_url = excluded.github_url, ` +
-            `github_error = excluded.github_error, github_failed_at = excluded.github_failed_at`,
+            `on conflict (id) ${updateChanged("shared_comments", [
+              "triage_state",
+              "github_state",
+              "github_url",
+              "github_error",
+              "github_failed_at",
+            ])}`,
+          { operation: "comments", candidates: chunk.length },
         );
+        for (const { id, row } of chunk) written.set(id, row);
       }
     },
   };

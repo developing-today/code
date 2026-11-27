@@ -60,7 +60,6 @@
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import fs, { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -80,7 +79,21 @@ export class ExportError extends Error {
 /** Candidate store paths, most-expected first. The first entry is the
  * verified live store (2026-11-02); the rest are the plausible move
  * targets (OpenChamber-managed data dir, XDG state fallback). */
-export function defaultCandidatePaths(home = homedir()) {
+/** HOME for a default path, per the #5762 home-resolution contract (#8220):
+ * an unset or empty HOME is an error naming what needed it, never
+ * os.homedir's silent passwd fallback; a set HOME is returned unchanged. */
+export function requireHome(what) {
+  const home = process.env.HOME;
+  if (home === undefined || home.trim() === "") {
+    throw new Error(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so the default for ${what} cannot be derived; ` +
+        "set HOME (home-resolution contract #5762: no passwd fallback)",
+    );
+  }
+  return home;
+}
+
+export function defaultCandidatePaths(home = requireHome("the OpenCode store candidate paths")) {
   return [
     join(home, ".local/share/opencode/opencode.db"),
     join(home, ".local/share/openchamber/opencode.db"),
@@ -90,6 +103,10 @@ export function defaultCandidatePaths(home = homedir()) {
 
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
 const zeroTokens = () => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 });
+/** A message's cost or token count: a finite number, else 0. A string
+ * or object there would otherwise concatenate into the totals. */
+const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const isRecord = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const addTokens = (acc, t) => {
   acc.input += t.input || 0;
   acc.output += t.output || 0;
@@ -99,11 +116,11 @@ const addTokens = (acc, t) => {
   return acc;
 };
 const msgTokens = (t) => ({
-  input: t?.input || 0,
-  output: t?.output || 0,
-  reasoning: t?.reasoning || 0,
-  cacheRead: t?.cache?.read || 0,
-  cacheWrite: t?.cache?.write || 0,
+  input: num(t?.input),
+  output: num(t?.output),
+  reasoning: num(t?.reasoning),
+  cacheRead: num(t?.cache?.read),
+  cacheWrite: num(t?.cache?.write),
 });
 
 /** Parse a session/model JSON text column defensively: current rows
@@ -236,13 +253,16 @@ function readUsageSnapshot(db, { sinceMs }) {
       } catch {
         continue;
       }
+      // Valid JSON that is not an object (null, an array, a scalar) is
+      // not a message body: skip it like unparseable text (#7983).
+      if (!isRecord(data)) continue;
       const model = parseModel(data.model);
       const key = `${model.providerID ?? ""}\u0000${model.id ?? ""}`;
       const entry =
         byModel.get(key) ??
         { model: model.id, providerID: model.providerID, count: 0, cost: 0, tokens: zeroTokens() };
       entry.count += 1;
-      entry.cost += data.cost || 0;
+      entry.cost += num(data.cost);
       addTokens(entry.tokens, msgTokens(data.tokens));
       byModel.set(key, entry);
     }
@@ -383,13 +403,17 @@ function parseArgs(argv) {
 }
 
 /** One exporter tick. Injectable `now`/`home` keep the tests offline
- * and deterministic; production uses the defaults. */
+ * and deterministic; production uses the defaults. HOME is read only
+ * when a default path needs it (#8220), so --out-dir and
+ * OPENCODE_USAGE_DB runs need none, and a missing HOME fails the tick
+ * with its failure document like any other read error. */
 export async function run({
   argv = [],
   env = process.env,
   now = Date.now(),
-  home = homedir(),
+  home,
 } = {}) {
+  const resolveHome = () => home ?? requireHome("the opencode usage export's store and output paths");
   const attemptedAt = new Date(now).toISOString();
   let args;
   try {
@@ -405,17 +429,18 @@ export async function run({
     const doc = failureDocument(e.status, e.message, attemptedAt);
     if (!e.suppressFailureDocument) {
       try {
-        await writeDocument(err?.args?.outDir ?? join(home, "atlas/opencode-usage-export"), doc);
+        await writeDocument(err?.args?.outDir ?? join(resolveHome(), "atlas/opencode-usage-export"), doc);
       } catch {
         /* nowhere to write the failure either; exit code carries it */
       }
     }
     return { exitCode: e.exitCode, doc };
   }
-  const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
+  let outDir = args.outDir;
   try {
+    outDir ??= join(resolveHome(), "atlas/opencode-usage-export");
     const explicit = args.db ?? env.OPENCODE_USAGE_DB ?? null;
-    const candidates = explicit ? [explicit] : defaultCandidatePaths(home);
+    const candidates = explicit ? [explicit] : defaultCandidatePaths(resolveHome());
     const state = await readState(outDir);
     const { path, newestUpdated, moved } = resolveStore({
       candidates,
@@ -453,7 +478,8 @@ export async function run({
         : new ExportError("read-failed", 6, `opencode usage export failed: ${err?.message ?? err}`);
     const doc = failureDocument(e.status, e.message, attemptedAt);
     try {
-      await writeDocument(outDir, doc);
+      // With no --out-dir and no HOME there is nowhere to write.
+      if (outDir) await writeDocument(outDir, doc);
     } catch {
       /* nowhere to write the failure either; exit code carries it */
     }

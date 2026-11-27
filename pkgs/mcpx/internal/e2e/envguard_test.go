@@ -32,7 +32,9 @@ import (
 // harnessSetMCPX is every registry variable the harness sets: newEnv for
 // every child, or a test's withEnv/append for its own.
 var harnessSetMCPX = map[string]struct{}{
+	"MCPX_ADAPTERS_ALLOW_BARE":          {},
 	"MCPX_ARTIFACTS_MAX_BYTES":          {},
+	"MCPX_AUTH_MODE":                    {},
 	"MCPX_AUTONOMY_MAX":                 {},
 	"MCPX_AUTOSTART_ARGS":               {},
 	"MCPX_AUTOSTART_IDLE_EXIT":          {},

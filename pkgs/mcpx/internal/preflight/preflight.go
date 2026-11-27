@@ -47,6 +47,9 @@ func (p Problem) String() string {
 // Report is everything found.
 type Report struct {
 	Problems []Problem
+	// Prepared is the dependency environment stage 3 materialised,
+	// set only by the import pipeline in prepare mode (#1915).
+	Prepared *PreparedSet
 }
 
 // Add records a problem.
@@ -183,6 +186,21 @@ const (
 	TypeCheckOn     TypeCheckMode = TypeCheckTypes // legacy name for callers
 	TypeCheckStrict TypeCheckMode = "strict"
 )
+
+// ShouldSkipJSCheck is the script.checkJs gate (#1911 slice 2): when
+// checkJs is off, a JavaScript entry is not type checked at all —
+// Deno would otherwise still report // @ts-check pragma errors in it.
+// TypeScript entries are never skipped by this gate.
+func ShouldSkipJSCheck(entry string, checkJs bool) bool {
+	if checkJs {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(entry)) {
+	case ".js", ".mjs", ".cjs":
+		return true
+	}
+	return false
+}
 
 // TypeCheck resolves and checks a program without running it.
 //

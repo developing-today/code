@@ -40,6 +40,10 @@ pub struct WorldRuntimeArgs {
     /// (#1067); 0 = auto (parallelism − 2).
     #[arg(long, default_value_t = 0, requires = "world", value_name = "COUNT")]
     pub world_guest_burn_concurrency: usize,
+    /// Concurrent synchronous guest burns admitted per charged
+    /// account (#1067 per-account quotas); 0 = no per-account bound.
+    #[arg(long, default_value_t = 0, requires = "world", value_name = "COUNT")]
+    pub world_guest_burn_per_account_concurrency: usize,
 }
 
 /// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
@@ -70,6 +74,9 @@ impl id_caps::world_limits::WorldLimitArgs for WorldRuntimeArgs {
     }
     fn world_guest_burn_concurrency(&self) -> usize {
         self.world_guest_burn_concurrency
+    }
+    fn world_guest_burn_per_account_concurrency(&self) -> usize {
+        self.world_guest_burn_per_account_concurrency
     }
 }
 
@@ -409,6 +416,31 @@ pub struct WorldProfileArgs {
     /// Requested native call deadline in milliseconds.
     #[arg(long, visible_alias = "native-deadline")]
     pub native_call_deadline_ms: Option<u64>,
+    /// World on the host to use (default: the host's default world).
+    #[arg(long, env = "ID_WORLD")]
+    pub world: Option<String>,
+    /// Direct socket address of the host (repeatable); skips discovery.
+    #[arg(long = "addr")]
+    pub addrs: Vec<SocketAddr>,
+    /// Disable relay servers (direct connection only).
+    #[arg(long)]
+    pub no_relay: bool,
+}
+
+/// The arguments of `id world presentation`, extracted into
+/// their own `Args` struct for the same reason as `ServeArgs`
+/// (#4751).
+#[derive(Args, Debug)]
+pub struct WorldPresentationArgs {
+    /// The host's node ID (64 hex characters).
+    pub node: String,
+    /// Replace the policy with the one in this JSON file (needs
+    /// `--admin-token`). A duplicated key is refused.
+    #[arg(long, value_name = "FILE")]
+    pub set: Option<PathBuf>,
+    /// Admin secret configured with `serve --world-admin-token`.
+    #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+    pub admin_token: Option<String>,
     /// World on the host to use (default: the host's default world).
     #[arg(long, env = "ID_WORLD")]
     pub world: Option<String>,
@@ -939,7 +971,6 @@ pub enum WorldCommand {
     /// a named world, and the scratch world is discarded when the
     /// session ends. Prints one JSON report: the compiled module's
     /// provenance, the initial view, and the view after each `--input`.
-    #[cfg(feature = "sandbox")]
     Dev(WorldDevArgs),
     /// Show (and, with `--grant`/`--revoke`/`--ceiling`, change) a world's capabilities.
     ///
@@ -954,6 +985,14 @@ pub enum WorldCommand {
     /// are specified, prints the current persisted profile (requires either
     /// `--admin-token` or a guest `--capability`).
     Profile(WorldProfileArgs),
+    /// View or replace a world's presentation policy.
+    ///
+    /// Without `--set` it prints the policy: what appearances the world
+    /// lets render (user uploads, the richest rung, filters, shaders,
+    /// its fallback art). Reading needs no token, because the policy is
+    /// public before anyone joins. `--set FILE` replaces it with the
+    /// policy in a JSON file and needs `--admin-token`.
+    Presentation(WorldPresentationArgs),
     /// Scaffold a new Roc world app directory.
     ///
     /// Writes `main.roc`, `build.sh`, and `README.md`. The platform path in the
@@ -984,7 +1023,8 @@ pub enum WorldCommand {
     /// is applied through the admin operations and journaled by the host.
     Apply(WorldApplyArgs),
     /// Print the versioned shell contract (the frame protocol every shell
-    /// speaks), or check a recorded session against it.
+    /// speaks), or check a recorded session against it. With `--check-suite`,
+    /// run the whole conformance suite from a manifest instead.
     ///
     /// A transcript has one JSON object per line:
     /// `{"from": "client"|"server", "frame": {...}}`. The check prints each
@@ -993,6 +1033,11 @@ pub enum WorldCommand {
         /// Transcript to check (`-` reads stdin); without it, print the contract.
         #[arg(long, value_name = "FILE")]
         check: Option<PathBuf>,
+        /// Suite manifest to run (`contract/shell-suite.v1.json`): every
+        /// shell's capability statement and recorded session, checked in
+        /// one pass. Fails if any shell fails.
+        #[arg(long, value_name = "FILE", conflicts_with = "check")]
+        check_suite: Option<PathBuf>,
     },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///
@@ -1002,7 +1047,6 @@ pub enum WorldCommand {
     /// Prints one JSON object with, per call kind, the calls made, total and
     /// worst fuel, and the worst call as a percent of the fuel limit. Exits
     /// nonzero only if the module fails to compile or a call traps.
-    #[cfg(feature = "sandbox")]
     Measure(WorldMeasureArgs),
     /// Tail a world's recent events (bounded by retention and a deadline).
     Logs(WorldLogsArgs),
@@ -1013,7 +1057,6 @@ pub enum WorldCommand {
     Record(WorldRecordArgs),
     /// Replay a recorded fixture offline through a module and compare records.
     /// Prints a verdict line first; exits nonzero when the records differ.
-    #[cfg(feature = "sandbox")]
     Replay(WorldReplayArgs),
     /// Verify a recorded fixture's determinism: replay it twice offline
     /// through a module and compare the records after every event. Prints a
@@ -1025,7 +1068,6 @@ pub enum WorldCommand {
     /// Verification covers the events captured by the admin-authorized fixture,
     /// including host-originated events in their recorded order. It proves
     /// determinism for that history, not correctness of host policy.
-    #[cfg(feature = "sandbox")]
     Verify(WorldVerifyArgs),
     /// List the worlds a host serves. Without `--admin-token` this reads
     /// the host's public directory (#812: names, loaded state, presence
@@ -1092,6 +1134,83 @@ pub enum WorldCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export a durable world on disk as a template bundle (#8282).
+    ///
+    /// Writes the template as JSON: the active program as a bundle
+    /// reference and the `kv` entries named with `--keep-state`.
+    /// Capabilities, author keys and grants are stripped and only
+    /// counted. A program that was not installed from a bundle is
+    /// refused. Local only; no host is contacted.
+    TemplateExport {
+        /// Directory of the world to export (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// File to write the template to; it must not exist yet.
+        out: PathBuf,
+        /// A `kv` key to carry as template state (repeatable).
+        #[arg(long = "keep-state", value_name = "KEY")]
+        keep_state: Vec<String>,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a new durable world on disk from a template (#8282).
+    ///
+    /// The world gets a fresh id and starts with the template's state.
+    /// Each program the template names installs from a bundle file given
+    /// with `--bundle`, through the same verification as a sideloaded
+    /// bundle. A program with no matching bundle is recorded in the
+    /// world's `template-gaps.json` instead. Local only; no host or
+    /// network is contacted.
+    #[cfg(feature = "sandbox")]
+    TemplateCreate {
+        /// Template file written by `id world template-export`.
+        template: PathBuf,
+        /// Directory to create the world in; it must be absent or empty.
+        dir: PathBuf,
+        /// The new world's id: `a-z`, `0-9`, `-` and `_`. Defaults to the
+        /// directory's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// A program bundle file the template may name (repeatable).
+        #[arg(long = "bundle", value_name = "FILE")]
+        bundles: Vec<PathBuf>,
+        /// An author key (64 hex characters) whose bundles the new world
+        /// trusts (repeatable). With none, the world keeps no trust list.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_keys: Vec<String>,
+        /// Deterministic seed supplied to the program's initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install the programs a template-created world is still missing
+    /// (#8282).
+    ///
+    /// Reads the world's `template-gaps.json` and installs each recorded
+    /// program whose exact bundle is given with `--bundle`, through the
+    /// same verification as a sideloaded bundle. Programs still missing
+    /// stay recorded. Local only; no host or network is contacted.
+    #[cfg(feature = "sandbox")]
+    TemplateResume {
+        /// Directory of the template-created world.
+        dir: PathBuf,
+        /// A program bundle file that may fill a gap (repeatable).
+        #[arg(long = "bundle", value_name = "FILE")]
+        bundles: Vec<PathBuf>,
+        /// An author key (64 hex characters) whose bundles the world
+        /// trusts (repeatable). With none, the world keeps no trust list.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_keys: Vec<String>,
+        /// Deterministic seed supplied to the program's initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a durable world's provenance from its journal: its id and,
     /// for a fork, the world it was forked from, the module hash at the
     /// fork point, and whether it was marked a template (F12.2). Local
@@ -1124,6 +1243,67 @@ pub enum WorldCommand {
     /// Inspect or copy a durable world's journal file (F11.12 journal
     /// format management). Local only; no host is contacted.
     Journal(WorldJournalArgs),
+    /// Publish a signed world announcement to pkarr relays (#10706).
+    ///
+    /// Signs with the world key in `--key-file` (an owner-only file,
+    /// created on first use) and prints one JSON line per publish.
+    /// With `--watch` it stays up and republishes on the heartbeat.
+    Announce(WorldAnnounceArgs),
+    /// Fetch a world's announcement from pkarr relays by its world id,
+    /// verify it, and print it as JSON (#10706).
+    Lookup(WorldLookupArgs),
+}
+
+/// The arguments of `id world announce` (#10706).
+#[derive(Args, Debug)]
+pub struct WorldAnnounceArgs {
+    /// File holding the world's signing key (created on first use).
+    /// The world id is this key's public half.
+    #[arg(long)]
+    pub key_file: String,
+    /// The node id (64 hex characters) that hosts the world.
+    #[arg(long)]
+    pub node: String,
+    /// A relay URL that reaches the node (never a raw IP and port).
+    #[arg(long)]
+    pub relay_hint: Option<String>,
+    /// Display name (at most 64 characters).
+    #[arg(long)]
+    pub name: String,
+    /// Short description (at most 200 characters).
+    #[arg(long, default_value = "")]
+    pub description: String,
+    /// A tag (repeatable, at most 8).
+    #[arg(long = "tag")]
+    pub tags: Vec<String>,
+    /// Mark the world listed, so registries may include it. Unlisted
+    /// worlds are found only by their id.
+    #[arg(long)]
+    pub listed: bool,
+    /// Coarse occupancy.
+    #[arg(long, default_value = "has_room", value_parser = ["has_room", "near_full", "full"])]
+    pub occupancy: String,
+    /// A pkarr relay base URL (repeatable). Defaults to the
+    /// developing-today relay.
+    #[arg(long = "relay")]
+    pub relays: Vec<String>,
+    /// How long each announcement stays valid, such as 3h.
+    #[arg(long, default_value = "3h", value_parser = crate::helpers::parse_duration_secs)]
+    pub lifetime: u64,
+    /// Stay up and republish on the heartbeat until interrupted.
+    #[arg(long)]
+    pub watch: bool,
+}
+
+/// The arguments of `id world lookup` (#10706).
+#[derive(Args, Debug)]
+pub struct WorldLookupArgs {
+    /// The world id (64 hex characters).
+    pub world_id: String,
+    /// A pkarr relay base URL (repeatable). Defaults to the
+    /// developing-today relay.
+    #[arg(long = "relay")]
+    pub relays: Vec<String>,
 }
 
 /// The arguments of `id world journal`: a subcommand over a world

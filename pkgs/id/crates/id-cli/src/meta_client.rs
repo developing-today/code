@@ -6,7 +6,7 @@
 //! What stays in the facade is the composition: [`MetaClient`] chooses
 //! between a running `id serve` (found through the CLI layer's serve
 //! lock) and the in-process [`LocalNode`], both of which are facade
-//! concerns until step 7 extracts the CLI layer.
+//! concerns now composed by `id-cli` after split step 7b.
 
 use anyhow::Result;
 use iroh::{

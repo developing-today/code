@@ -4339,6 +4339,20 @@ a {
   margin: 1px 2px 1px 0;
   white-space: nowrap;
 }
+/* #10035 S6: the nav unread badge + chat thread cards. */
+.badge.prompt-unread {
+  text-decoration: none;
+  background: #d2992233;
+  border-color: #d29922;
+  color: #e3b341;
+}
+.chat-prompt.unread {
+  border-color: #d29922;
+}
+.chat-answer {
+  border-left: 3px solid #2ea043;
+  padding-left: 8px;
+}
 .badge.open {
   background: #1f6feb33;
   border-color: #1f6feb;

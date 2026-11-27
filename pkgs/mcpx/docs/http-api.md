@@ -30,7 +30,18 @@ the binary, it can be produced with **no daemon running**:
 a superset of the other. Every path they share is identical, byte
 for byte, and `mcpx openapi` adds the MCP endpoint, a REST path
 per mcpx tool (`POST /v1/tools/{tool}` is itself an operation in
-the table) and the settings index. The daemon's document instead
+the table) and the settings index.
+
+In the printed document those per-tool paths are concrete — one
+`POST` path per tool mcpx itself serves: `/v1/tools/mcpx_exec`,
+`/v1/tools/mcpx_search`, `/v1/tools/mcpx_types`,
+`/v1/tools/mcpx_catalog`, `/v1/tools/mcpx_call`,
+`/v1/tools/mcpx_batch`, `/v1/tools/mcpx_namespaces`,
+`/v1/tools/mcpx_registry`, `/v1/tools/mcpx_status`,
+`/v1/tools/mcpx_stats`, `/v1/tools/mcpx_log`, and the batch form
+`/v1/tools/batch_call`. [parity.md](./parity.md) carries the
+living table behind the names; the list above is the set the
+binary prints today. The daemon's document instead
 adds one concrete path per tool in the **live catalogue**
 (`POST /v1/call/<namespace>/<tool>`, with that tool's input
 schema, generated per request by `handleOpenAPI` in
@@ -98,6 +109,18 @@ loopback is a deliberate act, and the responsibility of whatever
 does it, because whatever can route to the port can run tools as
 you. The same listeners mount the [MCP surface](./mcp.md#mcp) at
 `/mcp` — one listener, one access-control decision.
+
+That is the default (`auth.mode=off`). Two settings close it, on
+`/v1` and `/mcp` alike. `transport.bearerToken` is one shared
+token every caller must present. `auth.mode` turns on per-user
+keys (`Authorization: Bearer mcpx_key_...`, stored only as SHA-256
+hashes in `auth.json` in the state directory): `permissive`
+honours a key and refuses an unknown or revoked one but still
+serves an anonymous loopback caller, and `required` refuses every
+HTTP caller without a valid key with `401` and
+`WWW-Authenticate: Bearer`. In both, the unix socket stays
+owner-only by its file permissions and needs no key. The design
+record is [Daemon authentication](./daemon-auth.md).
 
 ### Call-scoped settings: the `X-Mcpx-Settings` header
 

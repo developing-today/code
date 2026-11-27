@@ -15,13 +15,28 @@
 //! in any queue, files no new row: the reply carries the existing
 //! task (like a dedupe_key hit) plus a `work_identity_collision`
 //! naming its id, state and identity, so a generator can route its
-//! follow-up onto it. Terminal tasks never block a new filing
-//! (re-queue after failure is unaffected; a fresh already-done
-//! verdict is the claim-time staleness check's job, #10626).
+//! follow-up onto it. Failed and cancelled tasks never block a new
+//! filing (re-queue after failure is unaffected). A COMPLETED task
+//! does block (#13091): the claim-time staleness check (#10626)
+//! fails open by standing rule, so during a probe degradation
+//! completed work was served again and completed a second time;
+//! the broker knows its own verified completions locally and
+//! absorbs the re-filing itself, no probe involved.
+//!
+//! One completed kind is not completed issue work (#16007): a
+//! triage task completes by filing its fix follow-on, so when that
+//! follow-on later fails or is cancelled (or never landed) and no
+//! live or completed follow-on covers the issue, a completed triage
+//! row must NOT absorb the reconciliation re-filing in either the
+//! dedupe-key check or the completed-identity check below — the
+//! fresh triage task is the recovery path, and `/coverage` (live
+//! rows only) must be able to see it afterwards.
 //!
 //! Only kinds that work one issue one way take part: small_fix,
-//! triage, and pr_shepherd (per PR set). ci_investigation and
-//! second_pass are recurring by design and file as before. A packet
+//! triage, and pr_shepherd (per PR set). ci_investigation,
+//! second_pass and feature_slice are recurring by design and file
+//! as before — a feature_slice parent issue carries many slices in
+//! parallel, one dedupe key per slice ordinal (#12233 F2c). A packet
 //! may declare `dedupe_exempt: true` (a recurring kind) or
 //! `dedupe_override: "<reason>"` (a deliberate parallel, recorded
 //! as a `dedupe_override` event on the new task). A quarantined
@@ -127,17 +142,29 @@ pub fn dedupe_override(packet: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether a live row holds `identity` and may absorb a new filing:
-/// same identity, and not a quarantined (invalid) row.
-pub fn holds_identity(row: &Value, identity: &WorkIdentity) -> bool {
+/// Whether a row in one of `statuses` holds `identity` and may
+/// absorb a new filing: same identity, and not a quarantined
+/// (invalid) row.
+fn holds_identity_in(row: &Value, identity: &WorkIdentity, statuses: &[&str]) -> bool {
     let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    if !LIVE_STATUSES.contains(&status) {
+    if !statuses.contains(&status) {
         return false;
     }
     if work_identity(row).as_ref() != Some(identity) {
         return false;
     }
     claim_guard_reason(row).is_none()
+}
+
+/// Whether a live row holds `identity` and may absorb a new filing:
+/// same identity, and not a quarantined (invalid) row.
+pub fn holds_identity(row: &Value, identity: &WorkIdentity) -> bool {
+    holds_identity_in(row, identity, &LIVE_STATUSES)
+}
+
+/// Whether a completed row holds `identity` (#13091).
+fn holds_completed_identity(row: &Value, identity: &WorkIdentity) -> bool {
+    holds_identity_in(row, identity, &["done"])
 }
 
 /// The live task already holding `identity`, oldest first, in any
@@ -159,6 +186,116 @@ pub(crate) fn live_identity_holder(
         &TASK_JSON_COLS,
     )?;
     Ok(rows.into_iter().find(|row| holds_identity(row, identity)))
+}
+
+/// The completed task already holding `identity`, oldest first, in
+/// any queue (#13091): the same match as live_identity_holder over
+/// done rows. Only completion absorbs — failed and cancelled rows
+/// are re-queueable by design (#10627).
+pub(crate) fn done_identity_holder(
+    t: &TursoBackend,
+    identity: &WorkIdentity,
+    kind: &str,
+) -> Result<Option<Value>, TErr> {
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks \
+             WHERE status = 'done' \
+               AND json_extract(payload, '$.kind') = ? \
+               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+             ORDER BY id ASC"
+        ),
+        &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
+        &TASK_JSON_COLS,
+    )?;
+    Ok(rows
+        .into_iter()
+        .find(|row| holds_completed_identity(row, identity)))
+}
+
+/// #16007: whether a completed triage's issue is left uncovered by
+/// its fix follow-ons. Recovery is needed when no follow-on is live
+/// (queued/claimed/parked/handed_off/blocked) and none completed:
+/// every follow-on failed or was cancelled, or none ever landed.
+/// A live follow-on still covers the issue (the completed triage
+/// absorbs the re-filing), and a completed follow-on is the work
+/// actually done (it absorbs too).
+pub fn triage_recovery_needed(follow_on_statuses: &[&str]) -> bool {
+    !follow_on_statuses
+        .iter()
+        .any(|s| LIVE_STATUSES.contains(s) || *s == "done")
+}
+
+/// The statuses of every fix follow-on of the triage work named by
+/// `identity` (#16007): rows in any queue whose work identity is the
+/// fix-family identity for the same repo and issue — the follow-on
+/// a triage completion files (`small_fix`, #7016). Status strings
+/// only; `triage_recovery_needed` decides what they mean.
+pub(crate) fn triage_follow_on_statuses(
+    t: &TursoBackend,
+    identity: &WorkIdentity,
+) -> Result<Vec<String>, TErr> {
+    let fix_identity = WorkIdentity {
+        repo: identity.repo.clone(),
+        issue: identity.issue,
+        family: "fix".to_string(),
+        prs: Vec::new(),
+    };
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks \
+             WHERE json_extract(payload, '$.kind') = 'small_fix' \
+               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+             ORDER BY id ASC"
+        ),
+        &[Arg::Int(identity.issue)],
+        &TASK_JSON_COLS,
+    )?;
+    Ok(rows
+        .iter()
+        .filter(|row| work_identity(row).as_ref() == Some(&fix_identity))
+        .filter_map(|row| {
+            row.get("status")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .collect())
+}
+
+/// The machine-readable report when an enqueue's dedupe key already
+/// names the returned row (#10627, fleet-monitor ask 2026-11-25): the
+/// filing was absorbed and nothing was created, and the reply must
+/// say so in a field of its own — a bare row reads as a successful
+/// filing, and a completed row returned this way left `queue/queued`
+/// issues holding no live task and no signal (the monitor sampled
+/// tasks 18037, 22316, 22051, 23610 returned for fresh filings).
+/// `terminal` separates the completed predecessor (the caller
+/// suffixes the key and re-files in the same pass) from a live hit
+/// (the caller attaches follow-ups to the holder).
+pub fn dedupe_match_detail(row: &Value, terminal: bool) -> Value {
+    let (rule, hint) = if terminal {
+        (
+            "dedupe_key_terminal",
+            "the dedupe key already belongs to a completed task; no new task was \
+             filed — suffix the dedupe key to file this work again, or file with \
+             payload.dedupe_override=\"<reason>\" for a deliberate parallel",
+        )
+    } else {
+        (
+            "dedupe_key_live",
+            "the dedupe key already has a live task; no new task was filed — \
+             attach follow-ups to the existing task, or file with \
+             payload.dedupe_override=\"<reason>\" for a deliberate parallel",
+        )
+    };
+    json!({
+        "rule": rule,
+        "task_id": row.get("id").cloned().unwrap_or(Value::Null),
+        "status": row.get("status").cloned().unwrap_or(Value::Null),
+        "queue": row.get("queue").cloned().unwrap_or(Value::Null),
+        "dedupe_key": row.get("dedupe_key").cloned().unwrap_or(Value::Null),
+        "hint": hint,
+    })
 }
 
 /// The machine-readable collision a deduped enqueue reports.
@@ -200,7 +337,7 @@ mod tests {
 
     #[test]
     fn recurring_kinds_exempt_and_issueless_take_no_part() {
-        for kind in ["ci_investigation", "second_pass"] {
+        for kind in ["ci_investigation", "second_pass", "feature_slice"] {
             let p = json!({"kind": kind, "repo": "developing-today/code", "issue": {"number": 5}});
             assert!(work_identity(&task("queued", p)).is_none(), "{kind}");
         }
@@ -290,6 +427,69 @@ mod tests {
         assert_eq!(c["status"], "claimed");
         assert_eq!(c["identity"], "developing-today/code#5:fix");
         assert_eq!(c["rule"], "open_work_identity");
+    }
+
+    #[test]
+    fn dedupe_match_is_machine_readable() {
+        let done = json!({"id": 7, "status": "done", "queue": "q", "dedupe_key": "k"});
+        let m = dedupe_match_detail(&done, true);
+        assert_eq!(m["rule"], "dedupe_key_terminal");
+        assert_eq!(m["task_id"], 7);
+        assert_eq!(m["status"], "done");
+        assert_eq!(m["dedupe_key"], "k");
+        let live = json!({"id": 8, "status": "claimed", "queue": "q", "dedupe_key": "k"});
+        let m = dedupe_match_detail(&live, false);
+        assert_eq!(m["rule"], "dedupe_key_live");
+        assert_eq!(m["task_id"], 8);
+        assert_eq!(m["status"], "claimed");
+    }
+
+    #[test]
+    fn triage_recovery_only_when_no_follow_on_covers_the_issue_16007() {
+        // #16007 oracle: a completed triage task with an open issue
+        // and a failed or cancelled fix follow-on is re-queueable —
+        // the recovery filing must not be absorbed.
+        assert!(triage_recovery_needed(&["failed"]));
+        assert!(triage_recovery_needed(&["cancelled"]));
+        assert!(triage_recovery_needed(&["failed", "cancelled"]));
+        // No follow-on ever landed: nothing covers the issue either.
+        assert!(triage_recovery_needed(&[]));
+        // A live follow-on covers the issue: no recovery triage.
+        for status in ["queued", "claimed", "parked", "handed_off", "blocked"] {
+            assert!(!triage_recovery_needed(&[status]), "{status}");
+            assert!(!triage_recovery_needed(&["failed", status]), "{status}");
+        }
+        // A completed follow-on is the work done: no recovery triage,
+        // even alongside an earlier failed attempt.
+        assert!(!triage_recovery_needed(&["done"]));
+        assert!(!triage_recovery_needed(&["failed", "done"]));
+        assert!(!triage_recovery_needed(&["cancelled", "done"]));
+    }
+
+    #[test]
+    fn triage_recovery_is_checked_in_both_done_absorption_paths_16007() {
+        // #16007 wiring oracle: BOTH completed-work absorptions in
+        // verb_enqueue — the same-dedupe-key terminal hit and the
+        // done work-identity holder — consult the triage recovery
+        // check before returning the completed triage row, so the
+        // same-key and the same-work-identity re-filings both file a
+        // fresh claimable triage task in the recovery state.
+        let src = include_str!("claim.rs");
+        let start = src.find("fn verb_enqueue(").unwrap();
+        let body = &src[start..];
+        let key_branch = body.find("dedupe_match_detail(row, true)").unwrap_or(usize::MAX);
+        assert_eq!(
+            body.matches("triage_recovery_filing(").count(),
+            2,
+            "both done-absorption paths must check triage recovery"
+        );
+        let first_check = body.find("triage_recovery_filing(").unwrap();
+        let done_identity = body.find("done_identity_holder(").unwrap();
+        assert!(first_check < key_branch || first_check < done_identity);
+        // Completed non-triage work still absorbs: both terminal
+        // reports remain in the enqueue body.
+        assert!(body.contains("dedupe_match_detail(row, true)"));
+        assert!(body.contains("done_work_identity"));
     }
 
     #[test]

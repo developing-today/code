@@ -24,6 +24,7 @@ const SECTION_NAMES = [
   "questions",
   "prs",
   "priorities",
+  "done",
   "agents",
   "services",
   "more",
@@ -114,43 +115,25 @@ describe("sign-in", () => {
     expect(w.calls).toEqual([]);
   });
 
-  test("the owner's switch for the edge acting by itself runs the setup script here, on or off", async () => {
-    const w = setup((argv) => ({
-      stdout: argv.includes("on")
-        ? "changed: edge direct: upload the GitHub and queue tokens and turn direct actions on\n"
-        : "changed: edge direct: turn direct actions off and take the two tokens away\n",
-    }));
-    const docs = new Docs(
-      Object.fromEntries(SECTION_NAMES.map((name) => [name, { ttlMs: 1000, load: async () => ({}) }])),
-    );
-    expect(await perform(w.table, docs, "edge.direct", { on: true })).toEqual({
-      on: true,
-      changed: ["edge direct: upload the GitHub and queue tokens and turn direct actions on"],
-    });
-    expect(await perform(w.table, docs, "edge.direct", { on: false })).toMatchObject({ on: false });
-    expect(w.calls.map((c) => c.argv.slice(2))).toEqual([
-      ["--edge-direct", "on"],
-      ["--edge-direct", "off"],
-    ]);
-    // Nothing is handed to it: the tokens are read by the script, by name.
-    expect(w.calls.every((c) => c.stdin === undefined)).toBe(true);
-    // What it records is the choice. It is the laptop's to do, so it is never held for later.
-    expect(w.table["edge.direct"].audit({ on: true })).toEqual({ on: true });
-    expect(HOLDABLE.has("edge.direct")).toBe(false);
-    // Anything but true or false is refused before the script is run.
-    for (const on of ["on", 1, undefined, null]) {
-      const refused = await w.ops.edgeDirect(on).catch((error) => error);
-      expect(refused).toBeInstanceOf(OpError);
-      expect(refused.status).toBe(400);
+  test("the message log is a list whatever the fleet printed for an empty one", async () => {
+    const two = [
+      { ts: "2026-11-22T10:00:00Z", direction: "out", agent: "conductor", kind: "message", body: "one" },
+      { ts: "2026-11-22T10:01:00Z", direction: "in", agent: "muse", kind: "command", body: "two" },
+    ];
+    for (const [printed, want] of [
+      [JSON.stringify({ messages: two }), two],
+      [JSON.stringify({ messages: [] }), []],
+      // No log yet: the answer is still a list, never nothing at all (an
+      // empty answer used to stop the Agents screen from loading).
+      ["{}", []],
+      ["[]", []],
+      ["null", []],
+      [JSON.stringify({ messages: "none" }), []],
+    ] as const) {
+      const w = setup(() => ({ stdout: printed }));
+      expect(await w.ops.messages("15")).toEqual(want as unknown[]);
+      expect(w.calls[0].argv.slice(1)).toEqual(["bridge", "log", "--limit", "15", "--order", "desc"]);
     }
-    expect(w.calls).toHaveLength(2);
-    // A script that fails says why.
-    const failing = setup(() => ({ code: 1, stderr: "secret turso.fleet-queue-rw-token is not readable here\n" }));
-    const failed = await failing.ops.edgeDirect(true).catch((error) => error);
-    expect(failed.status).toBe(502);
-    expect(failed.message).toBe(
-      "Cloudflare was not given the tokens: secret turso.fleet-queue-rw-token is not readable here",
-    );
   });
 
   test("a script that fails says why, without either value even if the script printed one", async () => {
@@ -167,4 +150,34 @@ describe("sign-in", () => {
     );
     expect(failed.message).not.toContain(VALUE);
   });
+});
+
+test("the Android build on the laptop is described for the edge, and fingerprinted only when it changes", async () => {
+  const { androidBuild } = await import("../src/server.ts");
+  const { mkdtempSync, writeFileSync, utimesSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "pm-apk-"));
+  try {
+    const path = join(dir, "pm-console.apk");
+    const build = androidBuild(path);
+    // No build installed: nothing to describe.
+    expect(await build()).toBeNull();
+    writeFileSync(path, "first build");
+    const one = await build();
+    // SHA-256 of the text, worked out separately with sha256sum.
+    expect(one?.sha256).toBe("f3adf3a4014af2dc15376ed0b22ac63cae9073430512bad33659b8f352c9fb30");
+    expect(one?.size).toBe(11);
+    expect(new TextDecoder().decode(await one?.read())).toBe("first build");
+    // Unchanged: the same description.
+    expect((await build())?.sha256).toBe(one?.sha256);
+    // A new build put in its place, same length: a new fingerprint and date.
+    writeFileSync(path, "other build");
+    utimesSync(path, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000));
+    const two = await build();
+    expect(two?.sha256).not.toBe(one?.sha256);
+    expect(two?.at).toBeGreaterThan(one?.at ?? 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

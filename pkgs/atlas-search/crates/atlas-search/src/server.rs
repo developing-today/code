@@ -30,10 +30,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use atlas_core::types::BranchPools;
 use atlas_core::{
     BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
-    JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
-    SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
-    VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
-    record_feedback, run_get_chunk, run_search_with_executor_traced,
+    JsonlFeedbackSink, JsonlTraceSink, Manifest, QueryEmbedder, SearchBackend,
+    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    VectorBackend as CoreVectorBackend, builtin_manifest, chunk_classification, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk_with_context,
+    run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -229,6 +230,10 @@ struct ServiceConfigFile {
     /// Seconds between shard re-discoveries in serve mode
     /// (#6666 slice 1). Default 60; ignored without `shards`.
     shard_refresh_seconds: Option<u64>,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7). Requires
+    /// `shards`; absent = occurrence rows stay unattributed.
+    source_registry: Option<String>,
     limits: Option<RuntimeLimitsFile>,
     clients: Vec<RawClientConfig>,
 }
@@ -247,6 +252,13 @@ pub struct ServeSettings {
     /// snapshot-bound result cache invalidates on the new
     /// snapshot id.
     pub shard_refresh: Duration,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7): opened at serve
+    /// start and attached to the shard fan-out, so served
+    /// get-chunk occurrence rows carry `root_id` for registered
+    /// locators. Requires `shards`; `None` = unattributed rows,
+    /// exactly as before slice 7.
+    pub source_registry: Option<PathBuf>,
 }
 
 /// Default shard re-discovery interval for serve mode (#6666).
@@ -270,7 +282,10 @@ pub fn default_service_config_path() -> PathBuf {
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
-    if let Some(p) = flag {
+    // An empty flag value counts as absent (same reasoning as
+    // service::base_url: the clap env binding on --config passes a
+    // set-but-empty ATLAS_SEARCH_SERVICE_CONFIG through as a value).
+    if let Some(p) = flag.filter(|p| !p.as_os_str().is_empty()) {
         return p.to_path_buf();
     }
     if let Ok(p) = std::env::var("ATLAS_SEARCH_SERVICE_CONFIG")
@@ -333,9 +348,9 @@ pub fn load_service_settings(
                 c.name
             ));
         }
-        let cap = ProtoSensitivity::from_name(&c.ceiling_cap).ok_or_else(|| {
+        let cap = ProtoSensitivity::from_ceiling_name(&c.ceiling_cap).ok_or_else(|| {
             format!(
-                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing",
+                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing (or public, internal, private, sensitive)",
                 c.name
             )
         })?;
@@ -372,6 +387,19 @@ pub fn load_service_settings(
     if shard_refresh_seconds == 0 {
         return Err("service config shard_refresh_seconds must be at least 1".to_string());
     }
+    let source_registry = match raw.source_registry {
+        Some(p) if !p.trim().is_empty() => Some(PathBuf::from(p)),
+        Some(_) => {
+            return Err("service config source_registry path must not be empty".to_string());
+        }
+        None => None,
+    };
+    if source_registry.is_some() && shards.is_none() {
+        return Err(
+            "service config source_registry requires shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        );
+    }
     Ok(ServeSettings {
         listen,
         clients,
@@ -381,6 +409,7 @@ pub fn load_service_settings(
         limits,
         shards,
         shard_refresh: Duration::from_secs(shard_refresh_seconds),
+        source_registry,
     })
 }
 
@@ -581,8 +610,51 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
     }
 }
 
-fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
-    Filters::new(
+/// Resolve a request's generic dimensions against the effective
+/// manifest surface (#6228 Phase 3, slice 2). Only a dimension the
+/// manifest declares with the `generic_list` shape is supported:
+/// an unknown name, a named-field dimension carried in the generic
+/// map, or a declared dimension of any other shape is a 400 before
+/// any scheduling or backend work (fail-closed). The returned
+/// filters carry the dimension's declared match semantics.
+fn generic_filters(
+    req: &SearchRequest,
+    surface: &Manifest,
+) -> Result<Vec<atlas_core::filters::GenericFilter>, ServerError> {
+    let mut out = Vec::new();
+    for (name, values) in &req.filters.dimensions {
+        if values.is_empty() {
+            continue;
+        }
+        let Some(dim) = surface.dimension(name) else {
+            return Err(ServerError::bad_request(format!(
+                "generic filter dimension '{name}' is not supported by this search surface: \
+                 unknown dimension (not declared in the effective manifest)"
+            )));
+        };
+        if dim.shape != atlas_core::manifest::Shape::GenericList {
+            return Err(ServerError::bad_request(format!(
+                "generic filter dimension '{name}' is not supported by this search surface: \
+                 declared shape is '{}', not 'generic_list'",
+                dim.shape.name()
+            )));
+        }
+        out.push(atlas_core::filters::GenericFilter {
+            name: name.clone(),
+            semantics: dim.semantics,
+            values: values.clone(),
+        });
+    }
+    Ok(out)
+}
+
+fn build_filters(
+    req: &SearchRequest,
+    effective: ProtoSensitivity,
+    surface: &Manifest,
+) -> Result<Filters, ServerError> {
+    let generic = generic_filters(req, surface)?;
+    let mut filters = Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
         req.filters.project.clone(),
@@ -591,10 +663,13 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
         req.filters.since.clone(),
         req.filters.until.clone(),
     )
-    .map_err(|e| ServerError::from_core(&e))
+    .map_err(|e| ServerError::from_core(&e))?;
+    filters.generic = generic;
+    Ok(filters)
 }
 
-fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
+fn validate_request(req: &SearchRequest, surface: &Manifest) -> Result<(), ServerError> {
+    generic_filters(req, surface)?;
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -634,6 +709,16 @@ pub trait SearchEngine: Send + Sync {
         NO_SNAPSHOT_ID.to_string()
     }
 
+    /// The effective filter-surface manifest the next search
+    /// would serve under (#6228 Phase 4): the job manager binds
+    /// every cache key to its `(version, content_hash)`, so a
+    /// surface change invalidates coalescing and result reuse
+    /// exactly like a snapshot change. Engines with no manifest
+    /// surface report the built-in manifest.
+    fn surface_manifest(&self) -> Manifest {
+        builtin_manifest()
+    }
+
     fn search(
         &self,
         request: &SearchRequest,
@@ -651,6 +736,21 @@ pub trait SearchEngine: Send + Sync {
         neighbors: usize,
         ceiling: ProtoSensitivity,
     ) -> Result<Json, ServerError>;
+
+    /// Hydrate one content item by its canonical SHA-256 hash, under
+    /// the authenticated client's ceiling.
+    fn content_by_hash(
+        &self,
+        canonical_hash: &str,
+        ceiling: ProtoSensitivity,
+    ) -> Result<Json, ServerError> {
+        let _ = (canonical_hash, ceiling);
+        Err(ServerError::new(
+            404,
+            "chunk_not_found",
+            "content not found",
+        ))
+    }
 
     /// Embed one query text into the production query-vector
     /// space (#6788): the Cloudflare search Worker's miss path
@@ -772,8 +872,56 @@ where
         if !allowed || excluded {
             return Err(not_found());
         }
-        run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
-            .map_err(|e| ServerError::from_core(&e))
+        // The explicit-id gate keeps its documented form (a
+        // by-id lookup with no caller ceiling; the LocalOwner
+        // context applies, exactly like the Python), while the
+        // caller's actual ceiling is threaded through so the
+        // occurrence provenance is bounded by it — never by the
+        // destination context's standalone ceiling (P1: a
+        // personal-capped caller must not receive secret-tier
+        // source locators, and a personal-only service must not
+        // request a secret-tier fan-out).
+        run_get_chunk_with_context(
+            self.backend.as_ref(),
+            chunk_id,
+            neighbors,
+            DisclosureContext::LocalOwner,
+            core_sensitivity(ceiling),
+        )
+        .map_err(|e| ServerError::from_core(&e))
+    }
+
+    fn content_by_hash(
+        &self,
+        canonical_hash: &str,
+        ceiling: ProtoSensitivity,
+    ) -> Result<Json, ServerError> {
+        let ids = self
+            .backend
+            .chunk_ids_by_hash(canonical_hash)
+            .map_err(|e| ServerError::from_core(&e))?;
+        for chunk_id in ids {
+            match self.chunk(chunk_id, 0, ceiling) {
+                Ok(payload)
+                    if payload
+                        .get("text")
+                        .and_then(Json::as_str)
+                        .is_some_and(|text| {
+                            atlas_core::classify::sha256_hex(text.as_bytes()) == canonical_hash
+                        }) =>
+                {
+                    return Ok(payload);
+                }
+                Ok(_) => continue,
+                Err(error) if error.status == 404 => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(ServerError::new(
+            404,
+            "chunk_not_found",
+            "content not found",
+        ))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
@@ -786,6 +934,10 @@ where
         self.backend
             .snapshot_id()
             .unwrap_or_else(|| NO_SNAPSHOT_ID.to_string())
+    }
+
+    fn surface_manifest(&self) -> Manifest {
+        self.backend.manifest()
     }
 
     fn embedder_state(&self) -> String {
@@ -1022,6 +1174,18 @@ struct CacheKey {
     client: Vec<String>,
     since: Option<String>,
     until: Option<String>,
+    /// Generic dimension filters (#6228 Phase 3), in the
+    /// dimension map's sorted (BTreeMap) order: a request filtered
+    /// on a generic dimension never coalesces with one that is
+    /// not, exactly like the named filters above.
+    dimensions: Vec<(String, Vec<String>)>,
+    /// The effective filter surface's identity (#6228 Phase 4,
+    /// design note §7): `(manifest_version, content_hash)` of the
+    /// manifest the serving backend loaded. Entries computed
+    /// under a different surface never coalesce or serve, even on
+    /// the same corpus snapshot.
+    manifest_version: i64,
+    content_hash: String,
     effective_ceiling: ProtoSensitivity,
     /// The resolved disclosure context (#12404): cached and
     /// coalesced payloads are context-filtered, so the context
@@ -1035,6 +1199,7 @@ impl CacheKey {
         req: &SearchRequest,
         effective_ceiling: ProtoSensitivity,
         snapshot: &str,
+        surface: &Manifest,
     ) -> CacheKey {
         CacheKey {
             snapshot: snapshot.to_string(),
@@ -1072,6 +1237,14 @@ impl CacheKey {
             client: req.filters.client.clone(),
             since: req.filters.since.clone(),
             until: req.filters.until.clone(),
+            dimensions: req
+                .filters
+                .dimensions
+                .iter()
+                .map(|(name, values)| (name.clone(), values.clone()))
+                .collect(),
+            manifest_version: surface.version,
+            content_hash: surface.content_hash.clone(),
             effective_ceiling,
             context: request_context(req),
         }
@@ -1537,14 +1710,20 @@ impl JobManager {
         client: &ClientConfig,
         request: SearchRequest,
     ) -> Result<JobCreated, ServerError> {
-        validate_request(&request)?;
+        let surface = self.engine.surface_manifest();
+        validate_request(&request, &surface)?;
         let effective = request.ceiling.clamped_to(client.ceiling_cap);
         // Bind this submit to the corpus snapshot it would serve
         // from (#9943): the key — dedupe and result cache alike —
         // carries the snapshot, so nothing computed under another
         // snapshot can coalesce onto or answer this request.
         let snapshot = self.engine.snapshot_id();
-        let key = CacheKey::from_request(&request, effective, &snapshot);
+        // Bind this submit to the effective filter surface too
+        // (#6228 Phase 4): the key carries the loaded manifest's
+        // (version, content_hash), so a manifest change — a new
+        // generic dimension, a changed shape — can never be
+        // answered from entries computed under the old surface.
+        let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
         let now = Instant::now();
@@ -1661,7 +1840,7 @@ impl JobManager {
                     key: key.clone(),
                     owner_name: client.name.clone(),
                     request: request.clone(),
-                    filters: build_filters(request, effective)?,
+                    filters: build_filters(request, effective, &self.engine.surface_manifest())?,
                     effective_ceiling: effective,
                     demand: request.mode.branch_demand(),
                     submitted: now,
@@ -1705,7 +1884,7 @@ impl JobManager {
                 inner.queue.len(),
             ));
         }
-        let filters = build_filters(request, effective)?;
+        let filters = build_filters(request, effective, &self.engine.surface_manifest())?;
         let comp = Arc::new(Computation {
             id: new_job_id().map_err(|m| ServerError::new(500, "internal", m))?,
             key: key.clone(),
@@ -1998,6 +2177,14 @@ impl JobManager {
             .chunk(chunk_id, neighbors, job.computation.effective_ceiling)
     }
 
+    pub fn content_by_hash(
+        &self,
+        canonical_hash: &str,
+        ceiling: ProtoSensitivity,
+    ) -> Result<Json, ServerError> {
+        self.engine.content_by_hash(canonical_hash, ceiling)
+    }
+
     /// Embed one query through the engine's shared embedder
     /// (#6788). No job is created: the vector is a pure function
     /// of the text under the pinned model, and the caller (the
@@ -2248,6 +2435,22 @@ impl ServerInner {
                     }),
                 ))
             }
+            ("GET", ["v1", "content", canonical_hash]) => {
+                let client = self.require_client(req)?;
+                if canonical_hash.len() != 64
+                    || !canonical_hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(ServerError::bad_request(
+                        "content hash must be 64 lowercase hexadecimal characters",
+                    ));
+                }
+                let payload = self
+                    .manager
+                    .content_by_hash(canonical_hash, client.ceiling_cap)?;
+                Ok(HttpResponse::json(200, payload))
+            }
             ("POST", ["v1", "search"]) => {
                 let client = self.require_client(req)?;
                 let request: SearchRequest = req.json()?;
@@ -2475,6 +2678,21 @@ mod tests {
                 .collect())
         }
 
+        fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>, CoreError> {
+            Ok([1, 2, 3]
+                .into_iter()
+                .filter(|id| {
+                    let text = match id {
+                        1 => "alpha one",
+                        2 => "alpha two",
+                        3 => "secret canary",
+                        _ => unreachable!(),
+                    };
+                    atlas_core::classify::sha256_hex(text.as_bytes()) == canonical_hash
+                })
+                .collect())
+        }
+
         fn neighbors(
             &self,
             _message_id: &str,
@@ -2513,7 +2731,80 @@ mod tests {
             limits,
             shards: None,
             shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
+            source_registry: None,
         }
+    }
+
+    #[test]
+    fn content_by_hash_reuses_authorized_chunk_hydration_and_refuses_other_content() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let backend = Arc::new(StubBackend {
+            calls,
+            gate: None,
+            snapshot: None,
+        });
+        let engine = Arc::new(CoreSearchEngine::new(
+            backend,
+            Arc::new(FixedEmbedder {
+                raw: vec![1.0, 0.0],
+            }),
+            Arc::new(|| "ready".to_string()),
+        ));
+        let expected = engine
+            .chunk(1, 0, ProtoSensitivity::Personal)
+            .expect("authorized existing chunk hydration");
+        let handle = start_server(settings(RuntimeLimits::default()), engine).unwrap();
+        let hash = "447ddb49ae0e88206741f4e0d10b13711675bb523d438de9c21de83c81a3fff4";
+
+        let response = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{hash}"),
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, expected);
+
+        let withheld_hash = "694d870b635b9d2084a4b0c32b2303665545a4b90d4a8fbc7300bd4402aa6ab4";
+        let withheld = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{withheld_hash}"),
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(withheld.status, 404);
+        assert_eq!(withheld.body["error"]["code"], "chunk_not_found");
+        assert!(!withheld.body.to_string().contains("secret canary"));
+
+        let missing = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{}", "0".repeat(64)),
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(missing.status, 404);
+        assert_eq!(missing.body, withheld.body);
+
+        let malformed = http(
+            handle.addr,
+            "GET",
+            "/v1/content/not-a-sha256",
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(malformed.status, 400);
+
+        let unauthenticated = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{hash}"),
+            None,
+            None,
+        );
+        assert_eq!(unauthenticated.status, 401);
     }
 
     #[test]
@@ -2539,6 +2830,57 @@ mod tests {
             })
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
+        );
+    }
+
+    #[test]
+    fn service_config_source_registry_round_trips() {
+        // #3125 slice 7: `source_registry` in the service config
+        // lands on ServeSettings as a path; it requires `shards`
+        // (attribution rides the fan-out) and must not be empty.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-service-registry-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let wired = write(
+            "wired.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&wired, ServeOverrides::default()).unwrap();
+        assert_eq!(
+            settings.source_registry.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.db"))
+        );
+        let orphan = write(
+            "orphan.json",
+            &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&orphan, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry requires shards"),
+            "got: {err}"
+        );
+        let empty = write(
+            "empty.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
+            ),
+        );
+        let err = load_service_settings(&empty, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry path must not be empty"),
+            "got: {err}"
         );
     }
 
@@ -3681,6 +4023,27 @@ mod tests {
     }
 
     #[test]
+    fn search_rejects_generic_dimensions_before_backend_work() {
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "filters": { "dimensions": { "source-app": ["mail"] } }
+            }),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(
+            response.body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not supported")
+        );
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
     fn search_honors_and_dedupes_by_parameters() {
         // Oracle: the API contract flattens SearchParametersV1 onto the
         // request; effective controls reach branch execution and distinguish
@@ -3738,6 +4101,93 @@ mod tests {
             calls.lock().unwrap().len() > first_calls.len(),
             "different effective parameters must not reuse the first ranking"
         );
+    }
+
+    #[test]
+    fn cache_key_binds_manifest_surface_and_generic_dimensions() {
+        // #6228 Phase 3/4, oracle: key equality. Two submits that
+        // differ only in the effective manifest's (version,
+        // content_hash), or only in a generic dimension filter,
+        // must NOT share a cache key; identical surface + filters
+        // must share one.
+        let mut req = SearchRequest::default();
+        req.query = "alpha".to_string();
+        let builtin = builtin_manifest();
+        let base = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        let same = CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_eq!(base, same);
+
+        let mut other_surface = builtin.clone();
+        other_surface.version += 1;
+        other_surface.content_hash = other_surface.compute_hash();
+        let diff_surface =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &other_surface);
+        assert_ne!(base, diff_surface);
+
+        req.filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+        let diff_dimension =
+            CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_ne!(base, diff_dimension);
+    }
+
+    #[test]
+    fn generic_dimensions_unknown_to_the_surface_are_rejected() {
+        // #6228 Phase 3 slice 2: the built-in surface declares no
+        // generic_list dimension, so any nonempty generic dimension
+        // is unknown there and fails closed with a 400.
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+
+        let error =
+            build_filters(&request, ProtoSensitivity::Personal, &builtin_manifest()).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.body.error.code, "bad_request");
+        assert!(error.body.error.message.contains("not supported"));
+        assert!(error.body.error.message.contains("unknown dimension"));
+    }
+
+    #[test]
+    fn generic_list_dimension_declared_by_the_surface_is_applied() {
+        // #6228 Phase 3 slice 2, oracle: a manifest declaring
+        // `source_app` as generic_list/exact. A request filtering
+        // on it builds core Filters carrying exactly that generic
+        // filter (name, declared semantics, values); a declared
+        // non-generic_list dimension (kind/scalar_in) requested
+        // through the generic map is still a 400.
+        let mut surface = builtin_manifest();
+        surface.dimensions.push(atlas_core::manifest::Dimension {
+            name: "source_app".to_string(),
+            shape: atlas_core::manifest::Shape::GenericList,
+            semantics: atlas_core::manifest::Semantics::Exact,
+            label_column: None,
+        });
+        surface.content_hash = surface.compute_hash();
+
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .dimensions
+            .insert("source_app".to_string(), vec!["mail".to_string()]);
+        let filters = build_filters(&request, ProtoSensitivity::Personal, &surface)
+            .expect("declared generic_list dimension must build");
+        assert_eq!(filters.generic.len(), 1);
+        assert_eq!(filters.generic[0].name, "source_app");
+        assert_eq!(
+            filters.generic[0].semantics,
+            atlas_core::manifest::Semantics::Exact
+        );
+        assert_eq!(filters.generic[0].values, vec!["mail".to_string()]);
+
+        let mut bad = SearchRequest::default();
+        bad.filters
+            .dimensions
+            .insert("kind".to_string(), vec!["chat".to_string()]);
+        let error = build_filters(&bad, ProtoSensitivity::Personal, &surface).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert!(error.body.error.message.contains("not 'generic_list'"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------
@@ -4016,6 +4466,291 @@ mod tests {
             None,
         );
         assert_eq!(result_ids(&pq.body), vec![2]);
+    }
+    // ----- serve-path occurrence attribution (#3125 slice 8) --------
+
+    /// Fixture text whose canonical hash the shard below records.
+    const ATTRIBUTION_TEXT: &str = "dns shared block\n";
+    /// The occurrence's source locator; registered under the
+    /// `repo` root in the slice-8 catalog.
+    const ATTRIBUTION_SOURCE: &str = "repo@abc:infra/dns/a.yaml";
+    /// Chunk id served by the slice-8 monolith stub.
+    const ATTRIBUTION_CHUNK: i64 = 7;
+
+    /// One internal-tier fixture shard carrying a single
+    /// `chunk_occurrences` row for [`ATTRIBUTION_TEXT`]: the same
+    /// DDL the aggregator writes (mirrors the atlas-core
+    /// occurrences oracle fixture), so discovery and the shard
+    /// fan-out see a production-shaped shard.
+    fn attribution_fixture_shard(dir: &Path, hash: &str) -> PathBuf {
+        use atlas_core::DEFAULT_VEC_TABLE;
+        use atlas_core::shards::parse_shard_name;
+        let name = "atlas-core-internal-work-01";
+        let (tier, topic, part) = parse_shard_name(name).expect("shard name parses");
+        let path = dir.join(format!("{name}.db"));
+        let _ = std::fs::remove_file(&path);
+        let con = rusqlite::Connection::open(&path).expect("create shard");
+        con.execute_batch(&format!(
+            "CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, \
+               chunk_idx INTEGER, text TEXT NOT NULL, content_hash TEXT UNIQUE NOT NULL, \
+               sensitivity TEXT);
+             CREATE TABLE {DEFAULT_VEC_TABLE} (chunk_id INTEGER PRIMARY KEY, vec BLOB NOT NULL);
+             CREATE TABLE atlas_manifest (\"key\" TEXT PRIMARY KEY, value TEXT);"
+        ))
+        .expect("schema");
+        con.execute_batch(
+            "CREATE TABLE chunk_occurrences ( \
+               shard_chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE, \
+               canonical_hash TEXT NOT NULL, source TEXT NOT NULL, \
+               span_start INTEGER NOT NULL, span_end INTEGER NOT NULL, observed_at TEXT NOT NULL, \
+               PRIMARY KEY (shard_chunk_id, source, span_start)); \
+             CREATE INDEX chunk_occurrences_hash ON chunk_occurrences (canonical_hash);",
+        )
+        .expect("occurrence schema");
+        con.execute(
+            "INSERT INTO chunks VALUES (?1, 'm7', 0, ?2, 'h7', 'personal')",
+            rusqlite::params![ATTRIBUTION_CHUNK, ATTRIBUTION_TEXT],
+        )
+        .expect("chunk");
+        con.execute(
+            &format!("INSERT INTO {DEFAULT_VEC_TABLE} VALUES (?1, x'00000000')"),
+            rusqlite::params![ATTRIBUTION_CHUNK],
+        )
+        .expect("vec");
+        con.execute(
+            "INSERT INTO chunk_occurrences \
+             (shard_chunk_id, canonical_hash, source, span_start, span_end, observed_at) \
+             VALUES (?1, ?2, ?3, 0, 17, '2026-11-24T00:00:00Z')",
+            rusqlite::params![ATTRIBUTION_CHUNK, hash, ATTRIBUTION_SOURCE],
+        )
+        .expect("occurrence");
+        for (k, v) in [
+            ("shard", name.to_string()),
+            ("tier", tier.name().to_string()),
+            ("topic", topic),
+            ("part", part.to_string()),
+            ("expected_chunks", "1".to_string()),
+            ("metric", "cosine".to_string()),
+            (
+                "embedding_model",
+                atlas_core::shards::EMBEDDING_MODEL_ID.to_string(),
+            ),
+            ("engine", "tursodb".to_string()),
+        ] {
+            con.execute(
+                "INSERT OR REPLACE INTO atlas_manifest VALUES (?, ?)",
+                rusqlite::params![k, v],
+            )
+            .expect("manifest");
+        }
+        path
+    }
+
+    /// Discovery connector for the slice-8 fixture shards: local
+    /// files only, every tier admissible (mirrors the atlas-core
+    /// occurrences oracle connector).
+    struct AttributionConnector;
+    impl atlas_core::shards::ShardConnector for AttributionConnector {
+        fn can_open(&self, _tier: atlas_core::shards::Tier) -> bool {
+            true
+        }
+        fn connect(
+            &self,
+            ep: &atlas_core::shards::ShardEndpoint,
+            _tier: atlas_core::shards::Tier,
+        ) -> Result<std::sync::Arc<dyn atlas_core::shards::ShardTransport>, CoreError> {
+            use atlas_core::shards::ShardLocation;
+            let ShardLocation::File(p) = &ep.location else {
+                panic!("slice-8 fixtures are files");
+            };
+            Ok(std::sync::Arc::new(
+                atlas_core::shards::LocalShardTransport::open(p)?,
+            ))
+        }
+    }
+
+    /// Stands in for the wrapped monolith: serves the one chunk
+    /// detail whose text the fixture shard records, and no
+    /// branches (the slice-8 jobs run FTS-only, so the vector
+    /// branch — and the embedder — stay out of the proof).
+    struct AttributionMonolith;
+    impl SearchBackend for AttributionMonolith {
+        fn name(&self) -> &'static str {
+            "turso"
+        }
+        fn vec_table(&self) -> &str {
+            atlas_core::DEFAULT_VEC_TABLE
+        }
+        fn notes(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn branch_pools(&self, _q: &BranchQuery, _f: &Filters) -> Result<BranchPools, CoreError> {
+            Ok(BranchPools::default())
+        }
+        fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>, CoreError> {
+            Ok(ids
+                .iter()
+                .filter(|id| **id == ATTRIBUTION_CHUNK)
+                .map(|id| ChunkDetail {
+                    chunk_id: *id,
+                    text: ATTRIBUTION_TEXT.to_string(),
+                    chunk_idx: 0,
+                    message_id: "m7".to_string(),
+                    m_role: Some("user".to_string()),
+                    session_id: "s7".to_string(),
+                    s_title: None,
+                    s_client: None,
+                    s_created_at: None,
+                    l_kind: None,
+                    l_topics: None,
+                    l_projects: None,
+                    eff_sensitivity: Some("personal".to_string()),
+                })
+                .collect())
+        }
+        fn neighbors(
+            &self,
+            _message_id: &str,
+            _chunk_idx: i64,
+            _n: i64,
+        ) -> Result<Vec<NeighborRow>, CoreError> {
+            Ok(Vec::new())
+        }
+        fn message(&self, _message_id: &str) -> Result<Option<MessageRow>, CoreError> {
+            Ok(None)
+        }
+    }
+
+    /// Boot a serve over the fixture shards, with the catalog at
+    /// `registry_path` attached exactly the way the serve verb
+    /// attaches `--source-registry` (`open_source_registry` into
+    /// `with_source_registry`), or with no registry when `None`.
+    fn start_attribution_server(shard_dir: &Path, registry_path: Option<&Path>) -> ServerHandle {
+        use atlas_core::shards::scan::ShardedBackend;
+        use atlas_core::shards::{DirLister, DiscoveryOptions, Tier, TierCeiling, discover};
+        let set = std::sync::Arc::new(
+            discover(
+                &DirLister {
+                    dir: shard_dir.to_path_buf(),
+                },
+                &AttributionConnector,
+                &DiscoveryOptions::new(TierCeiling(Tier::Secret)),
+            )
+            .expect("discovery"),
+        );
+        let mut sharded = ShardedBackend::new(AttributionMonolith, set);
+        if let Some(path) = registry_path {
+            let conn =
+                atlas_core::source_registry::open_source_registry(path).expect("open registry");
+            sharded = sharded.with_source_registry(conn);
+        }
+        let engine = std::sync::Arc::new(CoreSearchEngine::new(
+            std::sync::Arc::new(sharded),
+            std::sync::Arc::new(FixedEmbedder { raw: vec![1.0] }),
+            std::sync::Arc::new(|| "ready".to_string()),
+        ));
+        start_server(settings(RuntimeLimits::default()), engine).expect("start server")
+    }
+
+    /// Submit an FTS-only job and wait it done, returning the
+    /// (job_id, job_token) capability for job-scoped routes.
+    fn attribution_job(addr: SocketAddr, token: &str) -> (String, String) {
+        let created = submit(
+            addr,
+            token,
+            json!({"query": "provisioned shared block", "mode": "fts"}),
+        );
+        assert_eq!(created.status, 202, "{}", created.body);
+        let job_id = created.body["job_id"].as_str().unwrap().to_string();
+        let job_token = created.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &job_id, &job_token);
+        (job_id, job_token)
+    }
+
+    #[test]
+    fn serve_path_carries_occurrence_attribution_over_the_wire() {
+        // #3125 slice 8: end-to-end serve-path proof. A booted
+        // serve (real HTTP over loopback, like every test in this
+        // module) whose shard fan-out carries a source registry
+        // returns get-chunk occurrence rows with `root_id` over
+        // the wire; the same serve without the registry returns
+        // the same rows unattributed — no `root_id` key at all.
+        // Oracle: slice 6's backend-layer contract, now observed
+        // through the served JSON instead of a direct call. The
+        // secret-bearing client admits the internal fixture shard.
+        let base =
+            std::env::temp_dir().join(format!("atlas-serve-attribution-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let shard_dir = base.join("shards");
+        std::fs::create_dir_all(&shard_dir).expect("shard dir");
+        let hash = atlas_core::classify::sha256_hex(ATTRIBUTION_TEXT.as_bytes());
+        attribution_fixture_shard(&shard_dir, &hash);
+
+        // The catalog: one root with one registered locator, built
+        // through the same `open_source_registry` entry point the
+        // serve verb uses for its source-registry path.
+        let catalog = base.join("catalog.db");
+        {
+            use atlas_core::source_registry::{register_locator, register_source_root};
+            let conn =
+                atlas_core::source_registry::open_source_registry(&catalog).expect("open catalog");
+            register_source_root(&conn, "repo", "repo@abc:", "2026-11-24T00:00:00Z").expect("root");
+            register_locator(&conn, "repo", ATTRIBUTION_SOURCE, "2026-11-24T00:00:00Z")
+                .expect("locator");
+        }
+
+        // Wired serve: the occurrence row carries `root_id`.
+        let wired = start_attribution_server(&shard_dir, Some(&catalog));
+        let (job_id, job_token) = attribution_job(wired.addr, SECRET_TOKEN);
+        let chunk = http(
+            wired.addr,
+            "GET",
+            &format!("/v1/search/jobs/{job_id}/chunk/{ATTRIBUTION_CHUNK}"),
+            Some(&job_token),
+            None,
+        );
+        assert_eq!(chunk.status, 200, "{}", chunk.body);
+        let occ = chunk
+            .body
+            .get("occurrences")
+            .and_then(|v| v.as_array())
+            .expect("occurrences present over the wire");
+        assert_eq!(occ.len(), 1, "one fixture row: {occ:?}");
+        assert_eq!(occ[0]["root_id"], json!("repo"), "row attributed: {occ:?}");
+        assert_eq!(occ[0]["source"], json!(ATTRIBUTION_SOURCE));
+        assert_eq!(occ[0]["shard"], json!("atlas-core-internal-work-01"));
+
+        // Unwired serve: the same row, unattributed — no
+        // `root_id` key anywhere in the served body.
+        let plain = start_attribution_server(&shard_dir, None);
+        let (job_id, job_token) = attribution_job(plain.addr, SECRET_TOKEN);
+        let chunk = http(
+            plain.addr,
+            "GET",
+            &format!("/v1/search/jobs/{job_id}/chunk/{ATTRIBUTION_CHUNK}"),
+            Some(&job_token),
+            None,
+        );
+        assert_eq!(chunk.status, 200, "{}", chunk.body);
+        let occ = chunk
+            .body
+            .get("occurrences")
+            .and_then(|v| v.as_array())
+            .expect("occurrences present without a registry");
+        assert_eq!(occ.len(), 1, "same row, unattributed: {occ:?}");
+        assert_eq!(occ[0]["source"], json!(ATTRIBUTION_SOURCE));
+        assert!(
+            occ[0].get("root_id").is_none(),
+            "no attribution without a registry: {occ:?}"
+        );
+        assert!(
+            !serde_json::to_string(&chunk.body)
+                .unwrap()
+                .contains("root_id"),
+            "wire shape unchanged without a registry"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
     }
     #[test]
     fn parse_cursor_refuses_malformed_input_without_panicking() {

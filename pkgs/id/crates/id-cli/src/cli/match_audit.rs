@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 /// Subcommands for `id match-audit`.
-#[cfg(feature = "sandbox")]
 #[derive(Subcommand, Debug)]
 pub enum MatchAuditCommand {
     /// Export a reference tic-tac-toe transcript using synthetic demo keys.

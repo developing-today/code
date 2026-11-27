@@ -1,8 +1,10 @@
 # fleet — the multicall fleet binary
 
+[Program charter](../../doc/2026-11-23T18-00-00Z_design_fleet_program/charter.md) · [R&D book](book/research/overview.md) · [Implementation plan](book/research/roadmap.md)
+
 One Rust binary for the whole fleet surface (epic
 developing-today/code#5412; design note
-`doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/`). This
+`../../doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md`). This
 workspace began as the step-1 (#5429) skeleton: the registry,
 config, secrets-by-name and proxy-protocol platform crates. Step 2
 (#5430) landed the queue domain — the repo-queue client and the
@@ -132,13 +134,13 @@ crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             egress (sandbox seat).
 crates/fleet/               the binary: multicall dispatch, capability
                             stubs, `version`, `capabilities`, help.
-default.nix                 the four variant packages (see below)
+default.nix                 the six variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
 ## Session identity in worktrees (#9075)
 
-`fleet session bind [--session-id ID]` is the explicit, validated boundary for
+`fleet session bind [--session-id ID] [--force]` is the explicit, validated boundary for
 binding an identity. It resolves the explicit value, then `FLEET_SESSION_ID`,
 then `OPENCODE_SESSION_ID`, then the worktree's plain-text `.fleet-session-id`.
 The OpenCode session plugin exports its session ID as `FLEET_SESSION_ID` to
@@ -152,7 +154,10 @@ runtime marker. A recovered marker is accepted only when the local OpenCode
 server returns a matching, non-archived session record; the check uses
 `OPENCODE_URL`, then `OPENCODE_SERVER_URL`, and the OpenCode Basic-auth password
 from `OPENCODE_AUTH_FILE` or `~/.local/state/opencode/service-prod.json`. An
-ended or unverifiable marker fails closed. A malformed nonempty session ID in
+ended or unverifiable marker fails closed. `fleet session bind --force` removes
+the marker without validating it, so a dead binding can be replaced in place
+from inside the worktree (#14454); a supplied or inherited identity is then
+persisted by the normal path. A malformed nonempty session ID in
 either environment variable also fails closed for supported Fleet invocations;
 clear or correct that variable to resume unrelated commands.
 `fleet init` validates help and extra arguments before session resolution, and
@@ -231,6 +236,13 @@ own release.
 5. **Deploy truth.** What a target runs is read from the deployed
    binary's own `Derived version:` line, never from paperwork
    (that read is the #5760 deployed-state check's input).
+6. **Who cuts them.** The workflow of record is the release-workflow
+   design record (`doc/2026-11-23T13-09-25Z_design_release-workflow-per-app-tags/`):
+   releases are cut only by `deploy release <app>` (pkgs/deploy,
+   #13306), which attests the main-gate for the tagged commit in the
+   tag's `release-attestation:v1` block, records the release in the
+   deploy ledger, and refuses a release-claiming deploy with no
+   attested tag behind it.
 
 ## Variants
 
@@ -297,13 +309,28 @@ and every build compiles it, so no build can know a domain another
 build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
-`fleet shell`, `fleet search` and `fleet laptop-agent`, plus the
+`fleet shell`, `fleet search`, `fleet laptop-agent`, `fleet cert`,
+`fleet actions`, `fleet host`, `fleet orgs`, `fleet kv` and `fleet id`, and the
+laptop route forms (#13717): `fleet laptop` (tier T0, the generic
+tiered command), `fleet commander` (T1), `fleet http` (T2) and
+`fleet ssh` (T3), plus the
 built-ins `fleet init`, `fleet session`, `fleet version`,
 `fleet capabilities` and `fleet help`.
 
 The per-domain `subcommands` arrays are the top-level command inventory rendered by `fleet <domain> --help`. The argument grammar and nested leaves live in the domain handlers and are documented in [`docs/verbs.md`](docs/verbs.md). That reference covers all shipped Fleet domains, top-level verbs, nested queue and agent commands, and where to ask a leaf for exact usage.
 
 The queue client dispatches 32 top-level verbs, including `show`; grouped surfaces (`fallback`, `dispatch`, `session`, `surfaces`, `outbox`, and `stack`) document their nested commands and flags in the same reference. Before scripting an unfamiliar command, check `fleet capabilities` and the leaf's `--help`.
+The same contract covers the book. [`book/`](book/) (mdBook sources,
+`book.toml` at this package's root) is the complete, self-contained
+reference for the binary — every domain, subcommand, flag, default and
+operational procedure — and any change to a command, flag, default,
+capability, surface or procedure updates the matching chapter in the
+same change. The rule is recorded for agents in
+[`doc/agents/documentation.md`](doc/agents/documentation.md) and in
+the book's own "Keeping this book current" chapter. The book builds
+with `nix build .#fleet-docs`; `create-missing = false` in
+`book.toml` makes a missing chapter a build failure, never a stub.
+
 Shipped examples — every verb below is dispatchable today:
 
 ```sh
@@ -423,6 +450,17 @@ requires a decision record in the same body of work — see
   a decision record in the same body of work** — the same PR, or the
   same run for non-PR work. See
   [the rule](../../doc/decisions/README.md#5-same-body-of-work).
+
+## Fleet program
+
+The fleet program — full investigation of the fleet system, design completion,
+and new designs toward a fully featured platform — is chartered by the
+[Fleet program investigation & build-out prompt](../../doc/2026-11-23T12-45-06Z_design_fleet_program_investigation/2026-11-23T12-45-06Z_design_fleet_program_investigation.md),
+tracked in [#13272](https://github.com/developing-today/code/issues/13272).
+Read the [Fleet charter](../../doc/2026-11-23T12-45-06Z_design_fleet_program_investigation/charter.md),
+the [research and implementation roadmap](book/development/program-roadmap.md),
+and the [open issue and dependency map](book/operations/program-issue-map.md).
+The design series is published in the existing [Fleet book](https://developing-today.github.io/code/fleet/).
 
 ## Build and smoke
 

@@ -16,7 +16,10 @@
 #             into ~/.local/share/muse-bootstrap/bin, sha256-checked
 #   token     BWS and optional 1Password service-account tokens into
 #             ~/.config/bitwarden/access-token and ~/.config/op/service-account-token
-#             (600), read from stdin or hidden prompts, never argv
+#             (600), read from stdin or hidden prompts, never argv; plus the
+#             three shared broker tokens from the BWS fleet.* names into
+#             ~/tools/{secrets-broker,queue-broker,laptop-agent}-token (600),
+#             so a fresh seat's secrets/queue/shell legs work (#12898)
 #   restore   ~/.config from restic-sandbox-config, then every top-level
 #             home entry from restic-sandbox-home (latest snapshot per
 #             entry; ~/git and ~/agents only with --all)
@@ -30,15 +33,15 @@
 #             fleet linked (only /home/hatch survives a recycle)
 #   init      run the restored ~/tools/init.sh (units, services)
 #   check     fleet version/capabilities, laptop link, secrets broker,
-#             bridge hello as agent "muse" (group muse)
+#             bridge hello as the enrolling agent (its own groups, #12897)
 #
 # Secrets are fetched by name and never printed, logged or put in argv.
 # Exit: 0 ok, 1 a phase failed (the message names it), 2 usage.
 set -euo pipefail
 
 # ---- pinned artifacts (update together; sha256 of the downloaded file) ----
-FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-ad0707b/fleet-x86_64-linux-musl}"
-FLEET_SHA256="${FLEET_SHA256:-762bac6318329f202e47f8aeb7727cf6351e22ca93c278fd4d95377febcfa5f2}"
+FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-74eee89/fleet-x86_64-linux-musl}"
+FLEET_SHA256="${FLEET_SHA256:-27eedcf9e0d6a1c251d6bc9ddf41212747f47cbce6d0cfe2cf96ea820708085d}"
 BWS_URL="https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-musl-2.1.0.zip"
 BWS_SHA256="f59ee150e42b82128d437087e9bac920053c6bfddcb960d20ce9386e5ac9bba6"
 RESTIC_URL="https://github.com/restic/restic/releases/download/v0.20.0/restic_0.20.0_linux_amd64.bz2"
@@ -52,6 +55,7 @@ LAPTOP_TAILNET_IP=100.99.113.103
 AGENT="${FLEET_AGENT:-muse}"
 AGENT_WAS_EXPLICIT=0
 [ "${FLEET_AGENT+x}" = x ] && AGENT_WAS_EXPLICIT=1
+AGENT_GROUPS="${FLEET_AGENT_GROUPS:-}"
 TS_HOSTNAME_OVERRIDE="${TS_HOSTNAME:-}"
 TS_STATE_OVERRIDE="${TS_STATE:-}"
 
@@ -282,6 +286,50 @@ if want token; then
   say "token: stored and verified"
 fi
 
+# The three shared broker token files a seat's fleet client verbs read
+# (#12898): the secrets broker's client token (fleet secrets), the queue
+# broker's (fleet queue) and the laptop agent's (fleet laptop-agent, and the
+# session broker's default). BWS is the source of truth: the fleet.* names
+# were published from the laptop's server files on 2026-11-22. Before this,
+# only the muse seat had the files, by accident of the home restore, and a
+# fresh non-muse seat had no provisioning path at all. Fetch by name, write
+# 0600, never print. A name the seat's BWS token cannot see is a warning,
+# not a failure: the enrollment continues and the check phase names the
+# legs that stay down.
+provision_broker_token() { # provision_broker_token BWS_NAME DEST
+  local name=$1 dest=$2 value
+  value=$(bws secret list -o json 2>/dev/null | python3 -c '
+import json, sys
+name = sys.argv[1]
+for s in json.load(sys.stdin):
+    if s.get("key") == name:
+        sys.stdout.write(s.get("value", "")); sys.exit(0)
+sys.exit(1)' "$name") || {
+    say "token: BWS secret $name not visible to this seat; $dest not provisioned"
+    return 0
+  }
+  # The published values are the laptop files byte-for-byte; the files are
+  # one token per line, so normalize whitespace the same way store_token
+  # does and write exactly one trailing newline.
+  value=$(printf '%s' "$value" | tr -d '[:space:]')
+  [ -n "$value" ] || {
+    say "token: BWS secret $name is empty; $dest not provisioned"
+    return 0
+  }
+  mkdir -p "$(dirname "$dest")"
+  (
+    umask 077
+    printf '%s\n' "$value" >"$dest.tmp"
+  ) && mv -f "$dest.tmp" "$dest"
+  chmod 600 "$dest"
+  say "token: provisioned $dest from BWS $name"
+}
+if want token; then
+  provision_broker_token fleet.secrets-broker-token "$HOME/tools/secrets-broker-token"
+  provision_broker_token fleet.queue-broker-token "$HOME/tools/queue-broker-token"
+  provision_broker_token fleet.laptop-agent-token "$HOME/tools/laptop-agent-token"
+fi
+
 # ---- restore ----
 restic_env() { # restic_env REPO PASSWORD_SECRET
   AWS_ACCESS_KEY_ID=$(secret cloudflare.r2-backups-access-key-id)
@@ -399,6 +447,12 @@ elif want tailnet; then
     # have under load.
     RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
     [ "$RECORDED_MODE" = userspace ] && MODE=userspace
+    # tailscaled must not inherit the sandbox egress proxy: it TLS-intercepts
+    # the control plane and the re-issued register requests are rejected
+    # (seat fix, 2026-11-21/22; ported from the installed muse-bootstrap.sh).
+    # Strip the proxy vars for the daemon only; fleet keeps using
+    # tailscaled's local CONNECT proxy in userspace mode.
+    TS_ENV=(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY)
     ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
       python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     ts_alive() { pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; }
@@ -413,7 +467,7 @@ elif want tailnet; then
     }
     ts_start_userspace() {
       ts_fresh_start
-      setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
+      "${TS_ENV[@]}" setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
     }
@@ -421,7 +475,7 @@ elif want tailnet; then
       MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
     elif [ "$MODE" = kernel ]; then
       ts_fresh_start
-      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
+      $SUDO "${TS_ENV[@]}" setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
       # The probe can pick kernel where creating the TUN interface is
       # still forbidden (#12427): the daemon then exits during engine
@@ -599,6 +653,62 @@ PY
     chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
     say "persist: hooked ~/tools/muse-boot.sh into ~/tools/init.sh"
   fi
+  # Deploy-target unit restorer (code#5770, design §4.4): sandbox
+  # deploy targets keep their generations and the activated-targets
+  # manifest in the persistent home; /etc/systemd/system does not
+  # survive a recycle. Install the standalone restorer next to the
+  # other tools and hook it into init.sh the same way as
+  # muse-boot.sh, so every boot re-links the activated targets'
+  # rendered units generically — one restorer instead of a bespoke
+  # install block per service family. The bespoke quota-recorder
+  # block in a restored init.sh is retired in the same pass: the
+  # restorer is hooked right after the shebang, ahead of the family
+  # blocks, and quota-recorder is the first migrated target.
+  RESTORE_SRC=""
+  [ -n "$SELF" ] && RESTORE_SRC="$(dirname "$SELF")/../../pkgs/deploy/restore.py"
+  if [ -n "$RESTORE_SRC" ] && [ -f "$RESTORE_SRC" ]; then
+    if ! cmp -s "$RESTORE_SRC" "$HOME/tools/deploy-restore.py" 2>/dev/null; then
+      install -m 755 "$RESTORE_SRC" "$HOME/tools/deploy-restore.py"
+      say "persist: installed ~/tools/deploy-restore.py (deploy-target unit restorer, code#5770)"
+    fi
+    if ! grep -q 'deploy-restore.py' "$INIT"; then
+      python3 - "$INIT" "$HOME/tools/deploy-restore.py" <<'PY'
+import sys
+p, tool = sys.argv[1], sys.argv[2]
+lines = open(p).read().splitlines(keepends=True)
+hook = ('# muse-bootstrap: restore deploy-target units after a recycle (scripts/muse/bootstrap.sh, code#5770)\n'
+        f'[ -x {tool} ] && {{ {tool} || true; }}\n')
+at = 1 if lines and lines[0].startswith("#!") else 0
+lines.insert(at, hook)
+open(p + ".tmp", "w").write("".join(lines))
+PY
+      chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
+      say "persist: hooked ~/tools/deploy-restore.py into ~/tools/init.sh"
+    fi
+    # Retire the bespoke quota-recorder block: the generic restorer
+    # replaces it. Anchored on the block's own header comment; when
+    # the markers are absent init.sh is left untouched.
+    if python3 - "$INIT" <<'PY'
+import sys
+p = sys.argv[1]
+lines = open(p).read().splitlines(keepends=True)
+start = next((i for i, l in enumerate(lines)
+              if "Quota recorder: reinstall systemd units if missing" in l), None)
+if start is None:
+    sys.exit(1)
+end = next((i for i in range(start, len(lines)) if lines[i].rstrip() == "fi"), None)
+if end is None:
+    sys.exit(1)
+del lines[start:end + 1]
+open(p + ".tmp", "w").write("".join(lines))
+PY
+    then
+      chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
+      say "persist: retired the bespoke quota-recorder block in ~/tools/init.sh (generic restorer replaces it, code#5770)"
+    fi
+  else
+    say "persist: pkgs/deploy/restore.py not found next to this script; deploy-restore install skipped"
+  fi
   say "persist: a restart brings back the tailnet and fleet from ~/tools/muse-bootstrap.sh (log ~/logs/muse-boot.log)"
 fi
 
@@ -655,15 +765,37 @@ except OSError:
   if command -v op >/dev/null 2>&1 && [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] &&
     OP_SERVICE_ACCOUNT_TOKEN="$OP_SERVICE_ACCOUNT_TOKEN" op whoami >/dev/null 2>&1; then
     say "check: 1Password CLI and service account answer"
+  elif ! want restore; then
+    # Restore was skipped (--skip restore, or --only without restore):
+    # op comes back with ~/tools in that phase, so its absence on this
+    # seat is expected, not a failure (#13048).
+    say "check: 1Password CLI/token not verified, but the restore phase was skipped, so op is not expected on this seat yet (warning only)"
   else
     say "check: 1Password CLI/token did not verify (op is restored from ~/tools or login data is missing)"
     rc=1
   fi
-  if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
-    say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
+  # Bridge registration probe (#12897): use the enrolling agent's own
+  # groups when the caller supplies them (FLEET_AGENT_GROUPS); with
+  # none supplied, hello without --groups -- the bridge registers a
+  # new agent group-less and leaves an existing agent's groups
+  # untouched. Never hardcode another kind's group here: `fleet agent
+  # enroll` is the step that owns group assignment.
+  # Both bridge calls are time-bounded (#13045): hello depends on the
+  # session broker in practice, so with init skipped (or a stale broker
+  # socket) an unbounded hello hangs check forever instead of reaching
+  # the named failure below. A timeout lands in the same else branch.
+  bridge_hello=(timeout 30 fleet bridge hello --agent "$AGENT")
+  [ -n "$AGENT_GROUPS" ] && bridge_hello+=(--groups "$AGENT_GROUPS")
+  if "${bridge_hello[@]}" >/dev/null 2>&1; then
+    say "check: bridge hello as $AGENT ok; unread commands: $(timeout 30 fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else
     say "check: bridge hello failed"
     rc=1
+  fi
+  # Informational only (never fails the check): the first sandbox
+  # deploy target's state after this rebuild (code#5770).
+  if [ -f "$HOME/.local/state/deploy/sandbox-manifest.json" ]; then
+    if systemctl is-active --quiet quota-recorder.timer 2>/dev/null; then say "check: quota-recorder timer active (deploy target, code#5770)"; else say "check: quota-recorder timer not active yet (the restorer runs from init.sh on boot)"; fi
   fi
   [ "$rc" = 0 ] || die "check: see the lines above"
   say "check: all good"

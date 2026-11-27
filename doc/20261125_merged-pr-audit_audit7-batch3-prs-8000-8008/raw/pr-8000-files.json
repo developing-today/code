@@ -1,0 +1,14 @@
+[
+  {
+    "sha": "f1cf806c1fd585ab5bf028e73bbf811cfe619047",
+    "filename": "infra/talos/01b.us/save-secrets.sh",
+    "status": "modified",
+    "additions": 19,
+    "deletions": 3,
+    "changes": 22,
+    "blob_url": "https://github.com/developing-today/code/blob/d1636bbd4833597f00cc44019dae44b846f19e47/infra%2Ftalos%2F01b.us%2Fsave-secrets.sh",
+    "raw_url": "https://github.com/developing-today/code/raw/d1636bbd4833597f00cc44019dae44b846f19e47/infra%2Ftalos%2F01b.us%2Fsave-secrets.sh",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/infra%2Ftalos%2F01b.us%2Fsave-secrets.sh?ref=d1636bbd4833597f00cc44019dae44b846f19e47",
+    "patch": "@@ -1,4 +1,20 @@\n #!/usr/bin/env bash\n-tar czf - ./secrets | base64 >secrets.tmp\n-sops --encrypt secrets.tmp >secrets.enc\n-rm secrets.tmp\n+set -Eeuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail\n+\n+# Encrypt to temp files in this directory and atomically rename over\n+# secrets.enc only after sops exits 0 with non-empty output, so a failed\n+# encryption leaves the previous secrets.enc byte-identical (#6554).\n+plaintext_tmp=\"$(mktemp secrets.tmp.XXXXXX)\"\n+cipher_tmp=\"$(mktemp secrets.enc.tmp.XXXXXX)\"\n+cleanup() {\n+  rm -f \"$plaintext_tmp\" \"$cipher_tmp\" secrets.tmp\n+}\n+trap cleanup EXIT\n+\n+tar czf - ./secrets | base64 >\"$plaintext_tmp\"\n+sops --encrypt \"$plaintext_tmp\" >\"$cipher_tmp\"\n+if [ ! -s \"$cipher_tmp\" ]; then\n+  echo \"save-secrets: sops produced empty output; leaving secrets.enc untouched\" >&2\n+  exit 1\n+fi\n+mv -- \"$cipher_tmp\" secrets.enc"
+  }
+]

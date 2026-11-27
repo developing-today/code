@@ -191,8 +191,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// key. The configured upstream key stands; otherwise the daemon token
 	// would be forwarded to the provider (and the provider key would fail
 	// the gate). Unset, a caller-supplied header still selects the key,
-	// exactly as before.
-	if authHdr := r.Header.Get("Authorization"); authHdr != "" && BearerToken(s.set) == "" {
+	// exactly as before. A header the gate resolved to a daemon key
+	// (#13659) is the daemon's credential too and is never forwarded.
+	_, keyed := KeyIdentityFrom(r.Context())
+	if authHdr := r.Header.Get("Authorization"); authHdr != "" && BearerToken(s.set) == "" && !keyed {
 		apiKey = strings.TrimPrefix(authHdr, "Bearer ")
 	}
 
@@ -242,12 +244,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if fb := s.reg.FeedbackStore(); fb != nil {
 		outStr := fmt.Sprintf("mcpx reverse proxy: semantically injected %d tools for query %q.", len(discovered), query)
 		_ = fb.RecordInteraction(logstore.InteractionRecord{
-			TraceID:   turnID,
-			Timestamp: time.Now(),
-			Source:    "proxy",
-			Input:     query,
-			Output:    outStr,
-			ToolsUsed: toolNames,
+			TraceID:      turnID,
+			Timestamp:    time.Now(),
+			Source:       "proxy",
+			Input:        query,
+			Output:       outStr,
+			ToolsOffered: toolNames,
 		})
 	}
 
@@ -302,12 +304,12 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, upstrea
 
 	if fb := s.reg.FeedbackStore(); fb != nil {
 		_ = fb.RecordInteraction(logstore.InteractionRecord{
-			TraceID:   turnID,
-			Timestamp: time.Now(),
-			Source:    "proxy",
-			Input:     query,
-			Output:    buf.String(),
-			ToolsUsed: toolNames,
+			TraceID:      turnID,
+			Timestamp:    time.Now(),
+			Source:       "proxy",
+			Input:        query,
+			Output:       buf.String(),
+			ToolsOffered: toolNames,
 		})
 	}
 }

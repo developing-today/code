@@ -2,6 +2,24 @@
 //!
 //! The API transport is deliberately injected by callers. In particular, a
 //! bearer token is never accepted by or serialized from [`Manifest`].
+//!
+//! Slice 2 (page/block core, link rewriting, files) lives in [`content`].
+//! Slice 4 comment claims (§2.4) live in [`comments`].
+//! Slice 3 (databases: note identity and per-data-source schema claims)
+//! lives in [`databases`].
+//! Slice 3 remainder (row notes, property claims, relations) lives in
+//! [`rows`].
+//! Slice 4 export reader (§2.5: Markdown+CSV archive, match ledger) lives
+//! in [`export`]; export-only degraded mode (§2.5) lives in
+//! [`export_only`].
+
+pub mod comments;
+pub mod content;
+pub mod databases;
+pub mod export;
+pub mod export_only;
+pub mod reimport;
+pub mod rows;
 
 #[cfg(unix)]
 use std::fs::File;
@@ -41,6 +59,18 @@ pub trait NotionApi {
     ) -> Result<serde_json::Value>;
     /// Return whether the comments endpoint can be queried for this page.
     fn comments_available(&mut self, page_id: &str) -> Result<bool>;
+    /// Fetch one page of comments for a page (`GET /v1/comments`).
+    /// Only called for pages whose [`NotionApi::comments_available`]
+    /// returned `true`. The default returns an empty list, so transports
+    /// and test doubles that predate slice 4 keep compiling; a real
+    /// transport must override it.
+    fn comments(
+        &mut self,
+        _page_id: &str,
+        _start_cursor: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({"object":"list","results":[],"has_more":false}))
+    }
     /// Return the top-level IDs visible to this integration.
     fn visible_share_ids(&self) -> Vec<String>;
     /// Return the workspace edition when the transport can determine it.
@@ -292,7 +322,7 @@ fn crawl_pending_blocks(
     Ok(())
 }
 
-fn crawl_pages(
+pub(crate) fn crawl_pages(
     mut fetch: impl FnMut(Option<&str>) -> Result<serde_json::Value>,
 ) -> Result<Vec<serde_json::Value>> {
     let mut pages = Vec::new();
@@ -540,6 +570,15 @@ pub struct ObjectProgress {
     pub reason: Option<String>,
 }
 
+/// One fetched source file's blob identity (design §4). The blob itself is
+/// content-addressed by the model's `raw-blake3-256` profile: the lowercase
+/// hex BLAKE3-256 digest of the exact bytes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FileBlobRecord {
+    pub blob_hash: String,
+    pub size_bytes: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Manifest {
     pub schema_version: u32,
@@ -550,14 +589,83 @@ pub struct Manifest {
     pub inventory: Inventory,
     /// Stable Notion page UUID -> destination note UUID.
     pub page_id_to_note_id: BTreeMap<String, String>,
+    /// Stable Notion database UUID -> destination note UUID. Assigned by
+    /// [`Manifest::assign_database_identities`]; absent from slice-1/2
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub database_id_to_note_id: BTreeMap<String, String>,
     /// Stable Notion block UUID -> (destination note UUID, block identity).
     pub block_id_to_identity: BTreeMap<String, (String, String)>,
     /// Stable data-source UUID -> (current database UUID, source identity).
     pub data_source_id_to_identity: BTreeMap<String, (String, String)>,
+    /// Source file occurrence -> fetched blob (design §4). The key is the
+    /// UUID of the block carrying the file; duplicate bytes share one
+    /// `blob_hash` across occurrences. Absent from slice-1 manifests, so it
+    /// defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub file_blobs: BTreeMap<String, FileBlobRecord>,
+    /// Page UUID -> its comment claims (§2.4), recorded by
+    /// [`comments::convert_comments`]. Absent from pre-slice-4
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub comment_claims: BTreeMap<String, Vec<crate::comments::CommentClaim>>,
+    /// Page UUID -> whether the acquisition path could see the page's
+    /// comments (§2.4). A page present here has had its comments
+    /// converted (possibly to zero claims); a page absent here has not.
+    /// Absent from pre-slice-4 manifests, so it defaults empty.
+    #[serde(default)]
+    pub comments_coverage: BTreeMap<String, crate::comments::CommentsCoverage>,
+    /// Row page UUID -> its row conversion record (§2.2), recorded by
+    /// [`rows::convert_row`]. Absent from pre-slice-3-remainder
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub row_records: BTreeMap<String, crate::rows::RowConversion>,
+    /// Versioned per-data-source schema claims. Superseded claims remain as
+    /// provenance when a source moves or changes schema (§6.1).
+    #[serde(default)]
+    pub schema_claim_history: Vec<crate::databases::SchemaClaimRecord>,
+    /// Data-source parent changes observed during re-import (§6.1).
+    #[serde(default)]
+    pub moved_data_sources: Vec<crate::reimport::MovedDataSource>,
+    /// Page UUID -> its degradation ledger (slice 4 design record §2.4,
+    /// §2.6), recorded by [`content::convert_page`]. Absent from
+    /// pre-slice-4 manifests, so it defaults empty when an older
+    /// manifest is loaded.
+    #[serde(default)]
+    pub page_losses: BTreeMap<String, crate::content::LossLedger>,
+    /// Export path -> how that export file matched the API inventory
+    /// (design §2.5/§2.6). Every uncertain match is named here. Absent from
+    /// pre-export manifests, so it defaults empty.
+    #[serde(default)]
+    pub export_matches: BTreeMap<String, crate::export::ExportMatch>,
+    /// Which acquisition front ends fed this manifest (design §2.6).
+    /// Additive: absent from older manifests, so it defaults to all false.
+    #[serde(default)]
+    pub acquisition: Acquisition,
+    /// Degraded mode only (design §2.5): page UUID -> the weaker identity
+    /// its `page_id_to_note_id` key carries. Every key of
+    /// `page_id_to_note_id` that appears here is a degraded key. Absent
+    /// from older manifests, so it defaults empty.
+    #[serde(default)]
+    pub degraded_identities: BTreeMap<String, crate::export_only::DegradedIdentity>,
+    /// Page UUID -> why its comments were not imported, for pages whose
+    /// `comments_coverage` is unavailable for a known reason (an
+    /// export-only run records `export-path`). Defaults empty.
+    #[serde(default)]
+    pub comments_uncovered_reasons: BTreeMap<String, String>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
     pub objects: BTreeMap<String, ObjectProgress>,
+}
+
+/// Acquisition header (design §2.6): which front ends supplied content and
+/// whether the run fell back to export-only degraded mode.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Acquisition {
+    pub api: bool,
+    pub export: bool,
+    pub degraded_mode: bool,
 }
 
 impl Manifest {
@@ -587,6 +695,11 @@ impl Manifest {
                 })
             })
             .collect();
+        let acquisition = Acquisition {
+            api: acquisition_paths.iter().any(|path| path == "api"),
+            export: acquisition_paths.iter().any(|path| path == "export"),
+            degraded_mode: false,
+        };
         Ok(Self {
             schema_version: 1,
             workspace_id,
@@ -609,9 +722,108 @@ impl Manifest {
                 .collect(),
             inventory,
             page_id_to_note_id: BTreeMap::new(),
+            database_id_to_note_id: BTreeMap::new(),
             block_id_to_identity: BTreeMap::new(),
             data_source_id_to_identity,
+            file_blobs: BTreeMap::new(),
+            comment_claims: BTreeMap::new(),
+            comments_coverage: BTreeMap::new(),
+            row_records: BTreeMap::new(),
+            schema_claim_history: Vec::new(),
+            moved_data_sources: Vec::new(),
+            page_losses: BTreeMap::new(),
+            export_matches: BTreeMap::new(),
+            acquisition,
+            degraded_identities: BTreeMap::new(),
+            comments_uncovered_reasons: BTreeMap::new(),
         })
+    }
+
+    /// Assign a destination note ID to every inventoried page that lacks
+    /// one (design §3: identity is assigned for the whole inventory before
+    /// any content converts, so forward references resolve). Assignments
+    /// already recorded are never changed — that stability is what makes
+    /// re-import idempotent (§6.1) — and a minter that returns an empty or
+    /// already-used ID fails the pass rather than forking identity.
+    /// Returns how many pages were newly assigned.
+    pub fn assign_page_identities(
+        &mut self,
+        mint: &mut dyn FnMut(&str) -> Result<String>,
+    ) -> Result<usize> {
+        let page_ids: Vec<String> = self
+            .inventory
+            .objects
+            .values()
+            .filter(|object| object.kind == "page")
+            .map(|object| object.id.clone())
+            .collect();
+        let mut taken: std::collections::BTreeSet<String> = self
+            .page_id_to_note_id
+            .values()
+            .cloned()
+            .chain(self.database_id_to_note_id.values().cloned())
+            .collect();
+        let mut assigned = 0;
+        for page_id in page_ids {
+            if self.page_id_to_note_id.contains_key(&page_id) {
+                continue;
+            }
+            let note_id =
+                mint(&page_id).with_context(|| format!("mint note id for page {page_id}"))?;
+            if note_id.trim().is_empty() {
+                bail!("note id minter returned an empty id for page {page_id}");
+            }
+            if !taken.insert(note_id.clone()) {
+                bail!("note id minter returned duplicate id {note_id}");
+            }
+            self.page_id_to_note_id.insert(page_id, note_id);
+            assigned += 1;
+        }
+        Ok(assigned)
+    }
+
+    /// Assign a destination note ID to every inventoried database that
+    /// lacks one (design §2.2: one note per database; §3: identity is
+    /// assigned for the whole inventory before any content converts, so
+    /// forward references resolve). Mirrors
+    /// [`Manifest::assign_page_identities`]: assignments already recorded
+    /// are never changed, and a minter that returns an empty or
+    /// already-used ID fails the pass rather than forking identity.
+    /// Returns how many databases were newly assigned.
+    pub fn assign_database_identities(
+        &mut self,
+        mint: &mut dyn FnMut(&str) -> Result<String>,
+    ) -> Result<usize> {
+        let database_ids: Vec<String> = self
+            .inventory
+            .objects
+            .values()
+            .filter(|object| object.kind == "database")
+            .map(|object| object.id.clone())
+            .collect();
+        let mut taken: std::collections::BTreeSet<String> = self
+            .database_id_to_note_id
+            .values()
+            .cloned()
+            .chain(self.page_id_to_note_id.values().cloned())
+            .collect();
+        let mut assigned = 0;
+        for database_id in database_ids {
+            if self.database_id_to_note_id.contains_key(&database_id) {
+                continue;
+            }
+            let note_id = mint(&database_id)
+                .with_context(|| format!("mint note id for database {database_id}"))?;
+            if note_id.trim().is_empty() {
+                bail!("note id minter returned an empty id for database {database_id}");
+            }
+            if !taken.insert(note_id.clone()) {
+                bail!("note id minter returned duplicate id {note_id}");
+            }
+            self.database_id_to_note_id.insert(database_id, note_id);
+            assigned += 1;
+        }
+        Ok(assigned)
     }
 
     /// Reject resume against another workspace before callers create objects.
@@ -733,7 +945,7 @@ fn ensure_complete_page(page: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn required_string(value: &serde_json::Value, key: &str) -> Result<String> {
+pub(crate) fn required_string(value: &serde_json::Value, key: &str) -> Result<String> {
     value
         .get(key)
         .and_then(|v| v.as_str())
@@ -784,7 +996,7 @@ fn parent_id(parent: &serde_json::Value) -> Option<String> {
     parent.get(key)?.as_str().map(str::to_owned)
 }
 
-fn sanitized_source(mut value: serde_json::Value) -> serde_json::Value {
+pub(crate) fn sanitized_source(mut value: serde_json::Value) -> serde_json::Value {
     fn redact(value: &mut serde_json::Value) {
         match value {
             serde_json::Value::Object(map) => {
