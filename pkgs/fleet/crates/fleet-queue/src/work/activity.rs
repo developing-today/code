@@ -1,11 +1,15 @@
-//! Resumable durable page ingestion — HYD-05
+//! Resumable durable page ingestion — HYD-05 — plus per-source
+//! incremental activity revisions and tombstones — HYD-06
 //! (developing-today/code#9207, program #9196).
 //!
 //! This module is the page-iterator/cursor slice of the PM
 //! orchestration design (`doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/components/9207-context-hydration-incremental-activity.md`,
 //! §4 and the crash table): GitHub `Link` continuation parsing,
 //! per-source page cursors, atomic page-ingest/cursor-commit
-//! semantics, documented API caps, and query/API fingerprinting.
+//! semantics, documented API caps, query/API fingerprinting, and the
+//! revision/tombstone observation layer (design §4 rows "Old comment
+//! edited after creation cursor advanced" and "Comment
+//! deleted/minimized").
 //! It is pure types and validation: no I/O, no queue, no storage —
 //! the `turso_queue.rs` transaction integration named by the slice
 //! is explicitly deferred until storage approval, so a rejection is
@@ -16,9 +20,13 @@
 //! durable ingest does not advance; crash before commit means refetch
 //! the page; the unique event key makes repeats idempotent; unknown
 //! cursor forces a full snapshot and legacy `last_checked_at` is
-//! never trusted. The test below compares expected and observed
-//! committed sequences explicitly. No mock-only claim of
-//! deployed/live behavior.
+//! never trusted. For revisions: ascending creation-ID order never
+//! hides edits — a newer revision of an old native ID observed
+//! behind the creation watermark is an edit, never nothing and never
+//! a second creation; disappearance without a tombstone is a
+//! reported visibility gap, never an inferred delete. The tests below
+//! compare expected and observed committed sequences explicitly. No
+//! mock-only claim of deployed/live behavior.
 
 use serde::{Deserialize, Serialize};
 
@@ -220,6 +228,207 @@ pub fn cap_status(fetched: usize, cap: usize, reason: &'static str) -> (bool, Op
     }
 }
 
+/// Presence of one observed revision. Absence from a listing is
+/// never a state — it is a visibility gap (see
+/// [`RefreshOutcome::visibility_gaps`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActivityState {
+    /// A live item the source still reports.
+    Present,
+    /// A minimized item the API still reports (e.g. minimized
+    /// comment): retained as an observation, never dropped.
+    Minimized,
+    /// A tombstone the authoritative source/event provided (e.g.
+    /// deleted comment): retained, never inferred from absence.
+    Deleted,
+}
+
+/// Normalized observation of one source-native activity item at one
+/// revision — HYD-06 (design §4: "Activity identity separates
+/// occurrence and edits").
+///
+/// Identity is `(native_id, revision)`: the source-native event or
+/// comment ID separates occurrence from edits, while the revision
+/// (source revision or `updated_at`) plus the content digest detects
+/// edits to old IDs that ascending creation order would miss. The
+/// three clocks stay distinguished: `occurred_at` is the source's
+/// creation time (stable across edits), `observed_at` is when this
+/// revision was seen, and `source_updated_at` is the source's own
+/// update time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityRecord {
+    /// Source-native event/comment ID (occurrence identity).
+    pub native_id: String,
+    /// Source revision or `updated_at` (edit identity).
+    pub revision: String,
+    /// Current content digest.
+    pub content_digest: String,
+    /// Source creation time; stable across edits of the same item.
+    pub occurred_at: String,
+    /// When this revision was observed locally.
+    pub observed_at: String,
+    /// The source's own update time for this revision.
+    pub source_updated_at: String,
+    /// Presence of this observation.
+    pub state: ActivityState,
+}
+
+impl ActivityRecord {
+    /// Build one observation; empty identity is a typed rejection,
+    /// never a silently accepted blank record.
+    pub fn new(
+        native_id: impl Into<String>,
+        revision: impl Into<String>,
+        content_digest: impl Into<String>,
+        occurred_at: impl Into<String>,
+        observed_at: impl Into<String>,
+        source_updated_at: impl Into<String>,
+        state: ActivityState,
+    ) -> Result<Self, ContractError> {
+        let native_id = native_id.into();
+        let revision = revision.into();
+        if native_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "activity record has empty native_id".to_string(),
+            });
+        }
+        if revision.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "activity record has empty revision".to_string(),
+            });
+        }
+        Ok(ActivityRecord {
+            native_id,
+            revision,
+            content_digest: content_digest.into(),
+            occurred_at: occurred_at.into(),
+            observed_at: observed_at.into(),
+            source_updated_at: source_updated_at.into(),
+            state,
+        })
+    }
+
+    /// Dedupe key: repeats of a committed `(native_id, revision)`
+    /// pair are idempotent; the same native ID under a new revision
+    /// is an edit, never a second creation.
+    pub fn revision_key(&self) -> (String, String) {
+        (self.native_id.clone(), self.revision.clone())
+    }
+}
+
+/// Outcome of refreshing committed activity against a refetch —
+/// HYD-06 (design §4 rows "Old comment edited after creation cursor
+/// advanced" and "Comment deleted/minimized").
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefreshOutcome {
+    /// Native IDs never committed before, first seen `Present`.
+    pub creations: Vec<ActivityRecord>,
+    /// Committed native IDs whose revision, digest, or state moved
+    /// (includes edits observed behind the creation watermark).
+    pub edits: Vec<ActivityRecord>,
+    /// Newly observed minimized/deleted states for committed IDs,
+    /// plus first observations already minimized/deleted.
+    pub tombstones: Vec<ActivityRecord>,
+    /// Committed native IDs whose revision, digest, and state are
+    /// all unchanged — however many times re-observed.
+    pub unchanged_ids: Vec<String>,
+    /// Committed IDs absent from the refetch with no tombstone:
+    /// reported, never inferred as deleted (design §4: "absent API
+    /// evidence cannot be inferred from disappearance in a paginated
+    /// list").
+    pub visibility_gaps: Vec<String>,
+}
+
+/// Refresh committed activity against one refetch.
+///
+/// * A refetch carrying a newer revision (or digest, or state) of a
+///   committed native ID is an edit — even when that ID sits behind
+///   the creation watermark. Creation order never hides edits.
+/// * A refetch minimized/deleted state for a committed `Present`
+///   item — or a first observation already minimized/deleted — is a
+///   retained tombstone, not a creation and not a drop.
+/// * Equal revision + equal digest + equal state is unchanged (the
+///   equal-`updated_at` negative case): re-observation alone changes
+///   nothing.
+/// * A committed ID absent from the refetch with no tombstone is a
+///   visibility gap, never an inferred delete.
+/// * Duplicate `(native_id, revision)` pairs inside one refetch
+///   report once (first occurrence wins); order is refetch order.
+pub fn refresh_activity(
+    committed: &[ActivityRecord],
+    refetch: &[ActivityRecord],
+) -> RefreshOutcome {
+    use std::collections::{HashMap, HashSet};
+    let committed_by_id: HashMap<&str, &ActivityRecord> = committed
+        .iter()
+        .map(|record| (record.native_id.as_str(), record))
+        .collect();
+    let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
+    let mut seen_ids: HashSet<&str> = HashSet::new();
+    let mut outcome = RefreshOutcome::default();
+    for record in refetch {
+        if !seen_pairs.insert((record.native_id.clone(), record.revision.clone())) {
+            continue;
+        }
+        seen_ids.insert(record.native_id.as_str());
+        match committed_by_id.get(record.native_id.as_str()) {
+            None => {
+                if record.state == ActivityState::Present {
+                    outcome.creations.push(record.clone());
+                } else {
+                    outcome.tombstones.push(record.clone());
+                }
+            }
+            Some(previous) => {
+                if record.state != ActivityState::Present
+                    && previous.state == ActivityState::Present
+                {
+                    outcome.tombstones.push(record.clone());
+                } else if record.revision != previous.revision
+                    || record.content_digest != previous.content_digest
+                    || record.state != previous.state
+                {
+                    outcome.edits.push(record.clone());
+                } else {
+                    outcome.unchanged_ids.push(record.native_id.clone());
+                }
+            }
+        }
+    }
+    for record in committed {
+        if !seen_ids.contains(record.native_id.as_str()) {
+            outcome.visibility_gaps.push(record.native_id.clone());
+        }
+    }
+    outcome
+}
+
+/// Drop already-committed revisions from a redelivery — HYD-06
+/// (design §4: "Dedup webhook delivery ID separately from resource
+/// revision").
+///
+/// The dedupe key is the `(native_id, revision)` pair, not the
+/// creation: reordered duplicate redelivery of committed revisions
+/// yields nothing, while the same native ID under a new revision
+/// passes through exactly once as a change. Order is delivery order;
+/// duplicates inside one delivery report once.
+pub fn dedupe_replay(
+    seen_revision_keys: &[(String, String)],
+    delivery: &[ActivityRecord],
+) -> Vec<ActivityRecord> {
+    use std::collections::HashSet;
+    let seen: HashSet<(String, String)> = seen_revision_keys.iter().cloned().collect();
+    let mut emitted: HashSet<(String, String)> = HashSet::new();
+    delivery
+        .iter()
+        .filter(|record| {
+            let key = (record.native_id.clone(), record.revision.clone());
+            !seen.contains(&key) && emitted.insert(key)
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +550,266 @@ mod tests {
         assert!(!snapshot_needed(Some(&c2), "qfp1", "v3"));
         assert!(snapshot_needed(Some(&c2), "qfp2", "v3"));
         assert!(snapshot_needed(Some(&c2), "qfp1", "v4"));
+    }
+
+    fn record(
+        native_id: &str,
+        revision: &str,
+        digest: &str,
+        occurred_at: &str,
+        observed_at: &str,
+        source_updated_at: &str,
+        state: ActivityState,
+    ) -> ActivityRecord {
+        ActivityRecord::new(
+            native_id,
+            revision,
+            digest,
+            occurred_at,
+            observed_at,
+            source_updated_at,
+            state,
+        )
+        .expect("valid activity record")
+    }
+
+    /// HYD-06 oracle (design §4, rows "Old comment edited after
+    /// creation cursor advanced" and "Comment deleted/minimized"):
+    /// ascending creation-ID order never hides edits — a refetch
+    /// that carries a newer revision of an old native ID behind the
+    /// creation watermark is an edit, not nothing; disappearance
+    /// without a tombstone is a reported visibility gap, never an
+    /// inferred delete.
+    #[test]
+    fn pmo_hyd_refresh_observes_edit_behind_creation_cursor() {
+        // Committed store: c5 r1 and c9 r1. The creation watermark
+        // has advanced past c5 (max observed creation is c9).
+        let committed = vec![
+            record(
+                "c5",
+                "r1",
+                "dig-old",
+                "t0",
+                "o0",
+                "u1",
+                ActivityState::Present,
+            ),
+            record(
+                "c9",
+                "r1",
+                "dig-9",
+                "t9",
+                "o9",
+                "u9",
+                ActivityState::Present,
+            ),
+            record(
+                "c8",
+                "r1",
+                "dig-8",
+                "t8",
+                "o8",
+                "u8",
+                ActivityState::Present,
+            ),
+        ];
+        // Refetch: c5 edited behind the cursor (same native ID, new
+        // revision + digest + later source time); c9 byte-identical
+        // but re-observed (equal updated_at must stay unchanged);
+        // c10 brand new; c7 minimized tombstone newly observed.
+        // c8 is absent with no tombstone anywhere in the refetch.
+        let refetch = vec![
+            record(
+                "c5",
+                "r2",
+                "dig-new",
+                "t0",
+                "o1",
+                "u2",
+                ActivityState::Present,
+            ),
+            record(
+                "c9",
+                "r1",
+                "dig-9",
+                "t9",
+                "o10",
+                "u9",
+                ActivityState::Present,
+            ),
+            record(
+                "c10",
+                "r1",
+                "dig-10",
+                "t10",
+                "o10",
+                "u10",
+                ActivityState::Present,
+            ),
+            record(
+                "c7",
+                "r1",
+                "dig-7",
+                "t7",
+                "o10",
+                "u7",
+                ActivityState::Minimized,
+            ),
+        ];
+        let outcome = refresh_activity(&committed, &refetch);
+
+        // The behind-cursor edit is observed as exactly one edit.
+        assert_eq!(
+            outcome
+                .edits
+                .iter()
+                .map(|r| &r.native_id)
+                .collect::<Vec<_>>(),
+            ["c5"]
+        );
+        assert_eq!(outcome.edits[0].revision, "r2");
+        assert_eq!(outcome.edits[0].content_digest, "dig-new");
+        // Occurrence time is stable across the edit; observation and
+        // source-update times move forward — the three clocks stay
+        // distinguished.
+        assert_eq!(outcome.edits[0].occurred_at, "t0");
+        assert_eq!(outcome.edits[0].observed_at, "o1");
+        assert_eq!(outcome.edits[0].source_updated_at, "u2");
+
+        // Only the genuinely new native ID is a creation: the edit
+        // behind the cursor is never double-counted as one.
+        assert_eq!(
+            outcome
+                .creations
+                .iter()
+                .map(|r| &r.native_id)
+                .collect::<Vec<_>>(),
+            ["c10"]
+        );
+
+        // Equal updated_at + equal digest + equal revision is
+        // unchanged, however many times it is re-observed.
+        assert_eq!(outcome.unchanged_ids, ["c9"]);
+
+        // The minimized record is retained as a tombstone
+        // observation, not dropped and not a creation.
+        assert_eq!(
+            outcome
+                .tombstones
+                .iter()
+                .map(|r| &r.native_id)
+                .collect::<Vec<_>>(),
+            ["c7"]
+        );
+
+        // c8 vanished with no tombstone: reported gap, never an
+        // inferred delete.
+        assert_eq!(outcome.visibility_gaps, ["c8"]);
+        assert!(!outcome.creations.iter().any(|r| r.native_id == "c8"));
+        assert!(!outcome.edits.iter().any(|r| r.native_id == "c8"));
+        assert!(!outcome.tombstones.iter().any(|r| r.native_id == "c8"));
+
+        // Empty identity is rejected, never silently accepted.
+        assert!(ActivityRecord::new("", "r1", "d", "t", "o", "u", ActivityState::Present).is_err());
+    }
+
+    /// HYD-06 oracle (design §4: "Dedup webhook delivery ID
+    /// separately from resource revision"): redelivery of an already
+    /// committed (native ID, revision) pair commits nothing, while
+    /// the same native ID under a new revision is one edit — the
+    /// dedupe key is the revision, not the creation.
+    #[test]
+    fn pmo_hyd_replay_deduplicates_revision_not_creation() {
+        let seen: Vec<(String, String)> = vec![
+            ("c5".to_string(), "r1".to_string()),
+            ("c5".to_string(), "r2".to_string()),
+        ];
+        // Reordered duplicate redelivery of committed revisions:
+        // nothing new, in any order.
+        let replay = vec![
+            record(
+                "c5",
+                "r2",
+                "dig-new",
+                "t0",
+                "o2",
+                "u2",
+                ActivityState::Present,
+            ),
+            record(
+                "c5",
+                "r1",
+                "dig-old",
+                "t0",
+                "o2",
+                "u1",
+                ActivityState::Present,
+            ),
+        ];
+        assert!(dedupe_replay(&seen, &replay).is_empty());
+
+        // Same native ID, new revision: exactly one change, and it
+        // is an edit of c5 — never a second creation of it.
+        let edit = vec![record(
+            "c5",
+            "r3",
+            "dig-v3",
+            "t0",
+            "o3",
+            "u3",
+            ActivityState::Present,
+        )];
+        let fresh = dedupe_replay(&seen, &edit);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].native_id, "c5");
+        assert_eq!(fresh[0].revision, "r3");
+
+        // Committed key stream across replay + edit: every
+        // (native ID, revision) pair appears at most once.
+        let mut keys: Vec<(String, String)> = seen.clone();
+        keys.extend(
+            fresh
+                .iter()
+                .map(|r| (r.native_id.clone(), r.revision.clone())),
+        );
+        let mut sorted = keys.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(keys.len(), sorted.len());
+        assert_eq!(
+            keys,
+            [
+                ("c5".to_string(), "r1".to_string()),
+                ("c5".to_string(), "r2".to_string()),
+                ("c5".to_string(), "r3".to_string()),
+            ]
+        );
+
+        // Full-refresh view agrees: the new revision lands in edits,
+        // creations stay empty, and a straight repeat lands nowhere.
+        let committed = vec![record(
+            "c5",
+            "r2",
+            "dig-new",
+            "t0",
+            "o2",
+            "u2",
+            ActivityState::Present,
+        )];
+        let again = refresh_activity(
+            &committed,
+            &[record(
+                "c5",
+                "r2",
+                "dig-new",
+                "t0",
+                "o9",
+                "u2",
+                ActivityState::Present,
+            )],
+        );
+        assert!(again.creations.is_empty());
+        assert!(again.edits.is_empty());
+        assert_eq!(again.unchanged_ids, ["c5"]);
     }
 }
