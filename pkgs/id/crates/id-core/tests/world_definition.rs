@@ -33,6 +33,7 @@ mod world_definition;
 
 use ed25519_dalek::SigningKey;
 use id_shape::{ContentId, HashProfile};
+use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery};
 use world_definition::{
     CoreKind, SignedWorldDefinition, WORLD_DEFINITION_DOMAIN, WorldDefinition, WorldDefinitionError,
 };
@@ -112,6 +113,16 @@ fn tampering_domain_or_signer_key_rejects() {
         signer_tampered.verify().unwrap_err().class(),
         "bad_signature"
     );
+}
+
+#[test]
+fn identity_point_forgery_is_rejected() {
+    let signer = key(12);
+    let mut forged = SignedWorldDefinition::sign(definition(12, 1, None), &signer).unwrap();
+    forged.signer_key = IDENTITY_KEY;
+    forged.signature = identity_forgery();
+
+    assert_eq!(forged.verify().unwrap_err().class(), "bad_signature");
 }
 
 #[test]
