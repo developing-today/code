@@ -96,33 +96,51 @@ machines:
       # validator requires the earned checks record below).
       source: watchdog
       last_seen: '2026-11-27T14:54:17Z'
-      status: degraded
+      status: unknown
       checks:
-        reported_at: '2026-11-27T14:54:17Z'
+        reported_at: '2026-11-27T15:24:18Z'
         reachable:
-          state: ok
-          ssh: true
-          opencode_server_http: 200
+          state: unknown
+          reason: 'probe exited 2: error: unrecognized subcommand ''shell''
+      
+      
+            Usage: fleet <domain> [args...]
+      
+      
+            For the full domain registry, run: fleet --help'
         load_headroom:
-          state: failed
-          load15: 18.02
-          cpu_cores: 16
-          load15_per_core: 1.126
+          state: unknown
+          reason: 'probe exited 2: error: unrecognized subcommand ''shell''
+      
+      
+            Usage: fleet <domain> [args...]
+      
+      
+            For the full domain registry, run: fleet --help'
         disk_headroom:
-          state: failed
-          volume: worktree (home)
-          total_gb: 3371
-          free_gb: 155
-          free_pct: 4.6
+          state: unknown
+          reason: 'probe exited 2: error: unrecognized subcommand ''shell''
+      
+      
+            Usage: fleet <domain> [args...]
+      
+      
+            For the full domain registry, run: fleet --help'
         sessions:
-          state: ok
-          listed: 50
-          active_within_cadence: 50
-          max_sessions: 12
-          source: openchamber attach api
+          state: unknown
+          reason: 'probe exited 2: error: unrecognized subcommand ''shell''
+      
+      
+            Usage: fleet <domain> [args...]
+      
+      
+            For the full domain registry, run: fleet --help'
         last_queue_job:
-          state: ok
-          task_id: '23885'
-          queue: repo-health-code-pilot
-          worker: repo-worker-code
-          completed_at: '2026-11-26T13:18:38Z'
+          state: unknown
+          reason: 'probe exited 2: error: unrecognized subcommand ''shell''
+      
+      
+            Usage: fleet <domain> [args...]
+      
+      
+            For the full domain registry, run: fleet --help'
