@@ -13,18 +13,18 @@
 //! `doc/fleet-machine-registry.yaml` (schema slice 1a, #14714):
 //! registry `id`, human names, transport offers (endpoint data and
 //! credential NAMES only — never values), and the enrollment table
-//! saying which agent classes may use which offers. The live
-//! overlay (1b, #14715) is not in this build yet, so load is
-//! *unknown* end to end (#13611: unknown never sorts as zero) and
-//! selection is the pool's ordered strategy over registry order;
-//! when the overlay lands, its per-offer health/load feed this same
-//! `resolve` as pool member state/load without a new ladder.
+//! saying which agent classes may use which offers. The broker live
+//! overlay (1b, #14715) feeds fresh per-offer health/load into host
+//! selection: stale or unhealthy offers are excluded, and measured
+//! load is consumed by the pool's least-loaded strategy. Missing load
+//! remains unknown (#13611).
 //!
 //! `fleet laptop` is the N=1 legacy spelling: the name `laptop`
 //! resolves to the `amd` record here, exactly as the tiered
 //! `fleet laptop` walker serves that host today.
 
-use fleet_pool::{NodeId, Ordered, Pool};
+use fleet_pool::{LeastLoaded, NodeId, Pool};
+use fleet_queue::live_overlay::LiveOverlay;
 
 /// One transport offer on a host record (design §1.2): endpoint data
 /// and credential names only.
@@ -176,13 +176,32 @@ pub fn candidates(record: &HostRecord, agent_class: &str) -> Vec<HostCandidate> 
     out
 }
 
-/// Resolve a host name into candidates and select through the
-/// fleet-pool primitive. `now` is logical seconds for the pool's
-/// decision log. `None` for an unknown host or a class enrolled
-/// for no offers.
+/// Resolve without a broker overlay. Load remains unknown and the
+/// pool's least-loaded strategy applies its unknown-last rule.
 pub fn resolve(name: &str, agent_class: &str, now: u64) -> Option<Resolution> {
+    resolve_with_overlay(name, agent_class, now, None)
+}
+
+/// Resolve a host and select through the fleet-pool primitive, applying
+/// the broker's fresh per-offer liveness when available. With an overlay,
+/// offers without a fresh report and offers reported unhealthy are excluded;
+/// unknown health remains eligible, while unknown load remains `None`.
+pub fn resolve_with_overlay(
+    name: &str,
+    agent_class: &str,
+    now: u64,
+    overlay: Option<&LiveOverlay>,
+) -> Option<Resolution> {
     let record = host_record(name)?;
-    let candidates = candidates(record, agent_class);
+    let mut candidates = candidates(record, agent_class);
+    if let Some(overlay) = overlay {
+        let liveness = overlay.selection_view(record.id, now);
+        candidates.retain(|candidate| {
+            liveness
+                .iter()
+                .any(|offer| offer.offer == candidate.offer && offer.healthy != Some(false))
+        });
+    }
     if candidates.is_empty() {
         return None;
     }
@@ -194,9 +213,23 @@ pub fn resolve(name: &str, agent_class: &str, now: u64) -> Option<Resolution> {
             Some(&NodeId::new(record.id)),
         );
     }
-    // No live overlay in this build (1b, #14715): load is unknown
-    // for every member, never zero (#13611).
-    let selected_id = pool.select(&mut Ordered, &|_| None, now)?;
+    // The broker reports per-offer load, shared by that offer's forms.
+    // Missing/unmeasured load stays unknown, never zero (#13611).
+    let liveness = overlay.map(|overlay| overlay.selection_view(record.id, now));
+    let selected_id = pool.select(
+        &mut LeastLoaded,
+        &|id| {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.id == id.as_str())?;
+            liveness
+                .as_ref()?
+                .iter()
+                .find(|offer| offer.offer == candidate.offer)
+                .and_then(|offer| offer.load)
+        },
+        now,
+    )?;
     let selected = candidates
         .iter()
         .find(|c| c.id == selected_id.as_str())?
@@ -351,10 +384,68 @@ mod tests {
         );
         assert!(
             resolution.decision.contains(&resolution.selected.id)
-                && resolution.decision.contains("strategy=ordered"),
+                && resolution.decision.contains("strategy=least-loaded"),
             "decision log names the selected member: {}",
             resolution.decision
         );
+    }
+
+    // Oracle (overlay contract #14715 + selection contract #14716):
+    // only fresh, non-unhealthy offers are candidates, and the pool's
+    // least-loaded strategy consumes the overlay's measured load.
+    #[test]
+    fn fresh_overlay_health_and_load_drive_pool_selection() {
+        use fleet_queue::live_overlay::OfferReport;
+
+        let mut overlay = LiveOverlay::new();
+        overlay.record(
+            "amd-6",
+            OfferReport {
+                offer: "commander-door".to_owned(),
+                seen_at: 1_000,
+                load: Some(0.9),
+                healthy: Some(true),
+            },
+        );
+        overlay.record(
+            "amd-6",
+            OfferReport {
+                offer: "laptop-agent-cf".to_owned(),
+                seen_at: 1_000,
+                load: Some(0.2),
+                healthy: Some(true),
+            },
+        );
+        overlay.record(
+            "amd-6",
+            OfferReport {
+                offer: "laptop-agent-tailnet".to_owned(),
+                seen_at: 1_000,
+                load: Some(0.0),
+                healthy: Some(false),
+            },
+        );
+        overlay.record(
+            "amd-6",
+            OfferReport {
+                offer: "ssh".to_owned(),
+                seen_at: 1_000 - fleet_queue::live_overlay::LIVE_OVERLAY_TTL_SECONDS - 1,
+                load: Some(0.1),
+                healthy: Some(true),
+            },
+        );
+
+        let resolution = resolve_with_overlay("amd", "muse-seats", 1_000, Some(&overlay))
+            .expect("two fresh healthy offers remain selectable");
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.offer != "laptop-agent-tailnet"
+                    && candidate.offer != "ssh")
+        );
+        assert_eq!(resolution.selected.offer, "laptop-agent-cf");
+        assert!(resolution.decision.contains("strategy=least-loaded"));
     }
 
     #[test]

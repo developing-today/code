@@ -895,6 +895,48 @@ fn rotation_with_config(
     out
 }
 
+/// Add a hinted installation that exists live but is not present in
+/// that App's configured owner set. The configured rotation remains
+/// the fallback if an App's installation list could not be read.
+fn add_dynamic_hint_sources(
+    mut sources: Vec<TokenSource>,
+    args: &[String],
+    installations: &[(GhApp, Vec<String>)],
+) -> Vec<TokenSource> {
+    let Some(hint) = owner_hint(args) else {
+        return sources;
+    };
+    for (app, owners) in installations {
+        if sources.iter().any(|source| {
+            matches!(source, TokenSource::AppInstallation { app: source_app, owner }
+                if source_app == app && owner.eq_ignore_ascii_case(&hint))
+        }) {
+            continue;
+        }
+        let Some(owner) = owners
+            .iter()
+            .find(|owner| owner.eq_ignore_ascii_case(&hint))
+        else {
+            continue;
+        };
+        let source = TokenSource::app(app.clone(), owner);
+        let insert_at = sources
+            .iter()
+            .position(|existing| {
+                matches!(existing, TokenSource::AppInstallation { app: source_app, .. }
+                    if source_app == app)
+            })
+            .or_else(|| {
+                sources
+                    .iter()
+                    .position(|s| matches!(s, TokenSource::Personal))
+            })
+            .unwrap_or(sources.len());
+        sources.insert(insert_at, source);
+    }
+    sources
+}
+
 /// May this failed attempt be repeated under the next token?
 /// The #8887 retry-safety rule: pre-execution refusals (rate limit,
 /// permission) may repeat anything; other failures may repeat only
@@ -921,6 +963,13 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
 /// with fake identities and a fake `gh` (the oracle tests below).
 trait TokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String>;
+
+    /// Owners with a live installation for this App. The runner uses
+    /// this only when an explicit owner hint is absent from the
+    /// configured owner list; failures leave the existing rotation intact.
+    fn installation_owners(&mut self, _app: &GhApp) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// Raw credential operations, with no caching: the
@@ -1176,6 +1225,11 @@ impl FleetTokenProvider {
 }
 
 impl TokenProvider for FleetTokenProvider {
+    fn installation_owners(&mut self, app: &GhApp) -> Result<Vec<String>, String> {
+        FleetTokenProvider::installations(self, app)
+            .map(|pairs| pairs.into_iter().map(|(owner, _)| owner).collect())
+    }
+
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
@@ -2015,9 +2069,35 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&call_args, config);
-    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
+    let mut sources = rotation(&call_args, config);
+    // An explicit rotation is authoritative. Otherwise, when a call
+    // names an owner outside an App's configured set, consult that
+    // App's cached live installations and add its leg if present.
+    if std::env::var("FLEET_GH_ORDER").is_err() {
+        if let Some(hint) = owner_hint(&call_args) {
+            let owners_env = Owners::from_env();
+            let mut discovered = Vec::new();
+            for app in all_apps(config) {
+                if owners_env
+                    .for_app(&app, config)
+                    .iter()
+                    .any(|owner| owner.eq_ignore_ascii_case(&hint))
+                {
+                    continue;
+                }
+                match provider.installation_owners(&app) {
+                    Ok(owners) => discovered.push((app, owners)),
+                    Err(error) => eprintln!(
+                        "fleet gh: could not check {} installations for owner hint: {error}",
+                        app.slug()
+                    ),
+                }
+            }
+            sources = add_dynamic_hint_sources(sources, &call_args, &discovered);
+        }
+    }
+    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let (code, final_stdout) = run_with_provider_capturing(
         &mut provider,
         &gh_bin,
@@ -2818,6 +2898,42 @@ mod tests {
         assert_eq!(
             TokenSource::app(GhApp::Fleet, "dezren39").label(),
             "app:dezren39"
+        );
+    }
+
+    #[test]
+    fn dynamic_owner_hint_adds_only_apps_with_a_live_installation() {
+        // Oracle: a hinted owner gets an App leg exactly when the
+        // provider's live-installation list contains that owner; the
+        // personal token remains the final fallback.
+        let args: Vec<String> = ["api", "repos/layercloud/private-repo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let base = rotation_with_config(&args, None, &Owners::default(), &Config::default());
+        let with_live = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[
+                (GhApp::Fleet, vec!["LayerCloud".to_string()]),
+                (GhApp::DevToday, vec!["another-org".to_string()]),
+                (GhApp::Backup, vec!["layercloud".to_string()]),
+            ],
+        );
+        assert_eq!(with_live[0], TokenSource::app(GhApp::Fleet, "LayerCloud"));
+        assert!(with_live.contains(&TokenSource::app(GhApp::Backup, "layercloud")));
+        assert!(!with_live.contains(&TokenSource::app(GhApp::DevToday, "layercloud")));
+        assert_eq!(with_live.last(), Some(&TokenSource::Personal));
+
+        let no_match = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[(GhApp::Fleet, vec!["other-org".to_string()])],
+        );
+        assert_eq!(no_match, base);
+        assert_eq!(
+            add_dynamic_hint_sources(base.clone(), &["api".to_string()], &[]),
+            base
         );
     }
 

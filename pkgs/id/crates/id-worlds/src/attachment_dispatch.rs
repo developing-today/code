@@ -105,7 +105,67 @@ impl AttachmentDispatch {
     pub fn is_attached(&self, entity_id: &str, library_id: &str) -> bool {
         self.snapshot.is_attached(entity_id, library_id)
     }
+
+    /// Resolve one live invocation against the current tick's snapshot.
+    ///
+    /// This is the boundary future verb dispatch calls per invocation:
+    /// `Ok` carries the attached behavior in force for this tick;
+    /// `Err` means the invocation must not dispatch — the library is
+    /// absent, was refused at attach time, or is staged-but-unapplied.
+    /// It delegates to [`Self::resolve`], so tick-boundary semantics
+    /// are unchanged: staged changes stay invisible until
+    /// [`Self::begin_tick`], and a snapshot handed out earlier keeps
+    /// resolving after a later detach lands.
+    ///
+    /// # Errors
+    ///
+    /// [`InvocationRefusal::NotAttached`] when nothing is attached
+    /// for `(entity_id, library_id)` in the current tick.
+    pub fn resolve_invocation(
+        &self,
+        entity_id: &str,
+        library_id: &str,
+    ) -> Result<&ActiveAttachment, InvocationRefusal> {
+        self.resolve(entity_id, library_id)
+            .ok_or_else(|| InvocationRefusal::NotAttached {
+                entity_id: entity_id.to_string(),
+                library_id: library_id.to_string(),
+            })
+    }
 }
+
+/// Why a live library invocation must not dispatch.
+///
+/// The refusal is fail-closed and names the invocation pair; the
+/// caller reports it without retrying against the live registry set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InvocationRefusal {
+    /// No attachment is in force for the pair in the current tick:
+    /// never attached, refused at attach time, detached, or
+    /// staged-but-unapplied.
+    NotAttached {
+        /// The invoking entity.
+        entity_id: String,
+        /// The invoked library.
+        library_id: String,
+    },
+}
+
+impl std::fmt::Display for InvocationRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAttached {
+                entity_id,
+                library_id,
+            } => write!(
+                f,
+                "library {library_id} is not attached to entity {entity_id} in the current tick"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvocationRefusal {}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -214,5 +274,104 @@ mod tests {
         dispatch
             .detach("author-a", "entity-1", "lib-hash-1")
             .expect("attach-capable author detaches");
+    }
+
+    // Oracle: the #12640 slice acceptance — live invocations resolve
+    // through the current tick snapshot only, and anything else
+    // refuses fail-closed instead of dispatching.
+
+    #[test]
+    fn test_live_invocation_resolves_attached_behavior() {
+        let mut dispatch = dispatch();
+        dispatch
+            .attach("owner-1", "entity-1", offer("1.0.0", &["chat.say"]))
+            .expect("attach stages");
+        dispatch.begin_tick();
+        let attachment = dispatch
+            .resolve_invocation("entity-1", "lib-hash-1")
+            .expect("attached behavior dispatches");
+        assert_eq!(
+            attachment.version,
+            LibraryVersion::parse("1.0.0").expect("test version parses")
+        );
+    }
+
+    #[test]
+    fn test_live_invocation_ignores_staged_attach_until_tick() {
+        let mut dispatch = dispatch();
+        dispatch
+            .attach("owner-1", "entity-1", offer("1.0.0", &["chat.say"]))
+            .expect("attach stages");
+        assert_eq!(
+            dispatch.resolve_invocation("entity-1", "lib-hash-1"),
+            Err(super::InvocationRefusal::NotAttached {
+                entity_id: "entity-1".to_string(),
+                library_id: "lib-hash-1".to_string(),
+            })
+        );
+        dispatch.begin_tick();
+        dispatch
+            .resolve_invocation("entity-1", "lib-hash-1")
+            .expect("visible after the boundary");
+    }
+
+    #[test]
+    fn test_live_invocation_keeps_prior_snapshot_after_detach_lands() {
+        let mut dispatch = dispatch();
+        dispatch
+            .attach("owner-1", "entity-1", offer("1.0.0", &["chat.say"]))
+            .expect("attach stages");
+        dispatch.begin_tick();
+        let in_flight = dispatch.snapshot().clone();
+        dispatch
+            .detach("owner-1", "entity-1", "lib-hash-1")
+            .expect("detach stages");
+        // Staged detach is invisible to the live boundary until the tick.
+        dispatch
+            .resolve_invocation("entity-1", "lib-hash-1")
+            .expect("still dispatches before the boundary");
+        dispatch.begin_tick();
+        assert_eq!(
+            dispatch.resolve_invocation("entity-1", "lib-hash-1"),
+            Err(super::InvocationRefusal::NotAttached {
+                entity_id: "entity-1".to_string(),
+                library_id: "lib-hash-1".to_string(),
+            })
+        );
+        // The in-flight invocation keeps the snapshot it started with.
+        assert!(in_flight.resolve("entity-1", "lib-hash-1").is_some());
+    }
+
+    #[test]
+    fn test_live_invocation_refuses_absent_and_refused_attachments() {
+        let mut dispatch = dispatch();
+        // Never attached: fail closed with the named pair.
+        assert_eq!(
+            dispatch.resolve_invocation("entity-1", "lib-hash-1"),
+            Err(super::InvocationRefusal::NotAttached {
+                entity_id: "entity-1".to_string(),
+                library_id: "lib-hash-1".to_string(),
+            })
+        );
+        // Refused at attach time (widening): stages nothing, still refuses.
+        dispatch
+            .attach("owner-1", "entity-1", offer("1.0.0", &["records.write"]))
+            .expect_err("widening attach is refused");
+        dispatch.begin_tick();
+        assert_eq!(
+            dispatch.resolve_invocation("entity-1", "lib-hash-1"),
+            Err(super::InvocationRefusal::NotAttached {
+                entity_id: "entity-1".to_string(),
+                library_id: "lib-hash-1".to_string(),
+            })
+        );
+        // Unknown entity and unknown library likewise refuse.
+        assert_eq!(
+            dispatch.resolve_invocation("no-such-entity", "lib-hash-1"),
+            Err(super::InvocationRefusal::NotAttached {
+                entity_id: "no-such-entity".to_string(),
+                library_id: "lib-hash-1".to_string(),
+            })
+        );
     }
 }
