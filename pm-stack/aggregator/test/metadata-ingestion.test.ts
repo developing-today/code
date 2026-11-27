@@ -58,6 +58,26 @@ describe("dual-ingestion block plumbing", () => {
     });
   });
 
+  test("a title containing triple backticks round-trips through render/extract/parse", () => {
+    const title = "Document ```json examples";
+    const metadata = {
+      pm_meta: 1,
+      direct_parent: { repo: "developing-today/code", number: 9060, kind: "epic" },
+      links: [] as unknown[],
+      title,
+    };
+    const body = `description\n\n${renderMetadataBlock(metadata)}\n`;
+    const payload = extractMetadataPayload(body);
+    expect(payload.found).toBe(true);
+    if (!payload.found) return;
+    expect((JSON.parse(payload.json) as { title: string }).title).toBe(title);
+    // The next check reads its own block as current, not generated or triage.
+    const outcome = runMetadataCheck(item({ body, title, labels: ["kind/feature"] }), CONTEXT);
+    expect(outcome.kind).toBe("current");
+    if (outcome.kind !== "current") return;
+    expect(outcome.record.parsed.extras.title).toBe(title);
+  });
+
   test("upsertMetadataBlock replaces in place and appends idempotently", () => {
     const metadata = { pm_meta: 1, links: [] as unknown[] };
     const once = upsertMetadataBlock("body\n", metadata);

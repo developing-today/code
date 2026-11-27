@@ -40,7 +40,8 @@ export const PM_METADATA_BLOCK_START = "<!-- pm-metadata:start -->";
 export const PM_METADATA_BLOCK_END = "<!-- pm-metadata:end -->";
 
 const BLOCK_PATTERN = /<!--\s*pm-metadata:start\s*-->([\s\S]*?)<!--\s*pm-metadata:end\s*-->/;
-const JSON_FENCE_PATTERN = /```json\s*([\s\S]*?)```/i;
+const JSON_FENCE_OPEN_LINE = /^\s*```json\s*$/i;
+const JSON_FENCE_CLOSE_LINE = /^\s*```\s*$/;
 
 /** Minimal GitHub item snapshot the check needs. Both watchers build this. */
 export interface IngestionItem {
@@ -118,9 +119,28 @@ export function extractMetadataPayload(
   if (!body) return { found: false, malformed: false };
   const block = BLOCK_PATTERN.exec(body)?.[1];
   if (block === undefined) return { found: false, malformed: false };
-  const json = JSON_FENCE_PATTERN.exec(block)?.[1];
+  const json = extractFencedJson(block);
   if (json === undefined) return { found: false, malformed: true };
-  return { found: true, json: json.trim() };
+  return { found: true, json };
+}
+
+/**
+ * Extract the fenced JSON payload between delimiter *lines*. Fence
+ * delimiters are whole lines (```json ... ```); backticks inside JSON
+ * string values (e.g. a title such as `Document ```json examples`) never
+ * form a delimiter line because JSON rendering escapes raw newlines
+ * inside strings, so they are left untouched. The previous non-greedy
+ * `[\s\S]*?` match stopped at the first backticks anywhere, truncating
+ * the payload and making the next check reject its own block (#16013).
+ */
+function extractFencedJson(block: string): string | undefined {
+  const lines = block.split("\n");
+  const openIdx = lines.findIndex((line) => JSON_FENCE_OPEN_LINE.test(line));
+  if (openIdx === -1) return undefined;
+  const rest = lines.slice(openIdx + 1);
+  const closeIdx = rest.findIndex((line) => JSON_FENCE_CLOSE_LINE.test(line));
+  if (closeIdx === -1) return undefined;
+  return rest.slice(0, closeIdx).join("\n").trim();
 }
 
 /** Render the canonical block around a metadata object. */
