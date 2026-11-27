@@ -210,11 +210,15 @@ describe("Fleet metadata create-path compatibility (#16010)", () => {
       "/state/test/fleet/metadata.db",
     );
     expect(fleetMetadataDbPath({ HOME: "/home/test" })).toBe("/home/test/.local/state/fleet/metadata.db");
+    expect(fleetMetadataDbPath({ FLEET_METADATA_DB: " ", XDG_STATE_HOME: "relative", HOME: "/home/test" })).toBe(
+      "/home/test/.local/state/fleet/metadata.db",
+    );
   });
 
-  test("ingestion refreshes the existing Fleet create row in place", () => {
-    const path = fleetMetadataDbPath({ FLEET_METADATA_DB: ":memory:", HOME: "/home/test" });
-    const db = openMetadataStore(path, () => new Database(":memory:"));
+  test("ingestion refreshes the existing Fleet create row in place", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleet-metadata-create-"));
+    const path = join(root, "metadata.db");
+    const db = openMetadataStore(path, (dbPath) => new Database(dbPath));
     try {
       const created = runMetadataCheck(item({ updatedAt: "2026-11-20T00:00:00Z" }), CONTEXT);
       expect(created.kind).toBe("generated");
@@ -242,8 +246,9 @@ describe("Fleet metadata create-path compatibility (#16010)", () => {
       expect(getPmMetadata(db, artifactIdFor(item()))?.sourceUpdatedAt).toBe("2026-11-21T00:00:00Z");
     } finally {
       db.close();
+      await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });
 
 describe("buildTriagePacket: the broker's required fields, pinned", () => {
