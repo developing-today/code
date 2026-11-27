@@ -19,7 +19,8 @@
 //!   understands shows that surface's own text projection (a form shows
 //!   its fields and actions); otherwise the view's `data` text, the same
 //!   fallback rule the terminal shell follows. While the view presents a
-//!   form, the host's last `form_result_status` for that form follows it.
+//!   form, the host's last `form_result_status` for that form follows it,
+//!   and while the form is in force, how to answer it.
 //! - **Chat:** the durable events since the last snapshot, oldest first,
 //!   each named by sequence and by the participant's display name from
 //!   the snapshot.
@@ -27,6 +28,7 @@
 use id::world_presentation::WorldSurface;
 use serde_json::Value;
 
+use crate::form;
 use crate::session::Session;
 
 /// Shown in the selector before any `records` reply has arrived.
@@ -161,6 +163,10 @@ pub fn document_lines(session: &Session) -> Vec<String> {
         };
         lines.push(String::new());
         lines.push(escape_free(&line));
+    }
+    if form::active(session).is_some() {
+        lines.push(String::new());
+        lines.push(form::ANSWER_HINT.to_owned());
     }
     lines
 }
