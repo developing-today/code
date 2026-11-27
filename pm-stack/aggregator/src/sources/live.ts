@@ -126,15 +126,14 @@ import type { Source } from "../source.ts";
 import { getJson } from "./http.ts";
 import {
   LatestCommentsCache,
+  createHttpProjectorReader,
   mergeLinks,
-  projectorComments,
-  projectorItems,
-  projectorLatestComments,
-  projectorLinks,
+  type ProjectorReader,
 } from "./projector.ts";
 export {
   LATEST_COMMENTS_TTL_MS,
   LatestCommentsCache,
+  createHttpProjectorReader,
   latestPerRef,
   mapProjectorComment,
   mapProjectorItem,
@@ -145,7 +144,7 @@ export {
   projectorLatestComments,
   projectorLinks,
 } from "./projector.ts";
-export type { ProjectorCommentRow, ProjectorItemRow, ProjectorLinkRow } from "./projector.ts";
+export type { ProjectorCommentRow, ProjectorItemRow, ProjectorLinkRow, ProjectorReader } from "./projector.ts";
 
 // --- Kaneo --------------------------------------------------------------
 
@@ -352,14 +351,14 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
  * it did not fetch.
  */
 async function enrichWithRegistryLinks<T extends { links: Link[] }>(
-  baseUrl: string,
+  reader: Pick<ProjectorReader, "links">,
   entries: T[],
   subjectOf: (entry: T) => string,
 ): Promise<{ entries: T[]; linksDegraded: boolean }> {
   let linksDegraded = false;
   const enriched = await Promise.all(
     entries.map(async (entry) => {
-      const extra = await projectorLinks(baseUrl, subjectOf(entry));
+      const extra = await reader.links(subjectOf(entry));
       if (extra === null) {
         linksDegraded = true;
         return entry;
@@ -647,6 +646,12 @@ export function liveSource(
      *  PM_AGG_STORE_BACKEND=turso; otherwise the local snapshot
      *  directory is the store (the dev/test and rollback path). */
     snapshotRemote?: SnapshotsRemote;
+    /** #8570 Phase 3: projector read seam. When present the live
+     *  source reads projections through this reader instead of the
+     *  PM_PROJECTOR_URL HTTP client — the seam an in-process
+     *  projector module will plug. Absent, the HTTP client built
+     *  from cfg.projector.baseUrl is the reader (unchanged). */
+    projector?: ProjectorReader;
   },
 ): Source {
   // #14065: when each facet's string last turned unavailable. Recorded
@@ -676,15 +681,20 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  // #8570 Phase 3: the projector read seam. An injected reader wins
+  // (tests, then the in-process projector module); otherwise the HTTP
+  // client built from PM_PROJECTOR_URL is the reader — today's path,
+  // unchanged. A null resolution means "no projector configured".
+  const projectorReader: ProjectorReader | null =
+    opts?.projector ?? (cfg.projector.baseUrl ? createHttpProjectorReader(cfg.projector.baseUrl) : null);
   // #9781: the briefs' latest-comments cache for this source instance.
   // The fetch seam keeps projectorLatestComments' fail-soft contract
   // (null = the whole batch failed); the fallback keeps the pre-cache
   // behaviour for never-seen refs whose projector read failed.
   const latestCommentsCache = new LatestCommentsCache(
     async (refs) => {
-      const baseUrl = cfg.projector.baseUrl;
-      if (!baseUrl) return null;
-      const live = await projectorLatestComments(baseUrl, refs);
+      if (!projectorReader) return null;
+      const live = await projectorReader.latestComments(refs);
       if (live) provenance.comments = "live (projector)";
       return live;
     },
@@ -1441,8 +1451,8 @@ export function liveSource(
         // merged below. Fixtures are only for a failed fetch (catch).
         provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         let merged = board;
-        if (cfg.projector.baseUrl) {
-          const { entries, linksDegraded } = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+        if (projectorReader) {
+          const { entries, linksDegraded } = await enrichWithRegistryLinks(projectorReader, board, (b) => b.id);
           merged = entries;
           // #8570: a dead registry degrades the links visibly — the board
           // stays up on the Kaneo cards, and the chip names the outage
@@ -1487,9 +1497,9 @@ export function liveSource(
         if (rows.length > 0) {
           let merged = rows;
           let label = "live (Grist)";
-          if (cfg.projector.baseUrl) {
+          if (projectorReader) {
             const { entries, linksDegraded } = await enrichWithRegistryLinks(
-              cfg.projector.baseUrl,
+              projectorReader,
               rows,
               (r) => r.subject,
             );
@@ -1551,8 +1561,8 @@ export function liveSource(
       let projectorServed = false;
       if (remaining.length) {
         let rest: Map<RefKey, GhItem> | null = null;
-        if (cfg.projector.baseUrl) {
-          rest = await projectorItems(cfg.projector.baseUrl, remaining).catch(() => null);
+        if (projectorReader) {
+          rest = await projectorReader.items(remaining).catch(() => null);
           if (rest && rest.size > 0) projectorServed = true;
         }
         // #1141: every served item carries its resolution source, so
@@ -1568,7 +1578,7 @@ export function liveSource(
       }
       const poolServed = refs.length - remaining.length;
       const unresolved = refs.filter((r) => !out.has(r)).length;
-      const projectorCause = cfg.projector.baseUrl ? "projector unreachable" : "no projector configured";
+      const projectorCause = projectorReader ? "projector unreachable" : "no projector configured";
       if (poolServed > 0 && feed) {
         provenance.items =
           `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})` +
@@ -1634,8 +1644,8 @@ export function liveSource(
       return coverageFromFeed(feed);
     },
     async comments(refs) {
-      if (cfg.projector.baseUrl) {
-        const live = await projectorComments(cfg.projector.baseUrl, refs);
+      if (projectorReader) {
+        const live = await projectorReader.comments(refs);
         if (live) {
           provenance.comments = "live (projector)";
           return live;
@@ -1648,7 +1658,7 @@ export function liveSource(
       return [];
     },
     async latestComments(refs) {
-      if (!cfg.projector.baseUrl) {
+      if (!projectorReader) {
         provenance.comments = COMMENTS_UNCONFIGURED;
         return [];
       }
