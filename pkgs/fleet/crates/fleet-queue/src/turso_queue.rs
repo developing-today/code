@@ -3259,6 +3259,35 @@ mod tests {
     }
 
     #[test]
+    fn claim_contention_sql_oracle_13602() {
+        // The fixture benchmark isolates the queued branch of the real
+        // default predicate and the id/status/attempts/timer recheck in
+        // claim_update_sql. Keep those seams visible so SQL drift fails
+        // before the Python contention oracle runs.
+        let src = test_source();
+        let pick = seg8217(&src, "pub(crate) fn default_pick_predicate(", "\npub(crate) fn handoff_pick_predicate(");
+        assert!(pick.contains("status = 'queued' AND attempts < max_attempts"));
+        assert!(pick.contains("not_before IS NULL OR not_before <= ?"));
+        let update = seg8217(&src, "pub(crate) fn claim_update_sql(", "\n/// The default (lane) pick predicate");
+        assert!(update.contains("WHERE id = ?"));
+        assert!(update.contains("AND ( {pick_predicate} )"));
+        assert!(update.contains("{PLATFORM_LIMIT_PICK_CLAUSE}"));
+
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claim_contention.py"))
+            .arg("--verify")
+            .output()
+            .expect("claim contention oracle requires Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "claim contention oracle failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn claim_quarantine_budget_is_separate_from_race_budget_9609() {
         // #9609 oracle: quarantines in the claim pick loop carry
         // their own budget (MAX_CLAIM_QUARANTINES_PER_CALL), sized
