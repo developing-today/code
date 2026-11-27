@@ -31,6 +31,8 @@ export interface Io {
   publicHost: string;
   /** What is deployed, for the health check. */
   version: string | null;
+  /** When it was deployed, for the health check. */
+  deployedAt: string | null;
   /** Work that may finish after the response has gone. */
   later: (work: Promise<unknown>) => void;
   now: () => number;
@@ -103,9 +105,17 @@ export async function route(request: Request, io: Io): Promise<Response> {
     const body = (await (await io.state(request)).json()) as Record<string, unknown>;
     // The hostname it is built for is said too: the host's setup script
     // will not put any other hostname behind this Worker.
-    return new Response(JSON.stringify({ ...body, version: io.version, host: io.publicHost }), {
-      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
-    });
+    const nowMs = io.now();
+    const deployedAtMs = Date.parse(io.deployedAt ?? "");
+    const hasDeploymentStamp = Number.isFinite(deployedAtMs) && deployedAtMs <= nowMs;
+    const deployedAt = hasDeploymentStamp ? new Date(deployedAtMs).toISOString() : null;
+    const ageSeconds = deployedAt === null ? null : Math.floor((nowMs - deployedAtMs) / 1_000);
+    return new Response(
+      JSON.stringify({ ...body, version: io.version, deployedAt, ageSeconds, host: io.publicHost }),
+      {
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
+      },
+    );
   }
 
   const forHost = request.clone() as Request;

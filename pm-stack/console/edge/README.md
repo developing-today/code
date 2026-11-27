@@ -79,7 +79,11 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   shows at once. `/console/health` says, to anyone, which release of the
   Android app this side knows of (`androidRelease`), beside the copy of
   the laptop's build (`androidBuild`): that is how either arriving here
-  is checked from outside.
+  is checked from outside. Beside them it says which commit this Worker
+  was deployed from (`version`, the full commit id the release stamps as
+  the `VERSION` var) and when (`deployedAt`, the `DEPLOYED_AT` var the
+  release stamps with the deploy; `ageSeconds` counts the seconds since,
+  so a stale copy cannot pass the deploy's health gate as this one).
 - **No class keeps the platform's `fetch` itself.** In the Worker
   runtime `fetch` refuses to be called as a method of another object
   ("Illegal invocation"), and bun does not mind, so no test under bun
@@ -458,7 +462,8 @@ which drive this Worker's routing and state against the laptop's real
 handler; a bundle; a run of that bundle in the Worker runtime itself
 (`scripts/edge-smoke.ts`, below), because the tests run under bun and
 the two do not behave alike everywhere; the release; then a check that
-the deployed Worker answers its health check as that commit.
+the deployed Worker answers its health check as that commit, with a
+truthful deployed age.
 
 The release is [`release.mjs`](release.mjs), and it starts from whatever
 is there, including nothing:
