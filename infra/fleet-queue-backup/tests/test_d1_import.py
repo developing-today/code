@@ -14,7 +14,12 @@ An earlier revision of import_sql skipped the ingest step and polled
 with the filename; the live API rejects that with
 "current_bookmark => Required" (first live run, 2026-11-22, #8584).
 These tests pin the step order and the poll payload so the drift is
-caught hermetically next time.
+caught hermetically next time. Resume oracle: Cloudflare's official
+workers-sdk/packages/wrangler/src/d1/execute.ts and types.ts (checked
+2026-11-27). An init without upload_url is already validated server-side
+using the supplied MD5 etag and ingestion has started. It returns the
+first import response (complete, active with at_bookmark, or failure),
+not speculative stored-object length/hash metadata or an ingest filename.
 
 Regression (#16070): a PUT accepted with its response lost is
 recovered idempotently -- the retry init may omit upload_url when
@@ -204,6 +209,8 @@ class ImportFlowTest(unittest.TestCase):
             {"status": "error", "error": "stored object etag mismatch"},
             {"status": "error", "at_bookmark": "bm-resume"},
             {"status": "complete", "error": "validation failed"},
+            {"status": "complete", "success": False},
+            {"status": "complete", "errors": ["stored object length mismatch"]},
             {"status": "active"},
             {"status": "mystery", "at_bookmark": "bm-resume"},
             {"filename": "import.sql"},
@@ -212,6 +219,31 @@ class ImportFlowTest(unittest.TestCase):
             with self.subTest(resume=resume):
                 with self.assertRaisesRegex(RuntimeError, "retryable"):
                     self._lost_response_resume(resume)
+
+    def test_resume_poll_error_cannot_report_success(self):
+        for result in (
+            {"status": "error", "errors": ["import failed"]},
+            {"status": "complete", "success": False},
+            {"status": "mystery"}, None,
+        ):
+            with self.subTest(result=result), mock.patch.object(
+                fq_common.D1Client, "_call", side_effect=[
+                    {"status": "active", "at_bookmark": "bm-resume"}, result,
+                ],
+            ), self.assertRaisesRegex(RuntimeError, "retryable"):
+                fq_common.D1Client("token", "acct").import_sql("db-id", self.sql)
+
+    def test_normal_ingest_can_complete_immediately(self):
+        complete = {"status": "complete"}
+        with mock.patch.object(fq_common.D1Client, "_call", side_effect=[
+            {"upload_url": "https://upload.example/put", "filename": "import.sql"},
+            complete,
+        ]) as api:
+            self.assertEqual(
+                fq_common.D1Client("token", "acct").import_sql("db-id", self.sql),
+                complete,
+            )
+        self.assertEqual(api.call_count, 2)
 
     def test_upload_etag_mismatch_retries_then_rejects(self):
         with mock.patch.object(
