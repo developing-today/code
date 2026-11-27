@@ -405,7 +405,9 @@ export async function probeBroker(
   fetchImpl: typeof fetch,
   config: TransportProbeConfig,
 ): Promise<BrokerProbe> {
-  if (!config.accessId || !config.accessSecret) {
+  const accessId = config.accessId;
+  const accessSecret = config.accessSecret;
+  if (!accessId || !accessSecret) {
     return { skipped: "Access service token not configured" };
   }
   const url = `${String(config.brokerUrl).replace(/\/+$/, "")}/healthz`;
@@ -413,8 +415,8 @@ export async function probeBroker(
     return await timed(config.timeoutMs ?? 10000, async (signal) => {
       const res = await fetchImpl(url, {
         headers: {
-          "CF-Access-Client-Id": config.accessId,
-          "CF-Access-Client-Secret": config.accessSecret,
+          "CF-Access-Client-Id": accessId,
+          "CF-Access-Client-Secret": accessSecret,
           "User-Agent": PROBE_UA,
         },
         redirect: "manual",
