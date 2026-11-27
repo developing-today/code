@@ -3017,6 +3017,11 @@ export class Edge {
         // sent toward it. A name already given to a machine keeps to
         // that machine, as before. No machine having said what it can
         // do (an older console): relayed as before.
+        // Promote expired askings before an early stale-machine hold.
+        // Otherwise the newer row can enter the queue ahead of older
+        // work whose relay deadline has already passed.
+        const about = subjectOf(kind, args as Record<string, unknown>);
+        if (about !== null) await this.outstandingRelays(about);
         const known = await this.knownMachines();
         const previous = id === null ? undefined : (await this.kv.get(`a:${id}`)) as Acted | undefined;
         let target = previous?.forKid ? known.find((m) => m.kid === previous.forKid) : undefined;
@@ -3060,7 +3065,6 @@ export class Edge {
         // for a machine that is about the same thing. Sent straight to
         // a machine that has just come back, it would be done before
         // the older one, which would undo it when its turn came.
-        const about = subjectOf(kind, args as Record<string, unknown>);
         if (about !== null) {
           const relaying = await this.outstandingRelays(about);
           if (relaying.some((mark) => mark.id !== id)) {
