@@ -163,6 +163,12 @@ describe("key-bound multi-machine routing (#13492 slice 2)", () => {
     // Capability changes on the other key and identical names do not steal it.
     const delivered = await sync(second, ["issue.comment"]);
     expect(await delivered.json()).toMatchObject({ commands: [{ id: "00000000-0000-4000-8000-000000000002", forKid: secondKid }] });
+    // A retry with the same action id cannot relay to the first machine,
+    // even after that machine starts advertising the same capability.
+    const retry = await act("00000000-0000-4000-8000-000000000002", "issue.comment", { issue: 301, text: "second only" });
+    expect(retry.headers.get("x-pm-next")).toBeNull();
+    expect(await retry.json()).toMatchObject({ held: true });
+    expect(await (await sync(first, ["task.move", "issue.comment"])).json()).toMatchObject({ commands: [] });
     s.restart();
     // Same signed key can acknowledge even with an older, nameless report.
     await sync(second, [], { legacy: true, acks: [{ id: "00000000-0000-4000-8000-000000000002", ok: true }] });

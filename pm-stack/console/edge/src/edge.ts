@@ -2140,6 +2140,13 @@ export class Edge {
       // Old unbound records belonged to the original tunnel machine.
       if (held[at].forKid ? held[at].forKid !== kid : !first) continue;
       const [done] = held.splice(at, 1);
+      // Keep a terminal answer when the held row leaves: otherwise a
+      // phone retry can choose another machine and execute it twice.
+      await this.kv.put(`a:${done.id}`, { at: now, kind: done.kind, state: "done",
+        status: ack.ok ? 200 : 503,
+        body: ack.ok ? { ok: true, result: null } : { error: String(ack.error ?? "the machine could not do it") },
+        forKid: kid, for: done.for } satisfies Acted);
+      await this.actedIndex(done.id);
       settled = true;
       if (ack.ok) {
         await this.dropAct(done.id); // the host's own record shows it done
@@ -2256,6 +2263,12 @@ export class Edge {
       if ((await this.outstandingRelays(about)).length > 0) mine.add(about);
     }
     const commands = held.filter((h) => {
+      const about = subjectOf(h.kind, h.args);
+      const skip = () => {
+        // A newer command on another key must not overtake this one.
+        if (about !== null) mine.add(about);
+        return false;
+      };
       // What waits for a machine goes only to one that says it can do
       // it (#13492 slice 2): a machine is never handed a kind it did
       // not declare, nor one that is held for another machine by
@@ -2267,9 +2280,8 @@ export class Edge {
       // Key-bound work survives a rename or an older report with no name.
       // Name-only records predate multi-key routing and belong to the
       // original tunnel key, not any new machine claiming the same name.
-      if (h.forKid !== undefined ? h.forKid !== kid : h.for !== undefined && !first) return false;
-      if (said !== null && !machineCanDo(said, h.kind)) return false;
-      const about = subjectOf(h.kind, h.args);
+      if (h.forKid !== undefined ? h.forKid !== kid : h.for !== undefined && !first) return skip();
+      if (said !== null && !machineCanDo(said, h.kind)) return skip();
       return about === null || !mine.has(about);
     });
     let marked = false;
@@ -2286,6 +2298,15 @@ export class Edge {
         handed.add(command.id);
         marked = true;
       }
+    }
+    // Persist the key independently of the held queue. A device retry
+    // must not choose a different machine after delivery (or after ACK).
+    for (const command of commands) {
+      const previous = (await this.kv.get(`a:${command.id}`)) as Acted | undefined;
+      await this.kv.put(`a:${command.id}`, { at: this.now(), kind: command.kind,
+        state: "given", relays: Math.max(1, previous?.relays ?? 0),
+        forKid: kid, for: command.for } satisfies Acted);
+      await this.actedIndex(command.id);
     }
     if (bound) await this.saveHeld();
     if (marked) await this.saveHanded();
@@ -3426,6 +3447,12 @@ export class Edge {
     };
     insertHeld(held, item);
     await this.saveHeld();
+    if (forKid !== undefined && previous?.state !== "done") {
+      await this.kv.put(`a:${item.id}`, { at: this.now(), kind, state: "given",
+        relays: previous?.relays ?? (went === "unknown" ? 1 : 0),
+        forKid, for: waitsFor } satisfies Acted);
+      await this.actedIndex(item.id);
+    }
     const waits = (await this.heldWaits(cfg)).get(item.id) ?? "machine";
     await this.audit({
       at: item.at,
