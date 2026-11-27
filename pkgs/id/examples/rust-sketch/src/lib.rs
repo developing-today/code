@@ -2,8 +2,8 @@
 //! first-app scenario (#13608). Draft geometry is transient UI state; only
 //! confirmed strokes and undo tombstones enter portable records/snapshots.
 
-use plaza_sdk::json::{self, Value};
 use plaza_sdk::World;
+use plaza_sdk::json::{self, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stroke {
