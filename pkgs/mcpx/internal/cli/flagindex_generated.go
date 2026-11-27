@@ -31,6 +31,11 @@ var handFlagIndex = map[string][]HandFlag{
 		{Name: "header", Usage: "a header sent with every operation call, as KEY=VALUE (repeatable)"},
 		{Name: "replace", Usage: "overwrite a declaration of the same name"},
 	},
+	"auth key create": {
+		{Name: "user", Usage: "user or standing machine role that owns the key"},
+		{Name: "label", Usage: "operator-visible name for this key"},
+		{Name: "ceiling", Usage: "named capability ceiling (default: discovery)"},
+	},
 	"batch": {
 		{Name: "session", Usage: "session key for stateful servers"},
 		{Name: "raw", Usage: "print the full JSON response"},

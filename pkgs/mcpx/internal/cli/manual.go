@@ -328,7 +328,7 @@ func handCommands() []Command {
 		},
 		{
 			Name: "auth", Group: "daemon",
-			Local:   "Manages keys in the local daemon state directory; no HTTP endpoint provisions or lists credentials.",
+			Local:   "Manages keys in the local daemon state directory; no HTTP endpoint provisions, lists, or revokes credentials.",
 			Usage:   "key <create|list|revoke> [flags]",
 			Summary: "create, list, and revoke local daemon keys",
 			Detail: "`mcpx auth key create` requires --user and --label; --ceiling " +
