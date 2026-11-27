@@ -297,7 +297,10 @@ pub fn format_owner_load(owner: &Value) -> String {
 /// (pretty JSON with `as_json`, operator lines otherwise); a
 /// coordinator failure is exit 3 naming the unavailability — never
 /// a fabricated empty load view.
-pub fn placement_load_report(answer: Result<Value, String>, as_json: bool) -> (i32, String, String) {
+pub fn placement_load_report(
+    answer: Result<Value, String>,
+    as_json: bool,
+) -> (i32, String, String) {
     match answer {
         Err(e) => (
             3,
@@ -306,8 +309,8 @@ pub fn placement_load_report(answer: Result<Value, String>, as_json: bool) -> (i
         ),
         Ok(load) => {
             if as_json {
-                let text = serde_json::to_string_pretty(&load)
-                    .unwrap_or_else(|_| "null".to_string());
+                let text =
+                    serde_json::to_string_pretty(&load).unwrap_or_else(|_| "null".to_string());
                 return (0, format!("{text}\n"), String::new());
             }
             let mut out = String::from("placement load (broker coordinator /placement-load):\n");
