@@ -27,9 +27,9 @@ Content-Type: application/json
 
 ## The gate and the pinned identity — read this plainly
 
-The endpoint is gated by the Worker's one shared gate token (secret name `GATE_TOKEN`, presented as `Authorization: Bearer &lt;token&gt;`), checked once before dispatch; the MCP handler itself never sees the token. Method is checked before the gate, so an unauthenticated `GET /mcp` gets 405, and an unauthenticated POST gets the shared 401 envelope — `{ "error": { "code": "unauthorized", "message": "missing or invalid gate token" } }` — which is a plain HTTP error, not a JSON-RPC error, because it happens before the MCP layer runs.
+The endpoint checks credentials before dispatch. If the optional `AGENT_TOKENS` Worker secret is configured, it must be a non-empty JSON object mapping stable ids (letters, digits, `.`, `_`, `:`, `-`) to distinct bearer tokens at least 16 characters long. The matching token determines `agent_id`; request headers and MCP parameters cannot override it. In this mode `GATE_TOKEN` is not accepted on `/mcp`. Without `AGENT_TOKENS`, the legacy `GATE_TOKEN` resolves to `hosted-per-user`. Method is checked before authentication, so `GET /mcp` gets 405; missing or invalid POST credentials return HTTP 401 before JSON-RPC dispatch.
 
-There is **no per-client identity on this endpoint**. No client name, agent credential or per-agent ceiling exists in the protocol as implemented. **All MCP callers share the one hosted identity: disclosure context `hosted-per-user`, sensitivity ceiling `personal`.** A caller cannot request a different ceiling or context — neither the tool schema nor any method parameter has a field for either. Per-agent identity stamping, per-agent ceilings and corpus scoping, and a query audit log are later slices of the MCP work (#8625) and are deliberately not improvised in this endpoint.
+Each valid MCP search emits a structured Worker log event (`event: atlas_mcp_query`) containing the authenticated `agent_id`, SHA-256 of the normalized query (not its raw text), k, status, cache result, and timestamp. The backend request still uses the shared disclosure context `hosted-per-user` and sensitivity ceiling `personal`; per-agent ceilings and corpus scoping are separate, unimplemented #8625 work. The four caller surfaces are not configured with distinct credentials by this code change alone.
 
 ## Methods
 

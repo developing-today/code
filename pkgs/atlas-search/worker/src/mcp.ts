@@ -8,11 +8,11 @@
  * index.ts before dispatch, and the search itself carries the
  * same pinned `hosted-per-user` disclosure context and
  * `personal` ceiling and the same per-query Durable Object
- * cache. Callers of this endpoint therefore share the one
- * hosted identity the REST surface already serves; per-agent
- * identity stamping, per-agent ceilings/corpus scoping, and
- * the query audit log are #8625's later slices and are
- * deliberately not improvised here.
+ * cache. If AGENT_TOKENS is configured, caller identity is
+ * resolved from its bearer credential and recorded in a
+ * query audit event; the shared hosted identity remains the
+ * compatibility fallback. Per-agent ceilings and corpus
+ * scoping are separate #8625 slices.
  *
  * Nothing else is exposed: cache purge is a write and cache
  * inspect is an operator/audit surface, so neither becomes a
@@ -93,6 +93,30 @@ function paramsObject(msg: JsonRpcMessage): Record<string, unknown> {
   return typeof msg.params === "object" && msg.params !== null ? (msg.params as Record<string, unknown>) : {};
 }
 
+async function recordQueryAudit(
+  agentId: string,
+  query: string,
+  k: number,
+  status: number,
+  cache?: string,
+): Promise<void> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(query));
+  const queryHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  // Worker logs are the audit sink. Do not retain raw query text: its
+  // stable digest is enough to correlate an execution without exposing it.
+  console.log(
+    JSON.stringify({
+      event: "atlas_mcp_query",
+      agent_id: agentId,
+      query_sha256: queryHash,
+      k,
+      status,
+      ...(cache === undefined ? {} : { cache }),
+      at: new Date().toISOString(),
+    }),
+  );
+}
+
 /**
  * Handle one JSON-RPC message. Returns the response object, or
  * null for a notification (a message with no `id` is never
@@ -103,6 +127,7 @@ async function handleMessage(
   msg: JsonRpcMessage,
   env: SearchEnv,
   protocolVersion: string | null,
+  agentId: string,
 ): Promise<Record<string, unknown> | null> {
   if (!("id" in msg)) return null;
   const id: JsonRpcId = msg.id ?? null;
@@ -140,7 +165,16 @@ async function handleMessage(
       }
       const query = normalizeQuery(args.query);
       if (!query) return rpcError(id, -32602, "arguments.query must not be empty");
-      const { status, payload } = await executeSearch(env, query, clampK(args.k));
+      const k = clampK(args.k);
+      let outcome: Awaited<ReturnType<typeof executeSearch>>;
+      try {
+        outcome = await executeSearch(env, query, k);
+      } catch (error) {
+        await recordQueryAudit(agentId, query, k, 500);
+        throw error;
+      }
+      const { status, payload } = outcome;
+      await recordQueryAudit(agentId, query, k, status, typeof payload.cache === "string" ? payload.cache : undefined);
       const text = JSON.stringify(payload);
       if (status !== 200) {
         return rpcResult(id, { content: [{ type: "text", text }], isError: true });
@@ -160,7 +194,7 @@ function jsonResponse(status: number, body: unknown): Response {
  * The POST /mcp handler. The caller (index.ts) has already
  * applied the gate; this owns the JSON-RPC layer only.
  */
-export async function handleMcp(req: Request, env: SearchEnv): Promise<Response> {
+export async function handleMcp(req: Request, env: SearchEnv, agentId: string): Promise<Response> {
   const raw = await readTextUpTo(req);
   if (raw === null) {
     return jsonResponse(413, rpcError(null, -32600, "body is larger than the 64 KiB limit"));
@@ -182,7 +216,7 @@ export async function handleMcp(req: Request, env: SearchEnv): Promise<Response>
         responses.push(rpcError(null, -32600, "invalid request: batch items must be objects"));
         continue;
       }
-      const resp = await handleMessage(item as JsonRpcMessage, env, protocolVersion);
+      const resp = await handleMessage(item as JsonRpcMessage, env, protocolVersion, agentId);
       if (resp !== null) responses.push(resp);
     }
     if (responses.length === 0) return new Response(null, { status: 202 });
@@ -191,7 +225,7 @@ export async function handleMcp(req: Request, env: SearchEnv): Promise<Response>
   if (typeof parsed !== "object" || parsed === null) {
     return jsonResponse(400, rpcError(null, -32600, "invalid request: body must be a JSON object or batch"));
   }
-  const resp = await handleMessage(parsed as JsonRpcMessage, env, protocolVersion);
+  const resp = await handleMessage(parsed as JsonRpcMessage, env, protocolVersion, agentId);
   if (resp === null) return new Response(null, { status: 202 });
   return jsonResponse(200, resp);
 }
