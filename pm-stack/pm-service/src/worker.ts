@@ -22,6 +22,8 @@ import { createDashboardHandler } from "./dashboard/dashboard.ts";
 import { createAsyncReadApiHandler } from "./read-api/async-api.ts";
 import { libsqlHttpDb } from "./tenant-store/libsql-http.ts";
 import { BoardDO } from "./board-do.ts";
+import { completeBrowserLogin, startBrowserLogin, type BrowserOAuthDeps } from "./oauth-pkce.ts";
+import { authenticateBrowserSession, logoutBrowserSession } from "./session.ts";
 
 export { BoardDO };
 
@@ -30,6 +32,8 @@ export interface PmServiceEnv {
   PM_TENANT_DB_URL?: string;
   PM_TENANT_DB_TOKEN?: string;
   BOARD_DO?: DurableObjectNamespace;
+  /** OAuth/session adapters are supplied by the deployment composition. */
+  BROWSER_OAUTH?: BrowserOAuthDeps;
 }
 
 const json = (body: unknown, status = 200): Response =>
@@ -39,6 +43,33 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
   const path = new URL(req.url).pathname;
   if (req.method === "GET" && path === "/health") {
     return json({ ok: true, service: "pm-service", version: env.VERSION ?? "unknown" });
+  }
+  if (path === "/login" && req.method === "GET") {
+    if (!env.BROWSER_OAUTH) return json({ error: "browser login is not configured" }, 503);
+    return startBrowserLogin(env.BROWSER_OAUTH);
+  }
+  if (path === "/oauth/callback" && req.method === "GET") {
+    if (!env.BROWSER_OAUTH) return json({ error: "browser login is not configured" }, 503);
+    return completeBrowserLogin(req, env.BROWSER_OAUTH);
+  }
+  if (path === "/logout" && req.method === "POST") {
+    if (!env.BROWSER_OAUTH) return json({ error: "browser login is not configured" }, 503);
+    const cookie = await logoutBrowserSession(req, {
+      store: env.BROWSER_OAUTH.sessions,
+      audit: env.BROWSER_OAUTH.audit,
+    });
+    return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": cookie, "cache-control": "no-store" } });
+  }
+  if (env.BROWSER_OAUTH && path !== "/login" && path !== "/oauth/callback") {
+    const auth = await authenticateBrowserSession(req, {
+      store: env.BROWSER_OAUTH.sessions,
+      resolveLivePrincipal: env.BROWSER_OAUTH.resolveLivePrincipal,
+    });
+    if (!auth.ok) return json({ error: "unauthenticated" }, 401);
+    // Refresh the sliding cookie expiry on all authenticated responses.
+    // Routes below own their responses, so the shared dispatcher applies it
+    // by wrapping the final response at the end of this function.
+    req = new Request(req, { headers: new Headers(req.headers) });
   }
   const boardMatch = /^\/api\/boards\/([^/]+)\/subscribe$/.exec(path);
   if (boardMatch && req.method === "GET") {

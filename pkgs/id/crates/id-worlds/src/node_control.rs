@@ -7,7 +7,10 @@
 //! the same control socket `id host run` binds: `id host start`, `stop`,
 //! `archive`, `restore`, `list`, `inspect`, `pin`, `wake`, `export` and
 //! `import` act on the worlds the node is serving, with the same request
-//! and response lines ([`ControlRequest`], [`ControlResponse`]).
+//! and response lines ([`ControlRequest`], [`ControlResponse`]). `id host
+//! snapshots` sets the node's snapshot policy, and the node takes and
+//! prunes scheduled sets of its live worlds as `id host run` does
+//! (#13739).
 //!
 //! A start records the operator's act first and then opens the world in
 //! the hub, so it works whatever the world's wake mode is; a failed open
@@ -19,16 +22,21 @@
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use tokio::net::UnixListener;
 
-use crate::host::{HostLifecycle, LifecycleState, census_of, inspect_world, settings_body};
-use crate::host_control::{
-    ControlRequest, ControlResponse, export_body, parse_source, read_request, state_body,
-    write_response,
+use crate::host::{
+    HostLifecycle, LifecycleState, census_of, inspect_world, settings_body, snapshot_live_world,
+    snapshot_settings_body,
 };
+use crate::host_control::{
+    ControlRequest, ControlResponse, export_body, log_snapshot_run, parse_source, read_request,
+    state_body, write_response,
+};
+use crate::host_snapshots::{SNAPSHOT_TICK_SECS, SnapshotRun};
 use crate::world_export::export_world_to_file;
 use crate::world_hub::WorldHub;
 
@@ -119,6 +127,13 @@ impl NodeControl {
                 self.host.set_wake(&world, wake)?;
                 settings_body(&self.host.snapshot(), &world)
             }
+            ControlRequest::SetSnapshots { world, policy } => {
+                self.host.set_snapshot_policy(world.as_deref(), policy)?;
+                snapshot_settings_body(self.host.root(), &self.host.snapshot(), world.as_deref())
+            }
+            ControlRequest::Snapshots { world } => {
+                snapshot_settings_body(self.host.root(), &self.host.snapshot(), world.as_deref())
+            }
             ControlRequest::Export { world, path } => {
                 let service = self.hub.open_service(&world).with_context(|| {
                     format!("world {world:?} is not live: start it before exporting")
@@ -179,8 +194,51 @@ impl NodeControl {
         Ok(state_body(world, LifecycleState::Asleep))
     }
 
+    /// Take a set of every world the node serves live whose snapshot
+    /// policy says it is due at `now_secs`, then prune its sets (#13739).
+    ///
+    /// A node with no signing key takes nothing. One world failing is
+    /// recorded in the run and never stops the others.
+    pub async fn run_due_snapshots(&self, now_secs: u64) -> SnapshotRun {
+        let mut run = SnapshotRun::default();
+        let Some(key) = self.signing_key.as_ref() else {
+            return run;
+        };
+        let file = self.host.snapshot();
+        let snapshot_root = file.snapshot_root(self.host.root());
+        for (name, record) in &file.worlds {
+            if record.state != LifecycleState::Live {
+                continue;
+            }
+            let policy = file.snapshot_policy(name);
+            if !policy.is_on() {
+                continue;
+            }
+            // A world recorded live but not open in the hub has nothing to
+            // export until a session wakes it.
+            let Some(service) = self.hub.open_service(name) else {
+                continue;
+            };
+            if let Err(error) = snapshot_live_world(
+                &service,
+                key,
+                name,
+                &policy,
+                &snapshot_root,
+                now_secs,
+                &mut run,
+            )
+            .await
+            {
+                run.failed.push((name.clone(), format!("{error:#}")));
+            }
+        }
+        run
+    }
+
     /// Answer requests on `listener` one at a time until `shutdown`
     /// resolves.
+    /// Between requests it takes the scheduled snapshots that are due.
     ///
     /// # Errors
     ///
@@ -192,9 +250,17 @@ impl NodeControl {
         shutdown: impl Future<Output = ()>,
     ) -> Result<()> {
         tokio::pin!(shutdown);
+        let mut snapshots = tokio::time::interval(Duration::from_secs(SNAPSHOT_TICK_SECS));
+        snapshots.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
+                _ = snapshots.tick() => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.as_secs());
+                    log_snapshot_run(&self.run_due_snapshots(now).await);
+                }
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _)) => {
                         if let Err(error) = self.answer(stream).await {

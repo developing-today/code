@@ -3537,6 +3537,70 @@ fn test_cli_parse_host_pin_and_wake_mode() {
 }
 
 #[test]
+fn test_cli_parse_host_snapshots() {
+    let cli = Cli::parse_from([
+        "id",
+        "host",
+        "snapshots",
+        "/data",
+        "--every",
+        "6h",
+        "--keep",
+        "7",
+        "--max-age",
+        "30d",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Snapshots {
+            world,
+            every,
+            keep,
+            max_age,
+            off,
+            inherit,
+            ..
+        })) => {
+            assert_eq!(world, None);
+            assert_eq!(every.as_deref(), Some("6h"));
+            assert_eq!(keep, Some(7));
+            assert_eq!(max_age.as_deref(), Some("30d"));
+            assert!(!off && !inherit);
+        }
+        _ => panic!("Expected host snapshots"),
+    }
+    let cli = Cli::parse_from([
+        "id",
+        "host",
+        "snapshots",
+        "/data",
+        "--world",
+        "w",
+        "--inherit",
+    ]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Snapshots { inherit: true, .. }))
+    ));
+    // A cadence needs a keep count, and inherit needs a world.
+    assert!(Cli::try_parse_from(["id", "host", "snapshots", "/data", "--every", "6h"]).is_err());
+    assert!(Cli::try_parse_from(["id", "host", "snapshots", "/data", "--inherit"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "host",
+            "snapshots",
+            "/data",
+            "--off",
+            "--every",
+            "6h",
+            "--keep",
+            "1"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn test_cli_parse_host_key_export_import() {
     let cli = Cli::parse_from(["id", "host", "key", "/data"]);
     assert!(matches!(
