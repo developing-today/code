@@ -602,7 +602,7 @@ impl WorldHandle {
         &self,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        self.submit_form_result_with_session(None, None, result)
+        self.submit_form_result_with_session(None, None, None, result)
             .await
     }
 
@@ -612,9 +612,10 @@ impl WorldHandle {
         &self,
         token: JoinCapability,
         session_id: crate::world::SessionId,
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        self.submit_form_result_with_session(Some(token), Some(session_id), result)
+        self.submit_form_result_with_session(Some(token), Some(session_id), caller_account, result)
             .await
     }
 
@@ -622,6 +623,7 @@ impl WorldHandle {
         &self,
         token: Option<JoinCapability>,
         session_id: Option<crate::world::SessionId>,
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
         let (reply, response) = oneshot::channel();
@@ -629,6 +631,7 @@ impl WorldHandle {
             .send(WorldCommand::SubmitFormResult {
                 token,
                 session_id,
+                caller_account,
                 result,
                 reply,
             })
