@@ -272,6 +272,17 @@ pub struct ConversionReceipt {
     pub reversal_of: Option<u128>,
 }
 
+/// The response to a conversion request: the unchanged generic
+/// signed gateway receipt plus the conversion-specific audit body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversionResponse {
+    /// The generic gateway receipt, signed with the gateway key.
+    pub signed_receipt: SignedReceipt,
+    /// The conversion terms and every ledger leg, returned alongside
+    /// the signed receipt without changing the shared wire format.
+    pub conversion_receipt: ConversionReceipt,
+}
+
 /// The role a stored leg plays in its chain: the leg's transfer
 /// code names it (the batch builder stamps one code per role);
 /// the positional reading of the chain (source first, destination
@@ -476,7 +487,8 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
     /// (module docs): verify, resolve, answer from the intent
     /// store if the request already has a recorded outcome,
     /// authorize, verify the presented authorisation, then
-    /// write ahead and submit the linked chain.
+    /// write ahead and submit the linked chain. Returns the generic
+    /// signed receipt together with the conversion-specific audit body.
     ///
     /// # Errors
     ///
@@ -492,7 +504,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         body: &[u8],
         now: u64,
         presented: &ConversionPresentation,
-    ) -> Result<SignedReceipt, ServiceError> {
+    ) -> Result<ConversionResponse, ServiceError> {
         let verified = verify_envelope(&mut self.replays, signed, body, now)?;
         let CurrencyOp::Convert(op) = &verified.request.op else {
             return Err(ServiceError::Unsupported(
@@ -509,14 +521,42 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             .get(idempotency)
             .map_err(ServiceError::IntentStore)?
         {
-            return self.replay(intent, None);
+            let signed_receipt = self.replay(intent, None)?;
+            let conversion_receipt = self
+                .intents
+                .get(idempotency)
+                .map_err(ServiceError::IntentStore)?
+                .and_then(|intent| intent.conversion_receipt())
+                .ok_or_else(|| {
+                    ServiceError::IntentStore(format!(
+                        "conversion intent {idempotency:032x} has no conversion receipt"
+                    ))
+                })?;
+            return Ok(ConversionResponse {
+                signed_receipt,
+                conversion_receipt,
+            });
         }
         self.authorize_convert(&account, &verified.request.op)?;
         let authorized = Authorized {
             account,
             idempotency,
         };
-        self.convert(&authorized, op, presented, now)
+        let signed_receipt = self.convert(&authorized, op, presented, now)?;
+        let conversion_receipt = self
+            .intents
+            .get(idempotency)
+            .map_err(ServiceError::IntentStore)?
+            .and_then(|intent| intent.conversion_receipt())
+            .ok_or_else(|| {
+                ServiceError::IntentStore(format!(
+                    "posted conversion {idempotency:032x} has no conversion receipt"
+                ))
+            })?;
+        Ok(ConversionResponse {
+            signed_receipt,
+            conversion_receipt,
+        })
     }
 
     /// Issue a quote for a `convert` request (#3802): the signed

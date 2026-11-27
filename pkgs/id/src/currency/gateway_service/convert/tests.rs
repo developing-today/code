@@ -19,7 +19,7 @@ use crate::currency::gateway::{
     Convert as GwConvert, CurrencyOp, CurrencyRequest, Issue as GwIssue,
     RegisterCurrency as GwRegister, sign_request,
 };
-use crate::currency::gateway_poc::{SignedReceipt, verify_receipt};
+use crate::currency::gateway_poc::verify_receipt;
 use crate::currency::graph::{
     CurrencyBinding, CurrencyDefinition, CurrencyId, SupplyCap, TokenIssue, sign_definition,
     sign_issue,
@@ -326,7 +326,7 @@ fn convert<B: LedgerBackend, I: IntentStore>(
     client_request_id: u128,
     amount: u128,
     presented: &ConversionPresentation,
-) -> Result<SignedReceipt, ServiceError> {
+) -> Result<ConversionResponse, ServiceError> {
     let request = convert_request(fx, client_request_id, amount);
     let device_key = fx.alice.device_key.clone();
     let (signed, body) = sign(fx, &device_key, &request);
@@ -383,10 +383,36 @@ fn convert_posts_one_linked_chain_and_replays_from_its_intent() {
     let auth = authorisation(&fx);
     let presented = present(&fx.euro_issuer, &auth, None);
 
-    let receipt = convert(&mut fx, 9, 1_000, &presented).expect("conversion posts");
-    assert!(verify_receipt(&fx.gateway_vk, &receipt));
-    assert_eq!(receipt.receipt.op, "convert");
-    assert_eq!(receipt.receipt.account, fx.alice.account);
+    let response = convert(&mut fx, 9, 1_000, &presented).expect("conversion posts");
+    assert!(verify_receipt(&fx.gateway_vk, &response.signed_receipt));
+    assert_eq!(response.signed_receipt.receipt.op, "convert");
+    assert_eq!(response.signed_receipt.receipt.account, fx.alice.account);
+    assert_eq!(
+        response.conversion_receipt.conversion_id,
+        response.signed_receipt.receipt.idempotency
+    );
+    assert_eq!(
+        response.conversion_receipt.outcome,
+        ConversionOutcome::Posted
+    );
+    assert_eq!(response.conversion_receipt.legs.len(), 3);
+    assert_eq!(
+        response.conversion_receipt.authorisation_id,
+        auth.authorisation_id
+    );
+    assert_eq!(
+        response.conversion_receipt.authorisation_version,
+        auth.version
+    );
+    assert_eq!(response.conversion_receipt.quote_id, None);
+    assert_eq!(
+        (
+            response.conversion_receipt.amount_in,
+            response.conversion_receipt.fee,
+            response.conversion_receipt.amount_out
+        ),
+        (1_000, 10, 900)
+    );
 
     // 1 000 DOLR at 0.9 is 900 EURO; the 1% fee is 10 DOLR on
     // its own leg to the DOLR issuer's fee account.
@@ -428,7 +454,11 @@ fn convert_posts_one_linked_chain_and_replays_from_its_intent() {
 
     // A retry is answered from the intent; nothing moves twice.
     let replay = convert(&mut fx, 9, 1_000, &presented).expect("retry answers");
-    assert_eq!(replay.receipt, receipt.receipt);
+    assert_eq!(
+        replay.signed_receipt.receipt,
+        response.signed_receipt.receipt
+    );
+    assert_eq!(replay.conversion_receipt, response.conversion_receipt);
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 900);
     assert_eq!(fx.svc.conversion_usage(&lp(&fx), 7), 1_000);
 
@@ -656,7 +686,11 @@ fn restart_rebuilds_usage_from_the_intent_log() {
         "{error:?}"
     );
     let replay = convert(&mut fx, 9, 1_000, &presented).expect("retry answers");
-    assert_eq!(replay.receipt, receipt.receipt);
+    assert_eq!(
+        replay.signed_receipt.receipt,
+        receipt.signed_receipt.receipt
+    );
+    assert_eq!(replay.conversion_receipt, receipt.conversion_receipt);
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 900);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -686,7 +720,11 @@ fn lost_answer_is_recovered_by_leg_id() {
         report.findings
     );
     let receipt = convert(&mut fx, 9, 1_000, &presented).expect("recovery finalizes");
-    assert!(verify_receipt(&fx.gateway_vk, &receipt));
+    assert!(verify_receipt(&fx.gateway_vk, &receipt.signed_receipt));
+    assert_eq!(
+        receipt.conversion_receipt.outcome,
+        ConversionOutcome::Posted
+    );
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 900);
     assert_eq!(balance(&fx, &fx.dollar, &fx.alice), 8_990);
 
@@ -834,9 +872,15 @@ fn reversal_receipt_names_the_original_conversion() {
     };
     let device_key = fx.alice.device_key.clone();
     let (signed, body) = sign(&mut fx, &device_key, &request);
-    fx.svc
+    let response = fx
+        .svc
         .handle_convert(&signed, &body, NOW, &reversal)
         .expect("reversal posts");
+    assert_eq!(response.conversion_receipt.reversal_of, Some(original_id));
+    assert_eq!(
+        response.conversion_receipt.outcome,
+        ConversionOutcome::Posted
+    );
     assert_eq!(balance(&fx, &fx.dollar, &fx.alice), 8_990 + 500);
     assert_eq!(balance(&fx, &fx.euro, &fx.alice), 400);
 
