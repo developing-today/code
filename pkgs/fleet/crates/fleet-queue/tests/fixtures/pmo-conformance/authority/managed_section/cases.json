@@ -1,0 +1,179 @@
+{
+  "family": "authority.managed_section",
+  "baseline_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+  "new_section": "\nstatus: running\n",
+  "plans": [
+    {
+      "name": "default_unverified_is_denied",
+      "capability": "unverified",
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "denied_unsupported"
+      }
+    },
+    {
+      "name": "verified_with_blank_evidence_is_denied",
+      "capability": {
+        "verified": "   "
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "denied_unsupported"
+      }
+    },
+    {
+      "name": "opt_in_without_risk_ack_is_denied",
+      "capability": "unverified",
+      "best_effort_opt_in": {
+        "approved_by": "owner:drew",
+        "acknowledges_human_clobber_risk": false
+      },
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "denied_unsupported"
+      }
+    },
+    {
+      "name": "opt_in_without_approver_is_denied",
+      "capability": "unverified",
+      "best_effort_opt_in": {
+        "approved_by": " ",
+        "acknowledges_human_clobber_risk": true
+      },
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "denied_unsupported"
+      }
+    },
+    {
+      "name": "denial_precedes_malformed_input",
+      "capability": "unverified",
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "denied_unsupported"
+      }
+    },
+    {
+      "name": "verified_plans_conditional_write",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "guarantee": "verified_conditional_write",
+        "label": "verified conditional write",
+        "body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: running\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n"
+      }
+    },
+    {
+      "name": "opt_in_plans_best_effort",
+      "capability": "unverified",
+      "best_effort_opt_in": {
+        "approved_by": "owner:drew",
+        "acknowledges_human_clobber_risk": true
+      },
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "guarantee": "best_effort_no_cas",
+        "label": "best-effort (no CAS; human-clobber race disclosed)",
+        "body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: running\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n"
+      }
+    },
+    {
+      "name": "outside_bytes_altered",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKept this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "outside_bytes_altered"
+      }
+    },
+    {
+      "name": "concurrent_edit_in_section",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: parked\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "concurrent_edit"
+      }
+    },
+    {
+      "name": "missing_end_marker",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "malformed_markers",
+        "markers": "missing_end"
+      }
+    },
+    {
+      "name": "missing_start_marker",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "malformed_markers",
+        "markers": "missing_start"
+      }
+    },
+    {
+      "name": "duplicate_markers",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n<!-- fleet:managed-section:start --><!-- fleet:managed-section:end -->",
+      "expected": {
+        "refusal": "malformed_markers",
+        "markers": "duplicate_markers"
+      }
+    },
+    {
+      "name": "end_before_start",
+      "capability": {
+        "verified": "capability test run recorded on the adapter"
+      },
+      "best_effort_opt_in": null,
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:end -->\nstatus: queued\n<!-- fleet:managed-section:start -->\n\nTrailing human text.\n",
+      "expected": {
+        "refusal": "malformed_markers",
+        "markers": "end_before_start"
+      }
+    }
+  ],
+  "timeouts": [
+    {
+      "name": "no_reread_yet",
+      "current_body": null,
+      "expected": "still_unknown"
+    },
+    {
+      "name": "patch_applied",
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: running\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": "applied"
+    },
+    {
+      "name": "patch_not_applied",
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: queued\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": "not_applied"
+    },
+    {
+      "name": "someone_else_edited",
+      "current_body": "## Notes from people\n\nKeep this.\n\n<!-- fleet:managed-section:start -->\nstatus: parked\n<!-- fleet:managed-section:end -->\n\nTrailing human text.\n",
+      "expected": "diverged"
+    }
+  ]
+}
