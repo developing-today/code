@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Oracle: controlled HTTP server responses, not a live outage or service health."""
-import contextlib
 import http.server
-import importlib.util
-import io
 import json
 from pathlib import Path
 import subprocess
@@ -15,7 +12,22 @@ SCRIPT = Path(__file__).with_name("tier-drill-probe.py")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    requests = []
+
     def do_GET(self):
+        self.requests.append(self.path)
+        if self.path == "/broken":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(b"b\r\nshort")
+            self.close_connection = True
+            return
+        if self.path == "/large":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"x" * 70000)
+            return
         if self.path == "/redirect":
             self.send_response(302)
             self.send_header("Location", "/login")
@@ -77,6 +89,20 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(row["status"])
         self.assertTrue(row["error"])
 
+    def test_protocol_failure_preserves_other_observations(self):
+        result = self.run_probe("--base-url", self.base, "--path", "/health", "--path", "/broken", "--path", "/health")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        rows = json.loads(result.stdout)["observations"]
+        self.assertEqual([r["httpSuccess"] for r in rows], [True, False, True])
+        self.assertEqual(rows[1]["error"], "IncompleteRead")
+
+    def test_large_body_is_explicitly_sampled(self):
+        result = self.run_probe("--base-url", self.base, "--path", "/large")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = json.loads(result.stdout)["observations"][0]
+        self.assertEqual(row["bodyBytes"], 65536)
+        self.assertTrue(row["bodyTruncated"])
+
     def test_strict_arguments_before_network(self):
         # Invalid options and path escapes must fail before any observation output.
         cases = [
@@ -85,11 +111,13 @@ class ProbeTests(unittest.TestCase):
             ["--path", "https://evil.example/"], ["--path", "/ok#fragment"],
             ["--base-url", self.base + "/prefix"], ["--base-url", "file:///etc/passwd"],
         ]
+        before = len(Handler.requests)
         for args in cases:
             with self.subTest(args=args):
                 result = self.run_probe("--base-url", self.base, "--path", "/health", *args)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertEqual(result.stdout, "")
+        self.assertEqual(len(Handler.requests), before)
 
 
 if __name__ == "__main__":

@@ -9,12 +9,18 @@ An HTTP success is not proof of surface correctness or an executed drill.
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from http.client import HTTPException
 import json
 import math
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import build_opener, Request
+from urllib.request import build_opener, HTTPRedirectHandler, Request
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
 
 
 def timestamp():
@@ -27,9 +33,9 @@ def arguments():
     parser.add_argument("--path", action="append", required=True)
     parser.add_argument("--timeout", type=float, default=10)
     args = parser.parse_args()
-    base = urlsplit(args.base_url)
     try:
-        valid_port = base.port
+        base = urlsplit(args.base_url)
+        base.port  # Validate the port before any request.
     except ValueError:
         parser.error("--base-url has an invalid port")
     if (base.scheme not in ("http", "https") or not base.hostname
@@ -63,7 +69,7 @@ def probe(opener, url, timeout):
                        contentType=response.headers.get("Content-Type"),
                        bodyBytes=min(len(body), 65536), bodyTruncated=len(body) > 65536,
                        bodySha256=hashlib.sha256(body[:65536]).hexdigest())
-    except (OSError, URLError, ValueError) as error:
+    except (OSError, URLError, ValueError, HTTPException) as error:
         row["error"] = type(error).__name__
     row.update(finishedAt=timestamp(), elapsedMs=round((time.monotonic() - start) * 1000))
     return row
@@ -71,7 +77,7 @@ def probe(opener, url, timeout):
 
 def main():
     args = arguments()
-    opener = build_opener()
+    opener = build_opener(NoRedirect())
     record = {"schemaVersion": 1, "kind": "tier-probe-observations", "provesDrill": False,
               "startedAt": timestamp(), "baseUrl": args.base_url}
     record["observations"] = [probe(opener, args.base_url + path, args.timeout) for path in args.path]
