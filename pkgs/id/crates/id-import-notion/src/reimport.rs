@@ -301,6 +301,11 @@ pub fn rehome_moved_sources(
     for database_id in destination_ids {
         convert_database(&mut next, &database_id)?;
     }
+    for movement in &previous.moved_data_sources {
+        if !next.moved_data_sources.contains(movement) {
+            next.moved_data_sources.push(movement.clone());
+        }
+    }
     for movement in &moves {
         if !next.moved_data_sources.contains(movement) {
             next.moved_data_sources.push(movement.clone());
