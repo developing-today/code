@@ -1289,6 +1289,7 @@ async fn joined<I: SessionIo>(
                         viewport,
                         &mut view_state,
                         screen_patches,
+                        caller_account.as_deref(),
                     )
                     .await
                     {
@@ -1320,6 +1321,7 @@ async fn joined<I: SessionIo>(
         viewport,
         &mut view_state,
         screen_patches,
+        caller_account.as_deref(),
     )
     .await
     {
@@ -1356,6 +1358,7 @@ async fn joined<I: SessionIo>(
                     viewport,
                     &mut view_state,
                     screen_patches,
+                    caller_account.as_deref(),
                 )
                 .await
                 {
@@ -1417,6 +1420,7 @@ async fn joined<I: SessionIo>(
                                 viewport,
                                 &mut view_state,
                                 screen_patches,
+                                caller_account.as_deref(),
                             )
                             .await
                             {
@@ -1480,6 +1484,7 @@ async fn joined<I: SessionIo>(
                         viewport,
                         &mut view_state,
                         screen_patches,
+                        caller_account.as_deref(),
                     )
                     .await
                     {
@@ -1677,6 +1682,7 @@ async fn handle_client_frame<I: SessionIo>(
                 *viewport,
                 view_state,
                 screen_patches,
+                caller_account,
             )
             .await;
         }
@@ -1914,6 +1920,7 @@ async fn handle_client_frame<I: SessionIo>(
                 *viewport,
                 view_state,
                 screen_patches,
+                caller_account,
             )
             .await;
         }

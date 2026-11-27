@@ -262,12 +262,14 @@ pub(crate) enum WorldCommand {
     },
     View {
         token: JoinCapability,
+        caller_account: Option<String>,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
     ViewAt {
         token: JoinCapability,
         width: u16,
         height: u16,
+        caller_account: Option<String>,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
     InstallProgram {
