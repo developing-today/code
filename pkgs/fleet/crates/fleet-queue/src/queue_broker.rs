@@ -16,8 +16,9 @@
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
 //!      read-only hosted-door probes at POST /door-health,
-//!      POST /door-list, and the POST /door-shadow dual-read
-//!      comparison for the CF-2b shadow comparison).
+//!      POST /door-list, the POST /door-shadow dual-read
+//!      comparison, and POST /door-timeline for per-task event
+//!      history in the CF-2b shadow comparison.
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -65,9 +66,10 @@ struct TrustBundleClientReport {
 
 /// Authenticated client for the hosted queue door. This slice
 /// exposes diagnostic read-only probes (`/door-health`,
-/// `/door-list`, and the `/door-shadow` dual-read comparison)
-/// for the CF-2b shadow comparison; it deliberately does not switch
-/// the broker's authoritative store or forward queue writes.
+/// `/door-list`, the `/door-shadow` dual-read comparison, and
+/// `/door-timeline` per-task event history) for the CF-2b shadow
+/// comparison; it deliberately does not switch the broker's
+/// authoritative store or forward queue writes.
 struct HostedQueueDoor {
     base_url: String,
     token: String,
@@ -109,8 +111,8 @@ impl HostedQueueDoor {
     /// POST /v1/queue/<verb> with a Bearer service token and the
     /// original JSON request; the door's broker-envelope response is
     /// returned intact so a shadow comparison can diff it against the
-    /// Turso plane. Only `health` and `list` are exposed as broker
-    /// `/door-*` routes today.
+    /// Turso plane. Only `health`, `list`, `shadow`, and `timeline`
+    /// are exposed as broker `/door-*` routes today.
     fn forward(&self, verb: &str, request: &Value) -> Result<Value, String> {
         let url = format!("{}/v1/queue/{verb}", self.base_url);
         let mut response = self
@@ -1367,6 +1369,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             None => fail(3, "hosted queue door is not configured"),
         },
         "/door-shadow" => door_shadow(st, req),
+        "/door-timeline" => match &st.hosted_door {
+            Some(door) => door.forward("timeline", req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
         _ => {
             let Some(turso) = st.turso.get() else {
                 let why = st
@@ -2377,7 +2383,7 @@ mod tests {
             };
             stream
                 .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 28\r\nconnection: close\r\n\r\n{\"ok\":true,\"events\":[]}",
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 23\r\nconnection: close\r\n\r\n{\"ok\":true,\"events\":[]}",
                 )
                 .unwrap();
             String::from_utf8(request[..body_end].to_vec()).unwrap()
