@@ -535,7 +535,9 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> DialFailure {
             source:
                 iroh::endpoint::ConnectingError::HandshakeFailure {
                     source: iroh::endpoint::AuthenticationError::RemoteId { .. },
+                    ..
                 },
+            ..
         } => DialFailure::IdentityMismatch,
         _ => DialFailure::RelayUnreachable,
     }
