@@ -2959,6 +2959,217 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dynamic_owner_hint_adds_only_apps_with_a_live_installation() {
+        // Oracle: a hinted owner gets an App leg exactly when the
+        // provider's live-installation list contains that owner; the
+        // personal token remains the final fallback.
+        let args: Vec<String> = ["api", "repos/layercloud/private-repo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let base = rotation_with_config(&args, None, &Owners::default(), &Config::default());
+        let with_live = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[
+                (GhApp::Fleet, vec!["LayerCloud".to_string()]),
+                (GhApp::DevToday, vec!["another-org".to_string()]),
+                (GhApp::Backup, vec!["layercloud".to_string()]),
+            ],
+        );
+        assert_eq!(with_live[0], TokenSource::app(GhApp::Fleet, "LayerCloud"));
+        assert!(with_live.contains(&TokenSource::app(GhApp::Backup, "layercloud")));
+        assert!(!with_live.contains(&TokenSource::app(GhApp::DevToday, "layercloud")));
+        assert_eq!(with_live.last(), Some(&TokenSource::Personal));
+
+        let no_match = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[(GhApp::Fleet, vec!["other-org".to_string()])],
+        );
+        assert_eq!(no_match, base);
+        assert_eq!(
+            add_dynamic_hint_sources(base.clone(), &["api".to_string()], &[]),
+            base
+        );
+    }
+
+    fn configured_apps_fixture() -> Config {
+        let mut config = Config::default();
+        config.gh.apps = vec![
+            fleet_config::GhAppConfig {
+                slug: "extra".to_string(),
+                app_id: Some(123456),
+                app_id_secret: None,
+                key_secret: "github.extra.key".to_string(),
+                owners: vec!["first-org".to_string(), "layercloud".to_string()],
+            },
+            fleet_config::GhAppConfig {
+                slug: "secret-id".to_string(),
+                app_id: None,
+                app_id_secret: Some("github.secret-id.id".to_string()),
+                key_secret: "github.secret-id.key".to_string(),
+                owners: vec!["second-org".to_string()],
+            },
+        ];
+        config
+    }
+
+    // Oracle: #10311 (c) requires every installation, independently
+    // of the configured rotation owner set, in stable App/owner order.
+    #[test]
+    fn tiers_all_lists_every_installation_then_personal() {
+        let config = configured_apps_fixture();
+        let apps = all_apps(&config);
+        assert_eq!(apps.len(), 5);
+        assert_eq!(apps[3].slug(), "extra");
+        assert_eq!(apps[4].slug(), "secret-id");
+
+        let sources = tiers_all_from_lists(&[
+            (GhApp::Fleet, vec!["z-org".into(), "a-org".into()]),
+            (GhApp::Configured("extra".into()), vec!["a-org".into()]),
+        ]);
+        assert_eq!(
+            sources.iter().map(TokenSource::label).collect::<Vec<_>>(),
+            ["app:a-org", "app:z-org", "extra:a-org", "personal"]
+        );
+        assert_eq!(
+            rotation_with_config(&[], None, &Owners::default(), &config)
+                .iter()
+                .map(TokenSource::label)
+                .collect::<Vec<_>>(),
+            [
+                "app:developing-today",
+                "app:developing-today-forks",
+                "app:dezren39",
+                "devtoday:developing-today",
+                "devtoday:dezren39",
+                "backup:developing-today",
+                "extra:first-org",
+                "extra:layercloud",
+                "secret-id:second-org",
+                "personal"
+            ]
+        );
+    }
+
+    // Oracle: #10311's additive App contract: built-ins unchanged,
+    // configured Apps in file order before personal, hint reorders only.
+    #[test]
+    fn configured_apps_rotation_and_order() {
+        let config = configured_apps_fixture();
+        for (hint, expected) in [
+            ("layercloud", vec!["extra:layercloud", "extra:first-org"]),
+            ("LAYERCLOUD", vec!["extra:layercloud", "extra:first-org"]),
+            ("unknown", vec!["extra:first-org", "extra:layercloud"]),
+        ] {
+            let args = vec!["--repo".to_string(), format!("{hint}/repo")];
+            let sources = rotation_with_config(&args, None, &Owners::default(), &config);
+            let builtins = rotation_with(&args, None, &Owners::default());
+            assert_eq!(&sources[..6], &builtins[..6]);
+            assert_eq!(
+                sources[6..8]
+                    .iter()
+                    .map(TokenSource::label)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(sources.last(), Some(&TokenSource::Personal));
+            assert_eq!(sources[8].label(), "secret-id:second-org");
+            assert_eq!(sources.len(), 10);
+        }
+        let fixed = rotation_with_config(
+            &[],
+            Some("secret-id:other,personal,extra:layercloud,app:dezren39"),
+            &Owners::default(),
+            &config,
+        );
+        assert_eq!(
+            fixed.iter().map(TokenSource::label).collect::<Vec<_>>(),
+            [
+                "secret-id:other",
+                "personal",
+                "extra:layercloud",
+                "app:dezren39"
+            ]
+        );
+        let mut no_owners = config.clone();
+        no_owners
+            .gh
+            .apps
+            .iter_mut()
+            .for_each(|app| app.owners.clear());
+        assert_eq!(
+            rotation_with_config(&[], None, &Owners::default(), &no_owners),
+            rotation_with(&[], None, &Owners::default())
+        );
+    }
+
+    // Oracle: cache requests carry only the stable slug; the daemon's
+    // own config must map it back to the same ID/key secret names.
+    #[test]
+    fn configured_apps_cache_slug_and_credentials() {
+        let config = configured_apps_fixture();
+        for entry in &config.gh.apps {
+            let request = gh_cache::request("token", Some(&entry.slug), Some("layercloud"), None);
+            let wire: serde_json::Value = serde_json::from_str(&request.to_string()).unwrap();
+            let app = GhApp::parse(wire["app"].as_str().unwrap(), &config).unwrap();
+            assert_eq!(app.slug(), entry.slug);
+            assert_eq!(app.key_secret(&config), entry.key_secret);
+            assert_eq!(app.id_secret(&config), entry.app_id_secret.as_deref());
+        }
+        assert_eq!(GhApp::parse("absent", &config), None);
+        assert_eq!(GhApp::parse("extra", &Config::default()), None);
+        let minter = RawMinter::new(&config);
+        let literal = GhApp::parse("extra", &config).unwrap();
+        assert_eq!(minter.app_id(&literal).unwrap(), "123456");
+        assert_eq!(minter.app_id(&literal).unwrap(), "123456");
+        assert_eq!(minter.app_ids.lock().unwrap().len(), 1);
+        let secret = GhApp::parse("secret-id", &config).unwrap();
+        assert_eq!(
+            minter
+                .app_id_with(&secret, |name| {
+                    assert_eq!(name, "github.secret-id.id");
+                    Ok(" 789012\n".to_string())
+                })
+                .unwrap(),
+            "789012"
+        );
+        assert_eq!(
+            minter
+                .app_id_with(&secret, |_| panic!("ID must be memoized"))
+                .unwrap(),
+            "789012"
+        );
+        let empty = RawMinter::new(&config);
+        assert_eq!(
+            empty
+                .app_id_with(&secret, |_| Ok(" \n".to_string()))
+                .unwrap_err(),
+            "app id for secret-id resolved empty"
+        );
+    }
+
+    proptest::proptest! {
+        // Oracle: every valid non-reserved configured slug round-trips
+        // through order labels and the existing cache wire's app field.
+        #[test]
+        fn configured_app_slug_round_trip(suffix in "[a-z0-9-]{1,30}") {
+            let mut config = configured_apps_fixture();
+            let slug = format!("custom-{suffix}");
+            config.gh.apps[0].slug = slug.clone();
+            let order = format!("{slug}:layercloud");
+            let sources = rotation_with_config(&[], Some(&order), &Owners::default(), &config);
+            proptest::prop_assert_eq!(sources.len(), 1);
+            proptest::prop_assert_eq!(sources[0].label(), order);
+            let request = gh_cache::request("token", Some(&slug), Some("layercloud"), None);
+            let app = GhApp::parse(request["app"].as_str().unwrap(), &config).unwrap();
+            proptest::prop_assert_eq!(app.slug(), slug.as_str());
+            proptest::prop_assert_eq!(app.key_secret(&config), "github.extra.key");
+        }
+    }
+
     // oracle: gh's hosts.yml shape (user block carrying oauth_token)
     // — the parser takes the token line and nothing else.
     #[test]
