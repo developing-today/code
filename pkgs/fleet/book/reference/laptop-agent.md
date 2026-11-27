@@ -229,16 +229,17 @@ fleet laptop-agent fetch REMOTE_PATH LOCAL_PATH
 | Flag                       | Argument | Default  | Meaning                                                  |
 | -------------------------- | -------- | -------- | -------------------------------------------------------- |
 | `REMOTE_PATH` (positional) | path     | required | File path on the laptop.                                 |
-| `LOCAL_PATH` (positional)  | path     | required | Destination path on this host. This verb takes no flags. |
+| `LOCAL_PATH` (positional)  | path     | required | Destination path on this host.                           |
+| `--chunk`                  | bytes    | 1048576  | Range size per `GET /file` request; 1..1048576.          |
 
 ### Behaviour
 
-Hash-checked copy. First it hashes the remote file _on the laptop_ by running `shasum -a 256` through `/exec`, then pulls the file in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` until an empty chunk, verifies the assembled bytes' SHA-256 against the remote hash, and only then writes the destination — a mismatch writes nothing and exits 1.
+Hash-checked copy. First it hashes the remote file _on the laptop_ by running `shasum -a 256` through `/exec` and stats its size the same way, then pulls the missing tail in `--chunk` raw ranges via `GET /file?path=…&off=…&len=…`, appends the new bytes only after the assembled file's SHA-256 matches the remote hash, and prints the legacy `fetched N bytes … in M round trip(s)` receipt. An existing destination is resumed from its current size (the prefix is never re-fetched); a destination larger than the remote is refused with the legacy overshoot message and left alone; an empty range before EOF fails the fetch. A SHA-256 mismatch writes nothing new and exits 1.
 
 ### Exit codes
 
 - `0` — ok, hash verified and destination written.
-- `1` — transport failure, or a SHA-256 mismatch (nothing written).
+- `1` — transport failure, overshoot refusal, empty chunk before EOF, or a SHA-256 mismatch (nothing new written).
 - `2` — usage.
 
 ### Example

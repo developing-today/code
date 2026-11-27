@@ -992,12 +992,95 @@ fn percent_encode(s: &str) -> String {
         .collect()
 }
 
-/// Copy a remote file to `dest`, hash-checked: the bytes are written only
-/// when their sha256 matches the remote's own. `chunk` is the GET /file
-/// range size (`--chunk`, default 1 MiB); it is clamped to the daemon's
-/// 1 MiB per-request cap. Resume-from-existing-OUT, the overshoot
-/// refusal, and the legacy `N round trip(s)` receipt stay deferred to a
-/// follow-up slice — this transport downloads whole and verifies.
+/// The byte size of the remote file, via `stat -c%s` through `/exec`
+/// (the same GNU `stat` the SSH fallback leg uses to size a range).
+fn remote_size(ladder: &Arc<Ladder>, remote: &str) -> Result<u64, String> {
+    let cmd = vec![
+        "stat".to_string(),
+        "-c%s".to_string(),
+        remote.to_string(),
+    ];
+    let spec = command_spec(None, false, &cmd);
+    let trip = crate::new_trip();
+    let body = json!({ "cmds": [spec], "timeout_s": 60 });
+    let reply = call(
+        ladder,
+        &trip,
+        "POST",
+        "/exec",
+        Some(body),
+        false,
+        Duration::from_secs(60 + TRANSPORT_GRACE_S),
+    )
+    .map_err(|e| e.to_string())?;
+    let r = reply
+        .body
+        .get("results")
+        .and_then(|v| v.get(0))
+        .ok_or("reply has no result")?;
+    if r.get("exit").and_then(Value::as_i64) != Some(0) {
+        let err = r
+            .get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return Err(format!("cannot stat {remote}: {err}"));
+    }
+    let out = r.get("stdout").and_then(Value::as_str).unwrap_or("");
+    out.trim()
+        .parse::<u64>()
+        .map_err(|_| format!("unexpected stat output for {remote}"))
+}
+
+/// The legacy `fetch` overshoot refusal, byte-for-byte with
+/// `laptop-agent-legacy.py` (`fetch PATH OUT`).
+fn overshoot_message(local: &std::path::Path, off: u64, remote: &str, total: u64) -> String {
+    format!(
+        "laptop-agent: local {} is {off} bytes but remote {remote} is only {total}; refusing to append \u{2014} remove or rename the local file and retry",
+        local.display()
+    )
+}
+
+/// The legacy `fetch` receipt, byte-for-byte with `laptop-agent-legacy.py`:
+/// `N round trip(s)`, with the resume offset when OUT already existed.
+fn fetch_receipt(
+    total: u64,
+    remote: &str,
+    dest: &std::path::Path,
+    trips: u64,
+    resumed_from: u64,
+) -> String {
+    format!(
+        "fetched {total} bytes from {remote} -> {} in {trips} round trip(s){}",
+        dest.display(),
+        if resumed_from > 0 {
+            format!(" (resumed from offset {resumed_from})")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// Copy a remote file to `dest`, hash-checked: the bytes are appended only
+/// when the assembled file's sha256 matches the remote's own. `chunk` is
+/// the GET /file range size (`--chunk`, default 1 MiB); it is clamped to
+/// the daemon's 1 MiB per-request cap.
+///
+/// Parity with `laptop-agent-legacy.py` (`fetch PATH OUT`): an existing
+/// OUT is resumed from its current size (the prefix is never re-fetched),
+/// a local file larger than the remote is refused with the legacy
+/// message, an empty range before EOF fails the fetch, and success
+/// prints the legacy `N round trip(s)` receipt. The legacy client trusts
+/// the transport; this transport additionally verifies the sha256 and
+/// writes nothing new on mismatch.
+///
+/// The remote size comes from `stat` over `/exec` rather than the
+/// `x-file-size` reply header the legacy reads off `GET /file`: the
+/// ladder's reply carries status and body only, so the header is not
+/// visible here. The refused-fetch file effect is identical either way
+/// (no bytes appended); only the trip spent learning the size differs
+/// (one `/exec` instead of one `GET /file`).
 pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path, chunk: u64) -> i32 {
     let len = chunk.clamp(1, FILE_CHUNK_MAX);
     let want = match remote_sha256(ladder, remote) {
@@ -1007,15 +1090,66 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path, chunk: 
             return 1;
         }
     };
+    let total = match remote_size(ladder, remote) {
+        Ok(n) => n,
+        Err(message) => {
+            eprintln!("laptop-agent: {message}");
+            return 1;
+        }
+    };
+    let resumed_from = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    if resumed_from > total {
+        eprintln!("{}", overshoot_message(dest, resumed_from, remote, total));
+        return 1;
+    }
+    let mut hasher = Sha256::new();
+    if resumed_from > 0 {
+        let mut prefix = match std::fs::File::open(dest) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("laptop-agent: cannot read {}: {e}", dest.display());
+                return 1;
+            }
+        };
+        let mut buf = [0u8; 65536];
+        loop {
+            use std::io::Read as _;
+            match prefix.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+                Err(e) => {
+                    eprintln!("laptop-agent: cannot read {}: {e}", dest.display());
+                    return 1;
+                }
+            }
+        }
+    }
     let mut data = Vec::new();
+    let mut off = resumed_from;
+    let mut trips: u64 = 0;
     loop {
-        match fetch_chunk(ladder, remote, data.len() as u64, len) {
-            Ok(chunk) if chunk.is_empty() => break,
-            Ok(chunk) => data.extend_from_slice(&chunk),
+        match fetch_chunk(ladder, remote, off, len) {
+            Ok(piece) => {
+                trips += 1;
+                if piece.is_empty() {
+                    if off < total {
+                        eprintln!("laptop-agent: empty chunk before EOF; fetch incomplete");
+                        return 1;
+                    }
+                    break;
+                }
+                off += piece.len() as u64;
+                data.extend_from_slice(&piece);
+                if off >= total {
+                    break;
+                }
+            }
             Err(e) => return fail(e),
         }
     }
-    let got: String = Sha256::digest(&data)
+    hasher.update(&data);
+    let got: String = hasher
+        .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
@@ -1025,14 +1159,32 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path, chunk: 
         );
         return 1;
     }
-    if let Err(e) = std::fs::write(dest, &data) {
-        eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
-        return 1;
+    if !data.is_empty() {
+        let mut fh = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
+                return 1;
+            }
+        };
+        if let Err(e) = fh.write_all(&data) {
+            eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
+            return 1;
+        }
+    } else if resumed_from == 0 {
+        // An empty remote still creates OUT, like the legacy `open(OUT, "wb")`.
+        if let Err(e) = std::fs::write(dest, b"") {
+            eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
+            return 1;
+        }
     }
     eprintln!(
-        "[laptop-agent] fetched {remote} -> {} ({} bytes, sha256 {got})",
-        dest.display(),
-        data.len()
+        "{}",
+        fetch_receipt(total, remote, dest, trips, resumed_from)
     );
     0
 }
@@ -1560,5 +1712,173 @@ mod tests {
         assert!(seen[0].contains("len=64"), "{}", seen[0]);
         assert!(seen[0].contains("off=0"), "{}", seen[0]);
         assert!(seen[1].contains("off=64"), "{}", seen[1]);
+    }
+
+    /// code#16088 fetch parity slice (oracle:
+    /// `laptop-agent-legacy.py` `fetch PATH OUT`): an existing OUT
+    /// is resumed from its current size — the prefix is never
+    /// re-fetched — and the completed file verifies.
+    struct FetchDaemon {
+        content: Vec<u8>,
+        sha_hex: String,
+        get_offs: std::sync::Mutex<Vec<u64>>,
+    }
+
+    impl FetchDaemon {
+        fn parse_off_len(path: &str) -> (u64, u64) {
+            let mut off = 0;
+            let mut len = 0;
+            for part in path.split(['?', '&']) {
+                if let Some(v) = part.strip_prefix("off=") {
+                    off = v.parse().unwrap_or(0);
+                }
+                if let Some(v) = part.strip_prefix("len=") {
+                    len = v.parse().unwrap_or(0);
+                }
+            }
+            (off, len)
+        }
+    }
+
+    impl Leg for FetchDaemon {
+        fn name(&self) -> &'static str {
+            "tailscale"
+        }
+        fn call(&self, req: &Request) -> Result<LegReply, LegError> {
+            if req.method == "POST" && req.path == "/exec" {
+                let body = req.body.as_ref().map(|b| b.to_string()).unwrap_or_default();
+                if body.contains("shasum") {
+                    let reply = json!({"results": [{
+                        "exit": 0,
+                        "stdout": format!("{}  /remote/a.bin\n", self.sha_hex),
+                        "stderr": "",
+                    }]});
+                    return Ok(LegReply {
+                        status: 200,
+                        body: serde_json::to_vec(&reply).unwrap(),
+                    });
+                }
+                if body.contains("stat") {
+                    let reply = json!({"results": [{
+                        "exit": 0,
+                        "stdout": format!("{}\n", self.content.len()),
+                        "stderr": "",
+                    }]});
+                    return Ok(LegReply {
+                        status: 200,
+                        body: serde_json::to_vec(&reply).unwrap(),
+                    });
+                }
+                return Err(LegError::Unsent("unexpected /exec call".into()));
+            }
+            if req.method == "GET" && req.path.starts_with("/file?") {
+                let (off, len) = Self::parse_off_len(&req.path);
+                self.get_offs.lock().unwrap().push(off);
+                let start = (off as usize).min(self.content.len());
+                let end = (start + len as usize).min(self.content.len());
+                return Ok(LegReply {
+                    status: 200,
+                    body: self.content[start..end].to_vec(),
+                });
+            }
+            Err(LegError::Unsent(format!("unexpected {} {}", req.method, req.path)))
+        }
+    }
+
+    fn fetch_daemon(content: &[u8]) -> (Arc<Ladder>, Arc<FetchDaemon>) {
+        use sha2::Digest as _;
+        let hex: String = sha2::Sha256::digest(content)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let daemon = Arc::new(FetchDaemon {
+            content: content.to_vec(),
+            sha_hex: hex,
+            get_offs: std::sync::Mutex::new(Vec::new()),
+        });
+        let ladder = Arc::new(Ladder::new(vec![
+            Box::new(FetchDaemonRef(Arc::clone(&daemon))) as Box<dyn Leg>
+        ]));
+        (ladder, daemon)
+    }
+
+    struct FetchDaemonRef(Arc<FetchDaemon>);
+
+    impl Leg for FetchDaemonRef {
+        fn name(&self) -> &'static str {
+            "tailscale"
+        }
+        fn call(&self, req: &Request) -> Result<LegReply, LegError> {
+            self.0.call(req)
+        }
+    }
+
+    fn fetch_tmpdir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "la-fetch-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn fetch_resumes_from_existing_out_without_refetching_prefix() {
+        let content = b"hello fetch resume world, chunked into small ranges!".to_vec();
+        let (ladder, daemon) = fetch_daemon(&content);
+        let dir = fetch_tmpdir("resume");
+        let dest = dir.join("out.bin");
+        let prefix = 10;
+        std::fs::write(&dest, &content[..prefix]).unwrap();
+        let rc = fetch(&ladder, "/remote/a.bin", &dest, 8);
+        assert_eq!(rc, 0, "resume completes");
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        let offs = daemon.get_offs.lock().unwrap();
+        assert!(!offs.is_empty(), "at least one range request");
+        assert!(
+            !offs.iter().any(|&o| o == 0),
+            "prefix is reused, never re-fetched: {offs:?}"
+        );
+        assert_eq!(offs[0], prefix as u64, "{offs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// code#16088 fetch parity slice (oracle: the `print`/`sys.exit`
+    /// strings in `laptop-agent-legacy.py` `fetch PATH OUT`): the success
+    /// receipt and the overshoot refusal match byte-for-byte, including
+    /// the `round trip(s)` spelling and the resume suffix.
+    #[test]
+    fn fetch_receipt_and_overshoot_match_legacy_spelling() {
+        let dest = std::path::Path::new("out.bin");
+        assert_eq!(
+            fetch_receipt(11, "/remote/a.bin", dest, 2, 0),
+            "fetched 11 bytes from /remote/a.bin -> out.bin in 2 round trip(s)"
+        );
+        assert_eq!(
+            fetch_receipt(11, "/remote/a.bin", dest, 1, 10),
+            "fetched 11 bytes from /remote/a.bin -> out.bin in 1 round trip(s) (resumed from offset 10)"
+        );
+        assert_eq!(
+            overshoot_message(dest, 20, "/remote/a.bin", 11),
+            "laptop-agent: local out.bin is 20 bytes but remote /remote/a.bin is only 11; refusing to append \u{2014} remove or rename the local file and retry"
+        );
+    }
+
+    #[test]
+    fn fetch_refuses_when_local_out_is_bigger_than_remote() {
+        let content = b"small remote".to_vec();
+        let (ladder, _daemon) = fetch_daemon(&content);
+        let dir = fetch_tmpdir("overshoot");
+        let dest = dir.join("out.bin");
+        let bigger = [content.clone(), b" + local extra bytes".to_vec()].concat();
+        std::fs::write(&dest, &bigger).unwrap();
+        let rc = fetch(&ladder, "/remote/a.bin", &dest, 8);
+        assert_eq!(rc, 1, "overshoot refuses like the legacy client");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            bigger,
+            "refused fetch leaves the local file alone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
