@@ -259,7 +259,7 @@ pub struct PipeStats {
 /// stderr-style — never into the response).
 pub async fn pipe_exchange<R, W, D>(
     conn: &iroh::endpoint::Connection,
-    mut input: R,
+    input: R,
     mut output: W,
     mut diag: D,
     caps: &StreamCaps,
@@ -308,7 +308,8 @@ where
 /// identical.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
-    format!("{:x}", sha2::Sha256::digest(bytes))
+    let digest = sha2::Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -457,7 +458,11 @@ mod tests {
     struct RelayFixture {
         relay_url: iroh::RelayUrl,
         relay_map: iroh::RelayMap,
-        _relay_server: iroh::test_utils::RelayServer,
+        // Opaque relay-server guard: `iroh::test_utils::run_relay_server`
+        // returns `iroh_relay::server::Server`, which `iroh` does not
+        // re-export, so we erase the type rather than add a direct
+        // `iroh-relay` dependency for one test guard.
+        _relay_server: Box<dyn std::any::Any + Send>,
     }
 
     async fn relay_fixture() -> RelayFixture {
@@ -468,7 +473,7 @@ mod tests {
         RelayFixture {
             relay_url,
             relay_map,
-            _relay_server: relay_server,
+            _relay_server: Box::new(relay_server),
         }
     }
 
@@ -491,6 +496,12 @@ mod tests {
         let fixture = relay_fixture().await;
         let server = relay_endpoint(&fixture, vec![STREAM_ALPN.as_bytes().to_vec()]).await;
         let client = relay_endpoint(&fixture, vec![]).await;
+        // Both sides must hold a live home-relay session before the
+        // dial: an early dial can miss the server's registration and
+        // burn the whole connect timeout (cf. id-core connectivity
+        // `test_n0_endpoints_dial_by_id`: "an early lookup can miss it").
+        tokio::join!(server.online(), client.online());
+        eprintln!("relay_pair: both online after {:?}", t0.elapsed());
         (fixture, server, client)
     }
 
@@ -512,10 +523,18 @@ mod tests {
     async fn relay_fixture_round_trip(size: usize, seed: u64) {
         let (fixture, server, client) = relay_pair().await;
         let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let incoming = server.accept().await.expect("incoming connection");
-        let conn = incoming.await.expect("authenticated relay connection");
+        // Accept and dial concurrently: awaiting the server accept
+        // before initiating the client connect deadlocks (each side
+        // waits for the other). `join!` polls both together.
+        let (incoming_opt, client_conn) = tokio::join!(
+            server.accept(),
+            connect_relay(&client, &server, &fixture.relay_url),
+        );
+        let conn = incoming_opt
+            .expect("incoming connection")
+            .await
+            .expect("authenticated relay connection");
         let serving = serve_echo(conn, 1, received.clone());
-        let client_conn = connect_relay(&client, &server, &fixture.relay_url).await;
         let caps = StreamCaps::with_max(16 << 20);
         let payload = fixture_bytes(size, seed);
         let echoed = exchange(&client_conn, &payload, &caps)
@@ -569,10 +588,16 @@ mod tests {
             const STREAMS: usize = 8;
             let (fixture, server, client) = relay_pair().await;
             let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let incoming = server.accept().await.expect("incoming connection");
-            let conn = incoming.await.expect("authenticated relay connection");
+            // Accept and dial concurrently (see relay_fixture_round_trip).
+            let (incoming_opt, client_conn) = tokio::join!(
+                server.accept(),
+                connect_relay(&client, &server, &fixture.relay_url),
+            );
+            let conn = incoming_opt
+                .expect("incoming connection")
+                .await
+                .expect("authenticated relay connection");
             let serving = serve_echo(conn, STREAMS, received.clone());
-            let client_conn = connect_relay(&client, &server, &fixture.relay_url).await;
             let caps = StreamCaps::with_max(16 << 20);
             let payloads: Vec<Vec<u8>> = (0..STREAMS)
                 .map(|i| fixture_bytes(1 << 20, 0x15440 + i as u64))
@@ -648,13 +673,19 @@ mod tests {
             let err = recv_bytes(&mut recv, StreamCaps::default().max_stream_bytes)
                 .await
                 .expect_err("65 KiB must exceed the 64 KiB default cap");
-            assert_eq!(
-                err,
-                StreamError::TooLarge {
-                    seen: 65 * 1024,
-                    cap: 64 * 1024
+            // The sender streams in chunks, so the exact over-cap
+            // byte count depends on chunk boundaries: assert the
+            // shape (cap bound + first-chunk overshoot), not a byte.
+            match err {
+                StreamError::TooLarge { seen, cap } => {
+                    assert_eq!(cap, 64 * 1024, "default cap is the 64 KiB bound");
+                    assert!(
+                        seen > cap && seen <= 65 * 1024,
+                        "seen {seen} is past the cap but within the 65 KiB stream"
+                    );
                 }
-            );
+                other => panic!("expected TooLarge, got {other:?}"),
+            }
             conn.close(0u32.into(), b"done");
             serving.await.expect("server task");
             client.close().await;
