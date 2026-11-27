@@ -95,6 +95,7 @@ pub(crate) fn apply_clear_policy(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
         ClearAuthority, ClearMarker, ServerDeletePolicy, apply_clear_policy,
