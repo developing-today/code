@@ -28,6 +28,7 @@ import type { HealthView } from "./health.ts";
 import type { QuotaView, TierItem, TieredEntry } from "./model.ts";
 import type { NotificationSendRow } from "./alerts.ts";
 import { createHash } from "node:crypto";
+import { hostedDecisionPageUrl } from "./decision-links.ts";
 import type { NeedsDrewQuestion } from "./needs-drew.ts";
 import { questionOptions } from "./needs-user.ts";
 import { decisionSetProgress, type DecisionSet } from "./decisions.ts";
@@ -706,7 +707,7 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         objectRef: `decision-set:${set.setId}`,
         title: `${progress.openItems} decision${progress.openItems === 1 ? "" : "s"} waiting for you`,
         body: `${set.title} — ${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open. Tap to open the decisions page.`,
-        url: `/decisions/${encodeURIComponent(set.setId)}`,
+        url: hostedDecisionPageUrl(set.setId),
         observedAt: set.createdAt,
         breakthrough: true,
         actedRefs: [`decision-set:${set.setId}`],

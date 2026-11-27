@@ -185,7 +185,7 @@ export async function questionsHtml(): Promise<string> {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return questionsSectionHtml(summaries, (s) => {
       const set = byId.get(s.setId);
-      return set ? decisionsPageUrl(set) : `/decisions/${encodeURIComponent(s.setId)}`;
+      return set ? decisionsPageUrl(set) : hostedDecisionPageUrl(s.setId);
     });
   } catch {
     return questionsSectionHtml(null, () => "/decisions");
