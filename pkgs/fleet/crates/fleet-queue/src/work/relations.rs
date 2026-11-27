@@ -1299,6 +1299,14 @@ impl Edge {
                 relation: self.relation,
             });
         }
+        if matches!(self.relation, Relation::RelatedTo | Relation::Duplicates) {
+            let (_, _, swapped) = pair_order(&self.source, &self.target)?;
+            if swapped {
+                // Refuse rather than silently swapping: on duplicates, role
+                // names an end and would change meaning if left untouched.
+                return Err(schema("source and target: non-canonical pair order"));
+            }
+        }
         if self.role.is_some() && self.relation != Relation::Duplicates {
             return Err(schema(format!(
                 "role: present only on duplicates, not {}",
@@ -1915,9 +1923,29 @@ mod tests {
         for relation in [Relation::RelatedTo, Relation::Duplicates] {
             let reversed = edge(relation, work("10"), work("2"));
             assert_eq!(reversed.validate().unwrap_err().code(), "invalid_schema");
-            assert_eq!(Edge::from_json(&reversed.to_json()).unwrap_err().code(), "invalid_schema");
+            assert_eq!(
+                Edge::from_json(&reversed.to_json()).unwrap_err().code(),
+                "invalid_schema"
+            );
             let canonical = edge(relation, work("2"), work("10"));
             assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+            // Authority sorts before numeric work id.
+            assert!(
+                edge(relation, remote_work("a", "10"), remote_work("z", "2"))
+                    .validate()
+                    .is_ok()
+            );
+            assert!(
+                edge(relation, remote_work("z", "2"), remote_work("a", "10"))
+                    .validate()
+                    .is_err()
+            );
+            // An external end belongs in source, regardless of lexical key.
+            assert!(
+                edge(relation, issue("z/repo", "2", Some("I_2")), work("10"))
+                    .validate()
+                    .is_ok()
+            );
         }
         // Directed relations must retain their meaning, not adopt pair ordering.
         for relation in [Relation::Blocks, Relation::Hierarchy, Relation::Supersedes] {
