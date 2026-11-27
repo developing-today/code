@@ -5305,6 +5305,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
       (e.planNote ? '<span class="muted">' + esc(e.planNote) + "</span><br>" : "") +
       "Pool seats: " + (e.routes.length ? e.routes.map(function (r) { return "<code>" + esc(r) + "</code>"; }).join(" ") : '<span class="muted">none — no route sends it work</span>') +
       (e.goCapUsd != null && e.aaCostPerTask ? '<br><span class="muted">Published OpenCode Go cap: $' + e.goCapUsd + "/mo → ~" + fmtInt(Math.floor(e.goCapUsd / e.aaCostPerTask)) + " AA tasks at the measured cost (docs reading — the fleet's workspaces appear to meter pooled).</span>" : "") +
+      (e.configured === false ? '<br><span class="badge stale">Unconfigured · non-routable</span> · AA ' + (e.estimated ? 'estimated' : 'measured') + (e.effort ? ' · ' + esc(e.effort) : '') : "") +
       (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : "") +
       (function () {
         var proj = project(e);
@@ -5742,7 +5743,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     tb.innerHTML = rows.map(function (e) {
       var ec = effCost(e);
       var proj = project(e);
-      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span></td>" +
+      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span>" + (e.configured === false ? '<br><span class="badge stale">Unconfigured · non-routable · AA ' + (e.estimated ? 'estimated' : 'measured') + '</span>' : '') + '</td>' +
         "<td>" + esc(e.providerName) + (e.plan ? '<br><span class="badge src">' + esc(e.plan) + "</span>" : "") + (e.disabled ? ' <span class="badge stale">disabled</span>' : "") + '</td>' +
         '<td class="num">' + fmtCtx(e.contextLimit) + "</td>" +
         "<td>" + (e.variants.length ? esc(e.variants.join(", ")) : "—") + "</td>" +
@@ -6287,9 +6288,9 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
     : "";
   const modelCards = catalog
     ? `<div class="board">
-<div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
-<div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
-<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the import has an intelligence score for its name</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.configured !== false).length} configured models</strong> · ${catalog.filter((e) => e.configured === false).length} AA-only rows<br><span class="muted">Configured models come from <code>.opencode/opencode.jsonc</code>; AA-only rows have no provider definition</span></div>
+<div class="card"><strong>${new Set(catalog.filter((e) => e.configured !== false).map((e) => e.provider)).size} configured providers</strong> · ${catalog.filter((e) => e.configured !== false && e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.configured !== false && e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured/estimated<br><span class="muted">Pooled = at least one route sends it work; ranking-only rows are explicitly non-routable</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
@@ -6424,7 +6425,7 @@ ${s.cai ? aaCaiTable(s.cai) : ""}
 <section id="xtab-models" hidden>
 ${catalogTabAge}
 <h2>The fleet's model universe</h2>
-<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
+<p class="muted">Configured models from the fleet provider catalogs plus AA-ranked families without a provider definition. Ranking-only rows are data-only, explicitly unconfigured/non-routable, and preserve measured versus estimated status. Click a row for details.</p>
 ${modelCards}
 <h3>Task projection — estimated, not measured</h3>
 <p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>
