@@ -19,7 +19,10 @@ use fleet_proxy::tunnel::{
 
 use crate::ladder::{Ladder, Leg, LegError, Reply, Request};
 use crate::tls::AgentTls;
-use crate::{CF_ACCESS_SECRET, TARGET_HOST, TARGET_PORT, broker_socket, read_token, token_file};
+use crate::{
+    CF_ACCESS_SECRET, LONG_POLL_WAIT_S, TARGET_HOST, TARGET_PORT, broker_socket, read_token,
+    token_file,
+};
 
 /// The proxy port the Python tailnet CONNECT dials (`PROXY_PORT`).
 pub const TAILNET_PROXY_PORT: u16 = 3130;
@@ -448,7 +451,7 @@ impl SshLeg {
     fn poll_job(&self, job_id: &str, query: &str) -> Result<Reply, LegError> {
         let out_off = query_u64(query, "out_off");
         let err_off = query_u64(query, "err_off");
-        let wait_s = query_u64(query, "wait_s").min(30);
+        let wait_s = query_u64(query, "wait_s").min(LONG_POLL_WAIT_S);
         let d = sshfb_job_dir(job_id)?;
         let remote = format!(
             "d={d}; end=$(( $(date +%s) + {wait_s} )); \
@@ -472,7 +475,7 @@ impl SshLeg {
              2>/dev/null | base64 -w0; echo",
             out_off, err_off
         );
-        let (_, out, _) = self.run(&remote, Duration::from_secs(60))?;
+        let (_, out, _) = self.run(&remote, Duration::from_secs(wait_s + 20))?;
         let text = String::from_utf8_lossy(&out);
         let mut fields: std::collections::HashMap<String, String> = Default::default();
         for line in text.lines() {
@@ -903,7 +906,7 @@ mod tests {
             "sshfb-0123456789abc",   // too long
             "sshfb-0123456789AB",    // uppercase hex
             "sshfb-zzzzzzzzzzzz",    // non-hex
-            "0123456789ab",          // missing prefix
+            "0123456789ab",           // missing prefix
             "$(touch${IFS}/tmp/pwn)", // command substitution
             "x;touch${IFS}/tmp/pwn", // separator
             "..",                    // traversal segment
