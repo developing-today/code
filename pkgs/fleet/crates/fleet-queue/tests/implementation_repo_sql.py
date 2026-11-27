@@ -10,9 +10,14 @@ import re
 import sqlite3
 import unittest
 
-SRC = (
-    pathlib.Path(__file__).resolve().parents[1] / "src/turso_queue/claim.rs"
-).read_text()
+SRC = "".join(
+    (
+        pathlib.Path(__file__).resolve().parents[1] / "src/turso_queue" / name
+    ).read_text()
+    # claim_filter.rs holds the #16255-split claim predicates
+    # (IMPLEMENTATION_REPO_SQL); claim.rs keeps the budget gate.
+    for name in ["claim.rs", "claim_filter.rs"]
+)
 
 
 def constant(name):

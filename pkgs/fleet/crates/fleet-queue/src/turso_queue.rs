@@ -87,7 +87,8 @@ mod tests {
 
     /// The full backend source, concatenated across the #8589
     /// module split (parent file last, so the cfg(test) marker
-    /// still terminates the production text). Each file is
+    /// still terminates the production text) and the later
+    /// #16255 splits (claim_filter, admin_time). Each file is
     /// truncated at its own first `#[cfg(test)]` so inline test
     /// modules (staleness, work_identity, closed_bound, lifecycle
     /// reprioritize_tests) never hide a later file's production
@@ -101,6 +102,7 @@ mod tests {
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
+            include_str!("turso_queue/admin_time.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
