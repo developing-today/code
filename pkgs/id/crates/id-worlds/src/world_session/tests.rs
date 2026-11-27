@@ -487,6 +487,108 @@ mod tests {
         peer.close().await;
     }
 
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_form_result_without_becoming_durable() {
+        // Oracle: the real sandbox's burn-budget deltas for an accepted joined
+        // form result belong to the transport account, never the world bucket.
+        // The host fixture supplies form UI; all updates/records run real Wasm.
+        struct ChargedFormProgram {
+            form: FormSessionProgram,
+            guest: crate::sandbox::WorldInstance,
+        }
+        impl crate::world::WorldProgram for ChargedFormProgram {
+            fn replace_caller_account(&mut self, account: Option<&str>) -> Option<String> {
+                crate::world::WorldProgram::replace_caller_account(&mut self.guest, account)
+            }
+            fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+                crate::world::WorldProgram::update(&mut self.guest, event)?;
+                crate::world::WorldProgram::update(&mut self.form, event)
+            }
+            fn records(&mut self) -> anyhow::Result<Option<String>> {
+                crate::world::WorldProgram::records(&mut self.guest)
+            }
+            fn wants(&mut self) -> anyhow::Result<Option<String>> {
+                crate::world::WorldProgram::wants(&mut self.form)
+            }
+            fn view(&mut self, viewer: &Participant) -> anyhow::Result<Option<String>> {
+                crate::world::WorldProgram::view(&mut self.form, viewer)
+            }
+        }
+
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut guest = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        guest.set_charge_key("lobby".to_owned());
+        guest.set_burn_budget(Arc::clone(&budget));
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(ChargedFormProgram {
+                form: FormSessionProgram {
+                    token: Arc::new(std::sync::Mutex::new(None)),
+                    results: Arc::clone(&results),
+                },
+                guest,
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world.clone(), Some("admin".to_owned()))),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        peer.say(serde_json::json!({
+            "type": "join", "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["surface"]["kind"], "form");
+        let before = budget.snapshot();
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": view["surface"]["presentation_token"],
+            "action": "submit",
+            "values": {"name": "Ada"},
+            // Client-supplied identity must not override the transport account.
+            "caller_account": "acct-forged",
+        }))
+        .await;
+        let ack = next_reply(&mut peer).await;
+        assert_eq!(ack["type"], "form_result_status");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
+        let after = budget.snapshot();
+        let ada_before = before.accounts.get("acct-ada");
+        assert!(after.accounts["acct-ada"].admitted > ada_before.map_or(0, |a| a.admitted));
+        assert!(after.accounts["acct-ada"].settled_fuel > ada_before.map_or(0, |a| a.settled_fuel));
+        assert_eq!(
+            after.accounts["lobby"].admitted,
+            before.accounts["lobby"].admitted
+        );
+        assert_eq!(
+            after.accounts["lobby"].settled_fuel,
+            before.accounts["lobby"].settled_fuel
+        );
+        assert!(!after.accounts.contains_key("acct-forged"));
+        peer.close().await;
+        let (events, _) = admin_history(WorldService::new(world, Some("admin".to_owned()))).await;
+        let durable = serde_json::to_string(&events).unwrap();
+        assert!(!durable.contains("acct-ada"));
+        assert!(!durable.contains("acct-forged"));
+    }
+
     #[tokio::test]
     async fn test_joined_form_cancel_result_frame_uses_session_auth_and_reaches_program() {
         let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
