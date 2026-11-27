@@ -3937,10 +3937,19 @@ mod manual_claim_override_audit_tests {
         assert_eq!(audit["previous_status"], "parked");
         assert_eq!(audit["previous_attempts"], 5);
         assert_eq!(audit["previous_max_attempts"], 5);
+        assert_eq!(audit["previous_not_before"], "2027-01-01T00:00:00Z");
         assert_eq!(audit["previous_park_reason"], "retry budget exhausted");
+        assert_eq!(audit["previous_park_kind"], "backoff");
+        assert_eq!(audit["previous_wait_kind"], "dependency");
         assert_eq!(audit["reason"], "retry after independent review");
         assert_eq!(audit["worker_id"], "max-attempt-worker");
+        assert_eq!(audit["lane_id"], "max-attempt-lane");
         assert_eq!(audit["session_id"], "ses_max_attempt_override");
+        assert!(
+            audit["claimed_at"]
+                .as_str()
+                .is_some_and(|at| !at.is_empty())
+        );
         let events = events_for(&t, id, "claimed");
         let detail: Value =
             serde_json::from_str(events.last().unwrap()["detail"].as_str().unwrap()).unwrap();
