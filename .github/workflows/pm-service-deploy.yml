@@ -151,14 +151,26 @@ jobs:
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
           # The version's preview URL answers before promotion, so
           # the gate runs against the candidate, not production.
-          # Take the URL from wrangler's own output: the preview
-          # host carries only the version id's first segment
-          # (run 45605143016 built the full-id host, got an HTML
-          # error page, and the gate correctly refused to promote).
-          preview_url="$(grep -Eo 'Version Preview URL: https://[^ ]+' "$RUNNER_TEMP/upload.log" | sed 's/.*: //' | tail -n 1)"
+          # Prefer the URL from wrangler's own output when it prints
+          # one; the preview host carries only the version id's first
+          # segment (run 45605143016 built the full-id host, got an
+          # HTML error page, and the gate correctly refused to
+          # promote). Wrangler 4.168.0 omits the Preview URL line on
+          # a successful upload (run 45952287379), so fall back to
+          # constructing the first-segment host via the account
+          # subdomain rather than failing the gate (issue #15969).
+          preview_url="$(grep -Eo 'Version Preview URL: https://[^ ]+' "$RUNNER_TEMP/upload.log" | sed 's/.*: //' | tail -n 1 || true)"
           if [ -z "$preview_url" ]; then
-            echo "could not read a version preview URL from the upload output" >&2
-            exit 1
+            short="${version_id%%-*}"
+            sub="$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["subdomain"])')"
+            if [ -z "$sub" ]; then
+              echo "could not resolve the workers.dev subdomain for the preview URL fallback" >&2
+              exit 1
+            fi
+            preview_url="https://${short}-pm-service.${sub}.workers.dev"
+            echo "wrangler omitted the Version Preview URL; using ${preview_url} (version ${version_id})." >> "$GITHUB_STEP_SUMMARY"
           fi
           node scripts/check-health.mjs \
             --url "${preview_url}/health" \
