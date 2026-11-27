@@ -540,24 +540,26 @@ mod tests {
             3,
         )
         .unwrap();
-        host.publish(
-            "bob",
-            NAME,
-            &artifact(v1, counter(1, Fault::Healthy)),
-            3,
-        )
-        .unwrap();
-        assert!(matches!(host.tick_boundary(USER, NAME), BoundaryOutcome::Activated { .. }));
-        assert!(matches!(host.tick_boundary("bob", NAME), BoundaryOutcome::Activated { .. }));
+        host.publish("bob", NAME, &artifact(v1, counter(1, Fault::Healthy)), 3)
+            .unwrap();
+        assert!(matches!(
+            host.tick_boundary(USER, NAME),
+            BoundaryOutcome::Activated { .. }
+        ));
+        assert!(matches!(
+            host.tick_boundary("bob", NAME),
+            BoundaryOutcome::Activated { .. }
+        ));
 
         let error = host.call(USER, NAME, b"event").unwrap_err().to_string();
         assert!(error.contains("plaza_update"), "{error}");
         assert!(host.call("bob", NAME, b"event").is_ok());
-        assert!(host
-            .call(USER, NAME, b"event")
-            .unwrap_err()
-            .to_string()
-            .contains("poisoned"));
+        assert!(
+            host.call(USER, NAME, b"event")
+                .unwrap_err()
+                .to_string()
+                .contains("poisoned")
+        );
         assert_eq!(host.registry().resolve(USER, NAME).unwrap().version, 1);
         assert_eq!(host.registry().resolve("bob", NAME).unwrap().version, 1);
     }
