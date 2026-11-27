@@ -26,6 +26,7 @@ function browser() {
   const frame = new Map(["ask", "ask-input", "ask-ok", "ask-title", "ask-text", "ask-label", "toast"].map((id) => [id, new Input(id)]));
   let result: any = { state: "refused", note: "No connection" };
   const sent: any[] = [];
+  let completeSend = () => {};
   const document = {
     getElementById: (id: string) => frame.get(id) ?? null,
     createElement: (tag: string) => new Input(tag),
@@ -34,8 +35,9 @@ function browser() {
   const ui = readFileSync(new URL("../public/ui.js", import.meta.url), "utf8").replaceAll("export ", "");
   const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8")
     .replace(/^import .*;$/gm, "").replaceAll("export ", "");
-  const hooks = runInNewContext(`${ui}\n${app}\nloadDoc = async () => {}; draw = () => {};\n({ questionCard, sendAnswer, setStore: (store) => { outbox = store; } });`, {
+  const hooks = runInNewContext(`${ui}\n${app}\nloadDoc = async () => {}; draw = () => completeSend();\n({ questionCard, setStore: (store) => { outbox = store; } });`, {
     document, PAGES: {}, navigator: {}, setTimeout: () => 0, clearTimeout: () => {},
+    completeSend: () => completeSend(),
     self: { PMOutbox: {
       make: (kind: string, args: unknown) => ({ id: "answer-id", kind, args }),
       rule: () => "keep",
@@ -53,13 +55,16 @@ function browser() {
     const card = hooks.questionCard({ options: [], recommended: [], links: [], q: "Which?", ...q });
     card.find("button").find((b: El) => b.textContent === "Write an answer").fire("click");
   }
-  async function settle() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
+  async function settle() { await Promise.resolve(); }
   async function answer(q: any, words: string) {
+    const done = new Promise<void>((resolve) => { completeSend = resolve; });
     open(q);
     input.value = words;
     dialog.returnValue = "ok";
     dialog.fire("close");
-    await settle();
+    // The real sendAnswer's final draw, not a sleep or a fixed number
+    // of microtasks, determines when its handoff has finished.
+    await done;
   }
   function cancel() { dialog.returnValue = ""; dialog.fire("close"); }
   return { open, answer, cancel, input, sent, hooks, settle, outcome: (out: any) => { result = out; } };
