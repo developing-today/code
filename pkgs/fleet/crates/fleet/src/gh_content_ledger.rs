@@ -3,7 +3,8 @@
 //! through the shared gate).
 //!
 //! Every `fleet gh` content-creating call — `issue create`,
-//! `pr create`, `issue comment`, `pr comment` — reserves a row in
+//! `pr create`, `issue comment`, `pr comment`, `release create` —
+//! reserves a row in
 //! the shared creation ledger
 //! (`~/.local/state/fleet/content-ledger.sqlite`, override with
 //! `CONTENT_LEDGER_PATH`) BEFORE any GitHub write and finalises it
@@ -29,9 +30,9 @@
 //!     circuit breaker, no verify-by-search. Those are the warn-mode
 //!     throttle (hatch#13) and later slices; this slice makes the
 //!     bypass visible in the ledger first.
-//!   - Scope is issues/PRs/comments, plus `pr review --comment`
-//!     (kind `review`, already in the reference vocabulary).
-//!     `release create`, `gist create`, POST-class `api` calls and
+//!   - Scope is issues/PRs/comments/releases, plus `pr review
+//!     --comment` (kind `review`, already in the reference
+//!     vocabulary). `gist create`, POST-class `api` calls and
 //!     the non-comment `pr review` shapes (`--approve`,
 //!     `--request-changes`) pass through unledgered as today;
 //!     routing them is the named follow-up slice (see the PR body).
@@ -74,7 +75,11 @@ CREATE INDEX IF NOT EXISTS events_nonce ON events(nonce);
 ";
 
 /// The create shapes this slice ledgers (reference `KINDS`
-/// subset: issues, PRs, comments).
+/// subset: issues, PRs, comments, plus `release` — the Rust
+/// writer's extension beyond the reference vocabulary, which files
+/// no release creates itself; the shared read paths group by
+/// outcome and read kind as data, so `release` rows reconcile in
+/// the one DB exactly like the existing kinds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateKind {
     Issue,
@@ -82,10 +87,12 @@ pub enum CreateKind {
     IssueComment,
     PrComment,
     PrReview,
+    Release,
 }
 
 impl CreateKind {
-    /// The reference implementation's kind string, byte-identical.
+    /// The reference implementation's kind string, byte-identical
+    /// (`release` extends the vocabulary per the note above).
     pub fn as_ledger_kind(self) -> &'static str {
         match self {
             CreateKind::Issue => "issue",
@@ -93,6 +100,7 @@ impl CreateKind {
             CreateKind::IssueComment => "issue_comment",
             CreateKind::PrComment => "pr_comment",
             CreateKind::PrReview => "review",
+            CreateKind::Release => "release",
         }
     }
 }
@@ -126,6 +134,10 @@ pub fn classify(args: &[String]) -> Option<Classified> {
         // the one that files new content with a body. `--approve`
         // and `--request-changes` stay unledgered in this slice.
         ("pr", "review") if args.iter().any(|a| a == "--comment") => CreateKind::PrReview,
+        // `release create` files a new release object; ledger it
+        // under the extended `release` kind (fail-closed like the
+        // other shapes).
+        ("release", "create") => CreateKind::Release,
         _ => return None,
     };
     Some(Classified {
@@ -244,7 +256,10 @@ fn reserve(
     repo: &str,
     kind: &str,
 ) -> Result<(i64, String), String> {
-    if !matches!(kind, "issue" | "issue_comment" | "pr" | "pr_comment" | "review") {
+    if !matches!(
+        kind,
+        "issue" | "issue_comment" | "pr" | "pr_comment" | "review" | "release"
+    ) {
         return Err(format!("unknown ledger kind {kind:?}"));
     }
     let conn = open_ledger(path)?;
@@ -454,9 +469,10 @@ mod tests {
             .unwrap()
     }
 
-    // oracle: the five ledgered shapes classify with the reference
-    // kind strings; everything else (reads, merges, deferred
-    // shapes) is None and passes through untouched.
+    // oracle: the six ledgered shapes classify with the reference
+    // kind strings (`release` extends the vocabulary); everything
+    // else (reads, merges, deferred shapes) is None and passes
+    // through untouched.
     #[test]
     fn classify_create_shapes() {
         let c = classify(&args(&["issue", "create", "--title", "x"])).unwrap();
@@ -474,6 +490,9 @@ mod tests {
         .unwrap();
         assert_eq!(c.kind, CreateKind::PrReview);
         assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["release", "create", "--tag", "v1.2.3"])).unwrap();
+        assert_eq!(c.kind, CreateKind::Release);
+        assert_eq!(c.kind.as_ledger_kind(), "release");
 
         assert!(classify(&args(&["issue", "list"])).is_none());
         // Non-comment review shapes stay unledgered in this slice.
@@ -487,7 +506,8 @@ mod tests {
         assert!(classify(&args(&["pr", "merge", "12"])).is_none());
         assert!(classify(&args(&["pr", "status"])).is_none());
         assert!(classify(&args(&["api", "repos/o/r/issues", "-f", "title=x"])).is_none());
-        assert!(classify(&args(&["release", "create"])).is_none());
+        assert!(classify(&args(&["release", "view", "v1.2.3"])).is_none());
+        assert!(classify(&args(&["gist", "create", "--filename", "x"])).is_none());
         assert!(classify(&args(&["frobnicate", "create"])).is_none());
         assert!(classify(&args(&[])).is_none());
         assert!(classify(&args(&["issue"])).is_none());
@@ -542,8 +562,11 @@ mod tests {
     #[test]
     fn guarded_vocabulary() {
         let path = temp_ledger("vocab");
-        let err = reserve(&path, "a", "j", "o/r", "release").unwrap_err();
+        let err = reserve(&path, "a", "j", "o/r", "gist").unwrap_err();
         assert!(err.contains("unknown ledger kind"), "{err}");
+        // `release` extends the writer vocabulary and reserves.
+        let (release_row, _) = reserve(&path, "a", "j", "o/r", "release").unwrap();
+        assert_eq!(row_outcome(&path, release_row).0, "reserved");
         // `review` is in the reference vocabulary and reserves.
         let (review_row, _) = reserve(&path, "a", "j", "o/r", "review").unwrap();
         assert_eq!(row_outcome(&path, review_row).0, "reserved");
