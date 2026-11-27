@@ -1464,6 +1464,7 @@ describe("before the host's first report", () => {
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
       routes: {},
+      workerChecks: null,
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.

@@ -58,6 +58,44 @@ function invalidBlock(message: string): FailClosed {
 }
 
 /**
+ * Extract the payload of the fenced block between the markers, or
+ * null when the region is not exactly one fenced block (#16075).
+ *
+ * The closing fence is a delimiter LINE — a line consisting solely
+ * of ``` — never a backtick run inside the payload: JSON.stringify
+ * leaves backticks inside string values unchanged, so a caller-owned
+ * title or link containing ``` (even at a line start in a
+ * caller-formatted payload whose strings carry literal newlines)
+ * must not end the fence early and truncate the block into an
+ * invalid_metadata_block refusal. A payload line of bare backticks
+ * cannot be valid JSON string content (a JSON string cannot contain
+ * a literal newline), so the first such line is unambiguously the
+ * delimiter. Anything other than whitespace before the opening fence
+ * or after the closing fence fails closed (returns null), as does a
+ * missing opening or closing fence.
+ */
+function extractFencedPayload(inner: string): string | null {
+  const lines = inner.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i++;
+  if (i >= lines.length || !/^```(?:json)?$/.test(lines[i].trim())) {
+    return null;
+  }
+  i++;
+  const payloadLines: string[] = [];
+  for (; i < lines.length; i++) {
+    if (lines[i].trim() === "```") {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() !== "") return null;
+      }
+      return payloadLines.join("\n");
+    }
+    payloadLines.push(lines[i]);
+  }
+  return null;
+}
+
+/**
  * Locate and parse the pm-metadata block in a body. A body with no
  * markers parses to block: null. A body whose markers are present but
  * whose payload is not a fenced JSON object with pm_meta: 1 fails
@@ -78,13 +116,13 @@ export function parseMetadataBlock(body: string): ParsedBody {
     throw invalidBlock("pm-metadata start marker without an end marker");
   }
   const inner = body.slice(startIdx + METADATA_START.length, endIdx);
-  const fence = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(inner);
-  if (!fence) {
+  const payload = extractFencedPayload(inner);
+  if (payload === null) {
     throw invalidBlock("pm-metadata block does not carry a fenced JSON payload");
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fence[1]);
+    parsed = JSON.parse(payload);
   } catch {
     throw invalidBlock("pm-metadata block payload is not valid JSON");
   }
