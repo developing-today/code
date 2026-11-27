@@ -112,6 +112,8 @@ PY
 
 # Fence fixtures: all writers stopped/inactive.
 mkdir -p "$TMP/units"
+printf 'inactive' >"$TMP/units/pm-kaneo.service"
+printf 'inactive' >"$TMP/units/pm-kaneo.timer"
 printf 'inactive' >"$TMP/units/docker-pm-grist.service"
 printf 'inactive' >"$TMP/units/docker-pm-pad.service"
 : >"$TMP/containers-clean.txt"
