@@ -21,14 +21,10 @@ using the supplied MD5 etag and ingestion has started. It returns the
 first import response (complete, active with at_bookmark, or failure),
 not speculative stored-object length/hash metadata or an ingest filename.
 
-Regression (#16070): a PUT accepted with its response lost is
-recovered idempotently -- the retry init may omit upload_url when
-the stored object verifies against the expected etag/length, and
-import_sql must finalize it without a second PUT; a resume naming
-a mismatched stored object, or no stored object at all, must raise
-a clear retryable RuntimeError, never KeyError or false success.
-Oracle: the same fake API; a resume is verified only by the fake's
-reported etag/length matching the digest/length of the SQL text.
+Regression (#16070): after an accepted PUT loses its response, retry
+init may return a complete or active import without upload_url. Never
+PUT or ingest again in this branch; reject failures, unknown states,
+and active responses without a bookmark with a retryable RuntimeError.
 
 Run: python3 -I infra/fleet-queue-backup/tests/test_d1_import.py
 """
