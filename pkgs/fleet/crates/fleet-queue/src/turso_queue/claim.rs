@@ -201,7 +201,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                         t,
                         &queue,
                         kind,
-                        dk.as_deref(),
+                        Some(dk.as_str()),
                         identity.as_ref(),
                     )? {
                         // #10627: the absorption itself is #13091's
