@@ -103,6 +103,9 @@ jobs:
         working-directory: pm-stack/platform
         run: bun test
 
+      - name: Test CF-12 read-only tier probe observations
+        run: python3 -I pm-stack/scripts/tier-drill-probe.test.py
+
       - name: Test seed and deploy/install scripts
         run: |
           bash pm-stack/scripts/seed-smoke.test.sh
