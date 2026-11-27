@@ -83,6 +83,12 @@ jobs:
         run: python3 infra/github-backup/bin/bundle_r2_all.py --bucket supabase-backups --root "$HOSTED_BACKUP_ROOT"
 
       - name: Publish verified rehost packs
+        # Failure isolation (#15515): the R2 and rehost legs are
+        # independent, so this leg attempts its run even when the R2
+        # upload failed — the run at 45811916838 hid the rehost
+        # evidence behind the R2 failure. The job still reports
+        # failure when any leg did.
+        if: always()
         env:
           HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
           RCLONE_CONFIG_R2BAK_TYPE: s3
@@ -95,6 +101,10 @@ jobs:
         run: python3 infra/github-backup/bin/rehost_publish_all.py --bucket fleet-git-rehost --root "$HOSTED_BACKUP_ROOT"
 
       - name: Verify live rehost clones
+        # Failure isolation (#15515): runs even when the rehost publish
+        # failed, so the report names the failing leg instead of going
+        # silent (run 45848318658 skipped this verification entirely).
+        if: always()
         env:
           HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
         run: python3 infra/github-backup/bin/verify_rehost_clones.py --root "$HOSTED_BACKUP_ROOT"
