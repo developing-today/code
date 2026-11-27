@@ -35,8 +35,8 @@ mod world_definition;
 mod test_forgeries;
 
 use ed25519_dalek::SigningKey;
-use test_forgeries::{IDENTITY_KEY, identity_forgery};
 use id_shape::{ContentId, HashProfile};
+use test_forgeries::{IDENTITY_KEY, identity_forgery};
 use world_definition::{
     CoreKind, SignedWorldDefinition, WORLD_DEFINITION_DOMAIN, WorldDefinition, WorldDefinitionError,
 };
