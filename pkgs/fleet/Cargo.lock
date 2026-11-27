@@ -1241,6 +1241,7 @@ name = "fleet"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "blake3",
  "ed25519-dalek",
  "fleet-agent",
  "fleet-bridge",
@@ -1266,6 +1267,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tokio",
  "ureq",
