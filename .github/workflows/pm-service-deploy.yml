@@ -11,7 +11,12 @@ name: pm-service deploy
 # yet); every later deploy takes the versions path. Rollback is a
 # versions operation: dispatch with
 # rollback_version set to a previous version id to promote it
-# back (the pm-console-edge input shape).
+# back (the pm-console-edge input shape). A pending Durable Object
+# migration is the second deploy-shaped exception: versions upload
+# cannot apply migrations, so when the upload refuses with a
+# pending-migration error the workflow applies this commit with a
+# plain deploy (which applies the migration) and health-gates
+# production directly; later commits return to the versions path.
 
 on:
   push:
@@ -115,8 +120,29 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          set +e
           bunx wrangler versions upload --var "VERSION:${GITHUB_SHA}" \
             --message "pm-service ${GITHUB_SHA}" | tee "$RUNNER_TEMP/upload.log"
+          status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$status" -ne 0 ] && grep -Eq 'pending Durable Object migration|must be applied with `wrangler deploy`' "$RUNNER_TEMP/upload.log"; then
+            # versions upload cannot apply DO migrations (run
+            # 45905665485): apply this commit with a plain deploy,
+            # which applies the pending migration, stamped the same
+            # way. Production serves it at once, so there is no
+            # version to promote; the final health step still gates
+            # the run on production reporting this SHA.
+            bunx wrangler deploy --var "VERSION:${GITHUB_SHA}" \
+              --message "pm-service migration ${GITHUB_SHA}"
+            echo "migrated=true" >> "$GITHUB_OUTPUT"
+            echo "Applied the pending Durable Object migration with a plain deploy of ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "migrated=false" >> "$GITHUB_OUTPUT"
+          if [ "$status" -ne 0 ]; then
+            echo "wrangler versions upload failed" >&2
+            exit "$status"
+          fi
           version_id="$(grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$RUNNER_TEMP/upload.log" | tail -n 1)"
           if [ -z "$version_id" ]; then
             echo "could not read a version id from the upload output" >&2
@@ -138,7 +164,7 @@ jobs:
             --url "${preview_url}/health" \
             --version "$GITHUB_SHA"
       - name: Promote the gated version
-        if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == '' && steps.standup.outputs.stood_up != 'true'
+        if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == '' && steps.standup.outputs.stood_up != 'true' && steps.upload.outputs.migrated != 'true'
         working-directory: pm-stack/pm-service
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
