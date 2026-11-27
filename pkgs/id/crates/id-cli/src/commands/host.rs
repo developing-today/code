@@ -122,6 +122,7 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             actor,
             json,
         } => import_act(&root, &file, &source, actor, json).await,
+        HostCommand::Drill { root, world, json } => drill_act(&root, &world, json).await,
         HostCommand::Snapshots {
             root,
             world,
@@ -326,6 +327,64 @@ async fn import_act(
     let mut body = serde_json::to_value(&manifest)?;
     body["path"] = serde_json::json!(path);
     print_body("restored", &body, json)
+}
+
+/// Run a one-shot restore drill for `world` in the data root `root` and
+/// print its record: `drilled <world> <pass|fail> ...` (or the record as
+/// JSON with `--json`). A failed drill still records the attempt, then
+/// fails the command so scripts can see it.
+async fn drill_act(root: &std::path::Path, world: &str, json: bool) -> Result<()> {
+    let key = host_key(root).await?;
+    let report = id_worlds::host_drill::run_restore_drill(
+        root,
+        world,
+        &key,
+        id_worlds::host_drill::now_secs(),
+    )
+    .await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&report.record)?)?
+        );
+    } else {
+        print!("{}", drill_line(&report));
+    }
+    if report.pass() {
+        Ok(())
+    } else {
+        let why = report
+            .record
+            .error
+            .clone()
+            .unwrap_or_else(|| format!("mismatches: {}", report.record.mismatches.join(",")));
+        anyhow::bail!("restore drill for world {world:?} failed: {why}")
+    }
+}
+
+/// `drilled <world> <pass|fail> source-entries=<n> restored-entries=<m>
+/// journal-identical=<bool> <record-path>`.
+fn drill_line(report: &id_worlds::host_drill::DrillReport) -> String {
+    let record = &report.record;
+    let outcome = match record.outcome {
+        id_worlds::host_drill::DrillOutcome::Pass => "pass",
+        id_worlds::host_drill::DrillOutcome::Fail => "fail",
+    };
+    let source_entries = record
+        .source
+        .as_ref()
+        .map_or(0, |fingerprint| fingerprint.journal_entries);
+    let restored_entries = record
+        .restored
+        .as_ref()
+        .map_or(0, |fingerprint| fingerprint.journal_entries);
+    format!(
+        "drilled {} {outcome} source-entries={source_entries} \
+         restored-entries={restored_entries} journal-identical={} {}\n",
+        record.world,
+        record.journal_identical,
+        report.record_path.display(),
+    )
 }
 
 /// A per-world setting an operator changes (#10694).
@@ -890,6 +949,66 @@ mod tests {
             export_line("exported", &body),
             "exported w entries=4 source=ab /x/w.export\n"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_drill_round_trips_a_world_and_records_the_result() {
+        use id_worlds::host_drill::{self, DrillOutcome};
+        use id_worlds::world::{WorldLimits, WorldScopes};
+        use id_worlds::world_limits::RuntimeLimits;
+        use id_worlds::world_session::WorldService;
+        use id_worlds::world_store::open_world;
+
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = root.path().join("w");
+        let (service, _) = open_world(
+            &dir,
+            "w",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, None),
+        )
+        .await
+        .unwrap();
+        let (_, ann) = service
+            .world()
+            .issue("ann", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(ann, "hello").await.unwrap();
+        service.world().shutdown().await.unwrap();
+        let journal_before = std::fs::read(dir.join("journal.jsonl")).unwrap();
+        assert!(!journal_before.is_empty());
+
+        // The oracle is the P6 replay-equality check: the restored journal
+        // must be byte-identical and the replay fingerprints must agree.
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let report = host_drill::run_restore_drill(root.path(), "w", &key, 1_700_000_001)
+            .await
+            .unwrap();
+        assert!(report.pass(), "drill failed: {:?}", report.record);
+        assert_eq!(report.record.outcome, DrillOutcome::Pass);
+        assert_eq!(report.record.at_secs, 1_700_000_001);
+        assert_eq!(report.record.world, "w");
+        assert!(report.record.journal_identical);
+        assert!(report.record.mismatches.is_empty());
+        assert!(report.record.export_entries.unwrap_or(0) >= 2);
+
+        let records = host_drill::read_drill_records(root.path()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0], report.record);
+
+        // A drill mutates nothing but the record file.
+        assert_eq!(
+            std::fs::read(dir.join("journal.jsonl")).unwrap(),
+            journal_before
+        );
+        let mut names: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec![".drills.jsonl".to_owned(), "w".to_owned()]);
     }
 
     #[test]

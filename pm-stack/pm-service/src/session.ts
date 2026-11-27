@@ -99,7 +99,7 @@ export async function createBrowserSession(
 }
 
 export interface SessionAuditEvent {
-  event: "login" | "logout";
+  event: "login" | "logout" | "revoked";
   sessionId: string;
   accountId: string;
   bindingId: string;
@@ -137,6 +137,13 @@ export async function authenticateBrowserSession(req: Request, opts: Authenticat
   const live = await opts.resolveLivePrincipal({ ...session });
   if (live === null) {
     await opts.store.delete(session.id);
+    await opts.audit?.({
+      event: "revoked",
+      sessionId: session.id,
+      accountId: session.principal.accountId,
+      bindingId: session.principal.bindingId,
+      at: nowMs,
+    });
     return { ok: false, reason: "revoked_session" };
   }
   return {

@@ -104,6 +104,43 @@ describe("front door (H1)", () => {
     expect(result.principal.providerSub).toBe(FIXTURE_SUB);
   });
 
+  test("two linked provider doors resolve one account to the same binding and role snapshot", async () => {
+    const fixture = await makeFixture();
+    const linkedSubjects = new Map([
+      ["github|123", FIXTURE_ACCOUNT],
+      ["google|456", FIXTURE_ACCOUNT],
+    ]);
+    const roleReads: Array<{ accountId: string; bindingId: string }> = [];
+    const deps = fixtureDeps(fixture, {
+      resolveAccountId: async (sub) => linkedSubjects.get(sub) ?? null,
+      loadRoles: async (accountId, bindingId) => {
+        roleReads.push({ accountId, bindingId });
+        return accountId === FIXTURE_ACCOUNT && bindingId === FIXTURE_BINDING ? ["owner", "agent"] : [];
+      },
+    });
+    const github = await resolveFrontDoor(
+      await mintToken(fixture, validClaims({ sub: "github|123" })),
+      deps,
+    );
+    const google = await resolveFrontDoor(
+      await mintToken(fixture, validClaims({ sub: "google|456" })),
+      deps,
+    );
+
+    expect(github.ok).toBe(true);
+    expect(google.ok).toBe(true);
+    if (!github.ok || !google.ok) return;
+    expect(github.principal.accountId).toBe(google.principal.accountId);
+    expect(github.principal.bindingId).toBe(google.principal.bindingId);
+    expect(github.principal.roles).toEqual(google.principal.roles);
+    expect(github.principal.roles).toEqual(["owner", "agent"]);
+    expect(github.principal.providerSub).not.toBe(google.principal.providerSub);
+    expect(roleReads).toEqual([
+      { accountId: FIXTURE_ACCOUNT, bindingId: FIXTURE_BINDING },
+      { accountId: FIXTURE_ACCOUNT, bindingId: FIXTURE_BINDING },
+    ]);
+  });
+
   test("forged token (signed with a different key) is rejected", async () => {
     const fixture = await makeFixture();
     const attacker = await makeFixture();

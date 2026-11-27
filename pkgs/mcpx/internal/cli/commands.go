@@ -224,7 +224,10 @@ func (a *App) CmdTypes(ctx context.Context, args []string) error {
 	return nil
 }
 
-// ensureSchemas triggers a fetch for namespaces that have never been read.
+// ensureSchemas blocks for the selected namespaces when they have never been
+// read. An explicit --ns selection is a first use (#1868 point 3 slice 2):
+// it awaits that namespace's schema read instead of serving a stub, while
+// the implicit ensureAnySchemas path only starts the read in the background.
 //
 // Selectors may name a tool ("chrome_devtools.click"); only the namespace part
 // is validated here, because whether a tool exists is a question for the
@@ -1401,14 +1404,15 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-// ensureAnySchemas fetches schemas when a namespace has none yet.
+// ensureAnySchemas starts a schema read when a namespace has none yet and
+// returns without waiting for it (#1868 point 3 slice 2).
 //
-// It used to stop at the first namespace that was cached, so a server whose
-// first fetch was still in flight -- an adapter, which is mcpx spawning
-// itself, is reliably slower than a small upstream -- was silently missing
-// from the generated client while its neighbours were present. A namespace
-// whose fetch failed has an error to show instead and is not retried here,
-// or every command would pay for one broken server.
+// Cached namespaces serve immediately from the generated typed stubs (PR
+// #12027); the first use of a cold namespace awaits its schema read
+// daemon-side via CallGenerated, so no entry path pays a blocking full
+// Refresh up front. A namespace whose fetch failed has an error to show
+// instead and is not retried here, or every command would pay for one
+// broken server; its error surfaces via `mcpx ls` without hanging.
 func (a *App) ensureAnySchemas(ctx context.Context, c *Client) error {
 	known, err := c.Namespaces(ctx, a.Profile)
 	if err != nil {
@@ -1423,9 +1427,25 @@ func (a *App) ensureAnySchemas(ctx context.Context, c *Client) error {
 	if !missing {
 		return nil
 	}
-	a.notice("reading tool schemas for the first time...")
-	_, err = c.Refresh(ctx)
-	return err
+	a.notice("reading tool schemas in the background; cached namespaces are ready now...")
+	a.startBackgroundRefresh(c)
+	return nil
+}
+
+// startBackgroundRefresh re-reads schemas without making the caller wait.
+// The context is detached: cancelling the invoking command must not cancel
+// the read another command is about to use. Errors stay on the daemon and
+// surface through the next `mcpx ls` instead of failing this command.
+func (a *App) startBackgroundRefresh(c *Client) {
+	timeout := a.Settings().Duration("daemon.refreshTimeout")
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		_, _ = c.Refresh(ctx)
+	}()
 }
 
 // buildPrelude imports the client and binds each namespace as a bare
