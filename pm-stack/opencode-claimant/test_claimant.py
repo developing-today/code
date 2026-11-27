@@ -752,6 +752,47 @@ class TestProviderWallGate(unittest.TestCase):
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_PROVIDER_WALL, recovery_argv)
         self.assertEqual(claimant._fire_provider_wall["error"], WALL_ERROR)
 
+    def test_prompt_wall_does_not_delete_a_resumed_session(self):
+        binds = []
+        deletes = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_resume")
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(
+                claimant,
+                "_get_session",
+                return_value=(
+                    "ok",
+                    {
+                        "id": "ses_resume",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    },
+                ),
+            ),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_send_prompt", return_value=False),
+            patch.object(claimant, "_take_prompt_wall", side_effect=[None, WALL_ERROR]),
+            patch.object(claimant, "_delete_session", side_effect=deletes.append),
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+
+        self.assertEqual(skips, [])
+        self.assertEqual(launched[0]["session_id"], "ses_resume")
+        self.assertTrue(launched[0]["prompt_failed"])
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(deletes, [], "a provider wall must not destroy a reused session")
+
     def test_main_records_provider_wall_in_fires_entry(self):
         # #8166 item 2: a walled fire's log line carries the
         # provider_wall entry - verbatim error, route, serving
@@ -1319,6 +1360,45 @@ class TestBindFailedRecordsError(unittest.TestCase):
         self.assertEqual(
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
+
+    def test_bind_failure_does_not_delete_a_resumed_session(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_resume")
+        deletes = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+                return Result(1, "", "bind failed: task already claimed")
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(
+                claimant,
+                "_get_session",
+                return_value=(
+                    "ok",
+                    {
+                        "id": "ses_resume",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    },
+                ),
+            ),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_send_prompt", return_value=True),
+            patch.object(claimant, "_delete_session", side_effect=deletes.append),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+
+        self.assertEqual(launched, [])
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(deletes, [], "a reused session must not be deleted")
 
     def test_bind_failure_deletes_the_created_session(self):
         """A refused bind leaves the new session bound to nothing.

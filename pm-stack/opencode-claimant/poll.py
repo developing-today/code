@@ -927,6 +927,9 @@ def normalize_row(row):
 
 def _candidate_entry(row, queue):
     prog = row.get("progress") or {}
+    packet = row.get("packet")
+    if not isinstance(packet, dict):
+        packet = {}
     issue = prog.get("issue_number") or prog.get("issue") or ""
     return {
         "id": row.get("id"),
@@ -941,7 +944,9 @@ def _candidate_entry(row, queue):
         "session_id": None,
         "issue": issue,
         "issue_number": prog.get("issue_number"),
-        "packet": row.get("packet") or {},
+        "packet": packet,
+        "resume_session_id": row.get("resume_session_id")
+        or packet.get("resume_session_id"),
         "attempts": row.get("attempts", 0),
         "max_attempts": row.get("max_attempts", 5),
         "title": row.get("title"),

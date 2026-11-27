@@ -2110,7 +2110,10 @@ def launch_step(
                     # added the error text below; it must not drop
                     # this cleanup (a rewrite of this branch removed
                     # it once already).
-                    _delete_session(session_id)
+                    if resume_session_id is None:
+                        _delete_session(session_id)
+                    # A resumed session predates this bind attempt and
+                    # is user data; never delete it after a bind refusal.
                     # Record WHY (#8042): bind's stderr names the
                     # exact failed precondition (lease lapsed / ledger
                     # row missing / already bound / task gone), and a
@@ -2205,7 +2208,7 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     # the binding. The gate closes for the fire.
                     provider_wall = _provider_wall_record(prompt_wall)
                     _fire_provider_wall = provider_wall
-                    if _delete_session(session_id):
+                    if resume_session_id is None and _delete_session(session_id):
                         unbind_result = subprocess.run(
                             [
                                 str(REPO_QUEUE_CMD),

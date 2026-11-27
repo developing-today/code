@@ -810,6 +810,23 @@ class TestFetchClaimedRows(unittest.TestCase):
         entry = poll._candidate_entry(rows[0], "repo-health-code-pilot")
         self.assertEqual(entry["packet"], packet)
 
+    def test_resume_session_hint_is_lifted_to_candidate(self):
+        packet = {"kind": "fix", "resume_session_id": "ses_resume"}
+        rows, _ = self.fetch(
+            {
+                "rows": [
+                    {
+                        "id": 13,
+                        "status": "claimed",
+                        "payload": packet,
+                        "progress": {"lane": "opencode", "stage": "handed_off"},
+                    }
+                ]
+            }
+        )
+        entry = poll._candidate_entry(rows[0], "repo-health-code-pilot")
+        self.assertEqual(entry["resume_session_id"], "ses_resume")
+
     def test_packet_lifted_from_payload_string(self):
         rows, _ = self.fetch(
             {
