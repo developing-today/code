@@ -54,11 +54,11 @@
 //! Malformed-value edges the design does not name are refused as
 //! `field_unsupported` rather than serialized into a request the source
 //! would reject or misread: a comparison against `null` (null tests go
-//! through `is.null`), an empty `in` list, a non-finite float, a keyset
-//! cursor whose arity does not match the effective ordering, and a
-//! `null` inside a keyset cursor (ordering keys are the declared unique
-//! key and declared orderable columns; a null there has no total-order
-//! position to page from).
+//! through `is.null`), an empty `in` list, a non-finite float, and a
+//! keyset cursor whose arity does not match the effective ordering. A
+//! `null` inside a keyset cursor is not malformed: it names the `NULL`
+//! bucket of that key, and the continuation pages into, out of, and
+//! within null buckets per the pinned null placement (#16132).
 
 mod allowlist;
 mod error;
