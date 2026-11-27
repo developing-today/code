@@ -5330,6 +5330,8 @@ describe("the edge does the core itself", () => {
         "hands.done",
         "issue.rank",
         "task.move",
+        "task.cancel",
+        "task.unblock",
         "pr.merge",
         "deploy.start",
         "intake.send",
