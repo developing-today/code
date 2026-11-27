@@ -23,8 +23,13 @@ import {
 } from "../src/d1-metadata-stores.ts";
 import { FixtureMetadataStore, extractKeys, type MetadataRecord, type MetadataStore } from "../src/stamping.ts";
 import { buildDeps } from "../src/worker.ts";
-import { withDb } from "./d1-double.ts";
-import { BINDING_A, BINDING_B } from "./helpers.ts";
+import { withDb, withRestartableDb } from "./d1-double.ts";
+import { BINDING_A, BINDING_B, ISSUER, AUDIENCE, SERVICE_TOKEN, bearerReq } from "./helpers.ts";
+import { sha256Hex, type AuthDeps } from "../src/auth.ts";
+import { FixtureGitHubWriter } from "../src/github.ts";
+import { renderBodyWithBlock, parseMetadataBlock } from "../src/metadata.ts";
+import { dispatch } from "../src/router.ts";
+import type { D1DatabaseLike } from "../src/d1-queue-store.ts";
 
 function metadataRecord(overrides: Partial<MetadataRecord> & { lane?: string; session?: string } = {}): MetadataRecord {
   const { lane = "code-a", session = "ses_abc", ...rest } = overrides;
@@ -187,3 +192,125 @@ test(
     assert.ok(unbound.backfillRunStore instanceof FixtureBackfillRunStore);
   }),
 );
+
+// #16096 acceptance oracle: the signed GitHub body is the source of truth;
+// every durable row and DB-only query must retain its complete Metadata JSON.
+const REPO = "developing-today/code";
+const keyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+const encodedKey = Buffer.from(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey)).toString("base64url");
+const publicKey = Buffer.from(await crypto.subtle.exportKey("raw", keyPair.publicKey)).toString("base64url");
+const testEnv = {
+  RP_ISSUER: ISSUER,
+  RP_AUDIENCE: AUDIENCE,
+  STAMP_SIGNING_KEY_PKCS8: encodedKey,
+  STAMP_SIGNING_KEY_ID: "durable-test",
+  STAMP_VERIFY_KEYS_JSON: JSON.stringify({ "durable-test": publicKey }),
+  TENANCY_FIXTURE_JSON: JSON.stringify({
+    subjects: [],
+    service_tokens: [{ sha256: await sha256Hex(SERVICE_TOKEN), binding_id: BINDING_A,
+      routes: ["stamping", "query", "ingestion"], active: true, label: "durable-test" }],
+  }),
+};
+
+function durableDeps(db: D1DatabaseLike, writer: FixtureGitHubWriter): AuthDeps {
+  return {
+    ...buildDeps({ ...testEnv, QUEUE_D1: db } as HostedEnv),
+    // GitHub is an external durable system, independent of the Worker restart.
+    githubWriter: writer, githubItems: writer, githubEditor: writer,
+  };
+}
+
+async function createDurable(deps: AuthDeps, kind: "issue" | "pr" = "issue") {
+  const body = renderBodyWithBlock(parseMetadataBlock("Durable metadata"), {
+    ...metadataRecord().metadata,
+    future_extension: { unicode: "λ 🚀", nested: [null, false, { value: 16096 }] },
+  });
+  const res = await dispatch(bearerReq("/v1/stamps", SERVICE_TOKEN, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo: REPO, kind, title: "Durable create", body,
+      ...(kind === "pr" ? { head: "feature", base: "main" } : {}) }),
+  }), deps);
+  assert.equal(res.status, 201, await res.clone().text());
+  return await res.json() as { number: number; body: string; metadata: Record<string, unknown>;
+    metadata_inserted: boolean; insert_error?: string };
+}
+
+async function durableBackfill(deps: AuthDeps): Promise<BackfillRunRecord> {
+  const res = await dispatch(bearerReq("/v1/ingestion/backfill", SERVICE_TOKEN, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repos: [REPO] }),
+  }), deps);
+  assert.equal(res.status, 201, await res.clone().text());
+  return await res.json() as BackfillRunRecord;
+}
+
+async function assertDurableQuery(deps: AuthDeps, metadata: Record<string, unknown>[]) {
+  // No GitHub fallback: this can only succeed from persisted D1 rows.
+  const res = await dispatch(bearerReq(`/v1/query?repo=${REPO}`, SERVICE_TOKEN),
+    { ...deps, githubItems: undefined });
+  assert.equal(res.status, 200, await res.clone().text());
+  const doc = await res.json() as { count: number; results: { metadata: unknown }[] };
+  assert.equal(doc.count, metadata.length);
+  assert.deepEqual(doc.results.map((r) => r.metadata), metadata);
+}
+
+test("stamp issue and PR → database close/reopen → fresh Worker query and backfill retain exact JSON",
+  withRestartableDb(async (restart) => {
+    const writer = new FixtureGitHubWriter();
+    let deps = durableDeps(restart(), writer);
+    const created = [await createDurable(deps), await createDurable(deps, "pr")];
+    for (const item of created) {
+      assert.equal(item.metadata_inserted, true);
+      assert.deepEqual(parseMetadataBlock(item.body).block, item.metadata);
+    }
+    const expected = await deps.metadataStore!.listRepo(REPO);
+    deps = durableDeps(restart(), writer);
+    assert.deepEqual(await deps.metadataStore!.listRepo(REPO), expected, "complete record, not just extracted keys");
+    await assertDurableQuery(deps, created.map((item) => item.metadata));
+    const run = await durableBackfill(deps);
+    assert.deepEqual(run.counts, { checked: 2, inserted: 0, refreshed: 0, unchanged: 2, errors: 0 });
+    deps = durableDeps(restart(), writer);
+    assert.deepEqual(await deps.backfillRunStore!.get(run.id), run);
+    await assertDurableQuery(deps, created.map((item) => item.metadata));
+  }),
+);
+
+for (const failure of ["schema", "index", "insert"] as const) {
+  test(`D1 ${failure} failure preserves GitHub create and heals in the same Worker and after restart`,
+    withRestartableDb(async (restart) => {
+      const db = restart();
+      let failing = true;
+      const faulty: D1DatabaseLike = {
+        prepare(sql: string) {
+          if (failing && failure === "index" && sql.startsWith("CREATE INDEX IF NOT EXISTS fleet_metadata_binding")) {
+            // A real D1 RPC rejects asynchronously, after table DDL succeeded.
+            return {
+              bind() { return this; },
+              async all() { throw new Error("unexpected row read"); },
+              async run() { throw new Error("forced D1 index outage"); },
+            };
+          }
+          if (failing && (failure === "schema" ? sql.startsWith("CREATE TABLE IF NOT EXISTS fleet_metadata")
+            : failure === "insert" && sql.startsWith("INSERT INTO fleet_metadata"))) {
+            throw new Error(`forced D1 ${failure} outage`);
+          }
+          return db.prepare(sql);
+        },
+      };
+      const writer = new FixtureGitHubWriter();
+      const deps = durableDeps(faulty, writer);
+      const created = await createDurable(deps);
+      assert.equal(created.metadata_inserted, false);
+      assert.match(created.insert_error!, /forced D1/);
+      assert.equal(writer.items.length, 1, "a DB miss never replays or deletes the GitHub create");
+      assert.deepEqual(parseMetadataBlock(writer.items[0].body).block, created.metadata);
+      failing = false;
+      const healed = await durableBackfill(deps);
+      assert.deepEqual(healed.counts, { checked: 1, inserted: 1, refreshed: 0, unchanged: 0, errors: 0 });
+      const fresh = durableDeps(restart(), writer);
+      await assertDurableQuery(fresh, [created.metadata]);
+      const again = await durableBackfill(fresh);
+      assert.deepEqual(again.counts, { checked: 1, inserted: 0, refreshed: 0, unchanged: 1, errors: 0 });
+      assert.equal(writer.items.length, 1);
+    }),
+  );
+}

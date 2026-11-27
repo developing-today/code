@@ -15,10 +15,10 @@
 //     queue fields stamp null — the design §5 rule for work that is
 //     not queue-originated. A test (or #12589) injects a source
 //     behind this interface without touching the route.
-//   - MetadataStore: the metadata DB is #9074's deliverable (design
-//     §3.1: "the create path inserts the full record into the
-//     metadata database"); a Turso-backed store replaces the fixture
-//     behind this interface. Insert failure semantics live in the
+//   - MetadataStore: D1MetadataStore (#15456) persists the complete
+//     record JSON and extracted keys behind this interface when
+//     QUEUE_D1 is bound; the fixture is the local/dev fallback.
+//     Insert failure semantics live in the
 //     route: a failed insert never loses the GitHub item — ingestion
 //     (#12590, design §7.3) heals it.
 
