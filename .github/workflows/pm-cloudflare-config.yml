@@ -12,17 +12,25 @@ name: pm-console-cloudflare config
 # and policy for pm.security.cab, the tunnel route, DNS, the edge
 # Worker route, and the Worker's secrets, whose values come from the
 # repository's secrets at apply time and are never in the repo.
-# Direct-mode tokens are managed only here; the laptop timer keeps
-# managing shared routing and Access settings, checked by parity tests.
+# Direct-mode tokens and repository-owned edge configuration are managed
+# here; the laptop timer owns only its named tunnel's ingress.
 on:
   push:
     branches: [main]
     paths:
       - "infra/pm-cloudflare/**"
+      - "pm-stack/console/scripts/expose.py"
+      - "pm-stack/console/scripts/test_expose.py"
+      - "pm-stack/systemd/pm-console-expose.service"
+      - "pm-stack/systemd/pm-console-expose.timer"
       - ".github/workflows/pm-cloudflare-config.yml"
   pull_request:
     paths:
       - "infra/pm-cloudflare/**"
+      - "pm-stack/console/scripts/expose.py"
+      - "pm-stack/console/scripts/test_expose.py"
+      - "pm-stack/systemd/pm-console-expose.service"
+      - "pm-stack/systemd/pm-console-expose.timer"
       - ".github/workflows/pm-cloudflare-config.yml"
   workflow_dispatch:
     inputs:
@@ -57,8 +65,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: State is valid and the applier matches expose.py
-        run: python3 -I infra/pm-cloudflare/test_apply.py -v
+      - name: Validate repository applier and laptop tunnel boundary
+        run: |
+          python3 -I infra/pm-cloudflare/test_apply.py -v
+          python3 -I pm-stack/console/scripts/test_expose.py -v
 
   apply:
     name: apply from the repository state

@@ -628,6 +628,17 @@ describe("the edge's run: the bridge through its binding", () => {
     const ops = { unreadInstructions: async () => ({ unreadInstructions: 2 }) };
     expect(await directRead("pipeline", ops as never, {} as never)).toEqual({ unreadInstructions: 2 });
   });
+
+  test("the questionSets section is read from the decision-events Worker reader (#13491)", async () => {
+    const discovery = { source: "decision-events", sets: [{ setId: "set-1" }] };
+    expect(await directRead("questionSets", {} as never, {} as never, async () => discovery as never)).toEqual(
+      discovery,
+    );
+    // With no Worker source held, the section is not this side's.
+    await expect(directRead("questionSets", {} as never, {} as never)).rejects.toThrow(
+      /decision-events Worker is not configured/,
+    );
+  });
 });
 
 describe("the direct classes", () => {
@@ -979,6 +990,7 @@ describe("what this side notes of each call it makes", () => {
       done: ["queue", "github"],
       agents: ["bridge"],
       pipeline: ["bridge"],
+      questionSets: ["worker"],
     });
   });
 });

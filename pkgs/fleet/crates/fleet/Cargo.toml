@@ -169,8 +169,9 @@ http = ["dep:fleet-laptop-agent"]
 ssh = []
 laptop = ["commander", "http", "ssh", "dep:fleet-pool"]
 # The host domain (#14716) is a working-seat client on the laptop
-# capability; include its compiled capability and the pool primitive.
-host = ["laptop"]
+# capability; include its compiled capability, pool primitive, and the
+# broker live-overlay read model used by host selection (1b -> 1c).
+host = ["laptop", "dep:fleet-queue"]
 # The actions domain (#13774): live exec sessions inside Actions
 # runners — seat verbs over the queue client, the runner-side
 # agent, and the R2 egress helper (SigV4 over sha2). Full only.

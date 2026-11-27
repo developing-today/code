@@ -210,6 +210,9 @@ export function actions(
       touch: [],
       audit: ids("operation", "database", "secret_name"),
     },
+    // Start a store migration in its workflow (#14256). The audit keeps
+    // the store's name only.
+    "store.migrate": { run: (a) => ops.storeMigrate(a), touch: [], audit: ids("store") },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],

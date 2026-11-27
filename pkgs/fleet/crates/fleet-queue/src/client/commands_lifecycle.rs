@@ -1403,6 +1403,29 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
     ));
     0
 }
+
+/// time-recheck (#14212): run the broker's time recheck pass
+/// now, or force one blocked task's recheck with --task. The
+/// pass requeues blocked rows whose {"kind": "time"} ready
+/// condition has lapsed. Production cadence is the sweep's;
+/// this is the manual trigger.
+pub(super) fn cmd_time_recheck(rest: &[String]) -> i32 {
+    let args = parse_verb_args("time-recheck", rest, &["task", "limit"], &[]);
+    reject_extra_pos("time-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/time-recheck", &body));
+    print_json(&served_row(
+        require_row(&resp, "time_recheck"),
+        "time-recheck",
+    ));
+    0
+}
 /// repair (#13191): repair a quarantined / malformed task
 /// packet in place. The broker re-runs the packet validators,
 /// applies the deterministic repairs whose correct value can be

@@ -34,8 +34,14 @@ cargo test -p id-tui-shell   # capability-statement tests
   a pure function of the session fold with every host string
   made escape-free. `tests/present.rs` pins the panels for the
   recorded sessions.
-- **Open** on issue #12818: the ratatui renderer that draws
-  the panels, and the iroh connection that drives the fold.
+- **Renderer — landed** (`src/render.rs`): ratatui draws the
+  three panels and the input line, with the chat kept on its
+  newest lines and the cursor after the typed text.
+  `tests/render.rs` checks the recorded session on ratatui's
+  test backend.
+- **Open** on issue #12818: the terminal loop (crossterm
+  backend, key handling into the frame builders) and the iroh
+  connection that drives the fold.
 
 ## Capability statement
 

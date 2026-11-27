@@ -139,11 +139,30 @@ class QueueWire {
       this.changes = 1;
       return { ...result([]), affected_row_count: 1 };
     }
+    if (sql.startsWith("UPDATE tasks SET ")) {
+      const names = list(/^UPDATE tasks SET (.*?) WHERE id = \?/s.exec(sql)![1]).map((set) => set.replace(/ = \?$/, ""));
+      const id = args[names.length];
+      const guard = args.slice(names.length + 1);
+      const row = this.tasks.find((candidate) => candidate.id === id);
+      const matched = row !== undefined && names.every((name, index) => row[name] === guard[index]);
+      if (matched) names.forEach((name, index) => (row![name] = args[index]));
+      this.changes = matched ? 1 : 0;
+      return { ...result([]), affected_row_count: this.changes };
+    }
+    if (sql.startsWith("DELETE FROM leases")) {
+      this.changes = 0;
+      return { ...result([]), affected_row_count: 0 };
+    }
     if (sql.includes("FROM github_mirror_issues")) return result([], ["labels"]);
     const select = /^SELECT (.*?) FROM tasks\b/s.exec(sql);
     if (select) {
-      let rows = sql.includes("json_valid(payload)") ? this.subset(args) : [...this.tasks];
-      if (!sql.includes("json_valid(payload)")) {
+      const byId = sql.includes("WHERE id = ?");
+      let rows = sql.includes("json_valid(payload)")
+        ? this.subset(args)
+        : byId
+          ? this.tasks.filter((row) => row.id === args[0] && row.queue === args[1])
+          : [...this.tasks];
+      if (!sql.includes("json_valid(payload)") && !byId) {
         if (sql.includes("queue = ?")) rows = rows.filter((row) => row.queue === args[0]);
         const status = /status = '([^']+)'/.exec(sql)?.[1];
         if (status) rows = rows.filter((row) => row.status === status);
@@ -301,7 +320,7 @@ async function setup() {
     sub: "u1",
     email: OWNER,
   });
-  const send = () =>
+  const act = (kind: string, args: Row) =>
     route(
       new Request("https://pm.example/console/api/act", {
         method: "POST",
@@ -311,10 +330,11 @@ async function setup() {
           "content-type": "application/json",
           "x-pm-console": "1",
         },
-        body: JSON.stringify({ kind: "ask.send", args: { text: TEXT } }),
+        body: JSON.stringify({ kind, args }),
       }),
       io,
     );
+  const send = () => act("ask.send", { text: TEXT });
   const held = () => {
     const index = stored.get("held:index") as string[] | undefined;
     if (Array.isArray(index)) {
@@ -325,7 +345,40 @@ async function setup() {
     }
     return (stored.get("held") ?? []) as { kind: string; args: Row }[];
   };
-  return { cfg, queue, github, stored, held, send, later };
+  return { cfg, queue, github, stored, held, send, act, later };
+}
+
+const JSON_FIELDS = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
+const normalize = (rows: Row[]) =>
+  rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([name, value]) => {
+        if (name === "manual_only") return [name, value === 1 || value === true];
+        if (JSON_FIELDS.has(name) && typeof value === "string") return [name, JSON.parse(value)];
+        return [name, value];
+      }),
+    ),
+  );
+
+/** The shared verb run on the same starting state, for the row and event oracle. */
+async function oracleFor(
+  w: Awaited<ReturnType<typeof setup>>,
+  prepare: (store: FixtureQueueStore) => Promise<void>,
+  verb: string,
+  request: Record<string, unknown>,
+) {
+  const oracle = new FixtureQueueStore();
+  const env = nativeQueueEnv(() => NOW / 1000);
+  const enqueued = await executeQueueVerb(
+    oracle,
+    "enqueue",
+    { queue: w.cfg.queue, packet: promptPacket(w.cfg.repo, w.cfg.queue, 7, TEXT, AT) },
+    env,
+  );
+  expect(enqueued.ok).toBe(true);
+  await prepare(oracle);
+  const response = await executeQueueVerb(oracle, verb, request, env);
+  return { response, oracle };
 }
 
 beforeEach(() => {
@@ -403,4 +456,131 @@ describe("Edge prompt queue door (#13490)", () => {
       await Promise.all(w.later);
     });
   }
+});
+
+describe("Edge task cancel and unblock door (#13490)", () => {
+  const cancel = { task: 1, reason: "owner stopped it" };
+  const cancelRequest = { task_id: 1, worker: "pm-console", reason: "owner stopped it" };
+  /** Seeds the queued task through the door, then clears the wire's record of it. */
+  async function seeded() {
+    const w = await setup();
+    expect((await w.send()).status).toBe(200);
+    w.queue.transactions.splice(0);
+    return w;
+  }
+
+  test("task.cancel cancels the task and writes its row and events in one transaction, with no held work", async () => {
+    const w = await seeded();
+    const { response: expected, oracle } = await oracleFor(w, async () => {}, "cancel", cancelRequest);
+    expect(expected.ok).toBe(true);
+    const response = await w.act("task.cancel", cancel);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, result: { task: 1, action: "cancel" } });
+    expect(w.queue.tasks).toHaveLength(1);
+    expect(w.queue.tasks[0]).toMatchObject({ status: "cancelled", worker_id: null, lease_until: null });
+    expect(normalize(w.queue.tasks)).toEqual(await oracle.allTasks());
+    expect(w.queue.events).toEqual(await oracle.allEvents());
+    expect(w.queue.events.map((event) => event.kind)).toEqual(["enqueued", "cancelled"]);
+    expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
+    expect(w.held()).toEqual([]);
+    await Promise.all(w.later);
+  });
+
+  test("task.unblock returns a blocked task to queued and writes its row and events in one transaction", async () => {
+    const w = await seeded();
+    w.queue.tasks[0].status = "blocked";
+    const { response: expected, oracle } = await oracleFor(
+      w,
+      (store) => store.updateTask(1, { status: "blocked" }),
+      "unblock",
+      { task_id: 1, worker: "pm-console", reason: "owner cleared it" },
+    );
+    expect(expected.ok).toBe(true);
+    const response = await w.act("task.unblock", { task: 1, reason: "owner cleared it" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, result: { task: 1, action: "unblock" } });
+    expect(w.queue.tasks[0]).toMatchObject({ status: "queued", blocked_deps: null });
+    expect(normalize(w.queue.tasks)).toEqual(await oracle.allTasks());
+    expect(w.queue.events).toEqual(await oracle.allEvents());
+    expect(w.queue.events.map((event) => event.kind)).toEqual(["enqueued", "unblocked"]);
+    expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
+    await Promise.all(w.later);
+  });
+
+  test("task.unblock of a task that is not blocked is refused and writes nothing", async () => {
+    const w = await seeded();
+    const before = structuredClone(w.queue.tasks);
+    const events = structuredClone(w.queue.events);
+    const response = await w.act("task.unblock", { task: 1, reason: "not blocked" });
+    expect(response.status).not.toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("unblock_task: task 1 is queued, not blocked");
+    expect(w.queue.tasks).toEqual(before);
+    expect(w.queue.events).toEqual(events);
+    expect(w.queue.transactions).toEqual([]);
+    await Promise.all(w.later);
+  });
+
+  test("a repeated task.cancel answers the same and writes nothing the second time", async () => {
+    const w = await seeded();
+    expect(await (await w.act("task.cancel", cancel)).json()).toEqual({
+      ok: true,
+      result: { task: 1, action: "cancel" },
+    });
+    const once = structuredClone(w.queue.tasks);
+    const events = structuredClone(w.queue.events);
+    expect(await (await w.act("task.cancel", cancel)).json()).toEqual({
+      ok: true,
+      result: { task: 1, action: "cancel" },
+    });
+    expect(w.queue.tasks).toEqual(once);
+    expect(w.queue.events).toEqual(events);
+    expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
+    await Promise.all(w.later);
+  });
+
+  test("a task in another queue is not this queue's to cancel", async () => {
+    const w = await seeded();
+    w.queue.tasks[0].queue = "elsewhere";
+    const before = structuredClone(w.queue.tasks);
+    const events = structuredClone(w.queue.events);
+    const response = await w.act("task.cancel", cancel);
+    expect(response.status).not.toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("cancel_repo_task: task 1 does not exist");
+    expect(w.queue.tasks).toEqual(before);
+    expect(w.queue.events).toEqual(events);
+    expect(w.queue.transactions).toEqual([]);
+    await Promise.all(w.later);
+  });
+
+  test("a queue transport failure on task.cancel leaves the task and its events as they were", async () => {
+    const w = await seeded();
+    const before = structuredClone(w.queue.tasks);
+    const events = structuredClone(w.queue.events);
+    w.queue.failure = "transport";
+    const response = await w.act("task.cancel", cancel);
+    expect(response.status).not.toBe(200);
+    // The refusal names the queue door's own cancel path, not a handoff:
+    // the store was reached and answered nothing.
+    expect(JSON.stringify(await response.json())).toContain("queue cancel");
+    expect(w.queue.tasks).toEqual(before);
+    expect(w.queue.events).toEqual(events);
+    expect(w.queue.transactions).toEqual([]);
+    await Promise.all(w.later);
+  });
+
+  test("a failed COMMIT on task.cancel rolls the whole change back", async () => {
+    const w = await seeded();
+    const before = structuredClone(w.queue.tasks);
+    const events = structuredClone(w.queue.events);
+    w.queue.failure = "step";
+    const response = await w.act("task.cancel", cancel);
+    expect(response.status).not.toBe(200);
+    // The refusal names the queue door's own cancel path: the batch was
+    // attempted and rolled back, not handed to a machine.
+    expect(JSON.stringify(await response.json())).toContain("queue cancel");
+    expect(w.queue.tasks).toEqual(before);
+    expect(w.queue.events).toEqual(events);
+    expect(w.queue.transactions).toEqual(["BEGIN IMMEDIATE", "ROLLBACK"]);
+    await Promise.all(w.later);
+  });
 });
