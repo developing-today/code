@@ -682,7 +682,9 @@ export class AlertsStore {
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
     await this.ensureRegistry();
-    const rows = await this.registry().query<Record<string, unknown>>(`${SUBSCRIPTION_SELECT} order by e.created_at, e.id`);
+    const rows = await this.registry().query<Record<string, unknown>>(
+      `${SUBSCRIPTION_SELECT} order by e.created_at, e.id`,
+    );
     // #3702 decision 3: old stored prefs are not rewritten, but must not
     // be reinterpreted on read. Apply the same per-field fallbacks used at
     // intake so delivery and the prefs page see safe values.

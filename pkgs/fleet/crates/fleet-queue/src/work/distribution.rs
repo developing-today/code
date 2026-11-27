@@ -26,7 +26,7 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use super::contracts::{digest, ContractError, DIGEST_DOMAIN_SELECTION_ORDER};
+use super::contracts::{ContractError, DIGEST_DOMAIN_SELECTION_ORDER, digest};
 
 /// One ordered candidate in comparator order (effective urgency
 /// ascending, then exact peer rank, creation time, normalized

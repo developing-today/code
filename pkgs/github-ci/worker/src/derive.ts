@@ -38,9 +38,7 @@ function escapeRegExp(s: string): string {
  * " xaltha " but not "xaltham"). Case-insensitive. */
 export function mentionsFleetIdentity(body: unknown): boolean {
   if (typeof body !== "string" || body.length === 0) return false;
-  return MENTION_IDENTITIES.some((id) =>
-    new RegExp(`(^|[^a-z0-9-])${escapeRegExp(id)}($|[^a-z0-9-])`, "i").test(body),
-  );
+  return MENTION_IDENTITIES.some((id) => new RegExp(`(^|[^a-z0-9-])${escapeRegExp(id)}($|[^a-z0-9-])`, "i").test(body));
 }
 
 /**

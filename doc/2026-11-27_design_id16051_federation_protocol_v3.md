@@ -279,14 +279,14 @@ to direct:
 
 ## 6. Local/self-host parity and hosted-backstop boundaries
 
-| Concern | Self-host / local | Our hosted instance | Boundary |
-| ------- | ----------------- | ------------------- | -------- |
-| Registry defaults | Follows none until the operator subscribes | Ships subscribed to our curated list | A setting (`fresh_self_host` vs `hosted_with_curated`); same `client_resolver` code |
-| Relay defaults | No relay until configured; direct where possible | Operates a default relay; announces its hint | A setting; same `route_for` gate |
-| Mirror tooling | Same `Registry::import` + `publish` + `verify_from` | Same, plus scheduled re-fetch of the curated subscription | Operation cadence only; no protocol branch |
-| Public endpoint | Anyone may serve one over their subscriptions (v2 §9) | Serves one over the curated subscription | Same query code; attribution always names the curator |
-| Portal grants | Mutual-grant check, both ends (#1068) | Same | No hosted override; a listing never overrides a grant |
-| Offline backstop | Two self-hosts federate with the backstop offline | Backstop is reachable, not required | Federation must be demonstrated with the backstop off |
+| Concern           | Self-host / local                                     | Our hosted instance                                       | Boundary                                                                            |
+| ----------------- | ----------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Registry defaults | Follows none until the operator subscribes            | Ships subscribed to our curated list                      | A setting (`fresh_self_host` vs `hosted_with_curated`); same `client_resolver` code |
+| Relay defaults    | No relay until configured; direct where possible      | Operates a default relay; announces its hint              | A setting; same `route_for` gate                                                    |
+| Mirror tooling    | Same `Registry::import` + `publish` + `verify_from`   | Same, plus scheduled re-fetch of the curated subscription | Operation cadence only; no protocol branch                                          |
+| Public endpoint   | Anyone may serve one over their subscriptions (v2 §9) | Serves one over the curated subscription                  | Same query code; attribution always names the curator                               |
+| Portal grants     | Mutual-grant check, both ends (#1068)                 | Same                                                      | No hosted override; a listing never overrides a grant                               |
+| Offline backstop  | Two self-hosts federate with the backstop offline     | Backstop is reachable, not required                       | Federation must be demonstrated with the backstop off                               |
 
 ## 7. Synthesis: the smallest interoperable protocol
 
@@ -317,14 +317,14 @@ no relay directory, no grant-in-discovery, no policy merge.
 
 ## 8. Open choices — decided here with defaults
 
-| Choice (deferred by #6289/#16051) | v3 decision |
-| ---------------------------------- | ----------- |
-| What crosses a mirror boundary | Announcements + tombstones-as-notices cross; signatures, seq, policy do not — mirror re-signs under local policy (§3) |
-| Automatic discovery / refresh | Operator-directed subscription only; scheduled re-fetch of subscribed lists is mechanical; transitive auto-subscription forbidden without a new design step (§3.1) |
-| Loop and fan-out bounds | No transitive traversal, so no loop protocol; fan-out is the reader's subscription set, never a crawl (§3.1) |
-| Join handshake minimum | Resolve → authorize-at-both-ends → mutual-grant portal channel; listing never grants, portals never leak through discovery (§4) |
-| Relay federation semantics | Reuse `route_for`; anyone may operate a relay; relay learns timing/size only; fail closed with named reason when no shared relay (§5) |
-| Interop minimum | Mirror + join + relay rules (§7); everything else explicitly not in the protocol |
+| Choice (deferred by #6289/#16051) | v3 decision                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| What crosses a mirror boundary    | Announcements + tombstones-as-notices cross; signatures, seq, policy do not — mirror re-signs under local policy (§3)                                              |
+| Automatic discovery / refresh     | Operator-directed subscription only; scheduled re-fetch of subscribed lists is mechanical; transitive auto-subscription forbidden without a new design step (§3.1) |
+| Loop and fan-out bounds           | No transitive traversal, so no loop protocol; fan-out is the reader's subscription set, never a crawl (§3.1)                                                       |
+| Join handshake minimum            | Resolve → authorize-at-both-ends → mutual-grant portal channel; listing never grants, portals never leak through discovery (§4)                                    |
+| Relay federation semantics        | Reuse `route_for`; anyone may operate a relay; relay learns timing/size only; fail closed with named reason when no shared relay (§5)                              |
+| Interop minimum                   | Mirror + join + relay rules (§7); everything else explicitly not in the protocol                                                                                   |
 
 ## 9. Implementation breakdown
 

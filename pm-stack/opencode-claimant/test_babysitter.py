@@ -228,15 +228,15 @@ class TestVerdicts(unittest.TestCase):
         bound = binding(repo="developing-today/code")
         record, _ = round_of([s], bindings={"ses_a": bound}, active_ids=None)
         self.assertNotIn("ses_a", record["verdicts"])
-        self.assertEqual(
-            [u["session_id"] for u in record["unclassified"]], ["ses_a"]
-        )
+        self.assertEqual([u["session_id"] for u in record["unclassified"]], ["ses_a"])
 
     def test_active_session_with_error_outcome_progresses(self):
         # #16214: the same stored error outcome on a session that
         # IS in the readable active set is a resumed session, not
         # a terminal one - membership overrides the stored marker.
-        s = session("ses_a", updated=NOW - 1 * MIN, idle=NOW - 60 * MIN, outcome="error")
+        s = session(
+            "ses_a", updated=NOW - 1 * MIN, idle=NOW - 60 * MIN, outcome="error"
+        )
         bound = binding(repo="developing-today/code")
         record, _ = round_of([s], bindings={"ses_a": bound}, active_ids={"ses_a"})
         v = record["verdicts"]["ses_a"]

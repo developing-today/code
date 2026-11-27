@@ -107,11 +107,7 @@ export function shouldLabelPoint(mode: unknown, onFrontier: boolean, isSelected:
 export type ChartLimitMode = "unset" | "atmost" | "atleast";
 export function resolveLimitMode(mode: unknown): ChartLimitMode;
 export function limitThreshold(raw: unknown): number | null;
-export function passesChartLimit(
-  value: number | null | undefined,
-  mode: unknown,
-  threshold: unknown,
-): boolean;
+export function passesChartLimit(value: number | null | undefined, mode: unknown, threshold: unknown): boolean;
 export function applyChartLimit<T>(
   rows: T[],
   get: (row: T) => number | null | undefined,

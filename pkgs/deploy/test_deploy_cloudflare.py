@@ -179,9 +179,7 @@ class StatusTests(unittest.TestCase):
             self.assertIn("cloudflare version v1 deployment d1", out)
 
     def test_status_reports_provider_failure_without_crash(self):
-        out = deploy.format_cloudflare_status(
-            NAME, DEFN, [], serving_error="boom"
-        )
+        out = deploy.format_cloudflare_status(NAME, DEFN, [], serving_error="boom")
         self.assertIn("Cloudflare query failed: boom", out)
 
     def test_status_dry_run_does_not_query_provider(self):
@@ -200,8 +198,15 @@ class StatusTests(unittest.TestCase):
                     json.dump(registry, fh)
                 env = dict(os.environ, DEPLOY_STATE_DIR=state)
                 proc = subprocess.run(
-                    [sys.executable, DEPLOY_PATH, "--registry", reg_path,
-                     NAME, "status", "--dry-run"],
+                    [
+                        sys.executable,
+                        DEPLOY_PATH,
+                        "--registry",
+                        reg_path,
+                        NAME,
+                        "status",
+                        "--dry-run",
+                    ],
                     capture_output=True,
                     text=True,
                     env=env,
@@ -235,8 +240,7 @@ class ExecuteTests(unittest.TestCase):
             def fake_verify(name, defn, version_id):
                 calls.append(("verify", version_id))
 
-            orig = self.patch(cf_publish=fake_publish,
-                              cf_verify_bindings=fake_verify)
+            orig = self.patch(cf_publish=fake_publish, cf_verify_bindings=fake_verify)
             try:
                 code, _lines = deploy.execute_deploy_cloudflare(
                     NAME, DEFN, [], state=state, actor="tester"
@@ -253,6 +257,7 @@ class ExecuteTests(unittest.TestCase):
 
     def test_deploy_failure_records_failed_without_ids(self):
         with tempfile.TemporaryDirectory() as state:
+
             def fake_publish(name, defn):
                 raise deploy.CloudflareError("publish exploded")
 
@@ -273,8 +278,7 @@ class ExecuteTests(unittest.TestCase):
     def test_deploy_missing_bindings_is_failure(self):
         with tempfile.TemporaryDirectory() as state:
             orig = self.patch(
-                cf_publish=lambda n, d: {"version_id": "v4",
-                                         "deployment_id": "d4"},
+                cf_publish=lambda n, d: {"version_id": "v4", "deployment_id": "d4"},
                 cf_verify_bindings=self._missing_bindings,
             )
             try:
@@ -290,8 +294,7 @@ class ExecuteTests(unittest.TestCase):
 
     def _missing_bindings(self, name, defn, version_id):
         raise deploy.CloudflareError(
-            f"{name}: version {version_id} lacks required bindings: "
-            + REQUIRED[0]
+            f"{name}: version {version_id} lacks required bindings: " + REQUIRED[0]
         )
 
     def test_rollback_reactivates_without_rebuild(self):
@@ -309,8 +312,9 @@ class ExecuteTests(unittest.TestCase):
                 self.assertEqual(version_id, "v1")
                 return {"version_id": "v1", "deployment_id": "d9"}
 
-            orig = self.patch(cf_verify_bindings=fake_verify,
-                              cf_activate_version=fake_activate)
+            orig = self.patch(
+                cf_verify_bindings=fake_verify, cf_activate_version=fake_activate
+            )
             try:
                 code, lines = deploy.execute_rollback_cloudflare(
                     NAME, DEFN, entries, state=state, actor="tester"
@@ -429,11 +433,13 @@ class ProviderBoundaryTests(unittest.TestCase):
         self.assertEqual(serving, {"version_id": "v9", "deployment_id": "d9"})
         self.assertEqual(
             seen,
-            [[
-                "/nix/store/cf-container-hello-1.0/bin/cf-container-hello-deploy",
-                "status",
-                "--json",
-            ]],
+            [
+                [
+                    "/nix/store/cf-container-hello-1.0/bin/cf-container-hello-deploy",
+                    "status",
+                    "--json",
+                ]
+            ],
         )
 
     def test_app_provider_surfaces_app_failure(self):
@@ -507,9 +513,7 @@ class RequiredBindingsTests(unittest.TestCase):
     required secret bindings."""
 
     def test_required_bindings_union(self):
-        self.assertEqual(
-            list(deploy.cf_required_bindings(NAME, DEFN)), REQUIRED
-        )
+        self.assertEqual(list(deploy.cf_required_bindings(NAME, DEFN)), REQUIRED)
         with_secrets = dict(DEFN, secrets=["ACCESS_TOKEN"])
         self.assertEqual(
             list(deploy.cf_required_bindings(NAME, with_secrets)),

@@ -289,14 +289,14 @@ read (merged pool + board summaries), served by both handlers (`api.ts` /
 `async-api.ts`); the async parity suite pins them byte-identical. The
 program HTML route uses those same loaders and pure derivations.
 
-* **Freshness visible:** every wave response carries `freshness` —
+- **Freshness visible:** every wave response carries `freshness` —
   the per-board latest snapshot stamps and the newest as
   `latestSnapshotAt` (null when no snapshot has landed).
-* **Write-amplification check (#14865 gate):** zero new writes.
+- **Write-amplification check (#14865 gate):** zero new writes.
   This wave adds no projection, table, or write path; it issues
   only the SELECTs the existing routes already issue, so the
   collector's snapshot landing remains the sole writer.
-* **Live cutover** still depends on #14969's tenant-plane binding and
+- **Live cutover** still depends on #14969's tenant-plane binding and
   deployment evidence. The #14866 ruling (comment 7189808145) authorizes
   D1 for board data; it is not an owner-approval gate. This code-only
   wave does not configure that binding, deploy, or flip any route. Until

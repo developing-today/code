@@ -20,8 +20,19 @@ from unittest.mock import patch
 
 # Keep legacy optional features: dropping these silently breaks existing callers.
 REQUIRED = (
-    "health", "jobs", "kill", "exec", "exec-batch", "run", "poll", "fetch",
-    "--cwd", "--timeout", "--shell", "--wait", "--chunk",
+    "health",
+    "jobs",
+    "kill",
+    "exec",
+    "exec-batch",
+    "run",
+    "poll",
+    "fetch",
+    "--cwd",
+    "--timeout",
+    "--shell",
+    "--wait",
+    "--chunk",
 )
 
 
@@ -37,7 +48,10 @@ def probe(binary):
     # Leaf help is local parsing only, unlike health/exec. Never mutate wrappers.
     result = subprocess.run(
         [binary, "laptop-agent", "exec", "--help"],
-        capture_output=True, text=True, timeout=15, check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
     )
     if result.returncode:
         raise RuntimeError(f"help exited {result.returncode}: {result.stderr.strip()}")
@@ -70,23 +84,32 @@ class CutoverReadinessTests(unittest.TestCase):
 
     def test_probe_only_invokes_local_help(self):
         with patch("subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess([], 0, " ".join(REQUIRED), "")
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, " ".join(REQUIRED), ""
+            )
             self.assertEqual(probe("/path with spaces/fleet"), [])
             run.assert_called_once_with(
                 ["/path with spaces/fleet", "laptop-agent", "exec", "--help"],
-                capture_output=True, text=True, timeout=15, check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
             )
 
     def test_failed_help_cannot_pass(self):
         with patch("subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess([], 69, " ".join(REQUIRED), "unavailable")
+            run.return_value = subprocess.CompletedProcess(
+                [], 69, " ".join(REQUIRED), "unavailable"
+            )
             with self.assertRaisesRegex(RuntimeError, "help exited 69"):
                 probe("fleet")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--probe", metavar="FLEET", help="check deployed help; no network calls")
+    parser.add_argument(
+        "--probe", metavar="FLEET", help="check deployed help; no network calls"
+    )
     args = parser.parse_args()
     if args.probe:
         try:
@@ -94,8 +117,15 @@ def main():
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             print(json.dumps({"ready": False, "error": str(error)}))
             return 1
-        print(json.dumps({"ready": not missing, "missing": missing,
-                          "scope": "advertised CLI only; not live parity"}))
+        print(
+            json.dumps(
+                {
+                    "ready": not missing,
+                    "missing": missing,
+                    "scope": "advertised CLI only; not live parity",
+                }
+            )
+        )
         return int(bool(missing))
     result = unittest.TextTestRunner(verbosity=2).run(
         unittest.defaultTestLoader.loadTestsFromTestCase(CutoverReadinessTests)

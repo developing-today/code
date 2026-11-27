@@ -902,16 +902,16 @@ mod tests {
         for bad in [
             "",
             "sshfb-",
-            "sshfb-0123456789a",     // too short
-            "sshfb-0123456789abc",   // too long
-            "sshfb-0123456789AB",    // uppercase hex
-            "sshfb-zzzzzzzzzzzz",    // non-hex
+            "sshfb-0123456789a",      // too short
+            "sshfb-0123456789abc",    // too long
+            "sshfb-0123456789AB",     // uppercase hex
+            "sshfb-zzzzzzzzzzzz",     // non-hex
             "0123456789ab",           // missing prefix
             "$(touch${IFS}/tmp/pwn)", // command substitution
-            "x;touch${IFS}/tmp/pwn", // separator
-            "..",                    // traversal segment
-            "../sshfb-0123456789ab", // traversal prefix
-            "sshfb-0123'45678ab",    // quote break-out
+            "x;touch${IFS}/tmp/pwn",  // separator
+            "..",                     // traversal segment
+            "../sshfb-0123456789ab",  // traversal prefix
+            "sshfb-0123'45678ab",     // quote break-out
         ] {
             assert!(
                 !is_canonical_sshfb_job_id(bad),

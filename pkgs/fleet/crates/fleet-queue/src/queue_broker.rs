@@ -2240,14 +2240,12 @@ mod tests {
         assert_eq!(diff["divergent"], json!(false));
         assert_eq!(diff["complete"], json!(true));
 
-        let truncated =
-            json!({"ok": true, "rows": [{"id": 1}], "total": 2, "truncated": true});
+        let truncated = json!({"ok": true, "rows": [{"id": 1}], "total": 2, "truncated": true});
         let diff = shadow_diff(&same, &truncated).unwrap();
         assert_eq!(diff["divergent"], json!(true));
         assert_eq!(diff["complete"], json!(false));
 
-        let unkeyed =
-            json!({"ok": true, "rows": [{"id": 1}, {"title": "no id"}], "total": 2, "truncated": false});
+        let unkeyed = json!({"ok": true, "rows": [{"id": 1}, {"title": "no id"}], "total": 2, "truncated": false});
         let diff = shadow_diff(&unkeyed, &unkeyed).unwrap();
         assert_eq!(diff["divergent"], json!(true));
         assert_eq!(diff["complete"], json!(false));
@@ -2502,9 +2500,7 @@ mod tests {
             agent,
         };
 
-        let response = door
-            .forward("show", &json!({"task_id": 23710}))
-            .unwrap();
+        let response = door.forward("show", &json!({"task_id": 23710})).unwrap();
         let request = server.join().unwrap();
         assert!(request.starts_with("POST /v1/queue/show HTTP/1.1\r\n"));
         assert!(

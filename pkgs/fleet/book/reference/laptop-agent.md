@@ -79,7 +79,7 @@ fleet laptop-agent exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 | Flag        | Argument | Default        | Meaning                                                                                                                  |
 | ----------- | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `--cwd`     | `DIR`    | daemon default | Working directory for the command (sent as the spec's `cwd`).                                                            |
-| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                           |
+| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                 |
 | `--shell`   | —        | off            | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
 | `--`        | —        | required       | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)").         |
 
@@ -108,11 +108,11 @@ Runs `cargo build` synchronously on the laptop with a 300 s timeout and returns 
 fleet laptop-agent run [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 ```
 
-| Flag        | Argument | Default        | Meaning                                                                                                                                  |
-| ----------- | -------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                           |
-| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                |
-| `--`        | —        | required       | Separator; everything after it is the command.                                                                                           |
+| Flag        | Argument | Default        | Meaning                                                                                                                                             |
+| ----------- | -------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                                      |
+| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                           |
+| `--`        | —        | required       | Separator; everything after it is the command.                                                                                                      |
 | `--timeout` | `SECS`   | 120 (ignored)  | Accepted for Python-CLI compatibility and ignored: detached jobs have no client-side timeout; use `poll --wait` to bound waiting. Must be positive. |
 
 ### Behaviour

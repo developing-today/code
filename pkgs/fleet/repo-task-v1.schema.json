@@ -89,7 +89,10 @@
       "type": "object",
       "description": "Prompt task identity is the prompt-store submission ID, not its source issue.",
       "properties": {
-        "id": { "type": "string", "pattern": "^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
+        "id": {
+          "type": "string",
+          "pattern": "^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
       },
       "required": ["id"]
     },

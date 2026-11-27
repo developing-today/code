@@ -2908,13 +2908,21 @@ mod tests {
         let child_edges = vec![soft_hierarchy, hard_blocks];
         assert_eq!(active_hard_blocker_count(&parent_edges), 0);
         assert_eq!(active_hard_blocker_count(&child_edges), 1);
-        assert!(blockers_ready(true, active_hard_blocker_count(&parent_edges)));
-        assert!(!blockers_ready(true, active_hard_blocker_count(&child_edges)));
+        assert!(blockers_ready(
+            true,
+            active_hard_blocker_count(&parent_edges)
+        ));
+        assert!(!blockers_ready(
+            true,
+            active_hard_blocker_count(&child_edges)
+        ));
 
         // Closing either end completes nothing: there is no `closed`
         // edge status, and no transition leads to one.
         assert_eq!(
-            EdgeStatus::parse_field("status", "closed").unwrap_err().code(),
+            EdgeStatus::parse_field("status", "closed")
+                .unwrap_err()
+                .code(),
             "invalid_schema"
         );
         for status in EdgeStatus::ALL {

@@ -35,18 +35,30 @@ def record(**overrides):
         "id": "amd-6",
         "state": "active",
         "secrets": ["github-gh-auth"],
-        "health": {"source": "watchdog", "status": "healthy",
-                   "last_seen": "2026-11-25T00:00:00Z"},
+        "health": {
+            "source": "watchdog",
+            "status": "healthy",
+            "last_seen": "2026-11-25T00:00:00Z",
+        },
         "transports": [
-            {"name": "commander-door", "kind": "commander-door",
-             "endpoint": {"url": "https://commander.security.cab/mcp"},
-             "credentials": ["desktop-commander.machine-bearer"]},
-            {"name": "laptop-agent-tailnet", "kind": "tsnet",
-             "endpoint": {"address": "100.99.113.103", "port": 4799},
-             "credentials": ["laptop-agent-token"]},
-            {"name": "ssh", "kind": "ssh",
-             "endpoint": {"target": "user@amd-6", "port": 22},
-             "credentials": ["ssh.operator-key"]},
+            {
+                "name": "commander-door",
+                "kind": "commander-door",
+                "endpoint": {"url": "https://commander.security.cab/mcp"},
+                "credentials": ["desktop-commander.machine-bearer"],
+            },
+            {
+                "name": "laptop-agent-tailnet",
+                "kind": "tsnet",
+                "endpoint": {"address": "100.99.113.103", "port": 4799},
+                "credentials": ["laptop-agent-token"],
+            },
+            {
+                "name": "ssh",
+                "kind": "ssh",
+                "endpoint": {"target": "user@amd-6", "port": 22},
+                "credentials": ["ssh.operator-key"],
+            },
         ],
     }
     rec.update(overrides)
@@ -57,9 +69,15 @@ class PublicationTests(unittest.TestCase):
     def test_shipped_registry_publishes_only_its_public_doors(self):
         records = dns.publish_records(shipped_doc())
         values = [v for _, v in records]
-        self.assertTrue(any("url=https://commander.security.cab/mcp" in v for v in values), values)
-        self.assertTrue(any("url=https://sandbox-link.security.cab" in v for v in values), values)
-        self.assertFalse(any("100.99" in v or "user@amd-6" in v for v in values), values)
+        self.assertTrue(
+            any("url=https://commander.security.cab/mcp" in v for v in values), values
+        )
+        self.assertTrue(
+            any("url=https://sandbox-link.security.cab" in v for v in values), values
+        )
+        self.assertFalse(
+            any("100.99" in v or "user@amd-6" in v for v in values), values
+        )
 
     def test_shipped_zone_file_matches_regeneration(self):
         expected = dns.format_zone(dns.publish_records(shipped_doc()))
@@ -86,7 +104,8 @@ class PublicationTests(unittest.TestCase):
         doc = {"machines": [record()]}
         before = dns.publish_records(doc)
         doc["machines"][0]["health"] = {
-            "source": "watchdog", "status": "unreachable",
+            "source": "watchdog",
+            "status": "unreachable",
             "last_seen": "2030-01-01T00:00:00Z",
         }
         self.assertEqual(dns.publish_records(doc), before)
@@ -95,18 +114,22 @@ class PublicationTests(unittest.TestCase):
 
     def test_non_active_and_non_public_offers_are_skipped(self):
         self.assertEqual(
-            dns.publish_records({"machines": [record(state="retired")]}), [])
+            dns.publish_records({"machines": [record(state="retired")]}), []
+        )
         http = record()
         http["transports"][0]["endpoint"]["url"] = "http://commander.security.cab/mcp"
         self.assertEqual(dns.publish_records({"machines": [http]}), [])
         tailnet_named = record()
-        tailnet_named["transports"][0]["endpoint"]["url"] = "https://amd-6.example.ts.net/mcp"
+        tailnet_named["transports"][0]["endpoint"]["url"] = (
+            "https://amd-6.example.ts.net/mcp"
+        )
         self.assertEqual(dns.publish_records({"machines": [tailnet_named]}), [])
 
     def test_publication_is_deterministic(self):
         doc = shipped_doc()
-        self.assertEqual(dns.publish_records(doc),
-                         dns.publish_records(copy.deepcopy(doc)))
+        self.assertEqual(
+            dns.publish_records(doc), dns.publish_records(copy.deepcopy(doc))
+        )
 
 
 class ResolverTests(unittest.TestCase):
@@ -122,22 +145,27 @@ class ResolverTests(unittest.TestCase):
         self.assertIs(cand["liveness"], False)
 
     def test_resolver_rejects_credential_material(self):
-        bad = ('_doors.amd-6.fleet.security.cab. 300 IN TXT '
-               '"v=fleet-door1; machine=amd-6; offer=x; kind=commander-door; '
-               'url=https://commander.security.cab/mcp; token=abc123"')
+        bad = (
+            "_doors.amd-6.fleet.security.cab. 300 IN TXT "
+            '"v=fleet-door1; machine=amd-6; offer=x; kind=commander-door; '
+            'url=https://commander.security.cab/mcp; token=abc123"'
+        )
         with self.assertRaises(ValueError):
             dns.resolve_candidates([bad])
 
     def test_resolver_rejects_liveness_claims_and_non_public_urls(self):
         for extra in ("last_seen=2026-11-25T00:00:00Z", "status=healthy"):
-            bad = (f"v=fleet-door1; machine=amd-6; offer=x; kind=commander-door; "
-                   f"url=https://commander.security.cab/mcp; {extra}")
+            bad = (
+                f"v=fleet-door1; machine=amd-6; offer=x; kind=commander-door; "
+                f"url=https://commander.security.cab/mcp; {extra}"
+            )
             with self.assertRaises(ValueError, msg=extra):
                 dns.parse_record_value(bad)
         with self.assertRaises(ValueError):
             dns.parse_record_value(
                 "v=fleet-door1; machine=amd-6; offer=x; kind=tsnet; "
-                "url=https://100.99.113.103:4799")
+                "url=https://100.99.113.103:4799"
+            )
 
 
 if __name__ == "__main__":

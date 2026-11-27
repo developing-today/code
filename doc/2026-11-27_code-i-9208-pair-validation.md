@@ -8,16 +8,16 @@ Baseline: `aa906a4d9e6` (`origin/main` at start).
 
 The parent is incomplete. A closed child or design record is not runtime proof.
 
-| Parent criterion | Baseline state and evidence |
-| --- | --- |
-| Seven relation spellings and canonical direction | Partial: `work/relations.rs` `RelationSpelling`, `normalize`, and `pmo_dep_aliases_normalize_to_one_canonical_edge`; JSON validation did not enforce symmetric pair ordering. |
-| Hard blockers affect eligibility and effective urgency; advisory edges do not block | Unmeasured end to end. `Edge::validate` restricts hard edges to `blocks`; this does not establish live scheduling integration. |
-| Cycle prevention and resolved-history preservation | Partial: `EdgeRevision::validate` and transition tests preserve identity/history; graph concurrency/production cycle prevention not established by this slice. |
-| Native GitHub links accurately projected; hierarchy distinct from hard dependencies | Unmeasured adapter behavior; canonical `Relation::Hierarchy` is distinct from `Blocks`, but DEP-04 #9444 remains open. |
-| Queue titles/summaries independent after initialization | Unmeasured integration behavior; AUTH-01 #9429 remains open. |
-| Private notes and append-only journal separate from public comments | Unmeasured integration behavior; JRN-02 #9464 remains open. |
-| Explicit managed-content mirror with truthful concurrency guarantee | Partial: `work/authority.rs` denies body updates without verified conditional-write capability or explicit best-effort opt-in. This is pure policy, not adapter/live proof; managed comments #9430 remain open. |
-| Priority label normalization from canonical score | Unmeasured here; belongs to the priority-distribution component, not this validator. |
+| Parent criterion                                                                    | Baseline state and evidence                                                                                                                                                                                     |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Seven relation spellings and canonical direction                                    | Partial: `work/relations.rs` `RelationSpelling`, `normalize`, and `pmo_dep_aliases_normalize_to_one_canonical_edge`; JSON validation did not enforce symmetric pair ordering.                                   |
+| Hard blockers affect eligibility and effective urgency; advisory edges do not block | Unmeasured end to end. `Edge::validate` restricts hard edges to `blocks`; this does not establish live scheduling integration.                                                                                  |
+| Cycle prevention and resolved-history preservation                                  | Partial: `EdgeRevision::validate` and transition tests preserve identity/history; graph concurrency/production cycle prevention not established by this slice.                                                  |
+| Native GitHub links accurately projected; hierarchy distinct from hard dependencies | Unmeasured adapter behavior; canonical `Relation::Hierarchy` is distinct from `Blocks`, but DEP-04 #9444 remains open.                                                                                          |
+| Queue titles/summaries independent after initialization                             | Unmeasured integration behavior; AUTH-01 #9429 remains open.                                                                                                                                                    |
+| Private notes and append-only journal separate from public comments                 | Unmeasured integration behavior; JRN-02 #9464 remains open.                                                                                                                                                     |
+| Explicit managed-content mirror with truthful concurrency guarantee                 | Partial: `work/authority.rs` denies body updates without verified conditional-write capability or explicit best-effort opt-in. This is pure policy, not adapter/live proof; managed comments #9430 remain open. |
+| Priority label normalization from canonical score                                   | Unmeasured here; belongs to the priority-distribution component, not this validator.                                                                                                                            |
 
 Paths in this table are relative to `pkgs/fleet/crates/fleet-queue/src/`.
 
