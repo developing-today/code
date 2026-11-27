@@ -30,64 +30,81 @@ fn text(value: &str) -> Value {
     Value::Text(value.to_string())
 }
 
-fn golden_vectors() -> Vec<(Value, &'static str)> {
-    vec![
-        (Value::UInt(0), "00"),
-        (Value::UInt(1), "01"),
-        (Value::UInt(10), "0a"),
-        (Value::UInt(23), "17"),
-        (Value::UInt(24), "1818"),
-        (Value::UInt(100), "1864"),
-        (Value::UInt(1000), "1903e8"),
-        (Value::UInt(1_000_000), "1a000f4240"),
-        (Value::UInt(u64::MAX), "1bffffffffffffffff"),
-        (Value::Int(-1), "20"),
-        (Value::Int(-10), "29"),
-        (Value::Int(-100), "3863"),
-        (Value::Int(-1000), "3903e7"),
-        (Value::Bool(false), "f4"),
-        (Value::Bool(true), "f5"),
-        (Value::Null, "f6"),
-        (Value::Bytes(vec![]), "40"),
-        (Value::Bytes(vec![1, 2]), "420102"),
-        (text(""), "60"),
-        (text("a"), "6161"),
-        (text("hello"), "6568656c6c6f"),
-        (Value::Array(vec![]), "80"),
-        (
-            Value::Array(vec![Value::UInt(1), Value::UInt(2), Value::UInt(3)]),
-            "83010203",
+fn fixture_value(value: &serde_json::Value) -> Value {
+    let kind = value["kind"].as_str().expect("fixture value kind");
+    match kind {
+        "null" => Value::Null,
+        "bool" => Value::Bool(value["value"].as_bool().expect("fixture boolean")),
+        "uint" => Value::UInt(
+            value["value"]
+                .as_str()
+                .expect("fixture unsigned integer")
+                .parse()
+                .expect("fixture unsigned integer range"),
         ),
-        (Value::Map(vec![]), "a0"),
-        (Value::Map(vec![(text("a"), Value::UInt(1))]), "a1616101"),
-        // Insertion order does not matter: keys sort by encoded
-        // bytes, so {"b":2,"a":1} encodes exactly as {"a":1,"b":2}.
-        (
-            Value::Map(vec![
-                (text("b"), Value::UInt(2)),
-                (text("a"), Value::UInt(1)),
-            ]),
-            "a2616101616202",
+        "int" => Value::Int(
+            value["value"]
+                .as_str()
+                .expect("fixture negative integer")
+                .parse()
+                .expect("fixture signed integer range"),
         ),
-        // A sidecar-shaped record: nested map, bytes, negative
-        // and large integers together.
-        (
-            Value::Map(vec![
-                (text("generation"), Value::UInt(7)),
-                (text("parent"), Value::Null),
-                (text("payload"), Value::Bytes(vec![0xde, 0xad])),
-            ]),
-            "a366706172656e74f6677061796c6f616442dead6a67656e65726174696f6e07",
+        "bytes" => Value::Bytes(unhex(value["value"].as_str().expect("fixture byte string"))),
+        "text" => Value::Text(value["value"].as_str().expect("fixture text").to_owned()),
+        "array" => Value::Array(
+            value["value"]
+                .as_array()
+                .expect("fixture array")
+                .iter()
+                .map(fixture_value)
+                .collect(),
         ),
-    ]
+        "map" => Value::Map(
+            value["value"]
+                .as_array()
+                .expect("fixture map")
+                .iter()
+                .map(|pair| {
+                    let pair = pair.as_array().expect("fixture map pair");
+                    assert_eq!(pair.len(), 2, "fixture map pair has key and value");
+                    (fixture_value(&pair[0]), fixture_value(&pair[1]))
+                })
+                .collect(),
+        ),
+        other => panic!("unknown fixture CBOR kind {other}"),
+    }
+}
+
+fn golden_vectors() -> Vec<(String, Value, String)> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/hosted-second-version-g1.json"
+    ))
+    .expect("shared G1 fixture is valid JSON");
+    fixture["canonical_cbor"]
+        .as_array()
+        .expect("shared canonical CBOR vectors")
+        .iter()
+        .map(|case| {
+            (
+                case["name"].as_str().expect("fixture vector name").to_owned(),
+                fixture_value(&case["value"]),
+                case["encoded_hex"]
+                    .as_str()
+                    .expect("fixture encoded bytes")
+                    .to_owned(),
+            )
+        })
+        .collect()
 }
 
 #[test]
 fn golden_vectors_encode_and_decode_byte_exactly() {
-    for (value, want_hex) in golden_vectors() {
+    let vectors = golden_vectors();
+    assert_eq!(vectors.len(), 27, "shared canonical CBOR fixture retains every vector");
+    for (name, value, want_hex) in vectors {
         let encoded = encode_canonical(&value).unwrap();
-        assert_eq!(hex(&encoded), want_hex, "encode {value:?}");
-        let decoded = decode_canonical(&unhex(want_hex)).unwrap();
+        assert_eq!(hex(&encoded), want_hex, "encode {name}");
+        let decoded = decode_canonical(&unhex(&want_hex)).unwrap();
         // Decoding yields the canonical in-memory form; for maps
         // that is key-sorted order regardless of construction
         // order, so compare re-encodings as well as values where
@@ -95,7 +112,7 @@ fn golden_vectors_encode_and_decode_byte_exactly() {
         assert_eq!(
             hex(&encode_canonical(&decoded).unwrap()),
             want_hex,
-            "round-trip {want_hex}"
+            "round-trip {name}"
         );
     }
 }
