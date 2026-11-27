@@ -110,6 +110,18 @@ does it, because whatever can route to the port can run tools as
 you. The same listeners mount the [MCP surface](./mcp.md#mcp) at
 `/mcp` — one listener, one access-control decision.
 
+That is the default (`auth.mode=off`). Two settings close it, on
+`/v1` and `/mcp` alike. `transport.bearerToken` is one shared
+token every caller must present. `auth.mode` turns on per-user
+keys (`Authorization: Bearer mcpx_key_...`, stored only as SHA-256
+hashes in `auth.json` in the state directory): `permissive`
+honours a key and refuses an unknown or revoked one but still
+serves an anonymous loopback caller, and `required` refuses every
+HTTP caller without a valid key with `401` and
+`WWW-Authenticate: Bearer`. In both, the unix socket stays
+owner-only by its file permissions and needs no key. The design
+record is [Daemon authentication](./daemon-auth.md).
+
 ### Call-scoped settings: the `X-Mcpx-Settings` header
 
 A daemon is started once and serves every later command, so a flag

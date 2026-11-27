@@ -119,6 +119,23 @@ directory's accessible text table (`DirectoryApp::text_table`).
 Without `--node`/`--capability` the window opens without a
 session and the startup line on stdout says so.
 
+Inside a session, key presses go to the world as the terminal's own
+`input` bytes. Ctrl+Shift+V and Shift+Insert paste the system
+clipboard instead, as one contract `paste` frame, the chords
+terminal emulators use (a plain Ctrl+V stays the literal-next byte).
+An empty clipboard sends nothing, and text over the contract's
+4096-byte bound is refused with a notice on stderr rather than
+split or truncated.
+
+Each session is also kept at the window's size. Rows are drawn in
+Bevy's built-in monospace face at a pinned 20 px with a 24 px line
+height, so one cell is 12×24 logical pixels; the window's logical
+size divided by that cell is the grid. Every live session gets a
+contract `resize` frame for that grid when it opens and again
+whenever the grid changes (clamped to the contract's 1..=500 ×
+1..=200 bounds), so a background world already has the right size
+when it comes back to the foreground.
+
 ## Recording / checking a session
 
 The step-1 transcript harness stands in for a recorded session:

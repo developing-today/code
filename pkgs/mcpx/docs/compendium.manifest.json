@@ -1208,6 +1208,13 @@
       "note": "the door Worker at mcpx.security.cab (#13657): the OAuth/bearer gate, the ns selector enforced at the JSON-RPC layer, the Access and tunnel chain to the laptop bridge, and the door's related work in order"
     },
     {
+      "path": "docs/daemon-auth.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 64,
+      "note": "daemon authentication design (#13659 slice 1): per-user keys, capability ceilings, the loopback migration and the door-selector mapping"
+    },
+    {
       "path": "worker/README.md",
       "chapter": null,
       "role": "not-compendium",

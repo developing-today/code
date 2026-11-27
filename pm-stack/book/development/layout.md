@@ -96,7 +96,7 @@ Four packages under `pkgs/` wrap `pm-stack/` sources as Nix derivations. Since t
 | `pkgs/pm-dispatch/package.nix`   | `pm-stack/dispatch/`              | The dispatch service                                                                                                                                                                                                                                                                                                                                                    |
 | `pkgs/pm-git-sync/package.nix`   | `pm-stack/scripts/pm-git-sync.sh` | A script wrapper, version 0.3.0 in the surveyed tree                                                                                                                                                                                                                                                                                                                    |
 
-There is no `pkgs/pm-console`. The console deploys through `pm-stack/console/install.sh` and `redeploy.sh` and through its edge and Android release paths. Whether the NixOS module builds the console by another route is UNVERIFIED.
+There is no `pkgs/pm-console`. The console deploys through `pm-stack/console/install.sh` and `redeploy.sh` and through its edge and Android release paths. `nixos/services/pm-stack` declares no console unit: `pm-stack/console/install.sh` copies `pm-console.service` and the `pm-console-expose`, `pm-console-redeploy` and `pm-console-android-release` timers from `pm-stack/systemd/` into `~/.config/systemd/user/` and enables them, and `redeploy.sh` runs that installer for each release (D16, settled in source).
 
 ## This book: `pm-stack/book/`
 

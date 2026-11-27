@@ -144,6 +144,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use id::bench_ack_mode::{journal_ack_mode_name, mw_journal_ack_mode};
 use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
@@ -448,6 +449,8 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
     };
     let mut limits = WorldLimits::default();
     limits.checkpoint_every = config.checkpoint_every;
+    limits.journal_ack_mode = mw_journal_ack_mode();
+    let ack_mode_name = journal_ack_mode_name(limits.journal_ack_mode);
     let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
     let runtime = RuntimeLimits::default();
     let opener = Arc::new(DurableBenchOpener {
@@ -721,7 +724,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={} max_open_worlds={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 journal_ack_mode={ack_mode_name} p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={} max_open_worlds={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,

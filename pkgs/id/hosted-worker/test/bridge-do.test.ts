@@ -75,7 +75,7 @@ function makeDO(env: Record<string, unknown> = {}) {
     storage: { sql },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return { doA: new UserDO(state as never, { BLOBS: bucket, ...env } as never), bucket, sql };
+  return { doA: new UserDO(state as never, { BLOBS_US: bucket, ...env } as never), bucket, sql };
 }
 
 function routed(path: string, irohHex: string | null, init: RequestInit = {}): Request {
@@ -342,14 +342,14 @@ function makeHibernatingDO(opts: { evict?: boolean } = {}) {
       hibernated.push(ws);
       ws.host = () => {
         if (opts.evict) {
-          current = new UserDO(state as never, { BLOBS: bucket } as never);
+          current = new UserDO(state as never, { BLOBS_US: bucket } as never);
           evictions++;
         }
         return current;
       };
     },
   };
-  let current = new UserDO(state as never, { BLOBS: bucket } as never);
+  let current = new UserDO(state as never, { BLOBS_US: bucket } as never);
   return { doA: () => current, sql, hibernated, evictions: () => evictions };
 }
 
@@ -460,12 +460,29 @@ async function runWsSession(opts: { evict: boolean }): Promise<void> {
   const doStore = new BridgeStore(sql as never);
   assert.equal(doStore.chainOf(author.publicHex).next_seq, 3);
   assert.deepEqual(doStore.canonical(), clientStore.canonical());
+  const activeCoord = sql.exec(
+    "SELECT tenant_id, peer_id, state, watermark FROM sync_coord WHERE peer_id = ?",
+    key.publicHex,
+  ).toArray()[0];
+  assert.equal(activeCoord.tenant_id, BINDING);
+  assert.equal(activeCoord.state, "active");
+  assert.deepEqual(JSON.parse(String(activeCoord.watermark)), [
+    { author: author.publicHex, next_seq: 3, head: events[2].id },
+  ]);
 
-  // Closing the socket removes the session's row.
+  // Closing the socket releases ownership without discarding the watermark.
   clientSocket.close();
   await new Promise((r) => setTimeout(r, 0));
   await server.settled();
   assert.equal(wsSessionRows(sql), 0);
+  const idleCoord = sql.exec(
+    "SELECT state, watermark FROM sync_coord WHERE peer_id = ?",
+    key.publicHex,
+  ).toArray()[0];
+  assert.equal(idleCoord.state, "idle");
+  assert.deepEqual(JSON.parse(String(idleCoord.watermark)), [
+    { author: author.publicHex, next_seq: 3, head: events[2].id },
+  ]);
 
   // A reconnecting client resumes against the same DO state with its
   // token, and has nothing left to send.

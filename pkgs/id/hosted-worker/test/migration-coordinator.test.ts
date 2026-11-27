@@ -53,7 +53,7 @@ function fakeBucket() {
   };
 }
 
-function makeDO() {
+function makeDO(jurisdiction: "us" | "eu") {
   const bucket = fakeBucket();
   const state = {
     id: { name: A },
@@ -62,7 +62,8 @@ function makeDO() {
     acceptWebSocket: () => {},
     getWebSockets: () => [],
   };
-  return { d: new UserDO(state as never, { BLOBS: bucket } as never), bucket };
+  const env = jurisdiction === "us" ? { BLOBS_US: bucket } : { BLOBS_EU: bucket };
+  return { d: new UserDO(state as never, env as never), bucket };
 }
 
 /** Lets a test make the k-th directory transition commit and then
@@ -99,7 +100,7 @@ function world(faults: Faults = { loseTransition: 0 }) {
     },
   };
   const directory = new PersistentHostedAccountDirectory(adapter);
-  const objects = { us: makeDO(), eu: makeDO() } as Record<string, ReturnType<typeof makeDO>>;
+  const objects = { us: makeDO("us"), eu: makeDO("eu") } as Record<string, ReturnType<typeof makeDO>>;
   const users = {
     jurisdiction(j: string) {
       return {
@@ -310,6 +311,55 @@ test("abort after the switch is refused; the migration can only finish", async (
     (e: unknown) => e instanceof FailClosed && e.code === "directory_transition_refused",
   );
   await driveMigration(w.ports, RUN);
+  await assertMoved(w);
+});
+
+test("a failed drive releases its lease: an immediate retry by a new owner is not lease_held (#15828)", async () => {
+  const w = world();
+  await seed(w);
+  let failed = false;
+  const failingOnce: MigrationPorts = {
+    ...w.ports,
+    async control(...args) {
+      if (!failed && args[3] === "/v1/migration/freeze") {
+        failed = true;
+        return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+      }
+      return w.ports.control(...args);
+    },
+  };
+  await assert.rejects(
+    driveMigration(failingOnce, RUN),
+    (e: unknown) => e instanceof FailClosed && e.code === "migration_step_failed",
+  );
+  // No time advance: the retry is inside the failed run's lease TTL,
+  // with a fresh owner like the operator route mints per request.
+  await driveMigration(w.ports, { ...RUN, owner: "coord-b" });
+  await assertMoved(w);
+});
+
+test("a refused abort releases its lease: a new owner can take over at once (#15828)", async () => {
+  const w = world();
+  await seed(w);
+  let calls = 0;
+  const stopAtActivate: MigrationPorts = {
+    ...w.ports,
+    async control(...args) {
+      if (++calls === 5) throw new Error("coordinator crashed");
+      return w.ports.control(...args);
+    },
+  };
+  await assert.rejects(driveMigration(stopAtActivate, RUN), /coordinator crashed/);
+  assert.equal((await w.directory.get("subject"))?.phase, "switched");
+  await assert.rejects(
+    abortMigration(w.ports, { ...RUN, owner: "operator-1" }),
+    (e: unknown) => e instanceof FailClosed && e.code === "directory_transition_refused",
+  );
+  // The refused abort must not poison the lease for its full TTL.
+  const lease = await w.directory.acquireLease("subject", "operator-2", w.ports.now(), 1000);
+  assert.ok(lease.token > 0);
+  await w.directory.releaseLease("subject", lease);
+  await driveMigration(w.ports, { ...RUN, owner: "operator-2" });
   await assertMoved(w);
 });
 

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use id_import_notion::content::{
-    BlockClass, FileFetcher, ReferenceSurface, SpanLink, convert_page,
+    BlockClass, ContentBlock, FileFetcher, ReferenceSurface, SpanLink, convert_page,
 };
 use id_import_notion::{Inventory, Manifest, NOTION_API_VERSION, NotionApi, Outcome, Stage};
 use serde_json::{Value, json};
@@ -327,7 +327,9 @@ fn recorded_pages_convert_to_the_expected_content() {
             "bookmark",
         ]
     );
-    assert_eq!(conversion.counts.clean, 13);
+    // The toggle converts structurally (slice 4), so its child is a
+    // converted clean block.
+    assert_eq!(conversion.counts.clean, 14);
     assert_eq!(conversion.counts.degraded, 1);
     assert_eq!(conversion.counts.unsupported, 1);
 
@@ -341,7 +343,7 @@ fn recorded_pages_convert_to_the_expected_content() {
     // The child page is a reference, not inlined content.
     let child_page = &content.blocks[4];
     assert_eq!(child_page.title.as_deref(), Some("Beta"));
-    assert!(child_page.children.is_empty());
+    assert_eq!(child_page.children, [] as [ContentBlock; 0]);
 
     // §3 rewriting: internal spans became note references, the outside
     // link stayed verbatim and was counted externalised.
@@ -434,13 +436,17 @@ fn recorded_pages_convert_to_the_expected_content() {
     assert!(content.blocks[7].missing_file.is_some());
     assert_eq!(fetcher.fetched.len(), 3);
 
-    // Degraded and unsupported blocks are preserved verbatim, children
-    // embedded, file URLs stripped.
+    // The degraded toggle keeps its structure (slice 4): text and child
+    // convert, the colour is a counted loss. The unsupported block stays
+    // verbatim, file URLs stripped.
     let toggle = &content.blocks[8];
     assert_eq!(toggle.class, BlockClass::Degraded);
-    let verbatim = toggle.verbatim.as_ref().unwrap();
-    assert_eq!(verbatim["toggle"]["color"], "blue_background");
-    assert_eq!(verbatim["children"][0]["id"], "blk-toggle-child");
+    assert!(toggle.verbatim.is_none());
+    assert_eq!(toggle.rich_text[0].text, "More");
+    assert_eq!(toggle.children[0].block_id, "blk-toggle-child");
+    assert_eq!(conversion.losses.per_attribute["toggle.color"], 1);
+    assert_eq!(conversion.losses.unsupported["future_widget"], 1);
+    assert_eq!(manifest.page_losses[ALPHA], conversion.losses);
     let future = &content.blocks[9];
     assert_eq!(future.class, BlockClass::Unsupported);
     assert!(future.verbatim.is_some());

@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use id_import_notion::comments::{CommentConversion, CommentsCoverage, convert_comments};
+use id_import_notion::comments::{
+    CommentClaim, CommentConversion, CommentsCoverage, convert_comments,
+};
 use id_import_notion::{Inventory, Manifest, NOTION_API_VERSION, NotionApi};
 use serde_json::{Value, json};
 
@@ -257,7 +259,7 @@ fn recorded_comments_become_claims_with_coverage_accounting() {
         manifest.comments_coverage[BETA],
         CommentsCoverage::Unavailable
     );
-    assert!(manifest.comment_claims[BETA].is_empty());
+    assert_eq!(manifest.comment_claims[BETA], [] as [CommentClaim; 0]);
 
     // Gamma: available but no comments — covered with an empty claim set,
     // distinct from Beta's unavailable.
@@ -265,7 +267,7 @@ fn recorded_comments_become_claims_with_coverage_accounting() {
     assert_eq!(gamma.claims.len(), 0);
     assert_eq!(gamma.coverage, CommentsCoverage::Covered);
     assert_eq!(manifest.comments_coverage[GAMMA], CommentsCoverage::Covered);
-    assert!(manifest.comment_claims[GAMMA].is_empty());
+    assert_eq!(manifest.comment_claims[GAMMA], [] as [CommentClaim; 0]);
 
     // §8 check 3 at conversion level: re-running over the unchanged
     // corpus reproduces identical claims and coverage.

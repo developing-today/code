@@ -31,6 +31,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "pool",
             "launched-by",
             "remaining-budget-minutes",
+            "manual-override",
         ],
         &["handoff", "bind"],
     );
@@ -149,6 +150,24 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // plain claim never names a task.
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
+    }
+    if let Some(reason) = args.get("manual-override") {
+        if args.get_i64("task").filter(|task| *task > 0).is_none() {
+            die(2, "claim: --manual-override requires --task <positive-id>");
+        }
+        if reason.trim().is_empty() {
+            die(2, "claim: --manual-override reason must not be empty");
+        }
+        if args.get("from-session").is_some()
+            || args.has("handoff")
+            || args.get_i64("count").unwrap_or(1) != 1
+        {
+            die(
+                2,
+                "claim: --manual-override cannot combine with transfer, handoff, or batch",
+            );
+        }
+        body["manual_override"] = json!(reason.trim());
     }
     // --count <n> (#8217): batch claim — the broker runs the same
     // atomic pick n times and answers with every claimed row. The
@@ -1381,6 +1400,29 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
     print_json(&served_row(
         require_row(&resp, "quarantine_recheck"),
         "quarantine-recheck",
+    ));
+    0
+}
+
+/// time-recheck (#14212): run the broker's time recheck pass
+/// now, or force one blocked task's recheck with --task. The
+/// pass requeues blocked rows whose {"kind": "time"} ready
+/// condition has lapsed. Production cadence is the sweep's;
+/// this is the manual trigger.
+pub(super) fn cmd_time_recheck(rest: &[String]) -> i32 {
+    let args = parse_verb_args("time-recheck", rest, &["task", "limit"], &[]);
+    reject_extra_pos("time-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/time-recheck", &body));
+    print_json(&served_row(
+        require_row(&resp, "time_recheck"),
+        "time-recheck",
     ));
     0
 }

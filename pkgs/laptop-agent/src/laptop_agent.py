@@ -90,6 +90,7 @@ import hmac
 import json
 import math
 import os
+import errno
 import secrets
 import shutil
 import signal
@@ -2287,13 +2288,61 @@ class AgentServer(ThreadingHTTPServer):
                 tls.close()
 
 
+# #15533: startup bind guard — the daemon starts before Tailscale
+# assigns the tailnet address, so a one-shot bind fails with
+# EADDRNOTAVAIL (errno 99) and the service burns its systemd restart
+# budget before the address appears. Retry ONLY that signature within
+# a 10-minute budget (1s doubling to a 15s cap); every other bind
+# error (EADDRINUSE, permission, bad port) raises at once exactly as
+# before, so a real misconfiguration never spins.
+BIND_RETRY_BUDGET_S = 600.0
+BIND_RETRY_BASE_S = 1.0
+BIND_RETRY_CAP_S = 15.0
+
+
+def bind_retry_delay(attempt):
+    """Delay before the retry after `attempt` failures (0-based)."""
+    return min(BIND_RETRY_BASE_S * (2**min(attempt, 4)), BIND_RETRY_CAP_S)
+
+
+def is_retryable_bind_error(exc):
+    """True only for the tailnet-not-ready signature (errno 99)."""
+    return getattr(exc, "errno", None) == errno.EADDRNOTAVAIL
+
+
+def bind_with_retry(make_server, budget_s=BIND_RETRY_BUDGET_S, sleep=None):
+    """Call `make_server()` until it binds, the error is fatal, or the
+    budget elapses. At least one attempt always runs."""
+    if sleep is None:
+        sleep = time.sleep
+    deadline = time.monotonic() + budget_s
+    attempt = 0
+    while True:
+        try:
+            return make_server()
+        except OSError as e:
+            remaining = deadline - time.monotonic()
+            if not is_retryable_bind_error(e) or remaining <= 0:
+                raise
+            delay = min(bind_retry_delay(attempt), remaining)
+            print(
+                f"laptop-agent: cannot bind {BIND_HOST}:{BIND_PORT} yet "
+                f"({e}); retrying in {delay:g}s",
+                flush=True,
+            )
+            sleep(delay)
+            attempt += 1
+
+
 def main():
     (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "exec").mkdir(parents=True, exist_ok=True)
     load_persisted_jobs()
     reap_old_jobs()
     threading.Thread(target=_reaper_loop, daemon=True).start()
-    srv = AgentServer((BIND_HOST, BIND_PORT), Handler, tls_context=TLS_CONTEXT)
+    srv = bind_with_retry(
+        lambda: AgentServer((BIND_HOST, BIND_PORT), Handler, tls_context=TLS_CONTEXT)
+    )
     mode = "TLS (dual-accept, Phase 1)" if TLS_CONTEXT is not None else "plaintext"
     print(f"laptop-agent listening on {BIND_HOST}:{BIND_PORT} ({mode})", flush=True)
     srv.serve_forever()

@@ -58,7 +58,7 @@ Deployment builds the packages, not the checkouts. Since the change recorded as 
 
 `pkgs/pm-aggregator/package.nix` shows the build shape the other packages follow in substance: the derivation takes its version from `pm-stack/aggregator/package.json`; its source fileset is the package file, the lockfile, `src/`, and `scripts/`; a fixed-output derivation runs `bun install` once with network access and the application derivation copies the resulting `node_modules` in beside the source. One entry point is deliberately not packaged: the fleet-feed collector derives repository-root paths from its own file location, so its unit keeps running it from the checkout. The exact `nix build` attribute names for the four PM packages are UNVERIFIED in the sources read for this chapter; the flake is the authority.
 
-The console has no Nix package. Its build and release route is its own scripts (`install.sh`, `redeploy.sh`, the edge deploy, and the Android release units), not a derivation. Whether the NixOS module builds the console by another route is UNVERIFIED.
+The console has no Nix package. Its build and release route is its own scripts (`install.sh`, `redeploy.sh`, the edge deploy, and the Android release units), not a derivation. `nixos/services/pm-stack` declares no console unit: `pm-stack/console/install.sh` copies `pm-console.service` and the `pm-console-expose`, `pm-console-redeploy` and `pm-console-android-release` timers from `pm-stack/systemd/` into `~/.config/systemd/user/` and enables them, and `redeploy.sh` runs that installer for each release (D16, settled in source).
 
 ## The CI route
 

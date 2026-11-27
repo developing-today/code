@@ -19,19 +19,23 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   routed request binds the object immutably to its
   (binding_id, jurisdiction); a common guard runs before every read or
   write and fails closed on unrouted requests, identity mismatch, or a
-  runtime-reported jurisdiction mismatch. Routes (13 paths,
-  15 method routes): `GET /v1/state`; `GET /v1/usage` (usage,
-  ceiling, and `at_cap`); `GET /v1/export` (full KV plus blob index;
+  runtime-reported jurisdiction mismatch. Routes (14 paths,
+  16 method routes): `GET /v1/state`; `GET /v1/usage` (usage,
+  ceiling, `at_cap`, `budget_step` and `watermark`); `GET
+/v1/storage` (contract version, head, backend manifest,
+  capability flags, declared limits and budget — see the storage
+  contract section below); `GET /v1/export` (full KV plus blob index;
   stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-tenant
   store; the key must match `[A-Za-z0-9._-]{1,128}`); `PUT /v1/blobs`,
-  `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
-  deduplicated across users — except client-encrypted blobs
-  (§7 of the #2258 spec), whose R2 keys are scoped to the owning
-  binding so they dedupe only per user; DELETE drops only this
-  user's reference); and the signed-object bridge routes (`GET
-/v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
-/v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
-  `GET /v1/bridge/ws`), covered in the bridge section below. Storage
+  `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in
+  jurisdiction-bound R2 — `BLOBS_US`/`BLOBS_EU`/`BLOBS_FEDRAMP` picked
+  strictly from the authoritative jurisdiction and deduped within each
+  bucket — except client-encrypted blobs (§7 of the #2258 spec), whose
+  R2 keys are scoped to the owning binding and dedupe only per user.
+  DELETE drops only this user's reference); and the signed-object bridge routes (`GET
+  /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
+  /v1/bridge/pull`, `GET /v1/bridge/export`, `GET /v1/bridge/ws`),
+  covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps. So is the per-binding request cap
   (#15485): with `USER_REQUEST_CEILING` set, requests past that many
@@ -78,8 +82,53 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   no state of its own and resumes from the directory's phase after a
   crash or a lost response. `abortMigration` discards the staged copy,
   moves the directory back to the source at a fresh epoch and reopens
-  the source, which then refuses a stale freeze. Nothing exposes the
-  coordinator to callers yet.
+  the source, which then refuses a stale freeze. The internal operator
+  API at `POST /v1/internal/migrations/{start,resume,abort}` exposes these
+  operations only when the dedicated `MIGRATION_OPERATOR_TOKEN` secret is
+  configured; it is unset by default, so the route remains disabled.
+  Requests use a binding ID and stable migration ID, and retries resume
+  from the durable directory phase. Abort remains refused after switch.
+
+## Storage contract, budget ladder and backend manifest (#15483)
+
+`src/storage-contract.ts` is the one place on the hosted stack that
+defines these; sibling slices (caps, the tenant data split #15482 and
+its rehome slice, the Turso adapter #12801) import it and do not
+restate a value. It is pure (no IO) and carries:
+
+- the #5863 typed refusals (`limit`, `unavailable`, `fork`,
+  `version`, `verification`) and their HTTP statuses, the watermark
+  read check (`checkReadAtWatermark`, read-at-≥N), the head shape,
+  the snapshot-plus-delta check (`checkSnapshotDelta`), the version
+  check, declared limits and the §4.2 capability flags per backend;
+- the #5868 budget ladder: `DEFAULT_LADDER_THRESHOLDS` (50/75/90 %,
+  10-point hysteresis), `ladderStep(used, ceiling, previous)`, the
+  per-step `LADDER_POLICY` over operation classes in the fixed
+  `DEGRADE_ORDER`, and `admit`, which never refuses a journal append
+  below the hard ceiling (the refused band is its reserve);
+- the #5867 backend manifest: `createManifest`, `validateManifest`
+  (missing, malformed or conflicting placement fails closed as
+  `unavailable`/`placement_unknown`), `advanceManifest` and
+  `checkPlacementGeneration`.
+
+What `UserDO` wires today: every write goes through `admit` over the
+storage ceiling (KV and blob PUTs as `write`, bridge pushes and the
+WebSocket leg as `journal_append`, writes that do not grow storage as
+`reclaim`). The hard ceiling keeps its `413 ceiling_exceeded`; a
+ladder refusal is `413 budget_refused`; both bodies add the typed
+`refusal`. The step is persisted for hysteresis and reported by
+`GET /v1/usage` and `GET /v1/storage`. Every committed mutation
+advances the store's head; successful answers carry
+`x-storage-watermark`, a request carrying `x-read-at-watermark: N`
+is refused `503 watermark_unavailable` until the store reaches `N`,
+and one carrying `x-placement-generation` must name the current
+generation (`503 placement_stale`). The object records its manifest
+(`do_sqlite`, generation 1, cutover 0) in `meta` on first serve and
+fails closed (`503 placement_unknown`) if that record is invalid. Not
+wired yet: snapshot/delta export and replay-in (the rehome slice),
+signing of the manifest (the #5681 manifest authority), and row
+meters (`meters.rows_read`/`rows_written` are reported as null).
+Tests: `test/storage-contract.test.ts`.
 
 ## Tenancy control plane (component E, #9083)
 
@@ -115,10 +164,20 @@ jurisdiction. So locally the application worker fails closed with
 the designed behaviour, not a bug: falling back to the unrestricted
 namespace would silently create the second, unrestricted store the
 design forbids. Residency on a real account can only be established by
-the deployed canary gated on #2285 (still open/escalated) — this
-package makes no residency claim and authorizes no deployment, no
-production binding/config, and no billable resource (#3403 stays
-blocked pending user authorization).
+the deployed canary and resource read-back; local tests do not establish
+where production data resides. Production signup and migration remain
+disabled until that validation passes.
+
+The hosted account directory is one shared D1 database and is the **single
+shared durable-directory residency exception**. Its allowlisted records
+contain pseudonymous subject keys and minimal binding, jurisdiction, and
+migration metadata. A hashed subject is potentially personal data, not
+anonymous. The directory does not hold graph content, journals, blob bytes,
+or private profile data. This exception describes D1 only and is not an
+end-to-end residency claim: KV caches may be global; logs and request
+processing may occur outside a tenant's jurisdiction; vendor backup
+placement is a separate, unverified residency gap. These locations and
+processing paths need their own disclosure and evidence.
 
 ## The signed-object bridge (#3818)
 
@@ -148,7 +207,11 @@ serves no authoritative snapshot.
   reference client.
 - Routes: `GET /v1/bridge/challenge`, `GET /v1/bridge/heads`,
   `POST /v1/bridge/push`, `POST /v1/bridge/pull`,
-  `GET /v1/bridge/ws`. Bridge bytes count toward the storage
+  `GET /v1/bridge/ws`. Push/ACK outcomes surface conflict reports
+  naming both forked event IDs; no branch is selected. `SyncCoord`
+  persists one live owner and the latest tenant watermark per peer in
+  the tenant DB; it stores no event content.
+  Bridge bytes count toward the storage
   ceiling. Design record:
   `doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation/`.
   Cross-language fixtures: `pkgs/id/tests/bridge_fixtures.rs`.

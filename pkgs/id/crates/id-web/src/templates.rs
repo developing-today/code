@@ -1347,7 +1347,7 @@ pub fn render_blocks(blocks: &[Block]) -> String {
     html.push_str("            <input type=\"text\" name=\"expires_at_ms\" class=\"input input-bordered input-xs\"/></label>\n");
     html.push_str("            <input type=\"hidden\" name=\"return_to\" value=\"/blocks\"/>\n");
     html.push_str(
-        "            <button type=\"submit\" class=\"btn btn-warning btn-xs\">block</button>\n",
+        "            <button type=\"submit\" class=\"btn btn-warning btn-xs\" title=\"Add block\" aria-label=\"Add block\">block</button>\n",
     );
     html.push_str("        </form>\n");
     html.push_str("    </div>\n");
@@ -1472,6 +1472,17 @@ mod tests {
         assert!(html.contains("class=\"theme-dot\""));
         assert!(html.contains("class=\"theme-label\">Sneak</span>"));
         assert!(!html.contains("btn-outline btn-primary\" data-theme"));
+    }
+
+    #[test]
+    fn test_render_blocks_add_form_button_has_accessible_label() {
+        // Palette #14990: the destructive Add-a-block submit is a short-text
+        // button like its per-row block/unblock siblings, so it carries the
+        // same title/aria-label pair for tooltip and screen-reader users.
+        let html = render_blocks(&[]);
+        assert!(html.contains(
+            "<button type=\"submit\" class=\"btn btn-warning btn-xs\" title=\"Add block\" aria-label=\"Add block\">block</button>",
+        ));
     }
 
     #[test]

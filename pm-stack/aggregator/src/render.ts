@@ -127,7 +127,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
-import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { derivedProjectState, PROJECT_URL } from "./projects.ts";
 import {
   PHASE12_ISSUE_URL,
   joinPhase12Steps,
@@ -166,6 +166,8 @@ import {
   ghItemDerivedStatus,
 } from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
+import { effectiveProjectDisagreement, resolveTrustedProjectValue } from "./conflicts.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
 import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
@@ -643,6 +645,9 @@ export function renderSearch(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  // #14060 slice 2: when the caller renders one bounded page, the true
+  // match count rides here so the heading never understates it.
+  totalResults?: number,
 ): string {
   const cards = results
     .map((result) => {
@@ -662,7 +667,7 @@ export function renderSearch(
       return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
     })
     .join("");
-  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${totalResults ?? results.length} result${(totalResults ?? results.length) === 1 ? "" : "s"} for “${esc(query)}”</h2>${totalResults !== undefined && totalResults > results.length ? `<p class="muted">Showing the first ${results.length} — refine the query to narrow the rest.</p>` : ""}${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
   // #1212 slice 2: the search page carries the same freshness facets
   // as the home page of each result kind present (board/roadmap/items
   // for work, registry for sessions, dns for the register, quota and
@@ -3486,7 +3491,7 @@ ${sections.header}${sections.queues}${sections.sessions}${questionsHtml}`,
 export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
   if (census === undefined) return "";
   if (census === null) {
-    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+    return `<h2 id="needs-user-census">Needs User — GitHub label census</h2><a id="needs-drew-census"></a><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
   }
   const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
   const failureNote = failed.length
@@ -3536,7 +3541,7 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
         .join("")}</ul>`
     : `<p class="muted">Nothing is parked on the owner by an agent${answered}.</p>`;
   const rows = `<h3 id="needs-drew-hands">Needs a person's hands (${hands.length})</h3>${handsRows}<h3 id="needs-drew-review">Review requested (${review.length})</h3>${reviewRows}<h3 id="needs-drew-parked">Parked on the owner by an agent — fleet work (${parked.length})</h3>${parkedRows}`;
-  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${hands.length + review.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
+  return `<h2 id="needs-user-census">Needs User — GitHub label census (${hands.length + review.length})</h2><a id="needs-drew-census"></a><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-user.json">/api/needs-user.json</a> (legacy: <a href="/api/needs-drew.json">/api/needs-drew.json</a>).</p>${failureNote}${rows}`;
 }
 
 /**
@@ -4083,11 +4088,11 @@ function queueRows(rows: QueueRow[], empty: string): string {
 
 /** The queue page body is also the Datastar fragment and JSON's source view. */
 export function renderQueueBody(view: QueueView): string {
-  return `<p class="muted">Cross-project work, reconciled from the existing board, Project pool, and orchestration inputs. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
-<h2>In progress <span class="badge">${view.inProgress.length}</span></h2>${queueRows(view.inProgress, "Nothing is in progress.")}
-<h2>Blocked <span class="badge">${view.blocked.length}</span></h2>${queueRows(view.blocked, "Nothing is blocked.")}
+  return `<p class="muted">Board-derived work items — reconciled from the existing board, the Project pool, and orchestration inputs. These are not fleet queue tasks: the queue broker's live task state is the console Now page's counts (same words, different source). <a href="/console/#now">Console Now — what its counts mean</a>. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
+<h2>In progress <span class="badge">${view.inProgress.length}</span></h2><p class="muted">Board-derived work items, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.inProgress, "Nothing is in progress.")}
+<h2>Blocked <span class="badge">${view.blocked.length}</span></h2><p class="muted">Board-derived work items, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.blocked, "Nothing is blocked.")}
 <h2>Done recently <span class="badge">${view.doneRecently.length}</span></h2><p class="muted">Completed or merged in the last 7 days; retired bookkeeping cards are excluded.</p>${queueRows(view.doneRecently, "Nothing completed in the last 7 days.")}
-<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
+<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder. Board-derived, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
 }
 
 export function renderQueue(view: QueueView, provenance: Provenance, detail?: ProvenanceDetail): string {
@@ -4135,6 +4140,9 @@ export interface OverviewData {
    *  the same render-time suppression as /attention (Codex review on
    *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
   actionsByObject?: Map<string, DashAction[]>;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement on the reconciled in-progress list while it stands. */
+  ruling?: ConflictRuling | null;
 }
 
 export type OverviewInProgressSignal = InProgressSignal;
@@ -4215,7 +4223,7 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
       .sort(byRecency)
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
-    inProgress: reconciledInProgress(data),
+    inProgress: reconciledInProgress({ ...data, ruling: data.ruling ?? null }),
   };
 }
 
@@ -4278,12 +4286,12 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")}</ul>`
     : `<p class="muted">Nothing in progress from the Project, active-session, or open-PR signals.</p>`;
-  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
-<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
+  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. In-progress and blocked counts here are board-derived work items, not fleet queue tasks — the console Now page counts the queue broker's live tasks instead (same words, different source). Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
+<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2><p class="muted">The NEEDS USER intake queue — the queue the orchestrator works first, escalating only what genuinely requires the user. The console's need-you set is a different set (open questions plus hands, reviews, and escalated items). <a href="/attention">What this count means</a>.</p>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${feedStaleBanner}${healthStrip}
-<h2>In progress</h2>${inProgressItems}
+<h2>In progress</h2><p class="muted">Board-derived work items (Project Status, active sessions lined up, and open PRs) — one row per work item, not fleet queue tasks. <a href="/console/#now">Console Now — what its counts mean</a>.</p>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
@@ -5297,6 +5305,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
       (e.planNote ? '<span class="muted">' + esc(e.planNote) + "</span><br>" : "") +
       "Pool seats: " + (e.routes.length ? e.routes.map(function (r) { return "<code>" + esc(r) + "</code>"; }).join(" ") : '<span class="muted">none — no route sends it work</span>') +
       (e.goCapUsd != null && e.aaCostPerTask ? '<br><span class="muted">Published OpenCode Go cap: $' + e.goCapUsd + "/mo → ~" + fmtInt(Math.floor(e.goCapUsd / e.aaCostPerTask)) + " AA tasks at the measured cost (docs reading — the fleet's workspaces appear to meter pooled).</span>" : "") +
+      (e.configured === false ? '<br><span class="badge stale">Unconfigured · non-routable</span> · AA ' + (e.estimated ? 'estimated' : 'measured') + (e.effort ? ' · ' + esc(e.effort) : '') : "") +
       (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : "") +
       (function () {
         var proj = project(e);
@@ -5734,7 +5743,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     tb.innerHTML = rows.map(function (e) {
       var ec = effCost(e);
       var proj = project(e);
-      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span></td>" +
+      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span>" + (e.configured === false ? '<br><span class="badge stale">Unconfigured · non-routable · AA ' + (e.estimated ? 'estimated' : 'measured') + '</span>' : '') + '</td>' +
         "<td>" + esc(e.providerName) + (e.plan ? '<br><span class="badge src">' + esc(e.plan) + "</span>" : "") + (e.disabled ? ' <span class="badge stale">disabled</span>' : "") + '</td>' +
         '<td class="num">' + fmtCtx(e.contextLimit) + "</td>" +
         "<td>" + (e.variants.length ? esc(e.variants.join(", ")) : "—") + "</td>" +
@@ -6279,9 +6288,9 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
     : "";
   const modelCards = catalog
     ? `<div class="board">
-<div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
-<div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
-<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the import has an intelligence score for its name</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.configured !== false).length} configured models</strong> · ${catalog.filter((e) => e.configured === false).length} AA-only rows<br><span class="muted">Configured models come from <code>.opencode/opencode.jsonc</code>; AA-only rows have no provider definition</span></div>
+<div class="card"><strong>${new Set(catalog.filter((e) => e.configured !== false).map((e) => e.provider)).size} configured providers</strong> · ${catalog.filter((e) => e.configured !== false && e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.configured !== false && e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured/estimated<br><span class="muted">Pooled = at least one route sends it work; ranking-only rows are explicitly non-routable</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
@@ -6416,7 +6425,7 @@ ${s.cai ? aaCaiTable(s.cai) : ""}
 <section id="xtab-models" hidden>
 ${catalogTabAge}
 <h2>The fleet's model universe</h2>
-<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
+<p class="muted">Configured models from the fleet provider catalogs plus AA-ranked families without a provider definition. Ranking-only rows are data-only, explicitly unconfigured/non-routable, and preserve measured versus estimated status. Click a row for details.</p>
 ${modelCards}
 <h3>Task projection — estimated, not measured</h3>
 <p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>
@@ -6516,14 +6525,16 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
-// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+// --- Source-conflict inbox (#1282, slices 1-2) --------------------------------
 
 /**
- * /conflicts — the read-only source-conflict inbox. Every disagreement the
- * facets already report, in one queue, grouped by conflict class, each entry
- * naming the item, both sources, both values and how long the pair has been
- * on record. It resolves nothing: slice 1 projects only, so this page is the
- * same list /api/conflicts.json serves, rendered.
+ * /conflicts — the source-conflict inbox. Every live disagreement the
+ * facets already report, in one queue, grouped by conflict class, each
+ * entry naming the item, both sources, both values and how long the pair
+ * has been on record. Slice 2 adds per-class trust rulings for the
+ * Project-vs-derived class: a standing ruling suppresses that class's
+ * entries (listed below with their suppressed count) and renders apply
+ * the trusted value; revoking re-surfaces the current disagreements.
  */
 export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
   const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
@@ -6554,8 +6565,31 @@ export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, de
     .join("");
   const oldest =
     inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const rulings = inbox.rulings ?? [];
+  const suppressed = inbox.suppressed ?? [];
+  const suppressedByClass = inbox.suppressedByClass ?? [];
+  const rulingFor = (classId: string) => rulings.find((r) => r.classId === classId) ?? null;
+  const projectRuling = rulingFor("project-vs-derived");
+  const rulingsHtml = `<h2>Trust rulings</h2>
+<p class="muted">One ruling per class, stored as data and applied to renders. Slice 2 rules only the Project-vs-derived class; revoking re-surfaces that class's current disagreements.</p>
+<div class="board">
+<div class="card"><strong>Project Status vs derived state</strong><br>${
+    projectRuling
+      ? `trusts <strong>${esc(projectRuling.trusted)}</strong> since ${esc(fmtDate(projectRuling.createdAt))} · suppresses <strong>${suppressed.length}</strong> entr${suppressed.length === 1 ? "y" : "ies"}`
+      : "no ruling — disagreements show as ⚠"
+  }${projectRuling?.reason ? `<br><span class="muted">${esc(projectRuling.reason)}</span>` : ""}</div>
+<div class="card"><strong>Quota records vs recorded reads</strong><br>no ruling path — always listed</div>
+</div>
+<div class="card"><strong>Record a ruling</strong><br><span class="muted">Owner-verified (Drew) write: POST /api/conflicts/rulings with <code>{"classId":"project-vs-derived","trusted":"project"|"derived"}</code>. Revoke with DELETE /api/conflicts/rulings with <code>{"classId":"project-vs-derived"}</code>.</span></div>`;
+  const suppressedNote = projectRuling
+    ? `<p class="muted">A trust ruling stands for Project Status vs derived state (trusts <strong>${esc(projectRuling.trusted)}</strong>): <strong>${suppressed.length}</strong> current disagreement${suppressed.length === 1 ? "" : "s"} suppressed from this queue while renders apply the trusted value. Revoking re-surfaces them.</p>`
+    : "";
+  const suppressedLine = suppressedByClass
+    .filter((c) => c.count > 0)
+    .map((c) => ` · ${esc(c.label)}: ${c.count} suppressed`)
+    .join("");
   const body = `<h1>Source conflicts</h1>
-<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}${suppressedLine}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>.${projectRuling ? "" : " No trust ruling stands, so nothing is suppressed."}</p>${suppressedNote}${rulingsHtml}
 <div class="board">
 <div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
 ${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
@@ -7149,6 +7183,10 @@ export function projectsBodyHtml(
     /** Spend beside progress (#4824): the #4823 rollup store's
      * reader view. Absent/null: cards render exactly as before. */
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282): a standing project-vs-derived
+     *  ruling suppresses the ⚠ clash badge — the card applies the
+     *  trusted value and says so, instead of showing both sides. */
+    ruling?: ConflictRuling | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -7216,13 +7254,22 @@ export function projectsBodyHtml(
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
-      const derived = derivedProjectState(p, opts.orchestration);
-      const clash = projectDisagreement(p, opts.orchestration);
+      const detected = derivedProjectState(p, opts.orchestration);
+      // #1282 slice 2: a standing ruling suppresses the clash — the
+      // card applies the trusted value and labels it, so the page
+      // cannot show a ⚠ the inbox no longer lists.
+      const clash = effectiveProjectDisagreement(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const trusted = !clash && opts.ruling?.classId === "project-vs-derived" && p.status ? opts.ruling.trusted : null;
+      const trustedValue = resolveTrustedProjectValue(p, opts.orchestration, undefined, opts.ruling ?? null);
+      const appliedStatus = trustedValue ?? p.status;
+      const appliedDerived = trustedValue ?? detected;
       const clashBadge = clash
         ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(clash.project)} · derived: ${esc(clash.derived)}</span>`
-        : "";
-      const statusBadge = p.status
-        ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+        : trusted
+          ? ` <span class="badge src" title="A trust ruling stands for Project Status vs derived state (recorded in the source-conflict inbox): this card applies the trusted ${esc(trusted)} value while the disagreement is suppressed — revoke the ruling to re-surface it">trusts ${esc(trusted)}</span>`
+          : "";
+      const statusBadge = appliedStatus
+        ? `<span class="badge ${appliedStatus === "Done" ? "merged" : appliedStatus === "Todo" ? "closed" : "implementing"}">${esc(appliedStatus)}</span>`
         : `<span class="badge">no status</span>`;
       const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
       // #5082: only active work (canonical Project status
@@ -7265,7 +7312,7 @@ export function projectsBodyHtml(
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
         p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
         `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
-        `<span class="badge src">derived: ${esc(derived)}</span>`,
+        `<span class="badge src">derived: ${esc(appliedDerived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
       const statusCtl = opts.identities
@@ -7275,12 +7322,12 @@ export function projectsBodyHtml(
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
       const spendCard = opts.spend?.byScope.get(p.ref);
       const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
-      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
+      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration, ruling: opts.ruling ?? null });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
       return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
-  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values — unless a trust ruling stands for the class, in which case the card applies the trusted value and says so. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 <div class="chips"><span class="muted">Status:</span> ${[
     `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
@@ -7340,6 +7387,8 @@ export function renderProjects(
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282), passed through to the pool cards. */
+    ruling?: ConflictRuling | null;
   } = {},
 ): string {
   return layout(
@@ -7449,12 +7498,14 @@ export function renderProgram(
     flowAnalytics?: FlowAnalytics;
     /** Spend beside progress (#4824) for the pool section. */
     spend?: SpendCardsView | null;
+    /** Slice-2 trust ruling (#1282), passed through to the pool cards. */
+    ruling?: ConflictRuling | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend, ruling: poolSection.ruling ?? null })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
@@ -8785,7 +8836,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
 <p class="muted">Weekly sent-vs-acted-on roll-up over the alert throat's send ledger (<code>alerts.notification_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
 <h2>How acted-on is counted (attribution)</h2>
 <p class="muted">A send counts as acted-on when the incident's Ack lands within 24 hours of the send: Ack is the exactly-once transition that stamps the send's <code>acted_on_at</code>, so it is the durable acted-on signal. Only ledger rows with outcome <code>sent</code> count as sends — suppressed (quiet hours / dedupe), gone, and error attempts never reached a device and never enter the denominator, and no send is inferred from delivered/escalated incident events. What this cannot attribute: reading a notification without acking, acting on the incident through another surface (GitHub, chat, a later dashboard visit that does not ack), and sends to subscriptions that were later removed — those count as sent-but-not-acted even when a human did see them. Test sends (class <code>test</code>) are real ledger rows and are reported as their own class.</p>
-${rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
+${rollup.alarm ? `<p role="alert"><strong>ALARM:</strong> all ${rollup.total} send ledger row(s) were excluded for missing/unusable timestamps — the roll-up below reports no sends because the ledger timestamps are unreadable, not because nothing was sent (#14419).</p>` : rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
 <h2>Per class, per week</h2>
 ${
   rollup.classes.length

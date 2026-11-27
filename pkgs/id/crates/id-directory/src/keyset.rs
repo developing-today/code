@@ -87,7 +87,12 @@ struct SignedBody<'a> {
     entry: &'a KeysetEntry,
 }
 
-fn body_bytes(author: &str, lamport: u64, prev_hash: &str, entry: &KeysetEntry) -> Result<Vec<u8>> {
+pub(crate) fn body_bytes(
+    author: &str,
+    lamport: u64,
+    prev_hash: &str,
+    entry: &KeysetEntry,
+) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&SignedBody {
         author,
         lamport,
@@ -936,6 +941,12 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
                 .context("unknown device key")?;
             ensure!(!device.revoked, "device is already revoked");
             device.revoked = true;
+            // ADR Decision 4 rule 3: revocation removes the key's
+            // authority, not merely one role. Migrated identities can
+            // use the same key as both admin and device.
+            if let Some(admin) = state.admin_keys.get_mut(device_key) {
+                *admin = AdminKeyState::Revoked;
+            }
         }
         KeysetEntry::AdminKeyRotated { new_admin_key } => {
             ensure!(authorized_admin, "admin rotation requires an active admin");
@@ -1048,6 +1059,40 @@ mod tests {
 
     fn public(seed: u8) -> String {
         hex_encode(&key(seed).verifying_key().to_bytes())
+    }
+
+    proptest! {
+        /// Oracle: ADR Decision 4 rule 3 — revocation removes every
+        /// authority of the revoked key prospectively, including when
+        /// migration assigned the same key both admin and device roles.
+        #[test]
+        fn test_revoked_dual_role_key_cannot_authorize_later_records(
+            seed in 2..=250u8,
+            later_lamport in 3..1000u64,
+            reverse_delivery in any::<bool>(),
+        ) {
+            let admin = key(seed);
+            let public = hex_encode(&admin.verifying_key().to_bytes());
+            let first = KeysetRecord::sign(&admin, 1, "", KeysetEntry::Genesis {
+                admin_key: public.clone(), device_key: public.clone(), label: "initial".into(),
+            }, None).unwrap();
+            let revoked = append(&first, &admin, 2, KeysetEntry::DeviceRevoked {
+                device_key: public.clone(), reason: "compromised".into(),
+            }, None);
+            let later = append(&revoked, &admin, later_lamport, KeysetEntry::IdpBindingBound {
+                binding_id: "must-not-authorize".into(),
+            }, None);
+            let mut records = vec![first.clone(), revoked.clone(), later];
+            if reverse_delivery { records.reverse(); }
+            let mut log = Log::default();
+            for record in records { log.insert(record).unwrap(); }
+            let state = fold(&log, &first.hash).unwrap();
+            prop_assert_eq!(&state.head_hash, &revoked.hash);
+            prop_assert_eq!(state.records_folded, 2);
+            prop_assert!(!state.is_device(&public));
+            prop_assert!(!state.is_admin(&public));
+            prop_assert!(state.idp_bindings.is_empty());
+        }
     }
 
     fn genesis() -> KeysetRecord {
@@ -1779,6 +1824,23 @@ mod tests {
 
         fn apply(&mut self, op: &HistoryOp) {
             let admin = key(self.admin_seed);
+            // Oracle: after losing its authority, this model's signer
+            // can emit evidence but cannot advance the canonical head.
+            if !self.state.is_admin(&public(self.admin_seed)) {
+                let lamport = self.next_lamport();
+                let record = KeysetRecord::sign(
+                    &admin,
+                    lamport,
+                    self.head.hash.clone(),
+                    KeysetEntry::IdpBindingBound {
+                        binding_id: "unauthorized".into(),
+                    },
+                    None,
+                )
+                .unwrap();
+                self.emit(record, false);
+                return;
+            }
             match op {
                 HistoryOp::Enroll(seed) => {
                     let lamport = self.next_lamport();
@@ -1823,6 +1885,9 @@ mod tests {
                         .is_some_and(|device| !device.revoked);
                     if valid {
                         self.state.devices.get_mut(&public(*seed)).unwrap().revoked = true;
+                        if let Some(admin) = self.state.admin_keys.get_mut(&public(*seed)) {
+                            *admin = AdminKeyState::Revoked;
+                        }
                     }
                     self.emit(record, valid);
                 }

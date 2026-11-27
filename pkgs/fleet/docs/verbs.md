@@ -49,6 +49,7 @@ Client for the repo-queue broker. It supports direct broker transport and the co
 | `link`                | Add, remove, or list normalized issue, pull-request, and task relationships.                                                                                                                     |
 | `dep-recheck`         | Re-evaluate recorded dependency edges.                                                                                                                                                           |
 | `quarantine-recheck`  | Re-evaluate quarantined items.                                                                                                                                                                   |
+| `time-recheck`        | Re-evaluate items blocked until a time; requeue the ones whose time has passed (#14212).                                                                                                         |
 | `repair`              | Repair a quarantined item's malformed packet in place (dedupe stamp re-derived live; `--dry-run` reports only).                                                                                  |
 | `resolution-backfill` | Run the idempotent, evidence-only Q2 terminal-resolution backfill and print its census.                                                                                                          |
 | `cancel`              | Cancel an item.                                                                                                                                                                                  |
@@ -166,7 +167,7 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 | Command                     | Purpose                                                                    |
 | --------------------------- | -------------------------------------------------------------------------- |
-| `tiers`                     | Show token-source rate-limit headroom.                                     |
+| `tiers [--all]`             | Show token-source rate-limit headroom; `--all` lists every App installation. |
 | `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                   |
 | `cache-status`              | Probe configured token-cache daemons.                                      |
 | `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number. |
@@ -382,6 +383,24 @@ literal recipes in the laptop mechanics doc, not here.
 | `tiers`                                                           | Print the codified form table (T0–T7) and the composition doctrine.                                                                                                       |
 | `exec [--form T1\|T2\|T3] [--timeout SECS] [--cwd DIR] -- CMD...` | Walk T1 → T2 → T3 (or one pinned tier), advancing only when a tier fails to serve; reports the serving tier. `--timeout` is per attempt and always applies (default 120). |
 
+## `host` — registry-backed host selection
+
+`fleet host <name> [--class <agent-class>]` resolves a host through the
+compiled machine registry, builds candidates for each enrolled transport
+and invocation form, then selects through `fleet-pool`. The default class
+is `muse-seats`; supported classes are `muse-seats`, `opencode-lanes`, and
+`external-mcp-clients`. The name `laptop` resolves to the `amd` record.
+
+```sh
+fleet host amd
+fleet host laptop --class opencode-lanes
+```
+
+This command takes a host name directly; it has no `resolve` subcommand.
+It prints the available candidates, the selected transport/form, and the
+pool decision. Unknown hosts or classes with no enrolled offers exit 1;
+usage errors exit 2; a build without the laptop capability exits 69.
+
 ## `commander` — tier T1 (commander/fleet)
 
 | Verb                                          | Purpose                                                                                                                                                                                                                                                                |
@@ -413,6 +432,8 @@ daemon's general client.
 | Verb                                          | Purpose                                                                                                                                                                                                                           |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
+| `sessions`                                     | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                              |
+| `sweep --idle-for DURATION [--dry-run]`        | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
 | `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
 
@@ -467,6 +488,17 @@ enqueue one command on the session's runner, stream its output,
 exit with the command's exit code (default command timeout
 600 s). `<ref>` is a handle or the portable `OWNER/REPO#RUN_ID`
 form.
+
+`fleet actions exec once [--repo OWNER/REPO] [--target-repo
+OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
+[--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
+<command...>` — the one-shot sugar over start+run: find a live
+session for `--repo` in the local store or start one with the
+start path (same #13765 claim, same handoff — new sessions take
+`--lease`, default 1800 s, where start requires `--timeout` by
+construction), run one command, exit with its code (default
+command `--timeout` 600 s). The session stays open for the next
+`once` unless `--close`.
 
 `fleet actions exec attach <ref>` / `fleet actions exec watch
 <ref>` — stream the session's IO after handoff (watch also
