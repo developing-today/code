@@ -270,6 +270,14 @@ pub enum ClaimError {
     ReplyMissingTarget,
     /// A reply answered an event the log does not hold.
     UnknownTarget(EventId),
+    /// A reply named a different subject than the event it answers:
+    /// the answer would attach to someone else's dispute.
+    SubjectMismatch {
+        /// The subject of the event being answered.
+        target_subject: String,
+        /// The subject the reply named instead.
+        reply_subject: String,
+    },
     /// The event id is already in the log: the entry is a duplicate,
     /// not a second event.
     DuplicateId(EventId),
@@ -292,6 +300,14 @@ impl std::fmt::Display for ClaimError {
             Self::ClaimHasTarget => write!(f, "a claim cannot name a reply target"),
             Self::ReplyMissingTarget => write!(f, "a reply must name its claim"),
             Self::UnknownTarget(_) => write!(f, "reply target is not in the log"),
+            Self::SubjectMismatch {
+                target_subject,
+                reply_subject,
+            } => write!(
+                f,
+                "reply subject {reply_subject} does not match the subject \
+                 {target_subject} of the event it answers"
+            ),
             Self::DuplicateId(_) => write!(f, "event id is already logged"),
             Self::Binding(source) => write!(f, "signer binding failed: {source}"),
         }
@@ -362,7 +378,11 @@ impl ClaimLog {
     /// Verify a wire event and append it. The author's key must be
     /// bound to the claimed identity before the signature is checked
     /// (B05 order: identity first, cryptography second), and a reply
-    /// is admitted only against a claim this log already holds.
+    /// is admitted only against an event this log already holds whose
+    /// subject the reply also names. The target may itself be a reply:
+    /// a correction is a reply naming the event it corrects, and the
+    /// same-subject rule is what keeps a correction attached to the
+    /// dispute it belongs to.
     pub fn append(
         &mut self,
         registry: &BindingRegistry,
@@ -394,8 +414,14 @@ impl ClaimLog {
             (EventKind::Claim, None) => {}
             (EventKind::Claim, Some(_)) => return Err(ClaimError::ClaimHasTarget),
             (EventKind::Reply, Some(target)) => {
-                if !self.ids.contains(&target) {
+                let Some(target_event) = self.get(&target) else {
                     return Err(ClaimError::UnknownTarget(target));
+                };
+                if target_event.body.subject != body.subject {
+                    return Err(ClaimError::SubjectMismatch {
+                        target_subject: target_event.body.subject.clone(),
+                        reply_subject: body.subject.clone(),
+                    });
                 }
             }
             (EventKind::Reply, None) => return Err(ClaimError::ReplyMissingTarget),
