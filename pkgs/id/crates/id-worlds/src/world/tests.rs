@@ -7050,6 +7050,21 @@ mod tests {
         assert_eq!(page.events[0].sequence, 2);
     }
 
+    /// #10927 slice 2: a cursor ahead of the journal can never be a
+    /// continuous resume (the journal was rebuilt or regressed), so the
+    /// host must answer with an authoritative snapshot, not an empty page.
+    #[test]
+    fn reconnect_requires_snapshot_when_cursor_is_ahead_of_journal() {
+        let mut core = world(8);
+        let (_, token) = join(&mut core, "Ada");
+        assert_eq!(core.chat(&token, "hello").unwrap().sequence, 1);
+        assert_eq!(core.chat(&token, "again").unwrap().sequence, 2);
+        let page = core.events_after(&token, 7).unwrap();
+        assert_eq!(page.current_sequence, 2);
+        assert!(page.needs_snapshot);
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
+    }
+
     #[test]
     fn reconnect_requires_snapshot_when_cursor_is_older_than_retention() {
         let mut core = world(2);
