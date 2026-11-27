@@ -609,7 +609,7 @@ registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
 
-## Surface 6 — PM-stack process intervals (5 entries)
+## Surface 6 — PM-stack process intervals (7 entries)
 
 Recurring loops owned by PM-stack processes (aggregator, console, dispatch). These are not
 external scheduler surfaces; this inventory records timers that run only
@@ -622,6 +622,20 @@ while the service is alive.
 | Console state refresh            | developing-today/code | every 5 seconds                                     | live console process only    | PR #12452     | `pm-stack/console/src/docs.ts` (`Docs.start`)                                         | not recorded | Reads only while the app was opened in the last 10 minutes; remove if state is no longer served from memory                                         | 2026-11-22 | 2026-11-22  |
 | Console notifier                 | developing-today/code | every 60 seconds                                    | live console process only    | PR #12452     | `pm-stack/console/src/notify.ts` (`Notifier.start`)                                   | not recorded | Reads only while a device is subscribed; remove if notifications move to another sender                                                             | 2026-11-22 | 2026-11-22  |
 | Console report to the edge       | developing-today/code | 5 to 30 seconds                                     | live console process only    | PR #12505     | `pm-stack/console/src/sync.ts` (`EdgeLink.start`)                                     | not recorded | Runs only when PM_CONSOLE_EDGE_URL is set; remove if the app is no longer served from the edge                                                      | 2026-11-22 | 2026-11-22  |
+| PM-core quota refresh (#8570)    | developing-today/code | every 15 minutes + immediate refresh at process start | live aggregator process only | issue #8570 | `pm-stack/aggregator/src/pm-core-scheduler.ts` (`QUOTA_CADENCE_MS`); wired by `src/pm-core-wiring.ts` (`startPmCoreSchedulers`); started in `src/server.ts` live mode only | not recorded | Remove if the in-process scheduler is retired; the legacy `quota-gatherer.timer` row (§2b) stays until its live disablement is verified | 2026-11-24 | 2026-11-27 |
+| PM-core fleet-feed collection (#8570) | developing-today/code | every 5 minutes + immediate refresh at process start | live aggregator process only | issue #8570 | `pm-stack/aggregator/src/pm-core-scheduler.ts` (`FLEET_FEED_CADENCE_MS`); wired by `src/pm-core-wiring.ts` (`startPmCoreSchedulers`); started in `src/server.ts` live mode only | not recorded | Remove if the in-process scheduler is retired; the legacy `fleet-feed-collector.timer` row (§2b) stays until its live disablement is verified | 2026-11-24 | 2026-11-27 |
+
+PM-core coexistence note (2026-11-27, issue #16056): the two PM-core rows
+above run the quota (15m) and fleet-feed (5m) cadences in-process in the
+live aggregator, with an immediate startup refresh of both jobs
+(`startPmCoreSchedulers` calls `runNow` for each job after `start()`).
+They coexist with the legacy systemd rows `quota-gatherer.timer` and
+`fleet-feed-collector.timer` (§2b), whose source declarations were
+removed by the #8570 cutover but whose retirement stays pending until
+deployment verifies the laptop units are inactive and disabled. The
+kill-collector drill pauses the in-process feed job through its
+state-file gate and refuses to run while the legacy collector timer
+remains active.
 
 ## Surface 7 — Cloudflare Worker cron triggers (5 entries)
 
