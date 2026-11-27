@@ -1432,19 +1432,49 @@ fn read_journal_entries(path: &Path) -> Result<Vec<JournalEntry>> {
     Ok(entries)
 }
 
+/// Sync a directory so the entries inside it are durable: a file-data
+/// fsync alone does not promise the directory entry itself survives a
+/// crash. Sibling paths (journal compaction, [`ModuleDir::save`]) treat
+/// a failure here as fatal; callers propagate it the same way.
+///
+/// # Errors
+///
+/// The directory cannot be opened, or its sync fails.
+fn sync_directory(dir: &Path) -> Result<()> {
+    File::open(dir)
+        .with_context(|| format!("open {} for sync", dir.display()))?
+        .sync_all()
+        .with_context(|| format!("sync {}", dir.display()))
+}
+
 /// Fork a durable world: copy the source's journal and modules into `dst_dir`
 /// under a new world id, and record the fork provenance (F12.2).
 ///
 /// The copied entries reproduce the parent's state exactly — the fork replays
 /// to the parent's records at the fork point. The `Created` header is
 /// rewritten to the new id, a [`JournalEntry::Forked`] records the origin, and
-/// the module files are copied unchanged.
+/// the module files are copied unchanged. Success is reported only once
+/// the destination is crash-durable (#16140): the journal and each copied
+/// module are synced, then the destination directory, its `modules`
+/// directory, and the destination's parent are synced.
 ///
 /// # Errors
 ///
 /// A missing or corrupt source journal, a source journal that belongs to a
-/// different world, or I/O failures writing the destination.
+/// different world, or I/O failures writing or syncing the destination.
 pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()> {
+    fork_world_with_dir_sync(src_dir, dst_dir, spec, &sync_directory)
+}
+
+/// [`fork_world`] with the directory-sync step supplied, split out so
+/// tests can fault-inject a sync failure (the same shape as the
+/// #16058/#16131 durability tests).
+fn fork_world_with_dir_sync(
+    src_dir: &Path,
+    dst_dir: &Path,
+    spec: &ForkSpec,
+    sync_dir: &dyn Fn(&Path) -> Result<()>,
+) -> Result<()> {
     let mut entries = read_journal_entries(&src_dir.join("journal.jsonl"))?;
     let Some(JournalEntry::Created {
         world_id,
@@ -1504,7 +1534,11 @@ pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()>
         at_sequence,
     });
 
-    // Write the destination journal, fsynced.
+    // Write the destination journal, fsynced. The file-data sync alone
+    // is not the durability promise the caller reads into `Ok(())`
+    // (#16140): the journal's directory entry, the copied modules and
+    // their directory, and the destination directory's own entry in
+    // its parent are all synced below before success is reported.
     std::fs::create_dir_all(dst_dir).with_context(|| format!("create {}", dst_dir.display()))?;
     let path = dst_dir.join("journal.jsonl");
     let mut file = OpenOptions::new()
@@ -1517,18 +1551,39 @@ pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()>
         file.write_all(serde_json::to_string(entry)?.as_bytes())?;
         file.write_all(b"\n")?;
     }
-    file.sync_all()?;
+    file.sync_all().context("sync forked journal")?;
+    drop(file);
 
     // Copy the module files, content-addressed under the same hashes.
+    // Each copy is synced before its directory entry is: a synced entry
+    // pointing at torn content would still be a torn module.
     let src_modules = src_dir.join("modules");
-    if src_modules.is_dir() {
-        let dst_modules = dst_dir.join("modules");
+    let dst_modules = dst_dir.join("modules");
+    let copied_modules = src_modules.is_dir();
+    if copied_modules {
         std::fs::create_dir_all(&dst_modules)
             .with_context(|| format!("create {}", dst_modules.display()))?;
         for entry in std::fs::read_dir(&src_modules)? {
             let entry = entry?;
-            std::fs::copy(entry.path(), dst_modules.join(entry.file_name()))?;
+            let copied = dst_modules.join(entry.file_name());
+            std::fs::copy(entry.path(), &copied)
+                .with_context(|| format!("copy module {}", copied.display()))?;
+            File::open(&copied)
+                .with_context(|| format!("open {} for sync", copied.display()))?
+                .sync_all()
+                .with_context(|| format!("sync {}", copied.display()))?;
         }
+        sync_dir(&dst_modules)?;
+    }
+
+    // Make the destination itself durable: `dst_dir`'s sync covers the
+    // journal (and `modules/`) entries inside it, and its parent's sync
+    // covers the new `dst_dir` entry `create_dir_all` made there. Any
+    // failure is fatal — reporting success for a fork a crash can lose
+    // is the defect — so propagate instead of returning `Ok`.
+    sync_dir(dst_dir)?;
+    if let Some(parent) = dst_dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        sync_dir(parent)?;
     }
     Ok(())
 }
@@ -1934,6 +1989,62 @@ mod tests {
         let mut line = serde_json::to_vec(entry).unwrap();
         line.push(b'\n');
         line
+    }
+
+    fn fork_fixture(root: &Path) -> (PathBuf, PathBuf, ForkSpec) {
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("modules")).unwrap();
+        drop(FileJournal::open(&src.join("journal.jsonl"), "src-world").unwrap());
+        std::fs::write(
+            src.join("modules").join(format!("{}.wasm", "a".repeat(64))),
+            b"wasm-bytes",
+        )
+        .unwrap();
+        let dst = root.join("nested").join("dst");
+        let spec = ForkSpec {
+            from_world_id: "src-world".to_owned(),
+            to_world_id: "dst-world".to_owned(),
+            template: false,
+        };
+        (src, dst, spec)
+    }
+
+    // #16140 oracle: a fork reported as done is complete on disk — the
+    // destination journal carries the new header plus the Forked
+    // provenance entry, and the module copy is byte-identical.
+    #[test]
+    fn fork_world_copies_the_journal_and_modules_under_the_new_id() {
+        let root = TempDir::new().unwrap();
+        let (src, dst, spec) = fork_fixture(root.path());
+        fork_world(&src, &dst, &spec).unwrap();
+        let entries = read_journal_entries(&dst.join("journal.jsonl")).unwrap();
+        assert!(matches!(
+            entries.first(),
+            Some(JournalEntry::Created { world_id, .. }) if world_id == "dst-world"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::Forked { from_world_id, .. }) if from_world_id == "src-world"
+        ));
+        let copied =
+            std::fs::read(dst.join("modules").join(format!("{}.wasm", "a".repeat(64)))).unwrap();
+        assert_eq!(copied, b"wasm-bytes");
+    }
+
+    // #16140 oracle: a directory-sync failure is fatal, not a successful
+    // fork — `fork_world` must propagate it instead of returning `Ok`
+    // for a destination a crash could lose.
+    #[test]
+    fn fork_world_propagates_a_directory_sync_failure() {
+        let root = TempDir::new().unwrap();
+        let (src, dst, spec) = fork_fixture(root.path());
+        let failing_sync =
+            |_: &Path| -> Result<()> { Err(anyhow::anyhow!("injected directory sync failure")) };
+        let error = fork_world_with_dir_sync(&src, &dst, &spec, &failing_sync).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[cfg(feature = "sandbox")]
