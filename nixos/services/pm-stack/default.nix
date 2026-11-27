@@ -127,11 +127,11 @@ let
   pmGitSync = pkgs.callPackage ../../../pkgs/pm-git-sync/package.nix { };
   sigtermWitness = pkgs.callPackage ../../../pkgs/sigterm-witness/package.nix { };
 
-  projectorReconcile = pkgs.writeShellScript "pm-projector-reconcile" ''
+  projectorReconcile = mode: pkgs.writeShellScript "pm-projector-reconcile-${mode}" ''
     # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
     exec ${pkgs.curl}/bin/curl -fsS -X POST \
       -H "Authorization: Bearer $PM_PROJECTOR_API_TOKEN" \
-      http://127.0.0.1:${toString cfg.projectorPort}/reconcile
+      "http://127.0.0.1:${toString cfg.projectorPort}/reconcile?mode=${mode}"
   '';
 
   # The port cloudflared serves its metrics + /ready endpoint on
@@ -520,7 +520,22 @@ in
             # completed streams have persisted cursors for its next pass.
             TimeoutStartSec = 14 * 60;
             EnvironmentFile = "${projState}/.env";
-            ExecStart = "${projectorReconcile}";
+            ExecStart = "${projectorReconcile "steady_state"}";
+          };
+        };
+
+        # Explicit, manually triggerable full-history pass. It shares the
+        # projector's single-flight gate and has no timer by design.
+        pm-projector-backfill = {
+          Unit = {
+            Description = "PM projector full-history backfill — poll GitHub without stored cursors";
+            After = [ "pm-projector.service" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 6 * 60 * 60;
+            EnvironmentFile = "${projState}/.env";
+            ExecStart = "${projectorReconcile "backfill"}";
           };
         };
 
