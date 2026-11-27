@@ -228,7 +228,7 @@ fleet proxy copy [--mode OCTAL] [--no-resume] <source> <destination>
 
 ### Behaviour
 
-Copies one file between any two hosts. Each side is a local path or `NAME:PATH`, parsed the scp way: a colon whose prefix is non-empty and holds no `/` makes the side remote, so `./odd:name` stays local. `local`, `localhost` and this host's own fleet location mean the local host; every other name must be a known remote (today `laptop`). Local to remote is a put and remote to local is a get, with the same hash-verified chunked transfer and atomic rename. Remote to remote relays through this host: it downloads into a local spool, uploads from it, checks that both hashes match and always removes the spool. Local to local is refused (use `cp`). Directories and stdin/stdout stay with `put -r`, `get -` and `put -`.
+Copies one file between any two hosts. Each side is a local path or `NAME:PATH`, parsed the scp way: a colon whose prefix is non-empty and holds no `/` makes the side remote, so `./odd:name` stays local. `local`, `localhost` and this host's own fleet location mean the local host; every other name must be a known remote (today `laptop`). Local to remote is a put and remote to local is a get, with the same hash-verified chunked transfer and atomic rename. When both remote paths name the same daemon, it performs an atomic server-side copy; distinct remote daemons still relay through this host. Local to local is refused (use `cp`). Directories and stdin/stdout stay with `put -r`, `get -` and `put -`.
 
 ### Exit codes
 

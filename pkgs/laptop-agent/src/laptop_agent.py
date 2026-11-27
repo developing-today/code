@@ -1980,6 +1980,7 @@ class Handler(BaseHTTPRequestHandler):
             "/files/commit": self._files_commit,
             "/files/abort": self._files_abort,
             "/files/read": self._files_read,
+            "/files/copy": self._files_copy,
         }.get(path)
         if handler is None:
             return self._send(404, {"error": "no such route"})
@@ -2150,6 +2151,67 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return {"error": f"abort {temp}: {e}"}
         return {"ok": True}
+
+    def _files_copy(self, body):
+        # Server-side copy for `fleet proxy copy` between two paths on
+        # this daemon (#14219): the bytes never cross the controller.
+        # Same transaction semantics as begin/write/commit — a
+        # deterministic temp, a hash check, then an atomic rename — so
+        # a killed copy leaves no partial destination and a retry is a
+        # plain re-issue of the same route.
+        src = body.get("from")
+        err = _files_validate(src)
+        if err:
+            return {"error": err if err != "path required" else "from required"}
+        dst = body.get("to")
+        err = _files_validate(dst)
+        if err:
+            return {"error": err if err != "path required" else "to required"}
+        mode = body.get("mode")
+        if not _files_mode_ok(mode):
+            return {"error": "mode must be an integer in 0..0o7777"}
+        try:
+            st = os.stat(src)
+        except FileNotFoundError:
+            return {"error": f"no such file: {src}"}
+        except OSError as e:
+            return {"error": f"stat {src}: {e}"}
+        if not os.path.isfile(src):
+            return {"error": f"not a regular file: {src}"}
+        try:
+            sha = _files_sha_file(Path(src))
+        except OSError as e:
+            return {"error": f"hash {src}: {e}"}
+        size = st.st_size
+        temp = Path(files_temp_path(dst, sha))
+        parent = temp.parent
+        try:
+            if not parent.exists():
+                return {"error": f"no such directory: {parent}"}
+            if not parent.is_dir():
+                return {"error": f"not a directory: {parent}"}
+            # Fresh write every call: a killed copy's temp is replaced,
+            # never resumed mid-file, so a retry always converges.
+            with open(temp, "wb") as out:
+                with open(src, "rb") as f:
+                    for block in iter(lambda: f.read(1 << 20), b""):
+                        out.write(block)
+                out.flush()
+                os.fsync(out.fileno())
+            actual = _files_sha_file(temp)
+            if actual != sha:
+                raise OSError(f"copy verification failed for {temp}")
+            if mode is not None:
+                os.chmod(temp, mode)
+            os.replace(temp, dst)
+            _fsync_dir(Path(dst).parent)
+        except OSError as e:
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            return {"error": f"copy {src} -> {dst}: {e}"}
+        return {"size": size, "sha256": sha}
 
     def _files_read(self, body):
         path = body.get("path")

@@ -464,6 +464,35 @@ pub struct PutReport {
     pub resumed_from: u64,
 }
 
+pub fn remote_copy(
+    t: &mut dyn FilesTransport,
+    from: &str,
+    to: &str,
+    mode: Option<u32>,
+) -> Result<PutReport, ClientError> {
+    validate_remote_path(from)?;
+    validate_remote_path(to)?;
+    let mut body = json!({"from": from, "to": to});
+    if let Some(mode) = mode {
+        body["mode"] = json!(mode);
+    }
+    let reply = t.post("/files/copy", body)?;
+    let size = reply
+        .get("size")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| ClientError::Transport("daemon copy returned no size".into()))?;
+    let sha256 = reply
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ClientError::Transport("daemon copy returned no sha256".into()))?
+        .to_string();
+    Ok(PutReport {
+        size,
+        sha256,
+        resumed_from: 0,
+    })
+}
+
 /// Upload `source` (already hashed by the caller pass in
 /// `put_file`; here a seekable reader whose full contents are the
 /// file) to `remote_path`. `size`/`sha256` describe the contents.

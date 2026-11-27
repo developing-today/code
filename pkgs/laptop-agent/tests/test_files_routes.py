@@ -177,6 +177,31 @@ class FilesRoutesTest(unittest.TestCase):
             offset = len(out)
         return bytes(out), st["sha256"]
 
+    def test_server_side_copy_hashes_and_atomically_publishes(self):
+        source = self.work / "copy-source.bin"
+        dest = self.work / "copy-dest.bin"
+        data = os.urandom(5 * 1024 * 1024)
+        source.write_bytes(data)
+        dest.write_bytes(b"old destination")
+        report = self.ok("/files/copy", {"from": str(source), "to": str(dest)})
+        self.assertEqual(
+            {key: report[key] for key in ("size", "sha256")},
+            {"size": len(data), "sha256": sha_hex(data)},
+        )
+        self.assertEqual(dest.read_bytes(), data)
+        self.assertEqual(list(self.work.glob(".copy-dest.bin.fleet-part-*")), [])
+
+    def test_server_side_copy_failure_never_publishes_partial_destination(self):
+        dest = self.work / "copy-failed.bin"
+        dest.write_bytes(b"keep original")
+        reply = self.err(
+            "/files/copy",
+            {"from": str(self.work / "missing-source"), "to": str(dest)},
+        )
+        self.assertIn("no such file", reply["error"])
+        self.assertEqual(dest.read_bytes(), b"keep original")
+        self.assertEqual(list(self.work.glob(".copy-failed.bin.fleet-part-*")), [])
+
     # -- AC1: whole-file round trips are sha256-identical ---------------
     #
     # The packet's acceptance is a 100 MiB transfer both ways. 100 MiB

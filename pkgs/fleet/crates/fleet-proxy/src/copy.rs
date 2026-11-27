@@ -18,9 +18,9 @@
 //! The transfers are the hash-verified `/files/*` paths of
 //! [`crate::files`]: local to remote is a put, remote to local is a
 //! get, both resumable through their deterministic temps. Remote to
-//! remote relays through the caller (get into a local spool, then
-//! put). The delegated direct path, where bytes skip the caller, is
-//! #14219.
+//! remote on one daemon uses its atomic server-side copy route; copies
+//! between distinct remotes still relay through the caller. The latter
+//! delegated path remains tracked by #14219.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +28,7 @@ use fleet_config::Config;
 
 use crate::client::{ClientError, ensure_broker};
 use crate::files::{
-    BrokerFilesTransport, FilesTransport, get_file, parse_transfer_args, put_file,
+    BrokerFilesTransport, FilesTransport, get_file, parse_transfer_args, put_file, remote_copy,
     validate_remote_path,
 };
 
@@ -44,8 +44,7 @@ A bare path is local; prefix ./ to keep a path with a colon local.
 NAME is 'local', 'localhost', this host's fleet location, or a known
 remote (laptop). Every transfer is SHA-256 verified and lands by
 atomic rename; an interrupted copy resumes unless --no-resume.
-Remote to remote relays through this host for now (#14219 tracks
-the direct path). Directories and stdin/stdout are 'fleet proxy put
+Remote to remote on the same daemon uses an atomic server-side copy. Distinct remote names still relay through this host. Direct daemon-to-daemon transfer remains tracked by #14219. Directories and stdin/stdout are 'fleet proxy put
 -r' and 'fleet proxy get -' / 'put -'.
 Exit codes: 2 usage, 3 transport, 69 capability-unavailable.";
 
@@ -149,7 +148,13 @@ pub enum Plan {
         path: String,
         local: PathBuf,
     },
-    /// Remote to remote: get into a local spool, then put.
+    /// Remote to remote on the same daemon: server-side copy.
+    Direct {
+        remote: String,
+        from_path: String,
+        to_path: String,
+    },
+    /// Remote to remote on distinct daemons: relay through the caller.
     Relay {
         from_remote: String,
         from_path: String,
@@ -189,12 +194,22 @@ pub fn plan(source: Endpoint, destination: Endpoint) -> Result<Plan, ClientError
                 remote: to_remote,
                 path: to_path,
             },
-        ) => Ok(Plan::Relay {
-            from_remote,
-            from_path,
-            to_remote,
-            to_path,
-        }),
+        ) => {
+            if from_remote == to_remote {
+                Ok(Plan::Direct {
+                    remote: from_remote,
+                    from_path,
+                    to_path,
+                })
+            } else {
+                Ok(Plan::Relay {
+                    from_remote,
+                    from_path,
+                    to_remote,
+                    to_path,
+                })
+            }
+        }
     }
 }
 
@@ -280,6 +295,18 @@ pub fn execute(
         } => {
             let mut t = connect(remote)?;
             let report = get_file(t.as_mut(), path, local, mode, resume, log)?;
+            Ok(CopyReport {
+                size: report.size,
+                sha256: report.sha256,
+            })
+        }
+        Plan::Direct {
+            remote,
+            from_path,
+            to_path,
+        } => {
+            let mut transport = connect(remote)?;
+            let report = remote_copy(transport.as_mut(), from_path, to_path, mode)?;
             Ok(CopyReport {
                 size: report.size,
                 sha256: report.sha256,
@@ -456,13 +483,17 @@ mod tests {
         assert!(matches!(plan(remote("/b"), local()), Ok(Plan::Get { .. })));
         assert_eq!(
             plan(remote("/b"), remote("/c")).unwrap(),
-            Plan::Relay {
-                from_remote: "laptop".into(),
+            Plan::Direct {
+                remote: "laptop".into(),
                 from_path: "/b".into(),
-                to_remote: "laptop".into(),
                 to_path: "/c".into(),
             }
         );
+        let other = Endpoint::Remote {
+            remote: "backup".into(),
+            path: "/c".into(),
+        };
+        assert!(matches!(plan(remote("/b"), other), Ok(Plan::Relay { .. })));
     }
 
     #[test]
@@ -524,6 +555,16 @@ mod tests {
                     let size = bytes.len() as u64;
                     self.files.insert(path, bytes);
                     json!({"size": size, "sha256": actual})
+                }
+                "/files/copy" => {
+                    let from = body["from"].as_str().unwrap_or("");
+                    let to = body["to"].as_str().unwrap_or("");
+                    let Some(source) = self.files.get(from).cloned() else {
+                        return json!({"error": "no such source"});
+                    };
+                    let sha = sha256_hex(&source);
+                    self.files.insert(to.to_string(), source.clone());
+                    json!({"size": source.len() as u64, "sha256": sha})
                 }
                 "/files/read" => {
                     let offset = body["offset"].as_u64().unwrap_or(0) as usize;
@@ -615,6 +656,31 @@ mod tests {
         let got = run(&daemon, &down, &dir).unwrap();
         assert_eq!(got.sha256, put.sha256);
         assert_eq!(std::fs::read(&back).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_remote_copy_is_server_side_and_hash_verified() {
+        let dir = scratch("direct");
+        let daemon = Arc::new(Mutex::new(Daemon::default()));
+        let data = bytes(100 * 1024 * 1024);
+        let expected = sha256_hex(&data);
+        daemon
+            .lock()
+            .unwrap()
+            .files
+            .insert("/srv/a.bin".into(), data.clone());
+        let direct = plan(
+            resolve(parse_side("laptop:/srv/a.bin"), None).unwrap(),
+            resolve(parse_side("laptop:/srv/b.bin"), None).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(direct, Plan::Direct { .. }));
+        let report = run(&daemon, &direct, &dir).unwrap();
+        assert_eq!(report.size, data.len() as u64);
+        assert_eq!(report.sha256, expected);
+        let files = &daemon.lock().unwrap().files;
+        assert_eq!(files.get("/srv/b.bin"), Some(&data));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
