@@ -1,9 +1,9 @@
 {
   "description": "pm-stack notifications Phase 2 (#8569) step 1: the pm-notify edge relay — one Worker + one Durable Object holding the mirrored push subscriptions and the heartbeat dead-man's switch (stack.silent / recovered).",
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20251011.0",
-    "typescript": "^5.6.0",
-    "wrangler": "4.59.1"
+    "@cloudflare/workers-types": "^5.20261124.1",
+    "typescript": "^7.0.2",
+    "wrangler": "4.167.0"
   },
   "name": "pm-notify-relay",
   "private": true,

@@ -265,7 +265,7 @@ func (c *Client) newestMutual(offered []string) string {
 // DiscoverResult arrives late. Abandoning the discover at the timeout would
 // misclassify exactly that server and cache the mistake.
 func (c *Client) probe(ctx context.Context, allowLegacy bool) error {
-	_, isHTTP := c.t.(*HTTPTransport)
+	_, isHTTP := c.bareTransport().(*HTTPTransport)
 	var timer <-chan time.Time
 	if allowLegacy && !isHTTP {
 		// HTTP decides by status code; a slow HTTP server is just slow.

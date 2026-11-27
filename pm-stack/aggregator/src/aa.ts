@@ -1048,6 +1048,7 @@ export function aaCatalogFromConfig(
           : [];
       entries.push({
         id,
+        configured: true,
         provider: providerId,
         providerName,
         model: modelId,
@@ -1071,6 +1072,48 @@ export function aaCatalogFromConfig(
         ...(rates ? { rate: rates.get(id) ?? rates.get(`part:${norm}`) ?? null } : {}),
       });
     }
+  }
+  // Rankings can contain valid AA model families that intentionally have
+  // no provider definition (for example Gemini 4 Carbon). Keep these as
+  // explicit, non-routable data rows rather than inventing a provider door.
+  const configuredNames = new Set(
+    entries.map((entry) => normalizeModelName(entry.model)).filter((name) => name !== ""),
+  );
+  const dataOnlyRows = new Map<string, AaRanking>();
+  for (const ranking of measured.rankings) {
+    const norm = normalizeModelName(ranking.family);
+    if (!norm || configuredNames.has(norm)) continue;
+    const effort = ranking.effort ?? "not stated";
+    const id = `aa/${normalizeModelName(ranking.creator).replace(/ /g, "-")}/${norm.replace(/ /g, "-")}/${normalizeModelName(effort).replace(/ /g, "-")}`;
+    if (!dataOnlyRows.has(id)) dataOnlyRows.set(id, ranking);
+  }
+  for (const [id, ranking] of dataOnlyRows) {
+    const effort = ranking.effort ?? "not stated";
+    const provider = `aa/${normalizeModelName(ranking.creator).replace(/ /g, "-")}`;
+    const estimated = ranking.testRunKey.split("|").includes("estimated");
+    entries.push({
+      id,
+      configured: false,
+      effort,
+      estimated,
+      provider,
+      providerName: `${ranking.creator} (AA ranking; unconfigured)`,
+      model: ranking.family,
+      name: `${ranking.family} (${effort})`,
+      contextLimit: null,
+      outputLimit: null,
+      variants: [],
+      routes: [],
+      disabled: false,
+      plan: null,
+      multiplier: null,
+      planNote: null,
+      goCapUsd: null,
+      aaScore: ranking.adjustedScore ?? ranking.rawScore,
+      aaCostPerTask: ranking.costTask,
+      aaTimePerTask: ranking.timeTaskSec,
+      ...(rates ? { rate: null } : {}),
+    });
   }
   return entries.sort((a, b) => byAlpha(a.id, b.id));
 }

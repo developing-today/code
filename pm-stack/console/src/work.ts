@@ -446,12 +446,12 @@ export class Work {
       }))
       .sort((a, b) => b.last.localeCompare(a.last));
     const waiting = all
-      .filter((e) => e.tier === "needs-drew")
+      .filter((e) => e.tier === "needs-user" || e.tier === "needs-drew")
       .map((e) => ({
         id: clip(e.id, 120),
         title: clip(e.title, 300),
         ref: clip(e.ref, 120),
-        why: clip(e.drewReason, 300),
+        why: clip(e.userReason ?? e.drewReason, 300),
       }));
     return { moving, waiting };
   }
@@ -459,11 +459,17 @@ export class Work {
   /** Issues and pull requests labelled as waiting on the owner, as the
    * dashboard has censused them. */
   async census(): Promise<Census> {
-    const data = (await this.dash("/api/needs-drew.json")) as {
+    let data: {
       fetchedAt?: string;
       complete?: boolean;
       items?: (Omit<NeedsItem, "kind"> & { kind: string })[];
     };
+    try {
+      data = (await this.dash("/api/needs-user.json")) as typeof data;
+    } catch {
+      // Older deployed aggregators may not have the role-term route yet.
+      data = (await this.dash("/api/needs-drew.json")) as typeof data;
+    }
     const items = (data.items ?? []).map((i) => ({
       ...i,
       kind: i.kind === "pr" ? ("pr" as const) : ("issue" as const),

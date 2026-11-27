@@ -82,3 +82,76 @@ One keyless Kilo smoke probe, 2026-11-25
   does not prove an OpenRouter completion (B6 precedent).
 - SambaNova stays excluded (402 payment-required); Cloudflare stays
   excluded (revoked credential) until fresh successful probes exist.
+
+## Slice 3 (2026-11-27, task 25259) — representative dry-run + Kilo repeat
+
+Recommendation-only boundary holds: no routing configuration changed.
+Harness reused as-is from PR #15006; no harness code changed.
+
+### Reproducible commands (run from repo root, origin/main `75996dcc9c`)
+
+- Offline suite: `node --test bin/free-context-probe.test.mjs` → 7/7 pass.
+- Fresh inventory: `node bin/free-context-probe.mjs --inventory-only`
+  → 119 direct leaves, 20/20 plans present, zero missingPlans.
+  Matches the slice-1 baseline (119 leaves).
+- Representative dry-run (one leaf per plan, zero network):
+  for each of the 20 FREE_PLAN_IDS,
+  `node bin/free-context-probe.mjs --dry-run --plan <plan> --max-probes 1 --max-input-tokens 8000`
+  → record `pm-stack/book/llm-plans/evidence/c5-representative-dryrun-2026-11-27.json`
+  (20 representatives, fixed 8-block sentinel payload, ~128–164 approx tokens each).
+- Kilo live re-probe (repeatability check, one keyless call):
+  `node bin/free-context-probe.mjs --live --leaf kilo/kilo-auto/free --max-probes 1`
+  → record `pm-stack/book/llm-plans/evidence/c5-kilo-free-rerun-2026-11-27.json`.
+- Routing-comparison dry-run leg (zero network):
+  `node bin/free-context-probe.mjs --dry-run --plan openrouter-free-plan --max-probes 11 --max-input-tokens 8000`
+  → 11 same-shape payloads (~128 approx tokens each), staged at
+  `target/fleet-output/c5-routing-openrouter-leg.json` (regenerable; not committed).
+
+### Captured outcomes
+
+- Kilo rerun 2026-11-27T00:33:43Z: HTTP 200, outcome `pass` (http-200) but
+  NOT `pass-sentinel` — the end-sentinel criterion from 2026-11-25 did not
+  reproduce. Serving leaf rotated: `kilo/reflection/beam-free` (11-25) →
+  `kilo/nvidia/nemotron-3.5-super-vl:free` (11-27). Usage 245 in / 64 out —
+  output exactly at the 64-token cap, consistent with truncation before the
+  sentinel (or non-following model). Latency 1634 ms vs 1067 ms prior.
+- Ledger note confirmed empirically: `kilo-auto/free` measures the router,
+  not a stable model. A single `pass-sentinel` is not a ceiling and does not
+  transfer across serving leaves.
+- Promotion: none. Every leaf stays `contextSource: provider-published`,
+  including Kilo (rerun failed the sentinel criterion).
+
+### Controlled routing comparison — status: live leg BLOCKED, design preserved
+
+- Blocker: the harness live adapter is keyless-Kilo-only by construction
+  (`--live` rejects any other `--leaf`). There is no credentialed live
+  adapter for `openrouter/*:free` or for direct free leaves, and this slice
+  does not add network capability. So no live same-prompt comparison
+  (openrouter-free-plan vs direct leaves; ordered vs weighted vs
+  round-robin) could run.
+- Preserved evidence: the dry-run openrouter leg (11 identical-shape
+  payloads) is staged for the future live adapter; direct-leaf counterparts
+  are the 20 representatives above. Live comparison design: same sentinel
+  payload through each leg, record per-leg attempts, rate-limit walls
+  (429s), serving-leaf attribution, and fall-through behavior.
+- Notable cross-evidence (observational only): the Kilo router served
+  `nvidia/nemotron-3.5-super-vl:free` on 11-27, a model family also present
+  on the openrouter-free-plan leg. No routing claim follows; recorded for
+  the future comparison.
+
+### Harness gap noted (recommendation, not changed in this slice)
+
+- The live record persists `outcome`/`reason` but not the underlying
+  `sentinelReturned` boolean; `pass` (HTTP 200) vs `pass-sentinel` is
+  recoverable only by re-reading the outcome string. Recommend persisting
+  `sentinelReturned` explicitly in a future harness slice.
+
+### Remaining work (updated)
+
+1. Credentialed live adapters (one per provider family, same cost controls:
+   one attempt, strict timeout, sanitized metadata) are the precondition
+   for ledger items 1–3 (per-plan live probes, binary-search ceilings,
+   live routing comparison). Until then, live work stays Kilo-smoke-only.
+2. Binary-search ceilings remain unstarted (need live adapters).
+3. Ordered vs weighted vs round-robin cluster comparison remains unstarted
+   (needs live adapters + pool-steward coordination; policy only here).

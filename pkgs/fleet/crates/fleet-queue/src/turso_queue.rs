@@ -3536,6 +3536,112 @@ mod tests {
     }
 
     #[test]
+    fn time_until_unix_parses_both_stored_shapes_14212() {
+        // Oracle: unix time. 2026-11-03T16:03:00Z is
+        // 1793721780; the fractional +00:00 form names the same
+        // instant and must parse to the same value — text order
+        // is not the oracle, the instant is.
+        assert_eq!(time_until_unix("2026-11-03T16:03:00Z"), Some(1793721780));
+        assert_eq!(
+            time_until_unix("2026-11-03T16:03:00.171848+00:00"),
+            Some(1793721780)
+        );
+        assert_eq!(time_until_unix("2026-11-16T00:14:04Z"), Some(1794788044));
+        // A non-UTC offset names its own instant: 05:30 at
+        // +05:30 is 00:00Z.
+        assert_eq!(
+            time_until_unix("2026-11-16T05:30:00+05:30"),
+            time_until_unix("2026-11-16T00:00:00Z")
+        );
+        // Garbage is never due: no parse, no release.
+        for bad in ["", "banana", "3600", "2026-11-03T16:03:00.171848+00:0"] {
+            assert_eq!(time_until_unix(bad), None, "{bad} must not parse");
+        }
+    }
+
+    #[test]
+    fn time_recheck_verdict_matrix_14212() {
+        // Oracle: the #14212 acceptance shape — a blocked row
+        // whose only wait is a lapsed {"kind": "time"} condition
+        // releases; every other owner of the row outranks the
+        // timer.
+        let now = 1795000000i64; // 2026-11-18, after both stored forms
+        let fossil = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00.171848+00:00"},
+        });
+        assert_eq!(time_recheck_verdict(&fossil, now), TimeRecheck::Release);
+        let fossil_z = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-16T00:14:04Z"},
+        });
+        assert_eq!(time_recheck_verdict(&fossil_z, now), TimeRecheck::Release);
+        // Time not yet come, and an unparseable time: not due.
+        let future = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2027-01-01T00:00:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&future, now), TimeRecheck::NotDue);
+        let garbage = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "banana"},
+        });
+        assert_eq!(time_recheck_verdict(&garbage, now), TimeRecheck::NotDue);
+        // A lane block owns its row even under a stale lapsed
+        // time condition (#10714's rule, applied to this pass).
+        let lane = json!({
+            "status": "blocked",
+            "progress": {"blocker": "waiting on review", "blocked_via": "lane"},
+            "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&lane, now), TimeRecheck::NotApplicable);
+        // A dep record owns its row (#8276's rechecker).
+        let dep = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "blocked_deps": [{"kind": "task", "task_id": 42}],
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&dep, now), TimeRecheck::NotApplicable);
+        // Not blocked, or not a time condition: not this pass.
+        let parked = json!({
+            "status": "parked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&parked, now), TimeRecheck::NotApplicable);
+        let other = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "task_terminal", "task_id": 42},
+        });
+        assert_eq!(time_recheck_verdict(&other, now), TimeRecheck::NotApplicable);
+    }
+
+    #[test]
+    fn time_recheck_wiring_oracles_14212() {
+        // Routes, sweep ride, client surface — the same wiring
+        // shape the quarantine rechecker established in #10648.
+        let src = &test_source();
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"/time-recheck\" => verb_time_recheck"));
+        let impl_flat = impl_src.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(impl_flat.contains("run_time_rechecks( t, req_i64(req, \"time_limit\")"));
+        assert!(impl_src.contains("run_time_rechecks(t, req_i64(req, \"limit\")"));
+        assert!(impl_src.contains("\"via\": \"time_recheck\""));
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
+        assert!(client_src.contains("\"time-recheck\" => cmd_time_recheck"));
+        assert!(client_src.contains("call(\"/time-recheck\""));
+    }
+
+    #[test]
     fn stored_not_before_rule_9179() {
         // #9179 (closing the #6426 bypass): the values the audit
         // found stored verbatim — delay-seconds in the absolute

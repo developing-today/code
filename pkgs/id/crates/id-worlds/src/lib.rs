@@ -75,6 +75,7 @@ pub mod creator_org_views;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
+pub mod host_snapshots;
 #[cfg(unix)]
 pub mod host_control;
 pub mod host_opener;
