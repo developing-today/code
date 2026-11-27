@@ -1491,6 +1491,7 @@ describe("before the host's first report", () => {
       directEnabled: false,
       githubTokenConfigured: false,
       queueTokenConfigured: false,
+      queueTransport: null,
       primary: false,
       directReady: false,
       refused: [],
@@ -1508,10 +1509,10 @@ describe("before the host's first report", () => {
       deferred: 0,
       version: "test",
       woke: w.now.t,
+      workerChecks: null,
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
       routes: {},
-      workerChecks: null,
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.

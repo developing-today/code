@@ -95,6 +95,15 @@ import {
 import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
 import { parseWorkerCheckSet, WORKER_CHECKS_KEY, type WorkerCheckSet } from "./worker-checks.ts";
+import {
+  parseQueueTransport,
+  QUEUE_TRANSPORT_KEY,
+  QUEUE_TRANSPORT_TOLD_KEY,
+  transportMessage,
+  transportNotifyDecision,
+  transportToldMarker,
+  type QueueTransport,
+} from "./queue-transport.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -1998,6 +2007,26 @@ export class Edge {
     return parseWorkerCheckSet(await this.kv.get(WORKER_CHECKS_KEY));
   }
 
+  /** The stateless part's read of the queue transport's health (#13503
+   * slice 1): what the queue-transport-alert Worker's /status said,
+   * normalized, handed here to keep. Only a verdict in the shape
+   * queue-transport.ts writes is kept; anything else is refused, so
+   * the health answer never shows a shape it cannot vouch for. */
+  private async queueTransportStore(req: Request): Promise<Response> {
+    const verdict = parseQueueTransport(await req.json().catch(() => null));
+    if (!verdict) return json({ error: "not a queue-transport verdict" }, 400);
+    await this.kv.put(QUEUE_TRANSPORT_KEY, verdict);
+    await this.ready();
+    await this.schedule(await this.config());
+    return json({ ok: true });
+  }
+
+  /** The last queue-transport verdict kept, or null before the first
+   * scheduled read has run (or when what is stored is not one). */
+  async lastQueueTransport(): Promise<QueueTransport | null> {
+    return parseQueueTransport(await this.kv.get(QUEUE_TRANSPORT_KEY));
+  }
+
   private async sync(req: Request): Promise<Response> {
     // The laptop cannot sign in, so this path is open to anyone, and a
     // report may be megabytes. Every report that fails a check below
@@ -2344,6 +2373,9 @@ export class Edge {
       // not be told, soon again.
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
+    // Scheduled transport reads are independent of host reports and the
+    // document clock. An untold transition also supplies its own retry.
+    if (await this.transportWanted()) wakes.push(now + ALARM_RETRY_MS);
     if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + this.ownClockMs));
     // The app is connected: this side reads by itself what has gone
     // stale, so there is something to say when it changes.
@@ -2404,6 +2436,16 @@ export class Edge {
     return this.trendsSeen > 0 && now - this.trendsSeen < TRENDS_WATCHED_MS;
   }
 
+  /** A transport transition remains pending until a device takes it.
+   * Unknown verdicts never clear the outage marker or trigger a recovery. */
+  private async transportWanted(): Promise<boolean> {
+    const transport = await this.lastQueueTransport();
+    const told = ((await this.kv.get(QUEUE_TRANSPORT_TOLD_KEY)) as string | undefined) ?? null;
+    if (transportNotifyDecision(transport, told) === "quiet") return false;
+    const status = await this.push.status();
+    return status.devices > 0 && status.classes.trouble;
+  }
+
   /** This side reads something the owner is told about, and a device
    * is there to be told: it has to wake by itself to read it. */
   private async clockWanted(cfg: EdgeConfig | null): Promise<boolean> {
@@ -2432,6 +2474,37 @@ export class Edge {
         if (delivery.failed === 0) await this.kv.put("silent", true);
       } catch {
         // Leave the transition pending so a later alarm can retry it.
+      }
+    }
+    // The queue transport's health, as the alert Worker stated it
+    // (#13503 slice 1): told once per outage, and its ending said too.
+    // The Worker stays the probe; this side is what tells the owner.
+    const transport = await this.lastQueueTransport();
+    if (transport && (await this.transportWanted())) {
+      const told = ((await this.kv.get(QUEUE_TRANSPORT_TOLD_KEY)) as string | undefined) ?? null;
+      const decision = transportNotifyDecision(transport, told);
+      if (decision === "notify") {
+        try {
+          const message = transportMessage(transport);
+          const delivery = await this.push.send("trouble", { ...message, url: "/console/" });
+          if (delivery.sent > 0 && delivery.failed === 0) {
+            await this.kv.put(QUEUE_TRANSPORT_TOLD_KEY, transportToldMarker(transport));
+          }
+        } catch {
+          // Leave the transition pending so a later alarm can retry it.
+        }
+      } else if (decision === "recovered") {
+        try {
+          const delivery = await this.push.send("trouble", {
+            title: "Queue broker is back",
+            body: "The repo-queue broker answers again.",
+            url: "/console/",
+            tag: "queue-transport",
+          });
+          if (delivery.sent > 0 && delivery.failed === 0) await this.kv.delete(QUEUE_TRANSPORT_TOLD_KEY);
+        } catch {
+          // Leave the transition pending so a later alarm can retry it.
+        }
       }
     }
     if (now - this.clockAt >= this.ownClockMs && (await this.clockWanted(cfg))) {
@@ -2491,6 +2564,7 @@ export class Edge {
       if (path === "/internal/relayed") return this.relayed(req);
       if (path === "/internal/route") return this.routeFlip(req);
       if (path === "/internal/worker-checks") return this.workerChecksStore(req);
+      if (path === "/internal/queue-transport") return this.queueTransportStore(req);
       return json({ error: "not found" }, 404);
     }
 
@@ -2564,6 +2638,10 @@ export class Edge {
         // checks, answering or not, the commit it named, when it was
         // asked. Null until the first scheduled round has run.
         workerChecks: await this.lastWorkerChecks(),
+        // The queue transport's health as the alert Worker stated it
+        // (#13503 slice 1): the verdict this side tells the owner
+        // about itself. Null until the first scheduled read has run.
+        queueTransport: await this.lastQueueTransport(),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
