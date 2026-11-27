@@ -707,6 +707,7 @@ No registry install or project link is performed unless prepare is requested.
 
 | setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `auth.capabilityCeilings` | string | `[{"name":"full","tools":["*"]},{"name":"discovery","tools":[]},{"name":"admin","tools":[]}]` | daemon | yes | `--auth-capability-ceilings` | `MCPX_AUTH_CAPABILITY_CEILINGS` | named daemon key ceilings and the upstream tools each permits | Exempt — keyed tool-ceiling enforcement is covered by deterministic internal/daemon tests (TestRegistryCallEnforcesConfiguredKeyToolCeilingBeforeInvocation, TestRegistryCallFailsClosedForUnknownOrMalformedKeyCeilings); the e2e harness has no keyed-tool fixture yet |
 | `auth.mode` | enum | `off` | daemon | no | `--auth-mode` | `MCPX_AUTH_MODE` | whether the daemon's HTTP surface honours or requires per-user keys | `TestAuthModeRequiredGatesTCPButNotTheSocket` |
 
 ### autonomy
