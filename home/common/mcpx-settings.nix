@@ -210,6 +210,13 @@
           "cooldownSeconds" = 60;
         };
       };
+      # A soft-block retry rotates the token at call time. Keep only one
+      # caller on this process and let the pool close it so the next child
+      # starts with the rotated token; a supervised child keeps its old env.
+      "mcpx" = {
+        "sharing" = "exclusive";
+        "supervised" = false;
+      };
     };
     "mcp-server-neon" = {
       "args" = [
