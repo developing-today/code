@@ -1134,6 +1134,211 @@ mod tests {
         assert_eq!(out["dedupe_match"], json!(null), "{out}");
     }
 
+    // ---- #16007: completed triage with a failed/cancelled fix
+    // follow-on is unfinished coverage, not completed work. The
+    // triage completion enqueues a fix follow-on (admin.rs); when
+    // that follow-on later fails or is cancelled while the issue
+    // stays open, check_coverage.py re-files the standard triage
+    // key — and #13091's same-key and same-identity absorption
+    // must not swallow that re-filing into the old done triage
+    // row. The tests below pin the recovery at the verb/SQL
+    // surface, plus the still-absorbing shapes (fix completed,
+    // exited triage with no follow-on, completed non-triage).
+
+    /// A #16007 triage packet: the check_coverage.py shape — triage
+    /// kind on the standard triage key, labels present so the
+    /// mirror enrichment (and its backend call) is skipped.
+    fn triage_packet_16007(issue: i64) -> Value {
+        let mut p = packet_12744(issue, 30);
+        p["dedupe_key"] = json!(format!(
+            "repo-health:v1:triage:developing-today/code:issue:{issue}"
+        ));
+        p["payload"]["kind"] = json!("triage");
+        p["payload"]["labels"] = json!([]);
+        p
+    }
+
+    fn triage_payload_16007(issue: i64) -> Value {
+        triage_packet_16007(issue)["payload"].clone()
+    }
+
+    fn fix_key_16007(issue: i64) -> String {
+        format!("repo-health:v1:fix:developing-today/code:issue:{issue}")
+    }
+
+    #[test]
+    fn enqueue_completed_triage_with_failed_fix_files_recovery_16007() {
+        // Same-key re-filing: done triage whose fix follow-on
+        // failed. The broker must file a fresh claimable triage
+        // task (revive-on-enqueue over the done predecessor),
+        // not return the old done row.
+        let issue = 16007;
+        let done_triage = task_row_13091(
+            4242,
+            "done",
+            &triage_payload_16007(issue),
+            &format!("repo-health:v1:triage:developing-today/code:issue:{issue}"),
+        );
+        let failed_fix = task_row_13091(
+            4243,
+            "failed",
+            &payload_13091(issue),
+            &fix_key_16007(issue),
+        );
+        let fresh = task_row_13091(
+            4244,
+            "queued",
+            &triage_payload_16007(issue),
+            &format!("repo-health:v1:triage:developing-today/code:issue:{issue}"),
+        );
+        // The fix-key route sorts first: its needle also matches
+        // the generic dedupe_key read, and the generic reply must
+        // not answer the fix-state lookup.
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("repo-health:v1:fix:developing-today/code:issue:16007", task_select_reply_13091(vec![failed_fix])),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done_triage.clone()])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done_triage])),
+            ("INSERT INTO tasks", insert_ok_13091(4244)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": triage_packet_16007(issue)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4244, "{out}");
+        assert_eq!(out["row"]["status"], "queued", "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
+        assert_eq!(out["work_identity_collision"], json!(null), "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "recovery must file a fresh triage task: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_completed_triage_with_cancelled_fix_files_recovery_16007() {
+        // Same-identity re-filing under another key (generators key
+        // the same work differently): done triage whose fix
+        // follow-on was cancelled. The identity holder must not
+        // absorb the filing.
+        let issue = 16007;
+        let done_triage = task_row_13091(
+            4242,
+            "done",
+            &triage_payload_16007(issue),
+            &format!("repo-health:v1:triage:developing-today/code:issue:{issue}"),
+        );
+        let cancelled_fix = task_row_13091(
+            4243,
+            "cancelled",
+            &payload_13091(issue),
+            &fix_key_16007(issue),
+        );
+        let fresh = task_row_13091(
+            4244,
+            "queued",
+            &triage_payload_16007(issue),
+            &format!("repo-health:v1:triage:developing-today/code:issue:{issue}:dispatch:0123abcd"),
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("repo-health:v1:fix:developing-today/code:issue:16007", task_select_reply_13091(vec![cancelled_fix])),
+            ("dedupe_key = ?", task_select_reply_13091(vec![])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done_triage])),
+            ("INSERT INTO tasks", insert_ok_13091(4244)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = triage_packet_16007(issue);
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:triage:developing-today/code:issue:16007:dispatch:0123abcd"
+        );
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4244, "{out}");
+        assert_eq!(out["row"]["status"], "queued", "{out}");
+        assert_eq!(out["dedupe_match"], json!(null), "{out}");
+        assert_eq!(out["work_identity_collision"], json!(null), "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "recovery must file a fresh triage task: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_completed_triage_with_done_fix_still_absorbs_16007() {
+        // The fix follow-on completed: the issue's work is done, so
+        // the same-key re-filing absorbs into the done triage row
+        // exactly as #13091 prescribes.
+        let issue = 16007;
+        let done_triage = task_row_13091(
+            4242,
+            "done",
+            &triage_payload_16007(issue),
+            &format!("repo-health:v1:triage:developing-today/code:issue:{issue}"),
+        );
+        let done_fix = task_row_13091(
+            4243,
+            "done",
+            &payload_13091(issue),
+            &fix_key_16007(issue),
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("repo-health:v1:fix:developing-today/code:issue:16007", task_select_reply_13091(vec![done_fix])),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done_triage])),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": triage_packet_16007(issue)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a completed fix means no recovery filing: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_completed_triage_with_no_fix_still_absorbs_16007() {
+        // An exited triage (invalid / already_solved) enqueues no
+        // fix follow-on: with no failed follow-on to recover, the
+        // same-key re-filing absorbs as before.
+        let issue = 16007;
+        let done_triage = task_row_13091(
+            4242,
+            "done",
+            &triage_payload_16007(issue),
+            &format!("repo-health:v1:triage:developing-today/code:issue:{issue}"),
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("repo-health:v1:fix:developing-today/code:issue:16007", task_select_reply_13091(vec![])),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done_triage])),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": triage_packet_16007(issue)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["dedupe_match"]["rule"], "dedupe_key_terminal", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "an exited triage files nothing new: {bodies:?}"
+        );
+    }
+
     #[test]
     fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
         // The parked half, at the exact SQL the serve path runs:

@@ -7,6 +7,71 @@
 
 use super::*;
 
+fn triage_row_key(row: &Value) -> String {
+    row.get("dedupe_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Whether a completed row is a triage filing: its payload kind, or
+/// its dedupe-key family when the payload is unavailable.
+fn is_triage_row(row: &Value, dedupe_key: &str) -> bool {
+    row.get("payload")
+        .and_then(|p| p.get("kind"))
+        .and_then(|k| k.as_str())
+        == Some("triage")
+        || dedupe_key.contains(":triage:")
+}
+
+/// #16007: whether a completed triage row's fix follow-on needs
+/// recovery. A triage completion is not the issue being done
+/// (admin.rs enqueues a fix follow-on); when that follow-on later
+/// fails or is cancelled with no live successor, the triage is
+/// unfinished coverage and check_coverage.py re-files the triage
+/// key. Absorbing that re-filing into the old done triage row
+/// leaves the open issue with no live task (`/coverage` excludes
+/// completed rows). True only when the fix follow-on for the triage
+/// key exists in `queue`, holds no live row, and its newest
+/// terminal row failed or was cancelled. A completed fix, a live
+/// fix, no fix rows at all (an exited triage), and any non-triage
+/// row all read as before: no recovery.
+fn triage_recovery_due(
+    t: &TursoBackend,
+    queue: &str,
+    triage_key: &str,
+    triage_row: &Value,
+) -> Result<bool, TErr> {
+    if triage_row.get("status").and_then(|v| v.as_str()) != Some("done") {
+        return Ok(false);
+    }
+    if !is_triage_row(triage_row, triage_key) {
+        return Ok(false);
+    }
+    let fix_key = match follow_on_key(triage_key) {
+        Some(k) => k,
+        None => return Ok(false),
+    };
+    let fix_rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? \
+             ORDER BY id ASC"
+        ),
+        &[Arg::Text(queue.to_string()), Arg::Text(fix_key)],
+        &TASK_JSON_COLS,
+    )?;
+    let (live, terminal) = dedupe_partition(&fix_rows);
+    if live.is_some() {
+        return Ok(false);
+    }
+    Ok(matches!(
+        terminal
+            .as_ref()
+            .and_then(|r| r.get("status").and_then(|v| v.as_str())),
+        Some("failed") | Some("cancelled")
+    ))
+}
+
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
     let metadata = req.get("metadata").cloned().unwrap_or_else(|| json!({}));
@@ -138,14 +203,22 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
-                    // #10627: the absorption itself is #13091's
-                    // standing rule; what was missing is the report.
-                    // Name the terminal match in the envelope so a
-                    // caller can suffix the key and re-file in the
-                    // same pass instead of mistaking the completed
-                    // row for the task it asked for.
-                    let report = dedupe_match_detail(row, true);
-                    return Ok((row.clone(), None, None, Some(report)));
+                    // #16007: a completed triage whose fix
+                    // follow-on failed or was cancelled is
+                    // unfinished coverage, not completed work —
+                    // fall through and file the re-filing instead
+                    // of absorbing it into the old done row.
+                    let triage_key = dk.clone();
+                    if !triage_recovery_due(t, &queue, &triage_key, row)? {
+                        // #10627: the absorption itself is #13091's
+                        // standing rule; what was missing is the report.
+                        // Name the terminal match in the envelope so a
+                        // caller can suffix the key and re-file in the
+                        // same pass instead of mistaking the completed
+                        // row for the task it asked for.
+                        let report = dedupe_match_detail(row, true);
+                        return Ok((row.clone(), None, None, Some(report)));
+                    }
                 }
             }
             predecessor = terminal;
@@ -175,14 +248,32 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             // is involved. Failed and cancelled holders still
             // never block a filing.
             if let Some(holder) = done_identity_holder(t, ident, kind)? {
-                let mut detail = collision_detail(&holder, ident);
-                detail["rule"] = json!("done_work_identity");
-                detail["hint"] = json!(
-                    "this work already completed under another task; a completed \
-                     task is never re-served (#13091) — file with \
-                     payload.dedupe_override=\"<reason>\" for a deliberate parallel"
-                );
-                return Ok((holder, None, Some(detail), None));
+                // #16007: same triage-recovery rule at the identity
+                // level — a completed triage holder whose fix
+                // follow-on failed or was cancelled must not absorb
+                // the re-filing. The holder may sit under another
+                // key (generators key the same work differently), so
+                // read the triage key off the holder row.
+                let holder_key = triage_row_key(&holder);
+                let holder_queue = holder
+                    .get("queue")
+                    .and_then(|v| v.as_str())
+                    .filter(|q| !q.is_empty())
+                    .unwrap_or(queue.as_str())
+                    .to_string();
+                let recover = triage_recovery_due(t, &holder_queue, &holder_key, &holder)?
+                    || (holder_queue != queue
+                        && triage_recovery_due(t, &queue, &holder_key, &holder)?);
+                if !recover {
+                    let mut detail = collision_detail(&holder, ident);
+                    detail["rule"] = json!("done_work_identity");
+                    detail["hint"] = json!(
+                        "this work already completed under another task; a completed \
+                         task is never re-served (#13091) — file with \
+                         payload.dedupe_override=\"<reason>\" for a deliberate parallel"
+                    );
+                    return Ok((holder, None, Some(detail), None));
+                }
             }
         }
         let ins = t.exec(
