@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, migrate, upsertItem, type ItemRow } from "../../projector/src/store.ts";
+import { createPmCoreProjectorReader } from "../src/pm-core-projector-reader.ts";
+import type { GhItem } from "../src/model.ts";
+import type { ProjectorReader } from "../src/sources/projector.ts";
 
 const ref = "developing-today/code#8570";
 const item = (): Omit<ItemRow, "fetched_at"> => ({
@@ -63,4 +66,42 @@ test("live pm-core reads projector items from its in-process store without an HT
     db.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a store-reader construction failure falls back to the configured HTTP reader", async () => {
+  let httpCalls = 0;
+  const fallbackItem: GhItem = {
+    ref,
+    kind: "issue",
+    url: "https://github.com/developing-today/code/issues/8570",
+    title: "HTTP fallback item",
+    state: "open",
+    draft: false,
+    labels: [],
+    author: "test",
+    updatedAt: "2026-11-27T00:00:00Z",
+  };
+  const fallback: ProjectorReader = {
+    async items() {
+      httpCalls += 1;
+      return new Map([[ref, fallbackItem]]);
+    },
+    async comments() {
+      return [];
+    },
+    async latestComments() {
+      return [];
+    },
+    async links() {
+      return [];
+    },
+  };
+  const reader = createPmCoreProjectorReader(
+    { PM_CORE_PROJECTOR_DATABASE_URL: "not-a-valid-libsql-url" },
+    fallback,
+  );
+
+  expect(reader).not.toBeNull();
+  await expect(reader!.items([ref])).resolves.toEqual(new Map([[ref, fallbackItem]]));
+  expect(httpCalls).toBe(1);
 });

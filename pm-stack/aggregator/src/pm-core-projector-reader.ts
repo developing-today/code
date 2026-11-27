@@ -1,6 +1,6 @@
 // #8570 Phase 3: read the projector projection store in-process. The
-// HTTP ProjectorReader remains the fallback when no database URL is set;
-// pm-core opts into this adapter for its shared projector store.
+// configured HTTP ProjectorReader remains a fallback when the local store
+// cannot be constructed or read.
 import { createStoreProjectorReader, type ProjectorReader } from "./sources/projector.ts";
 
 export interface PmCoreProjectorReaderEnv extends Record<string, string | undefined> {
@@ -15,12 +15,13 @@ export interface PmCoreProjectorReaderEnv extends Record<string, string | undefi
  */
 export function createPmCoreProjectorReader(
   env: PmCoreProjectorReaderEnv = process.env,
+  httpFallback?: ProjectorReader,
 ): ProjectorReader | null {
   const databaseUrl = env.PM_CORE_PROJECTOR_DATABASE_URL?.trim();
   if (!databaseUrl) return null;
 
-  let readerPromise: Promise<ProjectorReader> | undefined;
-  const reader = async (): Promise<ProjectorReader> => {
+  let readerPromise: Promise<ProjectorReader | null> | undefined;
+  const reader = async (): Promise<ProjectorReader | null> => {
     readerPromise ??= import("../../projector/src/store.ts").then((store) => {
       const db = store.openDb({
         DATABASE_URL: databaseUrl,
@@ -75,22 +76,38 @@ export function createPmCoreProjectorReader(
           }));
         },
       });
-    });
-    return readerPromise;
+    }).catch(() => null);
+    const resolved = await readerPromise;
+    if (!resolved) readerPromise = undefined;
+    return resolved;
+  };
+
+  const read = async <T>(
+    fromStore: (reader: ProjectorReader) => Promise<T | null>,
+    fromHttp: (reader: ProjectorReader) => Promise<T | null>,
+  ): Promise<T | null> => {
+    const storeReader = await reader();
+    if (storeReader) {
+      try {
+        const result = await fromStore(storeReader);
+        if (result !== null) return result;
+      } catch {
+        // A store failure degrades to the HTTP reader when it is configured.
+      }
+    }
+    if (!httpFallback) return null;
+    try {
+      return await fromHttp(httpFallback);
+    } catch {
+      return null;
+    }
   };
 
   return {
-    async items(refs) {
-      return (await reader()).items(refs);
-    },
-    async comments(refs) {
-      return (await reader()).comments(refs);
-    },
-    async latestComments(refs) {
-      return (await reader()).latestComments(refs);
-    },
-    async links(subject) {
-      return (await reader()).links(subject);
-    },
+    items: (refs) => read((source) => source.items(refs), (source) => source.items(refs)),
+    comments: (refs) => read((source) => source.comments(refs), (source) => source.comments(refs)),
+    latestComments: (refs) =>
+      read((source) => source.latestComments(refs), (source) => source.latestComments(refs)),
+    links: (subject) => read((source) => source.links(subject), (source) => source.links(subject)),
   };
 }
