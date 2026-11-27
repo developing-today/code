@@ -9,6 +9,7 @@ import {
   SERVICE_ID_RENAME_ALIASES,
   buildForecastAccuracyLedger,
   deriveRealizedDowntimeWindows,
+  deriveResetDurationOutcomes,
   errorDistribution,
   forecastAccuracySeriesKey,
   indexPercentRecords,
@@ -404,5 +405,14 @@ describe("reset_duration scoring (oracle: C4 design §3 inclusive range coverage
     });
     expect(facts).toHaveLength(0);
     expect(baselines[0]).toMatchObject({ predictionsScored: 0, predictionsUnscored: 2, coverage: null, meanWidthMs: null });
+  });
+
+  test("snapshot reset transitions estimate reopening at the bracket midpoint", () => {
+    const outcomes = deriveResetDurationOutcomes(new Map([["claude:5-hour", [
+      { ts: iso(T0), resetsAt: iso(T0 + 5 * H) },
+      { ts: iso(T0 + 2 * H), resetsAt: iso(T0 + 5 * H) },
+      { ts: iso(T0 + 6 * H), resetsAt: iso(T0 + 10 * H) },
+    ]]]));
+    expect(outcomes).toEqual([{ pool: "claude", window: "5-hour", realizedAt: iso(T0 + 4 * H) }]);
   });
 });

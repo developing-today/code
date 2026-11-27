@@ -193,6 +193,25 @@ export function indexPercentRecords(records: readonly SnapshotRecord[]): {
   return { index, joinedIds };
 }
 
+export function resetDurationObservationsFromSnapshots(
+  records: readonly SnapshotRecord[],
+): Map<string, ResetDurationObservationInput[]> {
+  const { index } = indexPercentRecords(records);
+  const observations = new Map<string, ResetDurationObservationInput[]>();
+  const seen = new Set<string>();
+  for (const pool of FORECAST_POOLS) {
+    for (const window of FORECAST_WINDOWS) {
+      const key = `${pool.providerId}:${window}`;
+      if (seen.has(key)) continue;
+      const points = pointsForWindow(index, pool.serviceId, window);
+      if (!points.length) continue;
+      seen.add(key);
+      observations.set(key, points.map((point) => ({ ts: new Date(point.ts).toISOString(), resetsAt: point.resetsAt })));
+    }
+  }
+  return observations;
+}
+
 /** Percent points for one pool window from the indexed history:
  * the product's own assembly (folded key + sub-id acceptance, the
  * alias metric set + ":window" suffix matching, (ts, value)
@@ -475,11 +494,47 @@ export interface ResetDurationPredictionInput {
   prediction: { earliest: string; latest: string } | null;
 }
 
+export interface ResetDurationObservationInput {
+  ts: string;
+  resetsAt: string | null;
+}
+
 export interface ResetDurationOutcomeInput {
   pool: string;
   window: string;
   /** Reopening instant estimated from the last closing-period and first next-period readings. */
   realizedAt: string;
+}
+
+/** Mirror quota-reset-duration.ts's realized-reset estimate: the midpoint
+ * between the final reading reporting the old reset and the first reading
+ * reporting the next reset. The snapshot cadence bounds this estimate. */
+export function deriveResetDurationOutcomes(
+  observations: ReadonlyMap<string, readonly ResetDurationObservationInput[]>,
+): ResetDurationOutcomeInput[] {
+  const outcomes: ResetDurationOutcomeInput[] = [];
+  for (const [subject, unsorted] of observations) {
+    const split = subject.lastIndexOf(":");
+    if (split <= 0) continue;
+    const pool = subject.slice(0, split);
+    const window = subject.slice(split + 1);
+    const rows = [...unsorted]
+      .map((row) => ({ row, ts: Date.parse(row.ts), reset: row.resetsAt === null ? NaN : Date.parse(row.resetsAt) }))
+      .filter(({ ts }) => Number.isFinite(ts))
+      .sort((a, b) => a.ts - b.ts);
+    let previousReset: number | null = null;
+    let previousTs: number | null = null;
+    for (const current of rows) {
+      if (!Number.isFinite(current.reset)) continue;
+      if (previousReset !== null && previousTs !== null && Math.abs(current.reset - previousReset) > PROJECTION_PERIOD_TOLERANCE_MS) {
+        const realizedMs = Math.round((previousTs + current.ts) / 2);
+        outcomes.push({ pool, window, realizedAt: new Date(realizedMs).toISOString() });
+      }
+      previousReset = current.reset;
+      previousTs = current.ts;
+    }
+  }
+  return outcomes.sort((a, b) => a.realizedAt.localeCompare(b.realizedAt) || a.pool.localeCompare(b.pool));
 }
 
 export interface ScoredResetDuration {
@@ -693,7 +748,7 @@ export function scoreResetDurationPredictions(args: {
 
 export function buildForecastAccuracyLedger(
   records: readonly SnapshotRecord[],
-  opts: { asOfMs?: number; generatedAt?: string; resetDurationPredictions?: readonly ResetDurationPredictionInput[]; resetDurationOutcomes?: readonly ResetDurationOutcomeInput[] } = {},
+  opts: { asOfMs?: number; generatedAt?: string; resetDurationPredictions?: readonly ResetDurationPredictionInput[]; resetDurationOutcomes?: readonly ResetDurationOutcomeInput[]; resetDurationObservations?: ReadonlyMap<string, readonly ResetDurationObservationInput[]> } = {},
 ): { ledger: ForecastAccuracyLedger; facts: ScoredForecast[] } {
   const pct = records.filter((r) => typeof r.value === "number" && r.unit === "pct");
   const stamps = records.map((r) => Date.parse(r.ts)).filter(Number.isFinite);
@@ -727,7 +782,7 @@ export function buildForecastAccuracyLedger(
   facts.sort((a, b) => a.issuedAt.localeCompare(b.issuedAt) || a.pool.localeCompare(b.pool));
   const resetDuration = scoreResetDurationPredictions({
     predictions: opts.resetDurationPredictions ?? [],
-    outcomes: opts.resetDurationOutcomes ?? [],
+    outcomes: opts.resetDurationOutcomes ?? deriveResetDurationOutcomes(opts.resetDurationObservations ?? resetDurationObservationsFromSnapshots(records)),
     asOfMs,
   });
   return {
