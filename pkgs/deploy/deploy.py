@@ -186,18 +186,21 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # this root (system scope); the rendered unit points at the profile's
 # `current` link.
 DEFAULT_PROFILE_BASE = "/nix/var/nix/profiles/per-service"
-ACTIVATION_CLASSES = {"systemd", "launchd", "sandbox"}
+ACTIVATION_CLASSES = {"systemd", "launchd", "sandbox", "cloudflare"}
 
-# Cloudflare lifecycle (issue #5767, slice 4: cf-container-hello through
-# the generic deploy CLI). Only the targets in this set have a
-# Cloudflare activation path in this slice; every other cloudflare (or
-# container) target still reports the different-slice refusal, so the
-# slice-2 "refuses other classes" oracle stays green for non-lifecycle
-# names. The required bindings are the Worker's durable-object binding
-# names from pkgs/cf-container-hello/wrangler.jsonc: a version that
-# does not carry them is refused before any mutation (rollback) or
-# recorded as failed (deploy).
-CLOUDFLARE_LIFECYCLE_TARGETS = frozenset({"cf-container-hello"})
+# Cloudflare lifecycle (issue #5767; generic class since #16239 item 1,
+# porting the unique remainder of PR #16095). Every cloudflare-class
+# target has a Cloudflare activation path: deploy/rollback plans render
+# for any cloudflare target, and the execute path drives the target's
+# own deploy app through the cf_* boundary (a target's app must speak
+# the lifecycle verbs, as cf-container-hello's does). The required
+# bindings a version must carry are the union (decision on #16239,
+# item 2) of the target's registered binding set -- for
+# cf-container-hello, the Worker's durable-object binding names from
+# pkgs/cf-container-hello/wrangler.jsonc -- and the secret binding
+# names the target's own definition requires (defn["secrets"]): a
+# version that lacks any of them is refused before any mutation
+# (rollback) or recorded as failed (deploy).
 REQUIRED_CF_CONTAINER_HELLO_BINDINGS = (
     "HELLO_CONTAINER",
     "CRAWLER_PROBE",
@@ -806,7 +809,7 @@ def plan_deploy(name, defn, entries, base=None):
     # Cloudflare lifecycle targets (issue #5767 slice 4) plan through
     # the Cloudflare path below; every other non-ACTIVATION_CLASSES
     # target still returns None (the slice-2 refusal oracle).
-    if defn.get("class") == "cloudflare" and name in CLOUDFLARE_LIFECYCLE_TARGETS:
+    if defn.get("class") == "cloudflare":
         return plan_deploy_cloudflare(name, defn, entries)
     if defn["class"] not in ACTIVATION_CLASSES:
         return None
@@ -860,7 +863,7 @@ def plan_rollback(name, defn, entries, base=None):
     # the previous distinct generation (design §4.1/§4.6), so it is
     # only defined when the folded history has one. Cloudflare
     # lifecycle targets plan through the Cloudflare path below.
-    if defn.get("class") == "cloudflare" and name in CLOUDFLARE_LIFECYCLE_TARGETS:
+    if defn.get("class") == "cloudflare":
         return plan_rollback_cloudflare(name, defn, entries)
     if defn["class"] not in ACTIVATION_CLASSES:
         return None, (
@@ -943,7 +946,7 @@ def format_status(name, defn, entries, health=None):
     return "\n".join(lines)
 
 
-# --- Cloudflare lifecycle (issue #5767, slice 4: cf-container-hello) ---
+# --- Cloudflare lifecycle (issue #5767; generic class per #16239) ---
 #
 # Oracle: the slice criterion. Status reports the version/deployment
 # currently serving from Cloudflare (the provider), never an inference
@@ -957,16 +960,50 @@ def format_status(name, defn, entries, health=None):
 # automated tests replace with fakes; no live deploy happens here.
 
 
-def cf_required_bindings(name):
-    """Required Cloudflare binding names for a lifecycle target."""
+def cf_required_bindings(name, defn=None):
+    """Required Cloudflare binding names for a target (#16239 item 2).
+
+    The standard is the union of the target's registered binding set
+    (cf-container-hello's durable-object bindings) and the secret
+    binding names its own definition requires (defn["secrets"], the
+    #5767 "verifies required secret bindings" check from PR #16095).
+    """
+    required = []
     if name == "cf-container-hello":
-        return REQUIRED_CF_CONTAINER_HELLO_BINDINGS
-    return ()
+        required.extend(REQUIRED_CF_CONTAINER_HELLO_BINDINGS)
+    if defn:
+        for secret in defn.get("secrets") or []:
+            if secret not in required:
+                required.append(secret)
+    return tuple(required)
 
 
 def cf_deploy_app(defn):
     """The deploy-app binary that publishes a cloudflare target."""
     return os.path.join(defn["package"], defn["entryPoint"])
+
+
+def cf_parse_app_output(name, verb, out):
+    """Parse a deploy app's answer: one JSON object on its last
+    non-empty stdout line (#16239 item 3, from PR #16095).
+
+    Progress lines before the answer are ignored; a non-JSON answer
+    is a CloudflareError, never a guessed value.
+    """
+    lines = [line for line in out.splitlines() if line.strip()]
+    if not lines:
+        raise CloudflareError(f"{name}: {verb} returned no output")
+    try:
+        data = json.loads(lines[-1])
+    except ValueError as exc:
+        raise CloudflareError(
+            f"{name}: {verb} returned invalid JSON: {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise CloudflareError(
+            f"{name}: {verb} returned a non-object JSON answer: {lines[-1]}"
+        )
+    return data
 
 
 def cf_get_serving(name, defn=None):
@@ -983,10 +1020,11 @@ def cf_get_serving(name, defn=None):
     rc, out, err = run_cmd([app, "status", "--json"])
     if rc != 0:
         raise CloudflareError(f"{name}: status failed (exit {rc}): {err.strip()}")
-    try:
-        data = json.loads(out)
-    except ValueError as exc:
-        raise CloudflareError(f"{name}: status returned invalid JSON: {exc}") from exc
+    data = cf_parse_app_output(name, "status", out)
+    if data.get("ok") is False:
+        raise CloudflareError(
+            f"{name}: status failed: {data.get('error') or 'app reported failure'}"
+        )
     version_id = data.get("version_id")
     deployment_id = data.get("deployment_id")
     if not version_id or not deployment_id:
@@ -1006,10 +1044,11 @@ def cf_publish(name, defn):
     rc, out, err = run_cmd([app, "--json"])
     if rc != 0:
         raise CloudflareError(f"{name}: publish failed (exit {rc}): {err.strip()}")
-    try:
-        data = json.loads(out)
-    except ValueError as exc:
-        raise CloudflareError(f"{name}: publish returned invalid JSON: {exc}") from exc
+    data = cf_parse_app_output(name, "publish", out)
+    if data.get("ok") is False:
+        raise CloudflareError(
+            f"{name}: publish failed: {data.get('error') or 'app reported failure'}"
+        )
     version_id = data.get("version_id")
     deployment_id = data.get("deployment_id")
     if not version_id or not deployment_id:
@@ -1031,12 +1070,12 @@ def cf_version_bindings(name, defn, version_id):
         raise CloudflareError(
             f"{name}: verify-bindings failed (exit {rc}): {err.strip()}"
         )
-    try:
-        data = json.loads(out)
-    except ValueError as exc:
+    data = cf_parse_app_output(name, "verify-bindings", out)
+    if data.get("ok") is False:
         raise CloudflareError(
-            f"{name}: verify-bindings returned invalid JSON: {exc}"
-        ) from exc
+            f"{name}: verify-bindings failed: "
+            f"{data.get('error') or 'app reported failure'}"
+        )
     bindings = data.get("bindings")
     if not isinstance(bindings, list):
         raise CloudflareError(
@@ -1055,12 +1094,11 @@ def cf_activate_version(name, defn, version_id):
     rc, out, err = run_cmd([app, "rollback", "--version", version_id, "--json"])
     if rc != 0:
         raise CloudflareError(f"{name}: rollback failed (exit {rc}): {err.strip()}")
-    try:
-        data = json.loads(out)
-    except ValueError as exc:
+    data = cf_parse_app_output(name, "rollback", out)
+    if data.get("ok") is False:
         raise CloudflareError(
-            f"{name}: rollback returned invalid JSON: {exc}"
-        ) from exc
+            f"{name}: rollback failed: {data.get('error') or 'app reported failure'}"
+        )
     deployment_id = data.get("deployment_id")
     if not deployment_id:
         raise CloudflareError(
@@ -1071,7 +1109,7 @@ def cf_activate_version(name, defn, version_id):
 
 def cf_verify_bindings(name, defn, version_id):
     """Raise CloudflareError when a version lacks required bindings."""
-    required = cf_required_bindings(name)
+    required = cf_required_bindings(name, defn)
     if not required:
         return
     present = set(cf_version_bindings(name, defn, version_id))
@@ -1087,7 +1125,7 @@ def plan_deploy_cloudflare(name, defn, entries):
     """Pure deploy plan for a Cloudflare lifecycle target (no I/O)."""
     next_id = next_generation_id(entries)
     current, _previous = current_previous(entries)
-    bindings = ", ".join(cf_required_bindings(name)) or "none required"
+    bindings = ", ".join(cf_required_bindings(name, defn)) or "none required"
     steps = [
         f"build the service package: {defn['package']} "
         "(flake-built, lockfile-pinned; no deploy-time npm install)",
@@ -1127,7 +1165,7 @@ def plan_rollback_cloudflare(name, defn, entries):
             f"previous generation {previous['generation']} for {name!r} lacks a "
             "recorded Cloudflare version id; cannot roll back without rebuilding"
         )
-    bindings = ", ".join(cf_required_bindings(name)) or "none required"
+    bindings = ", ".join(cf_required_bindings(name, defn)) or "none required"
     steps = [
         f"verify version {version_id} (generation {previous['generation']}) "
         f"carries required bindings: {bindings} — refuse before mutation if absent",
@@ -2856,7 +2894,7 @@ def cmd_status_all(registry, state, repo):
             print(f"deploy: {exc}", file=sys.stderr)
             return 1
         defn = registry[name]
-        if defn.get("class") == "cloudflare" and name in CLOUDFLARE_LIFECYCLE_TARGETS:
+        if defn.get("class") == "cloudflare":
             print(format_cloudflare_status(name, defn, entries))
         else:
             print(format_status(name, registry[name], entries))
@@ -3020,9 +3058,7 @@ def main(argv):
         print(f"deploy: unknown target {name!r}", file=sys.stderr)
         return 1
     defn = registry[name]
-    is_cloudflare_lifecycle = (
-        defn.get("class") == "cloudflare" and name in CLOUDFLARE_LIFECYCLE_TARGETS
-    )
+    is_cloudflare_lifecycle = defn.get("class") == "cloudflare"
     if defn["class"] == "sandbox":
         # Sandbox targets keep their generations in the persistent
         # home profile (design §4.4), not the system profile root,
