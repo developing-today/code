@@ -2689,14 +2689,17 @@ mod tests {
             "stepType": "replace", "from": 0, "to": 0,
             "slice": {"content": [{"type": "bullet_list", "content": [{
                 "type": "list_item", "content": [{"type": "text", "text": "bad"}]
-            }]]}
+            }]}]}
         })];
 
         let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
         assert!(error.contains("list_item"), "{error}");
         assert_eq!(doc.version(), 0);
         assert!(doc.steps.read().await.is_empty());
-        assert_eq!(doc.content_size.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
         assert!(updates.try_recv().is_err());
 
         let valid = vec![serde_json::json!({
@@ -2705,7 +2708,7 @@ mod tests {
                 "type": "list_item", "content": [{"type": "paragraph", "content": [
                     {"type": "text", "text": "ok"}
                 ]}]
-            }]]}
+            }]}]}
         })];
         assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
     }
