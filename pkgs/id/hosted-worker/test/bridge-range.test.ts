@@ -17,7 +17,7 @@ import {
   type RangeParams,
   type SyncKey,
 } from "../src/range.ts";
-import { blake3 } from "../src/blake3.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex } from "../src/ed25519.ts";
 
 /** Deterministic PRNG (mulberry32) so the sets are reproducible. */
