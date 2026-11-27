@@ -19,6 +19,7 @@ import {
   DEFAULT_BRIDGE_LIMITS,
   encodeBatch,
   encodedBatchBytes,
+  parseJson,
   splitBatches,
   syncWithRetry,
   TAG,
@@ -575,3 +576,23 @@ test("a client answer event that cannot fit any batch fails by name", async () =
 // event cannot be padded to exactly 64 KiB (event-tree byte strings
 // cap at 512 bytes and extension keys are a closed set), so no
 // end-to-end session variant of that exact size exists to run.
+
+test("a duplicated key in a Head frame is refused and names the key", () => {
+  // #16360: a bridge frame is frontier evidence, so the hosted leg
+  // takes the duplicate-key refusal too (#6520) — a duplicated
+  // `next_seq` must not collapse last-wins into the announced head.
+  const dup = new TextEncoder().encode(
+    '[{"author":"abc","next_seq":5,"next_seq":9000,"head":null}]',
+  );
+  assert.throws(() => parseJson(dup), /duplicate JSON object key "next_seq"/);
+
+  // A duplicate at any depth is refused, naming that key.
+  const nested = new TextEncoder().encode('{"outer":{"b":1,"b":2}}');
+  assert.throws(() => parseJson(nested), /duplicate JSON object key "b"/);
+
+  // The same frame with each key written once parses as before.
+  const clean = new TextEncoder().encode(
+    '[{"author":"abc","next_seq":5,"head":null}]',
+  );
+  assert.deepEqual(parseJson(clean), [{ author: "abc", next_seq: 5, head: null }]);
+});
