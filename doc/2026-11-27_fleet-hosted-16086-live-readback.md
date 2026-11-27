@@ -21,12 +21,12 @@ Rollback uses `.github/workflows/cf-worker-versions-release.yml` from main, `wor
 
 At approximately 10:54Z on 2026-11-27, ordinary curl requests (no custom User-Agent) to `https://fleet-hosted.developing-today.workers.dev` returned:
 
-| Request | Result | Oracle |
-| --- | --- | --- |
-| `GET /health` | 200; `status=ok`, `service=fleet-hosted`, `version=0.1.0`; `auth.rp_configured=false`, `auth.tenancy_configured=false` | Hosted service identity and explicit configuration flags |
-| `GET /capabilities` | 200; `build.name=fleet-hosted`, `profile=hosted`, `edition=hosted`, `version=0.1.0` | Hosted build identity, not native Fleet identity |
-| `POST /v1/queue/health`, `{}`, absent bearer | 503 `auth_not_configured` | Fail-closed configuration; **not** missing-token validation proof |
-| Same read-only request, `Bearer invalid.invalid.invalid` | 503 `auth_not_configured` | Fail-closed configuration; **not** invalid-token validation proof |
+| Request                                                  | Result                                                                                                                 | Oracle                                                            |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `GET /health`                                            | 200; `status=ok`, `service=fleet-hosted`, `version=0.1.0`; `auth.rp_configured=false`, `auth.tenancy_configured=false` | Hosted service identity and explicit configuration flags          |
+| `GET /capabilities`                                      | 200; `build.name=fleet-hosted`, `profile=hosted`, `edition=hosted`, `version=0.1.0`                                    | Hosted build identity, not native Fleet identity                  |
+| `POST /v1/queue/health`, `{}`, absent bearer             | 503 `auth_not_configured`                                                                                              | Fail-closed configuration; **not** missing-token validation proof |
+| Same read-only request, `Bearer invalid.invalid.invalid` | 503 `auth_not_configured`                                                                                              | Fail-closed configuration; **not** invalid-token validation proof |
 
 Ordinary Python urllib requests at 10:53Z instead returned Cloudflare 403/error 1010 on all four requests. This client-dependent edge rejection is recorded, not treated as application auth evidence or fixed by spoofing a User-Agent. curl success does not establish ordinary-client compatibility for every client.
 

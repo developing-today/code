@@ -108,12 +108,13 @@ function sourceTimeMs(value: string | undefined): number | null {
 function isStaleSnapshot(db: Database, artifactId: string, incoming: string | undefined): boolean {
   const incomingMs = sourceTimeMs(incoming);
   if (incomingMs === null) return false;
-  const stored = db
-    .query("SELECT source_updated_at FROM pm_metadata_items WHERE artifact_id = ?")
-    .get(artifactId) as { source_updated_at: string | null } | null;
-  const storedMs = stored?.source_updated_at === null || stored?.source_updated_at === undefined
-    ? null
-    : sourceTimeMs(stored.source_updated_at);
+  const stored = db.query("SELECT source_updated_at FROM pm_metadata_items WHERE artifact_id = ?").get(artifactId) as {
+    source_updated_at: string | null;
+  } | null;
+  const storedMs =
+    stored?.source_updated_at === null || stored?.source_updated_at === undefined
+      ? null
+      : sourceTimeMs(stored.source_updated_at);
   return storedMs !== null && incomingMs < storedMs;
 }
 

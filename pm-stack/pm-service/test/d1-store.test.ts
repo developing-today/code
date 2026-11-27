@@ -23,7 +23,7 @@ test("D1 async adapter binds parameters and returns result rows", async () => {
     },
   };
 
-  const result = await d1AsyncDb(database).all<typeof rows[number]>("SELECT project_id WHERE project_id = ?", ["pm"]);
+  const result = await d1AsyncDb(database).all<(typeof rows)[number]>("SELECT project_id WHERE project_id = ?", ["pm"]);
   expect(preparedSql).toBe("SELECT project_id WHERE project_id = ?");
   expect(bound).toEqual(["pm"]);
   expect(result).toEqual(rows);

@@ -31,7 +31,10 @@ class ReferenceHydrationTest(unittest.TestCase):
     def test_hot_variant_reuses_repeated_query_objects(self):
         result = BENCH.measure(BENCH.synthetic_sample(16), runs=5, cache_mode="both")
         for operation in result["hydration"].values():
-            self.assertLess(operation["hot"]["r2_class_b_gets"], operation["cold"]["r2_class_b_gets"])
+            self.assertLess(
+                operation["hot"]["r2_class_b_gets"],
+                operation["cold"]["r2_class_b_gets"],
+            )
 
     def test_corrupt_reference_fails_without_including_content(self):
         body = b"SYNTHETIC_PRIVATE_BODY_MUST_NOT_ESCAPE"

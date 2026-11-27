@@ -87,7 +87,7 @@ Implements the fleet architecture spec v0.3
   requires exactly one in-bundle identity and a `--password-file`;
   output is created owner-only and never overwrites an existing file.
   Import (`convert --from pkcs12 --in <archive> --password-file <f>
-  --out <new-dir>`) writes `certificate.der`, owner-only
+--out <new-dir>`) writes `certificate.der`, owner-only
   `private-key.pk8`, and `chain-NN.der` files without replacing an
   existing directory. The API requires a matching cert/key pair,
   preserves additional certificates as the CA chain, and rejects malformed

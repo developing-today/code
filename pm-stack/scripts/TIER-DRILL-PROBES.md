@@ -45,11 +45,11 @@ separate controlled queue drill; this GET-only collector cannot prove them.
 Design: `doc/2026-11-25_design_cloudflare-first-migration.md` §§6,8;
 current issue instructions and drill plan on #14952.
 
-| CF-12 criterion | State | Evidence / remaining work |
-| --- | --- | --- |
+| CF-12 criterion                   | State      | Evidence / remaining work                                                                                                             |
+| --------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Three actual tier drills recorded | Unmeasured | Existing comments explicitly say NOT RUN; this collector adds reproducible observations only. CF-4–CF-7 remain open as of 2026-11-27. |
-| M9 checklist complete | Unchecked | Serving/book verification and pipeline-written deployed commits still require live verification; no close-out claimed. |
-| Parent close-out summary | Unchecked | #14866 needs the eventual evidence-backed programme verdict, not a synthetic pass. |
+| M9 checklist complete             | Unchecked  | Serving/book verification and pipeline-written deployed commits still require live verification; no close-out claimed.                |
+| Parent close-out summary          | Unchecked  | #14866 needs the eventual evidence-backed programme verdict, not a synthetic pass.                                                    |
 
 No live drill, deployment or serving fact is changed by this slice.
 

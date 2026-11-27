@@ -207,8 +207,15 @@ const testEnv = {
   STAMP_VERIFY_KEYS_JSON: JSON.stringify({ "durable-test": publicKey }),
   TENANCY_FIXTURE_JSON: JSON.stringify({
     subjects: [],
-    service_tokens: [{ sha256: await sha256Hex(SERVICE_TOKEN), binding_id: BINDING_A,
-      routes: ["stamping", "query", "ingestion"], active: true, label: "durable-test" }],
+    service_tokens: [
+      {
+        sha256: await sha256Hex(SERVICE_TOKEN),
+        binding_id: BINDING_A,
+        routes: ["stamping", "query", "ingestion"],
+        active: true,
+        label: "durable-test",
+      },
+    ],
   }),
 };
 
@@ -216,7 +223,9 @@ function durableDeps(db: D1DatabaseLike, writer: FixtureGitHubWriter): AuthDeps 
   return {
     ...buildDeps({ ...testEnv, QUEUE_D1: db } as HostedEnv),
     // GitHub is an external durable system, independent of the Worker restart.
-    githubWriter: writer, githubItems: writer, githubEditor: writer,
+    githubWriter: writer,
+    githubItems: writer,
+    githubEditor: writer,
   };
 }
 
@@ -225,35 +234,57 @@ async function createDurable(deps: AuthDeps, kind: "issue" | "pr" = "issue") {
     ...metadataRecord().metadata,
     future_extension: { unicode: "λ 🚀", nested: [null, false, { value: 16096 }] },
   });
-  const res = await dispatch(bearerReq("/v1/stamps", SERVICE_TOKEN, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ repo: REPO, kind, title: "Durable create", body,
-      ...(kind === "pr" ? { head: "feature", base: "main" } : {}) }),
-  }), deps);
+  const res = await dispatch(
+    bearerReq("/v1/stamps", SERVICE_TOKEN, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repo: REPO,
+        kind,
+        title: "Durable create",
+        body,
+        ...(kind === "pr" ? { head: "feature", base: "main" } : {}),
+      }),
+    }),
+    deps,
+  );
   assert.equal(res.status, 201, await res.clone().text());
-  return await res.json() as { number: number; body: string; metadata: Record<string, unknown>;
-    metadata_inserted: boolean; insert_error?: string };
+  return (await res.json()) as {
+    number: number;
+    body: string;
+    metadata: Record<string, unknown>;
+    metadata_inserted: boolean;
+    insert_error?: string;
+  };
 }
 
 async function durableBackfill(deps: AuthDeps): Promise<BackfillRunRecord> {
-  const res = await dispatch(bearerReq("/v1/ingestion/backfill", SERVICE_TOKEN, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repos: [REPO] }),
-  }), deps);
+  const res = await dispatch(
+    bearerReq("/v1/ingestion/backfill", SERVICE_TOKEN, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repos: [REPO] }),
+    }),
+    deps,
+  );
   assert.equal(res.status, 201, await res.clone().text());
-  return await res.json() as BackfillRunRecord;
+  return (await res.json()) as BackfillRunRecord;
 }
 
 async function assertDurableQuery(deps: AuthDeps, metadata: Record<string, unknown>[]) {
   // No GitHub fallback: this can only succeed from persisted D1 rows.
-  const res = await dispatch(bearerReq(`/v1/query?repo=${REPO}`, SERVICE_TOKEN),
-    { ...deps, githubItems: undefined });
+  const res = await dispatch(bearerReq(`/v1/query?repo=${REPO}`, SERVICE_TOKEN), { ...deps, githubItems: undefined });
   assert.equal(res.status, 200, await res.clone().text());
-  const doc = await res.json() as { count: number; results: { metadata: unknown }[] };
+  const doc = (await res.json()) as { count: number; results: { metadata: unknown }[] };
   assert.equal(doc.count, metadata.length);
-  assert.deepEqual(doc.results.map((r) => r.metadata), metadata);
+  assert.deepEqual(
+    doc.results.map((r) => r.metadata),
+    metadata,
+  );
 }
 
-test("stamp issue and PR → database close/reopen → fresh Worker query and backfill retain exact JSON",
+test(
+  "stamp issue and PR → database close/reopen → fresh Worker query and backfill retain exact JSON",
   withRestartableDb(async (restart) => {
     const writer = new FixtureGitHubWriter();
     let deps = durableDeps(restart(), writer);
@@ -265,17 +296,24 @@ test("stamp issue and PR → database close/reopen → fresh Worker query and ba
     const expected = await deps.metadataStore!.listRepo(REPO);
     deps = durableDeps(restart(), writer);
     assert.deepEqual(await deps.metadataStore!.listRepo(REPO), expected, "complete record, not just extracted keys");
-    await assertDurableQuery(deps, created.map((item) => item.metadata));
+    await assertDurableQuery(
+      deps,
+      created.map((item) => item.metadata),
+    );
     const run = await durableBackfill(deps);
     assert.deepEqual(run.counts, { checked: 2, inserted: 0, refreshed: 0, unchanged: 2, errors: 0 });
     deps = durableDeps(restart(), writer);
     assert.deepEqual(await deps.backfillRunStore!.get(run.id), run);
-    await assertDurableQuery(deps, created.map((item) => item.metadata));
+    await assertDurableQuery(
+      deps,
+      created.map((item) => item.metadata),
+    );
   }),
 );
 
 for (const failure of ["schema", "index", "insert"] as const) {
-  test(`D1 ${failure} failure preserves GitHub create and heals in the same Worker and after restart`,
+  test(
+    `D1 ${failure} failure preserves GitHub create and heals in the same Worker and after restart`,
     withRestartableDb(async (restart) => {
       const db = restart();
       let failing = true;
@@ -284,13 +322,23 @@ for (const failure of ["schema", "index", "insert"] as const) {
           if (failing && failure === "index" && sql.startsWith("CREATE INDEX IF NOT EXISTS fleet_metadata_binding")) {
             // A real D1 RPC rejects asynchronously, after table DDL succeeded.
             return {
-              bind() { return this; },
-              async all() { throw new Error("unexpected row read"); },
-              async run() { throw new Error("forced D1 index outage"); },
+              bind() {
+                return this;
+              },
+              async all() {
+                throw new Error("unexpected row read");
+              },
+              async run() {
+                throw new Error("forced D1 index outage");
+              },
             };
           }
-          if (failing && (failure === "schema" ? sql.startsWith("CREATE TABLE IF NOT EXISTS fleet_metadata")
-            : failure === "insert" && sql.startsWith("INSERT INTO fleet_metadata"))) {
+          if (
+            failing &&
+            (failure === "schema"
+              ? sql.startsWith("CREATE TABLE IF NOT EXISTS fleet_metadata")
+              : failure === "insert" && sql.startsWith("INSERT INTO fleet_metadata"))
+          ) {
             throw new Error(`forced D1 ${failure} outage`);
           }
           return db.prepare(sql);

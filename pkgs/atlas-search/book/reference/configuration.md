@@ -121,8 +121,8 @@ Secrets (names only; set via `wrangler secret put` or the `cf` versions secrets 
 
 | Name                   | Purpose                                                                                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GATE_TOKEN`           | The inbound bearer gate for REST routes and the legacy MCP fallback.                                                                      |
-| `AGENT_TOKENS`         | Optional JSON secret object mapping stable agent ids to distinct MCP bearer tokens; configured maps disable the shared MCP fallback.        |
+| `GATE_TOKEN`           | The inbound bearer gate for REST routes and the legacy MCP fallback.                                                                       |
+| `AGENT_TOKENS`         | Optional JSON secret object mapping stable agent ids to distinct MCP bearer tokens; configured maps disable the shared MCP fallback.       |
 | `SERVICE_TOKEN`        | The fleet search service's `cf-worker` client token (service-side `ceiling_cap: personal`), presented by the Worker on every service call. |
 | `ACCESS_CLIENT_ID`     | Cloudflare Access service token, id half, for the `atlas-search.security.cab` tunnel hostname.                                             |
 | `ACCESS_CLIENT_SECRET` | Cloudflare Access service token, secret half, for the same hostname.                                                                       |

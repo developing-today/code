@@ -765,14 +765,8 @@ test("bind recovery mode compare-clears an error-stopped binding after lease exp
   assert.equal(progress["session_id"], null);
   assert.equal(progress["stage"], "launch_failed");
   assert.equal(progress["launch_failed_session_id"], "ses_failed1");
-  assert.equal(
-    progress["launch_failed_reason"],
-    "verified error-stopped session deleted before recovery",
-  );
-  assert.equal(
-    (await store.allEvents()).filter((e) => e.kind === "lane_session_recovered").length,
-    1,
-  );
+  assert.equal(progress["launch_failed_reason"], "verified error-stopped session deleted before recovery");
+  assert.equal((await store.allEvents()).filter((e) => e.kind === "lane_session_recovered").length, 1);
 
   // A live lease refuses recovery: a stale claimant can never
   // clear a binding whose replacement may still legitimately launch.

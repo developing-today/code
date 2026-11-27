@@ -48,10 +48,7 @@ export function storeRow(value: unknown): StoreRow | null {
   const usedBy = textList(v.used_by, 120, null);
   const tables = textList(v.tables, 63, TABLE);
   if (typeof v.name !== "string" || !NAME.test(v.name) || !title || !does || !token || !usedBy || !tables) return null;
-  if (
-    typeof v.address !== "string" ||
-    (!TURSO_ADDRESS.test(v.address) && v.address !== `${D1_GATEWAY}${v.name}`)
-  ) {
+  if (typeof v.address !== "string" || (!TURSO_ADDRESS.test(v.address) && v.address !== `${D1_GATEWAY}${v.name}`)) {
     return null;
   }
   if (v.schema_version !== null && v.schema_version !== undefined && text(v.schema_version, 200) === null) return null;

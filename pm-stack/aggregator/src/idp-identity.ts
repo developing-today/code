@@ -14,7 +14,11 @@ export type IdpWriteDecision =
   | { ok: false; status: 401 | 403; error: string };
 
 type Jwk = JsonWebKey & { kid?: string; alg?: string; use?: string };
-interface KeyCache { fetchedAt: number; keys: Jwk[]; jwksUri: string }
+interface KeyCache {
+  fetchedAt: number;
+  keys: Jwk[];
+  jwksUri: string;
+}
 const keyCache = new Map<string, KeyCache>();
 
 export function clearIdpJwksCache(): void {
@@ -86,7 +90,9 @@ export async function verifyIdpAccessToken(
     throw new Error("jwt expired or has no expiry");
   }
   if (typeof claims.sub !== "string" || claims.sub.trim() === "") throw new Error("jwt has no subject");
-  const roles = Array.isArray(claims.roles) ? claims.roles.filter((role): role is string => typeof role === "string") : [];
+  const roles = Array.isArray(claims.roles)
+    ? claims.roles.filter((role): role is string => typeof role === "string")
+    : [];
   return { sub: claims.sub, roles };
 }
 
@@ -105,7 +111,11 @@ export async function enforceIdpWriteRole(
   try {
     verified = await verifyIdpAccessToken(token, issuer, fetchImpl);
   } catch (error) {
-    return { ok: false, status: 401, error: `invalid IdP access token: ${error instanceof Error ? error.message : String(error)}` };
+    return {
+      ok: false,
+      status: 401,
+      error: `invalid IdP access token: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   if (!verified.roles.some((role) => (IDP_WRITE_ROLES as readonly string[]).includes(role))) {
     return { ok: false, status: 403, error: "owner or orchestrator role required" };

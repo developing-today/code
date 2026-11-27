@@ -1,4 +1,5 @@
 # Census Part 3 — Archer's Muse work-loop lanes, old-system hourly runs
+
 ## Window: 2026-11-26 10:14–18:14 CST (9 runs, 108 lanes)
 
 System: hourly cron `agent-work-loop-check` at HH:14 CST, 12 queue lanes per run, double-letter lane keys. The 18:14 run was the FINAL run of the old single job — after it, Drew ordered the restructure (~18:21 CST): the single job was removed via cron.remove and replaced by four staggered hourly jobs (alpha :37, bravo :52, charlie :07, delta :22) with a doubled 16–32 lane band (corrected to 16–24 at ~18:29 CST).
@@ -12,6 +13,7 @@ Outcome categories: LANDED (PR merged / issue closed) · GATE-HELD (verified blo
 ---
 
 ## Run 10:14 CST — lanes ZA–ZL (12 lanes)
+
 Record: `~/memory/2026-11-26.md` § "Agent work loop check 2026-11-26 10:14 CST — cycle outcome (lanes ZA-ZL)"; verified in the 1114 record §2.
 Infra at check: bench 0 at start; queue broker/laptop up, no-queue fallback not triggered.
 
@@ -34,6 +36,7 @@ Systemic blocker: **GitHub REST rate limit exhausted (core 5000/5000, user 11225
 ---
 
 ## Run 11:14 CST — lanes AA–AL (12 lanes)
+
 Record: `~/workspace/agent-work-loop-check-2026-11-26-1114.md` §5.
 Infra at check: init-ensure exit 0; fleet agent doctor all legs OK; laptop alive; gh core remaining 821/5000, reset 2026-11-26T17:33:40Z, graphql 4608 — low; lanes instructed to hard-stop+park on any 403. PR code#15186 CI-log flag hold explicitly excluded in briefs.
 
@@ -56,6 +59,7 @@ Systemic blocker: GitHub core was the recurring constraint — 821 remaining at 
 ---
 
 ## Run 12:14 CST — lanes BA–BL (12 lanes)
+
 Record: reconciled in `~/workspace/agent-work-loop-check-2026-11-26-1314.md` §2 and `~/memory/2026-11-26.md` § "12:14 CST batch BA–BL reconciled (~12:51 CST)" + per-lane entries.
 Infra at check: init-ensure exit 0; laptop alive; shortlist count 5 (low_water 3, not low). GitHub core 420/5000 remaining, reset 12:33 CST — lanes briefed to park cleanly on a genuine 403. Queue claim rung reported Turso overload once (BL fell back to shortlist).
 
@@ -78,6 +82,7 @@ Systemic blockers: **GH core exhausted mid-batch (0 remaining, reset 12:33 CST)*
 ---
 
 ## Run 13:14 CST — lanes CA–CL (12 lanes)
+
 Record: `~/workspace/agent-work-loop-check-2026-11-26-1314.md` (launch) + outcomes reconciled in `~/workspace/agent-work-loop-check-2026-11-26-1414.md` §2 and per-lane entries in `~/memory/2026-11-26.md`.
 Infra at check: init-ensure exit 0; doctor all legs OK; laptop alive; gh core remaining 436/5000, reset 2026-11-26T19:33:47Z (13:33 CST), graphql 4575 — low; lanes instructed to hard-stop+park on any 403. Shortlist 4, no refill. PR code#15186 hold excluded.
 
@@ -100,6 +105,7 @@ Systemic blocker: **403 cluster at 19:19:20–19:19:41Z** (CC, CE, CI hard stops
 ---
 
 ## Run 14:14 CST — lanes DA–DL (12 lanes)
+
 Record: `~/workspace/agent-work-loop-check-2026-11-26-1414.md` §5.
 Infra at check: init-ensure exit 0; doctor all legs OK; laptop alive; gh core 3921/5000, graphql 4973 — healthy again (prior cycle's 403s were transient token exhaustion). Shortlist 4. PR code#15186 excluded.
 
@@ -122,6 +128,7 @@ Systemic incident: **queue broker sandbox leg down ~20:19–20:24Z** — `repo-q
 ---
 
 ## Run 15:14 CST — lanes EA–EL (12 lanes)
+
 Record: `~/workspace/agent-work-loop-check-2026-11-26-1514.md` §5.
 Infra at check: init-ensure exit 0; doctor all legs OK; laptop alive; gh core remaining 39/5000 on the checked token (graphql 4548) — lanes instructed to hard-stop+park on any 403, no retry loop. Shortlist 4. PR code#15186 excluded.
 
@@ -144,6 +151,7 @@ Systemic blocker: **GH 403 hard stop on the fleet token (user 11225574) at 21:17
 ---
 
 ## Run 16:14 CST — lanes FA–FL (12 lanes)
+
 Record: `~/workspace/agent-work-loop-check-2026-11-26-1614.md` §5.
 Infra at check: init-ensure exit 0; doctor all legs OK; laptop alive. Direct gh core remaining 0/5000, reset 2026-11-26T22:34:00Z (16:34 CST), graphql 4598; fleet gh core remaining 4201/5000 — fleet token rotation healthy, lanes instructed to prefer fleet gh. Shortlist 4. Queue: repo-health-code-pilot 119 queued / 92 claimed / 229 parked — not dry. PR code#15186 excluded.
 
@@ -165,6 +173,7 @@ Run totals: 12 lanes — LANDED 3, GATE-HELD/blocked 1, PARKED 8, FAILED 0.
 ---
 
 ## Run 17:14 CST — lanes GA–GL (12 lanes)
+
 Record: `~/workspace/agent-work-loop-check-2026-11-26-1714.md` §5.
 Infra at check: init-ensure exit 0; doctor all legs OK; laptop alive; direct gh core 2257/5000, graphql 4769 — healthy this run. Shortlist 4. Queue: repo-health-code-pilot 474 queued / 101 claimed / 252 parked — not dry. Note: PR code#15186, the long-standing hold from prior cycles, was verified MERGED at the 16:14 flag-hold run, so it was no longer excluded.
 
@@ -186,6 +195,7 @@ Run totals: 12 lanes — LANDED 1, COMPLETED 7 (incl. 1 issue closure), PARKED 4
 ---
 
 ## Run 18:14 CST — lanes HA–HL (12 lanes) — FINAL run of the old single job
+
 Record: `~/memory/2026-11-26.md` § "Work-loop check 18:14 CST" + § "HA–HL batch reconciled (all 12 done)" + per-lane entries. No record file for this run.
 Infra at check: bench 0 at start (GA–GL all completed); init-ensure exit 0; doctor all legs ok. Queue: repo-health-code-pilot 408 queued / 92 claimed / 296 parked, nix-pilot 10 queued, openchamber-pilot 12, opencode-pilot 22 — not dry, broker up, no-queue fallback not triggered.
 
@@ -213,6 +223,7 @@ Post-run state change: at ~18:21 CST Drew ordered the work-loop restructure; the
 - LANDED: 13 lanes. COMPLETED (triage/verification, queue done): 11 lanes. STOOD DOWN: 3 lanes. GATE-HELD / dep-blocked with evidence: 16 lanes. PARKED (all other, with non-person wake conditions): 64 lanes. FAILED: 1 lane.
 
 ### Landed PRs (13)
+
 - code#15657 (ZE, 10:14)
 - code#15074 (AG, 11:14), code#15662 (AF, 11:14), code#15668 (AI, 11:14)
 - openchamber#2665 (BH, 12:14), code#15698 (BB, 12:14)
@@ -221,9 +232,10 @@ Post-run state change: at ~18:21 CST Drew ordered the work-loop restructure; the
 - code#15645 (FA, 16:14), code#15643 (FB, 16:14), code#15637 (FD, 16:14)
 - code#15792 (GH, 17:14)
 - darwin-nix#2248 (HA, 18:14)
-(14:14 run: no merges.)
+  (14:14 run: no merges.)
 
 ### Issues closed (4 in-window + 1 follow-up)
+
 - openchamber#2644 — closed by BH via PR openchamber#2665 (12:14).
 - darwin-nix#2236 — auto-closed by EF via PR darwin-nix#2239 (15:14).
 - code#13257 — closed/completed by GC, all criteria verified landed (17:14).
@@ -231,6 +243,7 @@ Post-run state change: at ~18:21 CST Drew ordered the work-loop restructure; the
 - Follow-up: code#15745 — filed by FD (16:14) after PR code#15637's `Closes #15634` auto-closed code#15634 while draft PR code#15731 was still open (FD reopened #15634); fleet monitor's 18:14-run record later CLOSED code#15745 as completed, its closing condition verified met (PR code#15731 merged 2026-11-27T00:07:15Z).
 
 ### Systemic blockers named in the records
+
 1. **GitHub REST 403 token exhaustion (user 11225574)** — the dominant constraint of the window:
    - 10:14 run: core 5000/5000 at 16:31Z claim time; 7 lanes hard-stopped (ZA, ZB, ZC, ZD, ZG, ZK, ZL).
    - 11:14 run: 821 remaining at check start; 403s at 17:24–17:27Z (AA log read, AH merge/verify, AJ git/trees POST); reset 17:33:40Z.

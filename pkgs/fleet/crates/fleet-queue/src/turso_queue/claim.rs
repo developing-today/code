@@ -41,11 +41,7 @@ pub(crate) fn triage_recovery_filing(
             )?;
             statuses = rows
                 .iter()
-                .filter_map(|r| {
-                    r.get("status")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                })
+                .filter_map(|r| r.get("status").and_then(|v| v.as_str()).map(str::to_string))
                 .collect();
         }
     }
@@ -250,8 +246,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             // triage task reconciliation needs.
             let triage_recovery =
                 triage_recovery_filing(t, &queue, kind, dedupe.as_deref(), Some(ident))?;
-            if let Some(holder) = done_identity_holder(t, ident, kind)?
-                .filter(|_| !triage_recovery)
+            if let Some(holder) = done_identity_holder(t, ident, kind)?.filter(|_| !triage_recovery)
             {
                 let mut detail = collision_detail(&holder, ident);
                 detail["rule"] = json!("done_work_identity");

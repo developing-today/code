@@ -26,11 +26,7 @@ import {
   type CommentFormOpts,
   commentThreadHtml,
 } from "./render-core.ts";
-import {
-  commentsMissingCause,
-  fixtureCommentsBannerHtml,
-  sessionRecordLine,
-} from "./render-board.ts";
+import { commentsMissingCause, fixtureCommentsBannerHtml, sessionRecordLine } from "./render-board.ts";
 
 // --- Sessions / identity registry page (#906 §3) ------------------------------
 

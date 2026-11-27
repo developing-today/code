@@ -86,7 +86,7 @@ async function setup() {
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
         headers: {
           ...(init.token === null ? {} : { "cf-access-jwt-assertion": init.token ?? "t" }),
-          ...((init.body === undefined && init.method !== "DELETE")
+          ...(init.body === undefined && init.method !== "DELETE"
             ? {}
             : { "content-type": "application/json", "x-pm-console": "1" }),
         },

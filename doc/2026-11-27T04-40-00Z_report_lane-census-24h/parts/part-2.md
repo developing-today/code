@@ -47,6 +47,7 @@ Mode: no-queue fallback still (code#15131 OPEN); laptop alive via ssh fallback.
 Initial lanes: **8 — AG, AH, AI, AJ, AK, AL, AM, AN**. Recorded replacement/expansion lanes labelled "(04:14 run)": **AO, AP, AQ, AR, AS, AT, AU, AV, AW, AX, AY, AZ, BA, BB, BC, BD, BF, BG, BH, BJ, BK, BL, BM, BN, BO, BP, BQ, BR, BT, BU, BV, BW, BX, BY, BZ, CA, CB, CC, CD, CE, CF**. **Total distinct recorded: 54** (8 initial + 46 replacements). AZ has no outcome entry — gap flagged below.
 
 ### Landed
+
 - **AG — LANDED.** PR #15490 MERGED 28d3966d3e26274ffcf6d12ec07367e0f2f707f1, 2026-11-26T11:06:06Z. Verification catch recorded: pre-existing run 45786696176 "success" was a masked nix-shell failure and was NOT counted; fresh run 45803726025 SUCCESS with real output (id_proxy 6 passed).
 - **AH — LANDED.** PR #15498 (Dependabot immutable 4.3.5→4.3.9) MERGED 6ee16e11c9740a3ab565f77d0e4ddccfcf9be9c5, 2026-11-26T10:21:36Z.
 - **AK — LANDED.** PR #15457 MERGED c36a1935d89c9993f0a6ac71485adb5be003a0e9, 2026-11-26T10:54:26Z (doc/README.md conflict resolved via Git-API; run 45802841968 SUCCESS). Note: #2174 gate honestly still NOT satisfied.
@@ -61,6 +62,7 @@ Initial lanes: **8 — AG, AH, AI, AJ, AK, AL, AM, AN**. Recorded replacement/ex
 - **BQ — LANDED (already-merged recheck).** PR #15415 was already MERGED 2026-11-26T10:42:59Z (722ec8cbb9a6d64637b9c8b8bac0e7b8e8663b1a) **by the main-chat no-queue diagnosis lane, not by a 04:14 lane**; BQ stood down, recorded AJ's re-dispatched run 45795525459 concluding FAILURE after the merge (comment 7190207251). #14268 stays OPEN.
 
 ### Gate-held properly (verified blocker posted, not merged)
+
 - **AI** — PR #15497: real defect found (cap-exempt list omits GET /v1/bridge/challenge, breaking the export-at-cap invariant) + no successful verification (run 45802666585 failed at Execute, #15131 family). Evidence 7189675486 / #15485 comment 7189679787.
 - **AJ** — PR #15415: stand-down pending verification; re-dispatched run 45795525459 still in_progress at ~35 min. Evidence 7189343446. (PR later merged by main-chat lane; see BQ.)
 - **AN** — PR #15250: verification FAILED on a real defect (run 45801023113) — drill assertions superseded by merged PR #15313. Evidence 7189434826 / #14265 comment 7189436497. Fix lane AT launched.
@@ -72,6 +74,7 @@ Initial lanes: **8 — AG, AH, AI, AJ, AK, AL, AM, AN**. Recorded replacement/ex
 - **CE** — evidence lane on code#15131: posted consolidated fleet-command placement-stall census (comment 7190531940), including the correction that #15131 itself was already CLOSED (broker recovered 10:30:27Z, issue closed 10:45:24Z).
 
 ### Stood down — premise dead / owned elsewhere / author lane live
+
 - **AP** — PR #15520 CLOSED unmerged at 10:25:30Z as superseded (S2 landed via PR #15257 + #15350; linked #14954 CLOSED). No action.
 - **AS** — PR #15523: live author-lane claim on #12830, head moved mid-check. Evidence 7189648906.
 - **AW** — PR #15263: Dependabot cargo group bump fails supply-chain checks (major jumps, duplicated graph, documented pins). Evidence 7189739339.
@@ -100,6 +103,7 @@ Initial lanes: **8 — AG, AH, AI, AJ, AK, AL, AM, AN**. Recorded replacement/ex
 - **CF** — PR #15551: auth diff review PASSED, but author run 45807449396 still QUEUED. Evidence 7190520584. (PR #15551 later merged — recorded closed #14978 at 11:53:39Z in the 06:14 run's RK entry.)
 
 ### Bookkeeping gaps flagged in the record (04:14)
+
 - **AZ** — "Blocker lane AZ launched on PR #15468" (from AX entry); **no AZ outcome entry exists in the log**. PR #15468 was later merged by lane SU in the 06:14 run.
 - **CA** — fix lane launched by BY for PR #15523; no outcome entry in this run's record.
 - The log's own BN note: "the open-PR pool is now essentially exhausted except claimed/stacked/gated/major-bump items plus pending verification runs (#15415 run 45795525459, #15523 run 45802583895, #15497 re-dispatch on Execute recovery, #15468 via lane AZ)."
@@ -127,6 +131,7 @@ Lanes: **8 — QA, QB, QC, QD, QE, QF, QG, QH.** No replacements recorded.
 Initial bench: **8 queue lanes RA–RH + shepherd S1** (S1 on PR #15560, QD's leftover). The log then records a large replacement bench through ~07:22 CST. Distinct keys recorded in this run's window: **RA, RB, RC, RD, RE, RF, RG, RH, RJ, RI, RK, RL, RM, RN, RO, RP, RQ, RR, RS, RT, RU, RV, RW, RX, RZ, S1, SB, SC, SD, SE, SG, SH, SI, SJ, SK, SL, SM, SN, SO, SQ, SS, SU, SV, SX, TA–TG (group, see gap), TD, TF, HW, HW2** — **≈57 distinct keys** (RA–RH + S1 = 9 initial; the rest replacements/programme lanes). Most R/S lanes are triage tasks: their "landing" is a verified triage verdict + park/complete, not a PR.
 
 ### Landed (PR merged / issue closed)
+
 - **S1 (shepherd) — LANDED.** PR #15560 (#14918 slice 1) failure diagnosed (rcgen E0609 in run 45811080501; CryptoProvider panic in 45814346451), QD fixes 4a1167b+ccb63777 verified green in run 45817227960 (6/6 serve_proxy_leg tests), PR MERGED 25850fd66387. Evidence #14918 comment 7192263528.
 - **RA (task 23864) — issue CLOSED.** Triage code#15346: assessment already done, PR #15442 merged; PR used Refs so the issue was orphaned open. Verdict posted (7191991804) and **#15346 closed as COMPLETED**. Queue task completed (follow_on_task_id 24170 auto-created).
 - **RX (task 23754) — LANDED.** PR #15037 verified (run 45819183803 SUCCESS, 30 pass) and MERGED 764d745e44680bf1d9a93673f1e9720d5c49a5d4. #14262 stays OPEN (remaining UI/wiring slice); task parked with that resume scope.
@@ -140,6 +145,7 @@ Initial bench: **8 queue lanes RA–RH + shepherd S1** (S1 on PR #15560, QD's le
 - **SS (task 23949) — queue task COMPLETED, residual filed.** Merge-watch code#15497: PR and #15485 already closed, superseded by merged PR #15582; salvage diff recorded (7192731317); **residual defect filed as issue #15591**. Task completed with verdict merged_verified + follow_up #15591.
 
 ### Parked with wake condition (verified triage / verified blocker posted)
+
 - **RB** (23868, #15342), **RD** (23865, #15345), **RE** (23866, #15344), **RJ** (23871, #15339), **RI** (23870, #15340), **RF** (23862, #15399) — all triage-parked on the #2174 migration gate family (gap 2 #2072 open and/or 48h pilot not demonstrated; RF blocked on #15435+#15436). Evidence comments 7192032814 / 7192034930 / 7192024204 / 7192075438 / 7192063404 / 7191991538 respectively.
 - **RC** (23863, #15397) — parked, ready condition: #15407 closed. Comment 7191999526.
 - **RG** (23860, #15423) — parked, blocked on B4 #15422. Comment 7192044187.
@@ -168,10 +174,12 @@ Initial bench: **8 queue lanes RA–RH + shepherd S1** (S1 on PR #15560, QD's le
 - **RY** (23836, #15511) — triage parked (external wait): defect already fixed by PR #15572; ready condition: probe reports r2_bundles fresh + hosted_alerts auto-closes #15511. Comments 7192498815 / #15503 comment 7192500065.
 
 ### Programme / heal lanes
+
 - **HW (heal lane, 06:35–06:47) — LANDED (infrastructure).** Diagnosed the broker-tunnel outage (broker.sock path unlinked by a competing heal/init while the broker held it), killed stale broker pid 8181, restarted via heal script (new pid 10752); delivered stranded completions 23875 + 23877 (both re-read "done").
 - **HW2 (heal lane, ~07:15–07:22) — LANDED (bookkeeping).** Delivered stranded park for task 23925 (triage #13765; verdict comment 7193009402; parked, not_before 13:35:36Z) and stranded park for task 23844 (SX's item; parked, not_before 14:16:24Z). Both verified by read-back.
 
 ### Bookkeeping gaps flagged in the record (06:14)
+
 - Run timed out; the 08:18 flush states "2 item lanes still running at cutoff; No completion claimed for that run."
 - **TA–TG group:** the 07:14 check entry says the previous run's lanes TA–TG + HW2 all finished, "several ended at cron timeout with work parked/incomplete, **two cancelled with no result — TB, ST**." Individual entries exist only for **TD** (task 23870 re-claim, #15340 re-parked, comment 7193154147) and **TF** (#3989 verified park via shortlist, comment 7193218145). **TA, TC, TE, TG have no individual outcome entries in the log — FAILED/unrecorded as a group, except TD/TF above.** ST is likewise cancelled/no-result (its run attribution is the TA–TG-era bench per that entry).
 
@@ -182,6 +190,7 @@ Initial bench: **8 queue lanes RA–RH + shepherd S1** (S1 on PR #15560, QD's le
 Bench at start 0; queue broker healthy at check. Spawned **10 fresh queue lanes TH–TQ**. The bench was then maintained via spawn/replace (per the timeout section), producing the T/U-series replacement lanes below. Distinct keys recorded: **TH, TI, TK, TM, TP, TQ, TR, TT, TU, TW, TX, TZ, UA, UB, UC, UD, UE, UF, UG, UJ, UK, UL, UM, UN, UO, UQ, UR, US, UT, UU, UV, UW, UX, UY** plus unnamed queue lanes identified by task (23985, 23981). **Total distinct named: 36** (+2 unnamed-by-task). **Gap: TJ, TL, TN, TO, UH have no entries anywhere in the log.**
 
 ### Landed
+
 - **TI (task 23984) — LANDED.** PR #14322 refresh resolved (conflict only in turso_queue.rs mod declarations), MERGED c42a925c; **issue #13579 closed** by Closes keyword. Task completed (merged_verified). Evidence PR comment 7193881527. Note: main CI runs still queued at completion.
 - **TM (task 23983) — LANDED.** PR #14355 refreshed via Git Data API merge commit 309c70bd, verified (fleet run 45831080565 SUCCESS), MERGED 04ca211f, 2026-11-26T14:16:57Z; **issue #13595 auto-closed**. Duplicate PR #14493 closed as superseded (7194606576). Task completed (hand-built disposition; verify-disposition read path rate-limited ×3).
 - **TQ (task 23986) — LANDED.** PR #14984 was CONFLICTING; resolved via Git Data API merge commit 39b30f37, MERGED 13712573; **issue #13087 closed** by keyword. Evidence #13087 comment 7193637831. Note: scratch clone tripped an execution-risk flag mid-run; all merge work after that used API-extracted text only.
@@ -203,6 +212,7 @@ Bench at start 0; queue broker healthy at check. Spawned **10 fresh queue lanes 
 - **UL (task 23880 re-claim) — queue task COMPLETED.** Triage code#15112: prior verdict stands; new evidence comment 7194345442 (laptop route now reachable, superseding the earlier laptop-unreachable park). Task completed (follow-on 24245 auto-created).
 
 ### Parked / gate-held
+
 - **TR (task 23754 re-claim)** — parked with dependency ready-condition (H3 #14261 / #9077 / H2 #14260 open). Evidence #14262 comment 7193493695.
 - **TK (task 23952 re-claim)**, **UA (task 23952 re-claim)** — triage code#15517 re-verified and re-parked; ready condition: openchamber PR #2648 merged + source #2645 closed. Comments 7193402540 / 7193941846.
 - **TT (task 23881 re-claim)** — triage code#15056 re-verified, re-parked with unchanged ready condition. Comment 7193673697.
@@ -212,7 +222,9 @@ Bench at start 0; queue broker healthy at check. Spawned **10 fresh queue lanes 
 - **UI (shortlist, code#5350)** — verified park (Gate C deferred blocker hatch-personal#20 still OPEN). Comment 7194267685. No queue task id existed to park (shortlist claim).
 
 ### Failed / incomplete at the 07:14 timeout (explicitly flagged in the record)
+
 Per the 08:14 check entry (line 1756) and the timeout section (line 2057):
+
 - **UY — FAILED: init only, no claim.**
 - **UX, UW — FAILED: claim outcome unclear.**
 - **UV (task 24151) — incomplete at cron timeout** (no outcome entry).
@@ -229,6 +241,7 @@ Per the 08:14 check entry (line 1756) and the timeout section (line 2057):
 Spawned **10 fresh queue lanes VA–VJ**, then replacements. Distinct keys recorded in this run's window: **VA, VB, VC, VD, VE, VF, VG, VH, VI, VJ, VK, VL, VM, VN, VO, VP, VQ, VR, VS, VT, VU, VV, VW, VX, VY, VZ, WA, WB, WC, WD, WE, WF, WG, WH, WI, WJ, WK, WL, WM, WN, WO, WP, WQ, WR, WS, WT, WU, WV, WW, WX, WY, WZ, XA, XB, XC, XD, XE** — **57 distinct keys** (the X* keys at the tail are this run's late replacements, interrupted by its timeout — see the timeout section; the 09:14 check entry loosely calls XA–XE "previous run" lanes).
 
 ### Landed
+
 - **VD (task 24155) — issue CLOSED.** Triage dezren39/darwin-nix#2091: pass verified complete (#2095/#2096 filed and CLOSED); **#2091 closed as COMPLETED** (7194926668, verified). Task completed 14:31:27Z.
 - **VG (task 24156) — LANDED.** dezren39/darwin-nix PR #2153 MERGED e727b98d664daffafeebc1d813b8afbaab6b1d61, 2026-11-26T14:35:28Z; **issue (darwin-nix) #1964 verified CLOSED**. Task completed (merged_verified).
 - **VK (task 24223) — issue CLOSED.** Triage code#13674: all three causes already fixed by merged PRs; fresh scripts-test run 45840826693 SUCCESS; **#13674 closed as completed** 14:42:41Z (7195205358). Task completed (merged_verified). Duplicate tracker #13682 flagged, not closed.
@@ -253,6 +266,7 @@ Spawned **10 fresh queue lanes VA–VJ**, then replacements. Distinct keys recor
 - **WH (task 23838) — queue task COMPLETED.** Triage code#15509: issue had already auto-CLOSED completed (freshness verified fresh; parent #15001 also closed). Evidence 7195642746; task completed 15:00:36Z (follow-on 24272 auto-created).
 
 ### Parked / gate-held / stood down
+
 - **VA** (shortlist #9206), **VC** (shortlist #9201), **VJ** (shortlist #9200) — design-mill container parks with non-person ready conditions; evidence comments 7195004193 / 7194958311 / 7194966395. No broker task existed for these shortlist draws (park recorded on the issue).
 - **VB** (24211, #14397) — triage parked: implemented by PR #14608 but PR CONFLICTING/DIRTY. Comment 7194947478. (Later resolved by WF above.)
 - **VE** (shortlist #7572) — parked: all five slices merged, but acceptance checkbox 3(b) needs a deployed game-day environment not available to the lane; no evidence fabricated. Comment 7194980396.
@@ -275,6 +289,7 @@ Spawned **10 fresh queue lanes VA–VJ**, then replacements. Distinct keys recor
 - **WW** (21583, AUDIT-7 batch 10) — 5-PR chunk audited (batch 10 now 60/250), ledger 7196179720; task parked with next-chunk ready condition.
 
 ### Failed / unrecovered at the 08:14 timeout (from the run's own timeout record, line 2346)
+
 - **XA (task 24030) — FAILED/incomplete:** PR #14763 verified MERGEABLE/CLEAN, checkpoint recorded, **NOT merged** — needs merge + evidence + queue complete.
 - **VT (task 24237) — FAILED/unconfirmed:** opencode PR #2866 open, local tests pass, **unit-test run 45846730831 conclusion UNCONFIRMED** — needs final verification, then merge/complete.
 - **WY (task 23976) — FAILED/aborted:** successor PR #15600 **verification aborted by timeout — fleet-run state uncertain**; needs check and a merge path or park.
@@ -290,6 +305,7 @@ Spawned **10 fresh queue lanes VA–VJ**, then replacements. Distinct keys recor
 Bench at check 0. Spawned **8 replacement queue lanes XF–XM**. Replacements recorded through ~10:35 CST: **XN, XP, XQ, XR, XS, XT, XU, XV, XW, XY, YA, YB, YC, YD, YE, YF, YG, YI, YL, YM, YN, YO, YP** (several known only from the 10:14 timeout list). **Total distinct recorded: 31** (8 initial + 23 replacements). No ~/workspace/agent-work-loop-check-2026-11-26-0914.md file exists.
 
 ### Landed
+
 - **XF (task 24040) — LANDED.** PR #14654 verified (run 45508630368 success, MERGEABLE/CLEAN), MERGED 4c72687ad4d9fda3efc6b89bc52d41f1cf978898, 2026-11-26T15:32:37Z. #2227 stays open. Task completed (merged_verified).
 - **XG (task 24035) — LANDED.** PR #14680 verified (run 45515851780 success), MERGED 3e01dca2209db54cff6d6ce0385c72872bea8a41, 2026-11-26T15:33:51Z. Task completed (merged_verified).
 - **XH (task 24037) — LANDED + follow-up filed.** PR #14671 conflict resolved via Git-API merge commit 79658962, MERGED e41e9da5a00c3187197cb26b11238ccd17126fa5, 2026-11-26T15:37:13Z. #10709 stays open; **follow-up issue #15646 filed**. Task completed (merged_verified, follow_up #15646). Gap named: main-CI runs for the merge SHA still queued at completion, not claimed green.
@@ -307,6 +323,7 @@ Bench at check 0. Spawned **8 replacement queue lanes XF–XM**. Replacements re
 - **YM (task 24085, replacement for YJ) — PR closed superseded (landed-equivalent).** PR #14282 verified superseded by merged PR #14406 (which auto-closed #13679); PR #14282 CLOSED 2026-11-26T16:24:01Z with §8 salvage note (7197568952). Task read back done (closed_verified; verify-disposition itself hit rate_limit ×2, disposition hand-built).
 
 ### Parked / gate-held
+
 - **XL (task 24036) — PR closed superseded.** PR #14677 verified superseded by merged PR #14747 (identical fix); PR CLOSED 2026-11-26T15:32:29Z with reason (7196421974). Task completed (merged_verified readback on #14352, already CLOSED).
 - **XN (task 24123 re-claim)**, **YE (task 24123 re-claim, ~10:02)** — opencode#1651 triage re-verified valid-blocked, re-parked with the same manual ready condition. Comments 7196514382 / 7197141869.
 - **XP (task 24021 re-claim)** — PR #14925 recheck: still not mergeable, re-parked with the same condition. Comment 7196581721.
@@ -319,10 +336,12 @@ Bench at check 0. Spawned **8 replacement queue lanes XF–XM**. Replacements re
 - **XV (task 24233 re-claim, replacement for XQ)** — **fix-forward on opencode PR #2864, NOT merged:** new head de158473 (fail-closed identity binding + regression tests); verification run 45855955605 still non-terminal (broker: queued) after ~19 min; task PARKED (delay 1200s) with ready condition to collect that run, then mutation-check, then merge. Evidence #2841 comment 7197633783.
 
 ### Failed / timed out incomplete (from the 10:14 check entry, line 2458)
+
 - **YP, YO, YN — FAILED: timed out incomplete at cron timeout** (no individual entries; claims' leases expire to queue).
 - **YI (task 24078, PR #14421) — FAILED: timed out incomplete** (no outcome entry in this window).
 - **YF (task 23999, PR #15186) — timed out incomplete; this is the flag-hold item** (same PR/lane lineage as WE in the 08:14 run; PR #15186 CI-log readback hold offered at 09:14 and re-offered at 10:14, widget-2dea1f3d-9518-48dd-a53c-9bcab414e167).
 - **YB (task 24066, PR #14492) — FAILED: timed out incomplete** (no outcome entry in this window).
 
 ### Cross-check from the 10:14 check entry (landed in the 09:14 cycle)
+
 "PRs #14654, #14680, #14683, #14709, #14662, #14671, #14668, #14508, #14577, #14525, #14484 merged; #14677 and #14282 closed superseded; audit batch 10 advanced to 70/250." — consistent with the lane entries above (with #14484 merged into its stacked base, per YC).

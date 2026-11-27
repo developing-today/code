@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Oracle: controlled HTTP server responses, not a live outage or service health."""
+
 import http.server
 import json
 from pathlib import Path
@@ -57,7 +58,9 @@ class ProbeTests(unittest.TestCase):
         cls.thread.join()
 
     def run_probe(self, *args):
-        return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *args], capture_output=True, text=True
+        )
 
     def test_baseline_is_not_drill_evidence(self):
         result = self.run_probe("--base-url", self.base, "--path", "/health")
@@ -78,19 +81,34 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(row["httpSuccess"])
 
     def test_failure_does_not_discard_other_surfaces(self):
-        result = self.run_probe("--base-url", self.base, "--path", "/unavailable", "--path", "/health")
+        result = self.run_probe(
+            "--base-url", self.base, "--path", "/unavailable", "--path", "/health"
+        )
         self.assertEqual(result.returncode, 1)
-        self.assertEqual([r["status"] for r in json.loads(result.stdout)["observations"]], [503, 200])
+        self.assertEqual(
+            [r["status"] for r in json.loads(result.stdout)["observations"]], [503, 200]
+        )
 
     def test_transport_failure_is_recorded(self):
-        result = self.run_probe("--base-url", "http://127.0.0.1:1", "--path", "/health", "--timeout", "0.1")
+        result = self.run_probe(
+            "--base-url", "http://127.0.0.1:1", "--path", "/health", "--timeout", "0.1"
+        )
         self.assertEqual(result.returncode, 1)
         row = json.loads(result.stdout)["observations"][0]
         self.assertIsNone(row["status"])
         self.assertTrue(row["error"])
 
     def test_protocol_failure_preserves_other_observations(self):
-        result = self.run_probe("--base-url", self.base, "--path", "/health", "--path", "/broken", "--path", "/health")
+        result = self.run_probe(
+            "--base-url",
+            self.base,
+            "--path",
+            "/health",
+            "--path",
+            "/broken",
+            "--path",
+            "/health",
+        )
         self.assertEqual(result.returncode, 1, result.stderr)
         rows = json.loads(result.stdout)["observations"]
         self.assertEqual([r["httpSuccess"] for r in rows], [True, False, True])
@@ -106,15 +124,23 @@ class ProbeTests(unittest.TestCase):
     def test_strict_arguments_before_network(self):
         # Invalid options and path escapes must fail before any observation output.
         cases = [
-            ["--typo"], ["extra"], ["--time", "1"], ["--timeout", "nan"],
-            ["--timeout", "0"], ["--path", "//evil.example/"],
-            ["--path", "https://evil.example/"], ["--path", "/ok#fragment"],
-            ["--base-url", self.base + "/prefix"], ["--base-url", "file:///etc/passwd"],
+            ["--typo"],
+            ["extra"],
+            ["--time", "1"],
+            ["--timeout", "nan"],
+            ["--timeout", "0"],
+            ["--path", "//evil.example/"],
+            ["--path", "https://evil.example/"],
+            ["--path", "/ok#fragment"],
+            ["--base-url", self.base + "/prefix"],
+            ["--base-url", "file:///etc/passwd"],
         ]
         before = len(Handler.requests)
         for args in cases:
             with self.subTest(args=args):
-                result = self.run_probe("--base-url", self.base, "--path", "/health", *args)
+                result = self.run_probe(
+                    "--base-url", self.base, "--path", "/health", *args
+                )
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertEqual(result.stdout, "")
         self.assertEqual(len(Handler.requests), before)

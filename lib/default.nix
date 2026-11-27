@@ -1730,14 +1730,15 @@ let
               grep -q "pm-aggregator" list.txt
               grep -q "pm-projector" list.txt
               grep -q "pm-tunnel" list.txt
-              ${if deployPkgs.deployReadyForAgentSupported then
-                ''grep -q "ready-for-agent" list.txt''
-              else
-                ''
-                  if grep -q "ready-for-agent" list.txt; then
-                    echo "ready-for-agent listed on an unsupported system (${system})" >&2
-                    exit 1
-                  fi''
+              ${
+                if deployPkgs.deployReadyForAgentSupported then
+                  ''grep -q "ready-for-agent" list.txt''
+                else
+                  ''
+                    if grep -q "ready-for-agent" list.txt; then
+                      echo "ready-for-agent listed on an unsupported system (${system})" >&2
+                      exit 1
+                    fi''
               }
               grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
@@ -1756,26 +1757,28 @@ let
               nativeBuildInputs = [ pkgs.gnugrep ];
             }
             ''
-              ${if
-                deployPkgs.deployReadyForAgentSupported
-                != pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform
-                  (pkgs.callPackage ../pkgs/ready-for-agent/package.nix { })
-              then
-                ''
-                  echo "deployReadyForAgentSupported disagrees with ready-for-agent meta.platforms on ${system}" >&2
-                  exit 1''
+              ${
+                if
+                  deployPkgs.deployReadyForAgentSupported != pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform (
+                    pkgs.callPackage ../pkgs/ready-for-agent/package.nix { }
+                  )
+                then
+                  ''
+                    echo "deployReadyForAgentSupported disagrees with ready-for-agent meta.platforms on ${system}" >&2
+                    exit 1''
                 else
                   "# gate agrees with meta.platforms on ${system}"
               }
               ${deployPkgs.deploy}/bin/deploy list > list.txt
-              ${if deployPkgs.deployReadyForAgentSupported then
-                ''grep -q "ready-for-agent" list.txt''
-              else
-                ''
-                  if grep -q "ready-for-agent" list.txt; then
-                    echo "ready-for-agent target registered on unsupported system ${system}" >&2
-                    exit 1
-                  fi''
+              ${
+                if deployPkgs.deployReadyForAgentSupported then
+                  ''grep -q "ready-for-agent" list.txt''
+                else
+                  ''
+                    if grep -q "ready-for-agent" list.txt; then
+                      echo "ready-for-agent target registered on unsupported system ${system}" >&2
+                      exit 1
+                    fi''
               }
               mkdir -p $out
             '';
