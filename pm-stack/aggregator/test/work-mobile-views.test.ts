@@ -1,4 +1,4 @@
-// MOB-03 pure-filter tests, part 1 (#9470 of the #9201 design).
+// MOB-03 pure-filter tests, parts 1+2 (#9470 of the #9201 design).
 // Oracle: the MOB-03 record D2/D3/D5 rules over the MOB-01 `WorkView`
 // read model. V1 builds its `WorkView` inputs in code via
 // `projectWorkView` (no JSON fixtures yet); a later slice adds
@@ -6,15 +6,23 @@
 // labels and relations land in the read model (follow-ups F1/F2/F4).
 //
 // Record tests 5 (`group_split`) and 6 (`saved_filters`) cover
-// `groupWorkViews` / `matchesSavedFilters`, which are slice 2 (the V1
-// read model carries no `owner/repo` locator, board id or author, so
-// grouping would be a single bucket). They are represented here by
-// the identity guards V1 does own: distinct authorities never merge,
-// and a repeated key is a validation error.
+// `groupWorkViews` / `matchesSavedFilters` in the second describe
+// block below (slice 2). `repo` groups by the primary source ref's
+// `repository_id`, `project` by the project fact value; `owner` stays
+// a single "Unknown author" bucket until MOB-01 carries an author
+// fact (F5).
 
 import { describe, expect, test } from "bun:test";
 import { projectWorkView, type WorkProjectionInput } from "../src/work-projection.ts";
-import { mobileView, type ViewContext, type WorkView } from "../src/work-mobile-views.ts";
+import {
+  groupWorkViews,
+  matchesSavedFilters,
+  mobileView,
+  workViewLike,
+  type ViewContext,
+  type WorkView,
+} from "../src/work-mobile-views.ts";
+import { itemMatchesView } from "../src/views.ts";
 // Type-only import keeps the runtime dependency one-way (views <- projection).
 import type {} from "../src/work-projection.ts";
 
@@ -171,5 +179,66 @@ describe("work_mobile_views/v1 pure filter", () => {
       reason: "fact_not_sourced",
       fact: "github.updated_at",
     });
+  });
+});
+
+describe("work_mobile_views/v1 grouping and saved filters (slice 2)", () => {
+  const withRefs = (id: string, repository_id: string, resource_id = "42"): WorkView =>
+    base(id, { source_refs: [{ kind: "github_issue", repository_id, resource_id }] });
+
+  test("work_mobile_views_group_split_on_ambiguous_identity", () => {
+    // Same resource number under two repository ids: MOB-01 D3 keeps
+    // them distinct, and `repo` grouping splits them (record test 5).
+    const views = [withRefs("a1", "111"), withRefs("b1", "222")];
+    const groups = groupWorkViews(views, "repo");
+    expect(groups.map((g) => g.label)).toEqual(["111", "222"]);
+    expect(groups.map((g) => g.refs.map((r) => r.work_id))).toEqual([["a1"], ["b1"]]);
+    // Rows with no source ref form their own group, never merged.
+    const mixed = [...views, backlog("c1")];
+    const labels = groupWorkViews(mixed, "repo").map((g) => g.label);
+    expect(labels).toContain("No repo");
+  });
+
+  test("work_mobile_views_group_by_project_and_owner", () => {
+    const withStatus = base("s1", { project_status: { value: "In Progress", source: "project" } });
+    const without = backlog("b1");
+    const groups = groupWorkViews([withStatus, without], "project");
+    expect(groups.map((g) => g.label).sort()).toEqual(["In Progress", "No project"]);
+    // F5: no author fact on WorkView, so owner grouping is one named
+    // bucket until MOB-01 carries it — never one bucket per row.
+    const ownerGroups = groupWorkViews([withStatus, without], "owner");
+    expect(ownerGroups).toHaveLength(1);
+    expect(ownerGroups[0].label).toBe("Unknown author");
+    expect(ownerGroups[0].refs.map((r) => r.work_id).sort()).toEqual(["b1", "s1"]);
+  });
+
+  test("work_mobile_views_saved_filters_reuse_item_matches_view", () => {
+    // Record test 6: a ViewFilters set gives the same answer through
+    // matchesSavedFilters as itemMatchesView on the mapped item.
+    const view = withRefs("a1", "developing-today/code", "9469");
+    const like = workViewLike(view);
+    expect(like.ref).toBe("developing-today/code#9469");
+    expect(like.repo).toBe("developing-today/code");
+    const filters = { repo: "developing-today/code" } as const;
+    expect(matchesSavedFilters(view, filters)).toBe(true);
+    expect(itemMatchesView(like, filters)).toBe(matchesSavedFilters(view, filters));
+    expect(matchesSavedFilters(view, { repo: "other/repo" })).toBe(false);
+    // A filter on an absent dimension (owner/author, F5) excludes the
+    // row instead of matching it on a guess (record D6).
+    expect(matchesSavedFilters(view, { owner: "someone" })).toBe(false);
+  });
+
+  test("work_mobile_views_group_order_is_deterministic", () => {
+    const views = [withRefs("a1", "zzz"), withRefs("b1", "aaa"), backlog("c1")];
+    const a = groupWorkViews(views, "repo");
+    const reversed = groupWorkViews([...views].reverse(), "repo");
+    expect(reversed).toEqual(a);
+    expect(JSON.stringify(reversed)).toBe(JSON.stringify(a));
+  });
+
+  test("work_mobile_views_group_dedupe_is_a_validation_error", () => {
+    expect(() => groupWorkViews([backlog("b1"), ready("b1")], "repo")).toThrow(
+      "work_mobile_views_duplicate_input",
+    );
   });
 });

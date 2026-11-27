@@ -27,12 +27,37 @@
 // - D5 orders by column, then `updated_at` descending; `updated_at` is
 //   not in `WorkView`, so V1 orders by column, then
 //   `(authority_id, work_id)` (F1 covers the missing key).
-// - `groupWorkViews` and `matchesSavedFilters` (record D1, D4, D6) are
-//   not in this slice: `WorkView` source refs carry no `owner/repo`
-//   locator, the project fact carries no board id, and no author fact
-//   exists, so grouping would be a single bucket. Slice 2 owns them.
+// - `groupWorkViews` (by `repo` / `project` / `owner`) and
+//   `matchesSavedFilters` (record D1, D4, D6) are slice 2 in this
+//   same module below. `repo` groups by the primary source ref's
+//   `repository_id`, `project` by the project fact value (absent rows
+//   form "No repo" / "No project" groups); `owner` stays a single
+//   "Unknown author" bucket until MOB-01 carries an author fact (F5).
+
+// V1 deviations from the record, all named so a later slice can lift
+// them (see the record section 9 gates and section 10 non-goals):
+// - The record names the input `PmWorkView`; that type does not exist.
+//   The input here is the actual MOB-01 export `WorkView`.
+// - `recent` / `cold_backlog` need the issue `updated_at`, which
+//   `WorkView` does not carry: both views return `unavailable` with
+//   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
+// - `needs_triage` needs issue labels, which `WorkView` does not carry:
+//   `unavailable` until MOB-01 carries them (follow-up F2).
+// - `triage` needs Area/Horizon beside Project Status; `WorkView`
+//   carries neither, so a decidable-status row is still `undecided`
+//   with `policy_undefined` (follow-up F3).
+// - `blocking` / `critical_path` wait on MOB-08 relations (record gate
+//   4): every row is `undecided` with `policy_undefined` (F4).
+// - D5 orders by column, then `updated_at` descending; `updated_at` is
+//   not in `WorkView`, so V1 orders by column, then
+//   `(authority_id, work_id)` (F1 covers the missing key).
+// - `groupWorkViews` by `repo`/`project` and `matchesSavedFilters`
+//   are slice 2 below. `owner` grouping stays a single "Unknown author"
+//   bucket: `WorkView` carries no author fact (follow-up F5; the
+//   saved-view `owner` dimension means the GitHub author on main).
 
 import type { BoardColumn, WorkView } from "./work-projection.ts";
+import { itemMatchesView, type ViewFilters, type ViewItemLike } from "./views.ts";
 
 export type MobileViewId =
   | "all"
@@ -298,4 +323,135 @@ export function mobileView(
   if (known.length === 0) freshness = "absent";
 
   return { id, refs, undecided, unavailable: null, freshness };
+}
+
+// --- Slice 2: grouping and saved-filter reuse (record D1, D4, D6) ---
+//
+// `groupWorkViews` answers the "by repo / project / owner" control on
+// `/work`: each group holds matched refs in D5 order, groups sort by
+// label. `matchesSavedFilters` maps a `WorkView` onto the #1276
+// `ViewItemLike` shape with the same field meanings as `ghItemLike`
+// (record D6) and reuses `itemMatchesView`, so one matching rule
+// serves both surfaces. No I/O, no clock, no module state.
+//
+// Truthfulness limits, all named:
+// - `repo` groups by the primary `source_refs` entry's
+//   `repository_id` (MOB-01 sorts `source_refs`, so [0] is stable).
+//   Rows with no source ref form a "No repo" group, never merged.
+// - `project` groups by the `project` fact value; rows with no
+//   project fact form a "No project" group, never merged.
+// - `owner` is a single "Unknown author" bucket: `WorkView` carries no
+//   author fact, and the saved-view `owner` dimension means the GitHub
+//   author on main (follow-up F5). A later slice lifts this once
+//   MOB-01 carries the author; the bucket shape stays the same.
+// - `area` / `horizon` / `epic` / `kind` are likewise absent from
+//   `WorkView`: `workViewLike` maps them to `null`, so a saved filter
+//   on one of those dimensions excludes the row (D6), never matches
+//   it on a guessed value.
+
+export type GroupBy = "repo" | "project" | "owner";
+
+export interface WorkGroup {
+  by: GroupBy;
+  key: string;
+  label: string;
+  refs: WorkKey[];
+}
+
+const columnRankOf = (view: WorkView): number => COLUMN_ORDER[view.projection.column] ?? 8;
+
+const compareGroupRefs = (
+  a: WorkKey,
+  b: WorkKey,
+  rank: Map<string, number>,
+): number => {
+  const ra = rank.get(a.authority_id + "|" + a.work_id) ?? 8;
+  const rb = rank.get(b.authority_id + "|" + b.work_id) ?? 8;
+  return ra - rb || compareKeys(a, b);
+};
+
+export function groupWorkViews(views: readonly WorkView[], by: GroupBy): WorkGroup[] {
+  // Same input validation as `mobileView`: a repeated work key is a
+  // validation error, never silently merged (record negative case).
+  const seen = new Set<string>();
+  for (const view of views) {
+    const key = keyOf(view);
+    if (seen.has(key)) {
+      throw new Error(
+        "work_mobile_views_duplicate_input: " + view.work.authority_id + "/" + view.work.work_id + " appears twice",
+      );
+    }
+    seen.add(key);
+  }
+
+  const rank = new Map<string, number>();
+  for (const view of views) {
+    rank.set(keyOf(view), columnRankOf(view));
+  }
+
+  const buckets = new Map<string, WorkGroup>();
+  for (const view of views) {
+    const ref: WorkKey = { ...view.work };
+    let key: string;
+    let label: string;
+    if (by === "repo") {
+      const primary = view.source_refs[0];
+      const repo = primary?.repository_id ?? null;
+      key = "repo:" + (repo ?? "none");
+      label = repo ?? "No repo";
+    } else if (by === "project") {
+      const project = view.facts.project;
+      const value = "value" in project ? project.value : null;
+      key = "project:" + (value ?? "none");
+      label = value ?? "No project";
+    } else {
+      // F5: no author fact on `WorkView`; one bucket until MOB-01
+      // carries it. The key/label shape is stable for that lift.
+      key = "owner:unknown";
+      label = "Unknown author";
+    }
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.refs.push(ref);
+    } else {
+      buckets.set(key, { by, key, label, refs: [ref] });
+    }
+  }
+
+  const groups = [...buckets.values()];
+  for (const group of groups) {
+    group.refs.sort((a, b) => compareGroupRefs(a, b, rank));
+  }
+  groups.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return groups;
+}
+
+/** The #1276 `ViewItemLike` projection of a `WorkView`: the same
+ *  field meanings as `ghItemLike`, with absent dimensions as `null`
+ *  so filters on them exclude the row (record D6). */
+export function workViewLike(view: WorkView): ViewItemLike {
+  const primary = view.source_refs[0];
+  const ref = primary
+    ? primary.repository_id + "#" + primary.resource_id
+    : view.work.authority_id + "/" + view.work.work_id;
+  const github = view.facts.github_state;
+  const project = view.facts.project;
+  return {
+    ref,
+    repo: primary?.repository_id ?? null,
+    area: null,
+    horizon: null,
+    // F5: no author fact on `WorkView` yet; never guess.
+    owner: null,
+    state: "value" in github ? github.value : null,
+    epic: null,
+    status: "value" in project ? project.value : null,
+    kind: null,
+  };
+}
+
+/** A saved `ViewFilters` set gives the same answer on a `WorkView`
+ *  as `itemMatchesView` on its mapped item: one matching rule. */
+export function matchesSavedFilters(view: WorkView, filters: ViewFilters): boolean {
+  return itemMatchesView(workViewLike(view), filters);
 }
