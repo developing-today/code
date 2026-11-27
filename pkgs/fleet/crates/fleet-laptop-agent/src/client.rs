@@ -438,6 +438,165 @@ pub fn kill(ladder: &Arc<Ladder>, job: &str) -> i32 {
     }
 }
 
+/// Read an `exec-batch` file: the POST body plus the client-side
+/// deadline. Mirrors laptop-agent-legacy.py: the body is posted
+/// exactly as read, `cmds` defaults to [] and `timeout_s` defaults
+/// to 120. Anything else malformed is refused before any transport.
+pub(crate) fn read_batch_file(path: &std::path::Path) -> Result<(Value, u64), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read batch file {}: {e}", path.display()))?;
+    let body: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("invalid JSON in batch file {}: {e}", path.display()))?;
+    if !body.is_object() {
+        return Err(format!(
+            "batch file {} must contain a JSON object",
+            path.display()
+        ));
+    }
+    let timeout_s = match body.get("timeout_s") {
+        Some(v) => v.as_u64().ok_or_else(|| {
+            format!(
+                "batch file {}: timeout_s must be a whole number",
+                path.display()
+            )
+        })?,
+        None => 120,
+    };
+    if let Some(cmds) = body.get("cmds")
+        && !cmds.is_array()
+    {
+        return Err(format!(
+            "batch file {}: cmds must be an array",
+            path.display()
+        ));
+    }
+    Ok((body, timeout_s))
+}
+
+/// Python truthiness for a JSON field, matching the legacy
+/// `if r.get(...)` checks: None/missing, false, 0, "", [], and {}
+/// are falsy; everything else is truthy.
+pub(crate) fn json_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .map(|i| i != 0)
+            .unwrap_or_else(|| n.as_f64().map(|f| f != 0.0).unwrap_or(false)),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(m)) => !m.is_empty(),
+    }
+}
+
+/// The worst per-command exit code. Mirrors the legacy `_batch`
+/// accumulator: a result with a (truthy) error counts 1, a (truthy)
+/// timeout counts TIMEOUT_EXIT, otherwise the command's own exit; a
+/// reply with no results exits 0 after printing.
+pub(crate) fn batch_exit_code(reply_body: &Value) -> i32 {
+    let Some(results) = reply_body.get("results").and_then(Value::as_array) else {
+        return 0;
+    };
+    let mut worst = 0;
+    for r in results {
+        if json_truthy(r.get("error")) {
+            worst = worst.max(1);
+        } else if json_truthy(r.get("timeout")) {
+            worst = worst.max(TIMEOUT_EXIT);
+        } else if let Some(exit) = r.get("exit").and_then(Value::as_i64) {
+            worst = worst.max(exit as i32);
+        }
+    }
+    worst
+}
+
+pub(crate) fn batch_truncated(reply_body: &Value) -> bool {
+    reply_body
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|results| results.iter().any(|r| json_truthy(r.get("truncated"))))
+        .unwrap_or(false)
+}
+
+/// Render a reply the way the legacy prints it:
+/// `print(json.dumps(out, indent=1))` — one space per level. Key
+/// order follows the JSON map (sorted here, wire order there);
+/// byte-identity holds for ASCII payloads with sorted keys.
+pub(crate) fn render_batch_reply(value: &Value) -> String {
+    use serde::Serialize;
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    value
+        .serialize(&mut ser)
+        .expect("in-memory JSON serialization");
+    buf.push(b'\n');
+    String::from_utf8(buf).expect("serializer emits UTF-8")
+}
+
+/// Words for the primary-checkout guard: the argv, or the shell
+/// string split on whitespace — the same split `exec --shell` uses.
+fn batch_words(cmd: &Value) -> Vec<String> {
+    if let Some(shell) = cmd.get("shell").and_then(Value::as_str) {
+        return shell.split_whitespace().map(str::to_string).collect();
+    }
+    cmd.get("argv")
+        .and_then(Value::as_array)
+        .map(|argv| {
+            argv.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `exec-batch FILE.json`: guard every command, POST the file body
+/// unchanged, print the reply, exit with the worst per-command code.
+pub fn exec_batch(ladder: &Arc<Ladder>, path: &std::path::Path) -> i32 {
+    let (body, timeout_s) = match read_batch_file(path) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("laptop-agent: {message}");
+            return 1;
+        }
+    };
+    if let Some(cmds) = body.get("cmds").and_then(Value::as_array) {
+        for cmd in cmds {
+            let cwd = cmd.get("cwd").and_then(Value::as_str);
+            if let Err(message) = crate::guard::check_job(cwd, &batch_words(cmd)) {
+                eprintln!("laptop-agent: {message}");
+                return 1;
+            }
+        }
+    }
+    let trip = crate::new_trip();
+    let deadline = Duration::from_secs(timeout_s + TRANSPORT_GRACE_S);
+    match call(ladder, &trip, "POST", "/exec", Some(body), false, deadline) {
+        Ok(reply) => {
+            note_fallbacks(&reply);
+            print!("{}", render_batch_reply(&reply.body));
+            // One warning per truncated result, like the legacy loop.
+            if let Some(results) = reply.body.get("results").and_then(Value::as_array) {
+                for r in results {
+                    if json_truthy(r.get("truncated")) {
+                        eprintln!(
+                            "laptop-agent: warning: a command's output was truncated at the 1 MiB/stream capture cap (tail kept)"
+                        );
+                    }
+                }
+            }
+            batch_exit_code(&reply.body)
+        }
+        Err(CallFailure::Deadline) => {
+            cancel(ladder, &trip);
+            fail(CallFailure::Deadline)
+        }
+        Err(e) => fail(e),
+    }
+}
+
 /// What a command runs: an argv, or a shell string (`--shell`).
 /// The caller's `FLEET_CTX_*` record rides the spec's `env`
 /// (code#14188): the daemon merges it into the job's environment and
@@ -1274,5 +1433,92 @@ mod tests {
             assert!(cur <= Duration::from_secs(10), "capped at poll {n}");
             prev = cur;
         }
+    }
+
+    /// code#16088 exec-batch parity slice: the legacy `_batch` exit
+    /// oracle — worst per-command code wins (an error counts 1, a
+    /// timeout counts TIMEOUT_EXIT, otherwise the command's own
+    /// exit; a reply with no results exits 0 after printing, exactly
+    /// like the Python's `worst` accumulator).
+    #[test]
+    fn batch_exit_matches_python_legacy_worst_code_oracle() {
+        assert_eq!(batch_exit_code(&json!({})), 0);
+        assert_eq!(batch_exit_code(&json!({"results": []})), 0);
+        assert_eq!(batch_exit_code(&json!({"results": [{"exit": 0}]})), 0);
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"exit": 0}, {"exit": 3}, {"exit": 1}]})),
+            3
+        );
+        assert_eq!(batch_exit_code(&json!({"results": [{"error": "boom"}]})), 1);
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"timeout": true}]})),
+            TIMEOUT_EXIT
+        );
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"error": "x"}, {"timeout": true}, {"exit": 5}]})),
+            TIMEOUT_EXIT
+        );
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"exit": 0}, {"exit": 7}]})),
+            7
+        );
+        // Python truthiness: falsy error/timeout values do not count.
+        assert_eq!(batch_exit_code(&json!({"results": [{"error": ""}]})), 0);
+        assert_eq!(batch_exit_code(&json!({"results": [{"error": null}]})), 0);
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"timeout": false}]})),
+            0
+        );
+    }
+
+    /// code#16088: the legacy prints `json.dumps(out, indent=1)` —
+    /// one space per level (bytes captured from CPython for an ASCII
+    /// payload; key order follows the JSON map, so the fixture uses
+    /// sorted keys).
+    #[test]
+    fn batch_reply_renders_python_indent_one() {
+        let body = json!({"results": [{"exit": 0, "stdout": "hi"}]});
+        assert_eq!(
+            render_batch_reply(&body),
+            "{\n \"results\": [\n  {\n   \"exit\": 0,\n   \"stdout\": \"hi\"\n  }\n ]\n}\n"
+        );
+    }
+
+    #[test]
+    fn batch_truncated_flags_any_truncated_result() {
+        assert!(!batch_truncated(&json!({})));
+        assert!(!batch_truncated(&json!({"results": [{"exit": 0}]})));
+        assert!(batch_truncated(
+            &json!({"results": [{"exit": 0}, {"exit": 0, "truncated": true}]})
+        ));
+    }
+
+    /// code#16088: the file carries the POST body; `cmds` defaults
+    /// to [], `timeout_s` defaults to 120 (the legacy `body.get`
+    /// defaults). Malformed files are refused before any transport.
+    #[test]
+    fn batch_file_parses_body_with_legacy_defaults() {
+        let dir = std::env::temp_dir().join(format!("la-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("batch.json");
+        std::fs::write(&file, r#"{"cmds": [{"argv": ["echo", "hi"]}]}"#).unwrap();
+        let (body, timeout) = read_batch_file(&file).unwrap();
+        assert_eq!(timeout, 120);
+        assert_eq!(body["cmds"].as_array().unwrap().len(), 1);
+        let full = dir.join("full.json");
+        std::fs::write(&full, r#"{"cmds": [], "timeout_s": 45}"#).unwrap();
+        let (_, timeout_full) = read_batch_file(&full).unwrap();
+        assert_eq!(timeout_full, 45);
+        assert!(read_batch_file(&dir.join("missing.json")).is_err());
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "not json").unwrap();
+        assert!(read_batch_file(&bad).is_err());
+        let bad_timeout = dir.join("bad-timeout.json");
+        std::fs::write(&bad_timeout, r#"{"cmds": [], "timeout_s": "soon"}"#).unwrap();
+        assert!(read_batch_file(&bad_timeout).is_err());
+        let bad_cmds = dir.join("bad-cmds.json");
+        std::fs::write(&bad_cmds, r#"{"cmds": {}}"#).unwrap();
+        assert!(read_batch_file(&bad_cmds).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
