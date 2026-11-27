@@ -45,10 +45,11 @@ struct State {
     turso: std::sync::OnceLock<crate::turso_queue::TursoBackend>,
     /// Why the backend is not ready yet: the latest startup failure.
     turso_pending: Mutex<String>,
-    /// Last trust-bundle version presented by each direct-TCP peer IP.
-    /// The value is client-reported, accepted only on an authenticated TLS
-    /// request; no token or client-supplied identity is retained.
-    trust_bundle_clients: Mutex<BTreeMap<IpAddr, TrustBundleClientReport>>,
+    /// Last trust-bundle observations by direct-TCP peer IP and presented
+    /// version. Keeping versions separate prevents a newer process on the
+    /// same host from hiding an older process during rollover. `None` records
+    /// an authenticated TLS request that made no valid version claim.
+    trust_bundle_clients: Mutex<BTreeMap<(IpAddr, Option<u32>), TrustBundleClientReport>>,
     /// #13765: the coordinator sweep must never overlap itself — a
     /// slow GitHub pass skips instead of piling a second grant loop
     /// onto the same counters.
@@ -57,7 +58,6 @@ struct State {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TrustBundleClientReport {
-    version: u32,
     last_seen_unix: u64,
 }
 
@@ -1168,13 +1168,13 @@ fn history_cursor_page(
 
 const TRUST_BUNDLE_VERSION_HEADER: &str = "X-Fleet-Trust-Bundle-Version";
 
-/// Record the client-reported trust-bundle version only for an authenticated
-/// TLS TCP request with one positive version and a server-observed peer IP.
-/// The model oracle is this exact conjunction; plaintext, UDS, break-glass
-/// (which sends no version), unauthenticated, ambiguous, or malformed inputs
-/// cannot create a health claim.
+/// Record an authenticated TLS TCP peer's presented version, or an unverified
+/// observation when it makes no single positive version claim. The version
+/// is client-reported, not a client identity or a server-side validation
+/// result. Plaintext, UDS, unauthenticated requests, and missing peer IPs
+/// cannot create either kind of observation.
 fn record_trust_bundle_client(
-    clients: &mut BTreeMap<IpAddr, TrustBundleClientReport>,
+    clients: &mut BTreeMap<(IpAddr, Option<u32>), TrustBundleClientReport>,
     transport: crate::uds_http::RequestTransport,
     headers: &[(String, String)],
     authenticated: bool,
@@ -1189,42 +1189,38 @@ fn record_trust_bundle_client(
     let mut version_headers = headers
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case(TRUST_BUNDLE_VERSION_HEADER));
-    let Some((_, raw_version)) = version_headers.next() else {
-        return false;
+    let version = match (version_headers.next(), version_headers.next()) {
+        (None, None) => None,
+        (Some((_, raw_version)), None) => raw_version
+            .parse::<u32>()
+            .ok()
+            .filter(|version| *version > 0),
+        _ => None,
     };
-    if version_headers.next().is_some() {
-        return false;
-    }
-    let Ok(version) = raw_version.parse::<u32>() else {
-        return false;
-    };
-    if version == 0 {
-        return false;
-    }
 
     clients
-        .entry(client_ip)
+        .entry((client_ip, version))
         .and_modify(|report| {
             report.version = version;
             report.last_seen_unix = report.last_seen_unix.max(now_unix);
         })
         .or_insert(TrustBundleClientReport {
-            version,
             last_seen_unix: now_unix,
         });
     true
 }
 
 fn trust_bundle_health_payload(
-    clients: &BTreeMap<IpAddr, TrustBundleClientReport>,
+    clients: &BTreeMap<(IpAddr, Option<u32>), TrustBundleClientReport>,
     now_unix: u64,
 ) -> Value {
     let clients = clients
         .iter()
-        .map(|(client_ip, report)| {
+        .map(|((client_ip, version), report)| {
             json!({
                 "client_ip": client_ip.to_string(),
-                "trust_bundle_version": report.version,
+                "trust_bundle_version": version,
+                "version_status": if version.is_some() { "presented" } else { "unverified" },
                 "last_seen_unix": report.last_seen_unix,
                 "age_seconds": now_unix.saturating_sub(report.last_seen_unix),
             })
@@ -1380,7 +1376,9 @@ fn handle_request(st: &State, token: &str, request: &crate::uds_http::HttpReques
     let path = request.target.split('?').next().unwrap_or("");
     let provided_token = request.header("X-Agent-Token");
     if request.method == "GET" && path == "/healthz" {
-        return (200, ok(queue_broker_health(st)));
+        // This unauthenticated endpoint is a liveness probe. Keep rollout
+        // inventory behind the ordinary broker-token POST route below.
+        return (200, ok(json!({"service": "queue-broker"})));
     }
 
     let token_authenticated = token_matches(provided_token, token);
@@ -1751,24 +1749,41 @@ mod tests {
         // Oracle: an old client's presented version remains visible with
         // last-seen and age data, so a rollover operator can identify it.
         let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
-        let reports = BTreeMap::from([(
-            client_ip,
-            TrustBundleClientReport {
-                version: 7,
-                last_seen_unix: 100,
-            },
-        )]);
+        let reports = BTreeMap::from([
+            (
+                (client_ip, Some(7)),
+                TrustBundleClientReport {
+                    last_seen_unix: 100,
+                },
+            ),
+            (
+                (client_ip, Some(8)),
+                TrustBundleClientReport {
+                    last_seen_unix: 9_000,
+                },
+            ),
+        ]);
 
         assert_eq!(
             trust_bundle_health_payload(&reports, 10_000),
             json!({
                 "service": "queue-broker",
-                "trust_bundle_clients": [{
-                    "client_ip": "100.64.0.12",
-                    "trust_bundle_version": 7,
-                    "last_seen_unix": 100,
-                    "age_seconds": 9_900
-                }]
+                "trust_bundle_clients": [
+                    {
+                        "client_ip": "100.64.0.12",
+                        "trust_bundle_version": 7,
+                        "version_status": "presented",
+                        "last_seen_unix": 100,
+                        "age_seconds": 9_900
+                    },
+                    {
+                        "client_ip": "100.64.0.12",
+                        "trust_bundle_version": 8,
+                        "version_status": "presented",
+                        "last_seen_unix": 9_000,
+                        "age_seconds": 1_000
+                    }
+                ]
             })
         );
     }
@@ -1779,7 +1794,9 @@ mod tests {
             kind in 0u8..3,
             authenticated in any::<bool>(),
             has_peer in any::<bool>(),
+            has_header in any::<bool>(),
             version in any::<u32>(),
+            malformed in any::<bool>(),
             duplicate in any::<bool>(),
         ) {
             // Oracle: the report is present iff the server observed direct
@@ -1795,11 +1812,20 @@ mod tests {
                 kind,
                 peer_ip: has_peer.then_some(client_ip),
             };
-            let mut headers = vec![(
-                TRUST_BUNDLE_VERSION_HEADER.to_string(),
-                version.to_string(),
-            )];
-            if duplicate {
+            let mut headers = has_header
+                .then(|| {
+                    (
+                        TRUST_BUNDLE_VERSION_HEADER.to_string(),
+                        if malformed {
+                            "not-a-version".to_string()
+                        } else {
+                            version.to_string()
+                        },
+                    )
+                })
+                .into_iter()
+                .collect::<Vec<_>>();
+            if duplicate && has_header {
                 headers.push((
                     TRUST_BUNDLE_VERSION_HEADER.to_string(),
                     version.to_string(),
@@ -1814,16 +1840,18 @@ mod tests {
                 authenticated,
                 1234,
             );
-            let expected = kind == crate::uds_http::RequestTransportKind::TcpTls
+            let expected_observation = kind == crate::uds_http::RequestTransportKind::TcpTls
                 && authenticated
-                && has_peer
-                && version > 0
-                && !duplicate;
-            prop_assert_eq!(recorded, expected);
-            prop_assert_eq!(reports.len(), if expected { 1 } else { 0 });
-            if expected {
-                let report = reports.get(&client_ip).unwrap();
-                prop_assert_eq!(report.version, version);
+                && has_peer;
+            prop_assert_eq!(recorded, expected_observation);
+            prop_assert_eq!(reports.len(), usize::from(expected_observation));
+            if expected_observation {
+                let expected_version = if has_header && !duplicate && !malformed && version > 0 {
+                    Some(version)
+                } else {
+                    None
+                };
+                let report = reports.get(&(client_ip, expected_version)).unwrap();
                 prop_assert_eq!(report.last_seen_unix, 1234);
             }
         }
@@ -1832,8 +1860,9 @@ mod tests {
     #[test]
     fn handler_records_only_authorized_tls_version_and_health_returns_it() {
         // Oracle: the direct-TCP TLS+token request updates health; a wrong
-        // token, plaintext header spoof, UDS header, and TLS request without
-        // a bundle version do not overwrite or add a report.
+        // token, plaintext header spoof, and UDS header do not create a
+        // version report; a later TLS request without a version is retained
+        // separately as an unverified observation.
         let state = test_state();
         let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
         let request = |kind, token: &str, version: Option<&str>| {
@@ -1885,8 +1914,50 @@ mod tests {
         assert_eq!(handle_request(&state, "token", &break_glass).0, 200);
 
         let clients = &queue_broker_health(&state)["trust_bundle_clients"];
-        assert_eq!(clients.as_array().unwrap().len(), 1);
-        assert_eq!(clients[0]["trust_bundle_version"], 17);
+        assert_eq!(clients.as_array().unwrap().len(), 2);
+        let clients = clients.as_array().unwrap();
+        assert!(clients.iter().any(|client| {
+            client["trust_bundle_version"] == 17 && client["version_status"] == "presented"
+        }));
+        assert!(clients.iter().any(|client| {
+            client["trust_bundle_version"].is_null() && client["version_status"] == "unverified"
+        }));
+
+        let mut authenticated_health =
+            request(crate::uds_http::RequestTransportKind::TcpTls, "token", None);
+        authenticated_health.target = "/healthz".to_string();
+        let (status, health) = handle_request(&state, "token", &authenticated_health);
+        assert_eq!(status, 200);
+        assert_eq!(health, ok(queue_broker_health(&state)));
+    }
+
+    #[test]
+    fn unauthenticated_get_healthz_only_reports_liveness() {
+        // Oracle: a public liveness probe never exposes peer IPs, versions,
+        // or last-seen timestamps from the authenticated rollout inventory.
+        let state = test_state();
+        let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
+        state.trust_bundle_clients.lock().unwrap().insert(
+            (client_ip, Some(17)),
+            TrustBundleClientReport {
+                last_seen_unix: 1234,
+            },
+        );
+        let request = crate::uds_http::HttpRequest {
+            method: "GET".to_string(),
+            target: "/healthz".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::TcpPlain,
+                peer_ip: Some(client_ip),
+            },
+        };
+
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body, ok(json!({"service": "queue-broker"})));
+        assert!(body.get("trust_bundle_clients").is_none());
     }
 
     #[test]
