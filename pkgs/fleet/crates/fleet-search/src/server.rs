@@ -33,7 +33,8 @@ use atlas_core::{
     JsonlFeedbackSink, JsonlTraceSink, Manifest, QueryEmbedder, SearchBackend,
     SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
     VectorBackend as CoreVectorBackend, builtin_manifest, chunk_classification, feedback_for,
-    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
+    load_feedback_dir, record_feedback, run_get_chunk_with_context,
+    run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -229,6 +230,10 @@ struct ServiceConfigFile {
     /// Seconds between shard re-discoveries in serve mode
     /// (#6666 slice 1). Default 60; ignored without `shards`.
     shard_refresh_seconds: Option<u64>,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7). Requires
+    /// `shards`; absent = occurrence rows stay unattributed.
+    source_registry: Option<String>,
     limits: Option<RuntimeLimitsFile>,
     clients: Vec<RawClientConfig>,
 }
@@ -247,6 +252,13 @@ pub struct ServeSettings {
     /// snapshot-bound result cache invalidates on the new
     /// snapshot id.
     pub shard_refresh: Duration,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7): opened at serve
+    /// start and attached to the shard fan-out, so served
+    /// get-chunk occurrence rows carry `root_id` for registered
+    /// locators. Requires `shards`; `None` = unattributed rows,
+    /// exactly as before slice 7.
+    pub source_registry: Option<PathBuf>,
 }
 
 /// Default shard re-discovery interval for serve mode (#6666).
@@ -270,7 +282,10 @@ pub fn default_service_config_path() -> PathBuf {
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
-    if let Some(p) = flag {
+    // An empty flag value counts as absent (same reasoning as
+    // service::base_url: the clap env binding on --config passes a
+    // set-but-empty ATLAS_SEARCH_SERVICE_CONFIG through as a value).
+    if let Some(p) = flag.filter(|p| !p.as_os_str().is_empty()) {
         return p.to_path_buf();
     }
     if let Ok(p) = std::env::var("ATLAS_SEARCH_SERVICE_CONFIG")
@@ -333,9 +348,9 @@ pub fn load_service_settings(
                 c.name
             ));
         }
-        let cap = ProtoSensitivity::from_name(&c.ceiling_cap).ok_or_else(|| {
+        let cap = ProtoSensitivity::from_ceiling_name(&c.ceiling_cap).ok_or_else(|| {
             format!(
-                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing",
+                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing (or public, internal, private, sensitive)",
                 c.name
             )
         })?;
@@ -372,6 +387,19 @@ pub fn load_service_settings(
     if shard_refresh_seconds == 0 {
         return Err("service config shard_refresh_seconds must be at least 1".to_string());
     }
+    let source_registry = match raw.source_registry {
+        Some(p) if !p.trim().is_empty() => Some(PathBuf::from(p)),
+        Some(_) => {
+            return Err("service config source_registry path must not be empty".to_string());
+        }
+        None => None,
+    };
+    if source_registry.is_some() && shards.is_none() {
+        return Err(
+            "service config source_registry requires shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        );
+    }
     Ok(ServeSettings {
         listen,
         clients,
@@ -381,6 +409,7 @@ pub fn load_service_settings(
         limits,
         shards,
         shard_refresh: Duration::from_secs(shard_refresh_seconds),
+        source_registry,
     })
 }
 
@@ -581,18 +610,51 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
     }
 }
 
-fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
-    if req
-        .filters
-        .dimensions
-        .values()
-        .any(|values| !values.is_empty())
-    {
-        return Err(ServerError::bad_request(
-            "generic filter dimensions are not supported by this search surface yet",
-        ));
+/// Resolve a request's generic dimensions against the effective
+/// manifest surface (#6228 Phase 3, slice 2). Only a dimension the
+/// manifest declares with the `generic_list` shape is supported:
+/// an unknown name, a named-field dimension carried in the generic
+/// map, or a declared dimension of any other shape is a 400 before
+/// any scheduling or backend work (fail-closed). The returned
+/// filters carry the dimension's declared match semantics.
+fn generic_filters(
+    req: &SearchRequest,
+    surface: &Manifest,
+) -> Result<Vec<atlas_core::filters::GenericFilter>, ServerError> {
+    let mut out = Vec::new();
+    for (name, values) in &req.filters.dimensions {
+        if values.is_empty() {
+            continue;
+        }
+        let Some(dim) = surface.dimension(name) else {
+            return Err(ServerError::bad_request(format!(
+                "generic filter dimension '{name}' is not supported by this search surface: \
+                 unknown dimension (not declared in the effective manifest)"
+            )));
+        };
+        if dim.shape != atlas_core::manifest::Shape::GenericList {
+            return Err(ServerError::bad_request(format!(
+                "generic filter dimension '{name}' is not supported by this search surface: \
+                 declared shape is '{}', not 'generic_list'",
+                dim.shape.name()
+            )));
+        }
+        out.push(atlas_core::filters::GenericFilter {
+            name: name.clone(),
+            semantics: dim.semantics,
+            values: values.clone(),
+        });
     }
-    Filters::new(
+    Ok(out)
+}
+
+fn build_filters(
+    req: &SearchRequest,
+    effective: ProtoSensitivity,
+    surface: &Manifest,
+) -> Result<Filters, ServerError> {
+    let generic = generic_filters(req, surface)?;
+    let mut filters = Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
         req.filters.project.clone(),
@@ -601,20 +663,13 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
         req.filters.since.clone(),
         req.filters.until.clone(),
     )
-    .map_err(|e| ServerError::from_core(&e))
+    .map_err(|e| ServerError::from_core(&e))?;
+    filters.generic = generic;
+    Ok(filters)
 }
 
-fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
-    if req
-        .filters
-        .dimensions
-        .values()
-        .any(|values| !values.is_empty())
-    {
-        return Err(ServerError::bad_request(
-            "generic filter dimensions are not supported by this search surface yet",
-        ));
-    }
+fn validate_request(req: &SearchRequest, surface: &Manifest) -> Result<(), ServerError> {
+    generic_filters(req, surface)?;
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -802,8 +857,23 @@ where
         if !allowed || excluded {
             return Err(not_found());
         }
-        run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
-            .map_err(|e| ServerError::from_core(&e))
+        // The explicit-id gate keeps its documented form (a
+        // by-id lookup with no caller ceiling; the LocalOwner
+        // context applies, exactly like the Python), while the
+        // caller's actual ceiling is threaded through so the
+        // occurrence provenance is bounded by it — never by the
+        // destination context's standalone ceiling (P1: a
+        // personal-capped caller must not receive secret-tier
+        // source locators, and a personal-only service must not
+        // request a secret-tier fan-out).
+        run_get_chunk_with_context(
+            self.backend.as_ref(),
+            chunk_id,
+            neighbors,
+            DisclosureContext::LocalOwner,
+            core_sensitivity(ceiling),
+        )
+        .map_err(|e| ServerError::from_core(&e))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
@@ -1592,7 +1662,8 @@ impl JobManager {
         client: &ClientConfig,
         request: SearchRequest,
     ) -> Result<JobCreated, ServerError> {
-        validate_request(&request)?;
+        let surface = self.engine.surface_manifest();
+        validate_request(&request, &surface)?;
         let effective = request.ceiling.clamped_to(client.ceiling_cap);
         // Bind this submit to the corpus snapshot it would serve
         // from (#9943): the key — dedupe and result cache alike —
@@ -1604,7 +1675,6 @@ impl JobManager {
         // (version, content_hash), so a manifest change — a new
         // generic dimension, a changed shape — can never be
         // answered from entries computed under the old surface.
-        let surface = self.engine.surface_manifest();
         let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
@@ -1722,7 +1792,7 @@ impl JobManager {
                     key: key.clone(),
                     owner_name: client.name.clone(),
                     request: request.clone(),
-                    filters: build_filters(request, effective)?,
+                    filters: build_filters(request, effective, &self.engine.surface_manifest())?,
                     effective_ceiling: effective,
                     demand: request.mode.branch_demand(),
                     submitted: now,
@@ -1766,7 +1836,7 @@ impl JobManager {
                 inner.queue.len(),
             ));
         }
-        let filters = build_filters(request, effective)?;
+        let filters = build_filters(request, effective, &self.engine.surface_manifest())?;
         let comp = Arc::new(Computation {
             id: new_job_id().map_err(|m| ServerError::new(500, "internal", m))?,
             key: key.clone(),
@@ -2574,6 +2644,7 @@ mod tests {
             limits,
             shards: None,
             shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
+            source_registry: None,
         }
     }
 
@@ -2600,6 +2671,57 @@ mod tests {
             })
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
+        );
+    }
+
+    #[test]
+    fn service_config_source_registry_round_trips() {
+        // #3125 slice 7: `source_registry` in the service config
+        // lands on ServeSettings as a path; it requires `shards`
+        // (attribution rides the fan-out) and must not be empty.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-service-registry-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let wired = write(
+            "wired.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&wired, ServeOverrides::default()).unwrap();
+        assert_eq!(
+            settings.source_registry.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.db"))
+        );
+        let orphan = write(
+            "orphan.json",
+            &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&orphan, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry requires shards"),
+            "got: {err}"
+        );
+        let empty = write(
+            "empty.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
+            ),
+        );
+        let err = load_service_settings(&empty, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry path must not be empty"),
+            "got: {err}"
         );
     }
 
@@ -3851,16 +3973,62 @@ mod tests {
     }
 
     #[test]
-    fn generic_dimensions_are_rejected_until_search_support_lands() {
+    fn generic_dimensions_unknown_to_the_surface_are_rejected() {
+        // #6228 Phase 3 slice 2: the built-in surface declares no
+        // generic_list dimension, so any nonempty generic dimension
+        // is unknown there and fails closed with a 400.
         let mut request = SearchRequest::default();
         request
             .filters
             .set_dimension("source-app", vec!["mail".to_string()]);
 
-        let error = build_filters(&request, ProtoSensitivity::Personal).unwrap_err();
+        let error =
+            build_filters(&request, ProtoSensitivity::Personal, &builtin_manifest()).unwrap_err();
         assert_eq!(error.status, 400);
         assert_eq!(error.body.error.code, "bad_request");
         assert!(error.body.error.message.contains("not supported"));
+        assert!(error.body.error.message.contains("unknown dimension"));
+    }
+
+    #[test]
+    fn generic_list_dimension_declared_by_the_surface_is_applied() {
+        // #6228 Phase 3 slice 2, oracle: a manifest declaring
+        // `source_app` as generic_list/exact. A request filtering
+        // on it builds core Filters carrying exactly that generic
+        // filter (name, declared semantics, values); a declared
+        // non-generic_list dimension (kind/scalar_in) requested
+        // through the generic map is still a 400.
+        let mut surface = builtin_manifest();
+        surface.dimensions.push(atlas_core::manifest::Dimension {
+            name: "source_app".to_string(),
+            shape: atlas_core::manifest::Shape::GenericList,
+            semantics: atlas_core::manifest::Semantics::Exact,
+            label_column: None,
+        });
+        surface.content_hash = surface.compute_hash();
+
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .dimensions
+            .insert("source_app".to_string(), vec!["mail".to_string()]);
+        let filters = build_filters(&request, ProtoSensitivity::Personal, &surface)
+            .expect("declared generic_list dimension must build");
+        assert_eq!(filters.generic.len(), 1);
+        assert_eq!(filters.generic[0].name, "source_app");
+        assert_eq!(
+            filters.generic[0].semantics,
+            atlas_core::manifest::Semantics::Exact
+        );
+        assert_eq!(filters.generic[0].values, vec!["mail".to_string()]);
+
+        let mut bad = SearchRequest::default();
+        bad.filters
+            .dimensions
+            .insert("kind".to_string(), vec!["chat".to_string()]);
+        let error = build_filters(&bad, ProtoSensitivity::Personal, &surface).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert!(error.body.error.message.contains("not 'generic_list'"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------

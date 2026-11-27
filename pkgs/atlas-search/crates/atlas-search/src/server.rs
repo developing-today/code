@@ -610,18 +610,51 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
     }
 }
 
-fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
-    if req
-        .filters
-        .dimensions
-        .values()
-        .any(|values| !values.is_empty())
-    {
-        return Err(ServerError::bad_request(
-            "generic filter dimensions are not supported by this search surface yet",
-        ));
+/// Resolve a request's generic dimensions against the effective
+/// manifest surface (#6228 Phase 3, slice 2). Only a dimension the
+/// manifest declares with the `generic_list` shape is supported:
+/// an unknown name, a named-field dimension carried in the generic
+/// map, or a declared dimension of any other shape is a 400 before
+/// any scheduling or backend work (fail-closed). The returned
+/// filters carry the dimension's declared match semantics.
+fn generic_filters(
+    req: &SearchRequest,
+    surface: &Manifest,
+) -> Result<Vec<atlas_core::filters::GenericFilter>, ServerError> {
+    let mut out = Vec::new();
+    for (name, values) in &req.filters.dimensions {
+        if values.is_empty() {
+            continue;
+        }
+        let Some(dim) = surface.dimension(name) else {
+            return Err(ServerError::bad_request(format!(
+                "generic filter dimension '{name}' is not supported by this search surface: \
+                 unknown dimension (not declared in the effective manifest)"
+            )));
+        };
+        if dim.shape != atlas_core::manifest::Shape::GenericList {
+            return Err(ServerError::bad_request(format!(
+                "generic filter dimension '{name}' is not supported by this search surface: \
+                 declared shape is '{}', not 'generic_list'",
+                dim.shape.name()
+            )));
+        }
+        out.push(atlas_core::filters::GenericFilter {
+            name: name.clone(),
+            semantics: dim.semantics,
+            values: values.clone(),
+        });
     }
-    Filters::new(
+    Ok(out)
+}
+
+fn build_filters(
+    req: &SearchRequest,
+    effective: ProtoSensitivity,
+    surface: &Manifest,
+) -> Result<Filters, ServerError> {
+    let generic = generic_filters(req, surface)?;
+    let mut filters = Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
         req.filters.project.clone(),
@@ -630,20 +663,13 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
         req.filters.since.clone(),
         req.filters.until.clone(),
     )
-    .map_err(|e| ServerError::from_core(&e))
+    .map_err(|e| ServerError::from_core(&e))?;
+    filters.generic = generic;
+    Ok(filters)
 }
 
-fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
-    if req
-        .filters
-        .dimensions
-        .values()
-        .any(|values| !values.is_empty())
-    {
-        return Err(ServerError::bad_request(
-            "generic filter dimensions are not supported by this search surface yet",
-        ));
-    }
+fn validate_request(req: &SearchRequest, surface: &Manifest) -> Result<(), ServerError> {
+    generic_filters(req, surface)?;
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -1636,7 +1662,8 @@ impl JobManager {
         client: &ClientConfig,
         request: SearchRequest,
     ) -> Result<JobCreated, ServerError> {
-        validate_request(&request)?;
+        let surface = self.engine.surface_manifest();
+        validate_request(&request, &surface)?;
         let effective = request.ceiling.clamped_to(client.ceiling_cap);
         // Bind this submit to the corpus snapshot it would serve
         // from (#9943): the key — dedupe and result cache alike —
@@ -1648,7 +1675,6 @@ impl JobManager {
         // (version, content_hash), so a manifest change — a new
         // generic dimension, a changed shape — can never be
         // answered from entries computed under the old surface.
-        let surface = self.engine.surface_manifest();
         let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
@@ -1766,7 +1792,7 @@ impl JobManager {
                     key: key.clone(),
                     owner_name: client.name.clone(),
                     request: request.clone(),
-                    filters: build_filters(request, effective)?,
+                    filters: build_filters(request, effective, &self.engine.surface_manifest())?,
                     effective_ceiling: effective,
                     demand: request.mode.branch_demand(),
                     submitted: now,
@@ -1810,7 +1836,7 @@ impl JobManager {
                 inner.queue.len(),
             ));
         }
-        let filters = build_filters(request, effective)?;
+        let filters = build_filters(request, effective, &self.engine.surface_manifest())?;
         let comp = Arc::new(Computation {
             id: new_job_id().map_err(|m| ServerError::new(500, "internal", m))?,
             key: key.clone(),
@@ -3947,16 +3973,62 @@ mod tests {
     }
 
     #[test]
-    fn generic_dimensions_are_rejected_until_search_support_lands() {
+    fn generic_dimensions_unknown_to_the_surface_are_rejected() {
+        // #6228 Phase 3 slice 2: the built-in surface declares no
+        // generic_list dimension, so any nonempty generic dimension
+        // is unknown there and fails closed with a 400.
         let mut request = SearchRequest::default();
         request
             .filters
             .set_dimension("source-app", vec!["mail".to_string()]);
 
-        let error = build_filters(&request, ProtoSensitivity::Personal).unwrap_err();
+        let error =
+            build_filters(&request, ProtoSensitivity::Personal, &builtin_manifest()).unwrap_err();
         assert_eq!(error.status, 400);
         assert_eq!(error.body.error.code, "bad_request");
         assert!(error.body.error.message.contains("not supported"));
+        assert!(error.body.error.message.contains("unknown dimension"));
+    }
+
+    #[test]
+    fn generic_list_dimension_declared_by_the_surface_is_applied() {
+        // #6228 Phase 3 slice 2, oracle: a manifest declaring
+        // `source_app` as generic_list/exact. A request filtering
+        // on it builds core Filters carrying exactly that generic
+        // filter (name, declared semantics, values); a declared
+        // non-generic_list dimension (kind/scalar_in) requested
+        // through the generic map is still a 400.
+        let mut surface = builtin_manifest();
+        surface.dimensions.push(atlas_core::manifest::Dimension {
+            name: "source_app".to_string(),
+            shape: atlas_core::manifest::Shape::GenericList,
+            semantics: atlas_core::manifest::Semantics::Exact,
+            label_column: None,
+        });
+        surface.content_hash = surface.compute_hash();
+
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .dimensions
+            .insert("source_app".to_string(), vec!["mail".to_string()]);
+        let filters = build_filters(&request, ProtoSensitivity::Personal, &surface)
+            .expect("declared generic_list dimension must build");
+        assert_eq!(filters.generic.len(), 1);
+        assert_eq!(filters.generic[0].name, "source_app");
+        assert_eq!(
+            filters.generic[0].semantics,
+            atlas_core::manifest::Semantics::Exact
+        );
+        assert_eq!(filters.generic[0].values, vec!["mail".to_string()]);
+
+        let mut bad = SearchRequest::default();
+        bad.filters
+            .dimensions
+            .insert("kind".to_string(), vec!["chat".to_string()]);
+        let error = build_filters(&bad, ProtoSensitivity::Personal, &surface).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert!(error.body.error.message.contains("not 'generic_list'"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------
