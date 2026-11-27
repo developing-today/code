@@ -50,7 +50,13 @@ class Account(cloudflare.Cloudflare):
             result = app
         elif path.endswith("/access/apps"):
             if method == "POST":
-                self.apps.append({"id": f"app-{len(self.apps)}", "aud": f"aud-{len(self.apps)}", **body})
+                self.apps.append(
+                    {
+                        "id": f"app-{len(self.apps)}",
+                        "aud": f"aud-{len(self.apps)}",
+                        **body,
+                    }
+                )
                 self.policies[self.apps[-1]["id"]] = []
             result = self.apps[-1] if method == "POST" else self.apps
         elif path.endswith("/policies"):
@@ -63,7 +69,12 @@ class Account(cloudflare.Cloudflare):
         elif path.endswith("/configurations"):
             if method == "PUT":
                 self.ingress = body["config"]["ingress"]
-            result = {"config": {"ingress": copy.deepcopy(self.ingress), "warp-routing": {"enabled": False}}}
+            result = {
+                "config": {
+                    "ingress": copy.deepcopy(self.ingress),
+                    "warp-routing": {"enabled": False},
+                }
+            }
         elif path == "/zones":
             name = query.partition("name=")[2]
             result = [{"id": self.zones[name]}] if name in self.zones else []
@@ -73,8 +84,13 @@ class Account(cloudflare.Cloudflare):
                 if self.uploads == self.fail_upload:
                     raise SystemExit("cloudflare PUT secrets: refused")
                 self.worker_secrets[body["name"]] = body["text"]
-            result = [{"name": name, "type": "secret_text"} for name in self.worker_secrets]
-        elif f"/workers/scripts/{cloudflare.WORKER}/secrets/" in path and method == "DELETE":
+            result = [
+                {"name": name, "type": "secret_text"} for name in self.worker_secrets
+            ]
+        elif (
+            f"/workers/scripts/{cloudflare.WORKER}/secrets/" in path
+            and method == "DELETE"
+        ):
             if self.delete_failures > 0:
                 self.delete_failures -= 1
                 raise SystemExit("cloudflare DELETE secret: refused")

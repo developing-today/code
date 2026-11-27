@@ -737,6 +737,21 @@ pub trait SearchEngine: Send + Sync {
         ceiling: ProtoSensitivity,
     ) -> Result<Json, ServerError>;
 
+    /// Hydrate one content item by its canonical SHA-256 hash, under
+    /// the authenticated client's ceiling.
+    fn content_by_hash(
+        &self,
+        canonical_hash: &str,
+        ceiling: ProtoSensitivity,
+    ) -> Result<Json, ServerError> {
+        let _ = (canonical_hash, ceiling);
+        Err(ServerError::new(
+            404,
+            "chunk_not_found",
+            "content not found",
+        ))
+    }
+
     /// Embed one query text into the production query-vector
     /// space (#6788): the Cloudflare search Worker's miss path
     /// stores this vector in the query's Durable Object before
@@ -874,6 +889,39 @@ where
             core_sensitivity(ceiling),
         )
         .map_err(|e| ServerError::from_core(&e))
+    }
+
+    fn content_by_hash(
+        &self,
+        canonical_hash: &str,
+        ceiling: ProtoSensitivity,
+    ) -> Result<Json, ServerError> {
+        let ids = self
+            .backend
+            .chunk_ids_by_hash(canonical_hash)
+            .map_err(|e| ServerError::from_core(&e))?;
+        for chunk_id in ids {
+            match self.chunk(chunk_id, 0, ceiling) {
+                Ok(payload)
+                    if payload
+                        .get("text")
+                        .and_then(Json::as_str)
+                        .is_some_and(|text| {
+                            atlas_core::classify::sha256_hex(text.as_bytes()) == canonical_hash
+                        }) =>
+                {
+                    return Ok(payload);
+                }
+                Ok(_) => continue,
+                Err(error) if error.status == 404 => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(ServerError::new(
+            404,
+            "chunk_not_found",
+            "content not found",
+        ))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
@@ -2129,6 +2177,14 @@ impl JobManager {
             .chunk(chunk_id, neighbors, job.computation.effective_ceiling)
     }
 
+    pub fn content_by_hash(
+        &self,
+        canonical_hash: &str,
+        ceiling: ProtoSensitivity,
+    ) -> Result<Json, ServerError> {
+        self.engine.content_by_hash(canonical_hash, ceiling)
+    }
+
     /// Embed one query through the engine's shared embedder
     /// (#6788). No job is created: the vector is a pure function
     /// of the text under the pinned model, and the caller (the
@@ -2379,6 +2435,22 @@ impl ServerInner {
                     }),
                 ))
             }
+            ("GET", ["v1", "content", canonical_hash]) => {
+                let client = self.require_client(req)?;
+                if canonical_hash.len() != 64
+                    || !canonical_hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(ServerError::bad_request(
+                        "content hash must be 64 lowercase hexadecimal characters",
+                    ));
+                }
+                let payload = self
+                    .manager
+                    .content_by_hash(canonical_hash, client.ceiling_cap)?;
+                Ok(HttpResponse::json(200, payload))
+            }
             ("POST", ["v1", "search"]) => {
                 let client = self.require_client(req)?;
                 let request: SearchRequest = req.json()?;
@@ -2606,6 +2678,21 @@ mod tests {
                 .collect())
         }
 
+        fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>, CoreError> {
+            Ok([1, 2, 3]
+                .into_iter()
+                .filter(|id| {
+                    let text = match id {
+                        1 => "alpha one",
+                        2 => "alpha two",
+                        3 => "secret canary",
+                        _ => unreachable!(),
+                    };
+                    atlas_core::classify::sha256_hex(text.as_bytes()) == canonical_hash
+                })
+                .collect())
+        }
+
         fn neighbors(
             &self,
             _message_id: &str,
@@ -2646,6 +2733,78 @@ mod tests {
             shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
             source_registry: None,
         }
+    }
+
+    #[test]
+    fn content_by_hash_reuses_authorized_chunk_hydration_and_refuses_other_content() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let backend = Arc::new(StubBackend {
+            calls,
+            gate: None,
+            snapshot: None,
+        });
+        let engine = Arc::new(CoreSearchEngine::new(
+            backend,
+            Arc::new(FixedEmbedder {
+                raw: vec![1.0, 0.0],
+            }),
+            Arc::new(|| "ready".to_string()),
+        ));
+        let expected = engine
+            .chunk(1, 0, ProtoSensitivity::Personal)
+            .expect("authorized existing chunk hydration");
+        let handle = start_server(settings(RuntimeLimits::default()), engine).unwrap();
+        let hash = "447ddb49ae0e88206741f4e0d10b13711675bb523d438de9c21de83c81a3fff4";
+
+        let response = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{hash}"),
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, expected);
+
+        let withheld_hash = "694d870b635b9d2084a4b0c32b2303665545a4b90d4a8fbc7300bd4402aa6ab4";
+        let withheld = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{withheld_hash}"),
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(withheld.status, 404);
+        assert_eq!(withheld.body["error"]["code"], "chunk_not_found");
+        assert!(!withheld.body.to_string().contains("secret canary"));
+
+        let missing = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{}", "0".repeat(64)),
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(missing.status, 404);
+        assert_eq!(missing.body, withheld.body);
+
+        let malformed = http(
+            handle.addr,
+            "GET",
+            "/v1/content/not-a-sha256",
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(malformed.status, 400);
+
+        let unauthenticated = http(
+            handle.addr,
+            "GET",
+            &format!("/v1/content/{hash}"),
+            None,
+            None,
+        );
+        assert_eq!(unauthenticated.status, 401);
     }
 
     #[test]

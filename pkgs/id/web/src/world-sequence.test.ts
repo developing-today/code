@@ -173,7 +173,7 @@ describe("world page snapshot/event sequence shapes (#10401)", () => {
     expect(participants().textContent).toContain("zero");
   });
 
-  it("reconnect join still sends the pre-malformed-frame cursor as after", async () => {
+  it("reconnect join asks for a fresh snapshot when continuity is unproven", async () => {
     const countBefore = FakeSocket.all.length;
     socket.serverDrop();
     await flushAsync();
@@ -181,6 +181,6 @@ describe("world page snapshot/event sequence shapes (#10401)", () => {
     const reconnected = FakeSocket.all.at(-1) as FakeSocket;
     reconnected.open();
     expect(reconnected.sent("join")).toHaveLength(1);
-    expect(reconnected.sent("join")[0].after).toBe(6);
+    expect(reconnected.sent("join")[0].after).toBeNull();
   });
 });

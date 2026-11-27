@@ -16,9 +16,7 @@ import {
 
 const tempDirs: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })),
-  );
+  await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
 async function files() {
@@ -40,13 +38,7 @@ const q = (ledgerId: string) => ({
   links: [],
 });
 
-async function answerApprove(
-  file: string,
-  ledgerId: string,
-  source: string,
-  key: string,
-  optionId = "approve",
-) {
+async function answerApprove(file: string, ledgerId: string, source: string, key: string, optionId = "approve") {
   await raiseNeedsDrew(file, q(ledgerId), source, key);
   const updated = await recordAnswer(file, ledgerId, { optionId, via: "test" });
   if (!updated?.answer) throw new Error("answer not recorded");
@@ -55,19 +47,11 @@ async function answerApprove(
 
 describe("actions-exec applier (#14043 S3)", () => {
   test("canonical message and house ISO shape match the broker S1 contract", () => {
-    expect(signedDecideMessage("h1", true, "ans", "2026-11-24T08:00:00Z")).toBe(
-      "h1|true|ans|2026-11-24T08:00:00Z",
-    );
-    expect(
-      signedDecideMessage("h1", false, "ans", "2026-11-24T08:00:00Z"),
-    ).toBe("h1|false|ans|2026-11-24T08:00:00Z");
-    expect(toHouseIso(Date.parse("2026-11-24T08:00:00.123Z"))).toBe(
-      "2026-11-24T08:00:00Z",
-    );
+    expect(signedDecideMessage("h1", true, "ans", "2026-11-24T08:00:00Z")).toBe("h1|true|ans|2026-11-24T08:00:00Z");
+    expect(signedDecideMessage("h1", false, "ans", "2026-11-24T08:00:00Z")).toBe("h1|false|ans|2026-11-24T08:00:00Z");
+    expect(toHouseIso(Date.parse("2026-11-24T08:00:00.123Z"))).toBe("2026-11-24T08:00:00Z");
     // node:crypto HMAC-SHA256 hex is 64 lowercase hex chars.
-    expect(signDecide("k", "h", true, "a", "2026-11-24T08:00:00Z")).toMatch(
-      /^[0-9a-f]{64}$/,
-    );
+    expect(signDecide("k", "h", true, "a", "2026-11-24T08:00:00Z")).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("approve mapping: approve->true, deny->false, free-text->null", async () => {
@@ -88,12 +72,7 @@ describe("actions-exec applier (#14043 S3)", () => {
       "deny",
     );
     expect(approveFromAnswer(d)).toBe(false);
-    await raiseNeedsDrew(
-      needsDrewFile,
-      q("actions-exec-ext:h3:1"),
-      "fleet-actions-exec",
-      "actions-exec-ext:h3:1",
-    );
+    await raiseNeedsDrew(needsDrewFile, q("actions-exec-ext:h3:1"), "fleet-actions-exec", "actions-exec-ext:h3:1");
     const f = await recordAnswer(needsDrewFile, "actions-exec-ext:h3:1", {
       freeText: "maybe?",
       via: "test",
@@ -104,12 +83,7 @@ describe("actions-exec applier (#14043 S3)", () => {
 
   test("§3 row 1: pending request decided -> applied", async () => {
     const { needsDrewFile, applyFile } = await files();
-    await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:alpha:1",
-      "fleet-actions-exec",
-      "actions-exec-ext:alpha:1",
-    );
+    await answerApprove(needsDrewFile, "actions-exec-ext:alpha:1", "fleet-actions-exec", "actions-exec-ext:alpha:1");
     const calls: unknown[] = [];
     const res = await runApplierTick({
       needsDrewFile,
@@ -171,18 +145,8 @@ describe("actions-exec applier (#14043 S3)", () => {
 
   test("§3 rows 3-4: fail 5 no-pending -> rejected; expired grace -> superseded", async () => {
     const { needsDrewFile, applyFile } = await files();
-    await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:gamma:1",
-      "fleet-actions-exec",
-      "actions-exec-ext:gamma:1",
-    );
-    await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:delta:1",
-      "fleet-actions-exec",
-      "actions-exec-ext:delta:1",
-    );
+    await answerApprove(needsDrewFile, "actions-exec-ext:gamma:1", "fleet-actions-exec", "actions-exec-ext:gamma:1");
+    await answerApprove(needsDrewFile, "actions-exec-ext:delta:1", "fleet-actions-exec", "actions-exec-ext:delta:1");
     const res = await runApplierTick({
       needsDrewFile,
       applyFile,
@@ -213,12 +177,7 @@ describe("actions-exec applier (#14043 S3)", () => {
 
   test("transient broker failure stays failed for retry (past the backoff)", async () => {
     const { needsDrewFile, applyFile } = await files();
-    await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:eps:1",
-      "fleet-actions-exec",
-      "actions-exec-ext:eps:1",
-    );
+    await answerApprove(needsDrewFile, "actions-exec-ext:eps:1", "fleet-actions-exec", "actions-exec-ext:eps:1");
     let nowMs = Date.parse("2026-11-27T03:00:00Z");
     const failing = async () => ({
       ok: false,
@@ -264,12 +223,7 @@ describe("actions-exec applier (#14043 S3)", () => {
 
   test("double-tap: one decide call, second answer for same handle superseded", async () => {
     const { needsDrewFile, applyFile } = await files();
-    await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:dbl:1",
-      "fleet-actions-exec",
-      "actions-exec-ext:dbl:1",
-    );
+    await answerApprove(needsDrewFile, "actions-exec-ext:dbl:1", "fleet-actions-exec", "actions-exec-ext:dbl:1");
     let calls = 0;
     const deps = {
       needsDrewFile,
@@ -304,19 +258,12 @@ describe("actions-exec applier (#14043 S3)", () => {
     expect(res.superseded).toBe(1);
     const ledger = await readApplyLedger(applyFile);
     expect(ledger).toHaveLength(2);
-    expect(
-      ledger.find((r) => r.ledgerId === "actions-exec-ext:dbl:2")?.state,
-    ).toBe("superseded");
+    expect(ledger.find((r) => r.ledgerId === "actions-exec-ext:dbl:2")?.state).toBe("superseded");
   });
 
   test("applied rows are never re-sent on the next tick", async () => {
     const { needsDrewFile, applyFile } = await files();
-    await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:once:1",
-      "fleet-actions-exec",
-      "actions-exec-ext:once:1",
-    );
+    await answerApprove(needsDrewFile, "actions-exec-ext:once:1", "fleet-actions-exec", "actions-exec-ext:once:1");
     let calls = 0;
     const deps = {
       needsDrewFile,

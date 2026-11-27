@@ -88,6 +88,10 @@ jobs:
         run: |
           test -f scripts/test_fleet_completion_usage.py
           python3 -I -m unittest discover -s scripts -p 'test_fleet_completion_usage.py' -v
+      - name: Run binding-history collector tests (#2140)
+        run: |
+          test -f scripts/test_fleet_binding_history.py
+          python3 -I -m unittest discover -s scripts -p 'test_fleet_binding_history.py' -v
       - name: Run graph encoding bake-off report check (#10219)
         run: |
           test -f doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/test_validate_real_encoding_bakeoff.py
@@ -97,6 +101,14 @@ jobs:
         run: |
           test -f scripts/fleet/queue-transport-alert/test_check_transport.py
           python3 -I -m unittest discover -s scripts/fleet/queue-transport-alert -p 'test_check_transport.py' -v
+      - name: Run drift census core tests (#14134 U1)
+        run: |
+          test -f scripts/test_drift_census.py
+          python3 -I -m unittest discover -s scripts -p 'test_drift_census.py' -v
+      - name: Run drift census report tests (#14134 U1 slice 2)
+        run: |
+          test -f scripts/fleet/test_drift_census_report.py
+          python3 -I -m unittest discover -s scripts/fleet -p 'test_drift_census_report.py' -v
       - name: Run sops atomic writers regression tests (#6555)
         run: bash lib/sops-atomic-writers.test.sh
       - name: Run run-switch regression tests (#7667)

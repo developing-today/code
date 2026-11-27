@@ -209,6 +209,80 @@ impl Default for Mux {
     }
 }
 
+/// Bidirectional mapping between one logical stream's IDs on paired broker
+/// legs. IDs are leg-local: the broker never forwards one leg's number onto
+/// the other. The broker chooses the destination ID (with the correct
+/// initiator/responder parity for that leg) and registers the pair here.
+#[derive(Debug, Default)]
+pub struct StreamIdMap {
+    left_to_right: HashMap<u32, u32>,
+    right_to_left: HashMap<u32, u32>,
+}
+
+impl StreamIdMap {
+    /// Register a pair of nonzero, currently unused leg-local IDs.
+    pub fn register(&mut self, left_id: u32, right_id: u32) -> bool {
+        if left_id == 0
+            || right_id == 0
+            || self.left_to_right.contains_key(&left_id)
+            || self.right_to_left.contains_key(&right_id)
+        {
+            return false;
+        }
+        self.left_to_right.insert(left_id, right_id);
+        self.right_to_left.insert(right_id, left_id);
+        true
+    }
+
+    /// Translate a frame received on the left leg for transmission on right.
+    /// Leg-level frames (stream 0) pass unchanged; an unmapped stream fails
+    /// closed with a protocol ERROR rather than leaking its source-leg ID.
+    pub fn left_to_right_frame(&self, frame: Frame) -> Result<Frame, Frame> {
+        Self::translate(frame, &self.left_to_right)
+    }
+
+    /// Translate a frame received on the right leg for transmission on left.
+    pub fn right_to_left_frame(&self, frame: Frame) -> Result<Frame, Frame> {
+        Self::translate(frame, &self.right_to_left)
+    }
+
+    fn translate(mut frame: Frame, mapping: &HashMap<u32, u32>) -> Result<Frame, Frame> {
+        if frame.stream_id == 0 {
+            return Ok(frame);
+        }
+        let Some(mapped_id) = mapping.get(&frame.stream_id).copied() else {
+            return Err(Frame::error(
+                ErrorReason::ProtocolViolation,
+                "frame for an unmapped paired-leg stream",
+            ));
+        };
+        frame.stream_id = mapped_id;
+        Ok(frame)
+    }
+
+    /// Remove a pair by its left-leg ID and return the former right-leg ID.
+    pub fn remove_left(&mut self, left_id: u32) -> Option<u32> {
+        let right_id = self.left_to_right.remove(&left_id)?;
+        self.right_to_left.remove(&right_id);
+        Some(right_id)
+    }
+
+    /// Remove a pair by its right-leg ID and return the former left-leg ID.
+    pub fn remove_right(&mut self, right_id: u32) -> Option<u32> {
+        let left_id = self.right_to_left.remove(&right_id)?;
+        self.left_to_right.remove(&left_id);
+        Some(left_id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.left_to_right.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.left_to_right.is_empty()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -506,5 +580,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn paired_leg_stream_ids_translate_both_directions_without_leaking_ids() {
+        let mut ids = StreamIdMap::default();
+        assert!(ids.register(1, 4));
+        assert!(ids.register(3, 8));
+        assert!(!ids.register(1, 10));
+        assert!(!ids.register(5, 8));
+        assert!(!ids.register(0, 12));
+
+        let left_data = Frame::data(1, 7, b"ciphertext".to_vec()).unwrap();
+        let right_data = ids.left_to_right_frame(left_data).unwrap();
+        assert_eq!((right_data.stream_id, right_data.seq), (4, 7));
+        assert_eq!(right_data.payload, b"ciphertext");
+
+        let right_close = Frame::new(FrameType::Close, 4, 0, Vec::new()).unwrap();
+        let left_close = ids.right_to_left_frame(right_close).unwrap();
+        assert_eq!(left_close.stream_id, 1);
+
+        let ping = Frame::new(FrameType::Ping, 0, 0, Vec::new()).unwrap();
+        assert_eq!(ids.left_to_right_frame(ping).unwrap().stream_id, 0);
+
+        assert_eq!(ids.remove_left(1), Some(4));
+        assert_eq!(ids.remove_right(8), Some(3));
+        assert!(ids.is_empty());
+        let stale = Frame::data(1, 8, vec![0]).unwrap();
+        let error = ids.left_to_right_frame(stale).unwrap_err();
+        assert_eq!(
+            error.error_reason().unwrap(),
+            Some(ErrorReason::ProtocolViolation)
+        );
     }
 }

@@ -559,6 +559,7 @@ Both render in the board cards (execution strip) and the item drill-down.
 ```bash
 cd pm-stack/aggregator
 bun install
+(cd ../projector && bun install)  # pm-core's in-process projector-store reader
 bun run dev          # http://127.0.0.1:4870
 ```
 

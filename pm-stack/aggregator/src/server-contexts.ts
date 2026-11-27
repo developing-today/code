@@ -30,7 +30,7 @@ import { renderBoard, deriveOverview, renderOverview, buildRoadmapDrill } from "
 import { buildBriefs } from "./brief.ts";
 import { RULING_CLASS_ID, type ConflictRuling } from "./conflict-rulings.ts";
 import { buildDigest, type Digest, type DigestKind } from "./digest.ts";
-import { searchWork } from "./search-view.ts";
+import { registrySearchRefs, searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
@@ -253,9 +253,7 @@ export async function searchContext(query: string) {
   // (registry taskRefs, tier-item refs) join the resolution set, or
   // their search badges always render unresolved even when the live
   // pool/projector could resolve them.
-  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
-    isValidRef,
-  );
+  const extraRefs = [...registrySearchRefs(registry, query), ...tierItems.map((item) => item.ref)].filter(isValidRef);
   const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await withSearchTiming(timings, "items", () => source.items(refs));
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };
@@ -447,7 +445,12 @@ export async function boardRender() {
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
   const orchestrationStatus = source.diagnostics?.().orchestration.state;
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
+  const briefs = buildBriefs(pool, {
+    comments,
+    orchestration,
+    orchestrationStatus,
+    ruling: await projectTrustRuling(),
+  });
   const act = {
     actionsByObject,
     poolByRef,
@@ -475,7 +478,12 @@ export async function attentionRender() {
     ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state, ruling: await projectTrustRuling() });
+  const briefs = buildBriefs(pool, {
+    comments,
+    orchestration,
+    orchestrationStatus: diagnosis?.state,
+    ruling: await projectTrustRuling(),
+  });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -559,7 +567,17 @@ export async function loadOverviewContext() {
     source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject, ruling: await projectTrustRuling() };
+  return {
+    attention: view,
+    pool,
+    quota,
+    health,
+    board,
+    items,
+    orchestration,
+    actionsByObject,
+    ruling: await projectTrustRuling(),
+  };
 }
 
 // #5082: same contract as the board assembly above — the overview

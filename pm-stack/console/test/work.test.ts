@@ -1570,6 +1570,7 @@ describe("the state kept ready", () => {
       asks: still,
       questionCount: still,
       questions: still,
+      questionSets: still,
       prs: still,
       priorities: still,
       done: still,

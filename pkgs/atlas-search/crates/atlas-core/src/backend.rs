@@ -79,6 +79,12 @@ pub trait SearchBackend {
     /// result.
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>>;
 
+    /// Chunk ids whose stored canonical content hash matches exactly.
+    /// Backends without a hash index expose no candidates.
+    fn chunk_ids_by_hash(&self, _canonical_hash: &str) -> Result<Vec<i64>> {
+        Ok(Vec::new())
+    }
+
     /// Same-message neighbor rows around (`message_id`, any
     /// `chunk_idx` in the window), ordered by chunk_idx.
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>>;
@@ -142,6 +148,9 @@ impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
     }
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
         (**self).chunk_details(ids)
+    }
+    fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        (**self).chunk_ids_by_hash(canonical_hash)
     }
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
         (**self).neighbors(message_id, chunk_idx, n)

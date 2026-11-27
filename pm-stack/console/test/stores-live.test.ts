@@ -70,7 +70,10 @@ test("the asking: size, one count per table the app reads, and the schema versio
 });
 
 test("an answer is read against the numbers the stand-in sent", () => {
-  const got = storeAnswered(platform, answer([[4096], [3], [0], [12], [1], [2], [0], [5], [7]]).results.map((r) => r.response?.result));
+  const got = storeAnswered(
+    platform,
+    answer([[4096], [3], [0], [12], [1], [2], [0], [5], [7]]).results.map((r) => r.response?.result),
+  );
   expect(got.answers).toBe(true);
   expect(got.error).toBeNull();
   expect(got.sizeBytes).toBe(4096);
@@ -122,7 +125,9 @@ test("read through the fleet binary and a stand-in store: live rows for the answ
   expect(byName.get("voice-line-ledger")?.answers).toBe(false);
   expect(byName.get("voice-line-ledger")?.error).toContain("not held under a secret's name");
   // Tokens were fetched by name, and no token value leaves in the result.
-  expect(new Set(fetched)).toEqual(new Set(["turso.fleet-queue-rw-token", "turso.fleet-platform-rw-token", "turso.fleet-mirror-rw-token"]));
+  expect(new Set(fetched)).toEqual(
+    new Set(["turso.fleet-queue-rw-token", "turso.fleet-platform-rw-token", "turso.fleet-mirror-rw-token"]),
+  );
   expect(JSON.stringify(got)).not.toContain("queue-token");
   expect(JSON.stringify(got)).not.toContain("platform-token");
   expect(seen.every((s) => s.auth.startsWith("Bearer "))).toBe(true);
@@ -203,7 +208,10 @@ test("a rotated token is fetched again, once, and the store then answers", async
 });
 
 test("the screen's words: an answering store shows its numbers; one that does not is said as not answering", () => {
-  const liveStore = storeAnswered(queue, answer([[2048], [3]]).results.map((r) => r.response?.result));
+  const liveStore = storeAnswered(
+    queue,
+    answer([[2048], [3]]).results.map((r) => r.response?.result),
+  );
   expect(storeSaid(liveStore).text).toContain("Answers. Size 2.0 KiB. Schema version 3.");
   const down = storeNotAnswering(queue, "the store answered http 503");
   const said = storeSaid(down);
@@ -212,4 +220,17 @@ test("the screen's words: an answering store shows its numbers; one that does no
   // Zero stores and many stores are both just the list, as given.
   expect(storesList({ stores: [] }).stores).toEqual([]);
   expect(storesList(JSON.parse(file)).stores.length).toBeGreaterThanOrEqual(4);
+});
+
+test("the store list accepts the named D1 gateway path, but not another endpoint", () => {
+  const queue = JSON.parse(file).stores[0];
+  expect(storesList({ stores: [queue] }).stores).toHaveLength(1);
+  for (const address of [
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-queue?other=1",
+    "https://other.workers.dev/db/fleet-queue",
+    "http://d1-gateway.developing-today.workers.dev/db/fleet-queue",
+  ]) {
+    expect(storesList({ stores: [{ ...queue, address }] }).malformed).toBe(1);
+  }
 });

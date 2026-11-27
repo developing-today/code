@@ -663,6 +663,21 @@ never inherits `MCPX_CLIENT`, `MCPX_RUNTIME`, `MCPX_ENTRY` or
 goes without (no generated client, no enforced permission profiles,
 skipped launcher phases).
 
+`script.imports=prepare` is the opt-in that installs resolved packages into
+mcpx's content-addressed cache. With the default
+`script.importsCrossProject=isolate`, packages declared by an imported file's
+foreign project manifest are prepared in a separate cache entry keyed by that
+manifest identity and its pinned packages. Node and Bun receive an mcpx-owned
+`node_modules` symlink at that foreign manifest directory so the imported
+file resolves against its own project set; the runner holds the normal
+directory lock and cache lease, does not replace a real `node_modules`
+directory or unrelated symlink, and removes a foreign-scope symlink it
+created or refreshed when the run ends (only if it still targets that
+prepared cache entry). Deno receives the corresponding manifest-scoped
+import-map entries and no project-directory link. `report` and
+`importsCrossProject=ignore` do not install subsets or create subset links.
+No registry install or project link is performed unless prepare is requested.
+
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
 ### adapters
@@ -1065,6 +1080,7 @@ skipped launcher phases).
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed | `TestScriptPhasesRunFromTheEnvironment` |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log | `TestScriptCaptureConsoleOffDropsConsoleOutput` |
 | `script.check` | enum | `off` | client | no | `--script-check`, `--script-typecheck`, `--typecheck` | `MCPX_SCRIPT_CHECK`, `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it; path alias: script.typecheck; one of off, types (also on), strict | `TestScriptTypecheckOnRefusesATypeError` |
+| `script.checkJs` | bool | `true` | client | no | `--script-check-js` | `MCPX_SCRIPT_CHECK_JS` | validate JavaScript scripts with // @ts-check and their .d.ts declarations | `TestScriptCheckJsDecidesWhetherJavaScriptIsChecked` |
 | `script.checkOnError` | enum | `fail` | client | no | `--script-check-on-error` | `MCPX_SCRIPT_CHECK_ON_ERROR` | what to do when script checking finds an error | `TestScriptCheckOnErrorDecidesOnACheckError` |
 | `script.checkOnUnsupported` | enum | `warn` | client | no | `--script-check-on-unsupported` | `MCPX_SCRIPT_CHECK_ON_UNSUPPORTED` | what to do when the selected runtime cannot check the script | `TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes` |
 | `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir | `TestScriptCwdIsReachableFromTheEnvironment` |

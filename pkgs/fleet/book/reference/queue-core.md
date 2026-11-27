@@ -202,6 +202,13 @@ parked by-ID claim still refuses; queued and handed-off by-ID claims keep their
 ordinary behavior. Attempt-capped overrides and supervision handling are separate
 slices.
 
+**Resume hint (storage, #9178 §1).** A packet may carry `resume_session_id`
+(a non-empty session-id string; absent/null means no hint). The broker validates
+the shape at enqueue and persists the trimmed hint on the task row, where it is
+returned on reads and recorded on the `enqueued` event. The claim wire — session
+continuation, fallbacks, and requested-vs-actual audit — is a separate slice;
+until it lands, hinted and hint-less tasks claim exactly as before.
+
 ## fleet queue release
 
 ```text

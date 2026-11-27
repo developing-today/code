@@ -9,7 +9,7 @@ import {
   encodeCanonical,
   validateRecord,
   type CborValue,
-} from "../src/canonical-cbor.ts";
+} from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 // The golden table is shared with the Rust suite
 // (crates/id-core/tests/canonical_cbor_vectors.rs): same logical

@@ -152,12 +152,72 @@ jobs:
               - **Prefer tracked, higher-impact work**: before inventing a new micro-fix, check the open issues and implement the highest-impact one you can complete and verify, even when it spans several files.
               - **Merging is permitted, never required**: merge your PR only when checks pass and you are reasonably certain it is correct and low-risk. Otherwise leave it open and state your confidence and what a human should check in the description.
 
+      - name: Verify the superseded-copy sweep is paginated and claim-safe (#15723)
+        run: |
+          python3 - <<'PYEOF4'
+          import sys
+          path = ".github/workflows/daily-codebase-ideation.yml"
+          text = open(path).read()
+          lines = text.splitlines()
+          step_name = "      - name: Close superseded daily session-prompt issues (#15723)"
+          step_start = next((i for i, line in enumerate(lines) if line == step_name), None)
+          if step_start is None:
+              sys.exit("superseded-copy sweep step is missing")
+          step_end = next(
+              (i for i in range(step_start + 1, len(lines)) if lines[i].startswith("      - name:")),
+              len(lines),
+          )
+          step = "\n".join(lines[step_start:step_end])
+          if "gh issue list" in step or "--limit" in step:
+              sys.exit("sweep must not cap its candidate list (--limit): older copies would be silently omitted")
+          if "--paginate" not in step or "search/issues" not in step:
+              sys.exit("sweep must collect candidates through the fully paginated search API")
+          view_at = step.find("gh issue view")
+          close_at = step.find("gh issue close")
+          if view_at == -1 or close_at == -1 or view_at > close_at:
+              sys.exit("sweep must re-read each candidate fresh (gh issue view) before closing it")
+          for guard in ("queue/claimed", "work/assigned", "recent comment activity"):
+              if guard not in step:
+                  sys.exit("sweep close guard is missing: " + guard)
+
+          def guard_outcome(state, labels, comment_times, cutoff):
+              if state != "OPEN":
+                  return "skip"
+              if "queue/claimed" in labels or "work/assigned" in labels:
+                  return "skip"
+              if any(t >= cutoff for t in comment_times):
+                  return "skip"
+              return "close"
+
+          cutoff = "2026-11-25T06:00:00Z"
+          cases = [
+              (("OPEN", [], []), "close"),
+              (("OPEN", ["queue/claimed"], []), "skip"),
+              (("OPEN", ["work/assigned"], []), "skip"),
+              (("CLOSED", [], []), "skip"),
+              (("OPEN", [], ["2026-11-25T07:00:00Z"]), "skip"),
+              (("OPEN", [], ["2026-11-20T07:00:00Z"]), "close"),
+          ]
+          for (state, labels, comments), want in cases:
+              got = guard_outcome(state, labels, comments, cutoff)
+              if got != want:
+                  sys.exit(f"sweep guard example failed: state={state} labels={labels} comments={comments}: got {got}, want {want}")
+          print("superseded-copy sweep is paginated and its close guard passes the fixture examples")
+          PYEOF4
+
       - name: Close superseded daily session-prompt issues (#15723)
         # Runs in the same job as the dispatch above, once the new tracking
         # issue exists, so each close comment can name it as the successor.
         # A prior copy is stale when it is open, carries the exact
-        # session-prompt title, is older than 24h, and is not claimed (no
-        # queue/claimed label): a claimed/in-flight copy is never auto-closed.
+        # session-prompt title, and is older than 24h. The candidate list
+        # alone never closes anything: a queue claim commits before its
+        # queue/claimed label lands, so each candidate is re-read fresh
+        # immediately before closing and is skipped when it is claimed
+        # (queue/claimed or work/assigned label), no longer open, or has
+        # comment activity inside the 24h window — a claimed or in-flight
+        # copy is never auto-closed. Candidates are collected through the
+        # search API with full pagination, so older copies past the first
+        # hundred matches are not silently omitted.
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.dispatch.outputs.issue_number != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -165,18 +225,29 @@ jobs:
         run: |
           set -euo pipefail
           cutoff="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
-            --search '"Daily codebase innovation & maintenance" in:title' \
-            --json number,title,createdAt,labels > stale-copies.json
+          gh api --paginate \
+            "search/issues?q=repo:${GITHUB_REPOSITORY}+is:issue+is:open+%22Daily+codebase+innovation+%26+maintenance%22+in:title&per_page=100" \
+            | jq -s '[.[].items[]]' > stale-copies.json
           jq -r --arg cutoff "$cutoff" --argjson new_issue "$NEW_ISSUE" '
             .[]
             | select(.title == "Daily codebase innovation & maintenance")
             | select(.number != $new_issue)
-            | select(.createdAt < $cutoff)
-            | select([.labels[].name] | index("queue/claimed") == null)
+            | select(.created_at < $cutoff)
             | .number' stale-copies.json > stale-copies.txt
           while read -r n; do
             [ -n "$n" ] || continue
+            gh issue view "$n" --repo "$GITHUB_REPOSITORY" \
+              --json state,labels,comments > "candidate-$n.json"
+            verdict="$(jq -r --arg cutoff "$cutoff" '
+              if .state != "OPEN" then "skip: no longer open"
+              elif ([.labels[].name] | index("queue/claimed")) != null then "skip: claimed"
+              elif ([.labels[].name] | index("work/assigned")) != null then "skip: assigned"
+              elif any(.comments[]; .createdAt >= $cutoff) then "skip: recent comment activity"
+              else "close" end' "candidate-$n.json")"
+            if [ "$verdict" != "close" ]; then
+              echo "not closing superseded session-prompt issue #$n ($verdict)"
+              continue
+            fi
             echo "closing superseded session-prompt issue #$n"
             gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
               --comment "closed as moot — session prompt superseded by #$NEW_ISSUE"

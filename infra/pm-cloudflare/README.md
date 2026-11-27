@@ -53,7 +53,7 @@ for its local console. This workflow remains the sole applier for the
 Access application and policy, DNS, Worker route and Worker settings.
 
 The app's Cloudflare screen says where the configuration was last
-  applied from: the latest successful dispatched run of this
-  workflow on main, with its commit, completion time and a link to
-  the run (the console's `cloudflare-apply` read). It says provenance
-  is unavailable when no successful apply is on record.
+applied from: the latest successful dispatched run of this
+workflow on main, with its commit, completion time and a link to
+the run (the console's `cloudflare-apply` read). It says provenance
+is unavailable when no successful apply is on record.

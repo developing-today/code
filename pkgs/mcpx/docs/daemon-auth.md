@@ -28,6 +28,7 @@ This is the design record for #13659 slice 1. It decides the identity model, cre
 ### 2.3 Identity to PolicySession and CapabilityCeiling
 
 - Each key names a **ceiling**: a named `CapabilityCeiling` declared in configuration under a new settings family `auth.*`. Ceilings are data in config, per the house rule that every value is a setting. A ceiling is a set of namespaces (mcpx's worlds), a tool allowlist (gateway tools and upstream tools named separately), a program allowlist for `mcpx_exec`, and quotas on the two axes mcpx has: `tool_calls` and `program_invocations`.
+- The first enforcement slice stores named ceilings in `auth.capabilityCeilings`, a JSON array of `{name, tools}` objects. Upstream tools use exact `namespace:tool` entries; `*` means every upstream tool. Unknown key ceiling names and malformed or duplicate ceiling definitions refuse authenticated tool calls. Namespace filters, gateway-tool mapping, and quotas remain later slices.
 - The id model's third axis, `frames`, has no mcpx analogue and is dropped. This is the one deliberate divergence.
 - Per request the daemon runs the PolicySession order, which is the alignment contract with `id_caps::mcp_policy`: ceiling check first, quota charge before execution, and exactly one audit event per action, refusals included, stamped with the key ID and `capability_ref`.
 - Ceilings are set by the owner at provisioning and are never widened by the session or the caller (the RoleGrant rule).
@@ -55,16 +56,24 @@ The unix socket stays filesystem-permission authentication: 0600, owner-only. A 
 
 1. Slice 2: key store and `mcpx auth` provisioning CLI. Hash-at-rest `auth.json`, create, list, revoke, and the `legacy-transport-token` import.
 2. Slice 3: daemon auth middleware. The `auth.mode` setting, key resolution on `/mcp` and `/v1`, the 401 refusal shape, and audit stamping with key ID and `capability_ref`.
-3. Slice 4: ceilings. Config-declared `CapabilityCeiling` sets and the PolicySession order (ceiling check, quota charge, audit) on both surfaces.
-4. Slice 5: client migration. Auto-provisioned `local-cli` key, client library and exec forwarding, and the `auth.mode` default flip to `permissive`.
-5. Slice 6: door mapping. The bridge presents per-client and per-machine daemon keys, selector-as-narrowing at the door, the `auth.mode` default flip to `required`, and removal of the legacy token import.
+3. Slice 4: audit identity. Stamp key ID and `capability_ref` on daemon tool-call audit rows.
+4. Slice 5: ceilings. Config-declared `CapabilityCeiling` sets and the PolicySession order (ceiling check, quota charge, audit) on both surfaces.
+5. Slice 6: client migration. Auto-provisioned `local-cli` key, client library and exec forwarding, and the `auth.mode` default flip to `permissive`.
+6. Slice 7: door mapping. The bridge presents per-client and per-machine daemon keys, selector-as-narrowing at the door, the `auth.mode` default flip to `required`, and removal of the legacy token import.
 
 ### 2.7.1 Implementation status
 
 - The key store and the HTTP gate have landed (the gate half of slice 3 together with the store half of slice 2). `auth.json` holds only SHA-256 hashes, mode 0600, in the state directory; a key's public ID is the first 12 hex digits of its hash. The store is re-read whenever the file changes, so a revocation takes effect on the next request.
 - `auth.mode` is registered with `off` as the default. `off` is the #1975 gate unchanged and does not consult keys. `permissive` and `required` resolve `Bearer mcpx_key_...` against the store and refuse an unknown or revoked key with 401 in either mode. `required` refuses every HTTP caller with no valid credential. The unix socket needs no key in either mode (section 2.4). `transport.bearerToken`, when set, is honoured in every mode as the virtual key `legacy-transport-token` (owner, ceiling `full`), resolved in memory rather than written into the store.
 - An authenticated request carries its (key ID, user, label, ceiling, `capability_ref`) on the request context. The chat-completions proxy never forwards a keyed request's Authorization header upstream.
-- Still open: the `mcpx auth key create|list|revoke` CLI, audit stamping with the key ID, ceilings (slice 4), client migration (slice 5) and the door mapping (slice 6). Until the CLI lands, a key is provisioned through the daemon package's `KeyStore.Create`.
+- The local CLI supports `mcpx auth key create|list|revoke`. Create requires a user and label, defaults to the `discovery` ceiling, and prints the raw key only once; `auth.json` stores only the hash. List exposes public metadata without the secret or hash. Keys are managed through the local state directory, never over unauthenticated HTTP. A lost key cannot be recovered: create a replacement, update its caller, then revoke the old key by its public ID.
+- Still open after the initial upstream-tool enforcement step: namespace filtering, gateway-tool mapping and quotas; client migration (slice 6); and the door mapping (slice 7).
+
+### 2.7.2 Tool-call ceiling enforcement
+
+- `auth.capabilityCeilings` defaults to three named policies: `full` allows all upstream tools (including the legacy transport-token identity), while `discovery` and `admin` allow no upstream tool calls.
+- The daemon resolves the authenticated key's named ceiling and checks its `namespace:tool` allowlist in each registry call entry point before invoking an upstream tool. A local MCP request that re-enters the daemon preserves its validated key for the nested call. A missing policy, unknown ceiling, malformed JSON, duplicate ceiling name, or denied tool fails closed with a permission refusal. Anonymous calls keep their existing behavior.
+- This slice does not implement namespace filtering, quota charging, program invocation policy, or front-door mapping.
 
 ### 2.8 Non-goals
 

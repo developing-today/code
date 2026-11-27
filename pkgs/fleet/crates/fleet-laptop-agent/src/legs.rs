@@ -448,9 +448,15 @@ impl SshLeg {
     fn poll_job(&self, job_id: &str, query: &str) -> Result<Reply, LegError> {
         let out_off = query_u64(query, "out_off");
         let err_off = query_u64(query, "err_off");
+        let wait_s = query_u64(query, "wait_s").min(30);
         let d = format!("$HOME/{SSHFB_REMOTE_DIR}/{job_id}");
         let remote = format!(
-            "d={d}; \
+            "d={d}; end=$(( $(date +%s) + {wait_s} )); \
+             while [ ! -f \"$d/exit\" ]; do \
+             os=$(stat -c%s \"$d/out\" 2>/dev/null || echo 0); \
+             es=$(stat -c%s \"$d/err\" 2>/dev/null || echo 0); \
+             if [ \"$os\" -gt {out_off} ] || [ \"$es\" -gt {err_off} ]; then break; fi; \
+             [ $(date +%s) -ge \"$end\" ] && break; sleep 0.2; done; \
              os=$(stat -c%s \"$d/out\" 2>/dev/null || echo 0); \
              es=$(stat -c%s \"$d/err\" 2>/dev/null || echo 0); \
              start=$(cat \"$d/start\" 2>/dev/null || date +%s); \

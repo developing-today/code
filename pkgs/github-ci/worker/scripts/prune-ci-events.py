@@ -21,7 +21,9 @@ import subprocess
 import sys
 import urllib.request
 
-TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform/v2/pipeline"
+TURSO_URL = (
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-platform/v2/pipeline"
+)
 TOKEN_NAME = "turso.fleet-platform-rw-token"
 
 

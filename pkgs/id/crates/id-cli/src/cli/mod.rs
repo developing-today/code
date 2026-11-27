@@ -42,6 +42,7 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   compact      Reclaim live-class event bytes with one retention pass
 //!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
 //!   talk         Talk pages: post on and list an object's discussion
 //!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
@@ -1540,6 +1541,29 @@ pub enum Command {
         #[command(subcommand)]
         command: ClaimCommand,
     },
+    /// Reclaim live-class bytes in the event store with one retention pass (#2056).
+    ///
+    /// The production caller for `LocalEvents::compact` (#5534, #2036 §4.6, criterion 8):
+    /// drops the bytes of applied `chat.message.v1` events below the per-author retain
+    /// frontier, keeping durable kinds, checkpoints and each author's most recent events.
+    /// A compacted event keeps its presence, applied verdict and causal edges as a
+    /// residue. Fails clearly while `id serve` holds the single-opener store.
+    /// This is node-wide across all channels and permanently removes eligible message bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id compact
+    /// id compact --retain-recent 50 --json
+    /// ```
+    Compact {
+        /// Print JSON instead of a line.
+        #[arg(long, global = true)]
+        json: bool,
+        /// How many of each author's most recent applied events are always kept.
+        #[arg(long, default_value_t = crate::commands::compact::DEFAULT_RETAIN_RECENT)]
+        retain_recent: u32,
+    },
     /// Walk a typed graph snapshot: neighbors, backlinks, threads,
     /// history, or a bounded path (native graph navigation, #7612).
     ///
@@ -1914,10 +1938,11 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
-    /// Revoke a device key, given as its hex public key. Records it signed
-    /// before the revocation stay valid history.
+    /// Revoke a device key, given as its hex public key or scanned
+    /// `id:keyset-device?...` payload. Records it signed before the
+    /// revocation stay valid history.
     Revoke {
-        /// The device's hex public key, as `id keyset show` prints it.
+        /// The device's hex public key or its scanned QR payload.
         device_key: String,
         /// Why it was revoked, kept in the record.
         #[arg(long, default_value = "revoked")]

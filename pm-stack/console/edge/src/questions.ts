@@ -78,8 +78,7 @@ export const QUESTIONS_DISCOVERY_NOTE =
   "a set's questions and answering them still need the laptop, whose report brings them when it is back.";
 
 const str = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
-const num = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
+const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 
 /** A set row as the Worker lists it, or null when what came back is
  * not one: a row that cannot be read is left out rather than shown
@@ -117,7 +116,10 @@ function setState(raw: unknown): QuestionSetState {
   };
 }
 
-type FetchLike = (url: string, init?: { headers?: Record<string, string> }) => Promise<{
+type FetchLike = (
+  url: string,
+  init?: { headers?: Record<string, string> },
+) => Promise<{
   ok: boolean;
   status: number;
   json: () => Promise<unknown>;

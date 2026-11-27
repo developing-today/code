@@ -21,12 +21,12 @@ test("health answers publicly with the hosted door's identity", async () => {
     status: string;
     service: string;
     doors: string[];
-    auth: { rp_configured: boolean; tenancy_configured: boolean };
+    auth: { rp_configured: boolean; tenancy_configured: boolean; service_auth_configured: boolean };
   };
   assert.equal(body.status, "ok");
   assert.equal(body.service, "fleet-hosted");
   assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync", "bridge", "kv", "kv-upload"]);
-  assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true });
+  assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true, service_auth_configured: true });
 });
 
 test("capabilities mirrors the native shape with hosted values", async () => {

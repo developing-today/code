@@ -66,6 +66,7 @@ Client for the repo-queue broker. It supports direct broker transport and the co
 | `dispatch`            | Plan or submit one remote command on an eligible Fleet runner. Dry-run by default; details and caching rules are in the [remote build and test runbook](../doc/agents/remote-build-and-test.md). |
 | `session`             | Inspect, list, or retrieve results for remote dispatch sessions.                                                                                                                                 |
 | `surfaces`            | Print the placement surface registry as JSON; accepts `--registry PATH` for another registry file.                                                                                               |
+| `placement-load`      | Print the placement coordinator's true load view (broker `/placement-load`): per owner, GitHub running/queued counts, active claims, occupancy vs cap, and the sweep read's time/source; `--json` prints the broker answer verbatim. Read-only; a down or disabled coordinator exits 3. |
 | `outbox`              | Inspect and drain the creation outbox.                                                                                                                                                           |
 | `stack`               | Record and operate on dependent pull-request stacks.                                                                                                                                             |
 
@@ -165,13 +166,13 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 `fleet gh <gh args...>` passes normal arguments through to the installed `gh` CLI with Fleet's token rotation and cache. The supported Fleet-specific commands are:
 
-| Command                     | Purpose                                                                    |
-| --------------------------- | -------------------------------------------------------------------------- |
+| Command                     | Purpose                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------- |
 | `tiers [--all]`             | Show token-source rate-limit headroom; `--all` lists every App installation. |
-| `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                   |
-| `cache-status`              | Probe configured token-cache daemons.                                      |
-| `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number. |
-| `--raw <gh args...>`        | Run the real `gh` with ambient credentials and no Fleet token injection.   |
+| `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                     |
+| `cache-status`              | Probe configured token-cache daemons.                                        |
+| `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number.   |
+| `--raw <gh args...>`        | Run the real `gh` with ambient credentials and no Fleet token injection.     |
 
 Leading `--cache-addr ADDR` options and `--no-cache` control the token cache for a call. Normal `gh` flags and subcommands pass through unchanged.
 
@@ -429,13 +430,13 @@ daemon's general client.
 
 ## `ssh` — tier T3 (ssh/fleet)
 
-| Verb                                          | Purpose                                                                                                                                                                                                                           |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
-| `sessions`                                     | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                              |
-| `sweep --idle-for DURATION [--dry-run]`        | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
-| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
-| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
+| Verb                                          | Purpose                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                                                                                                                                                                                    |
+| `sessions`                                    | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                                                                                                                                                                                      |
+| `sweep --idle-for DURATION [--dry-run]`       | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
+| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255.                                                                                                                                                        |
+| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                                                                                                                                                                                      |
 
 ## `id` — iroh-native ID transport (design #10391 pass 2)
 
@@ -464,6 +465,24 @@ The initiator speaks `/iroh-meta/3` only; every other ALPN
 selects mode 2. Dial failures are distinct and never downgrade:
 `relay_unreachable` vs `identity_mismatch` (fail closed on a
 peer NodeId that is not the pinned one).
+
+`fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>] [--relay <url>] [--expect-node-id <hex>] <target>`
+
+Slice 2 (#15434, design §4.2): byte-moves a caller-held ticket
+through the selected proxy mode. Mode 1's target (`tcp://host:port`,
+`unix:///path`, or bare `host:port` / `/path`) is spliced to this
+process's stdin/stdout byte for byte; fleet parses nothing and holds
+no iroh key for the flow. Mode 2 takes a peer NodeId as `<target>`,
+plus `--alpn`, `--relay https://…`, and `--expect-node-id`; it dials
+that peer through the configured relay and uses `HTTPS_PROXY` or
+`HTTP_PROXY` (including lowercase spellings) as the CONNECT tunnel
+when set. The post-dial QUIC stream stays opaque. Peer identity and
+relay failures are distinct and fail closed; mode 2 never retries
+through a direct transport. `--relay` / `--expect-node-id` on a
+mode-1 selection are refused, not ignored. Mode 3 through this verb
+is a usage error (the initiator verbs own it). Exit codes: 0 ok ·
+2 usage · 71 relay unreachable · 72 identity mismatch ·
+73 target unreachable.
 
 ## `actions` — live exec sessions in Actions runners
 

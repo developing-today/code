@@ -3,9 +3,17 @@ name: fleet-queue-backup tests
 on:
   push:
     branches: [main]
-    paths: [infra/fleet-queue-backup/**, .github/workflows/fleet-queue-backup-tests.yml]
+    paths:
+      [
+        infra/fleet-queue-backup/**,
+        .github/workflows/fleet-queue-backup-tests.yml,
+      ]
   pull_request:
-    paths: [infra/fleet-queue-backup/**, .github/workflows/fleet-queue-backup-tests.yml]
+    paths:
+      [
+        infra/fleet-queue-backup/**,
+        .github/workflows/fleet-queue-backup-tests.yml,
+      ]
 
 permissions:
   contents: read

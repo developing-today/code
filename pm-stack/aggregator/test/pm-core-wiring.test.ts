@@ -275,10 +275,7 @@ describe("pm-core wiring (#8570)", () => {
     runtime.shutdown();
 
     expect(calls.sort()).toEqual(["fleet-feed", "quota"]);
-    expect(audits.map((record) => `${record.job}:${record.status}`).sort()).toEqual([
-      "fleet-feed:ok",
-      "quota:ok",
-    ]);
+    expect(audits.map((record) => `${record.job}:${record.status}`).sort()).toEqual(["fleet-feed:ok", "quota:ok"]);
   });
 
   test("an operator-provided FLEET_FEED_OUT pin always wins over the feed file", async () => {

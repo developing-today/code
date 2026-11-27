@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #8049 | #961 | `audit:partial` | Changes the Gopls server to worktree scope, but the live prompt, linked-worktree rooting and distinct-instance proofs were not run. Issue #961 closed before those criteria were recorded. Follow-up #15098/task #23811 tracks the proof; Lane 2 pointer: #13871 comment 7162914420. PR note: #7162919013. |
-| #8050 | none | `audit:no-issue` | Automated OpenChamber/OpenCode flake input update; no source issue reference or matching tracker was found. PR note: #7163080277. |
-| #8051 | #3984 | `audit:complete` | Defines one forecast contract for Roadmap and Projects with explicit uncertainty states and shared rendering; it consumes #3983's model without inventing missing quota rates. |
-| #8053 | #5555 | `audit:complete` | Adds authenticated task/session status reads and documents the token source of truth. Review findings were resolved in the final head, including authorization through the durable cleared-session binding; #5555 closes with the merged fix. |
-| #8054 | #6939 | `audit:complete` | Strictly validates `--server` and unknown arguments before starting ACP traffic; malformed flags fail with a usage error and exit 2. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                                                    |
+| -------------: | -------------: | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #8049 |           #961 | `audit:partial`  | Changes the Gopls server to worktree scope, but the live prompt, linked-worktree rooting and distinct-instance proofs were not run. Issue #961 closed before those criteria were recorded. Follow-up #15098/task #23811 tracks the proof; Lane 2 pointer: #13871 comment 7162914420. PR note: #7162919013. |
+|          #8050 |           none | `audit:no-issue` | Automated OpenChamber/OpenCode flake input update; no source issue reference or matching tracker was found. PR note: #7163080277.                                                                                                                                                                          |
+|          #8051 |          #3984 | `audit:complete` | Defines one forecast contract for Roadmap and Projects with explicit uncertainty states and shared rendering; it consumes #3983's model without inventing missing quota rates.                                                                                                                             |
+|          #8053 |          #5555 | `audit:complete` | Adds authenticated task/session status reads and documents the token source of truth. Review findings were resolved in the final head, including authorization through the durable cleared-session binding; #5555 closes with the merged fix.                                                              |
+|          #8054 |          #6939 | `audit:complete` | Strictly validates `--server` and unknown arguments before starting ACP traffic; malformed flags fail with a usage error and exit 2.                                                                                                                                                                       |
 
 ## Slice state
 

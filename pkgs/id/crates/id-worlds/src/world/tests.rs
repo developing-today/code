@@ -1751,9 +1751,10 @@ mod tests {
         // Version 12 (#11960) records join and revoke times, version
         // 13 the kv store entries, version 14 the blob store entries,
         // and version 15 the notify provider's `Notification` events
-        // (all #1062). Version 16 (#13711) stamps lease positions, and
-        // version 17 (#14731) records the presentation policy.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+        // (all #1062). Version 16 (#13711) stamps lease positions,
+        // version 17 (#14731) records the presentation policy, and
+        // version 18 (#8282 slice 6) records template role definitions.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_TEMPLATE_ROLES);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         // A checkpoint whose lease history carries stamped positions
@@ -7050,6 +7051,21 @@ mod tests {
         assert_eq!(page.events[0].sequence, 2);
     }
 
+    /// #10927 slice 2: a cursor ahead of the journal can never be a
+    /// continuous resume (the journal was rebuilt or regressed), so the
+    /// host must answer with an authoritative snapshot, not an empty page.
+    #[test]
+    fn reconnect_requires_snapshot_when_cursor_is_ahead_of_journal() {
+        let mut core = world(8);
+        let (_, token) = join(&mut core, "Ada");
+        assert_eq!(core.chat(&token, "hello").unwrap().sequence, 1);
+        assert_eq!(core.chat(&token, "again").unwrap().sequence, 2);
+        let page = core.events_after(&token, 7).unwrap();
+        assert_eq!(page.current_sequence, 2);
+        assert!(page.needs_snapshot);
+        assert_eq!(page.events, [] as [WorldEvent; 0]);
+    }
+
     #[test]
     fn reconnect_requires_snapshot_when_cursor_is_older_than_retention() {
         let mut core = world(2);
@@ -8361,6 +8377,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8380,6 +8397,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8426,6 +8444,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8441,7 +8460,13 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "the oversized view is counted");
 
         let (reply, rx) = tokio::sync::oneshot::channel();
-        actor.handle(WorldCommand::View { token, reply }).await;
+        actor
+            .handle(WorldCommand::View {
+                token,
+                caller_account: None,
+                reply,
+            })
+            .await;
         let second = rx.await.unwrap();
         assert!(
             matches!(&second, Ok(Some(text)) if text == "recovered view"),
@@ -8526,6 +8551,7 @@ mod tests {
                 token: token.clone(),
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8576,6 +8602,7 @@ mod tests {
                 token,
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8633,6 +8660,7 @@ mod tests {
                 token,
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -9261,7 +9289,7 @@ mod tests {
         assert_eq!(committed_inputs(&w.journal), 0);
 
         // Expiry does not grant the DO ownership. Normal expiry recovery
-        // (journaled revoke then grant) is a separate slice; a handoff cannot
+        // journals revoke then grant (#13938 slice 1); a handoff cannot
         // silently turn an expired term into a live one.
         assert!(
             w.handle
@@ -9272,6 +9300,124 @@ mod tests {
         let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
         assert!(refused_again.is_err());
         assert_eq!(committed_inputs(&w.journal), 0);
+
+        // Recovery journals the fence before the grant (handoff 1,
+        // revoke 2, grant 3) and reopens DO writes only after the
+        // grant is durable.
+        assert_eq!(w.handle.recover_expired_lease().await.unwrap(), 3);
+        let entries = w.journal.entries();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            } if former_holder == "native-1"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseGranted {
+                holder,
+                epoch: 3,
+                position: 3,
+                ..
+            }) if holder == DO_WRITE_LEASE_HOLDER
+        ));
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
+
+        // Replay is the oracle: the journal alone rebuilds the DO
+        // holding epoch 3 at the grant position.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some(DO_WRITE_LEASE_HOLDER));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+    }
+
+    #[tokio::test]
+    async fn expired_lease_recovery_requires_an_expired_native_term() {
+        // A live native term cannot recover: expiry is the gate, and a
+        // recovery attempt journals nothing.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let before = w.journal.entries().len();
+        assert!(w.handle.recover_expired_lease().await.is_err());
+        assert_eq!(w.journal.entries().len(), before);
+        // The live term still fences the DO executor.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_native_lease_grant_append_failure_leaves_the_world_holderless() {
+        // A grant append failure between the two recovery transitions
+        // must leave the world holder-less and read-only: the revoke is
+        // durable, the grant is not, and DO writes stay refused.
+        struct FailGrantJournal {
+            inner: TransferJournal,
+        }
+        impl WorldJournal for FailGrantJournal {
+            fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+                if matches!(entry, JournalEntry::LeaseGranted { .. }) {
+                    bail!("injected grant append failure");
+                }
+                self.inner.append(entry)
+            }
+        }
+        let clock = Arc::new(ManualClock::new(1_000));
+        let core = WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+        let shared = TransferJournal(Arc::new(std::sync::Mutex::new(vec![lease_header()])));
+        let journal = FailGrantJournal {
+            inner: shared.clone(),
+        };
+        let program_updates = Arc::new(AtomicU64::new(0));
+        let handle = WorldHandle::spawn_durable(
+            core,
+            Box::new(LeaseTestProgram(program_updates)),
+            Some(Box::new(journal)),
+        );
+        let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+        handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        clock.advance(60_000);
+        assert!(handle.recover_expired_lease().await.is_err());
+        // Only the revoke is durable; the grant never landed.
+        let entries = shared.entries();
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            }) if former_holder == "native-1"
+        ));
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::LeaseGranted { .. }))
+        );
+        // The world is holder-less and read-only, not granted: DO
+        // writes stay refused and the failure is latched.
+        let refused = handle.input(token.clone(), b"0".to_vec()).await;
+        assert!(refused.is_err());
+        let again = handle.recover_expired_lease().await.unwrap_err();
+        assert!(format!("{again:#}").contains("storage failed"), "{again:#}");
+        assert_eq!(committed_inputs(&shared), 0);
     }
 
     #[tokio::test]
@@ -10555,6 +10701,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: None,
                 reply,
@@ -10660,6 +10807,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: None,
                 reply,
@@ -11107,6 +11255,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    caller_account: None,
                     device_input: None,
                     signed_move: None,
                     reply,
@@ -12904,9 +13053,11 @@ mod schedule_tests {
             journal_version_required_by(&checkpoint),
             JOURNAL_VERSION_NOTIFY
         );
-        // Version 17 (#14731, the presentation policy) is the newest
-        // version this binary reads.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+        // Version 17 (#14731, the presentation policy) is no longer the
+        // newest: version 18 (#8282 slice 6, template role definitions)
+        // is the newest version this binary reads.
+        assert_eq!(JOURNAL_VERSION_TEMPLATE_ROLES, 18);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_TEMPLATE_ROLES);
     }
 
     #[tokio::test]
@@ -15504,7 +15655,7 @@ mod presentation_policy_tests {
     }
 
     #[test]
-    fn the_entry_requires_version_17_and_it_is_the_newest() {
+    fn the_entry_requires_version_17() {
         for policy in [PresentationPolicy::default(), opted_in()] {
             assert_eq!(
                 journal_version_required_by(&JournalEntry::PresentationPolicy { policy }),
@@ -15512,7 +15663,6 @@ mod presentation_policy_tests {
             );
         }
         assert_eq!(JOURNAL_VERSION_PRESENTATION_POLICY, 17);
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
     }
 
     #[test]
@@ -15689,6 +15839,135 @@ mod presentation_policy_tests {
         assert!(
             format!("{error:#}").contains("invalid presentation policy"),
             "{error:#}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod template_roles_tests {
+    //! The world's stored D5 template role definitions (#8282 slice 6):
+    //! the journal entry, its version requirement, restore and
+    //! compaction. Membership is never represented here; the export
+    //! projection proves member absence in `world_template` tests.
+    use super::*;
+    use crate::world_template::RoleDefinition;
+
+    fn roles() -> Vec<RoleDefinition> {
+        vec![
+            RoleDefinition {
+                name: "editor".to_owned(),
+                description: "Can edit shared notes".to_owned(),
+            },
+            RoleDefinition {
+                name: "reader".to_owned(),
+                description: "Can read shared notes".to_owned(),
+            },
+        ]
+    }
+
+    fn header(version: u32) -> JournalEntry {
+        JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version,
+        }
+    }
+
+    #[test]
+    fn the_entry_requires_version_18_and_it_is_the_newest() {
+        assert_eq!(
+            journal_version_required_by(&JournalEntry::TemplateRolesSet { roles: roles() }),
+            JOURNAL_VERSION_TEMPLATE_ROLES
+        );
+        assert_eq!(JOURNAL_VERSION_TEMPLATE_ROLES, 18);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_TEMPLATE_ROLES);
+    }
+
+    #[test]
+    fn the_entry_round_trips_in_its_wire_shape() {
+        let entry = JournalEntry::TemplateRolesSet { roles: roles() };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["entry"], "template_roles_set");
+        let back: JournalEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn restore_applies_the_last_set() {
+        let entries = [
+            header(JOURNAL_VERSION_TEMPLATE_ROLES),
+            JournalEntry::TemplateRolesSet { roles: roles() },
+            JournalEntry::TemplateRolesSet {
+                roles: roles()[..1].to_vec(),
+            },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.template_roles, roles()[..1].to_vec());
+    }
+
+    #[test]
+    fn restore_refuses_an_empty_or_duplicate_name() {
+        for bad in [
+            vec![RoleDefinition {
+                name: String::new(),
+                description: "nameless".to_owned(),
+            }],
+            vec![
+                RoleDefinition {
+                    name: "editor".to_owned(),
+                    description: "first".to_owned(),
+                },
+                RoleDefinition {
+                    name: "editor".to_owned(),
+                    description: "second".to_owned(),
+                },
+            ],
+        ] {
+            let entries = [
+                header(JOURNAL_VERSION_TEMPLATE_ROLES),
+                JournalEntry::TemplateRolesSet { roles: bad },
+            ];
+            let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("empty or duplicate name"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_keeps_the_set_and_raises_the_header() {
+        let mut core = WorldCore::new("test-world", WorldLimits::default()).unwrap();
+        core.template_roles = roles();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_TEMPLATE_ROLES,
+                ..
+            }
+        ));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::TemplateRolesSet { .. }))
+                .count(),
+            1
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.template_roles, roles());
+    }
+
+    #[test]
+    fn compaction_omits_an_empty_set() {
+        let mut core = WorldCore::new("test-world", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::TemplateRolesSet { .. }))
         );
     }
 }

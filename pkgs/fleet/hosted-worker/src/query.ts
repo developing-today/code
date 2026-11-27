@@ -121,7 +121,11 @@ function filterItemRef(raw: Record<string, unknown>, key: string): { repo: strin
     if (!match) {
       throw invalidQuery(`${key} must be in owner/name#number form when given as a string`);
     }
-    return { repo: match[1], number: Number(match[2]) };
+    const number = Number(match[2]);
+    if (!Number.isSafeInteger(number)) {
+      throw invalidQuery(`${key} number must be a safe integer`);
+    }
+    return { repo: match[1], number };
   }
   if (typeof value === "object" && !Array.isArray(value)) {
     const v = value as Record<string, unknown>;
@@ -208,7 +212,12 @@ export function divergenceFields(dbMetadata: Record<string, unknown>, bodyBlock:
   const keys = new Set([...Object.keys(dbMetadata), ...Object.keys(bodyBlock)]);
   const fields: string[] = [];
   for (const key of keys) {
-    if (stableStringify(dbMetadata[key] ?? null) !== stableStringify(bodyBlock[key] ?? null)) {
+    const dbHasKey = Object.hasOwn(dbMetadata, key);
+    const bodyHasKey = Object.hasOwn(bodyBlock, key);
+    if (
+      dbHasKey !== bodyHasKey ||
+      (dbHasKey && stableStringify(dbMetadata[key]) !== stableStringify(bodyBlock[key]))
+    ) {
       fields.push(key);
     }
   }

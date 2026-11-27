@@ -191,9 +191,7 @@ export function queueFromPool(pool: readonly ProjectPoolItem[]): QueueView {
   }
   return {
     totalOpen: open.length,
-    byStatus: [...groups.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([status, refs]) => ({ status, refs })),
+    byStatus: [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([status, refs]) => ({ status, refs })),
     blocked,
     readyRefs,
     items: open,
