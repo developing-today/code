@@ -301,6 +301,8 @@ let
         claude-code
         latestCli.codex
         pkgs.antigravity-cli
+        # GitHub MCP stdio server for the mcpx failover pool (#8017).
+        pkgs.github-mcp-server
         pkgs.git
         pkgs.openssh
       ]
