@@ -345,17 +345,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             };
 
             // Origin + upload time (#4973): origin is the node that first
-            // wrote the file (`unknown` when unrecorded); uploaded is the
-            // `created` stamp. Refs only — bytes never travel in a surface.
+            // wrote the file (`unknown` when unrecorded). A locally created
+            // file carries the full ~60-char node id here; rendering it in
+            // full leaves no flex space and the filename link — the row's
+            // only shrinkable item via min-w-0 — collapses to zero width
+            // (#15146). Show the same 12-char short form as the content
+            // hash; the full id stays in `title`. The span itself is
+            // shrinkable (min-w-0 truncate) so no metadata combination can
+            // zero the link again.
             let origin_str = file.origin_node.as_deref().unwrap_or("unknown");
+            let short_origin: String = origin_str.chars().take(12).collect();
             let uploaded_str = file
                 .created_at
                 .map(format_unix_timestamp)
                 .filter(|d| !d.is_empty())
                 .unwrap_or_else(|| "unknown".to_owned());
             let origin_html = format!(
-                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                "<span class=\"text-base-content/40 whitespace-nowrap text-xs min-w-0 truncate\" title=\"{}\">origin {} \u{00b7} uploaded {}</span>",
                 html_escape(origin_str),
+                html_escape(&short_origin),
                 uploaded_str
             );
 
@@ -1660,10 +1668,55 @@ mod tests {
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
         // The filename anchor must keep flex space and shrink below content
-        // width (#15146): truncate alone gives a flex item an automatic
-        // minimum size of zero, so a crowded row collapses the link to
-        // zero width and Playwright reports it hidden.
+        // width (#15146): with min-w-0 it is the row's only shrinkable item,
+        // so unbounded nowrap metadata (a full ~60-char origin node id)
+        // collapses the link to zero width and Playwright reports it hidden.
+        // The origin display is shortened to the 12-char short-id form and
+        // the metadata span itself is shrinkable as a backstop.
         assert!(html.contains("truncate flex-auto min-w-0"));
+        assert!(html.contains("whitespace-nowrap text-xs min-w-0 truncate"));
+    }
+
+    #[test]
+    fn test_render_file_list_shortens_long_origin_node_id() {
+        // A locally created file carries the full node id as origin
+        // (#15146): the list shows the 12-char short form (same convention
+        // as the content hash) with the full id retained in `title`.
+        let long_origin = "78a4e309e09a24b096db41edc0fd7295f2d7fd8b9c0ffee11";
+        assert!(long_origin.len() > 12);
+        let files = vec![FileInfo {
+            name: "test.txt".to_owned(),
+            display_name: None,
+            hash: "abc123def456".to_owned(),
+            size: 1024,
+            kind: FileKind::Primary,
+            parent_name: None,
+            timestamp: None,
+            created_at: None,
+            modified_at: None,
+            tags: vec![],
+            origin_node: Some(long_origin.to_owned()),
+            is_deleted: false,
+        }];
+        let page = FileListPage {
+            total: files.len(),
+            files,
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+            sort: None,
+            origin_filter: None,
+        };
+        let html = render_file_list(&page);
+        assert!(
+            html.contains("origin 78a4e309e09a"),
+            "short origin shown, html: {html}"
+        );
+        assert!(
+            html.contains(&format!("title=\"{long_origin}\"")),
+            "full origin retained in title, html: {html}"
+        );
     }
 
     #[test]

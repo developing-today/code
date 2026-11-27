@@ -179,59 +179,6 @@ test.describe("Navigation", () => {
     // Regression (#15146): the row anchor collapsed to zero width when
     // crowded metadata left no flex space (truncate implies min-width 0).
     const row = page.locator(`.file-item[data-name="${fileName}"]`);
-    // TEMP-DIAG v2(#15146, oc-code-04): the v1 dump showed a zero-rect row
-    // with empty computed styles (= detached node?) while row assertions
-    // pass and only the anchor fails. Check connectedness, match count,
-    // and whether #file-list-content is being swapped under the test.
-    // Removed before merge; the assertions below are the regression.
-    const dumpRow = () =>
-      row.evaluate((element) => {
-        const el = element as HTMLElement;
-        const style = getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
-        const anchor = el.querySelector("a");
-        const anchorStyle = anchor ? getComputedStyle(anchor) : null;
-        const anchorRect = anchor?.getBoundingClientRect();
-        return {
-          kind: el.getAttribute("data-kind"),
-          matchesInDoc: document.querySelectorAll(
-            `.file-item[data-name="${el.getAttribute("data-name")}"]`,
-          ).length,
-          isConnected: el.isConnected,
-          inDoc: document.contains(el),
-          sameDoc: el.ownerDocument === document,
-          rootNode: String(el.getRootNode()?.nodeName),
-          styleProps: style.length,
-          rowDisplay: style.display,
-          rowRect: `${rect.x},${rect.y},${rect.width},${rect.height}`,
-          anchorConnected: anchor ? document.contains(anchor) : null,
-          anchorDisplay: anchorStyle?.display,
-          anchorRect: anchorRect
-            ? `${anchorRect.width.toFixed(1)}x${anchorRect.height.toFixed(1)}`
-            : null,
-          listTargets: document.querySelectorAll("#file-list-content").length,
-          mainTargets: document.querySelectorAll("#main").length,
-        };
-      });
-    console.log("created-file pre-count:", await row.count());
-    console.log("created-file pre-dump:", await dumpRow());
-    await page.evaluate(() => {
-      const w = window as unknown as Record<string, unknown>;
-      w.__swapCount = 0;
-      const t = document.getElementById("file-list-content");
-      if (t)
-        new MutationObserver(() => {
-          (w.__swapCount as number)++;
-        }).observe(t, { childList: true, subtree: true });
-    });
-    await page.waitForTimeout(4000);
-    console.log(
-      "created-file swaps-during-4s:",
-      await page.evaluate(
-        () => (window as unknown as Record<string, unknown>).__swapCount,
-      ),
-    );
-    console.log("created-file post-dump:", await dumpRow());
     await expect(row).toHaveAttribute("data-kind", "primary");
     await expect(row).toBeVisible();
     await expect(row.locator("a")).toBeVisible();
