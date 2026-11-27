@@ -1,0 +1,85 @@
+name: drift census
+
+# Drift census v1 daily report (#14134 U1 slice 2).
+#
+# Runs the read-only pinned-vs-running census
+# (`scripts/drift-census.py --format json`) and files the concise report
+# on the tracking issue when rows need attention; converged runs stay
+# silent (no comment). The census never fixes: no restarts, swaps,
+# deploys, or writes to a running system.
+#
+# Venue scoping: the GitHub-hosted runner can only observe repo-recorded
+# state. The laptop plane needs `nixos-version` on the laptop and the
+# sandbox plane needs the seat binaries; from this venue both would read
+# "unreadable" and report venue noise as drift. So this schedule censuses
+# the cloudflare plane, whose snapshot is built read-only from
+# `pm-stack/platform/workers.json` deploy records (workers without a
+# record are skipped — never guessed). The census `--plane` flag exists
+# for exactly this scoping; on-host schedules may add their planes later.
+#
+# Cadence 08:17 UTC sits after the daily flake sync (05:00 UTC) and
+# flake-inputs-update (07:23 UTC) so the pins being compared have landed.
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: drift-census
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  census:
+    name: census cloudflare plane and report on #14134
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the cloudflare snapshot from deploy records
+        run: |
+          set -eu
+          python3 -I -c "
+          import json
+          doc = json.load(open('pm-stack/platform/workers.json'))
+          workers = {
+              w['name']: w['lastDeployedCommit']
+              for w in doc['workers']
+              if w.get('lastDeployedCommit')
+          }
+          fixture = {'cloudflare': {'main_rev': '${{ github.sha }}', 'workers': workers}}
+          json.dump(fixture, open('census-fixture.json', 'w'), indent=2, sort_keys=True)
+          print(f'snapshot: {len(workers)} workers with deploy records')
+          "
+
+      - name: Run the read-only census
+        run: |
+          set -eu
+          python3 -I scripts/drift-census.py --plane cloudflare \
+            --fixture census-fixture.json --format json > census.json
+          python3 -I -c "
+          import json
+          r = json.load(open('census.json'))
+          print('census:', r['total'], 'rows', r['counts'], 'silent:', r['silent'])
+          "
+
+      - name: Comment on #14134 when rows need attention
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          body="$(python3 -I scripts/fleet/drift-census-report.py \
+            --report census.json \
+            --run-url "https://github.com/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}")"
+          if [ -z "$body" ]; then
+            echo "census converged — staying silent"
+            exit 0
+          fi
+          gh issue comment 14134 --body "$body"
+          echo "census report filed on #14134"
