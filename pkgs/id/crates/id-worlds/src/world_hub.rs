@@ -30,7 +30,7 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::account_charge::AccountWorldQuota;
+use crate::account_charge::{AccountStorageQuota, AccountStorageRefusal, AccountWorldQuota};
 use crate::world::{
     Isolation, PortalDelivery, PortalDeliveryFuture, PortalGrants, PortalSendError,
     ScheduleDelivery, ScheduleDeliveryFuture,
@@ -115,6 +115,14 @@ pub struct HubLimits {
     /// nonzero value enforces that quota at open/create for calls
     /// that carry an account.
     pub max_worlds_per_account: u32,
+    /// Most storage bytes one account may be charged at once
+    /// (#1067, F12.10 per-account quotas). `0` = no per-account
+    /// bound. Mirrors
+    /// [`id_caps::account_quota::AccountQuotas::max_storage_bytes`];
+    /// the hub owns the ledger and the write paths charge it — the
+    /// measurement slice lands the charges, this slice lands the
+    /// ledger, its limit, and the explicit charge/release API.
+    pub max_storage_bytes_per_account: u64,
 }
 
 impl Default for HubLimits {
@@ -124,6 +132,7 @@ impl Default for HubLimits {
             max_sessions: 1024,
             signed_boot_window: Duration::ZERO,
             max_worlds_per_account: 0,
+            max_storage_bytes_per_account: 0,
         }
     }
 }
@@ -243,6 +252,13 @@ struct HubInner {
     /// quota (#1067, F12.10). Taken only under (or after) the slots
     /// lock, never before it, so the two locks cannot deadlock.
     account_worlds: StdMutex<AccountWorldQuota>,
+    /// Storage bytes charged to accounts for the per-account
+    /// storage quota (#1067, F12.10). Contract half only: the hub
+    /// owns this ledger and the explicit charge/release API below,
+    /// and a later write-path slice measures world bytes into it.
+    /// `0` max means unbounded, so an unconfigured hub behaves
+    /// exactly as before.
+    account_storage: StdMutex<AccountStorageQuota>,
 }
 
 /// Registry of worlds. Cheap to clone.
@@ -500,6 +516,9 @@ impl WorldHub {
                 )),
                 account_worlds: StdMutex::new(AccountWorldQuota::new(
                     limits.max_worlds_per_account,
+                )),
+                account_storage: StdMutex::new(AccountStorageQuota::new(
+                    limits.max_storage_bytes_per_account,
                 )),
             }),
         }
@@ -874,6 +893,62 @@ impl WorldHub {
             .map_err(|_| ResolveError::Busy)?;
         let _lease = self.lease_with(name, true, permit, account).await?;
         Ok(!existed)
+    }
+
+    /// Charge `bytes` of storage to `account` against the hub's
+    /// per-account storage quota (#1067, F12.10).
+    ///
+    /// Whole-charge refusal, mirroring the ledger: a charge past the
+    /// limit charges nothing and reports the typed refusal, so a
+    /// refused write leaves the account exactly as it was. A hub
+    /// with no storage bound (`0`) admits every charge. This is the
+    /// explicit entry point the write-path measurement slice will
+    /// call once it measures a world's bytes; until then charges
+    /// come only from callers that name their bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`AccountStorageRefusal`] when the charge would take the
+    /// account past its limit (or overflow).
+    pub fn try_charge_storage_as(
+        &self,
+        account: &str,
+        bytes: u64,
+    ) -> Result<(), AccountStorageRefusal> {
+        self.inner
+            .account_storage
+            .lock()
+            .map_or(Ok(()), |mut storage| storage.try_charge(account, bytes))
+    }
+
+    /// Release `bytes` of storage from `account`'s quota (#1067,
+    /// F12.10). Saturates at zero and drops empty accounts; a
+    /// release for an account with no charges changes nothing.
+    pub fn release_storage_as(&self, account: &str, bytes: u64) {
+        if let Ok(mut storage) = self.inner.account_storage.lock() {
+            storage.release(account, bytes);
+        }
+    }
+
+    /// Storage bytes currently charged to `account` (#1067, F12.10).
+    /// For reporting: the quota state through the same read as the
+    /// charge path.
+    #[must_use]
+    pub fn storage_charged_by(&self, account: &str) -> u64 {
+        self.inner
+            .account_storage
+            .lock()
+            .map_or(0, |storage| storage.charged_by(account))
+    }
+
+    /// The hub's per-account storage limit in bytes (`0` =
+    /// unbounded), from [`HubLimits::max_storage_bytes_per_account`].
+    #[must_use]
+    pub fn storage_limit_per_account(&self) -> u64 {
+        self.inner
+            .account_storage
+            .lock()
+            .map_or(0, |storage| storage.max_bytes())
     }
 
     /// Worlds in storage plus any open ones, sorted by name. A
@@ -1717,6 +1792,50 @@ mod tests {
         hub.lease_as(Some("w1"), None, Some("acct-a"))
             .await
             .unwrap();
+    }
+
+    /// Oracle (#1067 F12.10 storage-plumbing slice): the hub owns a
+    /// per-account storage ledger behind its configured byte limit.
+    /// Charges accumulate per account, a charge past the limit is
+    /// refused whole (nothing charged), the other account is
+    /// unaffected, releases saturate, and a hub with no bound admits
+    /// everything — including a charge larger than any real quota.
+    #[test]
+    fn storage_quota_plumbing_charges_per_account_with_whole_refusals() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(
+            &opener,
+            HubLimits {
+                max_storage_bytes_per_account: 100,
+                ..HubLimits::default()
+            },
+        );
+        assert_eq!(hub.storage_limit_per_account(), 100);
+        hub.try_charge_storage_as("acct-a", 60).unwrap();
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+        let refusal = hub.try_charge_storage_as("acct-a", 41).unwrap_err();
+        assert_eq!(refusal.charged_bytes, 60);
+        assert_eq!(refusal.requested_bytes, 41);
+        assert_eq!(
+            hub.storage_charged_by("acct-a"),
+            60,
+            "a refused charge must be atomic"
+        );
+        // Another account is unaffected by the first account's charges.
+        hub.try_charge_storage_as("acct-b", 100).unwrap();
+        assert_eq!(hub.storage_charged_by("acct-b"), 100);
+        // Releases saturate and drop empty accounts.
+        hub.release_storage_as("acct-a", 60);
+        assert_eq!(hub.storage_charged_by("acct-a"), 0);
+        hub.try_charge_storage_as("acct-a", 100).unwrap();
+        hub.release_storage_as("acct-a", 999);
+        assert_eq!(hub.storage_charged_by("acct-a"), 0);
+
+        // A hub with no bound admits everything.
+        let open = new_hub(&opener, HubLimits::default());
+        assert_eq!(open.storage_limit_per_account(), 0);
+        open.try_charge_storage_as("acct-a", u64::MAX).unwrap();
+        assert_eq!(open.storage_charged_by("acct-a"), u64::MAX);
     }
 
     #[test]
