@@ -27,6 +27,11 @@ class ProjectorSelection(unittest.TestCase):
             root = Path(directory)
             projector = root / "pm-stack/projector"
             projector.mkdir(parents=True)
+            tests = projector / "test"
+            tests.mkdir()
+            for name in ["webhook-delivery-id.test.ts", "webhook-operation-forwarding.test.ts", "config.test.ts"]:
+                (tests / name).touch()
+            (tests / "directory.test.ts").mkdir()
             script = root / ".github/scripts/pmo-contract-conformance.py"
             script.parent.mkdir(parents=True)
             script.write_text((ROOT / script.relative_to(root)).read_text())
@@ -74,7 +79,8 @@ class ProjectorSelection(unittest.TestCase):
     def test_invalid_selection_is_rejected_before_install(self):
         # Invariant oracle: none of these selectors may launch any subprocess.
         for path in ["--help", "pm-stack/projector/test/../src/config.test.ts",
-                     "pm-stack/projector/test", "/tmp/example.test.ts"]:
+                     "pm-stack/projector/test", "/tmp/example.test.ts",
+                     "pm-stack/projector/test/directory.test.ts"]:
             with self.subTest(path=path):
                 calls, output = self.run_workflow_step(extra_file=path)
                 self.assertEqual(calls, [])

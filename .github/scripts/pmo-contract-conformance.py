@@ -75,6 +75,7 @@ def run_projector(manifest_path):
     # is the single selection authority; a future landed file cannot be
     # reported passing while the workflow still runs an older hardcoded set.
     files = []
+    projector = Path(__file__).resolve().parents[2] / "pm-stack/projector"
     for family in manifest(manifest_path)["families"]:
         if family["status"] != "landed":
             continue
@@ -87,12 +88,15 @@ def run_projector(manifest_path):
                 print(f"FAIL: invalid projector test file: {name}", file=sys.stderr)
                 return 2
             selected = "./" + str(path.relative_to("pm-stack/projector"))
+            source = (projector / selected).resolve()
+            if not source.is_relative_to((projector / "test").resolve()) or not source.is_file():
+                print(f"FAIL: not an explicit projector test file: {name}", file=sys.stderr)
+                return 2
             if selected not in files:
                 files.append(selected)
     if not files:
         print("FAIL: no landed projector tests selected", file=sys.stderr)
         return 2
-    projector = Path(__file__).resolve().parents[2] / "pm-stack/projector"
     installed = subprocess.run(["bun", "install", "--frozen-lockfile"], cwd=projector)
     if installed.returncode:
         return installed.returncode
