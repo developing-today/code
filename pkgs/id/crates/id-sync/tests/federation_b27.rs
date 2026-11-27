@@ -190,6 +190,67 @@ fn claim_and_reply_append_verify_and_order() {
 }
 
 #[test]
+fn reply_subject_must_match_the_event_it_answers() {
+    // Oracle: the module documents "a reply names the same subject as
+    // the claim it answers" — a properly signed reply whose subject
+    // differs from its target's must be refused, or third-party
+    // commentary attaches to someone else's dispute (#16313).
+    let reg = registry();
+    let mut log = ClaimLog::new();
+    let claim = sign_event(
+        &claim_body(0xC1, b"server:subject dropped our writes"),
+        &key(CLAIMANT_SEED),
+    );
+    log.append(&reg, &claim.encode()).unwrap();
+    // The subject answers, but names a different subject than the
+    // claim it answers: refused, and not admitted.
+    let mismatched = EventBody {
+        subject: "server:someone-else".to_owned(),
+        ..reply_body(0xE1, id(0xC1))
+    };
+    let signed = sign_event(&mismatched, &key(SUBJECT_SEED));
+    let err = log.append(&reg, &signed.encode()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClaimError::SubjectMismatch {
+                ref target_subject,
+                ref reply_subject
+            } if target_subject == "server:subject" && reply_subject == "server:someone-else"
+        ),
+        "mismatched-subject reply must fail typed, got {err:?}"
+    );
+    assert_eq!(log.len(), 1, "the mismatched reply must not be admitted");
+    // A matched-subject reply is still admitted.
+    let reply = sign_event(&reply_body(0xE1, id(0xC1)), &key(SUBJECT_SEED));
+    log.append(&reg, &reply.encode()).unwrap();
+    // Reply-to-reply is a correction (the module's own rule) and stays
+    // allowed — under the same subject guard: the claimant corrects
+    // its claim by answering the subject's reply, naming the same
+    // subject.
+    let correction = EventBody {
+        author: "server:claimant".to_owned(),
+        author_key: key(CLAIMANT_SEED).verifying_key().to_bytes(),
+        ..reply_body(0xE2, id(0xE1))
+    };
+    let signed = sign_event(&correction, &key(CLAIMANT_SEED));
+    log.append(&reg, &signed.encode()).unwrap();
+    assert_eq!(log.len(), 3);
+    // But a reply-to-reply naming another subject is refused too: the
+    // guard follows the target event, whatever its kind.
+    let stray = EventBody {
+        subject: "server:someone-else".to_owned(),
+        ..reply_body(0xE3, id(0xE1))
+    };
+    let signed = sign_event(&stray, &key(SUBJECT_SEED));
+    assert!(matches!(
+        log.append(&reg, &signed.encode()).unwrap_err(),
+        ClaimError::SubjectMismatch { .. }
+    ));
+    assert_eq!(log.len(), 3);
+}
+
+#[test]
 fn unilateral_claims_never_move_the_score() {
     let reg = registry();
     let mut log = ClaimLog::new();
