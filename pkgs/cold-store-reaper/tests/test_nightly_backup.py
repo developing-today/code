@@ -98,9 +98,7 @@ class TestNightlyBackup(unittest.TestCase):
                 self.assertIn(arg, result.stderr)
                 self.assertIn("usage: takes no arguments", result.stderr)
                 self.assertEqual(self.calls(), [])
-                self.assertFalse(
-                    (Path(self.env["COLD_STORE_HOME"]) / "logs").exists()
-                )
+                self.assertFalse((Path(self.env["COLD_STORE_HOME"]) / "logs").exists())
 
     def test_failing_first_step_does_not_starve_later_steps(self):
         env = {**self.env, "STUB_FAIL_STEP": "backup-d1"}

@@ -15,9 +15,7 @@ A future fleet producer must return BOTH:
 ```json
 {
   "compatibility_contracts": ["laptop-agent-python-cli/v1"],
-  "domains": [
-    {"name": "laptop-agent", "available": true, "state": "available"}
-  ]
+  "domains": [{ "name": "laptop-agent", "available": true, "state": "available" }]
 }
 ```
 

@@ -96,10 +96,7 @@ test("a store-reader construction failure falls back to the configured HTTP read
       return [];
     },
   };
-  const reader = createPmCoreProjectorReader(
-    { PM_CORE_PROJECTOR_DATABASE_URL: "not-a-valid-libsql-url" },
-    fallback,
-  );
+  const reader = createPmCoreProjectorReader({ PM_CORE_PROJECTOR_DATABASE_URL: "not-a-valid-libsql-url" }, fallback);
 
   expect(reader).not.toBeNull();
   await expect(reader!.items([ref])).resolves.toEqual(new Map([[ref, fallbackItem]]));

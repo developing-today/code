@@ -19,10 +19,10 @@ per-unit journals, the fleet queue ledger (list / timeline / show via the laptop
   `WorkingDirectory=/home/user/git/code`. The script (19 lines of bash) is an
   infinite loop: run one `codex exec` session, `sleep 60`, repeat:
   `codex exec --dangerously-bypass-approvals-and-sandbox --model gpt-6-luna
-  -c model_reasoning_effort=high --cd /home/user/git/code --json "<prompt>"`.
+-c model_reasoning_effort=high --cd /home/user/git/code --json "<prompt>"`.
 - **What triggers each job pickup:** the session itself. The fixed prompt tells
   the Codex session to enroll (`fleet agent enroll --kind opencode --name
-  <lane> --groups opencode,laptop`), `fleet bridge hello`, then
+<lane> --groups opencode,laptop`), `fleet bridge hello`, then
   `fleet agent next --agent <lane> --lane <lane> --repo developing-today/code`
   to claim a task from queue `repo-health-code-pilot`, follow it to a verified
   terminal disposition (checkpointing/heartbeating during long work), and exit
@@ -68,17 +68,17 @@ Journal evidence is limited to the last ~2.8 h (see caveats).
 
 ### Per instance
 
-| Lane | Category | Completions in window | Current session since (CST) | Notes |
-|---|---|---|---|---|
-| agent-next-19 | producing | 13 (12 + task 24250) | Nov 26 04:25 (one ~17.8 h session) | Flagship slice landed (PR #15899). Holding 2 live claims at census end. |
-| agent-next-20 | idle-but-alive (low output) | 2 | Nov 26 03:50 (one ~18.4 h session) | Marathon session, almost no terminal output under its own name; see dig. |
-| agent-next-21 | producing | 18 | Nov 26 20:17 | Session refreshed in-window; steady completions all day. |
-| agent-next-22 | producing | 10 | Nov 26 04:22 | 6 lease expiries on its tasks, all recovered to done. |
-| agent-next-23 | producing | 24 | Nov 26 04:06 | Burns long-tail backlog too (tasks 5803, 20397 completed in window). Holding 2 claims. |
-| agent-next-24 | producing | 29 | Nov 26 04:14 | Top producer; 29 completions inside one session. Holding 1 claim. |
-| agent-next-25 | producing | 15 | Nov 26 21:18 | Owns the window's one self-failed task — failed it properly, reclaimed, completed. |
-| agent-next-26 | producing | 16 | Nov 26 04:20 | Holding task 15848 (#1822 fix, attempts=24) with live heartbeats. |
-| agent-next-27 | producing, churny | 4 (+1 just after window) | Nov 26 21:22 (4th session in ~3 h) | Frequent session cycling; every expired claim still landed. |
+| Lane          | Category                    | Completions in window    | Current session since (CST)        | Notes                                                                                  |
+| ------------- | --------------------------- | ------------------------ | ---------------------------------- | -------------------------------------------------------------------------------------- |
+| agent-next-19 | producing                   | 13 (12 + task 24250)     | Nov 26 04:25 (one ~17.8 h session) | Flagship slice landed (PR #15899). Holding 2 live claims at census end.                |
+| agent-next-20 | idle-but-alive (low output) | 2                        | Nov 26 03:50 (one ~18.4 h session) | Marathon session, almost no terminal output under its own name; see dig.               |
+| agent-next-21 | producing                   | 18                       | Nov 26 20:17                       | Session refreshed in-window; steady completions all day.                               |
+| agent-next-22 | producing                   | 10                       | Nov 26 04:22                       | 6 lease expiries on its tasks, all recovered to done.                                  |
+| agent-next-23 | producing                   | 24                       | Nov 26 04:06                       | Burns long-tail backlog too (tasks 5803, 20397 completed in window). Holding 2 claims. |
+| agent-next-24 | producing                   | 29                       | Nov 26 04:14                       | Top producer; 29 completions inside one session. Holding 1 claim.                      |
+| agent-next-25 | producing                   | 15                       | Nov 26 21:18                       | Owns the window's one self-failed task — failed it properly, reclaimed, completed.     |
+| agent-next-26 | producing                   | 16                       | Nov 26 04:20                       | Holding task 15848 (#1822 fix, attempts=24) with live heartbeats.                      |
+| agent-next-27 | producing, churny           | 4 (+1 just after window) | Nov 26 21:22 (4th session in ~3 h) | Frequent session cycling; every expired claim still landed.                            |
 
 Category counts: **producing 7, producing-but-churny 1, idle-but-alive 1,
 erroring-looping 0, down 0.**
@@ -96,7 +96,7 @@ erroring-looping 0, down 0.**
   (`main-broken: #14665`, attempts=4, claimed 2026-11-27T01:55:40Z) and task
   20747 (second-pass #8017, claimed 03:49:20Z). One cosmetic journal error:
   `2026-11-27T03:03:16Z ERROR codex_models_manager::manager: failed to
-  refresh available models: request timed out` — session continued.
+refresh available models: request timed out` — session continued.
 - **20 — idle-but-alive.** One ~18.4 h session (PID 126781, since 03:50 CST)
   with only **2 completions** in window: 24056, and 25641 (triage of
   openchamber#1439; claimed 2026-11-27T01:26:00Z, completed 04:02:41Z after
@@ -132,12 +132,11 @@ erroring-looping 0, down 0.**
   23994, 24187, 24293, 24376, 24415, 25410, 25505, 24000, 24002, 24008.
   Owns failure F1 (below), handled properly. One transient journal error
   event: `Nov 26 20:14:59 {"type":"error","message":"Reconnecting... 2/5
-  (stream disconnected before completion: websocket closed by server before
-  response.completed)"}` — reconnected, no work lost. Just after window
+(stream disconnected before completion: websocket closed by server before
+response.completed)"}` — reconnected, no work lost. Just after window
   end it claimed task 20173 (#8570 fix, attempts=9).
 - **26 — producing.** 16 completions: 23894, 23933, 23959, 23968, 25631,
-  25654, 25695, 25794, 26003, 22884, 23758, 23997, 24083, 24092, 23718,
-  23719. Holding task 25690 (triage #9157) and task 15848
+  25654, 25695, 25794, 26003, 22884, 23758, 23997, 24083, 24092, 23718, 23719. Holding task 25690 (triage #9157) and task 15848
   (`Fix #1822`, **attempts=24**, claimed 02:07:46Z, lease extended to
   08:17:02Z — heartbeats are landing, so this is active long work, not a
   dangling claim).
@@ -187,9 +186,9 @@ window's most repeated real failure.** Sessions repeatedly ran
 verbatim from lane 27's journal:
 
 > `repo-queue: primary queue store failed on /complete (exit 2):
-> complete_task: feature_slice completion requires an evidence reference
-> on the result (merged PR, commit, or verified-closure note); the task
-> remains claimed`
+complete_task: feature_slice completion requires an evidence reference
+on the result (merged PR, commit, or verified-closure note); the task
+remains claimed`
 
 Observed: lane 27 ×3 completes on task 23791 before succeeding (it then
 supplied an issue-comment URL as evidence and the completion landed);

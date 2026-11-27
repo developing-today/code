@@ -109,7 +109,11 @@ describe("Class A caller via the content-by-hash seam (#13105 slice 3)", () => {
 
   it("absent content falls back without exposing bytes or a skip", async () => {
     const missing = "0".repeat(64);
-    interceptContent(missing, 404, JSON.stringify({ error: { code: "chunk_not_found", message: "content not found" } }));
+    interceptContent(
+      missing,
+      404,
+      JSON.stringify({ error: { code: "chunk_not_found", message: "content not found" } }),
+    );
     const skips: SkipLog[] = [];
     const outcome = await fetchClassAContent(envWithSkips(skips), missing);
     expect(outcome).toEqual({ served: false, reason: "content-miss" });
@@ -120,7 +124,11 @@ describe("Class A caller via the content-by-hash seam (#13105 slice 3)", () => {
     const withheld = "f".repeat(64);
     // The server answers withheld content with the same 404 shape
     // as missing content; the caller must not distinguish them.
-    interceptContent(withheld, 404, JSON.stringify({ error: { code: "chunk_not_found", message: "content not found" } }));
+    interceptContent(
+      withheld,
+      404,
+      JSON.stringify({ error: { code: "chunk_not_found", message: "content not found" } }),
+    );
     const skips: SkipLog[] = [];
     const outcome = await fetchClassAContent(envWithSkips(skips), withheld);
     expect(outcome).toEqual({ served: false, reason: "content-miss" });

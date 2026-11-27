@@ -214,10 +214,7 @@ export function divergenceFields(dbMetadata: Record<string, unknown>, bodyBlock:
   for (const key of keys) {
     const dbHasKey = Object.hasOwn(dbMetadata, key);
     const bodyHasKey = Object.hasOwn(bodyBlock, key);
-    if (
-      dbHasKey !== bodyHasKey ||
-      (dbHasKey && stableStringify(dbMetadata[key]) !== stableStringify(bodyBlock[key]))
-    ) {
+    if (dbHasKey !== bodyHasKey || (dbHasKey && stableStringify(dbMetadata[key]) !== stableStringify(bodyBlock[key]))) {
       fields.push(key);
     }
   }

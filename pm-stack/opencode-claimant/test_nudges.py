@@ -208,9 +208,7 @@ class TestPlan(unittest.TestCase):
             }
             for i in range(cap)
         ]
-        planned.append(
-            {"session_id": "ses_failed", "kind": "retry", "task_id": 999}
-        )
+        planned.append({"session_id": "ses_failed", "kind": "retry", "task_id": 999})
         to_apply, overflow = nudges.split_plan(planned)
         self.assertEqual(len(to_apply), cap)
         self.assertTrue(all(a["kind"] == "nudge" for a in to_apply))

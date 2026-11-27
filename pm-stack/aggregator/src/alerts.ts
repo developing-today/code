@@ -1494,9 +1494,7 @@ export async function runAlertTick(
         store,
       });
     } catch (err) {
-      console.warn(
-        `alerts engine: cost-anomaly step failed (${err instanceof Error ? err.message : "error"})`,
-      );
+      console.warn(`alerts engine: cost-anomaly step failed (${err instanceof Error ? err.message : "error"})`);
     }
   }
   await runDashboardNotificationTick(cfg, store, subs, push, options);

@@ -38,62 +38,96 @@ class SelectorTests(unittest.TestCase):
 
     def test_marker_gate(self):
         self.assertTrue(selector.compatible(DOCUMENT))
-        for doc in (None, [], {}, {"build": {"version": "0.1.0"}},
-                    {"domains": DOCUMENT["domains"]},
-                    dict(DOCUMENT, compatibility_contracts=["laptop-agent-python-cli/v0"]),
-                    dict(DOCUMENT, compatibility_contracts=selector.CONTRACT),
-                    dict(DOCUMENT, domains=[{"name": "laptop-agent", "available": False}]),
-                    dict(DOCUMENT, domains=[{"name": "laptop-agent", "available": 1, "state": "available"}])):
+        for doc in (
+            None,
+            [],
+            {},
+            {"build": {"version": "0.1.0"}},
+            {"domains": DOCUMENT["domains"]},
+            dict(DOCUMENT, compatibility_contracts=["laptop-agent-python-cli/v0"]),
+            dict(DOCUMENT, compatibility_contracts=selector.CONTRACT),
+            dict(DOCUMENT, domains=[{"name": "laptop-agent", "available": False}]),
+            dict(
+                DOCUMENT,
+                domains=[
+                    {"name": "laptop-agent", "available": 1, "state": "available"}
+                ],
+            ),
+        ):
             with self.subTest(doc=doc):
                 self.assertFalse(selector.compatible(doc))
 
     def test_strict_argv_before_probe_or_legacy(self):
-        invalid = [[], ["wat"], ["health", "extra"], ["jobs", "--typo"],
-                   ["kill"], ["kill", "j", "extra"], ["exec-batch"],
-                   ["exec-batch", "f", "extra"], ["exec", "--cwd"],
-                   ["exec", "--time", "2", "--", "x"], ["exec", "--"],
-                   ["run", "--timeout"], ["run", "--timeout=0", "--", "x"],
-                   ["poll", "j", "--wait"], ["poll", "j", "--wait=-1"],
-                   ["fetch", "--chunk", "0", "a", "b"], ["fetch", "a", "b", "extra"]]
+        invalid = [
+            [],
+            ["wat"],
+            ["health", "extra"],
+            ["jobs", "--typo"],
+            ["kill"],
+            ["kill", "j", "extra"],
+            ["exec-batch"],
+            ["exec-batch", "f", "extra"],
+            ["exec", "--cwd"],
+            ["exec", "--time", "2", "--", "x"],
+            ["exec", "--"],
+            ["run", "--timeout"],
+            ["run", "--timeout=0", "--", "x"],
+            ["poll", "j", "--wait"],
+            ["poll", "j", "--wait=-1"],
+            ["fetch", "--chunk", "0", "a", "b"],
+            ["fetch", "a", "b", "extra"],
+        ]
         for args in invalid:
-            with self.subTest(args=args), patch.object(sys, "argv", ["client", *args]), \
-                    patch.object(selector.shutil, "which") as which, \
-                    patch.object(selector, "_load_legacy") as legacy, \
-                    contextlib.redirect_stderr(io.StringIO()):
+            with (
+                self.subTest(args=args),
+                patch.object(sys, "argv", ["client", *args]),
+                patch.object(selector.shutil, "which") as which,
+                patch.object(selector, "_load_legacy") as legacy,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 with self.assertRaises(SystemExit) as exited:
                     selector.select_main()
                 self.assertEqual(exited.exception.code, 2)
                 which.assert_not_called()
                 legacy.assert_not_called()
-        self.assertEqual(selector.validate(["fetch", "--chunk=12", "a", "b"]),
-                         ["fetch", "--chunk", "12", "a", "b"])
-        self.assertEqual(selector.validate(["poll", "j", "--wait=2"]),
-                         ["poll", "j", "--wait", "2"])
+        self.assertEqual(
+            selector.validate(["fetch", "--chunk=12", "a", "b"]),
+            ["fetch", "--chunk", "12", "a", "b"],
+        )
+        self.assertEqual(
+            selector.validate(["poll", "j", "--wait=2"]), ["poll", "j", "--wait", "2"]
+        )
 
     def test_missing_binary_and_unready_use_legacy_once(self):
         for binary, ready in ((None, False), ("/fake/fleet", False)):
-            with patch.object(sys, "argv", ["client", "health"]), \
-                    patch.object(selector.shutil, "which", return_value=binary), \
-                    patch.object(selector, "probe", return_value=ready) as probe, \
-                    patch.object(selector, "_load_legacy") as legacy:
+            with (
+                patch.object(sys, "argv", ["client", "health"]),
+                patch.object(selector.shutil, "which", return_value=binary),
+                patch.object(selector, "probe", return_value=ready) as probe,
+                patch.object(selector, "_load_legacy") as legacy,
+            ):
                 selector.select_main()
                 legacy.return_value.main.assert_called_once_with()
                 self.assertEqual(probe.call_count, int(binary is not None))
 
     def test_exec_failure_never_replays(self):
-        with patch.object(sys, "argv", ["client", "jobs"]), \
-                patch.object(selector.shutil, "which", return_value="/fake/fleet"), \
-                patch.object(selector, "probe", return_value=True), \
-                patch.object(selector.os, "execv", side_effect=OSError("gone")), \
-                patch.object(selector, "_load_legacy") as legacy, \
-                contextlib.redirect_stderr(io.StringIO()):
+        with (
+            patch.object(sys, "argv", ["client", "jobs"]),
+            patch.object(selector.shutil, "which", return_value="/fake/fleet"),
+            patch.object(selector, "probe", return_value=True),
+            patch.object(selector.os, "execv", side_effect=OSError("gone")),
+            patch.object(selector, "_load_legacy") as legacy,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
             with self.assertRaises(SystemExit) as exited:
                 selector.select_main()
             self.assertEqual(exited.exception.code, 126)
             legacy.assert_not_called()
 
     def test_import_api_is_legacy_without_probe(self):
-        with patch.object(selector, "probe", side_effect=AssertionError("probe on import")):
+        with patch.object(
+            selector, "probe", side_effect=AssertionError("probe on import")
+        ):
             client = load("broker_client", ROOT / "laptop-agent.py")
             self.assertTrue(callable(client.make_cf_http))
             self.assertTrue(callable(client.make_tunnel_http))
@@ -122,11 +156,18 @@ class ProcessTests(unittest.TestCase):
 
     def test_probe_missing_malformed_stale_timeout_oversize_and_nonzero(self):
         self.assertFalse(selector.probe(str(self.binary)))
-        for body in ("print('not json')", "print('{}')", "print('[]')",
-                     "print(" + repr(json.dumps(dict(DOCUMENT, compatibility_contracts=["old"]))) + ")",
-                     "import time; time.sleep(5)", "print('x' * 70000)",
-                     "print('[' * 2000 + '0' + ']' * 2000)",
-                     "import sys; print(" + repr(json.dumps(DOCUMENT)) + "); sys.exit(1)"):
+        for body in (
+            "print('not json')",
+            "print('{}')",
+            "print('[]')",
+            "print("
+            + repr(json.dumps(dict(DOCUMENT, compatibility_contracts=["old"])))
+            + ")",
+            "import time; time.sleep(5)",
+            "print('x' * 70000)",
+            "print('[' * 2000 + '0' + ']' * 2000)",
+            "import sys; print(" + repr(json.dumps(DOCUMENT)) + "); sys.exit(1)",
+        ):
             with self.subTest(body=body):
                 self.fleet(body)
                 with patch.object(selector, "PROBE_TIMEOUT_S", 0.08):
@@ -150,19 +191,39 @@ class ProcessTests(unittest.TestCase):
             " sys.stderr.buffer.write(b'err\\x00bytes\\n')\n"
             " sys.exit(37)\n"
         )
-        cases = [["health"], ["jobs"], ["exec", "--cwd", "space dir", "--timeout=3", "--", "printf", "a b", "--weird"],
-                 ["run", "--timeout", "9", "--shell", "--", "echo x"],
-                 ["poll", "sshfb-old", "--wait=2"], ["kill", "job"],
-                 ["fetch", "--chunk=123", "remote", "local"], ["exec-batch", "batch.json"]]
+        cases = [
+            ["health"],
+            ["jobs"],
+            [
+                "exec",
+                "--cwd",
+                "space dir",
+                "--timeout=3",
+                "--",
+                "printf",
+                "a b",
+                "--weird",
+            ],
+            ["run", "--timeout", "9", "--shell", "--", "echo x"],
+            ["poll", "sshfb-old", "--wait=2"],
+            ["kill", "job"],
+            ["fetch", "--chunk=123", "remote", "local"],
+            ["exec-batch", "batch.json"],
+        ]
         for args in cases:
             with self.subTest(args=args):
-                result = subprocess.run([sys.executable, str(ROOT / "laptop-agent.py"), *args],
-                                        input=b'in\x00bytes\n', capture_output=True, env=self.env, timeout=5)
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "laptop-agent.py"), *args],
+                    input=b"in\x00bytes\n",
+                    capture_output=True,
+                    env=self.env,
+                    timeout=5,
+                )
                 self.assertEqual(result.returncode, 37)
                 line, rest = result.stdout.split(b"\n", 1)
                 self.assertEqual(json.loads(line), ["laptop-agent", *args])
-                self.assertEqual(rest, b'in\x00bytes\n')
-                self.assertEqual(result.stderr, b'err\x00bytes\n')
+                self.assertEqual(rest, b"in\x00bytes\n")
+                self.assertEqual(result.stderr, b"err\x00bytes\n")
                 # A replay would reach real legacy transport and alter bytes/status.
 
 
@@ -186,7 +247,9 @@ class InstallTests(unittest.TestCase):
             with patch.object(installer.os, "replace", side_effect=observe):
                 installer.install(dest)
             self.assertEqual(seen, ["laptop-agent-legacy.py", "laptop-agent.py"])
-            self.assertEqual((dest / "laptop-agent-legacy.py").read_bytes(), old.read_bytes())
+            self.assertEqual(
+                (dest / "laptop-agent-legacy.py").read_bytes(), old.read_bytes()
+            )
 
     def test_missing_source_does_not_publish_partial_pair(self):
         with tempfile.TemporaryDirectory() as tmp:

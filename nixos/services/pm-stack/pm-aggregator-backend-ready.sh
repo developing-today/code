@@ -16,20 +16,20 @@ fi
 
 port="$1"
 timeout_seconds="$2"
-if [[ ! "$port" =~ ^[0-9]{1,5}$ || ! "$timeout_seconds" =~ ^[0-9]{1,3}$ ]]; then
+if [[ ! $port =~ ^[0-9]{1,5}$ || ! $timeout_seconds =~ ^[0-9]{1,3}$ ]]; then
   usage
   exit 2
 fi
 
 port_num=$((10#$port))
 timeout_num=$((10#$timeout_seconds))
-if (( port_num < 1 || port_num > 65535 || timeout_num < 1 || timeout_num > 300 )); then
+if ((port_num < 1 || port_num > 65535 || timeout_num < 1 || timeout_num > 300)); then
   usage
   exit 2
 fi
 
 deadline=$((SECONDS + timeout_num))
-while (( SECONDS < deadline )); do
+while ((SECONDS < deadline)); do
   if exec 3<>"/dev/tcp/127.0.0.1/${port_num}" 2>/dev/null; then
     exec 3>&- 3<&-
     exit 0

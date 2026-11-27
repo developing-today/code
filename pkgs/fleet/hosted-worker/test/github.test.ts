@@ -147,9 +147,7 @@ test("an installation-token permission refusal fails over before create", async 
   const { fetchFn, calls } = fakeGitHub(
     () => jsonResponse(201, { number: 12, html_url: "https://github.com/o/r/issues/12" }),
     (installation) =>
-      installation === 111
-        ? jsonResponse(403, { message: "Resource not accessible by integration" })
-        : null,
+      installation === 111 ? jsonResponse(403, { message: "Resource not accessible by integration" }) : null,
   );
   const writer = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
   const created = await writer.createItem({ repo: "o/r", kind: "issue", title: "t", body: "b" });
@@ -157,11 +155,7 @@ test("an installation-token permission refusal fails over before create", async 
   assert.equal(created.number, 12);
   assert.deepEqual(
     calls.map((call) => call.url.replace("https://api.github.com", "")),
-    [
-      "/app/installations/111/access_tokens",
-      "/app/installations/222/access_tokens",
-      "/repos/o/r/issues",
-    ],
+    ["/app/installations/111/access_tokens", "/app/installations/222/access_tokens", "/repos/o/r/issues"],
   );
   assert.equal(calls[2].authorization, "Bearer installation-token-222");
 });

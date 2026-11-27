@@ -256,7 +256,13 @@ describe("worker entry", () => {
       DEPLOYED_AT: deployedAt,
     });
     expect(res.status).toBe(200);
-    const health = (await res.json()) as { ok: boolean; service: string; version: string; deployedAt: string; ageSeconds: number };
+    const health = (await res.json()) as {
+      ok: boolean;
+      service: string;
+      version: string;
+      deployedAt: string;
+      ageSeconds: number;
+    };
     expect(health).toMatchObject({ ok: true, service: "pm-service", version: "abc123", deployedAt });
     expect(Number.isInteger(health.ageSeconds)).toBe(true);
     expect(health.ageSeconds).toBeGreaterThanOrEqual(5);

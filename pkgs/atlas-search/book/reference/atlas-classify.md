@@ -136,8 +136,8 @@ All failures print `atlas-classify: &lt;msg&gt;` (or, for usage errors, the usag
 
 ## Exit codes
 
-| Code | Meaning                                                                                                                  |
-| ---- | ------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Success: the manifest, review batch, or apply report was printed (and written to `--manifest-out` when given).           |
-| 1    | Execution failure — runtime and classification failures such as an unreadable corpus or failed write. |
+| Code | Meaning                                                                                                                |
+| ---- | ---------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success: the manifest, review batch, or apply report was printed (and written to `--manifest-out` when given).         |
+| 1    | Execution failure — runtime and classification failures such as an unreadable corpus or failed write.                  |
 | 2    | Usage / invalid invocation — unknown or duplicated flags, missing flag values, malformed flag values, unknown actions. |

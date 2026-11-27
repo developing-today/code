@@ -505,6 +505,32 @@ gh workflow run pm-console-edge-deploy.yml -f rollback_version=<version id>   # 
 git revert <merge>                                       # and the next push deploys it
 ```
 
+### Queue transport notification rollout (#13503)
+
+This additive slice keeps `queue-transport-alert`, its queue and its incident
+handling in service. The console reads its `/status` on the existing five-minute
+trigger; after deployment, `/console/health` must include `queueTransport` with a
+non-null `checkedAt` from a subsequent tick before the slice is merged.
+
+The known-good deployment before this rollout is Actions run
+[45986510807](https://github.com/developing-today/code/actions/runs/45986510807),
+commit `bc173425a00f`, Worker version
+`8746c273-6f08-43c1-bb56-86c74b64c7f6`. To restore it through Actions:
+
+```bash
+gh workflow run pm-console-edge-deploy.yml --ref bc173425a00f1a4e25b59d153fbe10f042f903b6 -f rollback_version=8746c273-6f08-43c1-bb56-86c74b64c7f6
+```
+
+Follow that run to success, then check
+`https://pm-console-edge.developing-today.workers.dev/console/health` answers
+`ok: true`, `edge: true`, `version: "bc173425a00f"`. The rollout adds storage
+keys only, with no Durable Object migration or deletion; the previous version
+ignores those keys. Cron Triggers are applied separately after version deployment;
+rolling back a version leaves the five-minute trigger in place. The older
+version already handles the scheduled Worker checks. The original alert Worker continues GitHub incident,
+Telegram and enqueue handling even after this rollback. Retirement requires a
+later slice preserving those semantics; it is not part of this deploy.
+
 ## Run it here
 
 ```bash

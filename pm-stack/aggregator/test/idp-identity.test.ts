@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import {
-  clearIdpJwksCache,
-  enforceIdpWriteRole,
-  verifyIdpAccessToken,
-} from "../src/idp-identity.ts";
+import { clearIdpJwksCache, enforceIdpWriteRole, verifyIdpAccessToken } from "../src/idp-identity.ts";
 
 const ISSUER = "http://idp.test";
 const KID = "fixture-kid";
@@ -106,7 +102,7 @@ describe("aggregator IdP access-token write gate (#14411)", () => {
     const unavailable = await enforceIdpWriteRole(
       new Request("https://agg/api/actions", { headers: { authorization: `Bearer ${makeToken()}` } }),
       env,
-      (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
+      Object.assign(async () => new Response("unavailable", { status: 503 }), { preconnect: () => {} }),
     );
     expect(unavailable).toMatchObject({ ok: false, status: 401 });
   });

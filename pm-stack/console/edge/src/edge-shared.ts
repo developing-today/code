@@ -173,6 +173,9 @@ export interface Acted {
    * only when that asking was the only one. (A record from before this
    * was counted has none, and is taken to have set off already.) */
   relays?: number;
+  /** Once sent, retries must not choose a different machine. */
+  forKid?: string;
+  for?: string;
 }
 export const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 

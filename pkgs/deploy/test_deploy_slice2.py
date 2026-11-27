@@ -147,9 +147,7 @@ class StartLimitValidationTests(unittest.TestCase):
         return deploy.validate({"svc": dict(DEFN, **overrides)})
 
     def test_valid_values_pass(self):
-        self.assertEqual(
-            self.errors(restartDelaySec=5, startLimitIntervalSec=0), []
-        )
+        self.assertEqual(self.errors(restartDelaySec=5, startLimitIntervalSec=0), [])
         self.assertEqual(self.errors(restartDelaySec=0), [])
         self.assertEqual(self.errors(startLimitIntervalSec=86400), [])
 

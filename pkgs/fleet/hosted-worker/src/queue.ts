@@ -3466,12 +3466,9 @@ async function verbBind(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
   // migration-0026, so error-stopped recovery deleted the session
   // but never cleared the binding.
   const recoveryReasons: Record<string, string> = {
-    "opencode-claimant-recovery:zero-message-deleted":
-      "verified zero-message session deleted before recovery",
-    "opencode-claimant-recovery:gone-session":
-      "bound session verified absent before recovery",
-    "opencode-claimant-recovery:error-stopped":
-      "verified error-stopped session deleted before recovery",
+    "opencode-claimant-recovery:zero-message-deleted": "verified zero-message session deleted before recovery",
+    "opencode-claimant-recovery:gone-session": "bound session verified absent before recovery",
+    "opencode-claimant-recovery:error-stopped": "verified error-stopped session deleted before recovery",
   };
   const recoveryReason = recoveryReasons[launchedBy];
   if (recoveryReason !== undefined) {

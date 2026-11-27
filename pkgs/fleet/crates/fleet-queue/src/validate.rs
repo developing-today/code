@@ -1535,8 +1535,7 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     if let Some(value) = obj.get("resume_session_id").filter(|v| !v.is_null()) {
         if !value.as_str().is_some_and(|s| !s.trim().is_empty()) {
             errors.push(
-                "packet.resume_session_id: must be a non-empty string when present"
-                    .to_string(),
+                "packet.resume_session_id: must be a non-empty string when present".to_string(),
             );
         }
     }

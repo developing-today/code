@@ -18,12 +18,12 @@ pm-dispatch is a separate OpenCode intake daemon.
 
 ## The four systems, side by side
 
-| System | Volume (24h) | Outcome |
-|---|---|---|
-| Queue ledger (all workers) | 1,887 terminal events | 1,706 completed / 24 failed / 157 cancelled |
-| Muse work-loop lanes (Archer) | 36 cron runs, ≈549 lane instances | 160 PRs merged, 73 issues closed |
-| OpenCode sessions (laptop) | 1,603 sessions created | 1,036 succeeded (64.6%) / 530 errored (33.1%) / ~1 evaporated |
-| Codex lanes (9 instances) | 132 attributable completions | 0 failed-status tasks, 0 cancels |
+| System                        | Volume (24h)                      | Outcome                                                       |
+| ----------------------------- | --------------------------------- | ------------------------------------------------------------- |
+| Queue ledger (all workers)    | 1,887 terminal events             | 1,706 completed / 24 failed / 157 cancelled                   |
+| Muse work-loop lanes (Archer) | 36 cron runs, ≈549 lane instances | 160 PRs merged, 73 issues closed                              |
+| OpenCode sessions (laptop)    | 1,603 sessions created            | 1,036 succeeded (64.6%) / 530 errored (33.1%) / ~1 evaporated |
+| Codex lanes (9 instances)     | 132 attributable completions      | 0 failed-status tasks, 0 cancels                              |
 
 Completions by worker (queue ledger): repo-worker-code 1,241 (72.7%), archer 148,
 xaltha 63, repo-worker-openchamber 42, the nine Codex lanes 158 combined
@@ -53,6 +53,7 @@ xaltha 63, repo-worker-openchamber 42, the nine Codex lanes 158 combined
 ## Failures, grouped by cause
 
 **Queue tasks (24 failed of 1,887 terminal):**
+
 - 9 out-of-scope cross-repo claims — the broker served another repo's pilot task
   to a code-scoped lane; failed untouched.
 - 8 disposition-gate / packet-contract rejections — work done or correctly
@@ -63,6 +64,7 @@ xaltha 63, repo-worker-openchamber 42, the nine Codex lanes 158 combined
   failed Darwin acceptance).
 
 **OpenCode sessions (530 errored):**
+
 - **500 of 576 terminal failure events (87%) are one defect:** the workhorse
   route offered sessions the model `muse-wonder-1.0-contributor` on the `_muse`
   door, which answers "model not found" — 912 route attempts pinned to that one
@@ -77,6 +79,7 @@ xaltha 63, repo-worker-openchamber 42, the nine Codex lanes 158 combined
   CST) — contradicting the 2026-11-24 record that it stopped being launched.
 
 **Muse work-loop lanes:**
+
 - 7 cron runs timed out → 21 lanes evaporated mid-flight, ~14 cancelled.
 - 37 new-system lanes gate-held properly: CI-on-main-only + the deployed fleet
   binary predating merged PR #15841 → Actions-exec TLS UnknownIssuer/403 all
@@ -93,6 +96,7 @@ xaltha 63, repo-worker-openchamber 42, the nine Codex lanes 158 combined
   new test never ran).
 
 **Codex lanes:**
+
 - Most repeated friction: completion calls rejected (exit 2) for a missing
   evidence reference on feature_slice tasks — wasted turns, always recovered
   (lane 27: 3 attempts on task 23791; lane 20: 5 on task 25641).

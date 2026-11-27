@@ -30,7 +30,9 @@ describe("Atlas MCP agent authentication", () => {
     const config = JSON.stringify({ openclaw: OPENCLAW, "muse-lane": MUSE });
     expect(await authenticateMcpAgent(`Bearer ${OPENCLAW}`, "shared-gate-token-123456", config)).toBe("openclaw");
     expect(await authenticateMcpAgent(`Bearer ${MUSE}`, "shared-gate-token-123456", config)).toBe("muse-lane");
-    expect(await authenticateMcpAgent("Bearer shared-gate-token-123456", "shared-gate-token-123456", config)).toBeNull();
+    expect(
+      await authenticateMcpAgent("Bearer shared-gate-token-123456", "shared-gate-token-123456", config),
+    ).toBeNull();
     expect(await authenticateMcpAgent("Bearer forged-token-123456789", "shared-gate-token-123456", config)).toBeNull();
   });
 
@@ -38,6 +40,8 @@ describe("Atlas MCP agent authentication", () => {
     expect(await authenticateMcpAgent("Bearer shared-gate-token-123456", "shared-gate-token-123456")).toBe(
       "hosted-per-user",
     );
-    expect(await authenticateMcpAgent("Bearer shared-gate-token-123456", "shared-gate-token-123456", "bad-json")).toBeNull();
+    expect(
+      await authenticateMcpAgent("Bearer shared-gate-token-123456", "shared-gate-token-123456", "bad-json"),
+    ).toBeNull();
   });
 });
