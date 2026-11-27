@@ -62,6 +62,7 @@
 - [Schema validation (`internal/schemaval`)](schema-validation.md)
 - [MCP tool reference](tool-reference.md)
 - [Scripts](scripts.md)
+- [Session lifecycle: identity, release, and termination](session-lifecycle.md)
 - [mcpx](story.md)
 - [mcpx Development Strategies & Lessons Learned](work-strategies.md)
 - [Audit](<>)

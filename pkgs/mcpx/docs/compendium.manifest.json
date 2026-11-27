@@ -686,7 +686,7 @@
       "path": "docs/SUMMARY.md",
       "chapter": null,
       "role": "not-compendium",
-      "lines": 105,
+      "lines": 106,
       "note": "mdBook navigation index for the .#mcpx-docs book (#1939 Approach C); the generator reads it, it is not a chapter"
     },
     {
@@ -1185,6 +1185,13 @@
       "role": "chapter-source",
       "lines": 27,
       "note": "High-level roadmap for the Code Book programme #13905"
+    },
+    {
+      "path": "docs/session-lifecycle.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 160,
+      "note": "session identity, release vs termination contract for #1931 slice 1 (#15959)"
     },
     {
       "path": "docs/worker.md",
