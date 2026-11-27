@@ -191,6 +191,43 @@ describe("work_mobile_views/v1 pure filter", () => {
       fact: "github.updated_at",
     });
   });
+
+  test("work_mobile_views_needs_triage_matches_verbatim_label", () => {
+    // MOB-01 F2: needs_triage is decidable once the read model carries labels.
+    const labeled = (id: string, labels: string[]): WorkView =>
+      base(id, { github_labels: { value: labels, source: "github", observed_at: GEN } });
+    const triage = labeled("t1", ["needs-triage", "kind/design"]);
+    const other = labeled("o1", ["kind/design"]);
+    const unlabeled = backlog("b1");
+    const got = mobileView([triage, other, unlabeled], "needs_triage", CTX);
+    expect(got.unavailable).toBeNull();
+    // Only the verbatim needs-triage row matches; other labels are
+    // decidably out (excluded, not undecided); a row with no labels
+    // cannot be placed (D3).
+    expect(got.refs.map((r) => r.work_id)).toEqual(["t1"]);
+    expect(got.undecided).toEqual([
+      { ref: { authority_id: "fleet-authority", work_id: "b1" }, deciding_fact: "github.labels", state: "absent" },
+    ]);
+  });
+
+  test("work_mobile_views_needs_triage_never_matches_on_stale_or_bad_labels", () => {
+    // Stale labels are undecided, never matched on their last value
+    // (D3); a non-list value is invalid, never read as an empty list.
+    const stale = base("s1", {
+      github_labels: { value: ["needs-triage"], source: "github", freshness: "stale" },
+    });
+    const bad = base("x1", {
+      github_labels: { value: "needs-triage", source: "github" } as unknown as { value: string[]; source: string },
+    });
+    const good = base("t1", { github_labels: { value: ["needs-triage"], source: "github" } });
+    const got = mobileView([stale, bad, good], "needs_triage", CTX);
+    expect(got.unavailable).toBeNull();
+    expect(got.refs.map((r) => r.work_id)).toEqual(["t1"]);
+    expect(got.undecided).toEqual([
+      { ref: { authority_id: "fleet-authority", work_id: "s1" }, deciding_fact: "github.labels", state: "stale" },
+      { ref: { authority_id: "fleet-authority", work_id: "x1" }, deciding_fact: "github.labels", state: "invalid" },
+    ]);
+  });
 });
 
 describe("work_mobile_views/v1 grouping and saved filters (slice 2)", () => {
