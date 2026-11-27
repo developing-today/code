@@ -2542,7 +2542,9 @@ mod tests {
             Box::new(|e: &mut Edge| e.role = Some(DuplicateRole::TargetIsDuplicate)),
             Box::new(|e: &mut Edge| e.role = None),
             Box::new(|e: &mut Edge| {
-                e.source = work("3");
+                // Keep pair order valid so this isolates identity mutation,
+                // rather than failing the independent schema invariant first.
+                e.source = remote_work("alpha", "3");
                 e.source_key = e.source.key();
             }),
             Box::new(|e: &mut Edge| e.target = work("4")),
@@ -2550,6 +2552,9 @@ mod tests {
         ];
         for change in &changes {
             let changed = next(&**change);
+            changed
+                .validate()
+                .expect("identity fixture must remain a valid edge");
             assert_eq!(
                 revise(&base, &changed, "op-2").unwrap_err().code(),
                 "invalid_transition",

@@ -24,7 +24,7 @@ Paths in this table are relative to `pkgs/fleet/crates/fleet-queue/src/`.
 ## Bounded acceptance
 
 After this PR, `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue
---lib --features client,queue-broker pmo_dep_wire_` rejects reversed
+--lib --no-default-features pmo_dep_wire_` rejects reversed
 `related_to`/`duplicates` wire records, accepts canonical records, and leaves
 ordered `blocks`/hierarchy/supersedes untouched. The oracle is DEP-02 D1:
 authority byte order, then numeric work ID; an external end is the source.
