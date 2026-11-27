@@ -1873,9 +1873,66 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let rest = &args[1.min(args.len())..];
     match verb {
         "convert" => {
-            let p = parse_args(rest, &["in", "to", "out"], &["json"])?;
+            let p = parse_args(
+                rest,
+                &["in", "to", "out", "bundle", "password-file"],
+                &["json"],
+            )?;
+            let target = p.require("to", "format convert")?;
+            if target == "pkcs12" {
+                let bundle_dir = p.require("bundle", "format convert --to pkcs12")?;
+                let password_path =
+                    PathBuf::from(p.require("password-file", "format convert --to pkcs12")?);
+                let password = std::fs::read_to_string(&password_path).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot read PKCS#12 password file {}: {e}",
+                        password_path.display()
+                    ))
+                })?;
+                let password = password.trim_end_matches(['\r', '\n']);
+                let bundle = load_bundle(&PathBuf::from(&bundle_dir))?;
+                let identities: Vec<_> = bundle
+                    .manifest
+                    .certificates
+                    .iter()
+                    .filter(|c| c.key_path.is_some())
+                    .collect();
+                if identities.len() != 1 {
+                    return Err(CertError::validation(format!(
+                        "PKCS#12 export requires exactly one private-key identity in bundle; found {}",
+                        identities.len()
+                    )));
+                }
+                let identity = identities[0];
+                let certificate_bytes = read_artifact(&bundle, &identity.cert_path)?;
+                let certificate_der = crate::format::certificate_der(&certificate_bytes)?;
+                let key_path = identity.key_path.as_deref().expect("filtered key path");
+                let key_der = read_artifact(&bundle, key_path)?;
+                let chain_der = bundle
+                    .manifest
+                    .certificates
+                    .iter()
+                    .filter(|c| c.cert_path != identity.cert_path)
+                    .map(|c| {
+                        read_artifact(&bundle, &c.cert_path)
+                            .and_then(|bytes| crate::format::certificate_der(&bytes))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let archive =
+                    crate::pkcs12::export(&certificate_der, &key_der, &chain_der, password)?;
+                let path = PathBuf::from(p.require("out", "format convert --to pkcs12")?);
+                write_new_file(&path, &archive, true, "PKCS#12 archive")?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "wrote password-protected PKCS#12 identity to {}\n",
+                        path.display()
+                    ),
+                    json!({"out": path, "format": "pkcs12", "bundle": bundle_dir, "bytes": archive.len(), "private_material_emitted": true}),
+                ));
+            }
             let input = p.require("in", "format convert")?;
-            let to = crate::format::Encoding::parse(&p.require("to", "format convert")?)?;
+            let to = crate::format::Encoding::parse(&target)?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
             let out = crate::format::convert(&bytes, to)?;
@@ -1899,10 +1956,29 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
         }
         "verify" => {
-            let p = parse_args(rest, &["in"], &["json"])?;
+            let p = parse_args(rest, &["in", "password-file"], &["json"])?;
             let input = p.require("in", "format verify")?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            if let Some(password_path) = p.get("password-file") {
+                let password_path = PathBuf::from(password_path);
+                let password = std::fs::read_to_string(&password_path).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot read PKCS#12 password file {}: {e}",
+                        password_path.display()
+                    ))
+                })?;
+                let password = password.trim_end_matches(['\r', '\n']);
+                let verified = crate::pkcs12::verify(&bytes, password)?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "{input}: valid password-protected PKCS#12 identity (leaf sha256 {}, {} chain certificates); key material redacted\n",
+                        verified.certificate_sha256, verified.chain_certificates
+                    ),
+                    json!({"in": input, "format": "pkcs12", "certificate_sha256": verified.certificate_sha256, "chain_certificates": verified.chain_certificates, "private_material_emitted": false}),
+                ));
+            }
             let v = crate::format::verify(&bytes)?;
             Ok(emit(
                 json_out,

@@ -81,11 +81,18 @@ Implements the fleet architecture spec v0.3
   orphaned/unreferenced), upcoming expiries (CA 5y, leaf 90d
   Gregorian horizons, overridable per run), orphaned material;
   audit exits 1 iff expired>0 or drift>0. Nothing writes.
+- `fleet cert format convert|verify` — certificate PEM/DER conversion
+  plus password-protected PKCS#12 export from a verified bundle and
+  archive verification. Export requires exactly one in-bundle identity
+  and a `--password-file`; output is created owner-only and never
+  overwrites an existing file. The API requires a matching cert/key pair,
+  preserves additional certificates as the CA chain, and rejects malformed
+  archives. Verification redacts keys.
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`dns`, `key` escrow/restore/rotate and private export,
-`format`, profile validate/scaffold, algorithm benchmark/doctor,
+`dns`, `key` escrow/restore and private export,
+profile validate/scaffold, algorithm benchmark/doctor,
 `batch`, bundle pack/unpack/diff/migrate,
 publish apply/status (production-gated; slice 1 ships plan +
 verify read-only).
