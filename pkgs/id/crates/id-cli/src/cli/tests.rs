@@ -2326,6 +2326,22 @@ fn test_cli_parse_world_boot_window() {
 }
 
 #[test]
+fn test_cli_parse_world_max_per_account() {
+    // #1067 F12.10: opt-in per-account world quota, `0` keeps the
+    // unconfigured hub's behaviour.
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert_eq!(args.world_max_per_account, 0),
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x", "--world-max-per-account", "3"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert_eq!(args.world_max_per_account, 3),
+        _ => panic!("Expected Serve command"),
+    }
+}
+
+#[test]
 fn test_cli_parse_world_partition() {
     let cli = Cli::parse_from([
         "id",

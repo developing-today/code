@@ -385,7 +385,10 @@ async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: Ses
             }
             io.mark_authorized();
             let name = world.as_deref().unwrap_or_else(|| hub.default_world());
-            match hub.create(name).await {
+            // #1067 F12.10: an admin creation through a session counts
+            // against the caller's per-account world quota, exactly as a
+            // direct `create_as` does; a `None` account skips the quota.
+            match hub.create_as(name, caller_account.as_deref()).await {
                 Ok(created) => {
                     let _ = send_json(
                         &unattributed,
@@ -435,7 +438,13 @@ async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: Ses
     } else {
         admin
     };
-    let lease = match hub.lease(world.as_deref(), create_token).await {
+    // #1067 F12.10: the lease that would create a world counts against
+    // the caller's per-account world quota; a `None` account skips it,
+    // as every pre-quota path does.
+    let lease = match hub
+        .lease_as(world.as_deref(), create_token, caller_account.as_deref())
+        .await
+    {
         Ok(lease) => lease,
         Err(error) => {
             let _ = send_error(&unattributed, io, error.message()).await;
