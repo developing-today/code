@@ -1789,7 +1789,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn trust_version_report_requires_tls_auth_peer_and_one_positive_header(
+        fn trust_version_observation_requires_tls_auth_and_peer(
             kind in 0u8..3,
             authenticated in any::<bool>(),
             has_peer in any::<bool>(),
@@ -1798,9 +1798,10 @@ mod tests {
             malformed in any::<bool>(),
             duplicate in any::<bool>(),
         ) {
-            // Oracle: the report is present iff the server observed direct
-            // TLS, the request authenticated, a peer IP exists, and exactly
-            // one positive version header was presented.
+            // Oracle: only an authenticated TLS request with a server-
+            // observed peer can create an observation. One positive,
+            // unambiguous header records a presented version; every other
+            // such request is visible as unverified.
             let kind = match kind {
                 0 => crate::uds_http::RequestTransportKind::Uds,
                 1 => crate::uds_http::RequestTransportKind::TcpPlain,
