@@ -1490,6 +1490,26 @@ pub(super) fn iso_utc(secs: i64) -> String {
 /// broker build whose /events-list makes task_id optional;
 /// against an older broker it says so and exits 3. The window
 /// clamps to the store's 30-day event retention.
+/// `placement-load` (#15900): the read-only front door for the
+/// broker coordinator's `/placement-load` view (#13765) — observed
+/// GitHub load, active claims, and sweep freshness per owner,
+/// without dispatching or mutating placement. The read goes through
+/// the coordinator client, so `FLEET_PLACE_COORD=off` and a down
+/// broker both report as coordinator-unavailable (exit 3) instead
+/// of an empty view. `--worker` is accepted for attribution only,
+/// like `health` (#7349).
+pub(super) fn cmd_placement_load(rest: &[String]) -> i32 {
+    let args = parse_verb_args("placement-load", rest, &["worker"], &["json"]);
+    reject_extra_pos("placement-load", &args, 0);
+    let (code, out, err) = crate::placement::coordinator::placement_load_report(
+        crate::placement::coordinator::coordinator().load(),
+        args.has("json"),
+    );
+    print!("{out}");
+    eprint(&err);
+    code
+}
+
 pub(super) fn cmd_models(rest: &[String]) -> i32 {
     let args = parse_verb_args("models", rest, &["days"], &["json"]);
     reject_extra_pos("models", &args, 0);
