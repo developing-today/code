@@ -96,29 +96,27 @@ machines:
       # validator requires the earned checks record below).
       source: watchdog
       last_seen: '2026-11-27T03:54:57Z'
-      status: healthy
+      status: unreachable
       checks:
-        reported_at: '2026-11-27T03:54:57Z'
+        reported_at: '2026-11-27T04:24:07Z'
         reachable:
-          state: ok
+          state: failed
           ssh: true
-          opencode_server_http: 200
+          opencode_server_http: null
         load_headroom:
-          state: ok
-          load15: 12.47
+          state: failed
+          load15: 31.85
           cpu_cores: 16
-          load15_per_core: 0.779
+          load15_per_core: 1.991
         disk_headroom:
           state: ok
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 440
-          free_pct: 13.0
+          free_gb: 412
+          free_pct: 12.2
         sessions:
-          state: ok
-          listed: 50
-          active_within_cadence: 50
-          max_sessions: 12
+          state: unknown
+          reason: attach API HTTP None
           source: openchamber attach api
         last_queue_job:
           state: ok
