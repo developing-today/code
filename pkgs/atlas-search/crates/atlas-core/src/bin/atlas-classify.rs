@@ -109,7 +109,7 @@ impl Flags {
             if value_flags.contains(&arg.as_str()) {
                 let value = args
                     .get(i + 1)
-                    .ok_or_else(|| format!("{arg} needs a value"))?;
+                    .ok_or_else(|| format!("usage: {arg} needs a value"))?;
                 if values.insert(arg.clone(), value.clone()).is_some() {
                     return Err(format!("usage: {arg} given twice"));
                 }
