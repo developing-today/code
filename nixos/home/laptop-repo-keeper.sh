@@ -39,7 +39,7 @@ REPORT_DIR="$HOME/backups/repo-keeper"
 mkdir -p "$REPORT_DIR"
 TS="$(date '+%Y-%m-%d %H:%M %Z')"
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
-RESIDUE_RE='(^|/)([^/]*\.bak(-[^/]*)?|[^/]*\.backup|\.pre-warm[^/]*|resume-build|[^/]*\.mjs\.new)$'
+RESIDUE_RE='(^|/)([^/]*\.bak(-[^/]*)?|[^/]*\.backup|[^/]*\.pre-warm[^/]*|resume-build|[^/]*\.resume-build(-[^/]*)?|[^/]*\.mjs\.new)$'
 BIG_TRACKED=26214400 # 25 MiB
 # Space-separated repo paths the keeper never snapshot-commits in
 # (code#12162). Edits there are reported and left on disk.
