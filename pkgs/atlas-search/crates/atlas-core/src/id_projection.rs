@@ -217,6 +217,71 @@ pub fn project_run_with_pins(
     })
 }
 
+/// Outcome of replaying one logged run (§6.1): re-projection from the
+/// logged pins plus the caller-supplied statements must reproduce the
+/// logged emissions byte for byte, or replay refuses with the first
+/// divergence named. Replay is deterministic — the same pins and the
+/// same statements always yield the same claims — so a replayer that
+/// re-fetches the pinned inputs (snapshot marker, batch chain) can
+/// verify a run without trusting its logged outputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayReport {
+    /// The replayed run id, echoed from the log.
+    pub run_id: String,
+    /// Number of claims re-projected and compared.
+    pub claims_replayed: usize,
+    /// The reproduced chain head, equal to the logged head.
+    pub batch_chain_head: Option<String>,
+}
+
+/// Replays a logged run: re-projects `statements` under the logged
+/// pins and requires byte-identical emissions and head.
+///
+/// Fails closed: a pin mismatch (wrong chain head, key id, version),
+/// a statement mismatch (different bytes, order, or count), or a head
+/// mismatch refuses the whole replay, never a prefix.
+///
+/// # Errors
+///
+/// [`Error::Fatal`] when the replayed projection diverges from the
+/// log in pins, claims, or head.
+pub fn replay_run_from_pins(
+    log: &ProjectionRunLog,
+    statements: &[BatchStatement],
+) -> Result<ReplayReport> {
+    let replayed = project_run_with_pins(log.run_id.clone(), statements, log.pins.clone())?;
+    if replayed.claims.len() != log.claims.len() {
+        return Err(refuse(format!(
+            "id_projection: replay of run {:?} diverged: {} statements project to {} claims, log holds {}",
+            log.run_id,
+            statements.len(),
+            replayed.claims.len(),
+            log.claims.len(),
+        )));
+    }
+    for (position, (replayed_claim, logged_claim)) in
+        replayed.claims.iter().zip(log.claims.iter()).enumerate()
+    {
+        if replayed_claim != logged_claim {
+            return Err(refuse(format!(
+                "id_projection: replay of run {:?} diverged at claim {position} (batch {:?})",
+                log.run_id, logged_claim.batch_id,
+            )));
+        }
+    }
+    if replayed.batch_chain_head != log.batch_chain_head {
+        return Err(refuse(format!(
+            "id_projection: replay of run {:?} diverged: reproduced head {:?} != logged head {:?}",
+            log.run_id, replayed.batch_chain_head, log.batch_chain_head,
+        )));
+    }
+    Ok(ReplayReport {
+        run_id: log.run_id.clone(),
+        claims_replayed: replayed.claims.len(),
+        batch_chain_head: replayed.batch_chain_head,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -505,6 +570,88 @@ mod tests {
             decoded.batch_chain_head,
             decoded.claims.last().map(|claim| claim.subject.clone())
         );
+    }
+
+    fn logged_run(statements: &[BatchStatement], head: Option<String>) -> ProjectionRunLog {
+        let pins = ProjectionRunPins {
+            atlas_snapshot_marker: BTreeMap::from([("file-1".to_owned(), 7)]),
+            batch_chain_head: head,
+            publisher_key_id: "publisher-key-1".to_owned(),
+            projection_version: PROJECTION_VERSION.to_owned(),
+        };
+        project_run_with_pins("run-1", statements, pins).unwrap()
+    }
+
+    fn two_chained() -> (BatchStatement, BatchStatement) {
+        let first = BatchStatement::new(
+            vec![subject("shard-0:chunk-1", 0x11)],
+            vec![material("repo@abc:path", 0x22)],
+            predicate("batch-1", BatchOutcome::Published),
+        );
+        let first_digest = first.envelope_digest().unwrap();
+        let second = chained(
+            BatchStatement::new(
+                vec![subject("shard-0:chunk-2", 0x33)],
+                vec![material("repo@abc:path", 0x22)],
+                predicate("batch-2", BatchOutcome::Published),
+            ),
+            &first_digest,
+        );
+        (first, second)
+    }
+
+    /// Oracle §6.1: replay from the logged pins plus the same
+    /// statements reproduces the logged emissions byte for byte —
+    /// through a serialize/deserialize round trip, as a verifier
+    /// reading a persisted log would.
+    #[test]
+    fn replay_from_pins_reproduces_logged_emissions() {
+        let (first, second) = two_chained();
+        let statements = vec![first, second];
+        let log = logged_run(&statements, None);
+        let persisted = serde_json::to_vec(&log).unwrap();
+        let loaded: ProjectionRunLog = serde_json::from_slice(&persisted).unwrap();
+
+        let report = replay_run_from_pins(&loaded, &statements).unwrap();
+        assert_eq!(report.run_id, "run-1");
+        assert_eq!(report.claims_replayed, 2);
+        assert_eq!(report.batch_chain_head, loaded.batch_chain_head);
+        assert_eq!(
+            report.batch_chain_head.as_deref(),
+            Some(loaded.claims[1].subject.as_str())
+        );
+    }
+
+    /// Oracle §6.1, negative: replaying against different statements
+    /// refuses, even when the substitute chain is itself well-formed
+    /// (only the pinned run's inputs reproduce its emissions).
+    #[test]
+    fn replay_refuses_substituted_statements() {
+        let (first, second) = two_chained();
+        let statements = vec![first.clone(), second];
+        let log = logged_run(&statements, None);
+
+        let impostor = BatchStatement::new(
+            vec![subject("shard-0:chunk-9", 0x99)],
+            vec![],
+            predicate("batch-2", BatchOutcome::Published),
+        );
+        let impostor = chained(impostor, &first.envelope_digest().unwrap());
+        assert!(replay_run_from_pins(&log, &[first, impostor]).is_err());
+    }
+
+    /// Oracle §6.1, negative: statements that do not continue the
+    /// pinned batch-chain head refuse at the pin check, before any
+    /// claim comparison.
+    #[test]
+    fn replay_refuses_statements_off_the_pinned_head() {
+        let (first, second) = two_chained();
+        let statements = vec![first, second.clone()];
+        let log = logged_run(&statements, None);
+
+        // The second statement alone names a prior head the pins do
+        // not pin, so replay refuses without comparing claims.
+        assert!(replay_run_from_pins(&log, std::slice::from_ref(&second)).is_err());
     }
 
     proptest! {
