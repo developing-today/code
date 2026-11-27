@@ -3,7 +3,7 @@
 // serves is reachable from the manifest — the bar, the dropdown, the
 // /pages list, or a parent page's sub-route.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   PAGE_GROUPS,
@@ -33,7 +33,14 @@ const serverSource = [
 ]
   .map((f) => readFileSync(join(SRC, f), "utf8"))
   .join("\n");
-const renderSource = readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(SRC, "ui.css"), "utf8") +
+  "\n" +
+  readdirSync(SRC)
+    .filter((f) => f.startsWith("render") && f.endsWith(".ts"))
+    .sort()
+    .map((f) => readFileSync(join(SRC, f), "utf8"))
+    .join("\n");
 
 /** The CSS rule body for a selector in the stylesheet string. */
 function cssRule(selector: string): string {
