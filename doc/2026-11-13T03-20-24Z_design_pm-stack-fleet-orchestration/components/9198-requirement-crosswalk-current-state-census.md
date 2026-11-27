@@ -107,6 +107,7 @@ runtime completeness. Run `census/test_schema_compatibility_matrix.py --list`
 then its named oracle and negative tests (remote dispatch first).
 
 <!-- cen04-schema-mirror -->
+
 ```json
 {
   "sections": {
@@ -131,47 +132,32 @@ then its named oracle and negative tests (remote dispatch first).
     "9": "5cbad72f2a47594b4a84507a458e34538a5cc864c05dbc3bc3ebbc0eae2a6ab3"
   },
   "facts": [
-    {"fact":"queue_identity","source":"3.1","owners":["the queue broker"],"home":"tasks","disposition":"reuse","legacy_mapping":["3.1"],"write_read_api":["3.1"],"rollback":["3.1","7"],"gates":["5","9"]},
-    {"fact":"queue_state","source":"3.2","owners":["the queue broker"],"home":"tasks.status","disposition":"reuse","legacy_mapping":["3.2"],"write_read_api":["3.2"],"rollback":["3.2","7"],"gates":["5","9"]},
-    {"fact":"urgency_profile","source":"3.3","owners":["the queue broker"],"home":"tasks.priority","disposition":"reuse","legacy_mapping":["3.3"],"write_read_api":["3.3"],"rollback":["3.3","7"],"gates":["5","9"]},
-    {"fact":"lease_claim","source":"3.4","owners":["the queue broker"],"home":"leases","disposition":"reuse","legacy_mapping":["3.4"],"write_read_api":["3.4"],"rollback":["3.4","7"],"gates":["3.4","5","9"]},
-    {"fact":"blocked_dependencies","source":"3.5","owners":["the queue broker"],"home":"tasks.blocked_deps","disposition":"extend","legacy_mapping":["3.5"],"write_read_api":["3.5"],"rollback":["3.5","7"],"gates":["3.5","5","9"]},
-    {"fact":"broker_events","source":"3.6","owners":["the queue broker"],"home":"events","disposition":"reuse","legacy_mapping":["3.6"],"write_read_api":["3.6"],"rollback":["3.6","7"],"gates":["5","9"]},
-    {"fact":"journal","source":"3.6","owners":["#9208"],"home":"no journal table exists on main","disposition":"absent","legacy_mapping":["3.6"],"write_read_api":["3.6"],"rollback":["3.6","7"],"gates":["3.6","5","9"]},
-    {"fact":"checkpoints","source":"3.7","owners":["the queue broker"],"home":"checkpoints","disposition":"reuse","legacy_mapping":["3.7"],"write_read_api":["3.7"],"rollback":["3.7","7"],"gates":["5","9"]},
-    {"fact":"notes","source":"3.7","owners":["#9208"],"home":"absent as a Fleet-store fact","disposition":"absent","legacy_mapping":["3.7"],"write_read_api":["3.7"],"rollback":["3.7","7"],"gates":["3.7","5","9"]},
-    {"fact":"cursors","source":"3.8","owners":["fleet-queue"],"home":"none exists","disposition":"absent","legacy_mapping":["3.8"],"write_read_api":["3.8"],"rollback":["3.8","7"],"gates":["3.8","5","9"]},
-    {"fact":"operation_receipts","source":"3.9","owners":["REL-03"],"home":"No persisted operation or receipt table exists on main","disposition":"absent","legacy_mapping":["3.9"],"write_read_api":["3.9"],"rollback":["3.9","7"],"gates":["3.9","5","9"]},
-    {"fact":"creation_outbox","source":"3.9","owners":["broker"],"home":"creation_outbox","disposition":"reuse","legacy_mapping":["3.9"],"write_read_api":["3.9"],"rollback":["3.9","7"],"gates":["5","9"]},
-    {"fact":"project_fields","source":"3.10","owners":["GitHub"],"home":"GitHub","disposition":"reuse","legacy_mapping":["3.10"],"write_read_api":["3.10"],"rollback":["3.10","7"],"gates":["5","9"]},
-    {"fact":"metadata_block","source":"3.10","owners":["the stamper"],"home":"GitHub body","disposition":"reuse","legacy_mapping":["3.10"],"write_read_api":["3.10"],"rollback":["3.10","7"],"gates":["5","9"]},
-    {"fact":"metadata_mirror","source":"3.10","owners":["ingestion"],"home":"pm_metadata_items","disposition":"reuse","legacy_mapping":["3.10"],"write_read_api":["3.10"],"rollback":["3.10","7"],"gates":["5","9"]},
-    {"fact":"merge_intent","source":"3.11","owners":["the queue broker"],"home":"merge_intents","disposition":"reuse","legacy_mapping":["3.11"],"write_read_api":["3.11"],"rollback":["3.11","7"],"gates":["5","9"]},
-    {"fact":"placement_sessions","source":"3.12","owners":["the placement line"],"home":"placement_sessions","disposition":"reuse","legacy_mapping":["3.12"],"write_read_api":["3.12"],"rollback":["3.12","7"],"gates":["5","9"]},
-    {"fact":"coordination_replica","source":"3.13","owners":["Local coordination replica"],"home":"local SQLite file","disposition":"reuse","legacy_mapping":["3.13"],"write_read_api":["3.13"],"rollback":["3.13","7"],"gates":["5","9"]},
-    {"fact":"fallback_markers","source":"3.13","owners":["workers"],"home":"GitHub issue comments","disposition":"reuse","legacy_mapping":["3.13"],"write_read_api":["3.13"],"rollback":["3.13","7"],"gates":["5","9"]},
-    {"fact":"aggregator_actions","source":"3.14","owners":["aggregator"],"home":"public.agg_actions","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["5","9"]},
-    {"fact":"shared_comments","source":"3.14","owners":["Aggregator"],"home":"public.shared_comments","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["5","9"]},
-    {"fact":"projector","source":"3.14","owners":["Projector"],"home":"hot ledger","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["5","9"]},
-    {"fact":"pmp_links","source":"3.14","owners":["projector/link registry"],"home":"pmp_links","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["3.14","5","9"]},
-    {"fact":"pm_target","source":"3.14","owners":["PM line"],"home":"current homes","disposition":"conflict","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["3.14","5","9"]}
+    { "fact": "queue_identity", "source": "3.1", "owners": ["the queue broker"], "home": "tasks", "disposition": "reuse", "legacy_mapping": ["3.1"], "write_read_api": ["3.1"], "rollback": ["3.1", "7"], "gates": ["5", "9"] },
+    { "fact": "queue_state", "source": "3.2", "owners": ["the queue broker"], "home": "tasks.status", "disposition": "reuse", "legacy_mapping": ["3.2"], "write_read_api": ["3.2"], "rollback": ["3.2", "7"], "gates": ["5", "9"] },
+    { "fact": "urgency_profile", "source": "3.3", "owners": ["the queue broker"], "home": "tasks.priority", "disposition": "reuse", "legacy_mapping": ["3.3"], "write_read_api": ["3.3"], "rollback": ["3.3", "7"], "gates": ["5", "9"] },
+    { "fact": "lease_claim", "source": "3.4", "owners": ["the queue broker"], "home": "leases", "disposition": "reuse", "legacy_mapping": ["3.4"], "write_read_api": ["3.4"], "rollback": ["3.4", "7"], "gates": ["3.4", "5", "9"] },
+    { "fact": "blocked_dependencies", "source": "3.5", "owners": ["the queue broker"], "home": "tasks.blocked_deps", "disposition": "extend", "legacy_mapping": ["3.5"], "write_read_api": ["3.5"], "rollback": ["3.5", "7"], "gates": ["3.5", "5", "9"] },
+    { "fact": "broker_events", "source": "3.6", "owners": ["the queue broker"], "home": "events", "disposition": "reuse", "legacy_mapping": ["3.6"], "write_read_api": ["3.6"], "rollback": ["3.6", "7"], "gates": ["5", "9"] },
+    { "fact": "journal", "source": "3.6", "owners": ["#9208"], "home": "no journal table exists on main", "disposition": "absent", "legacy_mapping": ["3.6"], "write_read_api": ["3.6"], "rollback": ["3.6", "7"], "gates": ["3.6", "5", "9"] },
+    { "fact": "checkpoints", "source": "3.7", "owners": ["the queue broker"], "home": "checkpoints", "disposition": "reuse", "legacy_mapping": ["3.7"], "write_read_api": ["3.7"], "rollback": ["3.7", "7"], "gates": ["5", "9"] },
+    { "fact": "notes", "source": "3.7", "owners": ["#9208"], "home": "absent as a Fleet-store fact", "disposition": "absent", "legacy_mapping": ["3.7"], "write_read_api": ["3.7"], "rollback": ["3.7", "7"], "gates": ["3.7", "5", "9"] },
+    { "fact": "cursors", "source": "3.8", "owners": ["fleet-queue"], "home": "none exists", "disposition": "absent", "legacy_mapping": ["3.8"], "write_read_api": ["3.8"], "rollback": ["3.8", "7"], "gates": ["3.8", "5", "9"] },
+    { "fact": "operation_receipts", "source": "3.9", "owners": ["REL-03"], "home": "No persisted operation or receipt table exists on main", "disposition": "absent", "legacy_mapping": ["3.9"], "write_read_api": ["3.9"], "rollback": ["3.9", "7"], "gates": ["3.9", "5", "9"] },
+    { "fact": "creation_outbox", "source": "3.9", "owners": ["broker"], "home": "creation_outbox", "disposition": "reuse", "legacy_mapping": ["3.9"], "write_read_api": ["3.9"], "rollback": ["3.9", "7"], "gates": ["5", "9"] },
+    { "fact": "project_fields", "source": "3.10", "owners": ["GitHub"], "home": "GitHub", "disposition": "reuse", "legacy_mapping": ["3.10"], "write_read_api": ["3.10"], "rollback": ["3.10", "7"], "gates": ["5", "9"] },
+    { "fact": "metadata_block", "source": "3.10", "owners": ["the stamper"], "home": "GitHub body", "disposition": "reuse", "legacy_mapping": ["3.10"], "write_read_api": ["3.10"], "rollback": ["3.10", "7"], "gates": ["5", "9"] },
+    { "fact": "metadata_mirror", "source": "3.10", "owners": ["ingestion"], "home": "pm_metadata_items", "disposition": "reuse", "legacy_mapping": ["3.10"], "write_read_api": ["3.10"], "rollback": ["3.10", "7"], "gates": ["5", "9"] },
+    { "fact": "merge_intent", "source": "3.11", "owners": ["the queue broker"], "home": "merge_intents", "disposition": "reuse", "legacy_mapping": ["3.11"], "write_read_api": ["3.11"], "rollback": ["3.11", "7"], "gates": ["5", "9"] },
+    { "fact": "placement_sessions", "source": "3.12", "owners": ["the placement line"], "home": "placement_sessions", "disposition": "reuse", "legacy_mapping": ["3.12"], "write_read_api": ["3.12"], "rollback": ["3.12", "7"], "gates": ["5", "9"] },
+    { "fact": "coordination_replica", "source": "3.13", "owners": ["Local coordination replica"], "home": "local SQLite file", "disposition": "reuse", "legacy_mapping": ["3.13"], "write_read_api": ["3.13"], "rollback": ["3.13", "7"], "gates": ["5", "9"] },
+    { "fact": "fallback_markers", "source": "3.13", "owners": ["workers"], "home": "GitHub issue comments", "disposition": "reuse", "legacy_mapping": ["3.13"], "write_read_api": ["3.13"], "rollback": ["3.13", "7"], "gates": ["5", "9"] },
+    { "fact": "aggregator_actions", "source": "3.14", "owners": ["aggregator"], "home": "public.agg_actions", "disposition": "reuse", "legacy_mapping": ["3.14"], "write_read_api": ["3.14"], "rollback": ["3.14", "7"], "gates": ["5", "9"] },
+    { "fact": "shared_comments", "source": "3.14", "owners": ["Aggregator"], "home": "public.shared_comments", "disposition": "reuse", "legacy_mapping": ["3.14"], "write_read_api": ["3.14"], "rollback": ["3.14", "7"], "gates": ["5", "9"] },
+    { "fact": "projector", "source": "3.14", "owners": ["Projector"], "home": "hot ledger", "disposition": "reuse", "legacy_mapping": ["3.14"], "write_read_api": ["3.14"], "rollback": ["3.14", "7"], "gates": ["5", "9"] },
+    { "fact": "pmp_links", "source": "3.14", "owners": ["projector/link registry"], "home": "pmp_links", "disposition": "reuse", "legacy_mapping": ["3.14"], "write_read_api": ["3.14"], "rollback": ["3.14", "7"], "gates": ["3.14", "5", "9"] },
+    { "fact": "pm_target", "source": "3.14", "owners": ["PM line"], "home": "current homes", "disposition": "conflict", "legacy_mapping": ["3.14"], "write_read_api": ["3.14"], "rollback": ["3.14", "7"], "gates": ["3.14", "5", "9"] }
   ],
-  "refusals": [
-    "broker `events` = #9208 journal",
-    "broker `events` = PM `shared_events`",
-    "`blocked_deps` = free-text block reason",
-    "`merge_intents` = creator outbox",
-    "`creation_outbox` = general mutation outbox",
-    "`tasks.result` = operation receipt",
-    "checkpoint = note",
-    "GitHub label = priority",
-    "GitHub issue state = task state",
-    "pm-metadata mirror row = the block",
-    "projector ACK = Fleet command acceptance",
-    "replica row = broker row",
-    "fallback marker = receipt",
-    "`tasks.last_checked_at` = ingestion cursor"
-  ],
+  "refusals": ["broker `events` = #9208 journal", "broker `events` = PM `shared_events`", "`blocked_deps` = free-text block reason", "`merge_intents` = creator outbox", "`creation_outbox` = general mutation outbox", "`tasks.result` = operation receipt", "checkpoint = note", "GitHub label = priority", "GitHub issue state = task state", "pm-metadata mirror row = the block", "projector ACK = Fleet command acceptance", "replica row = broker row", "fallback marker = receipt", "`tasks.last_checked_at` = ingestion cursor"],
   "equivalences": []
 }
 ```

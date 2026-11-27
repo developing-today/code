@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7940 | #1252 (salvage task #7297) | `audit:completed-later` | Restores the event-driven freshness design note; the implementation followed in PRs #3976–#3978, and the remaining hierarchy clause was answered and routed before #1252 closed. PR note: #7160410393. |
-| #7941 | #2338 | `audit:complete` | Implements the typed device.info manifest, adapter-side cached capability description, version refusals and unknown-capability refusal, with tests covering the declared v1 contract. |
-| #7943 | #5833 | `audit:complete` | Settles lineage and divergence views, mark-most-correct semantics and merge proposals for the edit/fork graph; the design issue closes with the record. |
-| #7945 | #7089 | `audit:completed-later` | Delivers the agreement checker and Phase 1 contract while leaving Phases 2–4 open. Later PRs/child issues complete the remaining re-arm and audit work; final closure is recorded in #7089 comment 6905371441. PR note: #7160411110. |
-| #7946 | #5905 | `audit:complete` | Settles provider identity, signed admission, key-bound addressing, rogue-provider containment and bridge compromise boundaries; the design issue closes with this record. |
+| Payload number |             Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                              |
+| -------------: | -------------------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7940 | #1252 (salvage task #7297) | `audit:completed-later` | Restores the event-driven freshness design note; the implementation followed in PRs #3976–#3978, and the remaining hierarchy clause was answered and routed before #1252 closed. PR note: #7160410393.                               |
+|          #7941 |                      #2338 | `audit:complete`        | Implements the typed device.info manifest, adapter-side cached capability description, version refusals and unknown-capability refusal, with tests covering the declared v1 contract.                                                |
+|          #7943 |                      #5833 | `audit:complete`        | Settles lineage and divergence views, mark-most-correct semantics and merge proposals for the edit/fork graph; the design issue closes with the record.                                                                              |
+|          #7945 |                      #7089 | `audit:completed-later` | Delivers the agreement checker and Phase 1 contract while leaving Phases 2–4 open. Later PRs/child issues complete the remaining re-arm and audit work; final closure is recorded in #7089 comment 6905371441. PR note: #7160411110. |
+|          #7946 |                      #5905 | `audit:complete`        | Settles provider identity, signed admission, key-bound addressing, rogue-provider containment and bridge compromise boundaries; the design issue closes with this record.                                                            |
 
 ## Slice state
 

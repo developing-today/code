@@ -54,6 +54,7 @@ Exit codes: 0 ok; 1 the create failed (visible, error preserved);
 
 Env: FLEET_ACTOR / FLEET_JOB set the recorded actor/job defaults.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,8 +70,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_PATH = Path.home() / ".local/state/fleet/content-ledger.sqlite"
-KINDS = ("issue", "issue_comment", "pr", "pr_comment", "review",
-         "label_write", "other")
+KINDS = ("issue", "issue_comment", "pr", "pr_comment", "review", "label_write", "other")
 FINAL_OUTCOMES = ("created", "verified_existing", "failed")
 URL_RE = re.compile(r"https://github\.com/\S+")
 NUM_RE = re.compile(r"/(issues|pull)/(\d+)")
@@ -129,12 +129,10 @@ def default_job() -> str:
 
 class Ledger:
     def __init__(self, path=None):
-        self.path = Path(path or os.environ.get("CONTENT_LEDGER_PATH")
-                         or DEFAULT_PATH)
+        self.path = Path(path or os.environ.get("CONTENT_LEDGER_PATH") or DEFAULT_PATH)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.db = sqlite3.connect(str(self.path), timeout=30,
-                                      isolation_level=None)
+            self.db = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA busy_timeout=30000")
             self.db.executescript(SCHEMA)
@@ -154,8 +152,9 @@ class Ledger:
                 pass
             raise LedgerError(f"ledger write failed: {e}") from e
 
-    def reserve(self, actor: str, job: str, repo: str, kind: str,
-                nonce: str | None = None) -> int:
+    def reserve(
+        self, actor: str, job: str, repo: str, kind: str, nonce: str | None = None
+    ) -> int:
         if kind not in KINDS:
             raise LedgerError(f"unknown kind {kind!r} (want one of {KINDS})")
 
@@ -163,38 +162,50 @@ class Ledger:
             cur = self.db.execute(
                 "INSERT INTO events(ts_utc, actor, job, repo, kind, outcome,"
                 " nonce) VALUES(?,?,?,?,?,'reserved',?)",
-                (now_iso(), actor, job, repo, kind, nonce))
+                (now_iso(), actor, job, repo, kind, nonce),
+            )
             return cur.lastrowid
 
         return self._txn(ins)
 
-    def finalize(self, row_id: int, outcome: str, ref: str | None = None,
-                 detail: str | None = None, actor: str | None = None) -> None:
+    def finalize(
+        self,
+        row_id: int,
+        outcome: str,
+        ref: str | None = None,
+        detail: str | None = None,
+        actor: str | None = None,
+    ) -> None:
         if outcome not in FINAL_OUTCOMES:
             raise LedgerError(
-                f"unknown outcome {outcome!r} (want one of {FINAL_OUTCOMES})")
+                f"unknown outcome {outcome!r} (want one of {FINAL_OUTCOMES})"
+            )
 
         def upd():
             cur = self.db.execute(
                 "UPDATE events SET outcome=?, ref=COALESCE(?, ref),"
                 " detail=COALESCE(?, detail), actor=COALESCE(?, actor)"
                 " WHERE id=? AND outcome='reserved'",
-                (outcome, ref, detail, actor, row_id))
+                (outcome, ref, detail, actor, row_id),
+            )
             if cur.rowcount != 1:
                 raise LedgerError(
                     f"no reserved row {row_id} to finalize "
-                    "(already finalized or never reserved)")
+                    "(already finalized or never reserved)"
+                )
 
         self._txn(upd)
 
     def counts(self, window_seconds: int):
-        cutoff = (datetime.now(timezone.utc)
-                  - timedelta(seconds=window_seconds)).strftime(
-                      "%Y-%m-%dT%H:%M:%SZ")
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             rows = self.db.execute(
                 "SELECT outcome, COUNT(*) FROM events WHERE ts_utc>=?"
-                " GROUP BY outcome ORDER BY outcome", (cutoff,)).fetchall()
+                " GROUP BY outcome ORDER BY outcome",
+                (cutoff,),
+            ).fetchall()
         except sqlite3.Error as e:
             raise LedgerError(f"ledger read failed: {e}") from e
         return rows, sum(n for _, n in rows)
@@ -203,7 +214,9 @@ class Ledger:
         try:
             cur = self.db.execute(
                 "SELECT id, ts_utc, actor, job, repo, kind, ref, outcome"
-                " FROM events ORDER BY id DESC LIMIT ?", (limit,))
+                " FROM events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
             cols = [c[0] for c in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
         except sqlite3.Error as e:
@@ -244,15 +257,15 @@ def read_comment(repo: str, comment_id: int):
     return _api_json(f"repos/{repo}/issues/comments/{comment_id}")
 
 
-def search_nonce(repo: str, kind: str, nonce: str,
-                 target_number: int | None = None) -> str | None:
+def search_nonce(
+    repo: str, kind: str, nonce: str, target_number: int | None = None
+) -> str | None:
     """Find an object carrying the nonce; return its URL or None."""
     marker = nonce_marker(nonce)
     if kind in ("issue_comment", "pr_comment"):
         if target_number is None:
             return None
-        items = _api_json(
-            f"repos/{repo}/issues/{target_number}/comments?per_page=100")
+        items = _api_json(f"repos/{repo}/issues/{target_number}/comments?per_page=100")
         if not isinstance(items, list):
             return None
         for it in items:
@@ -273,8 +286,9 @@ def search_nonce(repo: str, kind: str, nonce: str,
     return None
 
 
-def confirm_created(repo: str, kind: str, url: str, nonce: str,
-                    target_number: int | None = None) -> str | None:
+def confirm_created(
+    repo: str, kind: str, url: str, nonce: str, target_number: int | None = None
+) -> str | None:
     """Verify-by-read for a create that returned a URL.
 
     Returns 'created' when a read of the object at that URL shows the
@@ -309,9 +323,16 @@ class Created:
         return f"Created({self.outcome}, {self.ref}, row {self.reservation_id})"
 
 
-def _create(kind: str, repo: str, body_text: str, create_args,
-            job: str | None, actor: str | None,
-            target_number: int | None, ledger: Ledger | None) -> Created:
+def _create(
+    kind: str,
+    repo: str,
+    body_text: str,
+    create_args,
+    job: str | None,
+    actor: str | None,
+    target_number: int | None,
+    ledger: Ledger | None,
+) -> Created:
     led = ledger or Ledger()
     job = job or default_job()
     actor = actor or default_actor()
@@ -322,8 +343,7 @@ def _create(kind: str, repo: str, body_text: str, create_args,
     effective = body_text.rstrip("\n") + f"\n\n{nonce_marker(nonce)}\n"
     tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(prefix="content-ledger-body-",
-                                   suffix=".md")
+        fd, tmp = tempfile.mkstemp(prefix="content-ledger-body-", suffix=".md")
         with os.fdopen(fd, "w") as f:
             f.write(effective)
         rc, out, err = _run_gh(create_args(tmp))
@@ -347,8 +367,10 @@ def _create(kind: str, repo: str, body_text: str, create_args,
         if outcome:
             led.finalize(row, outcome, ref=url)
             return Created(outcome, url, row)
-        detail = (f"create returned {url} but no read confirms the object "
-                  f"(readback mismatch); stderr: {err.strip()[-300:]}")
+        detail = (
+            f"create returned {url} but no read confirms the object "
+            f"(readback mismatch); stderr: {err.strip()[-300:]}"
+        )
         led.finalize(row, "failed", detail=detail)
         raise CreateFailed(detail, row)
 
@@ -358,9 +380,11 @@ def _create(kind: str, repo: str, body_text: str, create_args,
         led.finalize(row, "verified_existing", ref=found)
         return Created("verified_existing", found, row)
     if rc == 0:
-        detail = ("gh exited 0 with empty/unparsable output and no object "
-                  "was found by nonce search — the silent-create failure "
-                  "mode (code#2013)")
+        detail = (
+            "gh exited 0 with empty/unparsable output and no object "
+            "was found by nonce search — the silent-create failure "
+            "mode (code#2013)"
+        )
         if err.strip():
             detail += f"; stderr: {err.strip()[-300:]}"
     else:
@@ -369,11 +393,20 @@ def _create(kind: str, repo: str, body_text: str, create_args,
     raise CreateFailed(detail, row)
 
 
-def create_issue(repo: str, title: str, body_text: str,
-                 labels=(), job=None, actor=None, ledger=None) -> Created:
+def create_issue(
+    repo: str, title: str, body_text: str, labels=(), job=None, actor=None, ledger=None
+) -> Created:
     def args(body_file):
-        a = ["issue", "create", "--repo", repo, "--title", title,
-             "--body-file", body_file]
+        a = [
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body-file",
+            body_file,
+        ]
         for lab in labels:
             a += ["--label", lab]
         return a
@@ -381,22 +414,63 @@ def create_issue(repo: str, title: str, body_text: str,
     return _create("issue", repo, body_text, args, job, actor, None, ledger)
 
 
-def create_comment(repo: str, number: int, body_text: str, pr: bool = False,
-                   job=None, actor=None, ledger=None) -> Created:
+def create_comment(
+    repo: str,
+    number: int,
+    body_text: str,
+    pr: bool = False,
+    job=None,
+    actor=None,
+    ledger=None,
+) -> Created:
     def args(body_file):
-        return ["pr" if pr else "issue", "comment", str(number),
-                "--repo", repo, "--body-file", body_file]
+        return [
+            "pr" if pr else "issue",
+            "comment",
+            str(number),
+            "--repo",
+            repo,
+            "--body-file",
+            body_file,
+        ]
 
-    return _create("pr_comment" if pr else "issue_comment", repo, body_text,
-                   args, job, actor, number, ledger)
+    return _create(
+        "pr_comment" if pr else "issue_comment",
+        repo,
+        body_text,
+        args,
+        job,
+        actor,
+        number,
+        ledger,
+    )
 
 
-def create_pr(repo: str, title: str, body_text: str, head: str,
-              base: str = "main", job=None, actor=None,
-              ledger=None) -> Created:
+def create_pr(
+    repo: str,
+    title: str,
+    body_text: str,
+    head: str,
+    base: str = "main",
+    job=None,
+    actor=None,
+    ledger=None,
+) -> Created:
     def args(body_file):
-        return ["pr", "create", "--repo", repo, "--title", title,
-                "--body-file", body_file, "--head", head, "--base", base]
+        return [
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body-file",
+            body_file,
+            "--head",
+            head,
+            "--base",
+            base,
+        ]
 
     return _create("pr", repo, body_text, args, job, actor, None, ledger)
 
@@ -449,15 +523,24 @@ def main(argv=None) -> int:
     try:
         if args.cmd == "reserve":
             led = Ledger()
-            row = led.reserve(args.actor or default_actor(),
-                              args.job or default_job(),
-                              args.repo, args.kind, new_nonce())
+            row = led.reserve(
+                args.actor or default_actor(),
+                args.job or default_job(),
+                args.repo,
+                args.kind,
+                new_nonce(),
+            )
             print(row)
             return 0
         if args.cmd == "finalize":
             led = Ledger()
-            led.finalize(args.id, args.outcome, ref=args.ref,
-                         detail=args.detail, actor=args.actor)
+            led.finalize(
+                args.id,
+                args.outcome,
+                ref=args.ref,
+                detail=args.detail,
+                actor=args.actor,
+            )
             print(f"finalized row {args.id}: {args.outcome}")
             return 0
         if args.cmd == "counts":
@@ -470,33 +553,57 @@ def main(argv=None) -> int:
         if args.cmd == "tail":
             led = Ledger()
             for r in led.tail(args.limit):
-                print(f"{r['id']}\t{r['ts_utc']}\t{r['actor']}\t{r['job']}\t"
-                      f"{r['repo']}\t{r['kind']}\t{r['outcome']}\t"
-                      f"{r['ref'] or ''}")
+                print(
+                    f"{r['id']}\t{r['ts_utc']}\t{r['actor']}\t{r['job']}\t"
+                    f"{r['repo']}\t{r['kind']}\t{r['outcome']}\t"
+                    f"{r['ref'] or ''}"
+                )
             return 0
         if args.cmd == "create-comment" and not (args.issue or args.pr):
             ap.error("create-comment needs --issue N or --pr N")
         led = Ledger()
         if args.cmd == "create-issue":
-            res = create_issue(args.repo, args.title, _body(args),
-                               labels=args.label, job=args.job,
-                               actor=args.actor, ledger=led)
+            res = create_issue(
+                args.repo,
+                args.title,
+                _body(args),
+                labels=args.label,
+                job=args.job,
+                actor=args.actor,
+                ledger=led,
+            )
         elif args.cmd == "create-comment":
-            res = create_comment(args.repo, args.issue or args.pr,
-                                 _body(args), pr=bool(args.pr),
-                                 job=args.job, actor=args.actor, ledger=led)
+            res = create_comment(
+                args.repo,
+                args.issue or args.pr,
+                _body(args),
+                pr=bool(args.pr),
+                job=args.job,
+                actor=args.actor,
+                ledger=led,
+            )
         else:
-            res = create_pr(args.repo, args.title, _body(args), args.head,
-                            base=args.base, job=args.job, actor=args.actor,
-                            ledger=led)
+            res = create_pr(
+                args.repo,
+                args.title,
+                _body(args),
+                args.head,
+                base=args.base,
+                job=args.job,
+                actor=args.actor,
+                ledger=led,
+            )
         print(res.ref)
         return 0
     except LedgerError as e:
         print(f"content-ledger: LEDGER FAILURE: {e}", file=sys.stderr)
         return 5
     except CreateFailed as e:
-        print(f"content-ledger: CREATE FAILED (ledger row "
-              f"{e.reservation_id}): {e.detail}", file=sys.stderr)
+        print(
+            f"content-ledger: CREATE FAILED (ledger row "
+            f"{e.reservation_id}): {e.detail}",
+            file=sys.stderr,
+        )
         return 1
 
 

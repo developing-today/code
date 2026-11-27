@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7819 | #3181 | `audit:complete` | Adds a text-only Roc world, measured fuel budgets, and browser-WebSocket end-to-end tests for both uploaded modules and compile-from-source with Screen excluded. It matches the issue's two transport acceptance cases. |
-| #7820 | #7093 | `audit:completed-later` | Implements the yard reaper and schedule. Its first live apply failed safe before moving anything; later #7829 fixed the NameError and added end-to-end apply tests, after which #7093 recorded successful scheduled/apply runs and closed. |
-| #7821 | #7811 | `audit:complete` | Validates the full home-feed response before DOM mutation and preserves existing lists with a clean unavailable message on malformed data, with the issue's wrong-shape cases tested. |
-| #7822 | — | `audit:no-issue` | No originating issue was linked; this one-line test-fixture repair removes duplicate `ChainExt` fields and resolves the build error named in the PR. |
-| #7824 | #7098 | `audit:partial` | Adds backup snapshots for the Claude credentials file as a recovery net. The upstream write-boundary guard #2173 had already merged before this PR; #7098 later records both protections deployed and the service/credential acceptance passing. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                          |
+| -------------: | -------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7819 |          #3181 | `audit:complete`        | Adds a text-only Roc world, measured fuel budgets, and browser-WebSocket end-to-end tests for both uploaded modules and compile-from-source with Screen excluded. It matches the issue's two transport acceptance cases.                         |
+|          #7820 |          #7093 | `audit:completed-later` | Implements the yard reaper and schedule. Its first live apply failed safe before moving anything; later #7829 fixed the NameError and added end-to-end apply tests, after which #7093 recorded successful scheduled/apply runs and closed.       |
+|          #7821 |          #7811 | `audit:complete`        | Validates the full home-feed response before DOM mutation and preserves existing lists with a clean unavailable message on malformed data, with the issue's wrong-shape cases tested.                                                            |
+|          #7822 |              — | `audit:no-issue`        | No originating issue was linked; this one-line test-fixture repair removes duplicate `ChainExt` fields and resolves the build error named in the PR.                                                                                             |
+|          #7824 |          #7098 | `audit:partial`         | Adds backup snapshots for the Claude credentials file as a recovery net. The upstream write-boundary guard #2173 had already merged before this PR; #7098 later records both protections deployed and the service/credential acceptance passing. |
 
 ## Slice state
 

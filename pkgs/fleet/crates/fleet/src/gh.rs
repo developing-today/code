@@ -3233,7 +3233,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "fleet-gh-ledger-e2e-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let ledger = dir.join("ledger.sqlite");
@@ -3243,11 +3246,14 @@ mod tests {
              python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
              touch \"{}\"\n\
              exit 0\n",
-            ledger.display(), probe.display()
+            ledger.display(),
+            probe.display()
         );
         let script_path = place_script(&dir, "ledger-gh", &script);
         let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let pending = gh_content_ledger::start_at(&args, &ledger)
             .expect("reserve succeeds")
             .unwrap();
@@ -3262,7 +3268,10 @@ mod tests {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap();
-        assert_eq!(outcome, "failed", "empty successful output is not a created item");
+        assert_eq!(
+            outcome, "failed",
+            "empty successful output is not a created item"
+        );
         assert_eq!(detail, "gh exited 0 with empty output");
     }
 
@@ -3674,7 +3683,10 @@ mod tests {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
         let msg = spawn_failure_message("gh", &e);
         assert!(msg.contains("install gh"), "no install remedy: {msg}");
-        assert!(msg.contains("FLEET_GH_BIN"), "no FLEET_GH_BIN remedy: {msg}");
+        assert!(
+            msg.contains("FLEET_GH_BIN"),
+            "no FLEET_GH_BIN remedy: {msg}"
+        );
         assert!(msg.contains("'gh'"), "binary name lost: {msg}");
     }
 

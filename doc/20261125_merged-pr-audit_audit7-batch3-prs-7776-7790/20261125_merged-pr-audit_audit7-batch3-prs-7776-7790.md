@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7776 | #5468 | `audit:complete` | Adds plan-aware Turso quota denominators to the aggregator mapping and native records. The issue's latest measurements establish the original surge as a stale Starter-denominator artifact; the Scaler plan reads well below the caps and the issue is closed. |
-| #7779 | #5820 | `audit:complete` | Records one canonical query/executor with scripting/API, agent and CLI adapters; parity corpus, error taxonomy and invariants. The design issue is closed by this record. |
-| #7781 | #5683 | `audit:partial` | Delivers the step-1 framework skeleton design and files child implementation issues. The parent remains open for the remaining framework/design work, already tracked by #5876–#5883 and #7782–#7787. |
-| #7788 | #6032 | `audit:completed-later` | This PR delivers the pure decision layer only. Later #11243 implements the I/O/core, adapters, repair rungs, producer scaffold and timer, with live state-file ticks and acceptance recorded on #6032. |
-| #7790 | #7789 | `audit:complete` | Wires the provider-retirement gate suite into `scripts-test.yml` and adds the test-suite registry row. The suite's venue is explicit; the queue-delayed CI result was recorded for follow-up, while the requested automatic venue is present. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                                         |
+| -------------: | -------------: | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7776 |          #5468 | `audit:complete`        | Adds plan-aware Turso quota denominators to the aggregator mapping and native records. The issue's latest measurements establish the original surge as a stale Starter-denominator artifact; the Scaler plan reads well below the caps and the issue is closed. |
+|          #7779 |          #5820 | `audit:complete`        | Records one canonical query/executor with scripting/API, agent and CLI adapters; parity corpus, error taxonomy and invariants. The design issue is closed by this record.                                                                                       |
+|          #7781 |          #5683 | `audit:partial`         | Delivers the step-1 framework skeleton design and files child implementation issues. The parent remains open for the remaining framework/design work, already tracked by #5876–#5883 and #7782–#7787.                                                           |
+|          #7788 |          #6032 | `audit:completed-later` | This PR delivers the pure decision layer only. Later #11243 implements the I/O/core, adapters, repair rungs, producer scaffold and timer, with live state-file ticks and acceptance recorded on #6032.                                                          |
+|          #7790 |          #7789 | `audit:complete`        | Wires the provider-retirement gate suite into `scripts-test.yml` and adds the test-suite registry row. The suite's venue is explicit; the queue-delayed CI result was recorded for follow-up, while the requested automatic venue is present.                   |
 
 ## Slice state
 

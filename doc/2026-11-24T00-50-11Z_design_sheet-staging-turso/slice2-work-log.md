@@ -1,6 +1,7 @@
 # Slice 2 work log — schema and idempotence verification (design §5 order 2, #6581)
 
 ## Scope (from design addendum §5 order 2)
+
 Inspect deployed DDL and code for all staging + curated tables; run safe
 isolated tests for batch association, unique keys, dedupe upserts,
 append-only guards, ambiguous commit recovery. No production cutover.
@@ -8,17 +9,19 @@ Add-only record: new test file + dated repair-plan doc. No data movement,
 no D1 action, no secrets.
 
 ## Fresh live state (revalidated 2026-11-24)
+
 - #6581 OPEN (umbrella, execution owner Drew).
 - #5692 OPEN + status/blocked + queue/blocked + work/assigned (sheet staging) — the slice's home wave.
 - #5691 CLOSED (mirror analytics out of scope).
 - #5690 OPEN task/triage, #5693 OPEN status/parked (other waves, untouched).
 - Slice 1 landed: PR #14078 (merge 333e8e1a), manifest
   `doc/2026-11-24T00-50-11Z_design_sheet-staging-turso/inventory-19-tables.md`
-  + contract test `scripts/tests/test_sheet_staging_inventory.py` (5/5).
+  - contract test `scripts/tests/test_sheet_staging_inventory.py` (5/5).
 - Nine-point design: PR #13930 merged (D1 ruling still pending — Turso is
   the working destination; no D1 action in this slice).
 
 ## PG source-of-truth DDL (repo, pkgs/fleet/migrations/)
+
 - 0017_workbook_final_captures.sql: automation/research/finance/home (?)
   staging triples — see DDL finding below.
 - 0004_ainventory.sql: ainventory staging pair (append-only, no dedupe key
@@ -29,6 +32,7 @@ no D1 action, no secrets.
 - 0013_aa_event_log.sql: ainventory event log parent.
 
 ## A. Deployed/source DDL key inventory
+
 Source of record: checked-in PG DDL in `pkgs/fleet/migrations/` (repo read
 2026-11-24; deployed Turso DDL not directly inspected — see §E).
 Turso naming: `schema.table` → `schema_table` (design §4).
@@ -75,6 +79,7 @@ Turso naming: `schema.table` → `schema_table` (design §4).
   repo-absent by design). Turso `home_*` tables unverified — §E.
 
 ## B. Canonical writer conflict/identity semantics
+
 - Batch identity: the writer's stable key is `sources.import_batch`
   (uuid). `AA_BATCH_INDEX_SQL` (`aa-turso-sql.ts:521`) LEFT JOINs
   `ingest_batches` for optional metadata only — a missing parent row must
@@ -101,8 +106,10 @@ Turso naming: `schema.table` → `schema_table` (design §4).
   with post-insert count checks; no destructive sync.
 
 ## C. Isolated-target proofs (sqlite3, file-local temp DB)
+
 Suite: `scripts/tests/test_sheet_staging_idempotence.py` — 9/9 PASS
 (python3, 2026-11-24, worktree `oc-code-04/6581-slice2-schema-idempotence`):
+
 - TestStagingBatchAssociation (4): duplicate source row idempotent;
   same row in new batch is a new row; row without source refused (FK);
   orphan-detector query (LEFT JOIN ingest_batches) returns [].
@@ -112,9 +119,10 @@ Suite: `scripts/tests/test_sheet_staging_idempotence.py` — 9/9 PASS
   batch-row key with rotated dedupe_key never dupes.
 - TestAmbiguousCommitRecovery (1): replay of identical staging+curated
   input after read-back changes nothing (1,1).
-No production, staging, or shared DB touched; no network; no secrets.
+  No production, staging, or shared DB touched; no network; no secrets.
 
 ## D. Mismatches with explicit repair plan
+
 1. 0017 `sheet_rows.source_id` has NO REFERENCES clause (0004/0011 do).
    Orphan rows are conventionally impossible but not DB-refused. REPAIR
    (slice 3, per domain): either add the FK (migration) or keep the
@@ -142,6 +150,7 @@ No production, staging, or shared DB touched; no network; no secrets.
    for home. Home is NOT cleared for writer changes.
 
 ## E. Remote coverage gaps (unverified, not declared)
+
 - Deployed Turso `fleet-platform` DDL not inspected in this slice (no
   live read performed): unique indexes, FK equivalents, and append-only
   guard installation on the TARGET are unproven. The §C proofs run on an

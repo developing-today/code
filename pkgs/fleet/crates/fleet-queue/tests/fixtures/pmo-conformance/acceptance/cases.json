@@ -23,22 +23,13 @@
     "grants": [
       {
         "principal": "octocat",
-        "verbs": [
-          "status",
-          "priority"
-        ],
-        "repos": [
-          "octo-org/widgets"
-        ]
+        "verbs": ["status", "priority"],
+        "repos": ["octo-org/widgets"]
       },
       {
         "principal": "hubot",
-        "verbs": [
-          "status"
-        ],
-        "repos": [
-          "octo-org/elsewhere"
-        ]
+        "verbs": ["status"],
+        "repos": ["octo-org/elsewhere"]
       }
     ]
   },

@@ -126,11 +126,7 @@ impl ModelRoute {
     /// `cap_groups` declares shared caps: each entry names a cap
     /// and the providers whose legs all draw on it (the #13693
     /// alias-provider pattern as a grouping declaration).
-    pub fn new(
-        route: &str,
-        legs: Vec<RouteLeg>,
-        cap_groups: &[(&str, &[&str])],
-    ) -> Self {
+    pub fn new(route: &str, legs: Vec<RouteLeg>, cap_groups: &[(&str, &[&str])]) -> Self {
         let mut pool = Pool::new();
         let route_id = NodeId::new(route);
         pool.add_group(route_id.clone(), None);
@@ -142,8 +138,7 @@ impl ModelRoute {
             let cap_id = NodeId::new(format!("{route}/cap:{cap}"));
             pool.add_group(cap_id.clone(), Some(&route_id));
             for provider in *providers {
-                provider_parent
-                    .insert((*provider).to_owned(), cap_id.clone());
+                provider_parent.insert((*provider).to_owned(), cap_id.clone());
             }
         }
 
@@ -256,7 +251,10 @@ impl ModelRoute {
                 return None;
             }
         };
-        self.legs.iter().find(|leg| leg.node_id() == picked).cloned()
+        self.legs
+            .iter()
+            .find(|leg| leg.node_id() == picked)
+            .cloned()
     }
 
     /// Advance time on the underlying pool (wall expiry and

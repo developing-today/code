@@ -253,7 +253,9 @@ export function projectsBodyHtml(
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
       const spendCard = opts.spend?.byScope.get(p.ref);
       const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
-      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration, ruling: opts.ruling ?? null });
+      const brief =
+        opts.briefs?.get(p.ref) ??
+        buildItemBrief(p, { pool, orchestration: opts.orchestration, ruling: opts.ruling ?? null });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
       return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })

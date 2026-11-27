@@ -39,16 +39,30 @@ class ExposeTunnelBoundary(unittest.TestCase):
     def test_only_tunnel_ingress_is_written_and_unrelated_rules_are_preserved(self):
         account = Account()
         expose.configure(account)
-        writes = [(method, path) for method, path, _ in account.calls if method != "GET"]
-        self.assertEqual(writes, [("PUT", "/accounts/account/cfd_tunnel/tunnel/configurations")])
-        self.assertEqual(account.ingress[0], {"hostname": "pm.security.cab", "service": expose.CONSOLE})
+        writes = [
+            (method, path) for method, path, _ in account.calls if method != "GET"
+        ]
+        self.assertEqual(
+            writes, [("PUT", "/accounts/account/cfd_tunnel/tunnel/configurations")]
+        )
+        self.assertEqual(
+            account.ingress[0],
+            {"hostname": "pm.security.cab", "service": expose.CONSOLE},
+        )
         self.assertEqual(account.ingress[1]["hostname"], "kaneo.security.cab")
         self.assertEqual(account.ingress[-1], {"service": "http_status:404"})
-        self.assertFalse(any("access" in path or "dns" in path or "workers" in path for _, path, _ in account.calls))
+        self.assertFalse(
+            any(
+                "access" in path or "dns" in path or "workers" in path
+                for _, path, _ in account.calls
+            )
+        )
 
     def test_current_tunnel_config_is_idempotent(self):
         account = Account()
-        account.ingress.insert(0, {"hostname": "pm.security.cab", "service": expose.CONSOLE})
+        account.ingress.insert(
+            0, {"hostname": "pm.security.cab", "service": expose.CONSOLE}
+        )
         expose.configure(account)
         self.assertFalse(any(method != "GET" for method, _, _ in account.calls))
 
@@ -67,8 +81,14 @@ class ExposeTunnelBoundary(unittest.TestCase):
             {"hostname": "other.security.cab", "service": "http://localhost:2"},
         ]
         expose.configure(account)
-        self.assertEqual(account.ingress[0], {"hostname": "pm.security.cab", "service": expose.CONSOLE})
-        self.assertEqual(account.ingress[1], {"hostname": "other.security.cab", "service": "http://localhost:2"})
+        self.assertEqual(
+            account.ingress[0],
+            {"hostname": "pm.security.cab", "service": expose.CONSOLE},
+        )
+        self.assertEqual(
+            account.ingress[1],
+            {"hostname": "other.security.cab", "service": "http://localhost:2"},
+        )
         self.assertEqual(account.ingress[-1], {"service": "http_status:404"})
 
     def test_script_rejects_old_account_management_flags(self):

@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "path";
-import {
-  decisionSetSummary,
-  getDecisionSet,
-  listDecisionSets,
-  recordResolutions,
-} from "../src/decisions.ts";
+import { decisionSetSummary, getDecisionSet, listDecisionSets, recordResolutions } from "../src/decisions.ts";
 import { questionsSectionHtml } from "../src/render.ts";
 import {
   seedStandingDecisionSets,
