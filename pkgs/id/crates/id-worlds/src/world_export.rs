@@ -156,6 +156,11 @@ pub async fn export_world<W: AsyncWrite + Unpin + Send>(
 /// Export the world `service` holds to the file `path`, written beside it
 /// first and renamed into place once complete and fsynced.
 ///
+/// Success is reported only once the export is crash-durable (#16179):
+/// the partial file is synced, then after the rename the parent directory
+/// is synced so the new directory entry itself survives a crash. A
+/// directory-sync failure is fatal and propagated.
+///
 /// # Errors
 ///
 /// Refuses an existing `path`; otherwise as [`export_world`].
@@ -163,6 +168,34 @@ pub async fn export_world_to_file(
     service: &WorldService,
     signing_key: &SigningKey,
     path: &Path,
+) -> Result<ExportManifest> {
+    export_world_to_file_with_dir_sync(service, signing_key, path, &sync_directory).await
+}
+
+/// Sync a directory so the entries inside it are durable: a file-data
+/// fsync alone does not promise the directory entry itself survives a
+/// crash. A failure here is fatal; callers propagate it the same way as
+/// the journal-compaction, [`crate::world_store::fork_world`] and
+/// [`crate::world_store::ModuleDir::save`] siblings.
+///
+/// # Errors
+///
+/// The directory cannot be opened, or its sync fails.
+fn sync_directory(dir: &Path) -> Result<()> {
+    std::fs::File::open(dir)
+        .with_context(|| format!("open {} for sync", dir.display()))?
+        .sync_all()
+        .with_context(|| format!("sync {}", dir.display()))
+}
+
+/// [`export_world_to_file`] with the directory-sync step supplied, split
+/// out so tests can fault-inject a sync failure (the same shape as the
+/// #16058/#16131/#16140 durability tests).
+async fn export_world_to_file_with_dir_sync(
+    service: &WorldService,
+    signing_key: &SigningKey,
+    path: &Path,
+    sync_dir: &(dyn Fn(&Path) -> Result<()> + Send + Sync),
 ) -> Result<ExportManifest> {
     if tokio::fs::symlink_metadata(path).await.is_ok() {
         bail!("{} already exists: export to a new file", path.display());
@@ -180,6 +213,14 @@ pub async fn export_world_to_file(
         tokio::fs::rename(&partial, path)
             .await
             .with_context(|| format!("renaming {} to {}", partial.display(), path.display()))?;
+        // The rename is atomic, but its directory entry is not durable
+        // until the parent directory is synced (#16179): a crash in the
+        // window can leave `path` missing even though the caller received
+        // `Ok`. Propagate a sync failure instead of reporting success.
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            sync_dir(parent)
+                .with_context(|| format!("sync {}", parent.display()))?;
+        }
         Ok(manifest)
     }
     .await;
@@ -756,6 +797,27 @@ mod tests {
 
         // A second restore to the same place is refused.
         assert!(import_world_from_file(&file, &dest, source).await.is_err());
+    }
+
+    // #16179 oracle: a directory-sync failure is fatal, not a successful
+    // export — `export_world_to_file` must propagate it instead of
+    // returning `Ok` for a file a crash could lose.
+    #[tokio::test]
+    async fn export_world_to_file_propagates_a_directory_sync_failure() {
+        let root = TempDir::new().unwrap();
+        let service = busy_world(&root.path().join("w")).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let file = root.path().join("w.export");
+        let failing_sync =
+            |_: &Path| -> Result<()> { Err(anyhow::anyhow!("injected directory sync failure")) };
+        let error = export_world_to_file_with_dir_sync(&service, &key, &file, &failing_sync)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "unexpected error: {error:#}"
+        );
+        service.world().shutdown().await.unwrap();
     }
 
     #[tokio::test]
