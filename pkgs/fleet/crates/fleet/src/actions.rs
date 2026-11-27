@@ -233,7 +233,19 @@ fn gh_api(
 ) -> Result<Value, String> {
     let token = gh_token(config)?;
     let url = format!("https://api.github.com{path}");
-    let agent = ureq::agent();
+    // Platform root store, not webpki-roots alone: seats behind a
+    // TLS-intercepting egress proxy (the sandbox) present the proxy's
+    // CA, which only the platform store carries — with the default
+    // agent the dispatch died with UnknownIssuer (code#15575; same
+    // fix as the gh App leg, code#13122).
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .into();
     let mut resp = if method == "POST" {
         agent
             .post(&url)
