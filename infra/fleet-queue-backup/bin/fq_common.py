@@ -737,19 +737,92 @@ class D1Client:
         transport failure re-runs init + upload (the dump is already
         built; an upload retry never re-reads the source). API-level
         errors are not retried: they do not heal.
+
+        Idempotent recovery (#16070): if a PUT was accepted but its
+        response was lost, the retry init may omit upload_url. That
+        resume response is honoured only when it verifies against the
+        expected etag/length (see the no-upload_url branch below);
+        otherwise it raises a clear retryable RuntimeError.
         """
         digest = hashlib.md5(sql_text.encode()).hexdigest()
+        data = sql_text.encode()
         filename = None
+        bookmark = None
         for attempt in range(3):
             init = self._call(
                 "POST",
                 f"/accounts/{self.account}/d1/database/{db_id}/import",
                 {"action": "init", "etag": digest},
             )
-            upload_url, filename = init["upload_url"], init["filename"]
-            req = urllib.request.Request(
-                upload_url, data=sql_text.encode(), method="PUT"
-            )
+            if not isinstance(init, dict):
+                raise RuntimeError(
+                    "D1 import init returned no upload_url and no verified "
+                    f"matching stored object (got {init!r}); retryable: "
+                    "re-run the import"
+                )
+            upload_url = init.get("upload_url")
+            if not upload_url:
+                # Idempotent recovery (#16070): storage may have accepted
+                # an earlier PUT whose response was lost. The retry init
+                # is keyed by the expected etag (digest), so a resume
+                # response naming a stored object for that etag -- a
+                # filename, with any reported hash/length matching the
+                # expected values -- is a verified matching object:
+                # finalize it (ingest, or poll when init already carries
+                # a bookmark) without requiring an upload URL and
+                # without re-uploading. A resume response with a
+                # contradicting hash/length, or with nothing that
+                # identifies a stored object, is NOT a success: it is a
+                # clear retryable error, never a KeyError and never a
+                # false success.
+                reported_etag = None
+                for key in ("etag", "md5", "hash"):
+                    if init.get(key):
+                        reported_etag = str(init[key]).strip('"')
+                        break
+                reported_size = None
+                for key in ("size", "length", "content_length", "file_size"):
+                    if init.get(key) is not None:
+                        reported_size = init[key]
+                        break
+                if reported_etag is not None and reported_etag != digest:
+                    raise RuntimeError(
+                        "D1 import resume stored-object etag mismatch: "
+                        f"expected {digest}, got {reported_etag}; "
+                        "retryable: re-run the import"
+                    )
+                if reported_size is not None:
+                    try:
+                        size_ok = int(reported_size) == len(data)
+                    except (TypeError, ValueError):
+                        size_ok = False
+                    if not size_ok:
+                        raise RuntimeError(
+                            "D1 import resume stored-object length mismatch: "
+                            f"expected {len(data)}, got {reported_size!r}; "
+                            "retryable: re-run the import"
+                        )
+                if init.get("at_bookmark"):
+                    bookmark = init["at_bookmark"]
+                    filename = init.get("filename") or filename
+                    break
+                if init.get("filename"):
+                    filename = init["filename"]
+                    break
+                raise RuntimeError(
+                    "D1 import init returned no upload_url and no verified "
+                    "matching stored object "
+                    f"(init result: {str(init)[:300]}); retryable: "
+                    "re-run the import"
+                )
+            filename = init.get("filename") or filename
+            if not filename:
+                raise RuntimeError(
+                    "D1 import init returned an upload_url but no "
+                    f"filename (init result: {str(init)[:300]}); "
+                    "retryable: re-run the import"
+                )
+            req = urllib.request.Request(upload_url, data=data, method="PUT")
             try:
                 with urllib.request.urlopen(
                     req, timeout=UPLOAD_TIMEOUT_SECONDS
@@ -769,11 +842,14 @@ class D1Client:
                     f"D1 import upload etag mismatch: sent {digest}, got {etag}"
                 )
             time.sleep(5)
-        ingest = self._call(
-            "POST",
-            f"/accounts/{self.account}/d1/database/{db_id}/import",
-            {"action": "ingest", "etag": digest, "filename": filename},
-        )
+        if bookmark is not None:
+            ingest = {"at_bookmark": bookmark}
+        else:
+            ingest = self._call(
+                "POST",
+                f"/accounts/{self.account}/d1/database/{db_id}/import",
+                {"action": "ingest", "etag": digest, "filename": filename},
+            )
         bookmark = ingest.get("at_bookmark")
         if not bookmark:
             raise RuntimeError(f"D1 import ingest returned no at_bookmark: {ingest}")

@@ -102,6 +102,7 @@ pub fn run(args: &[String]) -> i32 {
         "dispatch" => crate::placement::cmd_dispatch(rest),
         "session" => crate::placement::cmd_session(rest),
         "surfaces" => crate::placement::cmd_surfaces(rest),
+        "placement-load" => cmd_placement_load(rest),
         "outbox" => cmd_outbox(rest),
         "stack" => cmd_stack(rest),
         _ => {

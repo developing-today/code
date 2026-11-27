@@ -219,6 +219,14 @@ function withAuditDefaults(row: AuditEvent): AuditEvent {
 export const EVENT_RETENTION_DAYS = 30;
 export const EVENT_RETENTION_MAX = 5000;
 
+/** Maximum length of `event.source.link`, in UTF-16 code units (the
+ *  same metric `String.length` and the validator below use).
+ *  Importers must enforce this bound before calling `record()`: an
+ *  over-limit link is a provider-data shape problem, not a retryable
+ *  failure, and the journal must never hold a record the validator
+ *  rejects (#16069). */
+export const MAX_SOURCE_LINK_LENGTH = 500;
+
 /** prevHash of the first record in an unpruned chain. */
 export const EVENT_CHAIN_GENESIS = "0".repeat(64);
 
@@ -316,7 +324,7 @@ function validateAuditExtras(input: NewAuditEvent): { ok: true } | { ok: false; 
     ) {
       return { ok: false, error: "event.source.identity must be a non-empty string of at most 200 chars" };
     }
-    if (s.link !== undefined && (typeof s.link !== "string" || s.link.length > 500)) {
+    if (s.link !== undefined && (typeof s.link !== "string" || s.link.length > MAX_SOURCE_LINK_LENGTH)) {
       return { ok: false, error: "event.source.link must be a string of at most 500 chars" };
     }
   }

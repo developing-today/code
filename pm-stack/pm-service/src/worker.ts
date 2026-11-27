@@ -29,6 +29,7 @@ export { BoardDO };
 
 export interface PmServiceEnv {
   VERSION?: string;
+  DEPLOYED_AT?: string;
   PM_TENANT_DB_URL?: string;
   PM_TENANT_DB_TOKEN?: string;
   BOARD_DO?: DurableObjectNamespace;
@@ -42,7 +43,12 @@ const json = (body: unknown, status = 200): Response =>
 export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Promise<Response> {
   const path = new URL(req.url).pathname;
   if (req.method === "GET" && path === "/health") {
-    return json({ ok: true, service: "pm-service", version: env.VERSION ?? "unknown" });
+    const nowMs = Date.now();
+    const deployedAtMs = Date.parse(env.DEPLOYED_AT ?? "");
+    const hasDeploymentStamp = Number.isFinite(deployedAtMs) && deployedAtMs <= nowMs;
+    const deployedAt = hasDeploymentStamp ? new Date(deployedAtMs).toISOString() : null;
+    const ageSeconds = deployedAt === null ? null : Math.floor((nowMs - deployedAtMs) / 1_000);
+    return json({ ok: true, service: "pm-service", version: env.VERSION ?? "unknown", deployedAt, ageSeconds });
   }
   if (path === "/login" && req.method === "GET") {
     if (!env.BROWSER_OAUTH) return json({ error: "browser login is not configured" }, 503);
