@@ -1,1 +1,13 @@
-[{"id":13198401620,"node_id":"LA_kwDOJWP4788AAAADEq-gVA","url":"https://api.github.com/repos/developing-today/code/labels/audit:completed-later","name":"audit:completed-later","color":"1d76db","default":false,"description":"Gap completed by later merged PR","archived_at":null,"archived_by":null}]
+[
+  {
+    "id": 13198401620,
+    "node_id": "LA_kwDOJWP4788AAAADEq-gVA",
+    "url": "https://api.github.com/repos/developing-today/code/labels/audit:completed-later",
+    "name": "audit:completed-later",
+    "color": "1d76db",
+    "default": false,
+    "description": "Gap completed by later merged PR",
+    "archived_at": null,
+    "archived_by": null
+  }
+]

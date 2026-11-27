@@ -239,16 +239,7 @@
         "created_at": 200
       }
     ],
-    "expected_order": [
-      "2",
-      "11",
-      "12",
-      "3",
-      "8",
-      "10",
-      "7",
-      "9"
-    ]
+    "expected_order": ["2", "11", "12", "3", "8", "10", "7", "9"]
   },
   "mixed_profile": {
     "other_profile_version": "2",

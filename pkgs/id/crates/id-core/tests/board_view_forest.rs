@@ -7,9 +7,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use id_core::graph::board_view::{AcceptedEntry, project_board};
+use id_core::graph::board_view::{AcceptedEntry, project_board, project_board_with_tombstones};
 use id_core::graph::social::{SocialObject, SocialObjectKind};
 use id_core::graph::term::ObjectRef;
 use id_core::id_shape::{ContentId, HashProfile};
@@ -168,6 +168,39 @@ fn parent_cycle_members_surface_flagged_instead_of_hanging() {
     assert_eq!(roots.len(), 1);
     assert!(roots[0].orphaned);
     assert_eq!(roots[0].children.len(), 1);
+}
+
+#[test]
+fn tombstones_hide_topics_and_comments_without_renumbering_visible_entries() {
+    let board = oid(1);
+    let topics = vec![entry(4, topic(10)), entry(8, topic(20))];
+    let comments = vec![
+        entry(2, comment(11, Some(10))),
+        entry(5, comment(12, Some(10))),
+        entry(7, comment(13, Some(11))),
+        entry(9, comment(14, Some(10))),
+    ];
+    let mut by_topic = HashMap::new();
+    by_topic.insert(oid(10), comments);
+    let tombstones = HashSet::from([oid(11), oid(20)]);
+
+    let view = project_board_with_tombstones(&board, &topics, &by_topic, &tombstones);
+
+    assert_eq!(
+        view.topics.iter().map(|node| node.seq).collect::<Vec<_>>(),
+        vec![4]
+    );
+    // Sibling sequences remain 5 and 9; the visible reply to hidden
+    // comment 11 is retained as an orphan with its original sequence 7.
+    let roots = &view.topics[0].children;
+    assert_eq!(
+        roots.iter().map(|node| node.seq).collect::<Vec<_>>(),
+        vec![5, 7, 9]
+    );
+    assert_eq!(roots[0].comment.object_id, oid(12));
+    assert_eq!(roots[1].comment.object_id, oid(13));
+    assert!(roots[1].orphaned);
+    assert_eq!(roots[2].comment.object_id, oid(14));
 }
 
 #[test]

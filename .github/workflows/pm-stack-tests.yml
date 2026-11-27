@@ -167,6 +167,9 @@ jobs:
           fi
           echo "tailnet-bindings script suite passed."
 
+      - name: Test PM aggregator backend readiness gate
+        run: bash nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh
+
       # Fencing and cutover suites for #6816: pm-stack/scripts/
       # fence-check.test.sh proves the fencing rule (old writer fenced
       # before promotion, fail closed when state is unreadable, per-store
@@ -409,9 +412,10 @@ jobs:
       # (tenant-store.test.ts, the component A PM tenant store
       # schema + migrations conformance suite; collector.test.ts,
       # the hosted collector acceptance suite; read-api.test.ts,
-      # the hosted read API parity suite) must not be silently
-      # skipped suites either. They need only bun (bun:sqlite is
-      # built in), no install step.
+      # the hosted read API parity suite; dual-edition-conformance.test.ts,
+      # which compares shared projections with the laptop aggregator)
+      # must not be silently skipped suites either. They need only bun
+      # (bun:sqlite is built in), no install step.
       - name: Test pm-service suites
         working-directory: pm-stack/pm-service
         run: |

@@ -1,12 +1,7 @@
 {
   "column": "In Progress",
   "rule": "R4",
-  "reason_codes": [
-    "fresh_authoritative_claim",
-    "verified_session_binding"
-  ],
-  "conflicts": [
-    "project_status_disagrees"
-  ],
+  "reason_codes": ["fresh_authoritative_claim", "verified_session_binding"],
+  "conflicts": ["project_status_disagrees"],
   "stale_facets": []
 }

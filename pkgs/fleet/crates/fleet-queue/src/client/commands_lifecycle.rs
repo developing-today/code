@@ -333,6 +333,14 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             code
         }
         GuardOutcome::Serve => {
+            // #4986: the claim is the placement for queue work (#8187).
+            // Best-effort placement-record emission: it logs to stderr
+            // (and FLEET_PLACEMENT_LOG) and never alters the claim.
+            placement_emit::emit_placement_record(
+                &out,
+                &worker,
+                body.get("lane").and_then(|v| v.as_str()).unwrap_or(""),
+            );
             attach_mode_line(&mut out, "claim", legs_served(true, true));
             print_json(&out);
             code

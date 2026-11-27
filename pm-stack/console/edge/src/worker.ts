@@ -10,7 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
-import { probeWorkers, selfCheck, type WorkerCheckTarget } from "./worker-checks.ts";
+import { runCheckRound, type WorkerBinding } from "./worker-checks.ts";
 import { unread } from "../../src/timed.ts";
 
 interface Env {
@@ -39,6 +39,28 @@ interface Env {
    * round; the bindings are declared in wrangler.jsonc. */
   PM_SERVICE?: { fetch(request: Request): Promise<Response> };
   DECISION_EVENTS?: { fetch(request: Request): Promise<Response> };
+  /** The rest of the roster (#15793): every other Worker
+   * pm-stack/platform/workers.json says is in service, each by its
+   * own service binding, asked the same question on the same
+   * schedule. The roster itself — which Worker answers to which
+   * binding name — is WORKER_BINDINGS in worker-checks.ts, and the
+   * console tests hold it to workers.json and to wrangler.jsonc. */
+  PM_NOTIFY?: WorkerBinding;
+  MCPX?: WorkerBinding;
+  QUEUE_TRANSPORT_ALERT?: WorkerBinding;
+  GITHUB_CI?: WorkerBinding;
+  VOICE_LINE?: WorkerBinding;
+  MUSE_AGENT_HANDOFF?: WorkerBinding;
+  DESKTOP_COMMANDER?: WorkerBinding;
+  FLEET_HOSTED?: WorkerBinding;
+  ATLAS_SEARCH?: WorkerBinding;
+  D1_GATEWAY?: WorkerBinding;
+  COLD_STORE_REHYDRATOR?: WorkerBinding;
+  DEVELOPING_TODAY_BACKUP?: WorkerBinding;
+  FLEET_GIT_REHOST?: WorkerBinding;
+  PKARR?: WorkerBinding;
+  LAB_OPS_HUB?: WorkerBinding;
+  CF_CONTAINER_HELLO?: WorkerBinding;
   /** The decision-events Worker (#13491): its address and the shared
    * secret its reads take, the secret a Worker secret like the two
    * tokens. With both, the edge reads the Questions discovery section
@@ -298,20 +320,8 @@ export default {
    * one that does not answer is recorded as not answering. */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const askedAt = Date.now();
-    const bound: [string, Env["BRIDGE"]][] = [
-      ["message-bridge", env.BRIDGE],
-      ["pm-service", env.PM_SERVICE],
-      ["decision-events", env.DECISION_EVENTS],
-    ];
-    const targets: WorkerCheckTarget[] = bound
-      .filter((entry): entry is [string, NonNullable<Env["BRIDGE"]>] => entry[1] !== undefined)
-      .map(([name, binding]) => ({
-        name,
-        fetcher: (request: Request) => binding.fetch(request),
-      }));
-    const set = await probeWorkers(targets, askedAt);
-    set.checks.push(selfCheck("pm-console-edge", env.VERSION, askedAt));
-    set.checks.sort((a, b) => a.name.localeCompare(b.name));
+    const byBinding = env as unknown as Record<string, WorkerBinding | undefined>;
+    const set = await runCheckRound((binding) => byBinding[binding], "pm-console-edge", env.VERSION, askedAt);
     const stub = env.PM.get(env.PM.idFromName("pm"));
     ctx.waitUntil(
       stub.fetch(

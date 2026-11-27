@@ -12,10 +12,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from transclusion import DELEGATED_VIEW_GRANTS, load_graph, render_composed, render_object  # noqa: E402
+from transclusion import (
+    DELEGATED_VIEW_GRANTS,
+    load_graph,
+    render_composed,
+    render_object,
+)  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-D2_FIXTURES = REPO / "doc" / "2026-11-25T01-40-00Z_design_id-apps_d2_transclusion" / "fixtures"
+D2_FIXTURES = (
+    REPO / "doc" / "2026-11-25T01-40-00Z_design_id-apps_d2_transclusion" / "fixtures"
+)
 EXPECTED = json.loads((D2_FIXTURES / "expected.json").read_text(encoding="utf-8"))
 
 failures = []
@@ -49,7 +56,11 @@ edited_graph["objects"]["img-group-photo-v3"] = {
     "author": "ed25519:cccc3333media",
     "created_claim": "2026-11-24T04:00:00Z",
     "kind": "image",
-    "body": {"digest": "blake3:group-photo-v3-edited", "mime": "image/jpeg", "size": 1800000},
+    "body": {
+        "digest": "blake3:group-photo-v3-edited",
+        "mime": "image/jpeg",
+        "size": 1800000,
+    },
     "schema_version": 1,
 }
 edited_graph["links"].append(
@@ -65,10 +76,13 @@ edited_graph["links"].append(
 )
 updated = render_composed(edited_graph, viewer="ana")
 updated_sections = updated.get("sections", [])
-updated_embeds = updated_sections[1].get("embeds", []) if len(updated_sections) > 1 else []
+updated_embeds = (
+    updated_sections[1].get("embeds", []) if len(updated_sections) > 1 else []
+)
 updated_object = updated_embeds[0] if updated_embeds else {}
 expect(
-    updated_object.get("object") == "img-group-photo-v3" and updated_object.get("badges") == ["edited"],
+    updated_object.get("object") == "img-group-photo-v3"
+    and updated_object.get("badges") == ["edited"],
     "a new superseding target appears on the next live render",
 )
 

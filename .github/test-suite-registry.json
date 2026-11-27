@@ -315,6 +315,7 @@
         "pkgs/id/hosted-worker/test/bridge-event.test.ts",
         "pkgs/id/hosted-worker/test/bridge-range.test.ts",
         "pkgs/id/hosted-worker/test/bridge-store.test.ts",
+        "pkgs/id/hosted-worker/test/d1-bridge-store.test.ts",
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
         "pkgs/id/hosted-worker/test/bridge-do.test.ts",
         "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
@@ -329,7 +330,7 @@
         "pkgs/id/hosted-worker/test/references.test.ts",
         "pkgs/id/hosted-worker/test/reference-index.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/d1-bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -851,6 +852,19 @@
       "related_issues": [12828]
     },
     {
+      "id": "pm-service.dual-edition-conformance",
+      "paths": ["pm-stack/pm-service/test/dual-edition-conformance.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test test/dual-edition-conformance.test.ts",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9074, 12833]
+    },
+    {
       "id": "pm-service.oauth-pkce",
       "paths": ["pm-stack/pm-service/test/worker-auth.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test test/worker-auth.test.ts",
@@ -930,6 +944,18 @@
       "venue": {
         "workflow": ".github/workflows/pm-aggregator-tests.yml",
         "job_step": "contract corpus test step",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "nixos.pm-stack.aggregator-readiness",
+      "paths": ["nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh"],
+      "invocation": "bash nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "PM aggregator backend readiness gate",
         "state": "active",
         "dispatchable": true
       },
@@ -1852,7 +1878,8 @@
         "pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
-        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs"
+        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_reimport.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {

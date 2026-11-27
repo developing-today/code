@@ -482,6 +482,9 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 // print nothing at all, and a result that merely repeats the
 // stdout parse must not be printed twice.
 func (a *App) reportFinalResult(res *execsvc.Result) {
+	if res.Runtime != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "mcpx: JavaScript runtime: %s\n", res.Runtime)
+	}
 	if !res.ResultPresent && res.Result == nil {
 		return
 	}
@@ -760,6 +763,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		TypeCheckDefaulted:     sh.checkDefaulted,
 		TypeCheckOnError:       sh.checkOnError,
 		TypeCheckOnUnsupported: sh.checkOnUnsupported,
+		CheckJs:                &sh.checkJs,
 		Imports:                sh.imports,
 		ImportsOnDynamic:       sh.importsOnDynamic,
 		ImportsOnMissing:       sh.importsOnMissing,

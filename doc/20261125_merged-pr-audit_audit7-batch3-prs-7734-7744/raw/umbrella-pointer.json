@@ -1,1 +1,47 @@
-{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157311605","html_url":"https://github.com/developing-today/code/issues/13871#issuecomment-7157311605","issue_url":"https://api.github.com/repos/developing-today/code/issues/13871","id":7157311605,"node_id":"IC_kwDOJWP4788AAAABqpvodQ","user":{"login":"dezren39","id":11225574,"node_id":"MDQ6VXNlcjExMjI1NTc0","avatar_url":"https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4","gravatar_id":"","url":"https://api.github.com/users/dezren39","html_url":"https://github.com/dezren39","followers_url":"https://api.github.com/users/dezren39/followers","following_url":"https://api.github.com/users/dezren39/following{/other_user}","gists_url":"https://api.github.com/users/dezren39/gists{/gist_id}","starred_url":"https://api.github.com/users/dezren39/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/dezren39/subscriptions","organizations_url":"https://api.github.com/users/dezren39/orgs","repos_url":"https://api.github.com/users/dezren39/repos","events_url":"https://api.github.com/users/dezren39/events{/privacy}","received_events_url":"https://api.github.com/users/dezren39/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2026-11-25T08:39:36Z","updated_at":"2026-11-25T08:39:36Z","author_association":"MEMBER","body":"AUDIT-7 Lane 4 suspect-closure pointer: #787 / #7734, #12926, #13267\n\nThe code remainder from #7734 is now landed: #12926 supplies Slice D (the cross-language parity oracle), and #13267 supplies Slices E/F (SSH negotiation/framing and browser opt-in). But #787's own comment #7101492168 says the final acceptance still needs one supported-terminal smoke session plus unsupported-terminal fallback evidence against a real terminal. No such evidence appears in the current issue comments.\n\nCurrent API state shows #787 closed at 2026-11-23T20:52:00Z, three seconds after #13267 merged. #13267's body explicitly says it does not close #787 and repeats the outstanding real-terminal acceptance. This looks like the same negated-close accidental closure previously recorded for #7734 and #12926. Lane 4 has not reopened the issue; passing this closure correction to Lane 2 for its disposition.\n\nEvidence: [#787 acceptance and comments](https://github.com/developing-today/code/issues/787), [#7734 Slice C](https://github.com/developing-today/code/pull/7734), [#12926 Slice D](https://github.com/developing-today/code/pull/12926), [#13267 Slices E/F](https://github.com/developing-today/code/pull/13267).","reactions":{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157311605/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null,"minimized":null,"pin":null}
+{
+  "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157311605",
+  "html_url": "https://github.com/developing-today/code/issues/13871#issuecomment-7157311605",
+  "issue_url": "https://api.github.com/repos/developing-today/code/issues/13871",
+  "id": 7157311605,
+  "node_id": "IC_kwDOJWP4788AAAABqpvodQ",
+  "user": {
+    "login": "dezren39",
+    "id": 11225574,
+    "node_id": "MDQ6VXNlcjExMjI1NTc0",
+    "avatar_url": "https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/dezren39",
+    "html_url": "https://github.com/dezren39",
+    "followers_url": "https://api.github.com/users/dezren39/followers",
+    "following_url": "https://api.github.com/users/dezren39/following{/other_user}",
+    "gists_url": "https://api.github.com/users/dezren39/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/dezren39/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/dezren39/subscriptions",
+    "organizations_url": "https://api.github.com/users/dezren39/orgs",
+    "repos_url": "https://api.github.com/users/dezren39/repos",
+    "events_url": "https://api.github.com/users/dezren39/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/dezren39/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "created_at": "2026-11-25T08:39:36Z",
+  "updated_at": "2026-11-25T08:39:36Z",
+  "author_association": "MEMBER",
+  "body": "AUDIT-7 Lane 4 suspect-closure pointer: #787 / #7734, #12926, #13267\n\nThe code remainder from #7734 is now landed: #12926 supplies Slice D (the cross-language parity oracle), and #13267 supplies Slices E/F (SSH negotiation/framing and browser opt-in). But #787's own comment #7101492168 says the final acceptance still needs one supported-terminal smoke session plus unsupported-terminal fallback evidence against a real terminal. No such evidence appears in the current issue comments.\n\nCurrent API state shows #787 closed at 2026-11-23T20:52:00Z, three seconds after #13267 merged. #13267's body explicitly says it does not close #787 and repeats the outstanding real-terminal acceptance. This looks like the same negated-close accidental closure previously recorded for #7734 and #12926. Lane 4 has not reopened the issue; passing this closure correction to Lane 2 for its disposition.\n\nEvidence: [#787 acceptance and comments](https://github.com/developing-today/code/issues/787), [#7734 Slice C](https://github.com/developing-today/code/pull/7734), [#12926 Slice D](https://github.com/developing-today/code/pull/12926), [#13267 Slices E/F](https://github.com/developing-today/code/pull/13267).",
+  "reactions": {
+    "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157311605/reactions",
+    "total_count": 0,
+    "+1": 0,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "performed_via_github_app": null,
+  "minimized": null,
+  "pin": null
+}

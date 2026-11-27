@@ -587,7 +587,9 @@ fn active_program(
 /// - **programs:** the active program's bundle identity. A program
 ///   installed any other way is refused, because a template names
 ///   bundles and never carries binaries.
-/// - **roles:** none. Worlds keep no role records in the journal.
+/// - **roles:** the latest D5 template-role definition set. Membership is
+///   deliberately absent; `id-caps` access-control role configuration is a
+///   separate surface and is not exported as template metadata.
 /// - **credentials:** every capability record, live or revoked, once
 ///   per participant. Export strips them.
 /// - **per-user data:** every author-key binding, once per participant.
@@ -634,6 +636,7 @@ pub fn template_source_from_journal(
     let mut portal = BTreeMap::new();
     let mut schedule = BTreeMap::new();
     let mut kv = BTreeMap::new();
+    let mut role_definitions = Vec::new();
     for entry in entries {
         match entry {
             JournalEntry::Issued {
@@ -667,6 +670,9 @@ pub fn template_source_from_journal(
             JournalEntry::KvDeleted { key } => {
                 kv.remove(key);
             }
+            JournalEntry::TemplateRolesSet { roles } => {
+                role_definitions.clone_from(roles);
+            }
             _ => {}
         }
     }
@@ -691,7 +697,13 @@ pub fn template_source_from_journal(
 
     Ok(TemplateSource {
         programs,
-        roles: Vec::new(),
+        roles: role_definitions
+            .into_iter()
+            .map(|definition| SourcedRole {
+                definition,
+                members: Vec::new(),
+            })
+            .collect(),
         credentials: credentials
             .into_iter()
             .map(|(id, digest)| SourcedCredential {
@@ -1274,6 +1286,44 @@ mod tests {
 
         fn keep(keys: &[&str]) -> Vec<String> {
             keys.iter().map(|key| (*key).to_owned()).collect()
+        }
+
+        #[test]
+        fn journal_roles_export_as_definitions_without_member_identity() {
+            let role_entry: JournalEntry = serde_json::from_value(serde_json::json!({
+                "entry": "template_roles_set",
+                "roles": [
+                    { "name": "editor", "description": "Can edit shared notes" },
+                    { "name": "reader", "description": "Can read shared notes" }
+                ]
+            }))
+            .unwrap();
+            let entries = vec![created(), issued(1), issued(2), role_entry];
+
+            let source = template_source_from_journal(&entries, &[]).unwrap();
+            let bundle = export_template(&source).unwrap();
+
+            assert!(source.roles.iter().all(|role| role.members.is_empty()));
+            assert_eq!(
+                bundle.manifest.roles,
+                vec![
+                    RoleDefinition {
+                        name: "editor".to_owned(),
+                        description: "Can edit shared notes".to_owned(),
+                    },
+                    RoleDefinition {
+                        name: "reader".to_owned(),
+                        description: "Can read shared notes".to_owned(),
+                    },
+                ]
+            );
+            let exported = serde_json::to_string(&bundle).unwrap();
+            for identity in ["player1", "player2", "account1", "account2"] {
+                assert!(
+                    !exported.contains(identity),
+                    "{identity} leaked into {exported}"
+                );
+            }
         }
 
         #[test]

@@ -65,7 +65,9 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
     const parsed: unknown = await req.json();
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
       return parsed as Record<string, unknown>;
-  } catch { /* fall through to empty */ }
+  } catch {
+    /* fall through to empty */
+  }
   return {};
 }
 
@@ -107,16 +109,14 @@ export function createSurfaceCHandler(deps: SurfaceCDeps): (req: Request) => Pro
       if (session === null) return json({ error: "unauthenticated" }, 401);
       const jti = decodeURIComponent(revokeMatch[1] as string);
       const result = await revokeAgentCredential(session, jti, credentialDeps);
-      if (!result.ok && result.reason === "audit_unavailable")
-        return json({ error: result.reason }, 503);
+      if (!result.ok && result.reason === "audit_unavailable") return json({ error: result.reason }, 503);
       if (!result.ok) return json({ error: result.reason }, result.reason === "not_found" ? 404 : 403);
       return json({ revoked: true, jti });
     }
 
     if (req.method === "POST" && path === "/oauth/token") {
       const body = await readBody(req);
-      if (asString(body.grant_type) !== "client_credentials")
-        return json({ error: "unsupported_grant_type" }, 400);
+      if (asString(body.grant_type) !== "client_credentials") return json({ error: "unsupported_grant_type" }, 400);
       const result = await exchangeClientCredentials(
         {
           credentialId: asString(body.client_id),

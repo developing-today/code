@@ -54,7 +54,8 @@ export interface DnsSection {
 export const DNS_PAGE_PATHS = new Set(["/dns", "/api/dns.json"]);
 
 /** The publisher's single-row snapshot (aggregator/src/dns-publisher.ts). */
-export const DNS_SNAPSHOT_SQL = "select section_json, generated_at, received_at, source from dns_snapshots where id = 1";
+export const DNS_SNAPSHOT_SQL =
+  "select section_json, generated_at, received_at, source from dns_snapshots where id = 1";
 
 /** Three missed ~5-minute collector intervals. */
 export const DNS_SNAPSHOT_MAX_AGE_MS = 15 * 60_000;
@@ -280,9 +281,10 @@ export async function dnsPage(request: Request, io: LedgerPagesIo): Promise<Resp
   };
   const rowsHtml = section.entries
     .map(
-      (e) => `<tr><td>${escapeHtml(e.domain)}</td><td>${escapeHtml(e.registrar)}</td><td>${escapeHtml(e.dnsHost)}</td><td>${escapeHtml(e.renewal)}</td><td>${escapeHtml(e.autoRenew)}</td><td>${
-        e.priceUsd === null ? "—" : `$${e.priceUsd.toFixed(2)}`
-      }</td><td>${escapeHtml(e.status)}</td></tr>`,
+      (e) =>
+        `<tr><td>${escapeHtml(e.domain)}</td><td>${escapeHtml(e.registrar)}</td><td>${escapeHtml(e.dnsHost)}</td><td>${escapeHtml(e.renewal)}</td><td>${escapeHtml(e.autoRenew)}</td><td>${
+          e.priceUsd === null ? "—" : `$${e.priceUsd.toFixed(2)}`
+        }</td><td>${escapeHtml(e.status)}</td></tr>`,
     )
     .join("");
   return page(

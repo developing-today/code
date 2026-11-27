@@ -10,8 +10,8 @@ STAMP="$(date +%Y%m%dT%H%M%S)"
 fetch() {
   local name="$1" url="$2"
   curl -fsSL --max-time 60 -A "Mozilla/5.0 (fleet-watch)" "$url" \
-    -o "$OUT_DIR/snapshots/${STAMP}-${name}.html" 2>>"$OUT_DIR/sweep-errors.log" \
-    && echo "ok $name" || echo "FAIL $name"
+    -o "$OUT_DIR/snapshots/${STAMP}-${name}.html" 2>>"$OUT_DIR/sweep-errors.log" &&
+    echo "ok $name" || echo "FAIL $name"
 }
 {
   echo "=== sweep $STAMP ==="

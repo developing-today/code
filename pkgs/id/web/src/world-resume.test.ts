@@ -4,18 +4,12 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 /**
- * #12648 regression tests: browser reconnect resume.
+ * #12648 / #10927 regression tests: browser reconnect continuity.
  *
- * Oracle: the host's resume contract (id-worlds world_session). A
- * resume token names one retained screen baseline; presented at join
- * while the client still holds the exact surface and revision it
- * names, the host answers with a catch-up patch whose
- * base_view_revision is that revision, and the patch applies to that
- * surface. The browser's half of the contract: retain token + surface
- * + revision as one unit across a reconnect, offer the token on
- * rejoin, keep a same-size resize from resetting the host's retained
- * baseline before the patch lands, and drop all three together when
- * the viewport actually changes.
+ * Oracle: resume patches are safe only when the client can prove it still
+ * holds the host's exact history. The offline store has no durable journal
+ * identity, so after a disconnect the browser asks for an authoritative
+ * snapshot and full view instead of offering its old cursor or resume token.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -129,7 +123,7 @@ describe("world page reconnect resume (#12648)", () => {
     document.body.innerHTML = "";
   });
 
-  it("retains the resume unit across a reconnect and applies the catch-up patch", async () => {
+  it("re-snapshots after a disconnect instead of applying a patch from an unproven history", async () => {
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
     q<HTMLButtonElement>("[data-world-join]").click();
     const first = FakeSocket.all.at(-1) as FakeSocket;
@@ -155,28 +149,19 @@ describe("world page reconnect resume (#12648)", () => {
     const resumed = FakeSocket.all.at(-1) as FakeSocket;
     resumed.open();
 
-    // The rejoin offers the retained token, and no resize has reset
-    // the host's retained baseline before its answer.
-    expect(resumed.sent("join")[0]).toMatchObject({ resume_token: "resume-1" });
-    expect(resumed.sent("resize")).toHaveLength(0);
+    // A disconnect invalidates the proof of continuity. The browser
+    // requests a fresh snapshot, omits the retained token, and establishes
+    // the viewport so the host sends a complete view.
+    expect(resumed.sent("join")[0]).toMatchObject({ after: null });
+    expect(resumed.sent("join")[0]?.resume_token).toBeUndefined();
+    expect(resumed.sent("resize")).toHaveLength(1);
 
-    // The host's catch-up patch applies to the retained surface with
-    // no intervening resize or full view.
     resumed.deliver({
-      type: "view",
-      sequence: 3,
-      patch: {
-        version: 1,
-        width: 1,
-        height: 1,
-        runs: [{ start: 0, cells: [{ symbol: "B", fg: 7, bg: 0, bold: false, columns: 1 }] }],
-      },
-      base_view_revision: 1,
-      view_revision: 2,
-      resume_token: "resume-2",
+      type: "snapshot",
+      snapshot: { world_id: "lobby", current_sequence: 4, participants: [] },
     });
-    expect(viewText()).toContain("B");
-    expect(resumed.sent("resize")).toHaveLength(0);
+    resumed.deliver({ type: "view", sequence: 4, data: "authoritative view", view_revision: 2 });
+    expect(viewText()).toContain("authoritative view");
   });
 
   it("drops the resume unit when the viewport actually changes", async () => {

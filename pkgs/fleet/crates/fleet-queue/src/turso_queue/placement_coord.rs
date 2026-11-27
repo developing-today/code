@@ -1537,12 +1537,7 @@ mod placement_coord_tests {
         use std::sync::Barrier;
         let t = fake_backend();
         for i in 0..19 {
-            let out = claim(
-                &t,
-                &format!("race-seed-{i:02}"),
-                "fleet-org",
-                json!({}),
-            );
+            let out = claim(&t, &format!("race-seed-{i:02}"), "fleet-org", json!({}));
             assert_eq!(out["status"], "claimed", "{i}: {out}");
         }
         let barrier = Barrier::new(2);
@@ -1570,7 +1565,11 @@ mod placement_coord_tests {
         } else {
             "race-b"
         };
-        let loser = if winner == "race-a" { "race-b" } else { "race-a" };
+        let loser = if winner == "race-a" {
+            "race-b"
+        } else {
+            "race-a"
+        };
         let w = verb_placement_claim_status(&t, &json!({"handle": winner}));
         assert_eq!(w["found"], true, "{w}");
         assert_eq!(w["claim"]["state"], "claimed", "{w}");

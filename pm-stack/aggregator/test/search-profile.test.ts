@@ -21,14 +21,9 @@
 // command and compare.
 
 import { describe, expect, test } from "bun:test";
-import type { RefKey } from "../src/model.ts";
+import type { BoardItem, GhItem, RefKey, RoadmapRow } from "../src/model.ts";
 import { searchWork } from "../src/search-view.ts";
-import {
-  median,
-  parseProfileArgs,
-  summarize,
-  type MeasureRecord,
-} from "../scripts/search-profile.ts";
+import { median, parseProfileArgs, summarize, type MeasureRecord } from "../scripts/search-profile.ts";
 
 describe("search-profile args — strict contract", () => {
   test("requires --query", () => {
@@ -60,7 +55,30 @@ describe("search-profile args — strict contract", () => {
 
   test("defaults: spawn mode, 1 cold, 3 warm", () => {
     const opts = parseProfileArgs(["--query", "fleet"]);
-    expect(opts).toMatchObject({ query: "fleet", mode: "spawn", coldRuns: 1, warmRuns: 3, live: false });
+    expect(opts).toMatchObject({
+      query: "fleet",
+      mode: "spawn",
+      coldRuns: 1,
+      warmRuns: 3,
+      live: false,
+      largeRegistryRecords: 0,
+    });
+  });
+
+  test("large-registry mode is explicit and bounded to fixture servers", () => {
+    expect(parseProfileArgs(["--query", "fleet", "--large-registry", "28479"]).largeRegistryRecords).toBe(28_479);
+    const exit = process.exit;
+    (process as { exit: (c: number) => void }).exit = ((c: number) => {
+      throw new Error(`exit:${c}`);
+    }) as typeof process.exit;
+    try {
+      expect(() => parseProfileArgs(["--query", "fleet", "--live", "--large-registry", "28479"])).toThrow(
+        "exit:2",
+      );
+      expect(() => parseProfileArgs(["--query", "fleet", "--large-registry", "1e3"])).toThrow("exit:2");
+    } finally {
+      process.exit = exit;
+    }
   });
 });
 
@@ -114,11 +132,16 @@ describe("summarize", () => {
     expect(json.warmMedianElapsedMs).toBeNull();
     expect(summary.renderDeltaMs).toBeNull();
   });
+
+  test("records the explicit fixture corpus size", () => {
+    const summary = summarize("fleet", "spawned-fixtures", [], 28_479);
+    expect(summary.largeRegistryRecords).toBe(28_479);
+  });
 });
 
 describe("searchWork — stable fixture response", () => {
   const ref = "developing-today/code#14060" as RefKey;
-  const board = [
+  const board: BoardItem[] = [
     {
       id: "kaneo:pm-stack/task-9",
       title: "Bound the search read path",
@@ -128,7 +151,7 @@ describe("searchWork — stable fixture response", () => {
       links: [{ ref, relation: "implements" as const }],
     },
   ];
-  const rows = [
+  const rows: RoadmapRow[] = [
     {
       id: 9,
       subject: "grist:program/roadmap/9",
@@ -141,7 +164,22 @@ describe("searchWork — stable fixture response", () => {
       links: [],
     },
   ];
-  const items = new Map([[ref, { ref, kind: "issue", url: "https://example.invalid/i", title: "Search latency", state: "open", labels: [], author: "a", updatedAt: "2026-11-01T00:00:00Z", resolution: "projector" }]] as never);
+  const items = new Map<RefKey, GhItem>([
+    [
+      ref,
+      {
+        ref,
+        kind: "issue",
+        url: "https://example.invalid/i",
+        title: "Search latency",
+        state: "open",
+        labels: [],
+        author: "a",
+        updatedAt: "2026-11-01T00:00:00Z",
+        resolution: "projector",
+      },
+    ],
+  ]);
 
   test("same inputs give byte-identical outputs", () => {
     const a = searchWork(board, rows, items, "search", {});

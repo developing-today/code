@@ -27,8 +27,8 @@
 //! grid the window can actually show.
 
 use bevy::prelude::{
-    App, Color, Commands, Component, Entity, Plugin, Query, Res, Resource, Startup, Text,
-    TextColor, TextSpan, Update, With, World,
+    App, Color, Commands, Component, Entity, Plugin, PositionType, Query, Res, Resource, Startup,
+    Text, TextColor, TextSpan, Update, Val, With, World,
 };
 use bevy::text::{FontSize, LineHeight, TextFont};
 use id::world_presentation::WorldSurface;
@@ -332,16 +332,32 @@ impl Plugin for ShellRenderPlugin {
     }
 }
 
-fn spawn_root(mut commands: Commands<'_, '_>) {
-    commands.spawn((
-        ScreenRoot,
-        bevy::prelude::Node {
-            flex_direction: bevy::prelude::FlexDirection::Column,
-            width: bevy::prelude::Val::Percent(100.0),
-            height: bevy::prelude::Val::Percent(100.0),
-            ..Default::default()
-        },
-    ));
+pub(crate) fn screen_root_node(directory_layout: bool) -> bevy::prelude::Node {
+    let (left, width) = if directory_layout {
+        (
+            Val::Percent(crate::directory::DIRECTORY_PANEL_PERCENT),
+            Val::Percent(100.0 - crate::directory::DIRECTORY_PANEL_PERCENT),
+        )
+    } else {
+        (Val::Percent(0.0), Val::Percent(100.0))
+    };
+    bevy::prelude::Node {
+        position_type: PositionType::Absolute,
+        left,
+        top: Val::Percent(0.0),
+        flex_direction: bevy::prelude::FlexDirection::Column,
+        width,
+        height: Val::Percent(100.0),
+        overflow: bevy::prelude::Overflow::clip(),
+        ..Default::default()
+    }
+}
+
+fn spawn_root(
+    mut commands: Commands<'_, '_>,
+    directory_layout: Option<Res<'_, crate::directory::DirectoryPanelLayout>>,
+) {
+    commands.spawn((ScreenRoot, screen_root_node(directory_layout.is_some())));
 }
 
 /// Rebuild the row nodes when the presented view's sequence changes.

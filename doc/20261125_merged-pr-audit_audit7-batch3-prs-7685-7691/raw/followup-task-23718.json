@@ -44,10 +44,7 @@
         "cd pkgs/id/web && bun run test passes through the required CI/Fleet venue and the existing suite registration covers added tests."
       ],
       "scope": {
-        "include": [
-          "pkgs/id/web client documents list/read panel",
-          "pkgs/id/web contract tests"
-        ],
+        "include": ["pkgs/id/web client documents list/read panel", "pkgs/id/web contract tests"],
         "exclude": [
           "Server session frames and SSH rendering already delivered by PR #7678",
           "Document publishing or writes",
@@ -74,13 +71,7 @@
         "checked_at": "2026-11-25T07:45:00Z",
         "basis": "No later merged PR or live queue task for the documents web panel was found; #3762 is closed and #14923 tracks only its web remainder."
       },
-      "labels": [
-        "app/id",
-        "effort/s",
-        "priority/normal",
-        "queue/queued",
-        "task/fix"
-      ]
+      "labels": ["app/id", "effort/s", "priority/normal", "queue/queued", "task/fix"]
     },
     "blocked_deps": null,
     "dep_next_recheck_at": null,

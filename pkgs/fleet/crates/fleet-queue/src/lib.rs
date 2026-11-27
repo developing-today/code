@@ -49,9 +49,9 @@ pub const BATCH_CLAIM_MAX: i64 = 5;
 pub const BUNDLE_CLAIM_CAP: i64 = 10;
 
 pub mod backoff;
+pub mod bin_args;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub mod bind_guard;
-pub mod bin_args;
 pub mod creation_outbox;
 #[cfg(any(feature = "client", feature = "queue-broker"))]
 pub mod disposition;

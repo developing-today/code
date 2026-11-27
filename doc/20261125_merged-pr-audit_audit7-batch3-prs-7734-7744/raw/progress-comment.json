@@ -1,1 +1,47 @@
-{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157350547","html_url":"https://github.com/developing-today/code/issues/13879#issuecomment-7157350547","issue_url":"https://api.github.com/repos/developing-today/code/issues/13879","id":7157350547,"node_id":"IC_kwDOJWP4788AAAABqpyAkw","user":{"login":"dezren39","id":11225574,"node_id":"MDQ6VXNlcjExMjI1NTc0","avatar_url":"https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4","gravatar_id":"","url":"https://api.github.com/users/dezren39","html_url":"https://github.com/dezren39","followers_url":"https://api.github.com/users/dezren39/followers","following_url":"https://api.github.com/users/dezren39/following{/other_user}","gists_url":"https://api.github.com/users/dezren39/gists{/gist_id}","starred_url":"https://api.github.com/users/dezren39/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/dezren39/subscriptions","organizations_url":"https://api.github.com/users/dezren39/orgs","repos_url":"https://api.github.com/users/dezren39/repos","events_url":"https://api.github.com/users/dezren39/events{/privacy}","received_events_url":"https://api.github.com/users/dezren39/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2026-11-25T08:41:29Z","updated_at":"2026-11-25T08:41:29Z","author_association":"MEMBER","body":"AUDIT-7 Lane 4 batch 3 progress — 61 valid PRs audited, 4 invalid payload references (2026-11-25)\n\nThis slice processed #7734, #7737, #7738, #7739 and #7744. Outcomes:\n\n- #7734 → #787: `audit:partial`. Slice C landed; later #12926 and #13267 deliver D/E/F, but #787 still lacks the real-terminal supported/unsupported smoke evidence. Closure correction pointer: #13871 comment 7157311605; evidence link on PR #7734 comment 7157315412.\n- #7737 → #7736: `audit:complete` (roadmap-annotation surrogate-safe cap).\n- #7738 → #5892: `audit:complete` (per-interface DoS catalogue).\n- #7739 → #5803: `audit:complete` (foreign-store adapter contract).\n- #7744 → #7741: `audit:complete` (three diagnostic text caps and regression tests).\n\nThe PR bodies, diffs, comments, source issue/comment captures, later PR evidence, closure timeline, verdicts and label readbacks are in [the continuation ledger](https://github.com/developing-today/code/blob/audit7-batch3-five-20261125/doc/20261125_merged-pr-audit_audit7-batch3-prs-7734-7744/20261125_merged-pr-audit_audit7-batch3-prs-7734-7744.md), on the existing docs PR #14847.\n\nCumulative count: 61 valid PRs audited from 65 payload entries; four payload identifiers (#7667, #7668, #7693, #7694) are issues rather than PRs; 185 identifiers remain, next #7745. Earlier count corrections are recorded in comments 7156848591 and 7156775726.","reactions":{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157350547/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null,"minimized":null,"pin":null}
+{
+  "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157350547",
+  "html_url": "https://github.com/developing-today/code/issues/13879#issuecomment-7157350547",
+  "issue_url": "https://api.github.com/repos/developing-today/code/issues/13879",
+  "id": 7157350547,
+  "node_id": "IC_kwDOJWP4788AAAABqpyAkw",
+  "user": {
+    "login": "dezren39",
+    "id": 11225574,
+    "node_id": "MDQ6VXNlcjExMjI1NTc0",
+    "avatar_url": "https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/dezren39",
+    "html_url": "https://github.com/dezren39",
+    "followers_url": "https://api.github.com/users/dezren39/followers",
+    "following_url": "https://api.github.com/users/dezren39/following{/other_user}",
+    "gists_url": "https://api.github.com/users/dezren39/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/dezren39/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/dezren39/subscriptions",
+    "organizations_url": "https://api.github.com/users/dezren39/orgs",
+    "repos_url": "https://api.github.com/users/dezren39/repos",
+    "events_url": "https://api.github.com/users/dezren39/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/dezren39/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "created_at": "2026-11-25T08:41:29Z",
+  "updated_at": "2026-11-25T08:41:29Z",
+  "author_association": "MEMBER",
+  "body": "AUDIT-7 Lane 4 batch 3 progress — 61 valid PRs audited, 4 invalid payload references (2026-11-25)\n\nThis slice processed #7734, #7737, #7738, #7739 and #7744. Outcomes:\n\n- #7734 → #787: `audit:partial`. Slice C landed; later #12926 and #13267 deliver D/E/F, but #787 still lacks the real-terminal supported/unsupported smoke evidence. Closure correction pointer: #13871 comment 7157311605; evidence link on PR #7734 comment 7157315412.\n- #7737 → #7736: `audit:complete` (roadmap-annotation surrogate-safe cap).\n- #7738 → #5892: `audit:complete` (per-interface DoS catalogue).\n- #7739 → #5803: `audit:complete` (foreign-store adapter contract).\n- #7744 → #7741: `audit:complete` (three diagnostic text caps and regression tests).\n\nThe PR bodies, diffs, comments, source issue/comment captures, later PR evidence, closure timeline, verdicts and label readbacks are in [the continuation ledger](https://github.com/developing-today/code/blob/audit7-batch3-five-20261125/doc/20261125_merged-pr-audit_audit7-batch3-prs-7734-7744/20261125_merged-pr-audit_audit7-batch3-prs-7734-7744.md), on the existing docs PR #14847.\n\nCumulative count: 61 valid PRs audited from 65 payload entries; four payload identifiers (#7667, #7668, #7693, #7694) are issues rather than PRs; 185 identifiers remain, next #7745. Earlier count corrections are recorded in comments 7156848591 and 7156775726.",
+  "reactions": {
+    "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157350547/reactions",
+    "total_count": 0,
+    "+1": 0,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "performed_via_github_app": null,
+  "minimized": null,
+  "pin": null
+}

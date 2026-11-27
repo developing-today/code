@@ -1,12 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // #1180 mobile audit (390x844): control-class tap targets carry a 40px
 // floor in the stylesheet. Static assertions, same style as nav.test.ts —
 // the rendered measurements live on issue #1180.
 const SRC = join(import.meta.dir, "..", "src");
-const renderSource = readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
+// The render layer is split across render.ts + render-*.ts (#13051); scan
+// the whole module set — the same code the single render.ts used to hold.
+const renderSource =
+  readFileSync(join(SRC, "ui.css"), "utf8") +
+  "\n" +
+  readdirSync(SRC)
+    .filter((f) => f.startsWith("render") && f.endsWith(".ts"))
+    .sort()
+    .map((f) => readFileSync(join(SRC, f), "utf8"))
+    .join("\n");
 
 function cssRule(selector: string): string {
   const start = renderSource.indexOf(`\n${selector} {`);

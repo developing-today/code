@@ -1,10 +1,7 @@
 {
   "column": "Done",
   "rule": "R1",
-  "reason_codes": [
-    "follow_up_open_elsewhere",
-    "verified_terminal_receipt"
-  ],
+  "reason_codes": ["follow_up_open_elsewhere", "verified_terminal_receipt"],
   "conflicts": [],
   "stale_facets": []
 }

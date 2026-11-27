@@ -998,7 +998,9 @@ async function handleAgentWake(req: Request): Promise<Response> {
     `A Message Bridge wake arrived for Fleet agent ${wake.agent} (message ids ${wake.messageIds.join(", ")}).\n\n` +
     `Run \`fleet agent next --agent ${wake.agent}\` once now. If it returns a task, follow its packet and every command in its \`then\` list. If it returns no work, report that and stop.`;
   void opencode.sendPrompt(session.id, prompt).catch((error) => {
-    console.error(`[dispatch-wake] prompt failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[dispatch-wake] prompt failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   });
   return json(202, { agent: wake.agent, session_id: session.id, status: "started" });
 }

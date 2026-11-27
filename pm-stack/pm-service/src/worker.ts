@@ -58,7 +58,10 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
       store: env.BROWSER_OAUTH.sessions,
       audit: env.BROWSER_OAUTH.audit,
     });
-    return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": cookie, "cache-control": "no-store" } });
+    return new Response(null, {
+      status: 303,
+      headers: { location: "/login", "set-cookie": cookie, "cache-control": "no-store" },
+    });
   }
   if (env.BROWSER_OAUTH && path !== "/login" && path !== "/oauth/callback") {
     const auth = await authenticateBrowserSession(req, {
@@ -75,8 +78,11 @@ export async function handlePmServiceFetch(req: Request, env: PmServiceEnv): Pro
   if (boardMatch && req.method === "GET") {
     if (!env.BOARD_DO) return json({ error: "BoardDO is not configured" }, 503);
     let boardId: string;
-    try { boardId = decodeURIComponent(boardMatch[1] as string); }
-    catch { return json({ error: "malformed board id" }, 400); }
+    try {
+      boardId = decodeURIComponent(boardMatch[1] as string);
+    } catch {
+      return json({ error: "malformed board id" }, 400);
+    }
     return env.BOARD_DO.get(env.BOARD_DO.idFromName(boardId)).fetch(
       new Request(`https://board-do/subscribe${new URL(req.url).search}`, req),
     );

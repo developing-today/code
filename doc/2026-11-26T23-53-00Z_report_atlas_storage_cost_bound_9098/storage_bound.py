@@ -45,14 +45,20 @@ def calculate_storage_bound(
     if not isinstance(monolith, dict) or not isinstance(tiers, list):
         raise ValueError("measurements must contain monolith and tier_stores")
     monolith_bytes = monolith.get("raw_text_bytes")
-    if isinstance(monolith_bytes, bool) or not isinstance(monolith_bytes, int) or monolith_bytes < 0:
+    if (
+        isinstance(monolith_bytes, bool)
+        or not isinstance(monolith_bytes, int)
+        or monolith_bytes < 0
+    ):
         raise ValueError("monolith.raw_text_bytes must be a non-negative integer")
     if r2_standard_rate_usd_per_gb_month < 0:
         raise ValueError("R2 storage rate must be non-negative")
     if r2_free_gb_month_available < 0:
         raise ValueError("R2 free allowance must be non-negative")
     if turso_storage_used_gb_issue_snapshot < 0 or turso_storage_included_gb <= 0:
-        raise ValueError("Turso storage values must be non-negative and included storage positive")
+        raise ValueError(
+            "Turso storage values must be non-negative and included storage positive"
+        )
 
     topic_text_bytes = _sum_bytes(tiers, "chunk_text")
     content_text_bytes = _sum_bytes(tiers, "messages")
@@ -61,7 +67,9 @@ def calculate_storage_bound(
     billable_gb_if_free_exhausted = _ceil_units(decimal_gb, r2_billable_unit_gb)
     paid_gb_after_free = max(Decimal(0), decimal_gb - r2_free_gb_month_available)
     billable_paid_gb = _ceil_units(paid_gb_after_free, r2_billable_unit_gb)
-    turso_after_offload = max(Decimal(0), turso_storage_used_gb_issue_snapshot - decimal_gb)
+    turso_after_offload = max(
+        Decimal(0), turso_storage_used_gb_issue_snapshot - decimal_gb
+    )
 
     return {
         "measurement_scope": measurements.get("measurement_scope", "unspecified"),
@@ -108,15 +116,24 @@ def main(argv: list[str]) -> int:
     here = Path(__file__).resolve().parent
     repo = here.parents[1]
     measurements = json.loads(
-        (repo / "doc/2026-11-25T11-33-10Z_report_atlas_embed_storage_composition_9098/measurements.json").read_text()
+        (
+            repo
+            / "doc/2026-11-25T11-33-10Z_report_atlas_embed_storage_composition_9098/measurements.json"
+        ).read_text()
     )
     assumptions = json.loads((here / "cost_inputs.json").read_text())
     report = calculate_storage_bound(
         measurements,
-        r2_standard_rate_usd_per_gb_month=Decimal(assumptions["r2_standard_rate_usd_per_gb_month"]),
+        r2_standard_rate_usd_per_gb_month=Decimal(
+            assumptions["r2_standard_rate_usd_per_gb_month"]
+        ),
         r2_billable_unit_gb=Decimal(assumptions["r2_billable_unit_gb"]),
-        r2_free_gb_month_available=Decimal(assumptions["r2_free_gb_month_available_scenario"]),
-        turso_storage_used_gb_issue_snapshot=Decimal(assumptions["turso_storage_used_gb_issue_snapshot"]),
+        r2_free_gb_month_available=Decimal(
+            assumptions["r2_free_gb_month_available_scenario"]
+        ),
+        turso_storage_used_gb_issue_snapshot=Decimal(
+            assumptions["turso_storage_used_gb_issue_snapshot"]
+        ),
         turso_storage_included_gb=Decimal(assumptions["turso_storage_included_gb"]),
         turso_overages_enabled=assumptions["turso_storage_overages_enabled"],
     )

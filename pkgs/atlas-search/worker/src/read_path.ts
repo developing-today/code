@@ -23,12 +23,7 @@
  * module is the decision primitive the hydration path will call;
  * only Class B (result sets) is wired into executeSearch so far.
  */
-import {
-  evaluateFreshness,
-  readTenantWatermark,
-  type DataClass,
-  type FreshnessReason,
-} from "./freshness";
+import { evaluateFreshness, readTenantWatermark, type DataClass, type FreshnessReason } from "./freshness";
 import type { HotCacheEntry } from "./hot_cache";
 
 /**
@@ -112,7 +107,9 @@ export async function tryServeFromHotCache(args: HotCacheReadArgs): Promise<HotC
   // invalidation event is known) evaluate without extra reads; the
   // watermark read below is skipped entirely for Class A reads.
   const watermark =
-    dataClass === "A" ? { status: "ok" as const, currentWatermark: entry.sourceWatermark } : await readTenantWatermark(source, tenantId);
+    dataClass === "A"
+      ? { status: "ok" as const, currentWatermark: entry.sourceWatermark }
+      : await readTenantWatermark(source, tenantId);
   const verdict = evaluateFreshness(
     {
       dataClass,

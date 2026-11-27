@@ -36,29 +36,21 @@
 import { createHmac } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import {
-  listAnswers,
-  needsDrewAnswerHandle,
-  type NeedsDrewQuestion,
-} from "./needs-drew.ts";
+import { listAnswers, needsDrewAnswerHandle, type NeedsDrewQuestion } from "./needs-drew.ts";
 import { readBrokerToken } from "./queue.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 
 /** fleet-secrets name of the applier HMAC key (design §2; the broker
  *  default is `pm-aggregator.actions-exec-apply-key`, overridable via
  *  `FLEET_ACTIONS_EXEC_APPLY_KEY_NAME`). */
-export const APPLY_KEY_SECRET_NAME_DEFAULT =
-  "pm-aggregator.actions-exec-apply-key";
+export const APPLY_KEY_SECRET_NAME_DEFAULT = "pm-aggregator.actions-exec-apply-key";
 
-export function applyKeySecretName(
-  env: Record<string, string | undefined> = process.env,
-): string {
+export function applyKeySecretName(env: Record<string, string | undefined> = process.env): string {
   const v = env.FLEET_ACTIONS_EXEC_APPLY_KEY_NAME?.trim();
   return v ? v : APPLY_KEY_SECRET_NAME_DEFAULT;
 }
 
-export type ApplyState =
-  "pending" | "applied" | "superseded" | "rejected" | "failed";
+export type ApplyState = "pending" | "applied" | "superseded" | "rejected" | "failed";
 
 export interface ApplyRecord {
   answerId: string;
@@ -82,12 +74,7 @@ interface ApplyFileShape {
 
 /** Canonical signed message — byte-identical to the broker's
  *  `signed_decide_message` (S1): `handle|approve|answer_id|answered_at`. */
-export function signedDecideMessage(
-  handle: string,
-  approve: boolean,
-  answerId: string,
-  answeredAt: string,
-): string {
+export function signedDecideMessage(handle: string, approve: boolean, answerId: string, answeredAt: string): string {
   return `${handle}|${approve ? "true" : "false"}|${answerId}|${answeredAt}`;
 }
 
@@ -114,12 +101,7 @@ export function toHouseIso(atMs: number): string {
  *  not an approval — the caller records them `rejected`. */
 export function approveFromAnswer(question: NeedsDrewQuestion): boolean | null {
   const optionId = question.answer?.optionId?.trim().toLowerCase() ?? "";
-  if (
-    optionId === "approve" ||
-    optionId === "approve-now" ||
-    optionId === "yes"
-  )
-    return true;
+  if (optionId === "approve" || optionId === "approve-now" || optionId === "yes") return true;
   if (optionId === "deny" || optionId === "no") return false;
   // Free-text answers never auto-apply: a tap carries an optionId.
   return null;
@@ -138,16 +120,9 @@ export function answerIdFor(question: NeedsDrewQuestion): string | null {
 async function readApplyRecords(file: string): Promise<ApplyRecord[]> {
   try {
     const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      Array.isArray((parsed as ApplyFileShape).records)
-    ) {
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as ApplyFileShape).records)) {
       return (parsed as ApplyFileShape).records.filter(
-        (r): r is ApplyRecord =>
-          !!r &&
-          typeof r === "object" &&
-          typeof (r as ApplyRecord).answerId === "string",
+        (r): r is ApplyRecord => !!r && typeof r === "object" && typeof (r as ApplyRecord).answerId === "string",
       );
     }
     return [];
@@ -169,10 +144,7 @@ function serializeApply<T>(file: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function writeApplyRecords(
-  file: string,
-  records: ApplyRecord[],
-): Promise<void> {
+async function writeApplyRecords(file: string, records: ApplyRecord[]): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${++applyWriteSeq}`;
   const data: ApplyFileShape = { version: 1, records };
@@ -222,23 +194,14 @@ function classifyDecideError(error: string): {
   // No pending request: settled sessions supersede; anything else is a
   // rejection of this answer (nothing to decide).
   if (msg.includes("no extension request is pending")) {
-    if (
-      msg.includes("settled") ||
-      msg.includes("closed") ||
-      msg.includes("expired")
-    ) {
+    if (msg.includes("settled") || msg.includes("closed") || msg.includes("expired")) {
       return { state: "superseded", note: error };
     }
     return { state: "rejected", note: error };
   }
   // Auth refusals (bad/expired sig) are terminal: retrying the same
   // envelope cannot succeed.
-  if (
-    msg.includes("signature") ||
-    msg.includes("replay") ||
-    msg.includes("window") ||
-    msg.includes("sig")
-  ) {
+  if (msg.includes("signature") || msg.includes("replay") || msg.includes("window") || msg.includes("sig")) {
     return { state: "rejected", note: error };
   }
   return { state: "failed", note: error };
@@ -307,8 +270,7 @@ export async function postSignedDecide(
     };
   }
   if (!res.ok || json.ok === false || typeof json.error === "string") {
-    const exit =
-      typeof json.exit === "number" ? json.exit : res.status >= 500 ? 3 : 4;
+    const exit = typeof json.exit === "number" ? json.exit : res.status >= 500 ? 3 : 4;
     return {
       ok: false,
       exit,
@@ -330,9 +292,7 @@ export async function postSignedDecide(
  *  sign each unapplied one, POST the decide verb, run the answer_id
  *  state machine. Idempotent: applied/superseded/rejected rows are
  *  never re-sent; a second answer for the same handle is superseded. */
-export async function runApplierTick(
-  deps: ApplierDeps,
-): Promise<ApplierTickResult> {
+export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResult> {
   const now = deps.now ?? (() => Date.now());
   const result: ApplierTickResult = {
     checked: 0,
@@ -349,13 +309,9 @@ export async function runApplierTick(
 
   const records = await readApplyRecords(deps.applyFile);
   const byAnswer = new Map(records.map((r) => [r.answerId, r]));
-  const appliedHandles = new Set(
-    records.filter((r) => r.state === "applied").map((r) => r.handle),
-  );
+  const appliedHandles = new Set(records.filter((r) => r.state === "applied").map((r) => r.handle));
 
-  const token = await (deps.readTokenFn ?? readBrokerToken)(
-    deps.brokerTokenFile,
-  );
+  const token = await (deps.readTokenFn ?? readBrokerToken)(deps.brokerTokenFile);
   if (!token) {
     result.errors.push("queue-broker token unavailable; answers stay pending");
     return result;
@@ -363,15 +319,11 @@ export async function runApplierTick(
   const keyName = deps.keyName ?? applyKeySecretName();
   const key = await (deps.resolveKeyFn ?? resolveBwsSecret)(keyName);
   if (!key) {
-    result.errors.push(
-      `applier signing key ${keyName} unavailable; answers stay pending`,
-    );
+    result.errors.push(`applier signing key ${keyName} unavailable; answers stay pending`);
     return result;
   }
 
-  const decide: DecideFn =
-    deps.decideFn ??
-    ((body) => postSignedDecide(deps.brokerUrl, token, body, deps.fetchImpl));
+  const decide: DecideFn = deps.decideFn ?? ((body) => postSignedDecide(deps.brokerUrl, token, body, deps.fetchImpl));
 
   const pending: ApplyRecord[] = [];
   for (const q of brokered) {
@@ -380,8 +332,7 @@ export async function runApplierTick(
     const answerId = answerIdFor(q);
     if (!answerId) continue;
     const existing = byAnswer.get(answerId);
-    if (existing && existing.state !== "pending" && existing.state !== "failed")
-      continue;
+    if (existing && existing.state !== "pending" && existing.state !== "failed") continue;
     // Double-tap guard: the first applied answer for a handle wins; a
     // second answer for the same handle (different answer_id) is
     // recorded superseded and never sent.
@@ -528,10 +479,7 @@ export function requestActionsExecApplyTick(): void {
 /** Start the applier loop (live mode only; fail-soft per pass). The
  *  periodic pass also catches answers that arrive by another route
  *  (the #13469 edge drain) and retries `failed` rows. */
-export function startActionsExecApplier(
-  deps: Omit<ApplierDeps, "decideFn" | "fetchImpl">,
-  intervalMs = 60_000,
-): void {
+export function startActionsExecApplier(deps: Omit<ApplierDeps, "decideFn" | "fetchImpl">, intervalMs = 60_000): void {
   const pass = async (): Promise<void> => {
     if (applierRunning) return;
     applierRunning = true;
@@ -539,9 +487,7 @@ export function startActionsExecApplier(
       const r = await runApplierTick(deps);
       for (const e of r.errors) console.error(`actions-exec applier: ${e}`);
     } catch (err) {
-      console.error(
-        `actions-exec applier: pass failed (${err instanceof Error ? err.message : "error"})`,
-      );
+      console.error(`actions-exec applier: pass failed (${err instanceof Error ? err.message : "error"})`);
     } finally {
       applierRunning = false;
     }

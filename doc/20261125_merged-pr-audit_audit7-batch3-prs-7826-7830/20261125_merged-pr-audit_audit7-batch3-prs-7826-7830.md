@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7826 | #5780 | `audit:complete` | Delivers the native Android client design across custody, offline sync, shell/client surfaces, phone capability providers and build shape; closes the design issue and names implementation follow-on #7938. |
-| #7827 | #7823 | `audit:complete` | Validates `/api/upload` response shape at the fetch boundary, rejects malformed payloads through the upload-failure path, and adds the malformed-response regression suite requested. |
-| #7828 | #5846 | `audit:complete` | Records the Evernote/ENEX importer design, including mapping/loss, deduplication, links, manifest and test corpus, while keeping implementation and sibling design choices out of scope. |
-| #7829 | #7093 | `audit:complete` | Fixes the yard reaper's live `--apply` NameError and adds end-to-end apply tests. Together with #7820, it satisfies the reaper specification and is the final completion PR for #7093. |
-| #7830 | — | `audit:no-issue` | No originating issue/task was linked at merge. It follows the direct order to declare the third OpenCode Go account and equal-weight unhooked plan pools without adding Mistral API routes; retroactive record #10079 documents the work. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                   |
+| -------------: | -------------: | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7826 |          #5780 | `audit:complete` | Delivers the native Android client design across custody, offline sync, shell/client surfaces, phone capability providers and build shape; closes the design issue and names implementation follow-on #7938.                              |
+|          #7827 |          #7823 | `audit:complete` | Validates `/api/upload` response shape at the fetch boundary, rejects malformed payloads through the upload-failure path, and adds the malformed-response regression suite requested.                                                     |
+|          #7828 |          #5846 | `audit:complete` | Records the Evernote/ENEX importer design, including mapping/loss, deduplication, links, manifest and test corpus, while keeping implementation and sibling design choices out of scope.                                                  |
+|          #7829 |          #7093 | `audit:complete` | Fixes the yard reaper's live `--apply` NameError and adds end-to-end apply tests. Together with #7820, it satisfies the reaper specification and is the final completion PR for #7093.                                                    |
+|          #7830 |              — | `audit:no-issue` | No originating issue/task was linked at merge. It follows the direct order to declare the third OpenCode Go account and equal-weight unhooked plan pools without adding Mistral API routes; retroactive record #10079 documents the work. |
 
 ## Slice state
 

@@ -1,1 +1,38 @@
-[{"sha":"5fe6c4f71ba3938876ad93ccdbefe7a32f8a8d41","filename":"pm-stack/aggregator/src/assets/app.css","status":"modified","additions":6,"deletions":0,"changes":6,"blob_url":"https://github.com/developing-today/code/blob/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fassets%2Fapp.css","raw_url":"https://github.com/developing-today/code/raw/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fassets%2Fapp.css","contents_url":"https://api.github.com/repos/developing-today/code/contents/pm-stack%2Faggregator%2Fsrc%2Fassets%2Fapp.css?ref=2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54","patch":"@@ -4323,6 +4323,12 @@ a {\n     max-width: 100%;\n     overflow-wrap: anywhere;\n   }\n+  .item-session-records .session-record-line .badge {\n+    box-sizing: border-box;\n+    max-width: 100%;\n+    white-space: normal;\n+    overflow-wrap: anywhere;\n+  }\n }\n .badge {\n   display: inline-block;"},{"sha":"79cb2d245f1a39fe8e257204bda09e992a224902","filename":"pm-stack/aggregator/src/ui.css","status":"modified","additions":1,"deletions":0,"changes":1,"blob_url":"https://github.com/developing-today/code/blob/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fui.css","raw_url":"https://github.com/developing-today/code/raw/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fui.css","contents_url":"https://api.github.com/repos/developing-today/code/contents/pm-stack%2Faggregator%2Fsrc%2Fui.css?ref=2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54","patch":"@@ -43,6 +43,7 @@ a { color: #58a6ff; }\n   .attention-card-header .badge { white-space: normal; }\n   .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }\n   .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }\n+  .item-session-records .session-record-line .badge { box-sizing: border-box; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }\n }\n .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }\n .badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }"},{"sha":"344f485bb3c1927dadc3cf57ea73698a854de927","filename":"pm-stack/aggregator/test/mobile-targets.test.ts","status":"modified","additions":2,"deletions":0,"changes":2,"blob_url":"https://github.com/developing-today/code/blob/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Ftest%2Fmobile-targets.test.ts","raw_url":"https://github.com/developing-today/code/raw/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Ftest%2Fmobile-targets.test.ts","contents_url":"https://api.github.com/repos/developing-today/code/contents/pm-stack%2Faggregator%2Ftest%2Fmobile-targets.test.ts?ref=2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54","patch":"@@ -51,6 +51,8 @@ describe(\"tap targets are at least 40px tall (#1180)\", () => {\n     expect(renderSource).toMatch(/\\.attention-card-header > strong \\{[^}]*min-width: 0;/);\n     expect(renderSource).toMatch(/\\.item-session-records > \\.session-record-line \\{[^}]*max-width: 100%;/);\n     expect(renderSource).toMatch(/\\.item-session-records \\.session-record-meta \\{[^}]*overflow-wrap: anywhere;/);\n+    expect(renderSource).toMatch(/\\.item-session-records \\.session-record-line \\.badge \\{[^}]*white-space: normal;/);\n+    expect(renderSource).toMatch(/\\.item-session-records \\.session-record-line \\.badge \\{[^}]*overflow-wrap: anywhere;/);\n     expect(renderSource).toContain('<div class=\"attention-card-header\">');\n     expect(renderSource).toContain('<div class=\"item-session-records\">');\n   });"}]
+[
+  {
+    "sha": "5fe6c4f71ba3938876ad93ccdbefe7a32f8a8d41",
+    "filename": "pm-stack/aggregator/src/assets/app.css",
+    "status": "modified",
+    "additions": 6,
+    "deletions": 0,
+    "changes": 6,
+    "blob_url": "https://github.com/developing-today/code/blob/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fassets%2Fapp.css",
+    "raw_url": "https://github.com/developing-today/code/raw/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fassets%2Fapp.css",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pm-stack%2Faggregator%2Fsrc%2Fassets%2Fapp.css?ref=2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54",
+    "patch": "@@ -4323,6 +4323,12 @@ a {\n     max-width: 100%;\n     overflow-wrap: anywhere;\n   }\n+  .item-session-records .session-record-line .badge {\n+    box-sizing: border-box;\n+    max-width: 100%;\n+    white-space: normal;\n+    overflow-wrap: anywhere;\n+  }\n }\n .badge {\n   display: inline-block;"
+  },
+  {
+    "sha": "79cb2d245f1a39fe8e257204bda09e992a224902",
+    "filename": "pm-stack/aggregator/src/ui.css",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 0,
+    "changes": 1,
+    "blob_url": "https://github.com/developing-today/code/blob/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fui.css",
+    "raw_url": "https://github.com/developing-today/code/raw/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Fsrc%2Fui.css",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pm-stack%2Faggregator%2Fsrc%2Fui.css?ref=2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54",
+    "patch": "@@ -43,6 +43,7 @@ a { color: #58a6ff; }\n   .attention-card-header .badge { white-space: normal; }\n   .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }\n   .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }\n+  .item-session-records .session-record-line .badge { box-sizing: border-box; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }\n }\n .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }\n .badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }"
+  },
+  {
+    "sha": "344f485bb3c1927dadc3cf57ea73698a854de927",
+    "filename": "pm-stack/aggregator/test/mobile-targets.test.ts",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 0,
+    "changes": 2,
+    "blob_url": "https://github.com/developing-today/code/blob/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Ftest%2Fmobile-targets.test.ts",
+    "raw_url": "https://github.com/developing-today/code/raw/2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54/pm-stack%2Faggregator%2Ftest%2Fmobile-targets.test.ts",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pm-stack%2Faggregator%2Ftest%2Fmobile-targets.test.ts?ref=2dd57d55ee9f51ea9ab715f56b8a54bf541dbb54",
+    "patch": "@@ -51,6 +51,8 @@ describe(\"tap targets are at least 40px tall (#1180)\", () => {\n     expect(renderSource).toMatch(/\\.attention-card-header > strong \\{[^}]*min-width: 0;/);\n     expect(renderSource).toMatch(/\\.item-session-records > \\.session-record-line \\{[^}]*max-width: 100%;/);\n     expect(renderSource).toMatch(/\\.item-session-records \\.session-record-meta \\{[^}]*overflow-wrap: anywhere;/);\n+    expect(renderSource).toMatch(/\\.item-session-records \\.session-record-line \\.badge \\{[^}]*white-space: normal;/);\n+    expect(renderSource).toMatch(/\\.item-session-records \\.session-record-line \\.badge \\{[^}]*overflow-wrap: anywhere;/);\n     expect(renderSource).toContain('<div class=\"attention-card-header\">');\n     expect(renderSource).toContain('<div class=\"item-session-records\">');\n   });"
+  }
+]

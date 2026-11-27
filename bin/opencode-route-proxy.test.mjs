@@ -8,13 +8,14 @@
 // route_attempt ledger with session_id NULL (the zero-session proof).
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
@@ -423,6 +424,8 @@ const startProxy = async (arg = {}) => {
     typeof arg === "string" ? arg : String(arg.timeoutMs ?? "15000");
   const leafTimeout = typeof arg === "object" ? arg.leafTimeoutMs : undefined;
   const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
+  const systemdActivation =
+    arg && typeof arg === "object" && arg.systemdActivation === true;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
   const leafB = await makeLeaf("LEAF-B", "key-b");
@@ -631,7 +634,20 @@ const startProxy = async (arg = {}) => {
 }`,
   );
 
-  const port = await freePort();
+  let activationSocket;
+  let activationFd;
+  let port;
+  if (systemdActivation) {
+    activationSocket = net.createServer();
+    await new Promise((resolve, reject) => {
+      activationSocket.once("error", reject);
+      activationSocket.listen(0, "127.0.0.1", resolve);
+    });
+    port = activationSocket.address().port;
+    activationFd = activationSocket._handle.fd;
+  } else {
+    port = await freePort();
+  }
   const env = {
     ...process.env,
     HOME: tmp,
@@ -646,11 +662,31 @@ const startProxy = async (arg = {}) => {
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
   };
+  delete env.LISTEN_FDS;
+  delete env.LISTEN_PID;
+  const proxyPath = path.join(binDir, "opencode-route-proxy.mjs");
+  const childArgs = systemdActivation
+    ? [
+        "--input-type=module",
+        "-e",
+        `process.env.LISTEN_PID = String(process.pid); await import(${JSON.stringify(pathToFileURL(proxyPath).href)});`,
+      ]
+    : [proxyPath];
+  if (systemdActivation) env.LISTEN_FDS = "1";
   const child = spawn(
     process.execPath,
-    [path.join(binDir, "opencode-route-proxy.mjs")],
-    { env, stdio: ["ignore", "pipe", "pipe"] },
+    childArgs,
+    {
+      env,
+      stdio: systemdActivation
+        ? ["ignore", "pipe", "pipe", activationFd]
+        : ["ignore", "pipe", "pipe"],
+    },
   );
+  if (systemdActivation) {
+    await once(child, "spawn");
+    await new Promise((resolve) => activationSocket.close(resolve));
+  }
   let log = "";
   child.stdout.on("data", (d) => (log += d));
   child.stderr.on("data", (d) => (log += d));
@@ -681,6 +717,9 @@ const startProxy = async (arg = {}) => {
     });
   const cleanup = async () => {
     child.kill("SIGKILL");
+    if (activationSocket?.listening) {
+      await new Promise((resolve) => activationSocket.close(resolve));
+    }
     leafA.server.close();
     leafB.server.close();
   };
@@ -777,6 +816,23 @@ test("health and model list are served locally", async () => {
     await p.cleanup();
   }
 });
+
+test(
+  "systemd LISTEN_FDS accepts on the inherited fd 3 listener (oracle: /health returns 200)",
+  async () => {
+    const p = await startProxy({ systemdActivation: true });
+    try {
+      const response = await fetch(`${p.base}/health`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        service: "opencode-route-proxy",
+      });
+    } finally {
+      await p.cleanup();
+    }
+  },
+);
 
 test("ordered route serves from the first leaf, messages verbatim", async () => {
   const p = await startProxy();

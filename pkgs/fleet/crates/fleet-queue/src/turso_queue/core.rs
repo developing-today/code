@@ -7,12 +7,13 @@
 
 use super::*;
 
-pub const DEFAULT_TURSO_URL: &str = "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
+pub const DEFAULT_TURSO_URL: &str =
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-    claim_provider, claim_model, claim_variant, claim_session_id, \
+    claim_provider, claim_model, claim_variant, claim_session_id, resume_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
@@ -957,6 +958,10 @@ impl TursoBackend {
             "claim_model",
             "claim_variant",
             "claim_session_id",
+            // #9178 §1 (FDR-0001): the durable resume hint — which
+            // OpenCode session a claim should continue. NULL means
+            // no hint: the existing claim path is unchanged.
+            "resume_session_id",
         ] {
             let has = cols
                 .iter()
@@ -1124,6 +1129,7 @@ pub(crate) const SCHEMA: [&str; 45] = [
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
         max_attempts INTEGER NOT NULL DEFAULT 1000, \
         claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
+        resume_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
         required_budget_minutes INTEGER, \

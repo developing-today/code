@@ -1,1 +1,46 @@
-[{"id":12834267441,"node_id":"LA_kwDOJWP4788AAAAC_PthMQ","url":"https://api.github.com/repos/developing-today/code/labels/kind/bug","name":"kind/bug","color":"ededed","default":false,"description":"Something isn't working (prefixed form of the classic bug label)","archived_at":null,"archived_by":null},{"id":12834286196,"node_id":"LA_kwDOJWP4788AAAAC_PuqdA","url":"https://api.github.com/repos/developing-today/code/labels/source/creator","name":"source/creator","color":"0e8a16","default":false,"description":"Filed by the new-issue-creator job","archived_at":null,"archived_by":null},{"id":12936099439,"node_id":"LA_kwDOJWP4788AAAADAw02bw","url":"https://api.github.com/repos/developing-today/code/labels/app/check-opencode-metered-providers","name":"app/check-opencode-metered-providers","color":"5319e7","default":false,"description":"bin/check-opencode-metered-providers.mjs metered PAYG provider guard","archived_at":null,"archived_by":null},{"id":13198400136,"node_id":"LA_kwDOJWP4788AAAADEq-aiA","url":"https://api.github.com/repos/developing-today/code/labels/audit:complete","name":"audit:complete","color":"0e8a16","default":false,"description":"PR fully implemented spawning issue","archived_at":null,"archived_by":null}]
+[
+  {
+    "id": 12834267441,
+    "node_id": "LA_kwDOJWP4788AAAAC_PthMQ",
+    "url": "https://api.github.com/repos/developing-today/code/labels/kind/bug",
+    "name": "kind/bug",
+    "color": "ededed",
+    "default": false,
+    "description": "Something isn't working (prefixed form of the classic bug label)",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12834286196,
+    "node_id": "LA_kwDOJWP4788AAAAC_PuqdA",
+    "url": "https://api.github.com/repos/developing-today/code/labels/source/creator",
+    "name": "source/creator",
+    "color": "0e8a16",
+    "default": false,
+    "description": "Filed by the new-issue-creator job",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12936099439,
+    "node_id": "LA_kwDOJWP4788AAAADAw02bw",
+    "url": "https://api.github.com/repos/developing-today/code/labels/app/check-opencode-metered-providers",
+    "name": "app/check-opencode-metered-providers",
+    "color": "5319e7",
+    "default": false,
+    "description": "bin/check-opencode-metered-providers.mjs metered PAYG provider guard",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 13198400136,
+    "node_id": "LA_kwDOJWP4788AAAADEq-aiA",
+    "url": "https://api.github.com/repos/developing-today/code/labels/audit:complete",
+    "name": "audit:complete",
+    "color": "0e8a16",
+    "default": false,
+    "description": "PR fully implemented spawning issue",
+    "archived_at": null,
+    "archived_by": null
+  }
+]

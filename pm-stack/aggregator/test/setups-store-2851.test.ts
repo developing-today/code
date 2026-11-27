@@ -4,13 +4,18 @@
 // saved — and importing a "__proto__" entry mutated the live store's
 // prototype while dropping the entry. The fix makes loadSetups()
 // return a null-prototype store. These tests extract the REAL
-// loadSetups/storeSetups from src/render.ts and drive the save/import
+// loadSetups/storeSetups from the render module set (src/render-aa.ts
+// since the #13051 split) and drive the save/import
 // handler cores verbatim against a stub localStorage.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const renderSource = readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
+const renderSource = readdirSync(join(import.meta.dir, "..", "src"))
+  .filter((f) => f.startsWith("render") && f.endsWith(".ts"))
+  .sort()
+  .map((f) => readFileSync(join(import.meta.dir, "..", "src", f), "utf8"))
+  .join("\n");
 const storeFns = renderSource.slice(
   renderSource.indexOf("function loadSetups()"),
   renderSource.indexOf("function refreshSetupList"),

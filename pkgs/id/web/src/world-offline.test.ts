@@ -232,14 +232,37 @@ describe("world page offline read model (#10927)", () => {
     expect(status()).toBe("Join the world before chatting");
     expect(FakeSocket.all).toHaveLength(0);
 
-    // Reconnect presents the stored last-applied sequence, not 0.
+    // The persisted sequence has no durable journal identity. Reconnect
+    // must ask for an authoritative snapshot rather than replay from it.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
     q<HTMLButtonElement>("[data-world-join]").click();
     expect(FakeSocket.all).toHaveLength(1);
     const socket = FakeSocket.all[0];
     socket.open();
     expect(socket.sent("join")).toHaveLength(1);
-    expect(socket.sent("join")[0]?.after).toBe(5);
+    expect(socket.sent("join")[0]).toMatchObject({ after: null });
+    expect(socket.sent("join")[0]?.resume_token).toBeUndefined();
+
+    // The journal was rebuilt with overlapping sequence numbers. The
+    // host snapshot must replace the offline projection before live events
+    // continue from the new history.
+    socket.deliver({
+      type: "snapshot",
+      snapshot: { world_id: "lobby", current_sequence: 3, participants: [{ id: 2, display_name: "grace" }] },
+    });
+    socket.deliver({ type: "view", data: "rebuilt history view" });
+    socket.deliver({ type: "records", records: { note: "rebuilt projection" }, next_after: null });
+    socket.deliver({
+      type: "event",
+      event: { sequence: 4, participant_id: 2, kind: { kind: "chat", data: "continuous" } },
+    });
+
+    expect(q("[data-world-participants]").textContent).toContain("grace");
+    expect(q("[data-world-participants]").textContent).not.toContain("ada");
+    expect(q("[data-world-view]").textContent).toContain("rebuilt history view");
+    expect(q("[data-world-records]").textContent).toContain("rebuilt projection");
+    expect(q("[data-world-records]").textContent).not.toContain("hello");
+    expect(loadWorldSnapshot(localStorage, window.location.host, null)?.sequence).toBe(4);
   });
 
   it("treats a notification as a hint and rebuilds from a fresh catch-up snapshot", async () => {

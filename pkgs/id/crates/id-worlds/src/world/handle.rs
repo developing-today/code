@@ -323,6 +323,7 @@ impl WorldHandle {
             stale_wants_at_open,
             acting: None,
             acting_session: None,
+            acting_account: None,
             acting_device_input: None,
             device_manifest,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
@@ -1531,7 +1532,8 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
-        self.input_with_session(token, input, None, None).await
+        self.input_with_session(token, input, None, None, None)
+            .await
     }
 
     /// Submit bounded opaque game input from a live session connection.
@@ -1541,8 +1543,9 @@ impl WorldHandle {
         input: Vec<u8>,
         session_id: SessionId,
         device_input: Option<serde_json::Value>,
+        caller_account: Option<String>,
     ) -> Result<WorldEvent> {
-        self.input_with_session(token, input, Some(session_id), device_input)
+        self.input_with_session(token, input, Some(session_id), device_input, caller_account)
             .await
     }
 
@@ -1552,6 +1555,7 @@ impl WorldHandle {
         input: Vec<u8>,
         session_id: Option<SessionId>,
         device_input: Option<serde_json::Value>,
+        caller_account: Option<String>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -1559,6 +1563,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id,
+                caller_account,
                 device_input,
                 signed_move: None,
                 reply,
@@ -1606,6 +1611,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: Some(signed_move),
                 reply,
@@ -1733,6 +1739,28 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped lease handoff response")?
+    }
+
+    /// Recover an expired native lease back to the DO (#13938 slice 1).
+    /// The actor journals `LeaseRevoked` for the expired holder and then
+    /// `LeaseGranted` for the DO before reopening DO mutations; between
+    /// the two journaled transitions the world has no holder and refuses
+    /// writes. Only an expired native term may recover this way.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the term has not expired, when no native holder stands,
+    /// or on world storage failure (including a failed grant append after
+    /// a durable revoke, which leaves the world holder-less and read-only).
+    pub async fn recover_expired_lease(&self) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::RecoverExpiredLease { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease recovery response")?
     }
 
     /// Run a spill v2 automatic failover (design #5787 §1, #7572).
