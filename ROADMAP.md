@@ -28,8 +28,7 @@ The order, the evidence behind it and the progress log are in the [results-first
 
 ## Next
 
-1. `id` hosted worlds v1 and discovery (#6276), then the agents-in-worlds spike (#6300).
-2. `id` Phase 13 shells: presentation tiers (#786).
+1. `id` hosted worlds v1 and discovery (#6276), then agents in worlds (#6280).
 
 ## Later
 
